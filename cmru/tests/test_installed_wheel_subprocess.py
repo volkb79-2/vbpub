@@ -45,11 +45,21 @@ def test_source_module_invocation_works_from_the_cmru_project_directory(tmp_path
     proc = invoke_module(
         "cmru.handlers", ["--help"], home=tmp_path, cwd=PROJECT_DIR, pythonpath=_own_sources(),
     )
-    # D2 (merged from W2-PKG2): the version is installed metadata only. A gate
-    # container that puts src/ on PYTHONPATH without installing the wheel has no
-    # distribution, and the entry then exits 3 with one line (no traceback); an
-    # installed distribution gets the real help. The child's own view decides.
-    if proc.returncode == 3:
+    # D2: the version is installed metadata only. The child inherits this
+    # process's environment, so whether the cmru distribution is installed is
+    # decided HERE and the outcome is exact (no either-or): the gate image bakes
+    # cmru (`+tester.unified`), so the lane gets exit 0 plus help; an environment
+    # without the distribution gets exit 3 with one line and no traceback.
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("cmru")
+        installed = True
+    except PackageNotFoundError:
+        installed = False
+    assert (proc.returncode == 0) is installed, proc.stderr
+    if not installed:
+        assert proc.returncode == 3
         assert proc.stderr.strip() == (
             "cmru is not installed as a distribution; install the wheel (see README)"
         )

@@ -47,7 +47,7 @@ memory_swap = "16g"
 
 [lanes.coverage]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-tester"
 argv = [
   "bash",
   "-c",
@@ -69,9 +69,18 @@ memory_swap = "16g"
 # before it starts. CMRU's host-side gate uses its configured secret through
 # CMRU's scoped Git transport; the tester container receives tag names and
 # commit IDs only, never publisher credentials.
+# TODO(cmru-6.0 landing): back to tester-unified:local after the retag
+# (the Wave 2 image bakes the cmru wheel; this mirrors the root tester-unified env).
+[environments.cmru-tester]
+mode = "ephemeral"
+image = "tester-unified:cmru6-integ"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
+
 [environments.cmru-mutation]
 mode = "ephemeral"
-image = "tester-unified:local"
+# TODO(cmru-6.0 landing): back to tester-unified:local after the retag
+image = "tester-unified:cmru6-integ"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 
@@ -126,7 +135,7 @@ memory_swap = "16g"
 
 [lanes.canary]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-tester"
 argv = [
   "bash",
   "-c",
