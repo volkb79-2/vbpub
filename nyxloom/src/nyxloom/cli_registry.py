@@ -379,9 +379,6 @@ def _extract_guard(args: Any) -> None:
         if not (eff("ledger", False) or eff("stop_state", False)):
             raise CliFailure("--no-prose with neither --ledger nor --stop-state would print nothing",
                              exit_code=2, show_help=True)
-    if getattr(args, "no_strip_cd_prefix", False) and getattr(args, "strip_cd_prefix", False):
-        raise CliFailure("--strip-cd-prefix and --no-strip-cd-prefix are contradictory",
-                         exit_code=2, show_help=True)
     if getattr(args, "timestamp_gap_minutes", None) is not None:
         if eff("timestamps") != "gaps":
             raise CliFailure("--timestamp-gap-minutes only applies with --timestamps gaps",

@@ -133,6 +133,28 @@ def test_watch_jsonl_interview_rows_carry_the_version():
     assert watch.JSONL_VERSION == 1
 
 
+def test_strip_cd_prefix_is_refused_for_a_non_claude_code_format(tmp_path, capsys, monkeypatch):
+    from types import SimpleNamespace
+
+    import nyxloom.session_extract as extraction
+    from nyxloom.cli_harness import main as harness_main
+
+    source = tmp_path / "source.db"
+    source.write_bytes(b"placeholder")
+    monkeypatch.setattr(extraction, "extract", lambda *args, **kwargs: SimpleNamespace(format="opencode"))
+    assert harness_main(["extract", str(source), "--format", "opencode", "--strip-cd-prefix"]) == 1
+    assert "--strip-cd-prefix is not supported for 'opencode'" in capsys.readouterr().err
+
+
+def test_jsonl_and_json_are_refused_together(tmp_path, capsys):
+    from nyxloom.cli_harness import main as harness_main
+
+    fp = tmp_path / "agent-x.jsonl"
+    fp.write_text("{}\n", encoding="utf-8")
+    assert harness_main(["extract", str(fp), "--prose-only", "--jsonl", "--json"]) == 2
+    assert "--jsonl and --json are different outputs" in capsys.readouterr().err
+
+
 def test_watch_applies_an_explicit_block_renderer_to_every_text_row():
     fmt = watch.WatchFormatter(block_render=str.upper, timestamps="none")
     assert fmt.format(_ev(EventKind.ASSISTANT_TEXT, "quiet")) == "QUIET\n\n"
