@@ -616,11 +616,14 @@ suite caught a mutant. Before native R2 starts candidates, Assay requires a
 visible cgroup v2 path through the hierarchy root. The sampler reads
 `/proc/thread-self/cgroup`, because a worker thread in a threaded cgroup v2
 subtree can have a different cgroup from the process leader; `/proc/self/cgroup`
-would identify the wrong execution context. Assay selects the hierarchy mount
-ID from `/proc/self/mountinfo`, then checks the mount ID of the opened hierarchy
-and each opened control file through `/proc/self/fdinfo`. It reads control bytes
-from the same checked file descriptor. This catches a later overmount on a
-parent path as well as one directly covering a sampled cgroup path.
+would identify the wrong execution context. The capability guard likewise
+reads `/proc/thread-self/status`: Linux capabilities are per-thread, and
+`/proc/self/status` reports the main thread's sets. Assay selects the hierarchy
+mount ID from `/proc/self/mountinfo`, then checks the mount ID of the opened
+hierarchy and each opened control file through `/proc/self/fdinfo`. It reads
+control bytes from the same checked file descriptor. This catches a later
+overmount on a parent path as well as one directly covering a sampled cgroup
+path.
 
 Assay samples the candidate's
 `pids.events.max` whenever available and the event file at every visible

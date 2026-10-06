@@ -353,10 +353,10 @@ def _path_is_present(path: Path) -> bool:
 def _candidate_capabilities_are_unprivileged() -> None:
     """Refuse capabilities that can bypass cgroup control-file permissions."""
     try:
-        status = Path("/proc/self/status").read_text(encoding="ascii")
+        status = Path("/proc/thread-self/status").read_text(encoding="ascii")
     except (OSError, UnicodeError) as exc:
         raise ResourceLimitObservationError(
-            "cannot inspect candidate process capabilities"
+            "cannot inspect candidate thread capabilities"
         ) from exc
     capabilities: dict[str, int] = {}
     for line in status.splitlines():
@@ -366,11 +366,11 @@ def _candidate_capabilities_are_unprivileged() -> None:
                 capabilities[name] = int(value.strip(), 16)
             except ValueError as exc:
                 raise ResourceLimitObservationError(
-                    f"malformed {name} in /proc/self/status"
+                    f"malformed {name} in /proc/thread-self/status"
                 ) from exc
     if set(capabilities) != {"CapEff", "CapPrm"}:
         raise ResourceLimitObservationError(
-            "/proc/self/status is missing candidate capability sets"
+            "/proc/thread-self/status is missing candidate capability sets"
         )
     may_change_cgroup_access = sum(1 << bit for bit in (1, 3, 6, 7, 21))
     if any(value & may_change_cgroup_access for value in capabilities.values()):

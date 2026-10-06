@@ -177,6 +177,46 @@ def test_reader_uses_the_calling_worker_thread_cgroup(
     assert read_cgroup_paths == [Path("/proc/thread-self/cgroup")]
 
 
+def test_capability_guard_uses_the_calling_worker_thread_status(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    leader_status = "CapEff:\t0000000000000000\nCapPrm:\t0000000000000000\n"
+    worker_status = "CapEff:\t0000000000000002\nCapPrm:\t0000000000000002\n"
+    original_read_text = Path.read_text
+    read_status_paths: list[Path] = []
+
+    def read_thread_status(path: Path, *args: object, **kwargs: object) -> str:
+        if path in {Path("/proc/thread-self/status"), Path("/proc/self/status")}:
+            read_status_paths.append(path)
+            return (
+                worker_status
+                if path == Path("/proc/thread-self/status")
+                else leader_status
+            )
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_thread_status)
+    errors: list[BaseException] = []
+
+    def check_from_worker_thread() -> None:
+        try:
+            resource_limits._candidate_capabilities_are_unprivileged()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker_thread = threading.Thread(
+        target=check_from_worker_thread, name="capability-check-worker"
+    )
+    worker_thread.start()
+    worker_thread.join(timeout=5)
+
+    assert not worker_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ResourceLimitObservationError)
+    assert "capabilities" in str(errors[0])
+    assert read_status_paths == [Path("/proc/thread-self/status")]
+
+
 def test_mount_id_reader_uses_the_opened_file_identity(monkeypatch: pytest.MonkeyPatch):
     original_read_text = Path.read_text
 

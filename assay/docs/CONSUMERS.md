@@ -129,7 +129,9 @@ placements do not inherit the process leader's identity. It checks the mount ID
 of the opened hierarchy and every opened counter/limit file against the
 selected cgroup2 mount in `/proc/self/mountinfo`; it reads each file through
 the descriptor whose mount ID it checked. An ancestor overmount that redirects
-those paths therefore refuses the lane. Assay samples the candidate's
+those paths therefore refuses the lane. It also checks capabilities from
+`/proc/thread-self/status`, since a worker's capabilities can differ from the
+process leader's. Assay samples the candidate's
 `pids.events.max` when
 exposed, even if its own `pids.max` is unlimited, and every visible ancestor's
 event counter when available. A finite `pids.max` requires its event counter.
