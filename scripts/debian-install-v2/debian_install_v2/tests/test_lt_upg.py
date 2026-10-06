@@ -34,11 +34,12 @@ RELEASE_STANZAS = {
     "trixie-updates": {"Origin": "Debian", "Label": "Debian", "Suite": "stable-updates", "Codename": "trixie-updates"},
     "trixie-security": {"Origin": "Debian", "Label": "Debian-Security", "Suite": "stable-security", "Codename": "trixie-security"},
     "trixie-backports": {"Origin": "Debian Backports", "Label": "Debian Backports", "Suite": "stable-backports", "Codename": "trixie-backports"},
+}
+# Present on a host but never allowed. testing/unstable: controller ruling --
+# unattended-upgrades ignores pins, so they must not be allowed in ANY mode.
+FOREIGN_STANZAS = {
     "testing": {"Origin": "Debian", "Label": "Debian", "Suite": "testing", "Codename": "forky"},
     "unstable": {"Origin": "Debian", "Label": "Debian", "Suite": "unstable", "Codename": "sid"},
-}
-# Present on a host but never allowed.
-FOREIGN_STANZAS = {
     "docker": {"Origin": "Docker", "Label": "Docker CE", "Suite": "trixie", "Codename": "trixie"},
     "bookworm-backports": {"Origin": "Debian Backports", "Label": "Debian Backports", "Suite": "oldstable-backports", "Codename": "bookworm-backports"},
     "bookworm": {"Origin": "Debian", "Label": "Debian", "Suite": "oldstable", "Codename": "bookworm"},
@@ -259,8 +260,8 @@ def test_failed_upgrade_is_recorded_and_install_continues(tmp_path, monkeypatch)
     inst, actions, posted = _stage1_installer(tmp_path, monkeypatch, uu_output="", uu_error="action failed (1): boom\nx")
     inst._stage1()
     step = _steps(inst)["apt_upgrade_at_install"]
-    assert step["status"] == "failed" and "boom" in step["detail"]
-    assert len(posted) == 1 and "apt upgrade FAILED" in posted[0]
+    assert step["status"] == "warned" and "boom" in step["detail"]
+    assert len(posted) == 1 and "⚠️ apt upgrade failed" in posted[0]
     assert _steps(inst)["root_shrink"]["status"] == "planned"  # install went on
 
 

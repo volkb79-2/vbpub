@@ -792,9 +792,11 @@ MaxFileSec=1month
             f'    "origin=Debian,codename={release}";',
             f'    "origin=Debian,codename={release}-updates";',
             f'    "origin=Debian Backports,codename={release}-backports";',
-            '    "origin=Debian,suite=testing";',
-            '    "origin=Debian,suite=unstable";',
         ]
+        # testing/unstable are deliberately NOT allowed (controller ruling): the
+        # sources and pins keep them for manual `-t testing` installs, but
+        # unattended-upgrades picks the highest version of any ALLOWED origin
+        # regardless of pins, producing mixed testing sets (LT-07).
 
     def _configure_apt_auto_upgrade(self) -> None:
         if self.config.apt_auto_upgrade_mode == "notify-only":
@@ -879,8 +881,8 @@ MaxFileSec=1month
             )
         except ActionError as exc:
             detail = f"{mode}: unattended-upgrade failed: {str(exc).splitlines()[0]}"
-            self._mark_step(step, "failed", detail)
-            self._upgrade_summary = f"apt upgrade FAILED ({mode}), install continued"
+            self._mark_step(step, "warned", detail)
+            self._upgrade_summary = f"⚠️ apt upgrade failed ({mode}), install continued"
             return
         matches = self._UU_UPGRADED_RE.findall(out)
         count = len(matches[-1].split()) if matches else 0

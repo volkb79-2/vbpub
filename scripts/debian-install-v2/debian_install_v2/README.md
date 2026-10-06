@@ -101,11 +101,14 @@ The generated deb822 sources contain release, updates, security, backports,
 testing, and unstable for the detected release. Pin priorities: backports 600,
 security 550, stable and stable-updates 500, oldstable/oldstable-backports and
 testing 100 (visible, never chosen by default), unstable 50. `apt_auto_upgrade_mode`
-`full` covers all pinned origins, `security-only` just the security origin, and
+`full` covers release, `-updates`, `-security` and `-backports` (NOT testing/unstable:
+they stay in sources and pins for manual `-t testing` installs, but unattended-upgrades
+ignores pin priorities and would build mixed testing sets), `security-only` just the security origin, and
 `notify-only` installs nothing and reports the pending count via `vbpub-notify`.
 `apt_upgrade_at_install` (default true) runs `unattended-upgrade -v` once in
 stage1, after the sources/pins/config are written and before the root-shrink
 hook and the stage1 reboot, so a new (backports) kernel boots on that reboot;
 `security-only` takes security only, `notify-only` and `run_apt_auto_upgrade=false`
-skip it (notify-only reports the pending count). Env var: `APT_UPGRADE_AT_INSTALL`.
+skip it (notify-only reports the pending count). Env var: `APT_UPGRADE_AT_INSTALL`. A failed run is non-fatal (step `warned`, warning in the stage1-complete post).
+Side effect: `DPkg::Lock::Timeout "600"` is in the 51 config, so interactive apt waits up to 600 s for the dpkg lock while unattended-upgrades runs.
 Package-manager `Automatic-Reboot` stays off; `run_auto_reboot` owns rebooting.

@@ -161,12 +161,14 @@ def test_docker_cleanup_skipped_when_docker_install_disabled(tmp_path):
     assert "/etc/systemd/system/vbpub-docker-cleanup.service" not in actions.dry_run_writes
 
 
-def test_apt_auto_upgrade_full_mode_includes_all_pinned_origins(tmp_path):
+def test_apt_auto_upgrade_full_mode_excludes_testing_and_unstable(tmp_path):
+    # LT-UPG ruling: u-u ignores pins, so testing/unstable are not allowed origins.
     _, actions = install_dry(tmp_path, apt_auto_upgrade_mode="full")
     content = actions.dry_run_writes["/etc/apt/apt.conf.d/51-vbpub-unattended-upgrades"]
     assert "label=Debian-Security" in content
-    assert 'suite=testing' in content
-    assert 'suite=unstable' in content
+    assert "backports" in content
+    assert 'suite=testing' not in content
+    assert 'suite=unstable' not in content
     assert 'Automatic-Reboot "false"' in content
 
 
