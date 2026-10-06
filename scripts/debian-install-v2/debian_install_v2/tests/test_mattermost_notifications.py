@@ -71,11 +71,24 @@ def test_both_credentials_without_explicit_choice_is_a_config_error():
 
 
 @pytest.mark.parametrize("choice", ["mattermost", "telegram", "none"])
-def test_explicit_choice_resolves_ambiguity(choice):
+def test_explicit_choice_with_both_credentials_is_still_a_config_error(choice):
+    # LT-REG: an explicit backend never tolerates the OTHER backend's credential.
     config = Config(
         notify_backend=choice, mattermost_webhook_url=HOOK,
         telegram_bot_token="1:t", telegram_chat_id="2",
     )
+    with pytest.raises(ConfigError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("choice", ["mattermost", "telegram", "none"])
+def test_explicit_choice_matching_its_credential_resolves(choice):
+    kwargs = {
+        "mattermost": {"mattermost_webhook_url": HOOK},
+        "telegram": {"telegram_bot_token": "1:t", "telegram_chat_id": "2"},
+        "none": {},
+    }[choice]
+    config = Config(notify_backend=choice, **kwargs)
     validate_config(config)
     assert resolve_notify_backend(config) == choice
 
@@ -609,7 +622,7 @@ def test_only_the_selected_backends_credential_files_are_installed(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"), notify_backend="telegram",
         telegram_bot_token="123456789:" + "A" * 35, telegram_chat_id="42",
-        mattermost_webhook_url=HOOK, never_reboot=True, auto_reboot_after_stage1=False,
+        never_reboot=True, auto_reboot_after_stage1=False,
     )
     actions = HostActions(dry_run=True)
     Installer(config, actions).install()

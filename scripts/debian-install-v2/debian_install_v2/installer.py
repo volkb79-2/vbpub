@@ -16,7 +16,7 @@ import urllib.request
 
 from . import inuse_partition_editor
 from .actions import HostActions
-from .config import Config, ConfigError, load_config, resolve_notify_backend
+from .config import Config, ConfigError, load_config, persisted_config_data, resolve_notify_backend
 from .host_facts import _code, collect_host_facts, format_facts_html
 from .notify import NotifyConfigError, format_mattermost_message, post_webhook, redact_text
 from .state import StateError, StateStore
@@ -213,7 +213,7 @@ class Installer:
                 _LOG.warning("could not build/send initial report notification: %s", exc)
         try:
             self._stage1()
-        except Exception as exc:
+        except BaseException as exc:
             if not self.actions.dry_run:
                 self.state.save(status="failed", phase="stage1", last_error=str(exc))
             self._notify(
@@ -229,11 +229,7 @@ class Installer:
         persisted = saved.get("config", {})
         if not isinstance(persisted, dict):
             raise StateError("state manifest does not contain a configuration object")
-        config_data = {
-            key: value
-            for key, value in persisted.items()
-            if key not in {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
-        }
+        config_data = persisted_config_data(persisted)
         try:
             persisted_config = load_config(raw_json=json.dumps(config_data))
         except ConfigError as exc:
@@ -317,7 +313,7 @@ class Installer:
                     f"{key_note}\n\n{facts_html}",
                     event=f"install complete (duration {duration}){key_event}", status="ok",
                 )
-        except Exception as exc:
+        except BaseException as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
             self._notify(
                 f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
@@ -1543,6 +1539,16 @@ MaxFileSec=1month
         env_file = "/etc/vbpub/bootstrap.env"
         credentials_line = "-"
         backend = self._notify_backend()
+        # vbpub-notify picks its backend from whichever credential file exists,
+        # so a re-run that switches backend (or to `none`) must REMOVE the other
+        # backend's files, or the helper keeps posting through a stale credential.
+        stale = {
+            "mattermost": ("telegram_bot_token", "telegram_chat_id"),
+            "telegram": ("mattermost_webhook_url",),
+        }.get(backend, ("telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"))
+        for directory in ("/etc/vbpub/credentials", f"{self.config.state_dir}/credentials"):
+            for name in stale:
+                self.actions.remove_file(f"{directory}/{name}")
         if backend == "mattermost":
             self.actions.write_file(
                 "/etc/vbpub/credentials/mattermost_webhook_url",

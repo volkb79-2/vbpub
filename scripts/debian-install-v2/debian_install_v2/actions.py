@@ -87,6 +87,7 @@ class HostActions:
         self.dry_run = dry_run
         self.planned: list[PlannedAction] = []
         self.dry_run_writes: dict[str, str] = {}
+        self.dry_run_removals: list[str] = []
 
     @staticmethod
     def _validate(argv: list[str], allow_shell: bool = False) -> None:
@@ -164,6 +165,20 @@ class HostActions:
                 except FileNotFoundError:
                     pass
             raise
+
+    def remove_file(self, path: str) -> None:
+        """Delete one file (missing is fine); recorded in dry-run."""
+        target = PurePosixPath(path)
+        if not path.startswith("/") or ".." in target.parts:
+            raise ActionError(f"path must be absolute and normalized: {path}")
+        self.planned.append(PlannedAction(("/usr/bin/rm", "-f", path), f"remove {path}", True))
+        if self.dry_run:
+            self.dry_run_removals.append(path)
+            return
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
 
     def mkdir(self, path: str) -> None:
         self.planned.append(PlannedAction(("/usr/bin/mkdir", "-p", path), f"create directory {path}", True))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import re
 import tempfile
@@ -11,6 +12,7 @@ from typing import Any, Literal
 
 from .notify import NotifyConfigError, effective_backend, validate_host_label, validate_webhook_url
 
+_LOG = logging.getLogger("debian_install_v2.config")
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -330,6 +332,26 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     config = Config(**data)
     validate_config(config)
     return config
+
+
+def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
+    """Config dict from persisted state.json, tolerant of unknown keys.
+
+    state.json may have been written by an older or newer field set; resuming
+    must not abort on that (forward/backward compatibility). Unknown keys are
+    dropped with ONE warning naming them (names only, never values). Credential
+    keys are always dropped: they arrive through credential files. Operator
+    supplied config still goes through the strict ``load_config``.
+    """
+    allowed = {item.name for item in fields(Config)}
+    secret = {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
+    unknown = sorted(str(key) for key in saved if key not in allowed)
+    if unknown:
+        _LOG.warning(
+            "ignoring unknown key(s) in the saved state configuration: %s",
+            ", ".join(unknown),
+        )
+    return {key: value for key, value in saved.items() if key in allowed and key not in secret}
 
 
 def save_config(path: str, config: Config, *, overwrite: bool = False) -> None:
