@@ -1316,7 +1316,13 @@ that the normalized deterministic writer is guaranteed for `xztar`, while the
 other accepted archive formats use the platform archive writer. There is no
 bundle CLI help surface left to overstate this guarantee.
 
-### KI-35 — retained worktrees of published or ambiguous releases have no supported cleanup path — *open*
+### KI-35 — retained worktrees of published or ambiguous releases have no supported cleanup path — *open (partly fixed in source by W3-PREP, 2026-10-06)*
+
+**W3-PREP status.** Wanted item 1 is now covered for the origin-only case that remains in practice: `cmru abandon BRANCH` retires an
+origin-only `cmru-release-*` branch whose commits are all on `origin/main` (lease delete, sidecars removed, tags and assets untouched);
+a branch with other commits is withheld with the exact `git log` and manual delete command (exit 4). Still open: a retained LOCAL
+worktree of a published/ambiguous transaction (items 2 and 3), and orphan sidecars with no branch (no command; see the sweep plan
+`nyxloom-trove/reports/PROGRAM-2026-10-W3-SWEEP-PLAN.md`). At planning time all 16 remaining origin branches were origin-only.
 
 **Reported by:** an estate worktree cleanup, 2026-09-28 (vbpub `main` at `c57cac82`).
 

@@ -4,75 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- cleared 2026-09-09 after the 5.2.0 release, per this project's own
-     KI-23-adjacent housekeeping convention (see [5.0.0]'s cleared block
-     below for the prior occurrence): the retain-by-default change +
-     KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
-
-<!-- NOTE (W0-REL merge): KI-30 refuses a tagged release while this body is non-empty.
-     The controller moves it into the 6.0.0 notes before releasing. The pre-clear
-     hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`. -->
-
-### Added
-- Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
-- Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
-- Add opt-in rolling OCI tag checks that record manifest digests and detect moved tags.
-
-### Removed
-- **Breaking:** retire `cmru-agent` and `cmru-controller` (operator decision O5; no consumer, superseded by push over SSH): the two console scripts, `cmru.agent`, `cmru.controller`, `packaging/cmru-agent.service` and their SPEC/README/CONSUMERS/DESIGN-GUIDE rows are deleted. `docs/spec-cmru-agent-controller.md` is kept with a RETIRED banner.
-- Remove the `--repack` option from `cmru handler oci-image-build` / `oci-image-push` (CLI-14): it only ever failed while KI-02 is open. It returns when KI-02 is fixed.
-- Delete the byte-identical duplicate `templates/get.py.tmpl`; the package resource `src/cmru/templates/get.py.tmpl` is the only copy (CLI-18).
-
-### Changed
-- `--json` on `worktrees`, `dependencies` and `status` is now the library-owned output: compact JSON instead of the previous sorted, indented text. `status --json` lists every selected project with a `changed` field. A root-level `--dry-run`/`--log-level`/`--quiet`/`--debug`/`--color` given before the verb is forwarded to the release/build transaction child.
-- Deprecate `orchestration.default_projects` (CLI-04): it is no longer required, is accepted with a one-line warning that it is ignored, and will be removed. Help text for the project target now says "omitted: the current project, or every orchestrated project at the estate root"; the dead `estate_scope` parameter and `step_project_order` handling are gone.
-- `cmru cleanup PROJECT --remove-assets AGE` now refuses the target (exit 2) instead of silently pruning estate-wide (CLI-05).
-- Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
-- `tester-gate` now requires `CMRU_TESTER_PIDS_LIMIT` (positive integer, passed as `--pids-limit`; declare it in `[env]`, estate value `4096`) and, with `--enable-docker`, `CMRU_TESTER_DIND_MEMORY`/`_CPUS`/`_PIDS_LIMIT`. The probe and DinD images run privileged, so they must be digest-pinned (`repo@sha256:<64 hex>`), are started `--pull=never` and must already be present locally; an image reference starting with `-` is refused.
-- `cmru` wheel bundles with a declared `[wheel].find_links` now build with `--no-index` (the wheelhouse is the only source).
-- **Breaking (CLI redesign B8-B12, W2-PKG2):** `cmru handler oci-image-build`/`oci-image-push` take `--bake-target` instead of `--target` (it names a docker bake target, not a project target); `cmru tester-gate --forward-cgroup-parent-var`/`--forward-cgroup-parent-gates-var` are now `--forward-background-slice`/`--forward-gates-slice`.
-- **Breaking:** `cmru get-py` refuses several selected projects on stdout (CLI-12; use `--output-dir`), and `--dry-run` needs `--output` or `--output-dir`. `cmru resolve` prints one object for one explicit name and a keyed map for `all` or a list (CLI-13), and gains the config-free `--repo OWNER/REPO --prefix PREFIX` mode (CLI-D2).
-- **Breaking (exit codes, CLI-16):** `cmru standards` issues and a stale `cmru tool-deps` pin exit 4 (refused by policy; was 2); `cmru init` declining the write exits 0 (was 2); `tester-gate` with missing required configuration exits 3 (was 1). `cmru standards` gains `--json`.
-- `cmru init` is non-interactive when its options are complete (`--folder`, `--id`, `--description`, `--kind`, `--artifacts`, `--release-tags`, `--build-command`, `--publish-command`), prompts through the library prompt driver otherwise, and takes the library `--yes` for the write confirmation (CLI-10).
-- Every `tester-gate` environment fallback is resolved at run time (explicit option, then variable) and named as "(default: $VAR)" in the help (CLI-17); every delegate verb takes its project target as a library selector list and shares one registry factory.
-- Bump the project template to revision 5 (`CMRU_TESTER_PIDS_LIMIT`, the `[runtime]` table, the `cmru handler` steps); run `cmru standards --update`.
-
-### Fixed
-- `tester-gate` (KI-52): run the gate workload and the DinD sidecar under `--init` with a required pids limit, give every container an exact name and stop/remove it on SIGTERM/SIGHUP/Ctrl-C, copy the container's own `pids.events`/`memory.events` out before `--rm` deletes the cgroup and fail with exit 3 (naming the counter) on a non-zero `max`/`oom_kill`, a malformed or missing file, bound the DinD sidecar, time-out the DinD readiness probe, and pick the visible (last) entry on equal-length mount points. `tester-unified` disables detached git maintenance and builds estate-internal packages offline from the copied sources.
-- The ready-to-copy `templates/cmru.toml.tmpl` and `templates/cmru.orchestration.toml.tmpl` now load through the real config loader (missing `[runtime]` and central `[github]`/`[targets]`); a test loads every shipped template (CLI-18).
-- Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` by name into the build (KI-53).
-- Add the monorepo's sibling `cli-extended` and `worktree` source roots to
-  bound CMRU subprocesses, so system-Python release scripts can import the
-  matching runtime dependencies.
-- Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
-- Include the Topos and nyxloom manifests required by the estate adoption test in disposable mutation and canary controls.
-- Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
-- Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
-- Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
-- Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.
-- Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
-- Keep a skipped cleanup Release's tag and derive the clean-step version from applied cleanup results.
-- Recheck whole-package GHCR identity before confirmed deletion and report the clean-step version as a preview estimate.
-- Scope abandonment tag checks to the recorded projects and remove only local tags proven to come from that candidate's push attempt.
-- Preserve credential rotation when restoring secret overlays after the gate.
-- Prevent publishing an older retained build from moving the `-latest` pointer backward.
-- Bind retained publication to the captured Release ID and tag commit, rechecking them before metadata and asset mutations.
-- Treat GHCR 404 responses as absent-or-inaccessible and skip cleanup without certifying absence.
-- Install gate secret overlays without replacing a credential rotated at the masking boundary.
-- Copy resume credentials through no-follow paths and atomic mode-0600 destination files.
-- Verify staged retained artifact bytes against the build manifest before remote publication.
-- Require the registered real-enrollment lane to fail when prerequisites or fixture-image construction fail.
-- Verify the gates slice on the Docker host before starting enrollment fixtures.
-- Reject malformed, invalid, or out-of-pattern remote tag records before cleanup planning.
-
-### Testing
-- Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
-- Cover inclusive rolling-OCI age cutoffs, rolling-result override metadata, and the no-warning return contract.
-- Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
-- Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
-- Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
-- Cover symlinked credential destinations, altered retained upload staging, and required enrollment-lane prerequisites.
-- Cover Docker-host slice verification and malformed, invalid, duplicate, orphaned, or out-of-pattern remote tag records.
+<!-- Empty on purpose: KI-30 refuses a tagged release while this body is non-empty, and KI-23
+     refuses one while a hand-authored `## [6.0.0] - UNRELEASED` heading exists, so this file
+     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
+     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`. -->
 
 <!-- cmru: release history -->
 

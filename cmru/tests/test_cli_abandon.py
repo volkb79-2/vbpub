@@ -398,6 +398,11 @@ def test_abandon_branch_selection_is_exact(
     ]
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: candidates)
+    # KI-35: an unmatched release branch name is also looked up on origin; it
+    # is absent there, so the exact-selection refusal still applies.
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded_config(tmp_path, {}))
+    monkeypatch.setattr(transaction, "inspect_remote_candidate", lambda *_a, **_k: None)
     from cli_extended import CliFailure
 
     with pytest.raises(CliFailure, match=message) as refusal:
