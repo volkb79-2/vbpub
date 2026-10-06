@@ -288,7 +288,12 @@ class TestRealSubtreeEnforcement:
         """Host PIDs are observation-only in the private PID namespace;
         without placement the daemon must report, never signal."""
         ready_read, ready_write = os.pipe()
-        release_read, release_write = os.pipe()
+        try:
+            release_read, release_write = os.pipe()
+        except BaseException:
+            os.close(ready_read)
+            os.close(ready_write)
+            raise
         lane = None
         server = None
         parked = threading.Event()

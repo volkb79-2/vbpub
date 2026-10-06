@@ -228,24 +228,15 @@ def _stub_report_script(tmp_path: Path) -> str:
     return str(script)
 
 
-def _wait_for_socket(socket_path: str) -> None:
-    deadline = time.monotonic() + 5.0
-    last_error: Optional[OSError] = None
-    while time.monotonic() < deadline:
-        # bind() makes the pathname visible before listen() makes the socket
-        # connectable.  Path existence alone therefore lets a client race
-        # the server's bind/listen sequence and fail with ECONNREFUSED.
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                probe.settimeout(0.1)
-                probe.connect(socket_path)
-            return
-        except (FileNotFoundError, ConnectionRefusedError) as exc:
-            last_error = exc
-            time.sleep(0.01)
-    raise AssertionError(
-        f"socket did not become connectable within 5s: {socket_path}: {last_error}"
-    )
+def _wait_for_socket(server: serve.SessionServer, thread: threading.Thread) -> None:
+    # SessionServer assigns _sock only after bind() AND listen() succeed.  Wait
+    # on that state instead of connecting a synthetic client: an extra
+    # connection would be accepted by the real loop and could satisfy a
+    # separate test's accepted-event assertion before its intended client.
+    while server._sock is None:
+        if not thread.is_alive():
+            raise AssertionError("server thread exited before its socket became ready")
+        time.sleep(0.01)
 
 
 def _normalize(doc: Any, *, sessions_dir: str, socket_path: str) -> Any:
@@ -375,7 +366,7 @@ class _Scenario:
 
     def __enter__(self) -> "_Scenario":
         self.thread.start()
-        _wait_for_socket(self.socket_path)
+        _wait_for_socket(self.server, self.thread)
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -532,7 +523,7 @@ class TestWireShape:
         )
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
-        _wait_for_socket(socket_path)
+        _wait_for_socket(server, thread)
         bad_requests = [
             {"verb": ["version"], "args": {}, "contract": 1},
             {"verb": "version", "args": {}, "contract": True},
@@ -572,7 +563,7 @@ class TestWireShape:
         server.handle_stop = record_stop
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
-        _wait_for_socket(socket_path)
+        _wait_for_socket(server, thread)
         try:
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             client.settimeout(2.0)
@@ -605,7 +596,7 @@ class TestWireShape:
         )
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
-        _wait_for_socket(socket_path)
+        _wait_for_socket(server, thread)
         slow = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         slow.connect(socket_path)
         slow.sendall(b'{"verb":')
@@ -766,7 +757,7 @@ class TestWireShape:
         )
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
-        _wait_for_socket(socket_path)
+        _wait_for_socket(server, thread)
         try:
             response = _raw_socket_request(
                 socket_path,
@@ -969,7 +960,7 @@ class TestPeerCredentials:
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
         try:
-            _wait_for_socket(socket_path)
+            _wait_for_socket(server, thread)
             refused = _raw_socket_request(socket_path, _wire("version"))
             assert refused["error"]["code"] == "peer-refused"
             assert str(os.getuid()) in refused["error"]["message"]
@@ -989,7 +980,7 @@ class TestPeerCredentials:
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
         try:
-            _wait_for_socket(socket_path)
+            _wait_for_socket(server, thread)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(2.0)
                 client.connect(socket_path)
@@ -1017,7 +1008,7 @@ class TestPeerCredentials:
         thread = threading.Thread(target=server._accept_loop, daemon=True)
         thread.start()
         try:
-            _wait_for_socket(socket_path)
+            _wait_for_socket(server, thread)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(2.0)
                 client.connect(socket_path)
