@@ -603,18 +603,21 @@ document that the legacy global must be removed before adopting `skills`.
 
 **Provenance:** CX-BACKLOG review round 1 (finding C2), 2026-10-06.
 
-## CLI-EXT-31 — the pytest CLI-case coverage check makes any partial pytest run error
+## CLI-EXT-31 — the partial-run opt-out of the pytest CLI-case check is not discoverable
 
-**Status:** Open (found in the CX-BACKLOG review, 2026-10-06). Size S.
-**Type:** Defect (usability)
+**Status:** Error-message hint fixed in this branch (review round 1); docs mention remains open. Size S.
+**Type:** Usability
 **Area:** Pytest plugin
 
-The opt-in pytest plugin's CLI-case coverage check makes ANY partial pytest
-run (for example a single test file) error with "no tests ran" (exit 4)
-unless the review-cases test file is included. That is hostile to focused
-runs.
+The opt-in pytest plugin's CLI-case coverage check is strict by default, so a
+focused run (for example a single test file) errors (exit 4, "no tests ran")
+unless the review-cases test file is included. The opt-out already exists,
+`--cli-case-partial` (README, CONSUMERS, SPEC), but the error did not name it.
 
-Proposal: relax the check automatically when not all test paths were
-collected, or provide a documented opt-out (option or environment variable).
+Done: in strict mode the usage error now ends with `hint: for a focused
+(partial) run, pass --cli-case-partial (CI and gate runs stay strict)`; the
+hint is absent when the flag is already passed. Tested in `test_w6_testing.py`.
+Remaining: make the README/CONSUMERS mention easier to find from the adoption
+checklist (the existing mentions are in the testing sections only).
 
 **Provenance:** CX-BACKLOG review round 1, 2026-10-06.

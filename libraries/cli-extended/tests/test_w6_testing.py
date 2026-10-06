@@ -418,7 +418,9 @@ def test_partial_mode_passes_the_same_focused_run(pytester):
     unrelated.assert_outcomes(passed=1)
     strict = pytester.runpytest_inprocess("test_c.py", "-p", "no:cacheprovider")
     assert strict.ret == pytest.ExitCode.USAGE_ERROR
-    strict.stderr.fnmatch_lines(["*has no collected marked test*"])
+    strict.stderr.fnmatch_lines(
+        ["*has no collected marked test*", "*hint: for a focused (partial) run, pass --cli-case-partial*"]
+    )
 
 
 @pytest.mark.parametrize("flags", [(), ("--cli-case-partial",)])
@@ -436,6 +438,8 @@ def test_unknown_marker_case_fails_in_both_modes(pytester, flags):
 
     assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(["*unknown CLI case 'case:tool/missing'*"])
+    # The partial-run hint is offered in strict mode only.
+    assert ("--cli-case-partial" in result.stderr.str()) == (not flags)
 
 
 def test_partial_mode_still_enforces_errors_about_collected_tests(pytester):
