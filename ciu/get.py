@@ -1421,7 +1421,9 @@ def do_rollback(args: argparse.Namespace, token: Optional[str]) -> None:
             fatal(f"No install found at {root}.", EXIT_FAIL)
         if state.get("legacy"):
             fatal("This install uses the pre-W1 layout and has no recorded previous "
-                  "release; run 'python3 get.py update' once to migrate it.", EXIT_FAIL)
+                  "release: the pre-migration layout is not a rollback target; run "
+                  "'python3 get.py update' once to migrate it (the first update after "
+                  "migration creates a rollback target).", EXIT_FAIL)
         wanted = getattr(args, "version", None)
         if wanted:
             tag = normalize_tag(wanted)
@@ -1435,7 +1437,10 @@ def do_rollback(args: argparse.Namespace, token: Optional[str]) -> None:
         else:
             target = state.get("previous")
             if target is None:
-                fatal("No previous release to roll back to.", EXIT_FAIL)
+                fatal("No previous release to roll back to: the install has only one "
+                      "release (a fresh install, or one just migrated from the pre-W1 "
+                      "layout). The pre-migration layout is not a rollback target; the "
+                      "first update after migration creates one.", EXIT_FAIL)
 
         info(f"Rolling back to {target['tag']} ({target['name']}) ...")
         release = _verify_release_intact(root, target)

@@ -7,8 +7,10 @@ install, update, rollback, status, scope (system/user), bundled-wheel venv, SHA2
 minisign-manifest verification, private GitHub asset auth, and the project-adapter
 invocation contract (Seam 1). It ships INSIDE the release artifact.
 
-Template variables use [[VARNAME]] syntax. All placeholders must be replaced;
-unmatched [[...]] keys trigger a warning.
+Template variables use [[VARNAME]] syntax and are replaced in ONE pass. Every value that
+lands in code is a ``json.dumps`` literal, and a leftover ``[[...]]`` placeholder or a value
+outside the installer-field grammar (``config.installer_problems``) is a ``RenderError``
+(exit 2), never a warning. See SPEC S6.1/S6.15 for the contract.
 """
 from __future__ import annotations
 

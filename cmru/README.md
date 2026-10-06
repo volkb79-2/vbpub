@@ -607,7 +607,13 @@ reusable operation imports `run_bundle`; a root verb should be added only when a
 concrete operator workflow needs one. `cmru run-step` is the single-step CLI.
 The standalone generated `get.py` remains intentionally independent and uses
 `argparse` because adopters run it without a CMRU installation. It is the generic
-installer only; a project adds its own commands with `[project.installer] extensions =
+installer only: a fail-closed, transactional `install`/`update`/`status`/`rollback` that
+verifies the SHA-256 sidecar, the manifest (and, when the project pins a `manifest_pubkey`, its
+minisign signature) and every wheel hash, builds each release in its own
+`releases/<tag>-<digest>/` directory with its own venv (offline, `--require-hashes`), swaps
+`current` atomically and keeps the previous release for `rollback` (SPEC S6.3-S6.17, and the
+[authoring guide](docs/CONSUMERS.md#authoring-an-installer-for-your-project) in CONSUMERS).
+A project adds its own commands with `[project.installer] extensions =
 ["<relpath>.py"]` fragments that `cmru get-py` inlines verbatim (sha256-banner wrapped, one file,
 deterministic) after render-time checks. The names a fragment may use are the rendered file's
 `EXTENSION_API` tuple, a stability contract: changing or removing a name requires updating every

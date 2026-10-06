@@ -864,6 +864,10 @@ required_commands  = ["python3", "docker", "minisign"]   # checked pre-network (
 preserve           = ["shared/host.toml"] # paths kept in <root>/shared/ across updates
 manifest_name      = "manifest.json"      # manifest file inside the bundle
 signature_name     = "manifest.json.minisig"  # minisign signature for manifest
+# manifest_pubkey  = "RWS3E3vAMFRhE+IFwPRKkv1VcLeqZIzKShZeB+QjX7u2iOMK7WfqEwk4"
+#                                           # optional: 56-char minisign public key, pinned INTO get.py;
+#                                           # set => signed releases are REQUIRED (S6.15). Absent => unsigned.
+# launchers        = ["ciu", "cmru"]      # optional: <root>/bin/<cmd> -> ../current/venv/bin/<cmd> (S6.17)
 # extensions       = ["installer/extra.py"]   # project-owned get.py command fragments (S6.14)
 
 [[project.installer.wheels]]         # bundled wheels to install into private venv
@@ -1478,6 +1482,9 @@ is re-verified (recorded manifest digest, signature when a key is configured, ad
 that release's own venv. `state.previous` becomes the release rolled away from, so a second
 rollback toggles back. `--version TAG` selects a recorded release of that tag from `previous`
 or the history, if its directory still exists (pruning keeps only `current` and `previous`).
+When there is no `previous` (a fresh install, or a host just migrated from the pre-W1 layout)
+`rollback` exits 1 with: "the pre-migration layout is not a rollback target; the first update
+after migration creates one".
 
 **S6.7** Scope-exclusive lock (`flock` on `<root>/.lock`) serialises concurrent invocations.
 SIGINT/SIGTERM handler cleans up staging dir and releases the lock.
@@ -1498,7 +1505,9 @@ under the installer's own interpreter.)
 The GitHub token is **stripped** from the child-process environment.
 
 **S6.9** The installer is Python 3 **stdlib-only** (urllib/tarfile/hashlib/argparse/fcntl);
-no third-party dependencies. `minisign`, `docker`, and the project adapter are shelled out.
+no third-party dependencies. The project adapter, `python3 -m venv`/`pip` (wheels, S6.16) and,
+only when a `manifest_pubkey` is configured, `minisign` (S6.15) are shelled out; any other
+command in `required_commands` is only presence-checked.
 
 **S6.10** Auth (token) precedence: `--github-token` (warns: leaks via ps/history) >
 `--github-token-file FILE` (rejected if loose perms / wrong owner) > `--github-token-stdin`
@@ -1507,7 +1516,11 @@ no third-party dependencies. `minisign`, `docker`, and the project adapter are s
 **S6.11** `install_dir_user` degrades gracefully: if `entrypoint` is empty and `wheels`
 is empty, no adapter is called and no venv is created (tls-edge minimal path).
 
-**S6.13** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
+**S6.13** `--version <TAG>` pins the install to a specific tag (bare semver or full tag) and
+installs EXACTLY that tag: no "latest" lookup is made, so a moved or newer release can never
+substitute for it (and an unreachable release list does not block a pinned install). Without
+`--version` the highest-semver release is resolved. Arguments go to the right side of the pipe
+(`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
 
 **S6.12** **Variant selection (multi-variant releases, S-REL.6).** When the emitted `get.py`
 carries a non-empty `VARIANTS` list, the operator MUST select one at install/update time —
@@ -1574,6 +1587,55 @@ single rendered file:
 - Consequence: a project that renders `get.py` without `extensions` carries no root-run
   `authorized_keys` writer. Host enrollment is ciu's (`ciu/installer/enroll.py`); its hardening
   is tracked in ciu (CIU-122/CIU-123), not here.
+
+**S6.15** Signature policy, fail-closed behaviour and exit codes.
+
+- *Unsigned projects.* With no `manifest_pubkey` the releases are unsigned; `install` says so
+  ("unsigned"), `status` shows `signed: no`, and `minisign` is not required.
+- *Signed projects.* With `manifest_pubkey` the key is pinned into the rendered `get.py`
+  (never a flag or environment variable). `minisign` and the venv prerequisites are checked
+  BEFORE any network I/O (exit 3). The bundle MUST contain `signature_name` next to the
+  manifest; the signature is verified over the exact manifest bytes with
+  `minisign -V -m <manifest> -x <sig> -P <key>`; a missing or invalid signature, or one from
+  another key, is exit 1 and changes nothing under `<root>`. Rollback and the idempotent
+  re-install re-verify it.
+- *Trusted-comment binding (replay protection).* The signed trusted comment MUST be exactly
+  `project=<name> tag=<tag> manifest_sha256=<hex>`: `<tag>` is the tag being installed and
+  `<hex>` the SHA-256 of the manifest bytes. The installer refuses (exit 1) when either field
+  differs, so an old signed release cannot be replayed as another tag and a signature cannot
+  be moved onto a different manifest. Producer primitives that emit exactly this:
+  `cmru.manifest.build_trusted_comment(project, tag, manifest_path)` and
+  `cmru.delegated.minisign_sign(blob, secret_key, trusted_comment)` (writes
+  `<blob>.minisig`); a test signs with them and installs the result. **Gap:** nothing in the
+  `cmru release` pipeline calls them yet (GETPY-REDESIGN R4, automatic signing at release); a
+  project that sets `manifest_pubkey` must sign from a project-owned release step with those
+  primitives until R4 lands, otherwise every install of its releases fails closed.
+- *Fail-closed.* Every verification failure (checksum, sidecar grammar, signature, manifest
+  schema/tag, `files` hashes, wheel hashes, adapter not covered by the manifest, unsafe tar
+  member) is exit 1 with the install untouched.
+- *Exit codes:* `0` ok (including a verified no-op); `1` download/verify/install/adapter
+  failure; `2` configuration or render error (bad tag or variant, missing `--config` file,
+  invalid installer field); `3` missing prerequisite (command, `minisign`, `python3-venv`, root
+  for system scope).
+- *Transport.* HTTPS only, every redirect hop checked against the host allowlist
+  (`api.github.com`, `github.com`, `uploads.github.com`, `objects.githubusercontent.com`,
+  `*.githubusercontent.com`, `*.github.com`); the token is never forwarded across a redirect; an empty token on stdin is
+  exit 2; a non-200 asset download is fatal.
+
+**S6.16** Wheels, offline installs, hash lock. When `[[project.installer.wheels]]` is set, each
+wheel glob must match exactly one file in the bundle and have a manifest entry
+`manifest[<distribution>] = {sha256, wheel?, size?}` that it matches (a missing or mismatching
+entry is exit 1). The verified wheels are copied to `<release>/wheelhouse/` and a
+`requirements.lock` of `<dist>==<version> --hash=sha256:<hex>` lines is written, with
+`cli-extended` first and the rest in declared order. The release's own venv
+(`python3 -m venv`, so the `python3-venv` package is a prerequisite, exit 3) is populated with
+`pip install --isolated --no-index --find-links <wheelhouse> --require-hashes -r
+requirements.lock`, then `pip check`: no index, no network, no resolver choice, and any wheel
+swapped after verification fails the hash lock.
+
+**S6.17** Launchers. `launchers = ["a", "b"]` (plain command names) makes the installer create
+`<root>/bin/<cmd>` symlinks to `../current/venv/bin/<cmd>`, rewritten atomically after every
+install, update and rollback so they follow `current`. Add `<root>/bin` to `PATH`.
 
 ---
 

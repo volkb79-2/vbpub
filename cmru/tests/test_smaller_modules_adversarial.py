@@ -172,6 +172,6 @@ def test_github_host_filters_releases_and_surfaces_sha_retry_failure(monkeypatch
     ]
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
-    result = host.resolve_latest("demo-v")
-    assert result["version"] == "1.0.0" and result["sha256"] is None
+    with pytest.raises(RuntimeError, match="cannot read the checksum sidecar a.whl.sha256"):
+        host.resolve_latest("demo-v")  # INS-18: no silent sha256=None
     assert host.list_releases("demo-v")[0]["tag"] == "demo-v1.0.0"

@@ -88,7 +88,7 @@ class TestFormatResultEnv(unittest.TestCase):
 
 
 def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(monkeypatch):
-    project = SimpleNamespace(prefix="alpha-v", github_token="project-token")
+    project = SimpleNamespace(prefix="alpha-v", github_token="project-token", installer=None)
     loaded = (
         Path("/repo"), {"alpha": project}, ["alpha"], [], [], "project-first", {},
         SimpleNamespace(), cli.GitHubConfig("owner", "repo", "root-token", "user"),

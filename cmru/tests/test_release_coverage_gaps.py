@@ -343,7 +343,7 @@ def _patch_loader(monkeypatch, module, config_path, loaded):
 
 
 def test_getpy_context_outputs_and_rejections(monkeypatch, tmp_path, capsys):
-    project = SimpleNamespace(prefix="demo-v", github_token="")
+    project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     loaded = _loaded({"demo": project, "other": project}, ["demo", "other"])
     cfg = tmp_path / "cmru.toml"
     cfg.write_text("", encoding="utf-8")
@@ -398,8 +398,8 @@ def test_getpy_render_refuses_unknown_and_non_installer(tmp_path, monkeypatch):
 
 
 def test_resolve_context_and_multi_formats(monkeypatch, tmp_path, capsys):
-    project = SimpleNamespace(prefix="demo-v", github_token="")
-    loaded = _loaded({"demo": project, "other": SimpleNamespace(prefix="other-v", github_token="")}, ["demo", "other"])
+    project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
+    loaded = _loaded({"demo": project, "other": SimpleNamespace(prefix="other-v", github_token="", installer=None)}, ["demo", "other"])
     cfg = tmp_path / "cmru.toml"
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "tag": "demo-v1", "url": "https://x"})
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
@@ -416,7 +416,7 @@ def test_resolve_context_and_multi_formats(monkeypatch, tmp_path, capsys):
 
 def test_resolve_standalone_implicit_target(monkeypatch, tmp_path, capsys):
     cfg = tmp_path / "cmru.toml"
-    project = SimpleNamespace(prefix="demo-v", github_token="")
+    project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
@@ -427,7 +427,7 @@ def test_resolve_standalone_implicit_target(monkeypatch, tmp_path, capsys):
 
 def test_resolve_orchestration_context_without_explicit_target(monkeypatch, tmp_path, capsys):
     cfg = tmp_path / "cmru.orchestration.toml"
-    project = SimpleNamespace(prefix="demo-v", github_token="")
+    project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))

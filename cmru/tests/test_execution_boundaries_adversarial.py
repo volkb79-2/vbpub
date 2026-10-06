@@ -62,9 +62,9 @@ class TestGithubReleaseHost:
         class Resp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
-            def read(self): return b"abc123  bundle\n"
+            def read(self): return b"ab12" * 16 + b"  bundle\n"
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: Resp())
-        assert h.resolve_latest("p-")["sha256"] == "abc123"
+        assert h.resolve_latest("p-")["sha256"] == "ab12" * 16
 
     def test_latest_returns_none_for_no_release_or_no_primary_asset(self):
         h = self._host()

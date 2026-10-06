@@ -33,8 +33,11 @@ class ReleaseHost(ABC):
         """Return releases matching prefix, each with at least {tag, id, assets:[{name,url,sha256?}]}."""
 
     @abstractmethod
-    def resolve_latest(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Return {version, tag, asset, sha256, url} for highest-semver prefix release (S5)."""
+    def resolve_latest(self, prefix: str, asset_suffix: str = "") -> Optional[Dict[str, Any]]:
+        """Return {version, tag, asset, sha256, url} for highest-semver prefix release (S5).
+
+        ``asset_suffix`` selects the primary asset by type; a checksum sidecar that exists but
+        cannot be read raises ``RuntimeError``."""
 
     @abstractmethod
     def download_url(self, tag: str, asset_name: str) -> str:

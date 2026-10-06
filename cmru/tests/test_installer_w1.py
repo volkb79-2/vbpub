@@ -209,10 +209,13 @@ class TestTransport:
         monkeypatch.setattr(ns["sys"], "stdin", __import__("io").StringIO("tok\n"))
         assert ns["_resolve_token"](args(github_token_stdin=True)) == "tok"
 
+    # The asset's REAL digest is used wherever the digest is not the defect, so each case
+    # fails only because of the sidecar grammar (a wrong digest would be refused anyway).
     @pytest.mark.parametrize("text", [
-        "", "   \n", "abc  bundle.tar.xz\n", ("0" * 63) + "  bundle.tar.xz\n",
-        ("0" * 64) + "  other.tar.xz\n", ("0" * 64) + " a b\n",
-        ("0" * 64) + "  bundle.tar.xz\n" + ("1" * 64) + "  bundle.tar.xz\n",
+        "", "   \n", "abc  bundle.tar.xz\n", sha(b"x")[:63] + "  bundle.tar.xz\n",
+        sha(b"x") + "  other.tar.xz\n", sha(b"x") + " a b\n",
+        sha(b"x") + "  bundle.tar.xz\n" + sha(b"x") + "  bundle.tar.xz\n",
+        sha(b"x") + "  bundle.tar.xz\nextra line\n",
     ])
     def test_sidecar_parsed_strictly(self, tmp_path, text):
         ns = render_ns(tmp_path)
@@ -236,7 +239,12 @@ class TestTransport:
     @pytest.mark.parametrize("status", [404, 500])
     def test_download_http_error_is_fatal(self, tmp_path, status):
         ns = render_ns(tmp_path)
-        ns["_gh_request"] = lambda url, **kw: (status, b"")
+        def fake(url, **kw):
+            # an error body streamed into the destination must not pass as the asset
+            kw["stream_to"].write_bytes(b"<html>error page</html>")
+            return status, b""
+
+        ns["_gh_request"] = fake
         with _exits(1):
             ns["_download_asset"]("demo-v1.0.0", "demo-v1.0.0.tar.xz", tmp_path / "d", None)
 
@@ -379,6 +387,24 @@ class TestSignature:
         release = root_of(ns) / "releases" / state["current"]["name"]
         assert (release / "manifest.json.minisig").is_file()
 
+    def test_cmru_producer_output_verifies_with_the_installer(self, tmp_path):
+        """The shipped producer primitives (`manifest.write_manifest`/`build_trusted_comment`
+        + `delegated.minisign_sign`) emit exactly the trusted comment the installer requires."""
+        from cmru.delegated import minisign_sign
+        from cmru.manifest import build_trusted_comment, write_manifest
+        pub, sec = minisign_keypair(tmp_path / "keys")
+        ns = render_ns(tmp_path, manifest_pubkey=pub)
+        mpath = write_manifest({"schema_version": 1, "project": "demo", "tag": V1},
+                               tmp_path / "m" / "manifest.json")
+        minisign_sign(mpath, secret_key=str(sec), trusted_comment=build_trusted_comment(
+            project="demo", tag=V1, manifest_path=mpath))
+        make_bundle(tmp_path / "b", V1, files={"VERSION": b"1"},
+                    manifest=mpath.read_bytes(),
+                    signature=(tmp_path / "m" / "manifest.json.minisig").read_bytes())
+        use_bundles(ns, tmp_path / "b")
+        install(ns, version=V1)
+        assert _state(ns)["current"]["tag"] == V1
+
     def test_missing_signature_refused_nothing_changed(self, tmp_path):
         ns, _pub, _sec = self._setup(tmp_path, sign=False)
         with _exits(1):
@@ -413,6 +439,19 @@ class TestSignature:
     ])
     def test_trusted_comment_must_bind_tag_and_digest(self, tmp_path, comment):
         ns, _pub, _sec = self._setup(tmp_path, sign_comment=comment)
+        with _exits(1):
+            install(ns, version=V1)
+        assert snapshot(root_of(ns)) == {}
+
+    def test_signed_release_replayed_as_another_tag_refused(self, tmp_path):
+        """A genuine signature whose manifest digest is right but whose trusted comment names
+        ANOTHER tag (an old signed release replayed) is refused on the tag alone."""
+        ns, _pub, sec = self._setup(tmp_path)
+        _a, original = make_bundle(tmp_path / "o", V1, files={"VERSION": b"1"})
+        from tests.installer_fakes import minisign_sign
+        sig = minisign_sign(sec, original, f"project=demo tag={V2} manifest_sha256={sha(original)}",
+                            tmp_path / "s")
+        make_bundle(tmp_path / "b", V1, files={"VERSION": b"1"}, signature=sig)
         with _exits(1):
             install(ns, version=V1)
         assert snapshot(root_of(ns)) == {}
@@ -559,11 +598,13 @@ class TestLayoutAndRollback:
         rollback(ns, version=V2)
         assert _state(ns)["current"]["tag"] == V2
 
-    def test_rollback_without_previous_refused(self, tmp_path):
+    def test_rollback_without_previous_refused(self, tmp_path, capsys):
         ns, _ = _plain_setup(tmp_path)
         install(ns, version=V1)
         with _exits(1):
             rollback(ns)
+        assert ("pre-migration layout is not a rollback target; the first update "
+                "after migration creates one") in capsys.readouterr().err
 
     def test_rollback_reverifies_previous(self, tmp_path):
         ns, _ = _plain_setup(tmp_path)
@@ -746,7 +787,7 @@ class TestLegacyMigration:
         (root / "releases" / "demo-v0.0.1").mkdir()
         return old
 
-    def test_update_migrates_atomically(self, tmp_path):
+    def test_update_migrates_atomically(self, tmp_path, capsys):
         ns, _ = _plain_setup(tmp_path)
         old = self._legacy(ns)
         assert ns["_current_version"](root_of(ns)) == V1  # legacy current is recognised
@@ -768,6 +809,7 @@ class TestLegacyMigration:
         assert not (root / "releases" / "demo-v0.0.1").exists()
         with _exits(1):
             rollback(ns)  # legacy has no recorded rollback target
+        assert "not a rollback target" in capsys.readouterr().err
 
     def test_install_on_legacy_same_tag_still_migrates(self, tmp_path):
         ns, _ = _plain_setup(tmp_path)
@@ -850,6 +892,22 @@ class TestWheels:
         assert self._run(root, "demotool").stdout.strip() == "demotool 1.0.0"
         rollback(ns)
         assert self._run(root, "demotool").stdout.strip() == "demotool 2.0.0"
+
+    def test_pip_runs_offline_isolated_and_hash_locked(self, tmp_path):
+        """The install command is the contract (S6.16): pip's own behaviour for each flag is not
+        observable offline, so the argv of the one pip install is pinned."""
+        ns = self._project(tmp_path)
+        self._release(tmp_path, V1, "1.0.0")
+        use_bundles(ns, tmp_path / "b")
+        seen = []
+        real = ns["_run_checked"]
+        ns["_run_checked"] = lambda cmd, what: (seen.append(cmd), real(cmd, what))[1]
+        install(ns, version=V1)
+        pip = next(c for c in seen if c[1:3] == ["-m", "pip"] and "install" in c)
+        for flag in ("--isolated", "--no-index", "--require-hashes"):
+            assert flag in pip
+        assert "-r" in pip and pip[pip.index("-r") + 1].endswith("requirements.lock")
+        assert any(c[1:3] == ["-m", "pip"] and "check" in c for c in seen)
 
     def test_missing_dependency_fails_at_pip_offline_and_changes_nothing(self, tmp_path,
                                                                          monkeypatch):

@@ -253,6 +253,75 @@ Re-render and commit the project's `get.py` after editing a fragment; ciu's
 Host enrollment (`get.py enroll`, a root-run `authorized_keys` writer) is ciu's fragment, so a
 project that renders `get.py` without `extensions` gets no enrollment code.
 
+## Authoring an installer for your project
+
+The rendered `get.py` is a fail-closed, transactional installer you ship as a release asset
+(normative contract: SPEC S6.1-S6.17). To give your project one:
+
+1. **Configure** `[project.installer]` in the project's `cmru.toml` (all paths are relative to
+   the release root; `asset_suffix` is always `.tar.xz`):
+
+   ```text
+   [project.myproj.installer]
+   install_dir_system = "/opt/myproj"        # absolute; user scope uses install_dir_user
+   install_dir_user   = "myproj"
+   asset_suffix       = ".tar.xz"
+   entrypoint         = "scripts/adapter.py" # optional project adapter (bootstrap/apply/rollback)
+   launchers          = ["myproj"]           # optional: <root>/bin/myproj -> current venv
+   # manifest_pubkey  = "<56-char minisign public key>"   # optional: require signed releases
+
+   [[project.myproj.installer.wheels]]       # optional: wheels installed offline into a venv
+   path         = "vendor/myproj-*.whl"
+   distribution = "myproj"
+   ```
+
+2. **Publish a bundle** per release, next to its checksum. The release assets are
+   `<tag>.tar.xz` (`<tag>-<variant>.tar.xz` for variants), `<tag>.tar.xz.sha256`
+   (`<64 hex>  <name>`) and `get.py`. The tarball has exactly ONE top-level directory that holds
+   `manifest.json` (and `manifest.json.minisig` when signed), the wheels under their globbed
+   paths, and the project files. The manifest is JSON with `schema_version: 1`, `tag`/`version`
+   if present equal to the release tag, one `{"sha256": ..., "wheel": ..., "size": ...}` entry
+   per configured wheel distribution (key = distribution name), and a `files` map
+   `{relpath: {"sha256": ...}}` that MUST cover the `entrypoint`.
+3. **Render and commit** `cmru get-py myproj --config cmru.toml --output get.py`.
+4. **Users** run the installer. The one-liner (stdin carries the script, so a token for a
+   private repo comes from `--github-token-file` or `GITHUB_TOKEN`, never `--github-token-stdin`):
+
+   ```sh
+   curl -fsSL https://github.com/<owner>/<repo>/releases/download/<tag>/get.py \
+     | sudo python3 - install --version <tag>
+   ```
+
+   The careful form downloads, checks, then runs (the checksum is published next to the
+   release or printed by the controller you already trust):
+
+   ```sh
+   curl -fsSLo get.py https://github.com/<owner>/<repo>/releases/download/<tag>/get.py
+   echo "<sha256-of-get.py>  get.py" | sha256sum -c -
+   sudo python3 get.py install --version <tag>
+   ```
+
+   Then `python3 get.py update [--version TAG]`, `status` and `rollback [--version TAG]`.
+   `--version` installs exactly that tag; without it the highest release is resolved. Before the
+   first update after a migration from the old layout there is no rollback target (`rollback`
+   says so, exit 1).
+5. **Security properties.** Fail-closed on any verification error (exit 1, nothing changed);
+   SHA-256 sidecar checked before extraction; HTTPS only with an allowlisted host on every
+   redirect hop and the token never forwarded across a redirect; wheels installed offline with
+   `--require-hashes` into a per-release venv; a crash never leaves a half-built release live.
+   **Signing is optional but absolute once enabled:** with `manifest_pubkey` the installer needs
+   `minisign`, verifies `manifest.json.minisig` with the pinned key, and requires the signed
+   trusted comment to be exactly
+
+   ```text
+   project=<name> tag=<tag> manifest_sha256=<sha256 of manifest.json>
+   ```
+
+   (replay protection: it binds the signature to this tag and these manifest bytes). Sign with
+   `cmru.manifest.build_trusted_comment(project=, tag=, manifest_path=)` and
+   `cmru.delegated.minisign_sign(...)` from a project-owned release step; `cmru release` does not
+   sign automatically yet (SPEC S6.15).
+
 ## Using the wheel and component interfaces
 
 Install the approved CMRU wheel into the Python environment that will execute
