@@ -9,7 +9,7 @@
 | Depends on | P10a's ledger wire shape. Either P10a is accepted, or you finish under the documented **BLOCKED-PARTIAL** escape: anchor validated by length only, with P10b adding the grammar later. Either way the rest of this package is dispatchable. |
 | Contract class | **2b**. Public shapes are fixed below; the private construction is yours. |
 | Implementer | Opus (fresh session) |
-| Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field), A-483 (B145 native resource-limit evidence; originally `/4`, now `/6` after review hardening) |
+| Decisions | A-470 (D6, v14 cold-witness contract, A1–A9), A-465 (ledger wire fields), A-469 (D5 liveness disclosure fields), A-471 (runtime fingerprint field), A-483 (B145 native resource-limit evidence; originally `/4`, now `/7` after resource-monitor and worker-context review hardening) |
 | Size | L. This is a hard cut: ~50 fixtures, carve assets W10, gate markers, and about 15 test files with version literals. |
 
 **What this package is.** It is the consumer side of v14, meaning the model, the JSON schema, the independent raw verifier, reconstruction and version plumbing. P3a itself has **no producer behaviour**:
@@ -42,8 +42,8 @@ Native R2 fails `ERROR/EXEC_FAILED` before candidate execution if the counters
 cannot be read. The mutation state and progress records carry the same evidence;
 positive-delta records are not reused. At this report's implementation
 snapshot, `_JUDGE_DIGEST_LABEL` was `assay-judge-identity/4`, invalidating
-pre-B145 state. The final B145 review hardening advanced the current label to
-`/6`, which also cold-starts `/4` and `/5` evidence. This is a hard-cut
+pre-B145 state. Subsequent B145 review hardening advanced the current label to
+`/7`, which also cold-starts `/4`, `/5`, and `/6` evidence. This is a hard-cut
 compatibility change within the planned v14/8.0.0 wave, not another schema
 version.
 
