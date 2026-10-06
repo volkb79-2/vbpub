@@ -7277,3 +7277,26 @@ policy needs all participating Run-Gate projects/launchers to join one
 Docker-daemon ticket cap of two, plus a read of current slice capacity and
 timeout/liveness behavior under that cap; no host or admission setting was
 changed here.
+
+### RW-467 — 2026-10-06 22:11:45 UTC — preserve P6 scope after the current-main sync merge
+
+The first `assay plan r2 --request-base db29266f8a006b22a30609a74de7645d1e4c50b7`
+on the candidate worktree's sync merge `194ce64aa4550b54dd3089321dba9678d6279a9c`
+returned `status: ok`, `candidate_count: 0`. This was not an empty source
+change: the profiler `lib/` delta from that request base remains 6,508 added
+and 575 removed lines across 15 files. The cause is Assay's documented
+merge-HEAD rule in `assay.git.resolve_base`: for a merge commit it chooses
+the first parent, so the sync merge compared only its own tree delta; main's
+merged changes touched no profiler source. The explicit request base is not
+consulted in that case.
+
+Reproduction confirms this is commit-shape behavior, not candidate drift:
+the exact same `assay/` and `scripts/cgroup-profiler/` subtrees at pre-merge
+commit `04bc4395ff9e927ec454f702a2991e2cae5c890f` plan 1,261 candidates
+against `db29266…`, while merge commit `194ce64…` plans zero. Do not launch
+R2, or claim a green plan, on the sync merge. The controller will make one
+ordinary, controller-record-only commit after the merge, then re-run the
+plan. The resulting non-merge `HEAD` must resolve `db29266…` as its merge
+base and enumerate the full expected profiler candidate set before any gate
+or mutation launch. Keep that final HEAD quiet through R2; no commit, even
+outside `lib/`, during the campaign.
