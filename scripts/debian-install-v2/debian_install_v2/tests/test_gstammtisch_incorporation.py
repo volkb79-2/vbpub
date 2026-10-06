@@ -22,11 +22,11 @@ BASE = {
 
 # --- config validation -------------------------------------------------
 
-def test_vm_swappiness_default_is_50():
-    assert Config().vm_swappiness == 50
+def test_vm_swappiness_default_is_100():
+    assert Config().vm_swappiness == 100
 
 
-@pytest.mark.parametrize("value", [-1, 101])
+@pytest.mark.parametrize("value", [-1, 201])
 def test_vm_swappiness_out_of_range_rejected(value):
     with pytest.raises(ConfigError, match="vm_swappiness"):
         load_config(raw_json=json.dumps(dict(BASE, vm_swappiness=value)))
@@ -112,12 +112,13 @@ def test_notify_helper_written_unconditionally(tmp_path):
 
 def test_ksm_enabled_by_default_and_can_be_disabled(tmp_path):
     _, actions = install_dry(tmp_path)
-    assert "/etc/systemd/system/ksm-config.service" in actions.dry_run_writes
+    assert "/etc/tmpfiles.d/vbpub-ksm.conf" in actions.dry_run_writes
+    assert "/etc/systemd/system/ksm-config.service" not in actions.dry_run_writes
     descriptions = "\n".join(a.description for a in actions.planned)
-    assert "enable KSM unit" in descriptions
+    assert "apply /etc/tmpfiles.d/vbpub-ksm.conf now" in descriptions
 
     _, actions_off = install_dry(tmp_path, run_ksm=False)
-    assert "/etc/systemd/system/ksm-config.service" not in actions_off.dry_run_writes
+    assert "/etc/tmpfiles.d/vbpub-ksm.conf" not in actions_off.dry_run_writes
 
 
 def test_oomd_thresholds_written_and_enabled(tmp_path):

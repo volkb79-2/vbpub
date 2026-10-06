@@ -64,8 +64,9 @@ failures in journald. `status` shows persisted state and recent logs.
   `--volumes`): Wings bind-mounts `/var/lib/pterodactyl/volumes/<uuid>` by host
   path for all server state, so nothing durable is reachable through Docker's
   volume subsystem and a volume prune would only risk unrelated data.
-- `vm_swappiness` defaults to `50`; `run_oomd_config` thresholds are the safety
-  net that makes any value safe unattended.
+- `vm_swappiness` defaults to `100` (range 0-200); `run_oomd_config` thresholds
+  are the safety net that makes any value safe unattended. See the top-level
+  `README.md` for zswap, KSM/THP, sysctl, io.cost and swap-health.
 
 ## `vbpub-notify`
 

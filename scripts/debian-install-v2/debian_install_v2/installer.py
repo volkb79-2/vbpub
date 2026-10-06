@@ -37,7 +37,12 @@ from .templates import (
     DOCKER_CLEANUP_SERVICE,
     DOCKER_CLEANUP_TIMER,
     FSTRIM_OVERRIDE,
-    KSM_SERVICE,
+    IOCOST_MODEL_PATH,
+    IOCOST_SCRIPT,
+    IOCOST_SERVICE,
+    KSM_TMPFILES,
+    LEGACY_TUNING_UNITS,
+    MIN_FREE_FLOOR_SERVICE,
     NEEDRESTART_CONFIG,
     NOTIFY_SCRIPT,
     OOMD_CONFIG,
@@ -47,10 +52,15 @@ from .templates import (
     ROOT_SHRINK_BUILD_HOOK,
     ROOT_SHRINK_LOCAL_PREMOUNT_HOOK,
     STAGE2_SERVICE,
-    THP_SERVICE,
+    SWAP_HEALTH_SCRIPT,
+    SWAP_SYSCTL,
+    THP_TMPFILES,
     UNATTENDED_UPGRADES_CONFIG,
+    ZSWAP_MODULES_LOAD,
     ZSWAP_SERVICE,
+    render_min_free_floor_script,
 )
+from .userconfig import BASHRC_ALIASES_SNIPPET, USER_RC_FILES
 
 
 SUPPORTED_RELEASES = {"trixie", "forky"}
@@ -126,6 +136,8 @@ class Installer:
         self.state = StateStore(config.state_dir)
         self.state.dry_run = actions.dry_run
         self._notify_stage = "stage1"
+        # Shown in the "Install complete" notification (set when io.cost is skipped).
+        self._iocost_note = ""
         self.release = ""
         self.root_disk = ""
         self.root_partition_path = ""
@@ -348,10 +360,12 @@ class Installer:
                 retained = self._controller_key_retained()
                 key_note = "\n\nController key retained on host." if retained else ""
                 key_event = ", controller key retained on host" if retained else ""
+                io_note = f"\n\n{_code(self._iocost_note)}" if self._iocost_note else ""
+                io_event = f", {self._iocost_note}" if self._iocost_note else ""
                 self._notify(
                     f"<b>Install complete</b> (duration: {duration})"
-                    f"{key_note}\n\n{facts_html}",
-                    event=f"install complete (duration {duration}){key_event}", status="ok",
+                    f"{key_note}{io_note}\n\n{facts_html}",
+                    event=f"install complete (duration {duration}){key_event}{io_event}", status="ok",
                 )
         except BaseException as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
@@ -500,18 +514,32 @@ class Installer:
     def _configure_users(self) -> None:
         packages = ["htop", "iftop", "less", "man-db", "mc", "nano"]
         self._packages(packages, "users")
-        nanorc = "\n".join([
-            "set tabsize 4", "set softwrap", "set tabstospaces", "set mouse",
-            "set linenumbers", "set smooth", "set autoindent", "set boldtext",
-            'include /usr/share/nano/*.nanorc', "",
-        ])
-        aliases = "\n".join([
-            "alias ll='ls -alF'", "alias la='ls -A'", "alias l='ls -CF'",
-            "alias ls='ls --color=auto'", "alias grep='grep --color=auto'", "",
-        ])
-        self.actions.write_file("/root/.nanorc", nanorc, 0o600)
-        self.actions.write_file("/root/.bash_aliases", aliases, 0o600)
-        self._mark_step("user_config", "success", ", ".join(packages))
+        # root AND /etc/skel (new users inherit it). A file is written only when
+        # it is missing: an existing one (hand-edited, or rewritten by htop/mc
+        # itself) is operator-owned and never overwritten, so a re-run or resume
+        # is a no-op for files we already placed and safe for ones the operator changed.
+        kept = []
+        for home, mode in (("/root", 0o600), ("/etc/skel", 0o644)):
+            for relative, content in USER_RC_FILES:
+                path = f"{home}/{relative}"
+                if self.actions.exists(path):
+                    kept.append(path)
+                    continue
+                self.actions.write_file(path, content, mode)
+            self._ensure_bashrc_sources_aliases(f"{home}/.bashrc")
+        detail = ", ".join(packages) + "; rc files for root and /etc/skel"
+        if kept:
+            detail += f"; kept existing: {', '.join(kept)}"
+        self._mark_step("user_config", "success", detail)
+
+    def _ensure_bashrc_sources_aliases(self, bashrc: str) -> None:
+        """Make .bashrc source ~/.bash_aliases, once (Debian's skel .bashrc already does)."""
+        path = Path(bashrc)
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if ".bash_aliases" in existing:
+            return
+        mode = (path.stat().st_mode & 0o777) if path.is_file() else 0o644
+        self.actions.write_file(bashrc, existing + BASHRC_ALIASES_SNIPPET, mode)
 
     def _configure_journald(self) -> None:
         # 1G/60d, not the earlier 200M/12month: with docker_log_driver
@@ -758,11 +786,43 @@ MaxFileSec=1month
         )
         self._mark_step("cgroup2_flags", "success", "memory_recursiveprot+nsdelegate")
 
+    def _try_run(self, argv: list[str], description: str) -> str | None:
+        """Run a best-effort command; return the failure text instead of raising."""
+        try:
+            self._run(argv, description)
+        except (ActionError, InstallerError) as exc:
+            return str(exc).splitlines()[0] if str(exc) else "failed"
+        return None
+
+    def _apply_tmpfiles(self, path: str) -> str | None:
+        """Apply one tmpfiles.d file now (it also applies at every boot).
+
+        Best effort: a `w!` line whose knob is absent on this kernel fails that
+        line only, and must not abort the install. Returns the failure text.
+        `--boot` is required: systemd-tmpfiles skips `w!` lines without it, so
+        a bare `--create` would exit 0 and change nothing.
+        """
+        return self._try_run(["/usr/bin/systemd-tmpfiles", "--create", "--boot", path], f"apply {path} now")
+
+    def _retire_legacy_tuning_units(self) -> None:
+        """Disable and delete the old thp-config/ksm-config units when present."""
+        retired = []
+        for unit in LEGACY_TUNING_UNITS:
+            path = f"/etc/systemd/system/{unit}"
+            if self.actions.exists(path):
+                self._run(["/usr/bin/systemctl", "disable", unit], f"disable legacy {unit}")
+                self.actions.remove_file(path)
+                retired.append(unit)
+        if retired:
+            self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+
     def _configure_ksm(self) -> None:
-        self.actions.write_file("/etc/systemd/system/ksm-config.service", KSM_SERVICE)
-        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
-        self._run(["/usr/bin/systemctl", "enable", "ksm-config.service"], "enable KSM unit")
-        self._mark_step("ksm_config", "success", "ksmd enabled host-wide, opt-in per process")
+        # tmpfiles.d `w!`, as gstammtisch does -- no unit to keep enabled.
+        path = "/etc/tmpfiles.d/vbpub-ksm.conf"
+        self.actions.write_file(path, KSM_TMPFILES)
+        error = self._apply_tmpfiles(path)
+        detail = "ksmd enabled host-wide, opt-in per process"
+        self._mark_step("ksm_config", "warned" if error else "success", f"{detail}; tmpfiles apply: {error}" if error else detail)
 
     def _configure_oomd(self) -> None:
         # systemd-oomd ships as its own package on Debian, not part of the
@@ -813,24 +873,26 @@ MaxFileSec=1month
             "/etc/systemd/system/zswap-config.service",
             ZSWAP_SERVICE.format(
                 compressor=self.config.zswap_compressor,
-                zpool=self.config.zswap_zpool,
                 pool_percent=self.config.zswap_pool_percent,
+                accept_threshold_percent=self.config.zswap_accept_threshold_percent,
+                shrinker="Y" if self.config.zswap_shrinker_enabled else "N",
             ),
         )
-        self.actions.write_file("/etc/modules-load.d/vbpub-zstd.conf", "zstd\n")
+        self.actions.write_file("/etc/modules-load.d/vbpub-zstd.conf", ZSWAP_MODULES_LOAD)
         self.actions.write_file(
             "/etc/sysctl.d/99-vbpub-swap.conf",
-            "\n".join([
-                f"vm.swappiness = {self.config.vm_swappiness}",
-                "vm.page-cluster = 0",
-                "vm.vfs_cache_pressure = 50",
-                "vm.watermark_scale_factor = 125",
-                "vm.dirty_ratio = 15",
-                "vm.dirty_background_ratio = 5",
-                "",
-            ]),
+            SWAP_SYSCTL.format(swappiness=self.config.vm_swappiness),
         )
-        self.actions.write_file("/etc/systemd/system/thp-config.service", THP_SERVICE)
+        self.actions.write_file("/etc/tmpfiles.d/vbpub-thp.conf", THP_TMPFILES)
+        self.actions.write_file(
+            "/usr/local/sbin/vbpub-min-free-floor", render_min_free_floor_script(), 0o755
+        )
+        self.actions.write_file("/etc/systemd/system/vbpub-min-free-floor.service", MIN_FREE_FLOOR_SERVICE)
+        self.actions.write_file("/usr/local/sbin/vbpub-swap-health", SWAP_HEALTH_SCRIPT, 0o755)
+        # THP/KSM used to be oneshot units; they are tmpfiles.d entries now.
+        self._retire_legacy_tuning_units()
+        if not self.config.run_ksm and self.actions.exists("/etc/tmpfiles.d/vbpub-ksm.conf"):
+            self.actions.remove_file("/etc/tmpfiles.d/vbpub-ksm.conf")
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
         # enable --now, not a bare enable: both units are WantedBy=sysinit.target
         # (templates.py), a target already passed earlier in THIS boot --
@@ -854,8 +916,121 @@ MaxFileSec=1month
         # that would have printed "Unknown operation enable-now." and
         # aborted _configure_zswap() with a brand new failure instead of
         # fixing the original one.
-        self._run(["/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "thp-config.service"], "enable and start early tuning units")
-        self._mark_step("zswap_config", "success", self.config.zswap_compressor)
+        self._run(["/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "vbpub-min-free-floor.service"], "enable and start early tuning units")
+        # Apply the new sysctl.d file and the THP tmpfiles entries now too;
+        # both also apply at every boot. Best effort, like all knob writes
+        # that must work on both the 6.12 and the 7.x kernel line.
+        errors = [
+            error for error in (
+                self._try_run(["/usr/bin/systemctl", "restart", "systemd-sysctl.service"], "apply sysctl.d now"),
+                self._apply_tmpfiles("/etc/tmpfiles.d/vbpub-thp.conf"),
+            ) if error
+        ]
+        detail = self.config.zswap_compressor + (f"; best-effort apply failed: {'; '.join(errors)}" if errors else "")
+        self._mark_step("zswap_config", "warned" if errors else "success", detail)
+
+    def _load_io_benchmark_result(self) -> dict[str, int] | None:
+        """The persisted benchmark coefficients, or None when absent/invalid."""
+        path = Path(self.config.state_dir) / "io-benchmark.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        results = record.get("results") if isinstance(record, dict) else None
+        if not isinstance(results, dict):
+            return None
+        values: dict[str, int] = {}
+        for key in IOBENCH_RESULT_KEYS:
+            value = results.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                return None
+            values[key] = value
+        return values
+
+    def _remove_iocost_units(self) -> None:
+        """Drop a previously installed io.cost unit (no valid result any more)."""
+        service = "/etc/systemd/system/vbpub-iocost.service"
+        if self.actions.exists(service):
+            self._run(["/usr/bin/systemctl", "disable", "vbpub-iocost.service"], "disable io.cost unit")
+            for path in (service, IOCOST_MODEL_PATH, "/usr/local/sbin/vbpub-iocost-setup"):
+                self.actions.remove_file(path)
+            self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+
+    def _configure_iocost(self) -> None:
+        """io.cost for the root disk from the benchmark; skipped (not failed) without a result."""
+        if not self.config.iocost_enabled:
+            # A re-run with iocost off must not leave an earlier unit configuring io.cost at boot.
+            self._remove_iocost_units()
+            self._mark_step("iocost", "skipped", "iocost_enabled is false")
+            return
+        results = self._load_io_benchmark_result()
+        if results is None:
+            self._remove_iocost_units()
+            note = "io.cost not configured: no valid io benchmark result (enable run_io_benchmark to get one)"
+            self._mark_step("iocost", "skipped", note)
+            self._iocost_note = note
+            return
+        coefficients = " ".join(f"{key}={results[key]}" for key in IOBENCH_RESULT_KEYS)
+        self.actions.mkdir("/etc/vbpub")
+        self.actions.write_file(IOCOST_MODEL_PATH, coefficients + "\n")
+        self.actions.write_file("/usr/local/sbin/vbpub-iocost-setup", IOCOST_SCRIPT, 0o755)
+        self.actions.write_file("/etc/systemd/system/vbpub-iocost.service", IOCOST_SERVICE)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        # io.cost is advisory: the boot script exits 1 when it cannot resolve the
+        # root device or the kernel refuses the write. That must not abort the install.
+        error = self._try_run(["/usr/bin/systemctl", "enable", "--now", "vbpub-iocost.service"], "enable and start io.cost unit")
+        if error:
+            self._iocost_warn(f"io.cost unit failed to start: {error}")
+            return
+        self._mark_step("iocost", "planned" if self.actions.dry_run else "success", coefficients)
+
+    def _iocost_warn(self, text: str) -> None:
+        """Advisory io.cost problem: log it, mark the step warned, surface it in the notification."""
+        _LOG.warning("%s", text)
+        self._iocost_note = f"{self._iocost_note}; {text}" if self._iocost_note else text
+        self._mark_step("iocost", "warned", text)
+
+    @staticmethod
+    def _cgroup_io_lines(text: str) -> list[dict[str, str]]:
+        """Parse io.cost.model / io.cost.qos: one ``MAJ:MIN k=v ...`` line per device."""
+        lines = []
+        for raw in text.splitlines():
+            parts = raw.split()
+            if not parts:
+                continue
+            entry = {"dev": parts[0]}
+            entry.update(dict(part.split("=", 1) for part in parts[1:] if "=" in part))
+            lines.append(entry)
+        return lines
+
+    _CGROUP_ROOT = Path("/sys/fs/cgroup")
+    _SYS_CLASS_BLOCK = Path("/sys/class/block")
+
+    def _health_gate_iocost(self) -> None:
+        """Model and qos read back as configured (only when io.cost was set up).
+
+        io.cost is advisory: a mismatch warns and marks the step, it never raises.
+        """
+        if self.actions.dry_run or not self.config.iocost_enabled:
+            return
+        results = self._load_io_benchmark_result()
+        model_path = self._CGROUP_ROOT / "io.cost.model"
+        if results is None or not model_path.exists():
+            return  # no benchmark result (unit not installed) or a kernel without io.cost
+        devno = None
+        dev_file = self._SYS_CLASS_BLOCK / self.root_disk / "dev"
+        if dev_file.is_file():
+            devno = dev_file.read_text(encoding="utf-8").strip()
+        models = [m for m in self._cgroup_io_lines(model_path.read_text(encoding="utf-8")) if devno in (None, m["dev"])]
+        wanted = {key: str(value) for key, value in results.items()}
+        if not any(m.get("model") == "linear" and all(m.get(k) == v for k, v in wanted.items()) for m in models):
+            self._iocost_warn(f"io.cost.model does not read back the benchmark coefficients for {devno or 'the root disk'}")
+            return
+        qos_path = self._CGROUP_ROOT / "io.cost.qos"
+        qos_text = qos_path.read_text(encoding="utf-8") if qos_path.exists() else ""
+        qos = [q for q in self._cgroup_io_lines(qos_text) if devno in (None, q["dev"])]
+        if not any(q.get("enable") == "1" for q in qos):
+            self._iocost_warn(f"io.cost.qos is not enabled for {devno or 'the root disk'}")
 
     def _disk_facts(self) -> tuple[int, int, int]:
         if self.actions.dry_run:
@@ -2048,6 +2223,25 @@ MaxFileSec=1month
             self._mark_step("io_benchmark", "planned" if self.actions.dry_run else "success", summary)
             self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
 
+    _ZSWAP_PARAMS = Path("/sys/module/zswap/parameters")
+
+    def _health_gate_zswap(self) -> None:
+        """The live zswap knobs read back as configured. Booleans read as Y/N."""
+        if self.actions.dry_run:
+            return
+        # compressor first: it is the most common mismatch (the kernel's lzo default).
+        expected = (
+            ("compressor", self.config.zswap_compressor),
+            ("enabled", "Y"),
+            ("max_pool_percent", str(self.config.zswap_pool_percent)),
+            ("accept_threshold_percent", str(self.config.zswap_accept_threshold_percent)),
+            ("shrinker_enabled", "Y" if self.config.zswap_shrinker_enabled else "N"),
+        )
+        for name, want in expected:
+            actual = (self._ZSWAP_PARAMS / name).read_text(encoding="utf-8").strip()
+            if actual != want:
+                raise InstallerError(f"health gate failed: zswap {name} is {actual!r}, expected {want!r}")
+
     def _health_gate_swap_devices(self, *, mark_step: bool = True) -> None:
         expected_numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
         prefix = self._partition_base
@@ -2069,9 +2263,8 @@ MaxFileSec=1month
                 raise InstallerError(f"health gate failed: {path} is formatted but not active")
             if not self.actions.dry_run and partuuid not in fstab_partuuids:
                 raise InstallerError(f"health gate failed: {path} PARTUUID is absent from fstab")
-        compressor = "zstd" if self.actions.dry_run else Path("/sys/module/zswap/parameters/compressor").read_text(encoding="utf-8").strip()
-        if compressor != self.config.zswap_compressor:
-            raise InstallerError(f"health gate failed: zswap compressor is {compressor!r}, expected {self.config.zswap_compressor!r}")
+        self._health_gate_zswap()
+        self._health_gate_iocost()
         output_file = Path(self.config.stage2_output)
         if not self.actions.dry_run and not (output_file.is_file() and output_file.stat().st_size >= 0):
             raise InstallerError(f"health gate failed: stage2 log does not exist: {output_file}")
@@ -2472,6 +2665,7 @@ MaxFileSec=1month
         # clean up raises and stops the install here.
         self._run_io_benchmark(swap_written=swap_partitions_already_written)
         self._configure_zswap()
+        self._configure_iocost()
         self._configure_cgroup2_flags()
         if self.config.run_ksm:
             self._configure_ksm()

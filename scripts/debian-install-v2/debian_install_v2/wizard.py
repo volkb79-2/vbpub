@@ -72,9 +72,10 @@ WIZARD_SECTIONS = (
             WizardField("swap_discard", "Enable discard on swap?", "boolean"),
             WizardField("preserve_root_size_gb", "Root filesystem space to preserve (GiB)", "integer"),
             WizardField("zswap_compressor", "zswap compressor", "choice", ("zstd", "lz4", "lzo-rle")),
-            WizardField("zswap_zpool", "zswap memory allocator", "choice", ("z3fold", "zbud", "zsmalloc")),
             WizardField("zswap_pool_percent", "Maximum zswap pool (% of RAM)", "integer"),
-            WizardField("vm_swappiness", "vm.swappiness (0–100)", "integer"),
+            WizardField("zswap_accept_threshold_percent", "zswap accept threshold (% of pool; 0–100)", "integer"),
+            WizardField("zswap_shrinker_enabled", "Enable the zswap writeback shrinker?", "boolean"),
+            WizardField("vm_swappiness", "vm.swappiness (0–200)", "integer"),
         ),
     ),
     WizardSection(
@@ -139,6 +140,7 @@ WIZARD_SECTIONS = (
             WizardField("run_io_benchmark", "Run the destructive temporary-partition benchmark?", "boolean"),
             WizardField("io_benchmark_duration_s", "Duration per benchmark phase (seconds)", "integer"),
             WizardField("io_benchmark_max_size_gb", "Maximum temporary benchmark partition (GiB)", "integer"),
+            WizardField("iocost_enabled", "Configure io.cost for the root disk when a benchmark result exists?", "boolean"),
         ),
     ),
 )

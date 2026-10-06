@@ -14,6 +14,12 @@ from .notify import NotifyConfigError, effective_backend, validate_host_label, v
 
 _LOG = logging.getLogger("debian_install_v2.config")
 _WARNED_UNKNOWN_KEYS: set[str] = set()
+_WARNED_REMOVED_KEYS: set[str] = set()
+# Config keys that existed in an earlier revision and are now ignored (with one
+# warning) instead of rejected, so an old saved config or resume state loads.
+REMOVED_KEYS = {
+    "zswap_zpool": "the zswap zpool knob is absent on 7.x kernels; zsmalloc is the only backend",
+}
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -64,18 +70,20 @@ class Config:
     swap_discard: bool = True
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
-    zswap_zpool: Literal["z3fold", "zbud", "zsmalloc"] = "z3fold"
     zswap_pool_percent: int = 25
-    # 50, not the kernel's own default of 60 or gstammtisch's 100: anon pages
-    # stay the most precious tier even with zswap making reclaim cheap, so
-    # this host fleet favors a middle value over "swap early, zswap absorbs
-    # it" (100) or the stock default (60). oomd (run_oomd_config) is the
-    # safety net that makes ANY of these values safe to run unattended;
-    # 5-10 is the documented alternative for latency-sensitive workloads
-    # (databases etc.) that want almost no anon reclaim regardless of swap
-    # cost, and 100 remains documented for a memory-fungible/zswap-protected
-    # host in the gstammtisch mold. See debian_install_v2/README.md.
-    vm_swappiness: int = 50
+    # zswap's accept_threshold_percent (gstammtisch value 90), and the
+    # per-cgroup writeback shrinker (Y by default, operator decision
+    # 2026-10-06). There is no zpool field: the knob is absent on 7.x.
+    zswap_accept_threshold_percent: int = 90
+    zswap_shrinker_enabled: bool = True
+    # 100 (gstammtisch value, operator decision 2026-10-06): with zswap in
+    # front of swap, reclaiming anonymous pages is cheap, so cold anon goes
+    # to the compressed pool early and file cache stays resident. The kernel
+    # accepts 0-200. oomd (run_oomd_config) is the safety net that makes any
+    # of these values safe to run unattended; 5-10 remains the documented
+    # alternative for latency-sensitive workloads that want almost no anon
+    # reclaim. See debian_install_v2/README.md.
+    vm_swappiness: int = 100
     docker_live_restore: bool = True
     # journald, not json-file: container logs must survive `docker rm`
     # (operator requirement, 2026-09-09) -- json-file's log is deleted with
@@ -132,10 +140,12 @@ class Config:
     # Off by default: it's destructive-by-design against its target and
     # adds real time to every install. Persists rbps/rseqiops/rrandiops/
     # wbps/wseqiops/wrandiops (io.cost.model's own fields) to state_dir/
-    # io-benchmark.json; nothing yet enables io.cost itself from the
-    # result -- that's a separate, later decision. See
-    # debian_install_v2/README.md and the design note this same commit adds.
+    # io-benchmark.json. See debian_install_v2/README.md.
     run_io_benchmark: bool = False
+    # Configure io.cost for the ROOT disk from that persisted result (boot-time
+    # unit). Takes effect only when a valid result exists; with none, the unit
+    # is not installed and the notification says so (never a failure).
+    iocost_enabled: bool = True
     # Per sub-test duration in seconds (iocost_coef_gen.py's own --duration;
     # it runs 6 sub-tests, so wall-clock cost is roughly 6x this). Its own
     # upstream default is 120 (~12 minutes total) -- operator-set default
@@ -216,7 +226,7 @@ def validate_config(config: Config) -> None:
             raise ConfigError(f"{name} must be a JSON boolean")
     integer_names = [
         "schema_version", "swap_disk_total_gb", "swap_file_count", "swap_priority",
-        "preserve_root_size_gb", "zswap_pool_percent", "vm_swappiness",
+        "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
         "docker_cleanup_max_age_hours", "io_benchmark_duration_s", "io_benchmark_max_size_gb",
     ]
     for name in integer_names:
@@ -239,8 +249,6 @@ def validate_config(config: Config) -> None:
         )
     if not isinstance(config.zswap_compressor, str) or config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
-    if not isinstance(config.zswap_zpool, str) or config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
-        raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
     validate_address_pools(config.docker_default_address_pools)
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
@@ -268,8 +276,10 @@ def validate_config(config: Config) -> None:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:
         raise ConfigError("swap_priority must be from 0 to 32767")
-    if not 0 <= config.vm_swappiness <= 100:
-        raise ConfigError("vm_swappiness must be from 0 to 100")
+    if not 0 <= config.zswap_accept_threshold_percent <= 100:
+        raise ConfigError("zswap_accept_threshold_percent must be from 0 to 100")
+    if not 0 <= config.vm_swappiness <= 200:
+        raise ConfigError("vm_swappiness must be from 0 to 200")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
     if not 1 <= config.io_benchmark_duration_s <= 300:
@@ -323,6 +333,20 @@ def require_notify_credentials(config: "Config") -> None:
         raise ConfigError("notify_backend=telegram requires telegram_bot_token and telegram_chat_id")
 
 
+def drop_removed_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop known-removed config keys, warning once per process per key.
+
+    An old saved config may still carry them; they are ignored, not an error
+    (unlike a genuinely unknown key, which operator-supplied config rejects).
+    """
+    removed = sorted(key for key in data if key in REMOVED_KEYS)
+    for key in removed:
+        if key not in _WARNED_REMOVED_KEYS:
+            _WARNED_REMOVED_KEYS.add(key)
+            _LOG.warning("ignoring removed configuration key %s: %s", key, REMOVED_KEYS[key])
+    return {key: value for key, value in data.items() if key not in REMOVED_KEYS}
+
+
 def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if bool(path) == bool(raw_json):
         raise ConfigError("supply exactly one of --config FILE or --config-json JSON")
@@ -335,6 +359,7 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a JSON object")
     _reject_obsolete({str(key).upper() for key in data})
+    data = drop_removed_keys(data)
     allowed = {item.name for item in fields(Config)}
     unknown = sorted(set(data) - allowed)
     if unknown:
@@ -353,6 +378,7 @@ def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
     keys are always dropped: they arrive through credential files. Operator
     supplied config still goes through the strict ``load_config``.
     """
+    saved = drop_removed_keys(saved)
     allowed = {item.name for item in fields(Config)}
     secret = {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
     unknown = sorted(str(key) for key in saved if key not in allowed)

@@ -56,7 +56,9 @@ merged in last (wins over the named vars above):
              /opt/vbpub-debian-install-v2)
   Swap:      SWAP_DISK_TOTAL_GB, SWAP_FILE_COUNT, SWAP_PRIORITY,
              SWAP_DISCARD, PRESERVE_ROOT_SIZE_GB
-  zswap:     ZSWAP_COMPRESSOR, ZSWAP_ZPOOL, ZSWAP_POOL_PERCENT, VM_SWAPPINESS
+  zswap:     ZSWAP_COMPRESSOR, ZSWAP_POOL_PERCENT, ZSWAP_ACCEPT_THRESHOLD_PERCENT,
+             ZSWAP_SHRINKER_ENABLED (yes/no), VM_SWAPPINESS (0-200), IOCOST_ENABLED
+             (yes/no). ZSWAP_ZPOOL is removed: ignored with a warning.
   Docker:    DOCKER_LIVE_RESTORE, DOCKER_LOG_DRIVER, DOCKER_LOG_MAX_SIZE,
              DOCKER_LOG_MAX_FILE, DOCKER_CLEANUP_MAX_AGE_HOURS
   Updates:   APT_AUTO_UPGRADE_MODE (full|security-only|notify-only),
@@ -135,7 +137,6 @@ _FALSE = {"no", "false", "0", "off"}
 
 _STRING_FIELDS = {
     "ZSWAP_COMPRESSOR": "zswap_compressor",
-    "ZSWAP_ZPOOL": "zswap_zpool",
     "DOCKER_LOG_DRIVER": "docker_log_driver",
     "DOCKER_LOG_MAX_SIZE": "docker_log_max_size",
     "DOCKER_LOG_MAX_FILE": "docker_log_max_file",
@@ -158,6 +159,7 @@ _INT_FIELDS = {
     "SWAP_PRIORITY": "swap_priority",
     "PRESERVE_ROOT_SIZE_GB": "preserve_root_size_gb",
     "ZSWAP_POOL_PERCENT": "zswap_pool_percent",
+    "ZSWAP_ACCEPT_THRESHOLD_PERCENT": "zswap_accept_threshold_percent",
     "VM_SWAPPINESS": "vm_swappiness",
     "DOCKER_CLEANUP_MAX_AGE_HOURS": "docker_cleanup_max_age_hours",
 }
@@ -171,6 +173,8 @@ _BOOL_FIELDS = {
     "RUN_JOURNALD_CONFIG": "run_journald_config",
     "RUN_DOCKER_INSTALL": "run_docker_install",
     "RUN_KSM": "run_ksm",
+    "ZSWAP_SHRINKER_ENABLED": "zswap_shrinker_enabled",
+    "IOCOST_ENABLED": "iocost_enabled",
     "RUN_OOMD_CONFIG": "run_oomd_config",
     "RUN_FSTRIM": "run_fstrim",
     "RUN_DOCKER_CLEANUP": "run_docker_cleanup",
@@ -230,6 +234,9 @@ def build_config() -> dict:
             f"{', '.join(present_obsolete)} {'is' if len(present_obsolete) == 1 else 'are'} v1 env var name(s) "
             f"with no v2 equivalent -- see this file's docstring for the current names"
         )
+    if os.environ.get("ZSWAP_ZPOOL"):
+        # Removed knob (absent on 7.x kernels): ignored, never an error.
+        print("bootstrap-remote: ZSWAP_ZPOOL is removed and ignored", file=sys.stderr)
     config: dict = {}
     for env_name, field in _STRING_FIELDS.items():
         value = os.environ.get(env_name)

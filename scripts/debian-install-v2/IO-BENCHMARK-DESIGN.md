@@ -79,7 +79,8 @@ controller-driven netcup test. The design below was worked out 2026-09-09;
   when the benchmark runs. The test file is 75% of the partition, at most 16 GiB.
 - **Advisory:** any failure before cleanup is recorded as step `warned`, the
   partition is removed and the install continues. No `io.cost.model` /
-  `io.cost.qos` is written.
+  `io.cost.qos` is written on a failed benchmark. (Update, LT-MEM 2026-10-06:
+  on a VALID result a boot-time unit now writes both; see README "io.cost".)
 - **Residual risks:** `HostActions.run` has no timeout (a hung `fio` would hang
   stage 2); the tool switches the whole disk's scheduler to `none` for the run.
 
