@@ -621,8 +621,22 @@ def test_resolve_identities_accepts_source_environment_for_image_map_without_net
     assert document == {"schema_version": 1, "resolved": {"identities": {}}}
 
 
+@pytest.mark.parametrize(
+    "has_render_environment",
+    [
+        pytest.param(True, id="source-environment"),
+        pytest.param(False, id="saved-config"),
+    ],
+)
+@pytest.mark.parametrize(
+    "compose_project",
+    [
+        pytest.param("demo-project", id="named-project"),
+        pytest.param(None, id="no-project"),
+    ],
+)
 def test_resolve_identities_scopes_rendered_stack_and_keeps_project_optional(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, has_render_environment, compose_project
 ):
     repo = tmp_path / "repo"
     stack = repo / "tools" / "app"
@@ -642,16 +656,27 @@ def test_resolve_identities_scopes_rendered_stack_and_keeps_project_optional(
     monkeypatch.setattr(deploy.config_model, "render_stack", lambda *_a, **_kw: {"stack": {}})
     monkeypatch.setattr(deploy.config_model, "deep_merge", lambda base, _stack: base)
     monkeypatch.setattr(deploy.config_model, "validate_stack_shape", lambda _cfg: "app")
-    monkeypatch.setattr(deploy.engine, "auto_generate_values", lambda *_a, **_kw: None)
+    auto_generate_kwargs = []
+    monkeypatch.setattr(
+        deploy.engine,
+        "auto_generate_values",
+        lambda *_a, **kwargs: auto_generate_kwargs.append(kwargs),
+    )
     monkeypatch.setattr(deploy, "_resolve_hostdirs_for_render", lambda *_a, **_kw: None)
     monkeypatch.setattr(deploy.secret_directives, "discover", lambda *_a, **_kw: [])
     monkeypatch.setattr(composefile, "render_compose", lambda *_a, **_kw: "services:\n  app:\n    image: team/app:latest\n    working_dir: /srv/app\n")
     monkeypatch.setattr(deploy.engine, "scope_worktree_compose_images", lambda _root, source: source.replace("latest", "latest-id"))
-    monkeypatch.setattr(deploy.engine, "compose_project_name", lambda *_a: (_ for _ in ()).throw(ValueError("no project")))
+    def compose_project_name(*_args):
+        if compose_project is None:
+            raise ValueError("no project")
+        return compose_project
 
+    monkeypatch.setattr(deploy.engine, "compose_project_name", compose_project_name)
+
+    render_environ = {"INSTANCE_ID": "id"} if has_render_environment else None
     document = deploy.resolve_identities(
         repo,
-        render_environ={"INSTANCE_ID": "id"},
+        render_environ=render_environ,
         image_map_only=True,
         require_closed_image_map=True,
         service="app",
@@ -659,12 +684,18 @@ def test_resolve_identities_scopes_rendered_stack_and_keeps_project_optional(
     )
     row = document["resolved"]["identities"]["tools/app"]["app"]
     assert row["image"] == "team/app:latest-id"
-    assert row["compose_project"] is None
-    assert row["container_name"] is None
+    assert row["compose_project"] == compose_project
+    expected_name = (
+        f"{compose_project}-app-1" if compose_project is not None else None
+    )
+    assert row["container_name"] == expected_name
+    assert row["hostname"] == expected_name
     assert row["working_dir"] == "/srv/app"
     assert row["internal_host"] == "app.local"
     assert row["port"] == 8080
     assert row["live"] == {"status": "running"}
+    expected_kwargs = {"repo_root": repo.resolve()} if has_render_environment else {}
+    assert auto_generate_kwargs == [expected_kwargs]
 
 
 def test_shipped_deploy_passes_and_cleans_a_worktree_image_override(
