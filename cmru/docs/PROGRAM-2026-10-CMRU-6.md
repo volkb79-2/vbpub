@@ -34,12 +34,21 @@ commits since `cmru-v5.5.0`.
 
 | Pkg | Scope (findings) | Main files |
 |---|---|---|
-| W0-REL | REL-01 (both handoff guards, KI-54), REL-12 (split the release block first), REL-02 (data: drop the stale `[5.6.0]`; code: regenerate when stale), REL-10/KI-30, REL-03 (legacy abandon), REL-04 (merge-promote), REL-05 (tag rollback, recovery text, doc), REL-06, REL-13, REL-14, REL-15 (real-git end-to-end release test) | `cli.py` release/abandon, `transaction.py`, `changelog.py`, `CHANGES.md`, `docs/RELEASE-TRANSACTIONS.md` |
+| W0-REL | REL-01 (both handoff guards, KI-54), REL-12 (split the release block first), REL-02 (data: drop the stale `[5.6.0]`; code: regenerate when stale), REL-10/KI-30, REL-03 (legacy abandon), REL-04 (merge-promote), REL-05 (tag rollback, recovery text, doc), REL-06, REL-13, REL-14, REL-15 (real-git end-to-end release test), CLI-01 (status truncates the log; moved here from W0-RETIRE because it sits in the release/status block REL-12 restructures) | `cli.py` release/abandon, `transaction.py`, `changelog.py`, `CHANGES.md`, `docs/RELEASE-TRANSACTIONS.md` |
 | W0-GATE | BG-03 (no `--maxfail` outside mutation, junitxml, FAILED lines surfaced), BG-04 (child `PYTHONPATH` / `cmru handler` argv, REL-07), BG-11, REL-11 (`_git_scope`), BG-10, BG-09 | `assay.toml`, `run-gate.toml`, `cmru.toml`, `tools/run_release_gate.py`, `runner.py`, `config.py:_git_scope`, `build-initial-standalone.sh`, `handlers.py` (env) |
 | W0-TESTER | KI-52/BG-01 (`--init`, a required pids limit, a `pids.events` wrapper), BG-02 (names, signals, exact-name cleanup), BG-07 (DinD limits, probe timeout), BG-12, BG-13, BG-06 (digest pins, `--pull=never`), BG-05 and KI-52(b) in the `tester-unified` image (no PyPI for estate-internal packages, `maintenance.autoDetach=false`) | `tester_gate.py`, `tester-unified/Dockerfile` and `.dockerignore`, `cmru.orchestration.toml` image pins |
-| W0-RETIRE | O5 retirement (memo §5), CLI-04 (`default_projects` dead key), CLI-T1 (cleanup dry-run tests), CLI-01 (status truncates the log), CLI-05 (cleanup ignores the target), CLI-14 (`--repack`), CLI-18 (template loads), CLI-D3/D4/D5 docs drift, the ciu SPEC stale line, dstdns notice draft | `agent/`, `controller/`, tests, `pyproject.toml`, `cli.py` status/cleanup, docs |
+| W0-RETIRE | O5 retirement (memo §5), CLI-04 (`default_projects` dead key), CLI-T1 (cleanup dry-run tests), CLI-05 (cleanup ignores the target), CLI-14 (`--repack`), CLI-18 (template loads), CLI-D3/D4/D5 docs drift, the ciu SPEC stale line, dstdns notice draft | `agent/`, `controller/`, tests, `pyproject.toml`, `cli.py` status/cleanup, docs |
 
 ### Wave 1: the `get.py` split (O4)
+
+Wave 0 status: all four packages merged into `cmru-wave-2026-10` (RETIRE `b56c69f06`, GATE
+`b9ed0cc01`, REL `e92e8abb6`, TESTER `01bceec4c`); `coverage` and `canary` lanes PASS at 100%.
+
+**Order: sequential, W1-CIU-ENROLL first.** The enroll code calls the template's install helpers,
+which W1-INSTALLER rewrites (R7). W1-CIU-ENROLL therefore lands the `extensions` mechanism with a
+render-enforced `EXTENSION_API` (the template names a fragment may use) and moves enroll unchanged.
+W1-INSTALLER then keeps every `EXTENSION_API` name working, or updates the in-repo fragment in the
+same change.
 
 | Pkg | Scope |
 |---|---|
