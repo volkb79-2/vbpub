@@ -891,6 +891,12 @@ def test_child_release_args_finds_the_target_structurally(tmp_path):
         ["--set-version", "demo", "demo", "--dry-run"], config_path, tmp_path,
         original_target="demo", target_override="demo",
     ) == ["demo", "--set-version", "demo", "--dry-run", "--config", "cmru.toml"]
+    # A value-taking option's value is never mistaken for the (later) target:
+    # the previous assertion is symmetric, this one is not.
+    assert cli._child_release_args(
+        ["--set-version", "1.2.3", "demo"], config_path, tmp_path,
+        original_target="demo", target_override="demo",
+    ) == ["demo", "--set-version", "1.2.3", "--config", "cmru.toml"]
     # The target may also come after the options, and --config/--resume (with
     # either spelling) never reach the child.
     assert cli._child_release_args(
