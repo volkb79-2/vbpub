@@ -832,10 +832,9 @@ def _assert_complete(real: dict, expected: dict) -> None:
     # then stripped from a COPY before the exact-match assertion; `real`
     # itself, and the shared `judgment`/`r2` dict objects inside it, are
     # never mutated.
-    judgment = filtered.get("judgment")
-    r2 = judgment.get("r2") if isinstance(judgment, dict) else None
-    mutation = r2.get("mutation") if isinstance(r2, dict) else None
-    if isinstance(mutation, dict):
+    def normalize_resource_limit_evidence(mutation: object) -> None:
+        if not isinstance(mutation, dict):
+            return
         counter_groups = {
             "pids_events": ("max",),
             "memory_events": ("max", "oom", "oom_kill", "oom_group_kill"),
@@ -851,6 +850,11 @@ def _assert_complete(real: dict, expected: dict) -> None:
             for candidate in mutation.get(bucket, []):
                 evidence = candidate.get("resource_limit_evidence")
                 assert isinstance(evidence, dict)
+                assert set(evidence) == {
+                    "cgroup_version",
+                    "pids_events",
+                    "memory_events",
+                }
                 assert evidence.get("cgroup_version") == 2
                 for group, event_names in counter_groups.items():
                     counters = evidence.get(group)
@@ -866,6 +870,18 @@ def _assert_complete(real: dict, expected: dict) -> None:
                         assert delta == after - before == 0
                         sample["before"] = 0
                         sample["after"] = 0
+
+    # R2 outcome data is duplicated in the top-level claims and in the
+    # judgment summary. Validate and normalize both copies before comparing
+    # the complete artifact; their absolute cgroup counters are runtime facts.
+    for claim in filtered.get("claims", []):
+        if isinstance(claim, dict) and claim.get("rigor") == "R2":
+            normalize_resource_limit_evidence(claim.get("mutation"))
+    judgment = filtered.get("judgment")
+    r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    normalize_resource_limit_evidence(
+        r2.get("mutation") if isinstance(r2, dict) else None
+    )
     if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:
         derived = r2["budget_per_candidate_derived_s"]
         assert isinstance(derived, (int, float)) and not isinstance(derived, bool)
