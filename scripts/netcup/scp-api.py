@@ -1706,7 +1706,14 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
         _guard_server_mutation(client, server_id, "delete snapshot")
         endpoint = f"/api/v1/servers/{server_id}/snapshots"
         existing = _response_rows(_api_call(client.get, endpoint), f"GET {endpoint}")
-        match = next((row for row in existing if row.get("name") == name), None)
+        matches = [row for row in existing if row.get("name") == name]
+        if len(matches) > 1:
+            raise CliFailure(
+                f"server {server_id} has {len(matches)} snapshots named {name!r}; refusing to pick one",
+                exit_code=2,
+                hint=f"remove or rename the duplicates in the provider panel; list: ./scp-api.py snapshots {server_id}",
+            )
+        match = matches[0] if matches else None
         if match is None:
             known = ", ".join(str(row.get("name")) for row in existing) or "none"
             raise CliFailure(

@@ -1,5 +1,14 @@
 # debian-install-v2 — TODO / backlog
 
+## OPEN (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
+
+Test Augeas as an alternative for in-place config edits (see
+[`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); current approach is
+drop-ins plus whole-file templates. Evaluated 2026-10-06 and NOT adopted: the
+only true in-place edit in v2 is the fstab swap filter, and the lens catalog has
+no deb822 lens. The evaluation's code sketches were never executed; proving
+them in a throwaway container with the packages is the first step of any trial.
+
 ## IMPLEMENTED (LT-IOB, 2026-10-06; live validation pending): io.cost benchmark step
 
 `Installer._run_io_benchmark()` — see `IO-BENCHMARK-DESIGN.md` and
@@ -123,14 +132,3 @@ for this round.
 Not designed or scoped beyond the above; no code written yet.
 
 _Captured 2026-09-08 from the netcup live-test session per operator request._
-
-## Open (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
-
-Test Augeas as an alternative for in-place config edits (see
-[`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); current approach is
-drop-ins plus whole-file templates. Evaluated 2026-10-06 and NOT adopted: the
-only true in-place edit in v2 is the fstab swap filter, and the lens catalog has
-no deb822 lens. The evaluation's code sketches were never executed; proving
-them in a throwaway container with the packages is the first step of any trial.
-
-_Filed by Claude per operator request (LT-NC2)._

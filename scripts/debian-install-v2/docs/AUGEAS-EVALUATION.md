@@ -1,6 +1,7 @@
 # Augeas evaluation for scripts/debian-install-v2
 
 **Status: evaluated 2026-10-06, NOT adopted.**
+
 **Revisit: test as an alternative some time (operator note).**
 
 Tags: VERIFIED = observed here (repo reads, devcontainer probes, Debian source/package web pages fetched today). FROM-DOCS = upstream docs / my knowledge of Augeas, NOT executed here.

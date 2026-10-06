@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import json
-import types
 
 import pytest
 
@@ -134,21 +133,45 @@ def test_unknown_name_is_refused_before_any_delete(explore_mod, tmp_path, monkey
     assert run.calls == [("get", SNAPSHOTS, None)]
 
 
-def test_protected_server_is_refused_before_any_snapshot_request(explore_mod, fake_client, monkeypatch):
-    # run_scp_api rebuilds os.environ per replay, so the denylist is exercised
-    # through the command function with the suite's usual fake client.
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
-    client = fake_client(
-        get_responses=[{"id": 1, "name": "v2202503209318326780"}, TWO],
-        allow=("get", "delete"),
+@pytest.mark.parametrize(
+    "flags",
+    [[], ["--yes"], ["--dry-run"], ["--yes", "--dry-run"]],
+    ids=["no-flag", "yes", "dry-run", "yes-dry-run"],
+)
+@pytest.mark.parametrize(
+    "env_text",
+    ["NETCUP_SCP_API_PROTECTED_SERVERS=v42\n", "NETCUP_SCP_API_PROTECTED_SERVER_IDS=42\n"],
+    ids=["by-name", "by-id"],
+)
+def test_protected_server_is_refused_end_to_end(explore_mod, tmp_path, monkeypatch, capsys, flags, env_text):
+    """Real main() and real .env loader (a test file in cwd): the denylist applies
+    to every delete form, including --dry-run, before any snapshot or DELETE request."""
+    merged = dict(SCP_ROUTES)
+    merged[SNAPSHOTS] = TWO
+    run = run_scp_api(
+        explore_mod, ["snapshots", "42", "delete", "before", *flags], tmp_path=tmp_path,
+        monkeypatch=monkeypatch, capsys=capsys, routes=merged, env_text=env_text,
     )
-    args = types.SimpleNamespace(
-        server_id=1, action="delete", snapshot_name="before", yes=True, dry_run=False, json=False
-    )
-    with pytest.raises(explore_mod.netcup_scp_client.ProtectedServerError):
-        explore_mod.cmd_snapshots(client, args, explore_mod._Palette(enabled=False))
-    # The only request is the guard's own server-details read: no snapshot list, no DELETE.
-    assert [(c[0], c[1]) for c in client.calls] == [("get", "/api/v1/servers/1")]
+    assert run.status not in (0, None)
+    assert "protected by the local denylist" in run.err
+    # The guard's own server read is unavoidable; nothing else may be requested.
+    assert run.calls == [("get", "/api/v1/servers/42", None)]
+
+
+@pytest.mark.parametrize("near_miss", ["Before", "bef", "before "])
+def test_lookup_is_exact_not_prefix_or_case_folded(explore_mod, tmp_path, monkeypatch, capsys, near_miss):
+    run = _run(explore_mod, ["snapshots", "42", "delete", near_miss, "--yes"], tmp_path, monkeypatch, capsys)
+    assert run.status == 2
+    assert _deletes(run) == []
+    assert run.calls == [("get", SNAPSHOTS, None)]
+
+
+def test_duplicate_names_are_refused(explore_mod, tmp_path, monkeypatch, capsys):
+    routes = {SNAPSHOTS: [TWO[0], {"uuid": "snap-3", "name": "before", "state": "READY"}]}
+    run = _run(explore_mod, ["snapshots", "42", "delete", "before", "--yes"], tmp_path, monkeypatch, capsys, routes)
+    assert run.status == 2
+    assert "2 snapshots named 'before'" in run.err
+    assert run.calls == [("get", SNAPSHOTS, None)]
 
 
 def test_json_output_shape_without_a_task(explore_mod, tmp_path, monkeypatch, capsys):
