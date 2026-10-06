@@ -128,7 +128,7 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
         scale = {"s": 1, "m": 60, "h": 3600}[match.group(2)]
         return int(match.group(1)) * scale
 
-    sql_body = script.split("run_sql_qualification() {", 1)[1].split("\n}\n", 1)[0]
+    sql_body = script.split("run_sql_qualification() {", 1)[1].split("# --- entry points", 1)[0]
     sql_launch = re.search(
         r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker run -d", sql_body
     )

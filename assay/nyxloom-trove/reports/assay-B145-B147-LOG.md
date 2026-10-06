@@ -53,3 +53,20 @@ pass. No tests or gates have run on the corrected tree yet. The next step is the
 registered `tester-unified` gate on the final committed tree, then a serial
 no-ff merge to `main`. B146 stays deferred; release remains grouped with the
 planned v14/8.0.0 wave.
+
+## Controller continuation: first registered gate result (2026-10-06)
+
+The registered `tester-unified` gate ran on commit
+`4c4aa3019f3a9f9d01002bb7e8e6672a16a23b83` and returned FAIL after 775.14s:
+11 failed, 7,536 passed, and 11 skipped. The live B145 probes and packaging /
+attestation steps passed. The failures were in stale test assertions and test
+fixture wiring exposed by the B145 / SQL ownership changes, plus one ShellCheck
+warning; no failure was waived. The focused regression set now passes all 11
+cases, including exact physical-host, workspace, and socket mount checks.
+
+The corrective delta received a Sol xhigh review. It found that the SQL mount
+test did not bind its expected socket source; that assertion is now exact.
+`bash -n`, ShellCheck, and `git diff --check` pass on the current working tree.
+This corrected tree has not yet had a registered gate. Commit it, then rerun
+`tester-unified`; merge only the final gate-green commit. Release remains
+grouped with the planned v14 / 8.0.0 wave; B146 remains deferred.

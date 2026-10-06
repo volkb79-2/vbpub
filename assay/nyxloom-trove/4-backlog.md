@@ -11967,6 +11967,15 @@ The registered `tester-unified` gate on the final committed tree remains the
 pre-merge acceptance step. B146 remains deferred. Release stays grouped with
 the planned v14/8.0.0 wave.
 
+**Gate update (2026-10-06):** The first registered run at
+`4c4aa3019f3a9f9d01002bb7e8e6672a16a23b83` failed with 11 failed, 7,536
+passed, and 11 skipped after 775.14s. B145 probes and package / attestation
+steps passed; the failures exposed stale test expectations and fixture wiring,
+not a waived gate result. The focused regressions now pass, including the
+reviewed exact Docker mount-source assertions. The corrected tree still needs a
+fresh registered gate before merge. B146 remains deferred and release stays
+grouped with the planned v14 / 8.0.0 wave.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
 **Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.

@@ -1248,6 +1248,8 @@ run_sql_qualification() {
   runner_launch_stderr="$_assay_sql_scratch/runner-launch.stderr"
   [[ ! -e "$_assay_sql_runner_ownership_file" ]] \
     || die 'SQL qualification runner cidfile already exists in fresh scratch'
+# The single-quoted body is the script sent to the runner container.
+# shellcheck disable=SC2016
   sql_runner_script='
 set -euo pipefail
 worktree=$1
@@ -1299,7 +1301,7 @@ cat "$scratch/expected.marker"
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
-    --mount "type=bind,src=$docker_socket,dst=$docker_socket" \
+    --mount "type=bind,src=$docker_socket,dst=/var/run/docker.sock" \
     -w /workspaces/vbpub \
     tester-unified:local \
     bash -c "$sql_runner_script" assay-sql-qualification \

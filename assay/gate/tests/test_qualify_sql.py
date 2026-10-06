@@ -358,7 +358,7 @@ def test_an_incomplete_witness_exits_3_before_any_shape_check(monkeypatch, tmp_p
 
     monkeypatch.setattr(q, "run_qualification", fake_run_qualification)
     code = q.main(
-        ["--scratch", str(tmp_path / "s"), "--container-name", "run-gate-assay-sql-1-2", "--cgroup-parent", "x.slice"]
+        ["--scratch", str(tmp_path / "s"), "--container-name", "run-gate-assay-sql-1-2", "--ownership-token", _OWNER_TOKEN, "--cgroup-parent", "x.slice"]
     )
     assert code == 3
     assert "ASSAY_SQL_INCONCLUSIVE=witness incomplete: BUDGET_EXCEEDED/LANE_TIMEOUT" in capsys.readouterr().err
@@ -1453,7 +1453,10 @@ def gate_functions(tmp_path_factory) -> Path:
     test_socket.bind(str(socket_path))
     test_socket.close()
     out = tmp_path_factory.mktemp("sql-gate-functions") / "gate-functions.sh"
-    out.write_text(source.split(marker, 1)[0].replace("/var/run/docker.sock", str(socket_path)), encoding="utf-8")
+    body = source.split(marker, 1)[0].replace(
+        "docker_socket=/var/run/docker.sock", f"docker_socket={socket_path}"
+    )
+    out.write_text(body, encoding="utf-8")
     return out
 
 
@@ -1609,7 +1612,7 @@ def _sql_env(
         "        cidfile = pathlib.Path(pathlib.Path(os.environ['FAKE_LATE_POSTGRES_CIDFILE_PATH']).read_text(encoding='utf-8'))\n"
         "        cidfile.write_text(os.environ['FAKE_CID'] + '\\n', encoding='ascii')\n"
         "    prefix = os.environ.get('FAKE_FAIL_RM_PREFIX', '')\n"
-        "    if prefix and len(args) > 2 and args[2].startswith(prefix):\n"
+        "    if prefix and len(args) > 2 and args[-1].startswith(prefix):\n"
         "        raise SystemExit(1)\n"
         "    if len(args) == 3 and args[2] == os.environ['FAKE_RUNNER_CID']:\n"
         "        pathlib.Path(os.environ['FAKE_REMOVED_RUNNER_ID']).write_text(os.environ['FAKE_RUNNER_CID'], encoding='ascii')\n"
@@ -1752,15 +1755,19 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert "--group-add" in launch and launch[launch.index("--group-add") + 1].isdigit()
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
-    assert any("dst=/workspaces/vbpub" in mount for mount in mounts)
-    assert any(mount.startswith("type=bind,src=") and mount.endswith(",dst=/var/run/docker.sock") for mount in mounts)
+    assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
+    assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in mounts
+    socket_source = gate_functions.read_text(encoding="utf-8").split("docker_socket=", 1)[1].split()[0]
+    assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls
     postgres_remove = ["rm", "-f", "-v", _FAKE_CONTAINER_ID]
     assert postgres_remove in calls
     assert calls.index(postgres_remove) < calls.index(["logs", "--follow", _FAKE_RUNNER_ID])
-    assert calls[-1] == ["rm", "-f", _FAKE_RUNNER_ID]
+    assert ["rm", "-f", _FAKE_RUNNER_ID] in calls
+    assert calls[-1][:2] == ["ps", "--all"]
+    assert f"id={_FAKE_CONTAINER_ID}" in calls[-1]
     python_invocation = json.loads((tmp_path / "qualification-python.json").read_text(encoding="utf-8"))
     scratch_root = Path(args["--scratch"]).parent
     assert python_invocation[:2] == [
@@ -2042,7 +2049,8 @@ def test_exit_cleanup_refuses_a_planted_cid_for_an_unrelated_container(
     )
 
     assert proc.returncode == 1
-    assert "resolves to unexpected container /unrelated-container" in proc.stderr
+    assert "resolves to unexpected container" in proc.stderr
+    assert f"{_FAKE_CONTAINER_ID}|unrelated-container|{_OWNER_TOKEN}" in proc.stderr
     assert not any(call[:2] == ["rm", "-f"] for call in _docker_calls(docker_log))
     assert scratch.exists(), "preserve scratch for ownership recovery"
 
@@ -2330,11 +2338,11 @@ def test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_fini
     assert cleanup.index("trap - EXIT") < cleanup.index("_assay_sql_container_name") < cleanup.index("_assay_gate_logs_pid")
     assert "no PostgreSQL ownership ID; preserving scratch" in cleanup
     assert "remove_owned_sql_container" in cleanup
-    inventory = source.split("sql_container_inventory() {", 1)[1].split("\n}\n", 1)[0]
+    inventory = source.split("container_inventory() {", 1)[1].split("sql_container_inventory() {", 1)[0]
     removal = source.split("remove_owned_sql_container() {", 1)[1].split("\n}\n", 1)[0]
     assert "docker ps --all --no-trunc" in inventory
     assert '"$inventory" != "$container_id|$expected_name|$ownership_token"' in removal
     assert 'docker rm -f -v "$container_id"' in removal
-    sql = source.split("run_sql_qualification() {", 1)[1].split("\n}\n", 1)[0]
+    sql = source.split("run_sql_qualification() {", 1)[1].split("# --- entry points", 1)[0]
     assert sql.index('remove_owned_sql_container "$container_id"') < sql.index("echo 'ASSAY_GATE_PHASE=sql-qualified'")
     assert 'wait_for_container_log_follower "$_assay_sql_runner_logs_pid" 30' in sql

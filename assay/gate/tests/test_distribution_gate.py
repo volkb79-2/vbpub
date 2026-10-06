@@ -511,7 +511,7 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
         "git -c maintenance.auto=false -c maintenance.autoDetach=false "
         "-c gc.autoDetach=false config --global safe.directory"
     )
-    assert "test_low_pids_limit_event_cannot_become_a_kill" in run
+    assert "test_low_pids_limit_event_cannot_become_a_kill" in probe_command
     container_name = run[run.index("--name") + 1]
     assert calls[1][:2] == ["ps", "--all"]
     assert calls[2] == ["wait", _FAKE_B145_ID]
@@ -567,7 +567,8 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
     assert "tester-unified:local" in run
-    assert "sleep 60" in run
+    probe_command = run[run.index("bash") + 2]
+    assert "sleep 60" in probe_command
     probe_id = _FAKE_B145_ID
     assert docker_calls[1][:2] == ["ps", "--all"]
     assert docker_calls[2][:2] == ["ps", "--all"]
