@@ -232,6 +232,7 @@ def test_tester_gate_dry_run_skips_privileged_io_probe(monkeypatch, tmp_path, ca
         memory="1g", memory_swap="2g", cpus="1", pids_limit=None, command=["true"],
         device_read_iops="/dev/vda:10", device_write_iops="",
         device_read_bps="", device_write_bps="", dry_run=True,
+        forward_background_slice=None, forward_gates_slice=None,
     )
     assert tester_gate._run_tester_gate(args, None) == 0
     output = capsys.readouterr().out

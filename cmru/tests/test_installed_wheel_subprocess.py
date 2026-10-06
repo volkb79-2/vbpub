@@ -45,8 +45,18 @@ def test_source_module_invocation_works_from_the_cmru_project_directory(tmp_path
     proc = invoke_module(
         "cmru.handlers", ["--help"], home=tmp_path, cwd=PROJECT_DIR, pythonpath=_own_sources(),
     )
-    assert proc.returncode == 0, proc.stderr
-    assert "wheel-build" in proc.stdout
+    # D2 (merged from W2-PKG2): the version is installed metadata only. A gate
+    # container that puts src/ on PYTHONPATH without installing the wheel has no
+    # distribution, and the entry then exits 3 with one line (no traceback); an
+    # installed distribution gets the real help. The child's own view decides.
+    if proc.returncode == 3:
+        assert proc.stderr.strip() == (
+            "cmru is not installed as a distribution; install the wheel (see README)"
+        )
+        assert "Traceback" not in proc.stderr
+    else:
+        assert proc.returncode == 0, proc.stderr
+        assert "wheel-build" in proc.stdout
 
 
 def test_module_invocations_import_cli_extended_from_the_installed_distribution(tmp_path):

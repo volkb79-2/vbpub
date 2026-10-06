@@ -26,12 +26,13 @@ from typing import Iterator, Sequence
 
 from cli_extended import (
     ArgumentSpec,
-    CliRegistry,
+    CliFailure,
     OptionSpec,
     VerbGroup,
     VerbSpec,
 )
-from cmru.cli_support import cmru_identity, cmru_presentation_options
+from cmru import exit_codes
+from cmru.cli_support import cmru_registry
 
 
 def _unescape_mountinfo(value: str) -> str:
@@ -902,34 +903,35 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
 
 
 def tester_gate_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru tester-gate",
-        description="Run one command in tester-unified for this worktree.",
+    registry = cmru_registry(
+        "cmru tester-gate",
+        "Run one command in tester-unified for this worktree.",
         single_command=True,
         no_args_action=True,
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
     )
+    # One env-fallback rule (CLI-17): EVERY default is None at parse time and is
+    # resolved at run time as explicit flag > environment variable; the help
+    # names the variable as "(default: $VAR)". Nothing reads os.environ while
+    # the parser is being built.
     option_data = (
         (("--cwd",), "relative directory in the current worktree", "DIR", {"required": True}),
-        (("--image",), "container image; otherwise read $CMRU_TESTER_UNIFIED_IMAGE", "IMG", {"default": None}),
-        (("--cgroup-parent",), "explicit host gates slice; verified before launch", "SLICE", {"default": None}),
-        (("--forward-cgroup-parent-var",), "value forwarded as $CGROUP_PARENT_DEV_BACKGROUND", "SLICE", {"default": None}),
-        (("--forward-cgroup-parent-gates-var",), "value forwarded as $CGROUP_PARENT_DEV_GATES", "SLICE", {"default": None}),
-        (("--memory",), "Docker memory cap; defaults to $CMRU_TESTER_MEMORY", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY")}),
-        (("--memory-swap",), "Docker combined memory-plus-swap total", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY_SWAP")}),
-        (("--cpus",), "CPU ceiling >= 0.00001; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None, "type": _positive_cpu_limit}),
-        (("--pids-limit",), "container process ceiling (positive integer); otherwise read $CMRU_TESTER_PIDS_LIMIT", "N", {"default": None}),
-        (("--cgroup-probe-image",), "digest-pinned host-systemd probe image; otherwise read $CMRU_TESTER_CGROUP_PROBE_IMAGE", "IMG", {"default": None}),
-        (("--dind-image",), "digest-pinned nested Docker daemon image; required with --enable-docker", "IMG", {"default": None}),
-        (("--dind-memory",), "nested Docker memory cap; otherwise read $CMRU_TESTER_DIND_MEMORY (--enable-docker)", "MEMORY", {"default": None}),
-        (("--dind-cpus",), "nested Docker CPU ceiling; otherwise read $CMRU_TESTER_DIND_CPUS (--enable-docker)", "N", {"default": None}),
-        (("--dind-pids-limit",), "nested Docker process ceiling; otherwise read $CMRU_TESTER_DIND_PIDS_LIMIT (--enable-docker)", "N", {"default": None}),
-        (("--device-read-iops",), "per-container read IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", "")}),
-        (("--device-write-iops",), "per-container write IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", "")}),
-        (("--device-read-bps",), "per-container read bandwidth cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", "")}),
-        (("--device-write-bps",), "per-container write bandwidth cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", "")}),
+        (("--image",), "tester container image (default: $CMRU_TESTER_UNIFIED_IMAGE)", "IMG", {"default": None}),
+        (("--cgroup-parent",), "explicit host gates slice, verified before launch (default: $CMRU_TESTER_CGROUP_PARENT)", "SLICE", {"default": None}),
+        (("--forward-background-slice",), "slice forwarded into the container as $CGROUP_PARENT_DEV_BACKGROUND (default: $CMRU_TESTER_CGROUP_FORWARD_VAR)", "SLICE", {"default": None}),
+        (("--forward-gates-slice",), "slice forwarded into the container as $CGROUP_PARENT_DEV_GATES (default: $CMRU_TESTER_CGROUP_FORWARD_GATES_VAR)", "SLICE", {"default": None}),
+        (("--memory",), "Docker memory cap (default: $CMRU_TESTER_MEMORY)", "MEMORY", {"default": None}),
+        (("--memory-swap",), "Docker combined memory-plus-swap total (default: $CMRU_TESTER_MEMORY_SWAP)", "MEMORY", {"default": None}),
+        (("--cpus",), "CPU ceiling >= 0.00001 (default: $CMRU_TESTER_CPUS)", "N", {"default": None, "type": _positive_cpu_limit}),
+        (("--pids-limit",), "container process ceiling, a positive integer (default: $CMRU_TESTER_PIDS_LIMIT)", "N", {"default": None}),
+        (("--cgroup-probe-image",), "digest-pinned host-systemd probe image (default: $CMRU_TESTER_CGROUP_PROBE_IMAGE)", "IMG", {"default": None}),
+        (("--dind-image",), "digest-pinned nested Docker daemon image; with --enable-docker (default: $CMRU_TESTER_DIND_IMAGE)", "IMG", {"default": None}),
+        (("--dind-memory",), "nested Docker memory cap; with --enable-docker (default: $CMRU_TESTER_DIND_MEMORY)", "MEMORY", {"default": None}),
+        (("--dind-cpus",), "nested Docker CPU ceiling; with --enable-docker (default: $CMRU_TESTER_DIND_CPUS)", "N", {"default": None}),
+        (("--dind-pids-limit",), "nested Docker process ceiling; with --enable-docker (default: $CMRU_TESTER_DIND_PIDS_LIMIT)", "N", {"default": None}),
+        (("--device-read-iops",), "per-container read IOPS cap, Docker path:rate (default: $CMRU_TESTER_DEVICE_READ_IOPS, none when unset)", "DEV:RATE", {"default": None}),
+        (("--device-write-iops",), "per-container write IOPS cap, Docker path:rate (default: $CMRU_TESTER_DEVICE_WRITE_IOPS, none when unset)", "DEV:RATE", {"default": None}),
+        (("--device-read-bps",), "per-container read bandwidth cap, Docker path:rate (default: $CMRU_TESTER_DEVICE_READ_BPS, none when unset)", "DEV:RATE", {"default": None}),
+        (("--device-write-bps",), "per-container write bandwidth cap, Docker path:rate (default: $CMRU_TESTER_DEVICE_WRITE_BPS, none when unset)", "DEV:RATE", {"default": None}),
         (("--enable-docker",), "give this step an isolated nested Docker daemon", None, {"action": "store_true", "default": False}),
     )
     registry.register(VerbSpec(
@@ -937,6 +939,7 @@ def tester_gate_cli():
         description="Run the supplied command inside tester-unified with declared host limits.",
         group=VerbGroup.MODIFICATION.value,
         mutating=True,
+        dry_run=True,
         include_confirmation=False,
         arguments=(ArgumentSpec(
             "command", "command to execute in the gate container", metavar="COMMAND",
@@ -945,7 +948,7 @@ def tester_gate_cli():
         options=tuple(
             OptionSpec(flags, description, metavar=metavar, parser_kwargs=kwargs)
             for flags, description, metavar, kwargs in option_data
-        ) + (OptionSpec(("--dry-run",), "show the tester-unified Docker command without starting it", parser_kwargs={"action": "store_true", "default": False}),),
+        ),
         include_json=False,
         include_progress=False,
         handler=_run_tester_gate,
@@ -972,12 +975,14 @@ def _run_tester_gate_body(args) -> int:
 
     missing = _missing_orchestration_env(args)
     if missing:
-        raise SystemExit(
+        # A prerequisite (declared configuration) is missing: exit 3 (CLI-16).
+        raise CliFailure(
             "tester-gate: missing required configuration: " + ", ".join(missing) + ".\n"
             "These values are normally supplied by cmru.orchestration.toml [env] and reach\n"
             "this step through `cmru release`; they are NOT usually set in the project's own\n"
             "cmru.toml [env]. If you copied this step out of cmru.toml to run it by hand,\n"
-            "export every variable listed above (or pass its matching CLI flag) first."
+            "export every variable listed above (or pass its matching CLI flag) first.",
+            exit_code=exit_codes.PREREQ_MISSING,
         )
 
     # Guaranteed non-empty by the preflight above; resolvers below stay as
@@ -1011,10 +1016,16 @@ def _run_tester_gate_body(args) -> int:
         if exists is None:
             print(f"[WARN] tester-gate: {note}", file=sys.stderr)
 
-    device_caps = [dc.strip() for dc in (
-        args.device_read_iops, args.device_write_iops,
-        args.device_read_bps, args.device_write_bps,
-    )]
+    # Explicit flag (even an empty one) > environment variable > no cap.
+    device_caps = [
+        (explicit if explicit is not None else os.environ.get(env_name, "")).strip()
+        for explicit, env_name in (
+            (args.device_read_iops, "CMRU_TESTER_DEVICE_READ_IOPS"),
+            (args.device_write_iops, "CMRU_TESTER_DEVICE_WRITE_IOPS"),
+            (args.device_read_bps, "CMRU_TESTER_DEVICE_READ_BPS"),
+            (args.device_write_bps, "CMRU_TESTER_DEVICE_WRITE_BPS"),
+        )
+    ]
     args.device_read_iops, args.device_write_iops = device_caps[0], device_caps[1]
     args.device_read_bps, args.device_write_bps = device_caps[2], device_caps[3]
     if any(device_caps) and not dry_run:
@@ -1033,13 +1044,13 @@ def _run_tester_gate_body(args) -> int:
         )
 
     forward_var = (
-        getattr(args, "forward_cgroup_parent_var", None)
-        if getattr(args, "forward_cgroup_parent_var", None) is not None
+        args.forward_background_slice
+        if args.forward_background_slice is not None
         else os.environ.get("CMRU_TESTER_CGROUP_FORWARD_VAR", "")
     )
     forward_gates_var = (
-        getattr(args, "forward_cgroup_parent_gates_var", None)
-        if getattr(args, "forward_cgroup_parent_gates_var", None) is not None
+        args.forward_gates_slice
+        if args.forward_gates_slice is not None
         else os.environ.get("CMRU_TESTER_CGROUP_FORWARD_GATES_VAR", "")
     )
     build_kwargs = dict(

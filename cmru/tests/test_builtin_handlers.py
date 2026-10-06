@@ -471,7 +471,7 @@ def test_direct_oci_non_repack_handler_keeps_standard_bake_flow(
     args = type("Args", (), {
         "cwd": str(tmp_path),
         "bake_file": "docker-bake.hcl",
-        "target": "img",
+        "bake_target": "img",
     })()
 
     command(args)

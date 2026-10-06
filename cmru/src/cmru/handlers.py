@@ -606,7 +606,7 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
     """Build an OCI image using docker buildx bake."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
-    target = args.target
+    target = args.bake_target
 
     print(f"[INFO] cmru handler: building OCI image in {cwd}")
     print(f"[INFO]   bake_file={bake_file}  target={target}")
@@ -626,7 +626,7 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     """Push an OCI image with ``docker buildx bake --push``."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
-    target = args.target
+    target = args.bake_target
 
     print(f"[INFO] cmru handler: pushing OCI image in {cwd}")
     _docker_login()
@@ -639,17 +639,10 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
 
 
 def handlers_cli():
-    from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
-    from cmru.cli_support import cmru_identity, cmru_presentation_options
+    from cli_extended import OptionSpec, VerbGroup, VerbSpec
+    from cmru.cli_support import cmru_registry
 
-    identity = cmru_identity(command="cmru", long_name="Configurable Multi Release Utility")
-    registry = CliRegistry(
-        identity,
-        prog="cmru handler",
-        description="Explicit project-step command library.",
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
-    )
+    registry = cmru_registry("cmru handler", "Explicit project-step command library.")
     required_path = lambda flag, desc: OptionSpec(
         (flag,), desc, metavar="PATH", parser_kwargs={"required": True},
     )
@@ -691,24 +684,19 @@ def handlers_cli():
         ("oci-image-build", "Build an OCI image with docker buildx bake.", cmd_oci_image_build, (
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
-            required_name("--target", "bake target name", "NAME"),
+            required_name("--bake-target", "bake target name (not a project target)", "NAME"),
         )),
         ("oci-image-push", "Push an OCI image to its registry.", cmd_oci_image_push, (
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
-            required_name("--target", "bake target name", "NAME"),
+            required_name("--bake-target", "bake target name (not a project target)", "NAME"),
         )),
     )
     for name, description, handler, options in commands:
         mutating = name not in {"wheel-validate", "tarball-validate"}
-        if mutating:
-            options = options + (OptionSpec(
-                ("--dry-run",), "show this handler's inputs without running it",
-                parser_kwargs={"action": "store_true", "default": False},
-            ),)
 
-        def dispatch(args, _runtime, fn=handler, command=name):
-            if getattr(args, "dry_run", False):
+        def dispatch(args, runtime, fn=handler, command=name):
+            if runtime.dry_run:
                 details = {
                     key: value for key, value in vars(args).items()
                     if key != "dry_run" and "token" not in key.lower()
@@ -725,6 +713,7 @@ def handlers_cli():
                 if mutating else VerbGroup.EXPLORATION.value
             ),
             mutating=mutating,
+            dry_run=mutating,
             include_confirmation=False,
             options=options,
             include_json=False,
@@ -735,7 +724,20 @@ def handlers_cli():
 
 
 def main(argv: list | None = None) -> int:
-    return handlers_cli().run(argv=argv)
+    """``python -m cmru.handlers`` entry; the SAME builder as ``cmru handler``."""
+    from cli_extended import VersionLookupError
+
+    from cmru import exit_codes
+
+    try:
+        cli = handlers_cli()
+    except VersionLookupError:
+        print(
+            "cmru is not installed as a distribution; install the wheel (see README)",
+            file=sys.stderr,
+        )
+        return exit_codes.PREREQ_MISSING
+    return cli.run(argv=argv)
 
 
 if __name__ == "__main__":

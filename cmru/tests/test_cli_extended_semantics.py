@@ -249,8 +249,9 @@ def test_get_py_dry_run_reports_each_destination_without_creating_it(
     assert f"Would write {output_file}" in capsys.readouterr().out
     assert not output_file.exists()
 
-    assert getpy.getpy_main(["alpha", "--dry-run"]) == 0
-    assert "Would render 1 installer(s) to stdout" in capsys.readouterr().out
+    # D4: stdout mode writes nothing, so --dry-run needs a write destination.
+    assert getpy.getpy_main(["alpha", "--dry-run"]) == 2
+    assert "--dry-run requires --output or --output-dir" in capsys.readouterr().err
 
 
 def test_standards_dry_run_updates_only_the_marker_preview(monkeypatch, tmp_path, capsys):
@@ -268,14 +269,14 @@ def test_standards_dry_run_updates_only_the_marker_preview(monkeypatch, tmp_path
 
     assert standards.standards_main([
         "demo", "--config", str(config), "--update", "--dry-run",
-    ]) == 2
+    ]) == 4  # the check still finds policy issues (refused by policy, redesign E)
     output = capsys.readouterr().out
     assert f"template_revision = {standards.PROJECT_TEMPLATE_REVISION}" in output
     assert "Marker updates were previewed" in output
     assert "template_revision=3" in project_config.read_text(encoding="utf-8")
 
     assert standards.standards_main(["demo", "--config", str(config), "--dry-run"]) == 2
-    assert "standards --dry-run requires --update" in capsys.readouterr().err
+    assert "--dry-run requires --update" in capsys.readouterr().err
 
 
 def test_tool_dependency_refresh_dry_run_does_not_write_pin_files(monkeypatch, tmp_path, capsys):
@@ -337,7 +338,7 @@ def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
 
     assert handlers.main([
         "oci-image-build", "--cwd", str(tmp_path), "--bake-file", "bake.hcl",
-        "--target", "image", "--repack", "--dry-run",
+        "--bake-target", "image", "--repack", "--dry-run",
     ]) == 2
     assert "unrecognized arguments: --repack" in capsys.readouterr().err
 
@@ -366,7 +367,7 @@ def test_init_dry_run_validates_generated_contract_without_writing(
     monkeypatch, tmp_path, capsys,
 ):
     generated = tmp_path / "cmru.toml"
-    monkeypatch.setattr(scaffold, "collect_plan", lambda _options, _cwd: {"root": tmp_path})
+    monkeypatch.setattr(scaffold, "collect_plan", lambda _options, _cwd, _prompts: {"root": tmp_path})
     monkeypatch.setattr(scaffold, "build_files", lambda _plan, _root: [(generated, "valid")])
     monkeypatch.setattr(scaffold, "validate", lambda _files, _root: None)
 

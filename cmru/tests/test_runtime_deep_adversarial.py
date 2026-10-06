@@ -106,7 +106,7 @@ class TestHandlerSafetyContracts:
     def test_oci_build_and_prerequisite_paths_are_observable(self, monkeypatch, tmp_path):
         import argparse
         import cmru.handlers as h
-        args = argparse.Namespace(cwd=str(tmp_path), bake_file="b.hcl", target="img")
+        args = argparse.Namespace(cwd=str(tmp_path), bake_file="b.hcl", bake_target="img")
         monkeypatch.setattr(h.shutil, "which", lambda _: "/docker")
         monkeypatch.setattr(h.subprocess, "run", lambda *a, **k: None)
         for key, val in [("REGISTRY", "ghcr.io"), ("GITHUB_USERNAME", "u"), ("GITHUB_PUSH_PAT", "p")]: monkeypatch.setenv(key, val)

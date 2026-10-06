@@ -79,6 +79,9 @@ def _cli(monkeypatch, resolver, installer):
               SimpleNamespace(owner="o", repo="r", token=None), None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config", lambda _: SimpleNamespace(projects={"demo": project}),
+    )
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **kw: object())
     monkeypatch.setattr(resolve, "resolve", resolver)
 

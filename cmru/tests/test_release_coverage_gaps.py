@@ -355,12 +355,16 @@ def test_getpy_context_outputs_and_rejections(monkeypatch, tmp_path, capsys):
     assert "# demo" in capsys.readouterr().out
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: loaded)
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
-    getpy.getpy_main([])
-    assert "get.py Project" in capsys.readouterr().out
+    # CLI-12: an estate-root run selecting several projects refuses to
+    # concatenate their installers on stdout.
+    assert getpy.getpy_main([]) == 2
+    refused = capsys.readouterr()
+    assert "get.py Project" not in refused.out
+    assert "2 projects selected (demo, other)" in refused.err
     orch = tmp_path / "cmru.orchestration.toml"
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: orch)
-    getpy.getpy_main([])
-    assert "get.py Project" in capsys.readouterr().out
+    assert getpy.getpy_main([]) == 2
+    assert "2 projects selected" in capsys.readouterr().err
 
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     getpy.getpy_main(["demo"])
@@ -369,17 +373,11 @@ def test_getpy_context_outputs_and_rejections(monkeypatch, tmp_path, capsys):
     assert getpy.getpy_main(["demo", "--output", "one", "--output-dir", str(tmp_path / "many")]) == 2
     getpy.getpy_main(["all", "--output-dir", str(tmp_path / "many")])
     assert (tmp_path / "many/demo-get.py").is_file()
-    out = capsys.readouterr().out
-    assert "get.py Project: DEMO" in out or "Written to" in out
+    assert "Written to" in capsys.readouterr().out
 
-    monkeypatch.setattr(getpy, "_resolve_config", lambda _arg: cfg, raising=False)
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
-    monkeypatch.setattr(getpy, "render_from_config", lambda name, _path: "no-newline")
-    getpy.getpy_main(["all"])
-    assert "Project: DEMO" in capsys.readouterr().out
-    monkeypatch.setattr(getpy, "render_from_config", lambda name, _path: "with-newline\n")
-    getpy.getpy_main(["all"])
-    assert "Project: DEMO" in capsys.readouterr().out
+    assert getpy.getpy_main(["all"]) == 2
+    assert "stdout carries one installer" in capsys.readouterr().err
 
 
 def test_getpy_render_refuses_unknown_and_non_installer(tmp_path, monkeypatch):
@@ -404,6 +402,8 @@ def test_resolve_context_and_multi_formats(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "tag": "demo-v1", "url": "https://x"})
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: loaded)
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _p: SimpleNamespace(projects={
+        "demo": SimpleNamespace(installer=None), "other": SimpleNamespace(installer=None)}))
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
     assert resolve_module.resolve_main(["all", "--format", "env"]) == 0
@@ -419,6 +419,7 @@ def test_resolve_standalone_implicit_target(monkeypatch, tmp_path, capsys):
     project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _p: SimpleNamespace(projects={"demo": project}))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
     assert resolve_module.resolve_main([]) == 0
@@ -430,6 +431,7 @@ def test_resolve_orchestration_context_without_explicit_target(monkeypatch, tmp_
     project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _p: SimpleNamespace(projects={"demo": project}))
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
@@ -484,8 +486,9 @@ def test_standards_contextual_target_paths(monkeypatch, tmp_path):
 
 
 def test_scaffold_validation_edges(monkeypatch, tmp_path):
-    with pytest.raises(SystemExit):
-        scaffold._yes_no("maybe", "answer")
+    from cli_extended import CliFailure
+    from tests.prompt_fakes import ScriptedPrompts
+
     with pytest.raises(SystemExit):
         scaffold._artifact_selection("wheel,,bundle")
     with pytest.raises(SystemExit):
@@ -494,24 +497,17 @@ def test_scaffold_validation_edges(monkeypatch, tmp_path):
     assert scaffold._git_owner_repo(tmp_path) == ("", "")
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="git@github.com:acme/vbpub.git\n"))
     assert scaffold._git_owner_repo(tmp_path) == ("acme", "vbpub")
-    with pytest.raises(SystemExit):
-        scaffold._ask_project(tmp_path, False)
-    answers = iter(["bad id", "Description", "python"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    with pytest.raises(SystemExit):
-        scaffold._ask_project(tmp_path, True)
-    answers = iter(["demo", "Demo", "python", "generic", "wheel", "yes", "build", "publish"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    assert scaffold._ask_project(tmp_path, True)["artifacts"] == ["wheel"]
-    monkeypatch.setattr(scaffold, "_artifact_selection", lambda _value: [])
-    answers = iter(["demo", "Demo", "python", "wheel"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    with pytest.raises(SystemExit):
-        scaffold._ask_project(tmp_path, True)
-    answers = iter(["demo", "Demo", "invalid"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    with pytest.raises(SystemExit):
-        scaffold._ask_project(tmp_path, True)
+    with pytest.raises(CliFailure):  # no option and no prompt API: nothing to ask
+        scaffold._ask_project(tmp_path, {}, scaffold._NoPrompts())
+    with pytest.raises(SystemExit):  # an invalid id is refused before anything else
+        scaffold._ask_project(tmp_path, {}, ScriptedPrompts(["bad id", "Description", "python"]))
+    project = scaffold._ask_project(tmp_path, {}, ScriptedPrompts(
+        ["demo", "Demo", "python", "generic", "wheel", "yes", "build", "publish"]))
+    assert project["artifacts"] == ["wheel"]
+    assert project["build_argv"] == ["build"] and project["push_argv"] == ["publish"]
+    with pytest.raises(SystemExit):  # an unknown project kind from a (mis)behaving driver
+        scaffold._ask_project(tmp_path, {"project_type": "weird"}, ScriptedPrompts(
+            ["demo", "Demo", "wheel", "yes"]))
 
 
 def test_scaffold_collect_plan_refuses_invalid_adoption_inputs(monkeypatch, tmp_path):
@@ -530,10 +526,11 @@ def test_scaffold_collect_plan_refuses_invalid_adoption_inputs(monkeypatch, tmp_
 def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
     (tmp_path / "child").mkdir()
-    answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    from tests.prompt_fakes import ScriptedPrompts
+
+    monorepo = {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}
     plan = scaffold.collect_plan(
-        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
+        monorepo, tmp_path, ScriptedPrompts(["child", "child", "Child", "python", "wheel", "yes"]),
     )
     files = scaffold.build_files(plan, tmp_path)
 
@@ -555,23 +552,16 @@ def test_scaffold_monorepo_path_and_standards_failure(monkeypatch, tmp_path, cap
 
     outside = tmp_path.parent / "outside-project"
     outside.mkdir(exist_ok=True)
-    answers = iter([str(outside), "x", "X", "python", "wheel", "yes"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     with pytest.raises(SystemExit):
-        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
+        scaffold.collect_plan(monorepo, tmp_path, ScriptedPrompts(
+            [str(outside), "x", "X", "python", "wheel", "yes"]))
 
-    answers = iter(["child", "child", "Child", "python", "wheel", "yes"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
-    answers = iter(["missing"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    scaffold.collect_plan(monorepo, tmp_path, ScriptedPrompts(
+        ["child", "child", "Child", "python", "wheel", "yes"]))
     with pytest.raises(SystemExit):
-        scaffold.collect_plan({"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path)
-    answers = iter([str(tmp_path), "demo", "Demo", "python", "wheel", "yes"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    plan = scaffold.collect_plan(
-        {"owner": "o", "repo": "r", "owner_type": "user", "layout": "monorepo"}, tmp_path,
-    )
+        scaffold.collect_plan(monorepo, tmp_path, ScriptedPrompts(["missing"]))
+    plan = scaffold.collect_plan(monorepo, tmp_path, ScriptedPrompts(
+        [str(tmp_path), "demo", "Demo", "python", "wheel", "yes"]))
     assert plan["projects"][0]["config"] == "cmru.toml"
 
     # Directly exercise both optional command substitutions in the renderer.

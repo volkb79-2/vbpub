@@ -346,6 +346,11 @@ def _install_config_loader(monkeypatch, tmp_path, names=("alpha", "beta"), *, ow
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    # resolve reads the installer section from the strict ForgeConfig (B1).
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config",
+        lambda _path: SimpleNamespace(projects={n: SimpleNamespace(installer=None) for n in projects}),
+    )
     return config_path
 
 

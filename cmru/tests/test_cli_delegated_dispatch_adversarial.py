@@ -19,10 +19,11 @@ def test_cli_delegates_standards_resolve_and_get_commands(monkeypatch):
     assert cli.main(["standards", "demo"]) == 0
     assert cli.main(["resolve", "demo"]) == 0
     assert cli.main(["get-py", "demo", "--output", "x.py"]) == 0
+    # The selector is parsed by the library SelectorList: a tuple of names.
     assert calls == [
-        ("standards", "demo"),
-        ("resolve", "demo"),
-        ("get", "demo", "x.py"),
+        ("standards", ("demo",)),
+        ("resolve", ("demo",)),
+        ("get", ("demo",), "x.py"),
     ]
 
 

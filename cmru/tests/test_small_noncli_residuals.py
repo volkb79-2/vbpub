@@ -32,8 +32,7 @@ def test_standards_update_requires_project_local_config(monkeypatch):
     loaded = (Path("."), {"demo": SimpleNamespace(project_root=None)}, ["demo"])
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: Path("cmru.toml"))
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
-    with pytest.raises(ValueError, match="project-local"):
-        standards.standards_main(["demo", "--update"])
+    assert standards.standards_main(["demo", "--update"]) == 2  # config error, not a traceback
 
 
 def test_standards_atomic_write_cleans_temporary_file_after_replace_failure(monkeypatch, tmp_path):

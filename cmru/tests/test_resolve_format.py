@@ -102,6 +102,7 @@ def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(
 
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: Path("/repo/cmru.toml"))
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(projects={"alpha": project}))
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", FakeHost)
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: _RESULT)
 

@@ -304,7 +304,7 @@ class TestHandlerFailureContracts(unittest.TestCase):
         self.assertEqual(
             handlers.main([
                 "oci-image-push", "--cwd", ".", "--bake-file", "b.hcl",
-                "--target", "t", "--repack",
+                "--bake-target", "t", "--repack",
             ]),
             exit_codes.CONFIG_ERROR,
         )
