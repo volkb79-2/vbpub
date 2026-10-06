@@ -2620,8 +2620,33 @@ def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
         result = transaction._sync_local_main_result(h.repo_root)
         assert result.ok is False
         assert "dirty" in result.reason
-        assert "ignored files and directories" in result.reason
+        assert "tracked or untracked changes" in result.reason  # REL-13: ignored files are not blanket-blocking
         assert "conflict" not in result.reason
+
+
+def test_rel13_sync_local_main_ignores_ordinary_ignored_files(monkeypatch):
+    """Ignored build output that origin/main does not touch must not block the sync."""
+    with _OriginAndClone() as h:
+        (h.repo_root / ".gitignore").write_text("*.log\ncache/\n")
+        _git("add", ".gitignore", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "chore: ignore logs", cwd=h.repo_root)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=h.repo_root)
+        (h.repo_root / "cmru.release.log").write_text("keep me\n")
+        (h.repo_root / "cache").mkdir()
+        (h.repo_root / "cache" / "blob").write_text("keep me too\n")
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "later.txt").write_text("a later main commit\n")
+        _git("add", "later.txt", cwd=other)
+        _git("commit", "-q", "-m", "later", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is True, result.reason
+        assert (h.repo_root / "later.txt").read_text() == "a later main commit\n"
+        assert (h.repo_root / "cmru.release.log").read_text() == "keep me\n"
+        assert (h.repo_root / "cache" / "blob").read_text() == "keep me too\n"
 
 
 def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeypatch):
@@ -2653,7 +2678,7 @@ def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeyp
         result = transaction._sync_local_main_result(h.repo_root)
 
         assert result.ok is False
-        assert "ignored files and directories" in result.reason
+        assert "ignored" in result.reason and "overwrite" in result.reason
         assert not any(argv[1:2] == ["rebase"] for argv in calls)
         assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
         assert _git("rev-parse", "main", cwd=h.repo_root) == local_tip_before

@@ -252,15 +252,21 @@ unchanged. The compatibility rationale is in the
 
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes
-from the exact gated candidate commit, then fast-forwards `origin/main` from that same commit.
+from the exact gated candidate commit, then pushes that same commit to `origin/main`. If main
+advanced during the gate, CMRU merges `origin/main` into the candidate (up to three attempts, never
+a rebase or force-push) unless the new commits touched the project's own paths or conflict; see
+[promotion](docs/RELEASE-TRANSACTIONS.md#promotion-when-originmain-advanced-rel-04). A build
+failure after the tag push rolls that tag back so `--resume` works; once publishing began the tag
+is kept and the message prints exact recovery
+([post-publication recovery](docs/RELEASE-TRANSACTIONS.md#post-publication-recovery)).
 The exact release tag must be on `origin` before CMRU starts the build or publisher. After a
 failed push, CMRU checks origin: if the tag is absent, it removes that exact local tag and retains
 an untagged candidate that can be resumed; if origin confirms the exact candidate tag, it
 continues; when origin cannot be checked, it retains the tag and candidate for inspection.
 A same-name origin tag pointing to another object is a conflict, so CMRU retains the local
 tag and candidate for inspection instead of treating that state as absence.
-A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
-CMRU never rebases a candidate after building its public artifact. Resume retries only a
+A promotion that cannot merge `origin/main` safely fails closed and leaves the candidate
+branch/worktree for diagnosis; CMRU never rebases a candidate after building its public artifact. Resume retries only a
 pre-tag candidate; a release-plan refusal during resume also retains the existing candidate
 and its origin backup branch. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
@@ -292,7 +298,8 @@ checks again before writing the pointer in case a newer release appeared during 
 does not promote a source branch. `release`
 remains the source-first tag/build/publish/promote workflow. See the [KI-10 decision](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
 After the transaction, CMRU reports whether caller `main` was synchronized. A dirty caller
-checkout—including ignored files or directories—is left untouched before any rebase attempt,
+checkout (tracked or untracked changes; ordinary ignored files only matter when `origin/main`
+would overwrite one) is left untouched before any rebase attempt,
 including when `--allow-uncommitted` was used; see the [caller-main cleanup guidance](docs/RELEASE-TRANSACTIONS.md#caller-main-cleanup)
 and normative [S-CLI.5a](docs/SPEC.md#s-cli5a--projects-release-one-after-another-not-in-a-shared-batch).
 
@@ -310,7 +317,8 @@ Use the native release command directly—no wrapper or `2>&1 | tee ...` is requ
 cmru release assay
 ```
 
-It overwrites the root `cmru.release.log` with the complete release transcript.
+It overwrites the root `cmru.release.log` with the complete release transcript. (`cmru status`
+is read-only: it never touches that log, and it does not take `--log-append`/`--show-run-details`.)
 The terminal stays readable: CMRU reports command labels, duration, known test-framework
 success evidence, and concise failure excerpts. Detailed subprocess output is line-flushed to
 the audit log and the transaction-local project files such as
@@ -438,9 +446,9 @@ history, almost always a half-completed prior release — aborts with a named re
 (`--allow-tag-ahead-of-head` downgrades only that one deliberately). Any such plan-time refusal is a clean, typed failure that discards the
 just-created worktree — never retains it, since no project's cycle ever started. In the
 transaction worktree, cmru runs each changed project's required `run-tests` gate, then
-fast-forwards `origin/main` from the validated branch before creating tags or publishing.
-If another writer advanced remote main, the final candidate promotion fails closed after the
-artifact step. A failure keeps the branch/worktree for diagnosis; success removes both (after
+promotes `origin/main` from the validated branch after the artifact step (README promotion note above).
+If another writer advanced remote main, it is merged into the candidate when the project's own
+paths are untouched; otherwise the final promotion fails closed after the artifact step. A failure keeps the branch/worktree for diagnosis; success removes both (after
 optional evidence retention).
 
 When selected products live in independent Git repositories, CMRU runs one isolated transaction

@@ -9,6 +9,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      below for the prior occurrence): the retain-by-default change +
      KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
 
+<!-- NOTE (W0-REL merge): KI-30 refuses a tagged release while this body is non-empty.
+     The controller moves it into the 6.0.0 notes before releasing. The pre-clear
+     hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`. -->
+
 ### Added
 - Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
 - Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
@@ -61,67 +65,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Cover Docker-host slice verification and malformed, invalid, duplicate, orphaned, or out-of-pattern remote tag records.
 
 <!-- cmru: release history -->
-
-## [5.6.0] - 2026-10-03
-<!-- cmru: generated -->
-<!-- cmru: source-end=4a46ee439a6418bff539460ebfbaf9169f21fcd2 -->
-
-### Added
-- feat(cmru): authenticate transactional Git operations (7c2d7a8be)
-- feat: resume mutations with an unchanged test suite and fixture closure (2dca79d55)
-- feat: adopt cli-extended and resolve CMRU CLI decisions (f6b577f41)
-
-### Fixed
-- fix(cmru): correct generated askpass quoting (04c5f4901)
-- fix(cmru): authenticate Git and freeze cleanup plans (aba42a3a9)
-- fix(cmru): preserve tester CPU parse diagnostics (489ce8849)
-- fix(cmru): enforce effective tester CPU ceiling (356d259f2)
-- fix(cmru): bind sibling sources in release subprocesses (ec95f86b1)
-- fix(cmru): reject empty artifact coordinates (231c91d5e)
-- fix: tighten CLI review semantics and tester-gate previews (44411a624)
-- fix: resume mutations across unrelated monorepo commits (a6c4274be)
-- fix: anchor CMRU Assay coverage to release tag (98f98d380)
-- fix: pass PATH through CMRU Assay lane (9c71d58e4)
-- fix: include CLI dependencies in mutation fixtures (9c78d26e8)
-- fix: make empty CMRU runs true no-ops (a6ed9457c)
-
-### Changed
-- Merge branch 'cmru-cli-decisions' into integration/cmru-local-cleanup-20260930 (7e639e1dc)
-- merge: nyxloom testability doctrine + cmru KI-35 (docs/testability-cleanup-20260928) (5248b345d)
-- merge: sync CMRU CLI work with current main (b14643995)
-- Document CMRU worktree library adoption (c64a1c1d7)
-- Document CMRU module and consumer interfaces (f78c392c3)
-- Strengthen CLI semantic boundary coverage (a3620b149)
-- Adopt cli-extended and audit CMRU CLI (83ab24cc6)
-- Record canonical CMRU CLI semantic audit (0a93ae4b6)
-- Resolve CLI source roots for scaffold validation (4de03ca51)
-- Include sibling imports in CMRU CLI probes (481c7ebac)
-- Add sibling CLI source roots to CMRU gate (131453a9e)
-- Adopt cli-extended across CMRU command surfaces (c54e90581)
-
-### Documentation
-- docs(cmru): reconcile FEAT-03 release status (4efd5f334)
-- docs: add tester-gate contract anchor (898447dc5)
-- docs: apply fresh review to the testability doctrine and cmru KI-35 (851d1648e)
-- docs: add mutation-testability design guidance; file cmru KI-35 (703505aa5)
-- docs: preserve mutation timeout contract wording (3f391d6ea)
-- docs: specify nested CLI group help behavior (7358159d2)
-
-### Testing
-- test(cmru): align cleanup fake with clean-step contract (700f0f936)
-- test(cmru): cover overflowing tester CPU exponents (53757b2a2)
-- test(cmru): use valid tester CPU resolver values (4324e57c1)
-- test(cmru): cover malformed build coordinates (cf37ed112)
-- test(cmru): model existing Git common directory (fad90a5a9)
-- test(cmru): close CLI mutation survivors (c83db8862)
-- test: cover tester gate cgroup refusal (e26f35c5e)
-- test: supply registered agent dry-run default (1588856cc)
-- test: cover remaining observable CLI semantics (046bf12c9)
-- test: cover CLI semantic boundaries for mutation resume (07b38d541)
-- test: cover cli-extended mutation fixture copy (7774d1561)
-- test: include estate manifests in CMRU fixture (4e4d9e6b9)
-- test: harden CLI semantic checks and transaction context (9b2273d58)
-- test: cover CMRU CLI branch alternatives (635decab3)
 
 ## [5.5.0] - 2026-09-26
 <!-- cmru: generated -->

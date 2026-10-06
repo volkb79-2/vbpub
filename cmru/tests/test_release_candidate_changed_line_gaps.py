@@ -533,8 +533,9 @@ def test_abandon_workspace_rejects_changed_local_tag_facts(monkeypatch, tmp_path
     assert removed == []
 
 
-def test_abandon_workspace_rejects_non_sha1_candidate_object_id(monkeypatch, tmp_path):
-    oid = "a" * 64
+def test_abandon_workspace_rejects_malformed_candidate_object_id(monkeypatch, tmp_path):
+    # REL-14: SHA-256 (64 hex) ids are valid now; only malformed ids are refused.
+    oid = "a" * 63
     workspace, _calls, removed, _forgotten = _install_transaction_abandon(
         monkeypatch, tmp_path,
         pushed=True,

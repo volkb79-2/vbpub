@@ -219,9 +219,20 @@ publish → promote — to completion before the next project's cycle begins. In
 families are dispatched as separate ordered transactions; their results are coordinated but
 cannot be one atomic Git commit. The gate runs in the real gate environment before any tag or
 public artifact. The public artifact is built from the exact gated candidate commit; only after
-that build/publish succeeds does cmru fast-forward `origin/main` from that same `HEAD`.
-A non-fast-forward remote update therefore fails closed after publication and never rewrites the
-candidate by rebasing it onto a different source commit.
+that build/publish succeeds does cmru push that same `HEAD` to `origin/main`.
+A non-fast-forward rejection (REL-04) never rewrites the candidate by rebasing it onto a
+different source commit and never force-pushes: cmru fetches, verifies that the new `origin/main`
+commits did not touch the released project's own paths, merges `origin/main` INTO the candidate
+(`--no-ff`, `Merge origin/main into release candidate <tag>`) and pushes again, at most three
+attempts. A conflict (aborted, candidate unchanged), a touched project path, unknown paths or
+exhausted attempts fail closed after publication with manual recovery instructions; the tag and
+published state are kept. Non-race push failures (authentication, hooks, network) fail
+immediately. A failed build (never a failed publish) after the tag push rolls that tag back,
+locally and on `origin`, each deletion pinned to the object cmru pushed, and records an
+absence proof so `--resume` proceeds; once the publish (`push`) step has begun the tag is never
+touched and the message prints the tag, its object id and the exact recovery commands.
+The release-inputs commit carries a `Cmru-Release-Candidate: <tag>` trailer (REL-08); a
+candidate branch MUST NOT be merged into `main` by hand.
 If a versioning strategy creates a mechanical version commit after the initial pre-tag gate,
 cmru runs the gate again on that exact candidate before it publishes.
 
@@ -236,10 +247,10 @@ one run behind.
 On success: the origin candidate branch and the local worktree/branch are removed, and cmru
 attempts to sync the caller's local `main` with `origin/main`: a fast-forward when local main
 hasn't moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another
-terminal while the release built) — rebase, not merge, to stay consistent with the rest of
-this pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
-the "local main not ahead" precondition below); no other step here ever produces a merge
-commit. Safe to replay because a release only ever commits declared,
+terminal while the release built) — rebase, not merge, for the caller's local main. The only
+merge commit the pipeline ever produces is the REL-04 `Merge origin/main into release
+candidate` commit made inside the isolated candidate when main advanced during the gate.
+Safe to replay because a release only ever commits declared,
 mechanical generated paths (S-REL.4a), never hand-edited source, so local commits essentially
 never touch the same files. When the caller is currently on `main`, cmru first requires the
 checkout to be clean, including tracked and untracked changes. A dirty checkout returns a
@@ -306,7 +317,7 @@ inspection — `release` never resumes one automatically; the caller explicitly 
 fresh instead. Promotion is the final step of a project's cycle, so `origin/main` contains only
 earlier, fully completed projects. cmru does not create a source-tree revert commit and does not
 silently rebase a candidate after its artifact was built. If publication succeeded but promotion
-lost a fast-forward race, the candidate SHA and public artifact remain visible together on the
+could not be completed (REL-04 stop conditions), the candidate SHA and public artifact remain visible together on the
 retained branch/logs; resolving that post-publication state is an explicit operator action.
 Local `main` cleanup is attempted with the same clean-checkout guard regardless of outcome; a
 false result is reported and does not claim that local main was synchronized. On a later fresh
@@ -429,7 +440,7 @@ compares these rows with the registered parser objects, not a second parser.
 | cmru publish | MODIFICATION | target? | --build-output; --config; --dry-run; --log-append; --show-run-details |
 | cmru changelog | MODIFICATION | target? | --backfill-tag; --config; --dry-run |
 | cmru release | MIXED OPERATIONS | target? | --allow-stale-tool-deps; --allow-tag-ahead-of-head; --allow-uncommitted; --config; --discard-artifacts-on-release; --discard-evidence-on-release; --discard-logs-on-release; --dry-run; --log-append; --major; --minor; --no-build; --ref; --resume; --set-version; --show-run-details |
-| cmru status | EXPLORATION | target? | --config; --log-append; --major; --minor; --ref; --set-version; --show-run-details |
+| cmru status | EXPLORATION | target? | --config; --major; --minor; --ref; --set-version |
 | cmru cleanup | MAINTENANCE | target? | --config; --delete-build-output; --delete-unmanaged-release-tag; --discard-build-worktree; --dry-run; --remove-assets; --yes |
 | cmru abandon | MAINTENANCE | branch? | --config; --dry-run; --yes |
 | cmru init | MODIFICATION | — | --dry-run; --layout; --owner; --owner-type; --repo; --root |
@@ -523,7 +534,7 @@ registered implementation named beside them.
 | cmru publish | Optional target and `--config` select projects, each of which must declare a `push` step. Without `--build-output`, publication uses the caller checkout as before. `--build-output ID` accepts the exact UTC timestamp plus 40-character commit ID printed by `cmru build`, requires one selected project, validates that retained record and its artifact bytes, and gives the declared push step that record as its artifact input without rebuilding. Retained output with any recorded tracked or untracked source-tree change is refused. `--dry-run` resolves and displays the record, digests, and publisher commands without requiring credentials or executing them; it does not query remote tags. `--show-run-details` streams output and `--log-append` retains logs. | ACCEPTED; missing push steps fail as a usage/configuration error before credentials or external actions. Built-in publishers require existing GitHub Releases and tags, verify the versioned tag against the recorded source commit, and update assets without creating or moving Git refs. The retained inventory stays unchanged; `release` owns source promotion (KI-10). |
 | cmru changelog | Optional target selects projects; required repeatable `--backfill-tag TAG` provides one already-published tag per selected project; `--config` selects the source contract. `--dry-run` prints the exact changelog diff and creates or writes no file. | ACCEPTED; the verb is a post-release migration and refuses ambiguous tag/project matches. |
 | cmru release | Optional target selects projects. `--minor`, `--major`, and `--set-version VER` are mutually exclusive and are rejected for external-version or no-tag projects. `--dry-run` executes the declared external-version preparation only inside a disposable managed candidate so it can derive the plan; it does not gate, tag, build, publish, or promote. `--no-build` intentionally stops after tag/push. `--resume WORKTREE` resumes a retained pre-tag candidate using its recorded project scope when no target is supplied; an explicit target must match, and legacy candidates without scope metadata require an explicit target. Corrections must be committed there, then prepare and required gates rerun so the corrected commit is tagged and shipped. It is not post-tag publication recovery (KI-06). `--allow-uncommitted` permits caller edits to be omitted from the origin/main snapshot. `--allow-tag-ahead-of-head` allows only the strictly-ahead baseline case. `--allow-stale-tool-deps` relaxes freshness only; `--ref REF` changes comparison ref. `--discard-logs-on-release`, `--discard-artifacts-on-release`, and `--discard-evidence-on-release` change successful retention. `--config`, `--show-run-details`, and `--log-append` select config and diagnostics. | ACCEPTED; the removed `--allow-tag-at-head` spelling has no compatibility window. Dry-run preparation is confined to the managed candidate; if that preparation fails, the retained candidate remains inspectable. KI-06 now supports corrected pre-tag resume; durable post-tag retry remains open. |
-| cmru status | Optional target and `--config` choose the release view. `--minor`, `--major`, and `--set-version VER` are mutually exclusive preview selectors and are rejected for external-version/no-tag projects. `--ref REF` selects the comparison ref. `--show-run-details` and `--log-append` configure diagnostics, though status itself runs no project command. | ACCEPTED; read-only status has no `--dry-run`, and it no longer accepts a hidden transaction switch. |
+| cmru status | Optional target and `--config` choose the release view. `--minor`, `--major`, and `--set-version VER` are mutually exclusive preview selectors and are rejected for external-version/no-tag projects. `--ref REF` selects the comparison ref. `status` is read-only: it takes neither `--show-run-details` nor `--log-append` and never touches `cmru.release.log` (CLI-01). | ACCEPTED; read-only status has no `--dry-run`, and it no longer accepts a hidden transaction switch. |
 | cmru cleanup | Optional target selects projects; omission applies configured policy to its resolved scope. Exactly one explicit mode may be selected: `--remove-assets AGE` prunes configured age-based remote Releases/tags/GHCR versions estate-wide under the `[cleanup]` policy and refuses a project target (exit 2, CLI-05); `--delete-unmanaged-release-tag TAG` deletes one exact unmanaged GitHub Release but never its Git tag; `--delete-build-output ID` deletes the exact validated local retained record; `--discard-build-worktree PATH` removes one exact failed build worktree and forbids a project target. `--config` selects policy. Every mutating mode displays a captured target plan and asks for confirmation; `--yes` accepts that plan without rediscovery. `--dry-run` displays the plan and performs no deletion. | ACCEPTED; explicit cleanup modes are mutually exclusive, and age cleanup applies only the targets shown before confirmation (S2.5a). |
 | cmru abandon | Optional `branch` must exactly match a managed release branch; omission selects the complete retained release set. `--config` selects the project policy used to validate each recorded scope, including externally configured multi-project releases. `--dry-run` reports exact local and known remote candidates without changing them. `--yes` confirms the complete displayed set; otherwise interactive confirmation is required. | ACCEPTED; KI-29 exact selection, publication-evidence refusal, and no-widening semantics remain canonical in S-CLI.8. |
 | cmru init | `--root PATH` selects the adoption directory; `--layout` is exactly `single` or `monorepo`; `--owner`, `--repo`, and `--owner-type user or org` supply facts otherwise read from the Git origin or interactive prompts. `--dry-run` renders and validates generated files without prompting to write or changing the filesystem. | ACCEPTED; numeric `1`/`2` layout spellings were removed rather than carried as compatibility aliases. |
@@ -673,7 +684,7 @@ pre-tag candidate; an indeterminate result MUST retain the local tag and candida
 **S-REL.4a — Prepared source is source-first and fail-closed.** A `steps.prepare` command
 MAY derive a version or regenerate mechanical source inputs. Every tracked output MUST be
 declared in `release.commit_generated`; cmru rejects undeclared writes, commits only declared
-paths, gates that commit, fast-forwards remote main, and only then tags/builds/publishes.
+paths, gates that commit, and only then tags/builds/publishes; the candidate reaches main last, by a push that first merges origin/main into the candidate if main advanced (REL-04).
 Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
 Every managed project receives the project-relative `CHANGES.md` generated output by default.
 CMRU derives the project-scoped commit range, inserts one marked section at that document's
@@ -724,7 +735,7 @@ declared mechanical outputs, never hand-edited source. Every project follows the
 prepare → gate → backup-push → optional tag → `build_step` → `push` → promote frame;
 the project commands define what the publication phases do.
 `backup-push` (S-CLI.5) is a durability step only — it pushes the candidate branch to origin
-under its own name, never touching `main`; the final fast-forward of `main` integrates the exact
+under its own name, never touching `main`; the final push to `main` (merging origin/main into the candidate if main advanced) integrates the exact
 candidate commit after its public artifact succeeds. A candidate is never rebased at that point.
 
 **S-REL.6 — Multi-variant releases (per-interpreter artifact matrix).** A `bundle` or

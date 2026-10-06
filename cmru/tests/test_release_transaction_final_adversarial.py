@@ -180,7 +180,11 @@ def test_revert_promotion_noop_and_conflict_are_distinct(tmp_path):
 
 def test_sync_local_main_refuses_to_move_local_main_with_unrelated_commits(tmp_path):
     root = repo(tmp_path)
-    # No origin remote means fetch itself is an external boundary; a failed fetch is explicit.
+    # No origin remote means fetch itself is an external boundary. REL-06: a
+    # failed fetch is reported as a false sync result, never an exception that
+    # would turn a completed release into exit 1.
     with patch.object(transaction.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "fetch")):
-        with pytest.raises(subprocess.CalledProcessError):
-            transaction.sync_local_main(root)
+        result = transaction._sync_local_main_result(root)
+        assert result.ok is False
+        assert "fetching origin/main failed" in result.reason
+        assert transaction.sync_local_main(root) is False

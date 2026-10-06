@@ -637,7 +637,7 @@ remote state retains the tag and candidate for inspection. A same-name remote ta
 different ref object is a conflict, not proof of absence, so CMRU preserves the local ref and
 candidate. After a confirmed-absent attempt, the same tag name may acquire a new annotated-tag
 object on retry; the ledger permits that rotation only when the prior exact object has a matching
-origin-absence proof. CMRU fast-forwards `origin/main` from the same candidate only after
+origin-absence proof. CMRU promotes `origin/main` from the same candidate only after
 publication succeeds. This keeps a failed build or upload out of `main` and lets a later project
 consume an earlier project's completed release in the same run. Resume checks attempted release
 tags and recorded results against origin before replaying a candidate. It refuses when a tag may
@@ -645,8 +645,9 @@ have been pushed without a completed result or when a recorded result has not be
 also keeps an existing candidate after a release-plan refusal. This prevents a successful child
 exit from erasing evidence of an incomplete post-tag release.
 
-The promotion is deliberately a single fast-forward push. CMRU does not rebase the candidate
+The promotion is a push of the exact candidate. CMRU does not rebase the candidate
 when another writer advances `origin/main`, because that would change the SHA that was gated and
-used to build the artifact. The candidate branch and worktree remain available for inspection;
+used to build the artifact; it merges `origin/main` into the candidate (bounded, `--no-ff`) only
+when the new commits leave the project's own paths untouched, otherwise it stops (REL-04). The candidate branch and worktree remain available for inspection;
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.

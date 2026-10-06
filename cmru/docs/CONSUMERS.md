@@ -676,9 +676,11 @@ the same 1:1 scheme ciu uses. A successful release removes the worktree; a **fai
 it** for diagnosis and prints its exact path. The origin candidate branch is also retained. CMRU
 records the allocator's canonical identity input so the visible six-character token and the
 structured workspace context remain the same fact across resume and cleanup.
-publishes from the exact gated candidate SHA and only then fast-forwards `origin/main`; if a
-concurrent update rejects that final promotion, CMRU does not rebase the candidate or create a
-source revert. Inspect the retained candidate and resolve the external publication explicitly
+publishes from the exact gated candidate SHA and only then promotes it to `origin/main`; if a
+concurrent update rejects that final promotion, CMRU merges `origin/main` into the candidate when
+the project's own paths are untouched (bounded retries), otherwise it stops. It never rebases the
+candidate or creates a source revert. A build failure after the tag push rolls the tag back (the
+candidate stays resumable); once publishing began the tag is kept. Inspect the retained candidate and resolve the external publication explicitly
 before abandoning it. List and clean retained ones:
 
 ```
@@ -870,10 +872,15 @@ valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
+A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body (KI-30),
+and regenerating a stale generated history section overwrites hand edits inside it; see
+[release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
+
 After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
-that checkout is dirty, including with tracked or untracked files, ignored files, or ignored
-directories, CMRU refuses the cleanup rebase before invoking either rebase command and leaves
-the files and local ref untouched.
+that checkout is dirty with tracked or untracked (non-ignored) changes, CMRU refuses the cleanup
+rebase before invoking either rebase command and leaves the files and local ref untouched.
+Ordinary ignored build output does not block it; an ignored file blocks only where `origin/main`
+would add a file at that exact path.
 This warning does not put caller edits into the immutable remote snapshot, and
 `--allow-uncommitted` does not change that boundary. From a clean caller checkout, use the
 remedy printed by CMRU:
