@@ -114,5 +114,3 @@ def test_cleanup_commit_deletions_refuses_empty_staging_and_reports_commit_failu
     )
     assert calls[-1][4] == "chore(demo): cleanup deleted v1, v2, v3, v4, v5 (+1 more)"
     assert "commit failed" in capsys.readouterr().out
-
-

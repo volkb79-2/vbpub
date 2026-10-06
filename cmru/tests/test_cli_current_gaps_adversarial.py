@@ -86,5 +86,3 @@ def test_orchestrate_all_selection_runs_requested_validate_step(monkeypatch, tmp
     monkeypatch.setattr(cli.sys, "argv", ["cmru", "all", "--step", "validate"])
     cli._orchestrate()
     assert seen == [("demo", "validate")]
-
-

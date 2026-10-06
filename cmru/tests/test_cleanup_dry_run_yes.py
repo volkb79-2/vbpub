@@ -139,12 +139,13 @@ def test_a_bare_cleanup_names_the_required_modes_and_changes_nothing(estate, cap
 
 def test_cleanup_no_longer_discards_build_worktrees(estate, capsys):
     """Redesign B6: that object belongs to ``abandon [BRANCH|PATH]``."""
-    rc = cli.main(["cleanup", "--discard-build-worktree", "/tmp/cmru-build-x", "--dry-run"])
+    # A valid mode is supplied so the required-mode error cannot mask the real reason.
+    rc = cli.main(["cleanup", "--policy", "--discard-build-worktree", "/tmp/cmru-build-x", "--dry-run"])
 
     assert rc == 2
-    # argparse refuses before any work; the mode list it prints has no such mode
+    # The refusal is about THIS flag (unknown), not merely the missing mode group.
     err = capsys.readouterr().err
-    assert "--delete-build-output" in err and "--discard-build-worktree" not in err.split("--config")[0]
+    assert "unrecognized arguments" in err and "--discard-build-worktree" in err
 
 
 def test_without_dry_run_the_same_plan_is_applied(estate, monkeypatch):

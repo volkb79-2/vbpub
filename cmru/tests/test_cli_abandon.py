@@ -405,6 +405,22 @@ def test_abandon_branch_selection_is_exact(
     assert refusal.value.exit_code == 2
 
 
+def test_abandon_relative_path_is_refused_with_the_absolute_path_hint(monkeypatch, tmp_path):
+    build = _workspace(tmp_path, "cmru-build-20260924_120000-alpha-ab12cd")
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [build])
+    from cli_extended import CliFailure
+
+    relative = f".worktrees/{Path(build.path).name}"
+    with pytest.raises(CliFailure, match="pass the absolute path shown by `cmru worktrees`") as refusal:
+        _invoke_abandon(None, branch=relative)
+    assert refusal.value.exit_code == 2
+    # A bare unknown branch name (no path separator) gets no path hint.
+    with pytest.raises(CliFailure) as plain:
+        _invoke_abandon(None, branch="nope")
+    assert "absolute path" not in str(plain.value)
+
+
 @pytest.mark.parametrize("by", ["branch", "path"])
 def test_abandon_discards_a_retained_build_worktree_by_branch_or_path(
     monkeypatch, tmp_path, capsys, by,

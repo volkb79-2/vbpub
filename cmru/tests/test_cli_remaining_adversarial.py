@@ -111,5 +111,3 @@ def test_main_orchestration_builds_selected_steps_and_refuses_missing_credential
     monkeypatch.setattr(cli, "load_config", lambda *_: loaded)
     with pytest.raises(RuntimeError, match="Publishing"):
         cli.main(["run", "--step", "push", "--config", "x"])
-
-

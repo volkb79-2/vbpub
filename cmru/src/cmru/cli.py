@@ -2805,7 +2805,7 @@ def _report_publication_started(
         f"id: {oid or 'unknown (see `git rev-parse refs/tags/' + tag + '`)'}. "
         "`--resume` refuses this candidate. Recovery, from the source checkout:\n"
         + _release_tag_recovery_commands(tag, oid, workspace.branch)
-        + "\nAssets already published under the tag are removed with `cmru cleanup`."
+        + "\nAssets already published under the tag are removed with `cmru cleanup --policy` or `cmru cleanup --remove-assets AGE`."
     )
 
 
@@ -3026,10 +3026,51 @@ def _value_taking_flags(verb: str) -> frozenset[str]:
     )
 
 
+def _forwarded_global_args(parsed: object | None, rest: Sequence[str]) -> List[str]:
+    """The library-global flags the PARENT parsed, as child argv (CLI-19).
+
+    ``runtime.command_argv`` is only the argv AFTER the verb, so a global given
+    before it (``cmru --dry-run release``) is not in ``rest``. A child that did
+    not receive ``--dry-run`` would run a REAL release while the parent believed
+    it was previewing. Every global the parent parsed is therefore re-serialised
+    from the namespace; a flag already present in ``rest`` is never doubled, and
+    the mutually exclusive verbosity/colour families are skipped as a whole when
+    ``rest`` already chose one.
+    """
+    if parsed is None:
+        return []
+    present = {token.partition("=")[0] for token in rest if token.startswith("-")}
+    forwarded: List[str] = []
+    if getattr(parsed, "dry_run", False) and "--dry-run" not in present:
+        forwarded.append("--dry-run")
+    if not present & {"--log-level", "--quiet", "--debug", "--verbose"}:
+        level = getattr(parsed, "log_level", None)
+        if level:
+            forwarded.extend(["--log-level", str(level)])
+        elif getattr(parsed, "quiet", False):
+            forwarded.append("--quiet")
+        elif getattr(parsed, "debug", False):
+            forwarded.append("--debug")
+    if getattr(parsed, "debug_raw", False) and "--debug-raw" not in present:
+        forwarded.append("--debug-raw")
+    if not present & {"--color", "--no-color"}:
+        color = getattr(parsed, "color", None)
+        if color is True:
+            forwarded.append("--color")
+        elif color is False:
+            forwarded.append("--no-color")
+    if (
+        getattr(parsed, "log_prefix_time_short", False)
+        and "--log-prefix-time-short" not in present
+    ):
+        forwarded.append("--log-prefix-time-short")
+    return forwarded
+
+
 def _child_release_args(
     rest: List[str], config_path: Path, repo_root: Path, *, source_git_root: Path | None = None,
     target_override: str | None = None, original_target: object | None = None,
-    verb: str = "release",
+    verb: str = "release", forward_from: object | None = None,
 ) -> List[str]:
     """Point a transaction child at its snapshot or central CMRU config.
 
@@ -3085,6 +3126,7 @@ def _child_release_args(
         config_arg = str(relative)
     if target_override is not None:
         result.insert(0, target_override)
+    result.extend(_forwarded_global_args(forward_from, rest))
     result.extend(["--config", config_arg])
     return result
 
@@ -3099,6 +3141,7 @@ def _dispatch_independent_git_families(
     *,
     original_target: str | None,
     origin_main_snapshots: Mapping[Path, str] | None = None,
+    forward_from: object | None = None,
 ) -> int | None:
     """Run one normal transaction per independent selected Git family.
 
@@ -3144,6 +3187,7 @@ def _dispatch_independent_git_families(
                 target_override=",".join(names),
                 original_target=original_target,
                 verb=verb,
+                forward_from=forward_from,
             )
             child_env = os.environ.copy()
             child_env.pop("CMRU_RELEASE_PREFLIGHT_SNAPSHOT", None)
@@ -4367,14 +4411,18 @@ def _dispatch(args, runtime):
         ordered = _ordered_configs(configs, project_order)
         names = _select_projects(cfg_path, vargs.target, configs, project_order)
         build_output_id = getattr(vargs, "build_output", None) if verb == "publish" else None
-        if build_output_id and not transaction.is_build_output_id(build_output_id):
+        if verb == "publish" and not getattr(vargs, "from_checkout", False) and build_output_id is None:
+            _usage_error("publish needs a source: --build-output ID or --from-checkout")
+        # ``is not None``: an empty ID must fail validation, never become an
+        # unverified checkout publish.
+        if build_output_id is not None and not transaction.is_build_output_id(build_output_id):
             _usage_error(
                 "publish --build-output must use the exact ID printed by cmru build "
                 "(<UTC timestamp>_<40-character commit SHA>)"
             )
-        if build_output_id and len(names) != 1:
+        if build_output_id is not None and len(names) != 1:
             _usage_error("publish --build-output requires exactly one selected project")
-        if verb == "publish" and not vargs.dry_run and not build_output_id:
+        if verb == "publish" and not vargs.dry_run and build_output_id is None:
             require_project_publish_credentials(configs, names)
         step = "build" if verb == "build" else "push"
         transaction_child = transaction.is_transaction_child(repo_root)
@@ -4427,6 +4475,7 @@ def _dispatch(args, runtime):
                 configs,
                 names,
                 original_target=vargs.target,
+                forward_from=vargs,
             )
             if dispatched is not None:
                 _sys.exit(dispatched)
@@ -4442,7 +4491,7 @@ def _dispatch(args, runtime):
                 child_args = _child_release_args(
                     rest, cfg_path, repo_root, source_git_root=transaction_root,
                     target_override=",".join(names), original_target=vargs.target,
-                    verb="build",
+                    verb="build", forward_from=vargs,
                 )
                 with transaction.release_lock(transaction_root):
                     dirty = _uncommitted_release_paths(transaction_root, configs, names)
@@ -4657,7 +4706,10 @@ def _dispatch(args, runtime):
         selected_names = _select_projects(cfg_path, vargs.target, configs, project_order)
         plan = CleanupPlan()
 
-        if vargs.delete_unmanaged_release_tag:
+        # Every mode is selected by ``is not None`` (never truthiness): an empty
+        # value such as ``--remove-assets "$UNSET"`` must not fall through to the
+        # destructive policy cleanup. The parser also rejects empty strings.
+        if vargs.delete_unmanaged_release_tag is not None:
             if len(selected_names) != 1:
                 _usage_error("--delete-unmanaged-release-tag requires exactly one project target")
             selected_name = selected_names[0]
@@ -4683,7 +4735,7 @@ def _dispatch(args, runtime):
                 project_github.owner, project_github.repo, project_github.token, tag,
                 dry_run=dry_run, plan=plan,
             )
-        elif vargs.delete_build_output:
+        elif vargs.delete_build_output is not None:
             if len(selected_names) != 1:
                 _usage_error("--delete-build-output requires exactly one project target")
             selected_name = selected_names[0]
@@ -4711,7 +4763,7 @@ def _dispatch(args, runtime):
                             dry_run=False, expected_identity=expected_identity,
                         ),
                 )
-        elif vargs.remove_assets:
+        elif vargs.remove_assets is not None:
             # Explicit age-based cleanup mode. It applies the estate-wide [cleanup]
             # policy, so a project target would be silently ignored (CLI-05).
             if vargs.target is not None:
@@ -4720,13 +4772,20 @@ def _dispatch(args, runtime):
                 vargs.remove_assets, dry_run, cleanup, github_config, env_config,
                 plan=plan,
             )
-        else:
+        elif vargs.policy:
             action = lambda dry_run: run_cleanup_verb(
                 repo_root, configs, project_order, cleanup,
                 github_config, env_config,
                 project_filter=selected_names,
                 dry_run=dry_run,
                 plan=plan,
+            )
+        else:
+            # Unreachable through the required mode group; fail closed rather
+            # than default to the destructive policy cleanup.
+            _usage_error(
+                "cleanup needs a mode: --policy, --remove-assets AGE, "
+                "--delete-unmanaged-release-tag TAG or --delete-build-output ID"
             )
 
         # Enumerate and show an immutable action set before confirmation. Applying
@@ -4914,6 +4973,7 @@ def _release_launcher(
         release_scope,
         original_target=vargs.target,
         origin_main_snapshots=origin_main_snapshots,
+        forward_from=vargs,
     )
     if dispatched is not None:
         sys.exit(dispatched)
@@ -4936,6 +4996,7 @@ def _release_launcher(
         child_args = _child_release_args(
             rest, cfg_path, repo_root, source_git_root=transaction_root,
             target_override=",".join(release_scope), original_target=vargs.target,
+            forward_from=vargs,
         )
         with transaction.release_lock(transaction_root):
             if preflighted_base is not None:
@@ -5267,6 +5328,15 @@ def _release_child(
         log_info("Nothing built or published (see per-project log above for why).")
 
 
+def _non_empty(value: str) -> str:
+    """argparse ``type`` for mode values: an empty string (``--remove-assets "$UNSET"``) is a usage error."""
+    import argparse
+
+    if not value.strip():
+        raise argparse.ArgumentTypeError("the value must not be empty")
+    return value
+
+
 def _usage_error(message: str) -> None:
     from cli_extended import CliFailure
 
@@ -5367,7 +5437,11 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
         if not selected:
             raise CliFailure(
                 f"no exact managed CMRU build or release branch or worktree path "
-                f"named {args.branch!r}", exit_code=2,
+                f"named {args.branch!r}"
+                + (
+                    "; pass the absolute path shown by `cmru worktrees`"
+                    if not requested_path.is_absolute() and "/" in args.branch else ""
+                ), exit_code=2,
             )
         if transaction.workspace_purpose(selected[0].branch) == "build":
             return _abandon_build_worktree(args, runtime, repo_root, selected[0])
@@ -5791,7 +5865,7 @@ def _build_cli():
     build_options = (config_opt, *detail_opts)
     registry.register(VerbSpec("build", description="Run the isolated build step.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=build_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     publish_options = (
-        OptionSpec(("--build-output",), "publish the verified retained build ID printed by cmru build", metavar="ID", parser_kwargs={"default": None}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
+        OptionSpec(("--build-output",), "publish the verified retained build ID printed by cmru build", metavar="ID", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
         OptionSpec(("--from-checkout",), "publish whatever the CALLER'S checkout currently holds (not isolated, not verified)", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
         *build_options,
     )
@@ -5823,9 +5897,9 @@ def _build_cli():
     registry.register(VerbSpec("status", description="Preview changed projects and their next versions (read-only).", group=VerbGroup.EXPLORATION.value, arguments=common_target, options=status_options, include_json=True, include_progress=False, handler=direct()))
     cleanup_options = (
         OptionSpec(("--policy",), "apply the configured [cleanup] policy: delete Releases, tags and GHCR versions per project, run steps.clean, and commit", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
-        OptionSpec(("--remove-assets",), "age-based remote Releases and GHCR cleanup (estate-wide; takes no project target)", metavar="AGE", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
-        OptionSpec(("--delete-unmanaged-release-tag",), "delete one exact non-CMRU GitHub Release, never its Git tag", metavar="TAG", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
-        OptionSpec(("--delete-build-output",), "delete one exact local build record", metavar="ID", parser_kwargs={"default": None}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
+        OptionSpec(("--remove-assets",), "age-based remote Releases and GHCR cleanup (estate-wide; takes no project target)", metavar="AGE", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
+        OptionSpec(("--delete-unmanaged-release-tag",), "delete one exact non-CMRU GitHub Release, never its Git tag", metavar="TAG", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
+        OptionSpec(("--delete-build-output",), "delete one exact local build record", metavar="ID", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
         config_opt,
     )
     registry.register(VerbSpec("cleanup", description="Remove remote release assets (--policy, --remove-assets, --delete-unmanaged-release-tag) or one retained local build record (--delete-build-output); one mode is required. It does not abandon release transactions.", group=VerbGroup.MAINTENANCE.value, arguments=common_target, options=cleanup_options, mutating=True, dry_run=True, include_confirmation=True, include_json=False, include_progress=False, handler=direct()))
