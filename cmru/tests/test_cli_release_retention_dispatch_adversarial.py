@@ -51,7 +51,6 @@ def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
     monkeypatch.setattr(cli, "_assert_resume_candidate_is_safe_to_replay", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "read_release_results", lambda *args, **kwargs: {"demo": "demo-v1"})
     seen = []

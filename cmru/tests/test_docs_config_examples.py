@@ -283,7 +283,7 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "all tagged" in readme_flat and "before dispatching any family" in readme_flat
     assert "passes those exact commits to" in readme_flat
     assert "fetches `origin/main` again and refuses if" in readme_flat
-    assert "secret overlay follows the snapshot path" in readme_flat
+    assert "never copied into the snapshot" in readme_flat
     assert "targets must retain the `cmru.toml` filename" in readme_flat
     assert "from the selected repository path" in readme_flat
     assert "CMRU refuses to resume when a tag push may have landed" in readme_flat
@@ -315,7 +315,7 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "tag policy from its fetched `origin/main` snapshot" in consumers_flat
     assert "before starting any family release" in consumers_flat
     assert "fetches again and refuses if `origin/main` moved" in consumers_flat
-    assert "places the copied project secret overlay at the path recorded in the snapshot" in consumers_flat
+    assert "never copied into the snapshot" in consumers_flat
     assert "resolved target must keep the `cmru.toml` filename" in consumers_flat
     assert "preserves the selected repository link path" in consumers_flat
     assert "checks tag-push attempts and recorded release results" in consumers_flat

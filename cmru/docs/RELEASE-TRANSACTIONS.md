@@ -41,10 +41,13 @@ second one; there is no override for the first (push your commits instead).
 cmru then creates the release worktree and reports concise orchestration progress
 to your terminal. Full project subprocess output is line-flushed into the root
 audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use
-`--show-run-details` to stream raw child output to the terminal too. It copies the
-repository-root `cmru.secret.toml` and each selected project's explicit secret overlay
-into that worktree with mode `0600`; they are removed with a successful worktree and are
-never staged.
+`--show-run-details` to stream raw child output to the terminal too. No credential
+file is ever copied into (or read from) that worktree. The launcher resolves the
+publisher credential on the host from your checkout (the invocation environment
+token, else the repository-root `cmru.secret.toml` merged with each selected project's
+explicit overlay) and hands the resolved root and per-project tokens to the child over
+a private inherited pipe: never argv, never a file. A resumed child (`--resume`) gets
+its credential the same way. A child that received no handoff fails closed.
 
 The re-execed child reads project configs from the isolated snapshot. A central
 orchestration file in the snapshot already names project configs relative to

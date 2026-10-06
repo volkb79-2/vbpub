@@ -49,7 +49,6 @@ def test_release_failure_retains_candidate_without_automatic_revert(monkeypatch,
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "a" * 40)
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: False)
     calls = []

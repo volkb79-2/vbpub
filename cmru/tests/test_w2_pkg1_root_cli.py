@@ -227,7 +227,7 @@ def test_uncommitted_paths_refuse_with_exit_4(monkeypatch, tmp_path, estate, cap
     with pytest.raises(CliFailure, match="Uncommitted local changes") as refusal:
         cli._release_launcher(
             [], vargs, tmp_path / "cmru.toml", tmp_path, configs, configs, order,
-            ["alpha"], None, None, None,
+            ["alpha"], None, None, None, github_config=None,
         )
 
     assert refusal.value.exit_code == exit_codes.REFUSED
@@ -256,7 +256,7 @@ def test_release_while_the_release_lock_is_held_is_a_refusal_exit_4(monkeypatch,
     with pytest.raises(SystemExit) as refused:
         cli._release_launcher(
             [], vargs, tmp_path / "cmru.toml", tmp_path, configs, configs, order,
-            ["alpha"], None, None, None,
+            ["alpha"], None, None, None, github_config=None,
         )
 
     assert refused.value.code == exit_codes.REFUSED == 4
@@ -298,7 +298,7 @@ def test_release_preflight_boundary_reports_domain_errors_only(monkeypatch, tmp_
     def launch():
         cli._release_launcher(
             [], vargs, tmp_path / "cmru.toml", tmp_path, configs, configs, order,
-            ["alpha"], None, None, None,
+            ["alpha"], None, None, None, github_config=None,
         )
 
     monkeypatch.setattr(

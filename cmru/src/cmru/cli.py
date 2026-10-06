@@ -28,6 +28,7 @@ from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, is_reserved_internal_env, load_forge_config
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.credential_handoff import CredentialHandoff
 from cmru.cli_support import (
     TargetSelectionError,
     select_target_names,
@@ -3969,6 +3970,24 @@ def _project_git_tag_policy_in_candidate(
     )[1]
 
 
+def _credential_handoff(
+    github_config: "GitHubConfig",
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+) -> CredentialHandoff:
+    """Collect the credentials this launcher already resolved, for the child.
+
+    The values come from the loaded configuration (invocation-environment token
+    first, else the root secret merged with the project overlay), i.e. from the
+    caller's checkout on the host. They travel only over the child's private
+    pipe; no secret file is ever written into the release worktree.
+    """
+    return CredentialHandoff(
+        root=github_config.token or "",
+        projects={name: configs[name].github_token or "" for name in project_names},
+    )
+
+
 def _consume_release_snapshot_handoff(
     repo_root: Path, handoff: str | None,
 ) -> str | None:
@@ -4540,7 +4559,8 @@ def _dispatch(args, runtime):
                             "changes first so the isolated build cannot silently omit them."
                         )
                     base = transaction.fetch_origin_main(transaction_root, git_auth=git_auth)
-                    snapshot_config_paths = _project_config_paths_at_snapshot(
+                    # Validates every selected project config exists at the snapshot.
+                    _project_config_paths_at_snapshot(
                         transaction_root, base, cfg_path, configs, names,
                     )
                     behind = transaction.assert_local_main_not_ahead(transaction_root)
@@ -4553,20 +4573,13 @@ def _dispatch(args, runtime):
                         repo_root, base=base, purpose="build", scope=','.join(names),
                         source_git_root=transaction_root,
                     )
-                    transaction.copy_secret_overlays(
-                        repo_root,
-                        workspace,
-                        [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in names
-                         if configs[name].project_root is not None],
-                        candidate_config_paths=[snapshot_config_paths[name] for name in names
-                                                if configs[name].project_root is not None],
-                    )
                     log_info(
                         f"Build transaction {workspace.branch}: snapshot {workspace.base[:12]} "
                         f"at {workspace.path}"
                     )
                     rc = transaction.run_child(
                         workspace, child_args, verb="build", project_names=names,
+                        credentials=_credential_handoff(github_config, configs, names),
                     )
                     if rc:
                         log_error(
@@ -4948,6 +4961,7 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
         _release_launcher(
             rest, vargs, cfg_path, repo_root, configs, ordered, project_order,
             selected_names, resume_scope, git_auth, preflight_snapshot_handoff,
+            github_config=github_config,
         )
     else:
         _release_child(
@@ -5002,7 +5016,7 @@ def _exit_for_domain_error(exc: CmruError) -> NoReturn:
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
-    preflight_snapshot_handoff,
+    preflight_snapshot_handoff, *, github_config: "GitHubConfig",
 ) -> None:
     """The caller-side half of ``release``: set up and drive the transaction.
 
@@ -5044,7 +5058,6 @@ def _release_launcher(
     # project's own path (--allow-uncommitted overrides): otherwise it would be
     # silently left out with no warning, since the build never looks at it.
     try:
-        candidate_project_config_paths: list[Path] | None = None
         transaction_root = transaction.source_git_root_for_projects(
             repo_root, [configs[name] for name in release_scope]
         )
@@ -5114,10 +5127,6 @@ def _release_launcher(
                     git_auth=git_auth,
                     release_policies=candidate_release_policies,
                 )
-                candidate_project_config_paths = [
-                    candidate_config_paths[name] for name in release_scope
-                    if configs[name].project_root is not None
-                ]
                 if not vargs.dry_run:
                     if any(policy[1] for policy in candidate_release_policies.values()):
                         _require_local_tag_inspection_support(transaction_root)
@@ -5128,10 +5137,6 @@ def _release_launcher(
                 snapshot_config_paths = _project_config_paths_at_snapshot(
                     transaction_root, base, cfg_path, configs, release_scope,
                 )
-                candidate_project_config_paths = [
-                    snapshot_config_paths[name] for name in release_scope
-                    if configs[name].project_root is not None
-                ]
                 if not vargs.dry_run:
                     if any(
                         _project_git_tag_policy_at_snapshot(
@@ -5164,13 +5169,6 @@ def _release_launcher(
                     transaction.write_release_tag_snapshot(
                         transaction_root, workspace, initial_tag_refs,
                     )
-            transaction.copy_secret_overlays(
-                repo_root,
-                workspace,
-                [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in release_scope
-                 if configs[name].project_root is not None],
-                candidate_config_paths=candidate_project_config_paths,
-            )
             log_info(
                 f"Release transaction {workspace.branch}: "
                 f"snapshot {workspace.base[:12]} at {workspace.path}"
@@ -5178,6 +5176,7 @@ def _release_launcher(
             transaction.clear_plan_refused(transaction_root, workspace)
             rc = transaction.run_child(
                 workspace, child_args, project_names=release_scope,
+                credentials=_credential_handoff(github_config, configs, release_scope),
             )
             if rc == 0:
                 retained: list[Path] = []

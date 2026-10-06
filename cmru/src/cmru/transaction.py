@@ -42,7 +42,13 @@ from cmru.git_auth import (
     run_remote_git,
     without_publisher_tokens,
 )
-from cmru.config_names import PROJECT_CONFIG_FILENAME
+from cmru.credential_handoff import (
+    CHILD_ENV,
+    CREDENTIAL_FD_ENV,
+    CREDENTIAL_STATE_ENV,
+    CredentialHandoff,
+    encode as encode_credentials,
+)
 # RefusedBeforeChange / ReleaseLockHeld live in the domain-error family
 # (``cmru.errors``); re-exported here because callers know them as
 # ``transaction.RefusedBeforeChange``.
@@ -55,7 +61,7 @@ from cmru.errors import (  # noqa: F401
 )
 
 
-CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
+# CHILD_ENV is imported from cmru.credential_handoff (single definition).
 BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
 # Redesign section D: the bound launcher handed to project steps is internal.
@@ -741,173 +747,6 @@ def assert_resume_workspace_committed(path: Path) -> None:
             "retained release worktree has uncommitted changes. Commit the fixes on "
             "that release branch, then rerun `cmru release --resume`; the resumed "
             "prepare and required gate will run against and ship that commit."
-        )
-
-
-def _close_fd_if_open(fd: int) -> None:
-    """Close *fd* unless it is the ``-1`` "never opened" sentinel."""
-    if fd >= 0:
-        os.close(fd)
-
-
-def _copy_secret_overlay(
-    source: Path, workspace_root: Path, relative_target: Path,
-) -> None:
-    """Install one mode-0600 secret copy without following source or target links."""
-    try:
-        source_metadata = source.lstat()
-    except FileNotFoundError:
-        return
-    if not stat.S_ISREG(source_metadata.st_mode):
-        raise RuntimeError(f"publisher credential path is not a regular file: {source}")
-    if relative_target.is_absolute() or ".." in relative_target.parts or not relative_target.parts:
-        raise RuntimeError(f"publisher credential target escapes its worktree: {relative_target}")
-
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    source_fd = os.open(source, flags)
-    parent_flags = (
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    )
-    root_fd = parent_fd = -1
-    destination_fd = -1
-    temporary_name: str | None = None
-    try:
-        opened_source = os.fstat(source_fd)
-        if (
-            not stat.S_ISREG(opened_source.st_mode)
-            or (opened_source.st_dev, opened_source.st_ino)
-            != (source_metadata.st_dev, source_metadata.st_ino)
-        ):
-            raise RuntimeError(f"publisher credential changed while being opened: {source}")
-
-        root_fd = os.open(workspace_root, parent_flags)
-        parent_fd = root_fd
-        for component in relative_target.parts[:-1]:
-            try:
-                os.mkdir(component, 0o755, dir_fd=parent_fd)
-            except FileExistsError:
-                pass
-            child_fd = os.open(component, parent_flags, dir_fd=parent_fd)
-            if parent_fd != root_fd:
-                os.close(parent_fd)
-            parent_fd = child_fd
-
-        target_name = relative_target.parts[-1]
-
-        def target_metadata():
-            try:
-                return os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                return None
-
-        original_target = target_metadata()
-        if original_target is not None and not stat.S_ISREG(original_target.st_mode):
-            raise RuntimeError(
-                f"publisher credential destination is not a regular file: "
-                f"{workspace_root / relative_target}"
-            )
-
-        temporary_name = f".{target_name}.cmru-secret-{secrets.token_hex(16)}"
-        destination_fd = os.open(
-            temporary_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=parent_fd,
-        )
-        with os.fdopen(source_fd, "rb", closefd=False) as source_stream:
-            with os.fdopen(destination_fd, "wb", closefd=False) as destination_stream:
-                shutil.copyfileobj(source_stream, destination_stream)
-                destination_stream.flush()
-                os.fchmod(destination_fd, 0o600)
-                os.fsync(destination_fd)
-        os.close(destination_fd)
-        destination_fd = -1
-        after_source = source.lstat()
-        if (
-            not stat.S_ISREG(after_source.st_mode)
-            or (after_source.st_dev, after_source.st_ino)
-            != (source_metadata.st_dev, source_metadata.st_ino)
-        ):
-            raise RuntimeError(f"publisher credential changed while being copied: {source}")
-
-        current_target = target_metadata()
-        if original_target is None:
-            target_changed = current_target is not None
-        else:
-            target_changed = (
-                current_target is None
-                or not stat.S_ISREG(current_target.st_mode)
-                or (current_target.st_dev, current_target.st_ino)
-                != (original_target.st_dev, original_target.st_ino)
-            )
-        if target_changed:
-            raise RuntimeError(
-                f"publisher credential destination changed while being copied: "
-                f"{workspace_root / relative_target}"
-            )
-
-        # The temp file and final name share a directory. Replacing the path is
-        # atomic and never follows a symlink installed at the destination.
-        os.replace(
-            temporary_name, target_name,
-            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
-        )
-        temporary_name = None
-    finally:
-        os.close(source_fd)
-        if destination_fd >= 0:
-            os.close(destination_fd)
-        if temporary_name is not None and parent_fd >= 0:
-            try:
-                os.unlink(temporary_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
-        if parent_fd != root_fd:
-            _close_fd_if_open(parent_fd)
-        _close_fd_if_open(root_fd)
-
-
-def copy_secret_overlays(
-    repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
-    *, candidate_config_paths: Sequence[Path] | None = None,
-) -> None:
-    """Copy the root credential and explicit project overlays into a child worktree."""
-    if candidate_config_paths is not None and len(candidate_config_paths) != len(project_config_paths):
-        raise RuntimeError(
-            "candidate project config paths must match the source project config paths"
-        )
-    source_root = workspace.repo_root.resolve()
-    workspace_root = workspace.path
-    source = repo_root.resolve() / "cmru.secret.toml"
-    if repo_root.resolve() == source_root:
-        _copy_secret_overlay(source, workspace_root, Path("cmru.secret.toml"))
-    # A central CMRU root can be outside the selected Git family. In that
-    # layout the child receives the absolute orchestration config and reads the
-    # central root secret directly; copying it into an unrelated worktree would
-    # make ownership ambiguous.
-    for index, config_path in enumerate(project_config_paths):
-        config_path = config_path.resolve()
-        if candidate_config_paths is None:
-            try:
-                relative = config_path.parent.relative_to(source_root)
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"project config is outside selected Git workspace {source_root}: {config_path}"
-                ) from exc
-        else:
-            candidate_config = Path(candidate_config_paths[index])
-            if (
-                candidate_config.is_absolute()
-                or ".." in candidate_config.parts
-                or candidate_config.name != PROJECT_CONFIG_FILENAME
-            ):
-                raise RuntimeError(
-                    f"candidate project config path is unsafe: {candidate_config}"
-                )
-            relative = candidate_config.parent
-        source = config_path.with_name("cmru.secret.toml")
-        _copy_secret_overlay(
-            source, workspace_root, relative / "cmru.secret.toml",
         )
 
 
@@ -3574,14 +3413,22 @@ def sync_local_main(
 def run_child(
     workspace: ReleaseWorkspace, child_args: Sequence[str], *, verb: str = "release",
     project_names: Sequence[str] | None = None,
+    credentials: CredentialHandoff | None = None,
 ) -> int:
     """Run a CMRU verb from the snapshot, preserving terminal output.
 
     Release children use the installed ``cmru`` executable. For CMRU's own
     release, prepend the candidate's source roots so that the code being shipped
     also owns its transaction, including Git transport authentication.
+
+    The publisher credential resolved by the parent reaches the child ONLY over
+    a private inherited pipe (*credentials*): never argv, never a file in the
+    worktree. Without *credentials* the child receives no handoff and fails
+    closed instead of reading a secret file from its own root.
     """
     env = os.environ.copy()
+    env.pop(CREDENTIAL_FD_ENV, None)
+    env.pop(CREDENTIAL_STATE_ENV, None)
     env[CHILD_ENV] = "1"
     env[BRANCH_ENV] = workspace.branch
     env[BASE_ENV] = workspace.base
@@ -3609,4 +3456,19 @@ def run_child(
         internal_launcher(workspace.repo_root) or shutil.which("cmru") or "cmru"
     ]
     command = [*launcher, verb, *child_args]
-    return subprocess.run(command, cwd=workspace.path, env=env).returncode
+    if credentials is None:
+        return subprocess.run(command, cwd=workspace.path, env=env).returncode
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            payload = encode_credentials(credentials)
+            if os.write(write_fd, payload) != len(payload):
+                raise RuntimeError("short write while handing off publisher credential")
+        finally:
+            os.close(write_fd)
+        env[CREDENTIAL_FD_ENV] = str(read_fd)
+        return subprocess.run(
+            command, cwd=workspace.path, env=env, pass_fds=(read_fd,),
+        ).returncode
+    finally:
+        os.close(read_fd)

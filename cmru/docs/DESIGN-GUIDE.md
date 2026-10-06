@@ -555,16 +555,39 @@ source is installed at run time, so its verdict records the tool version.
 
 ### Keeping release credentials out of gate containers
 
-CMRU copies its ignored root and selected-project secret overlays into a
-release worktree so its host-side release transaction can use the configured
-GitHub credential. The copy opens source files without following links, walks
-candidate directories without following links, rejects nonregular destinations,
-and atomically installs a mode-0600 sibling file. A symlink in a retained
-candidate therefore cannot redirect credentials outside the worktree. A tester-unified container can read a mode-0600 file owned
-by its mapped uid, even when its environment allowlist does not forward the
-token. The registered host `gate` lane therefore resolves CMRU's scoped Git
-auth first, saves any copied overlays in a private temporary directory outside
-the mounted repository, and replaces their worktree paths with symlinks to the
+**No credential file is ever copied into, or read from, a release worktree.**
+`cmru release` (and `cmru build`) runs on the host and resolves the credential
+there, exactly as any other cmru invocation does: the invocation environment
+token wins, else the root `cmru.secret.toml` merged with the selected project's
+overlay, read from the caller's checkout (or the central CMRU root). The
+transaction child, which runs from the isolated release worktree, receives the
+already-resolved root token and per-project tokens from its parent over a private
+inherited pipe (`CMRU_INTERNAL_CREDENTIAL_FD` carries only the descriptor
+number). The token is never placed on argv, never written to disk, and never
+exported through the environment. The child reads the pipe once, closes it,
+and exports only a `CMRU_INTERNAL_CREDENTIAL_STATE=consumed` marker. A resumed
+child (`--resume WORKTREE`) is launched the same way, so the credential never
+depends on what a retained worktree contains.
+
+Inside a transaction child the config loader NEVER opens a `cmru.secret.toml`
+(root or project) and ignores ambient `GITHUB_PUSH_PAT`/`GITHUB_TOKEN`; a child
+that received no handoff fails closed with a configuration error instead of
+falling back to its own root. A process nested below a consuming child (a project
+step that re-invokes `cmru`) sees only the environment token, never a file.
+(This package replaces the former copy step, which opened source files without
+following links and installed mode-0600 siblings in the worktree: a tester
+container can read a mode-0600 file owned by its mapped uid even when its
+environment allowlist does not forward the token, so the safest copy is none.)
+
+The gate-side masking below is retained for now. It is not release-worktree
+specific code: it masks any visible root/project `cmru.secret.toml` under the
+mounted repository (for example a caller's checkout gated directly), so no part
+of it became dead when the worktree copy was removed. It goes away once run-gate
+mounts only the worktree under test (run-gate package RG-NARROW; cmru backlog
+KI-64, "remove gate-side secret masking once run-gate mounts only the worktree
+under test"). Until then, the registered host `gate` lane resolves CMRU's scoped Git
+auth first, saves any visible overlays in a private temporary directory outside
+the mounted repository, and replaces their paths with symlinks to the
 host backups for the full lane sequence. Host CMRU processes can still follow
 those links; tester containers see the same absolute `/tmp` paths in their own
 filesystem, where the host backup directory is not mounted. Nested
@@ -612,8 +635,9 @@ instead of trusting a caller checkout that may point to an older path. Project c
 resolved from the selected repository path in the same Git tree, and a target outside the family
 is refused. This preserves the link path when the caller's checkout still points to an older
 target. The resolved target must remain named `cmru.toml`, matching the config loader's filename
-rule. Project secret overlays are copied from the caller's config area to the matching snapshot
-path. Resume reads the config path and tag policy from the committed retained candidate before
+rule. Project secret overlays are never copied into the snapshot: the launcher resolves them from
+the caller's config area and hands the tokens to the child (see "Keeping release credentials
+out of gate containers"). Resume reads the config path and tag policy from the committed retained candidate before
 starting its child.
 The selected top-level config link can use an alias basename; snapshot and child resolution
 classify it by the resolved target's canonical config filename. When the checkout is reached

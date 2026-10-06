@@ -133,108 +133,6 @@ def mocked_invocation_context(monkeypatch):
     )
 
 
-def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
-    repo_root = tmp_path / "repo"
-    workspace_path = tmp_path / "workspace"
-    (repo_root / "alpha").mkdir(parents=True)
-    workspace_path.mkdir()
-    (repo_root / "cmru.secret.toml").write_text(
-        '[github]\ntoken = "root-test-token"\n', encoding="utf-8",
-    )
-    project_config = repo_root / "alpha" / "cmru.toml"
-    project_config.write_text("schema_version = 1\n", encoding="utf-8")
-    (repo_root / "alpha" / "cmru.secret.toml").write_text(
-        '[github]\ntoken = "project-test-token"\n', encoding="utf-8",
-    )
-    workspace = transaction.ReleaseWorkspace(
-        repo_root, workspace_path, "cmru/release/test", "a" * 40,
-    )
-
-    transaction.copy_secret_overlays(repo_root, workspace, [project_config])
-
-    assert (workspace_path / "cmru.secret.toml").read_text(encoding="utf-8") == (
-        '[github]\ntoken = "root-test-token"\n'
-    )
-    assert (workspace_path / "alpha" / "cmru.secret.toml").read_text(encoding="utf-8") == (
-        '[github]\ntoken = "project-test-token"\n'
-    )
-    assert (workspace_path / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
-    assert (workspace_path / "alpha" / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
-
-
-def test_copy_secret_overlay_uses_snapshot_config_path_after_project_move(tmp_path):
-    repo_root = tmp_path / "repo"
-    workspace_path = tmp_path / "workspace"
-    source_project = repo_root / "old" / "alpha"
-    source_project.mkdir(parents=True)
-    workspace_path.mkdir()
-    source_config = source_project / "cmru.toml"
-    source_config.write_text("schema_version = 1\n", encoding="utf-8")
-    (source_project / "cmru.secret.toml").write_text(
-        '[github]\ntoken = "project-test-token"\n', encoding="utf-8",
-    )
-    workspace = transaction.ReleaseWorkspace(
-        repo_root, workspace_path, "cmru/release/test", "a" * 40,
-    )
-
-    transaction.copy_secret_overlays(
-        repo_root, workspace, [source_config],
-        candidate_config_paths=[Path("new/alpha/cmru.toml")],
-    )
-
-    assert (workspace_path / "new/alpha/cmru.secret.toml").read_text(encoding="utf-8") == (
-        '[github]\ntoken = "project-test-token"\n'
-    )
-    assert not (workspace_path / "old/alpha/cmru.secret.toml").exists()
-
-
-def test_copy_secret_overlays_rejects_a_non_file_secret_path(tmp_path):
-    repo_root = tmp_path / "repo"
-    workspace_path = tmp_path / "workspace"
-    repo_root.mkdir()
-    workspace_path.mkdir()
-    (repo_root / "cmru.secret.toml").mkdir()
-    workspace = transaction.ReleaseWorkspace(
-        repo_root, workspace_path, "cmru/release/test", "a" * 40,
-    )
-
-    with pytest.raises(RuntimeError, match="not a regular file"):
-        transaction.copy_secret_overlays(repo_root, workspace, [])
-
-
-@pytest.mark.parametrize("project_scoped", [False, True])
-def test_copy_secret_overlays_refuses_symlink_destinations_without_touching_targets(
-    tmp_path, project_scoped,
-):
-    repo_root = tmp_path / "repo"
-    workspace_path = tmp_path / "workspace"
-    secret_dir = repo_root / "alpha" if project_scoped else repo_root
-    target_dir = workspace_path / "alpha" if project_scoped else workspace_path
-    secret_dir.mkdir(parents=True)
-    target_dir.mkdir(parents=True)
-    source = secret_dir / "cmru.secret.toml"
-    source.write_text("publisher token\n", encoding="utf-8")
-    outside = tmp_path / "outside.txt"
-    outside.write_text("must remain unchanged\n", encoding="utf-8")
-    outside.chmod(0o644)
-    destination = target_dir / "cmru.secret.toml"
-    destination.symlink_to(outside)
-    project_config = repo_root / "alpha" / "cmru.toml"
-    project_config.parent.mkdir(parents=True, exist_ok=True)
-    project_config.write_text("schema_version = 1\n", encoding="utf-8")
-    workspace = transaction.ReleaseWorkspace(
-        repo_root, workspace_path, "cmru/release/test", "a" * 40,
-    )
-
-    project_configs = [project_config] if project_scoped else []
-    with pytest.raises(RuntimeError, match="destination is not a regular file"):
-        transaction.copy_secret_overlays(repo_root, workspace, project_configs)
-
-    assert destination.is_symlink()
-    assert outside.read_text(encoding="utf-8") == "must remain unchanged\n"
-    assert outside.stat().st_mode & 0o777 == 0o644
-
-
 def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_path):
     config = tmp_path / "nested" / "cmru.toml"
     config.parent.mkdir()
@@ -398,7 +296,6 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: None)
@@ -474,7 +371,6 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root, **_kwargs: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w, **_kwargs: None)
@@ -556,7 +452,6 @@ cwd = "alpha"
     )
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "clear_plan_refused", lambda *_args: None)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace, **_kwargs: calls.append("backup-removed"))
@@ -1349,7 +1244,6 @@ def test_resume_checks_tag_policy_from_committed_candidate_before_running_child(
         cli, "_require_local_tag_inspection_support",
         lambda _root: events.append("tag-support"),
     )
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         cli.transaction, "run_child",
         lambda *_args, **_kwargs: events.append("child") or 0,
@@ -1493,7 +1387,6 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: calls.append("secret"))
     # Child fails after the candidate cycle started; the new parent must never
     # infer that source history needs a compensating revert.
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: calls.append(list(args)) or 1)
@@ -1559,7 +1452,6 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "write_release_tag_snapshot", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args, **kwargs: 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
@@ -3885,7 +3777,7 @@ def test_discard_build_workspace_refuses_when_managed_record_disappears(monkeypa
 def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path, monkeypatch):
     config = tmp_path / "cmru.toml"
     config.write_text("", encoding="utf-8")
-    project = SimpleNamespace(project_root=tmp_path / "alpha")
+    project = SimpleNamespace(project_root=tmp_path / "alpha", github_token="")
     workspace = transaction.ReleaseWorkspace(
         tmp_path, tmp_path / ".worktrees" / "build", "cmru/build/abc", "a" * 40,
     )
@@ -3904,7 +3796,6 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(
         transaction,
@@ -3941,7 +3832,6 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(
         transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
         transaction, "retain_successful_build_outputs", lambda *_args: calls.append("retained"),

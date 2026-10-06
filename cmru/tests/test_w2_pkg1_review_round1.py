@@ -62,7 +62,6 @@ def _single_family(monkeypatch, tmp_path):
     )
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "b" * 40)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *a, **k: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *a, **k: None)

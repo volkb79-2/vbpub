@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import cli, transaction
+from cmru.credential_handoff import CredentialHandoff
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +55,6 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     monkeypatch.setattr(cli.transaction, "resume_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _path: None)
     calls = []
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: calls.append("copy"))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: calls.append(("child", args[1], kwargs)) or 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda w, **kwargs: calls.append("backup"))
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w, **kwargs: calls.append("workspace"))
@@ -71,11 +71,15 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
             "--discard", "logs", "--discard", "artifacts",
         ])
     assert exc == 0
-    assert calls[:2] == [
-        "copy",
-        ("child", ["demo", "--discard", "logs", "--discard", "artifacts", "--config", "cmru.toml"], {"project_names": ["demo"]}),
-    ]
-    assert calls[2:] == ["backup", "workspace", "forget"]
+    child = calls[0]
+    assert child[:2] == (
+        "child", ["demo", "--discard", "logs", "--discard", "artifacts", "--config", "cmru.toml"],
+    )
+    # The resumed child gets its credential over the handoff, not a copied file.
+    assert set(child[2]) == {"project_names", "credentials"}
+    assert child[2]["project_names"] == ["demo"]
+    assert isinstance(child[2]["credentials"], CredentialHandoff)
+    assert calls[1:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out
     assert "Could not sync local main automatically" in output
     assert "caller checkout is dirty" in output
@@ -112,7 +116,6 @@ def test_release_resume_plan_refusal_keeps_existing_candidate(monkeypatch, tmp_p
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(transaction, "resume_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(transaction, "assert_resume_workspace_committed", lambda _path: None)
-    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(transaction, "run_child", lambda *args, **kwargs: 2)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda *_args: True)
     monkeypatch.setattr(

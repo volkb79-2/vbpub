@@ -170,7 +170,6 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: True)
     monkeypatch.setattr(
