@@ -76,3 +76,16 @@ any copy outside the repo layout, `test_entrypoint_wheel::test_the_repository_so
     does not record the mode; a `write_file` spy now does); M12 `test_bootstrap_debug_never_prints_the_webhook_url`; M14 as in 5.
 
 Tests after round 1: debian-install-v2 575 passed / 11 skipped; netcup 533 passed.
+
+## LT-KEY: controller key retention
+
+Status: PARTIAL, by controller instruction (HOLD on the key-retention design, items 1-4; `run_io_benchmark` rejection dropped).
+
+Committed in this slice:
+- LT-PREP nit 1: `validate_host_label` now uses `re.fullmatch` (notify.py), so `"x\n"` and `"netcup-1\n"` are rejected.
+  Test: two extra cases in `test_notify_host_label_rejected_at_validation` (test_mattermost_notifications.py).
+- Verified by running: debian-install-v2 `pytest debian_install_v2/tests` = 600 passed, 11 skipped with the fix.
+  With the fix temporarily reverted to `re.match` the two new cases fail (2 failed, 598 passed): mutation killed.
+- Not run: the `r0-r1` / netcup `suite` run-gate lanes (the worktree also holds uncommitted held code, so a lane verdict would not describe the commit).
+
+Not committed (left uncommitted in the worktree, held): see the controller hand-back message.

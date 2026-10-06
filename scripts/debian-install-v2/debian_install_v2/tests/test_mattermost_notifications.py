@@ -454,7 +454,7 @@ def test_long_event_and_long_excerpt_keep_fences_balanced_and_total_bounded():
     assert len(text) <= notify.MESSAGE_LIMIT
 
 
-@pytest.mark.parametrize("bad", ["@channel", "a\nb", "x`y", "[l](u)", "#h", "a|b", "x" * 65, "a*b"])
+@pytest.mark.parametrize("bad", ["@channel", "a\nb", "x`y", "[l](u)", "#h", "a|b", "x" * 65, "a*b", "x\n", "netcup-1\n"])
 def test_notify_host_label_rejected_at_validation(bad):
     with pytest.raises(ConfigError, match="notify_host_label"):
         validate_config(Config(notify_host_label=bad))

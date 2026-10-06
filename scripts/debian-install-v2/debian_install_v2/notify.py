@@ -61,7 +61,7 @@ class NotifyConfigError(ValueError):
 
 def validate_host_label(label: str) -> None:
     """Operator config: rejected (never silently sanitized) when unsafe."""
-    if label and not _LABEL_OK_RE.match(label):
+    if label and not _LABEL_OK_RE.fullmatch(label):
         raise NotifyConfigError(
             "notify_host_label must be 1-64 characters from [A-Za-z0-9 ._:/-]"
         )
