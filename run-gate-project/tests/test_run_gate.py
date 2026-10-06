@@ -24836,6 +24836,72 @@ class TestRgNarrowMounts:
             run_gate.git_mount_plan(wt, repo)
 
 
+class TestRgNarrowEdges:
+    """Branches the mount-set tests above do not reach (diff-coverage floor)."""
+
+    def test_alias_subpath_outside_the_aliased_root_is_refused(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR, "/root=/ns")
+        with pytest.raises(run_gate.GateError, match="outside the aliased root"):
+            run_gate.dual_mount_flags(
+                Path("/elsewhere/x"), Path("/elsewhere/x"), Path("/root"))
+        # inside the root the sub-path takes the namespace prefix
+        assert run_gate.dual_mount_flags(
+            Path("/root/sub"), Path("/root/sub"), Path("/root")) == [
+            "-v", "/root/sub:/root/sub", "-v", "/root/sub:/ns/sub"]
+
+    def test_private_dir_falls_back_when_system_temp_is_not_host_visible(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        (repo / ".run-gate").mkdir(parents=True)
+        system_tmp = tmp_path / "systmp"
+        system_tmp.mkdir()
+        monkeypatch.setattr(run_gate.tempfile, "gettempdir",
+                            lambda: str(system_tmp))
+
+        def physical(path, *_a, **_k):
+            if system_tmp in Path(path).parents:
+                raise run_gate.GateError("not host-visible")
+            return Path(path)
+        monkeypatch.setattr(run_gate, "physical_path", physical)
+        made, phys = run_gate._make_private_dir(repo)
+        assert made.parent == repo / ".run-gate" and phys == made
+        assert made.stat().st_mode & 0o777 == 0o700
+        assert list(system_tmp.iterdir()) == []  # the unusable dir was removed
+
+    def test_private_dir_with_no_usable_candidate_is_an_infra_error(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate.tempfile, "gettempdir",
+                            lambda: str(tmp_path / "missing-tmp"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="no host-visible private directory"):
+            run_gate._make_private_dir(tmp_path / "no-such-repo")
+
+    def test_relative_gitfile_resolves_to_the_admin_and_common_dirs(
+            self, tmp_path):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        admin = next((repo / ".git" / "worktrees").iterdir())
+        (wt / ".git").write_text(f"gitdir: {os.path.relpath(admin, wt)}\n")
+        plan = run_gate.git_mount_plan(wt, repo)
+        assert plan == {"kind": "linked", "common": (repo / ".git").resolve(),
+                        "admin": admin.resolve()}
+
+    def test_missing_common_config_is_an_infrastructure_error(self, tmp_path):
+        common = tmp_path / "gitdir"
+        common.mkdir()
+        with pytest.raises(run_gate.GateInfraError, match="is missing"):
+            run_gate.git_config_overlay_flags(
+                {"kind": "plain", "common": common, "admin": None}, tmp_path)
+
+    def test_allow_main_checkout_flag_is_applied_in_process(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, "0")
+        assert run_gate.main(["--allow-main-checkout", "--version"]) == 0
+        assert os.environ[run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR] == "1"
+        assert run_gate.main_checkout_opted_in()
+
+
 def _docker_image_present(image: str) -> bool:
     try:
         return subprocess.run(["docker", "image", "inspect", image],
