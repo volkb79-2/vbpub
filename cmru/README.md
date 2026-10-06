@@ -26,7 +26,9 @@ python3 -m pip install --no-index --find-links ./wheelhouse ./cmru-<version>-py3
 The guided `cmru init` wizard asks its questions with the optional `questionary` prompt
 driver, which is the `interactive` extra: install the wheelhouse with `cmru[interactive]`
 (`python3 -m pip install --no-index --find-links ./wheelhouse 'cmru[interactive]'`; the
-wheelhouse must then also hold `questionary` and its dependencies). A run whose options
+wheelhouse must then also hold `questionary` and its dependencies). Neither cmru nor
+cli-extended is on a package index, so `cmru[interactive]` always needs `--find-links`
+pointing at the release assets (or the GitHub release URL) that carry both wheels. A run whose options
 already carry every fact needs no terminal and no extra.
 
 A `get.py` bundle that declares `[[project.installer.wheels]]` for cli-extended installs

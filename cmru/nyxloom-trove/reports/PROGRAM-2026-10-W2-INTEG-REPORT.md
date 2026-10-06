@@ -57,7 +57,15 @@ keyword in `_child_release_args` and `_dispatch_independent_git_families` (all 2
 | `cmru/docs/{CONSUMERS,DESIGN-GUIDE,RELEASE-TRANSACTIONS,SPEC,plan-contextual-config}.md` | fixed |
 | `src/cmru/skills/cmru-cli/SKILL.md` (cleanup modes, `--abandon`, `--ref`, bare publish, `get`) | fixed |
 | `delegate_targets.py` docstring | fixed |
-| all estate `cmru.toml`/orchestration/`run-gate*.toml`/templates (handler, tester-gate argv) | NO stale callers found; guarded by `test_every_estate_cmru_argv_parses_against_the_registry` and `test_no_estate_contract_uses_a_removed_cmru_spelling` |
+| all estate `cmru.toml`/orchestration/`run-gate*.toml`/templates (handler, tester-gate argv) | TOML only: no stale callers (that was ALL the first sweep covered; see the round-1 rows below) |
+| **round 1:** `game_stuff/empyrion/run-full-workflow.sh:248,251` (`build --project`, `publish --project`) | fixed: `cmru build empyrion-translation`, `cmru publish empyrion-translation --from-checkout` |
+| **round 1:** `game_stuff/empyrion/TOOLS-README.md:306,309`, `game_stuff/empyrion/README.md:136,601` | fixed (same spellings) |
+| **round 1:** `pwmcp/docs/DEPLOYMENT.md:167,198` (bare `publish pwmcp`) | fixed: `--from-checkout` |
+| **round 1:** `cmru/docs/CONSUMERS.md:427` (`run example-wheel --build`) | fixed: `--step build` |
+| **round 1:** `libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md:46,272` (`release --project cli-extended`) | fixed: `cmru release cli-extended` |
+| **round 1:** `docs/spec-cmru-installer-v2.md:58`, `ciu/docs/CIU-V8-HANDOFF-2026-09-03.md:24` (`get-py --project`) | fixed: `get-py <name>` |
+| **round 1:** `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md:34`, `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md:855,1096`, `cmru/docs/reviews/KI-24-REPORT.md`, `ciu/nyxloom-trove/archive/*`, backlogs (`get-py --project ciu`) | NOT changed: dated design proposals / review records that quote the then-current spelling |
+| **round 1:** `docs/plan-post-cmru-estate-release.md:30` (`--discard-*-on-release`), `assay/nyxloom-trove/{W1-RESUME,STATE}.md` (`release --project assay`) | NOT changed: dated plans and resume notes |
 | `run-gate-project/REMOTE-LANES-BUILDKITE.md:408` | names the handlers only, no flags: no change |
 | `docs/plan-cmru-*.md`, `assay/nyxloom-trove/*`, `cmru/KNOWN_ISSUES_*`, `ciu/nyxloom-trove/archive/*` | historical records, intentionally untouched |
 | `--forward-cgroup-parent*` | no callers in tracked non-history files |
@@ -97,3 +105,74 @@ test other consumers of the image.
 - `canary` after the fix PASS, exit 0; log `/tmp/run-gate/lanes/canary/d4fddfb5e38902cce59607b4690928d3.log`. The coverage lane was NOT re-run after the
   test-only fix (test_w2_integ.py passes under pt.py, 19 passed).
 - `mutation`, `assay`, `installed-wheel`, `gate` lanes not run.
+
+## Review fix round 1 (successor implementer; review `REVIEW-ROUND1.md`, ACCEPT-conditional C1-C7)
+Edit/Write only; no image built; nothing pushed.
+
+**C1 (estate guard shrinks to cmru alone).** `test_the_estate_scan_actually_finds_the_project_contracts` now discovers
+project contracts on disk independently of `_SKIP_PARTS` (`*/cmru.toml`, `*/*/cmru.toml`, minus `.worktrees`/`.git`) and requires every one
+to be among the scanned files; for each of `ciu nyxloom assay topos pwmcp tls-edge run-gate-project` whose directory exists, its `cmru.toml`
+must be scanned; when any exists (a full checkout) at least 8 distinct project contracts must be on disk. The sparse canary snapshot
+still needs only cmru's own contract and the `init` template.
+**C3 (string / shell blind spot).** The guard now tokenises every TOML string value with `shlex` (descending into `bash -c`/`sh -c`
+payloads, splitting on `&&`, `||`, `;`, `|`, newlines; a segment counts only when `cmru` is its command word after `VAR=x`/`exec`/`sudo`...)
+and runs each `cmru ...` through `_registry_problem`. Every `*.sh` in the estate (comments dropped, `\` continuations joined) is scanned the
+same way, and its text also goes through the removed-spelling regex. Unit tests cover string, `bash -c`, prose-is-not-a-call and the
+`.sh` reader; a coverage test requires `tls-edge/scripts/release.sh` and `game_stuff/empyrion/run-full-workflow.sh` to be scanned and to
+contain cmru calls. First full-estate run: zero false positives.
+**C4 (env leak).** `_clean_env` now sets then deletes every name the code under test may write (the five `CMRU_INTERNAL_*`, the five
+old names, `PYTHONUNBUFFERED`, the child marker), so monkeypatch records "absent" and teardown removes what was written. A module-scoped
+baseline fixture plus a last-in-file probe `test_zz_no_internal_name_or_pythonunbuffered_leaks_out_of_this_file` fails on any leak.
+Observation (not fixed, outside this file): other test files already leave `CMRU_INTERNAL_RUN_LOG`/`SHOW_RUN_DETAILS`/`LOG_PREFIX_TIME_SHORT`
+in `os.environ` (found when my new tests failed in the full suite until they cleared them); the probe compares to the baseline so it is
+order-proof. A repo-wide leak sweep belongs to a later package.
+**C5 (reserve the prefix).** `config.is_reserved_internal_env(name)`: the old exact set (`CMRU_INTERNAL_RELEASE_PREFLIGHT_FD`,
+`CMRU_RELEASE_PREFLIGHT_SNAPSHOT`) OR any name starting `CMRU_INTERNAL_`; used by `_scalar_env` (project/orchestration `[env]`) and
+`apply_release_env`. Test: each of the five names, the two preflight names and an arbitrary `CMRU_INTERNAL_X` are refused on both paths; an
+ordinary `CMRU_*` name (and `CMRU_INTERNALS`) is still accepted.
+**C6 (landing hazards).** `# TODO(cmru-6.0 landing)` markers on the `coverage` and `canary` `environment =` lines; the mutation-lane
+paragraph moved back above `[environments.cmru-mutation]`. **Complete landing-revert list** (all go back after the `tester-unified` retag;
+`grep -rn "cmru6-integ\|TODO(cmru-6.0 landing)" cmru/run-gate.toml` finds the first four):
+  1. lane `coverage`: `environment = "cmru-tester"` -> `"tester-unified"`;
+  2. lane `canary`: same;
+  3. delete `[environments.cmru-tester]` (image `tester-unified:cmru6-integ`);
+  4. `[environments.cmru-mutation]` `image` -> `tester-unified:local`;
+  5. `CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"` in `cmru.orchestration.toml:59` and `cmru.project.sample.toml:23` STAY `:local` (the
+     retag makes them right: until then the real `cmru release` gate uses the old image);
+  6. lanes `assay` and `installed-wheel` stay on the root `tester-unified` environment (`run-gate.root.toml`, `:local`): never switched, not run here.
+**C7 + decision ask 1 (refusals exit 4 everywhere).** New `transaction.RefusedBeforeChange(RuntimeError)` and
+`transaction.ReleaseLockHeld(RefusedBeforeChange)`; `release_lock` raises the latter. `build` (uncommitted project paths: raises
+`RefusedBeforeChange`; held lock) and `release` (held lock; uncommitted paths already exited 4) and `abandon` (held lock) map them to
+`exit_codes.REFUSED`; the string match in `abandon` is gone. A build failing after it started (e.g. `fetch_origin_main` raising) stays exit 1.
+SPEC S8 now lists `build` and the lock for `release`, states the rule and the typed exception, and lists every decline-exits-0 site
+(`init` write; `abandon` and its retained-build-worktree discard path; `cleanup`). Tests: build uncommitted = 4 (also the existing
+`test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace`, changed 1 -> 4), build lock = 4, release lock = 4, abandon lock = 4
+(raises the typed exception now), real second lock holder raises `ReleaseLockHeld`, post-start build failure = 1.
+**Decision ask 2: `runner.run_step` deleted** (and its docs: SPEC, DESIGN-GUIDE, CONSUMERS; no caller existed, MDT never used it).
+Behaviours its direct tests pinned and where each is pinned now (`tests/test_run_step_replacements.py`, through the real `cmru run --step`):
+| Direct test deleted | Behaviour | Replacement |
+|---|---|---|
+| `test_runner_step_uses_nearest_central_config_for_project_path` | step runs in the project root, project `[env]` as extra env, protected `CMRU_RUNTIME_KIND`/`CMRU_INTERNAL_BIN` (bound `cmru`) | `test_run_step_executes_in_the_project_root_with_env_and_protected_runtime` |
+| `test_raw_runner_uses_project_local_log_root` | detail goes to `<project>/logs/cmru/build.log` | `test_run_step_quiet_detail_goes_to_the_project_local_log_root` (also: quiet output not streamed) |
+| `test_runner_run_step_requires_one_project_and_declared_step` (declared-step half) | undeclared step refused | `test_run_step_refuses_an_undeclared_step` (exit 2, nothing runs) |
+| `test_runner_step_refuses_central_config_without_exact_project_match`, same test's cardinality half | refuse a project the config does not name | `test_run_step_refuses_a_project_the_config_does_not_register` (exit 2). The path-to-project inference itself (nearest orchestration, project-root match) existed only in `run_step`; `run` selects by name, so it has no counterpart and is gone by design |
+**Nits.** `flat =" ".join(` typo fixed; README sentence added (`cmru[interactive]` needs `--find-links` to the release assets).
+**Out of scope, noted only.** `cmru standards cmru` fails "template revision is 4; expected 5" on the base tree (predates this package; Wave 3 runs `cmru standards --update`).
+
+**Plants** (each by Edit, targeted tests run, reverted; `git status` shows only intended files afterwards). All killed:
+| Plant | Killed by |
+|---|---|
+| C1: every sibling project added to `_SKIP_PARTS` | `test_the_estate_scan_actually_finds_the_project_contracts`, `..._covers_the_shell_scripts_that_call_cmru` |
+| C3 string: `CMRU_PLANT = "cmru publish ciu"` in `cmru.orchestration.toml` `[env]` | `test_every_estate_cmru_argv_parses_against_the_registry` |
+| C3 `.sh`: `cmru publish tls-edge` line in `tls-edge/scripts/release.sh` | same test |
+| C4: `_clean_env` back to `delenv(raising=False)` | `test_zz_no_internal_name_or_pythonunbuffered_leaks_out_of_this_file` |
+| C5: reservation back to the exact set (`CMRU_INTERNAL_BIN` accepted) | `test_project_env_cannot_declare_internal_names` x6 (the five names and `CMRU_INTERNAL_X`) |
+| C7 build: uncommitted raised as plain `RuntimeError` (exit 1) | `test_build_with_uncommitted_project_paths_is_a_refusal_exit_4`, `test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace` |
+| C7 lock: `release_lock` raises plain `RuntimeError` and `release` loses its mapping (exit 1) | `test_release_while_the_release_lock_is_held_is_a_refusal_exit_4`, `test_transaction_release_lock_refuses_second_holder` |
+| run_step replacement: `extra_env={}` in `run_project_step` | `test_run_step_executes_in_the_project_root_with_env_and_protected_runtime` |
+| run_step replacement: log root `logs` instead of `logs/cmru` | the same test and `test_run_step_quiet_detail_goes_to_the_project_local_log_root` |
+| run_step replacement: undeclared-step check disabled | `test_run_step_refuses_an_undeclared_step` |
+| run_step replacement: unknown-project check disabled | `test_run_step_refuses_a_project_the_config_does_not_register` |
+
+**Full suite (round 1, via `pt.py`, serial, flock/nice/ionice, PSI full avg60 0.00 before):** 3530 passed, 6 skipped, 0 failed;
+`--cov=cmru --cov-branch` TOTAL 11862 stmts / 5120 branches, 0 missed, 100%.

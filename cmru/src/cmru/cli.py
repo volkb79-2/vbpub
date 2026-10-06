@@ -25,7 +25,7 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import transaction
 from cmru import exit_codes
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
-from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, load_forge_config
+from cmru.config import _RESERVED_CMRU_INTERNAL_ENV, is_reserved_internal_env, load_forge_config
 from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.cli_support import (
@@ -715,7 +715,7 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
             "release environment key(s) are reserved for resolved publisher credentials: "
             + ", ".join(configured_credentials)
         )
-    configured_internal = sorted(_RESERVED_CMRU_INTERNAL_ENV.intersection(env_config.env))
+    configured_internal = sorted(name for name in env_config.env if is_reserved_internal_env(name))
     if configured_internal:
         raise RuntimeError(
             "release environment key(s) are reserved for CMRU internal launch state: "
@@ -4498,7 +4498,7 @@ def _dispatch(args, runtime):
                     if dirty:
                         for project_name, files in dirty.items():
                             log_error(f"{project_name}: uncommitted changes — {', '.join(files)}")
-                        raise RuntimeError(
+                        raise transaction.RefusedBeforeChange(
                             "cmru build snapshots origin/main; commit and push the selected project "
                             "changes first so the isolated build cannot silently omit them."
                         )
@@ -4581,6 +4581,11 @@ def _dispatch(args, runtime):
                             f"--delete-build-output {output_id} --yes"
                         )
                     _sys.exit(0)
+            except transaction.RefusedBeforeChange as exc:
+                # Refused before the build changed anything (dirty project paths, a
+                # held release lock): REFUSED, not "failed after start".
+                log_error(str(exc))
+                _sys.exit(exit_codes.REFUSED)
             except _DOMAIN_ERRORS as exc:
                 # The build worktree is only removed after full success above, so a
                 # failure here has already retained it; a programming error (any
@@ -5192,6 +5197,9 @@ def _release_launcher(
                 )
                 _sync_local_main_and_report(transaction_root, git_auth=git_auth)
             sys.exit(rc)
+    except transaction.ReleaseLockHeld as exc:
+        log_error(str(exc))
+        sys.exit(exit_codes.REFUSED)
     except _DOMAIN_ERRORS as exc:
         # Retention of the candidate worktree already happened above (a failed
         # child leaves it in place); any other exception type is a bug and
@@ -5359,10 +5367,8 @@ def _abandon(args, runtime) -> int:
             return _abandon_locked(args, runtime, repo_root)
     except CliFailure:
         raise
-    except RuntimeError as exc:
-        if "Another cmru release transaction is already running." in str(exc):
-            raise CliFailure(str(exc), exit_code=exit_codes.REFUSED) from exc
-        raise
+    except transaction.ReleaseLockHeld as exc:
+        raise CliFailure(str(exc), exit_code=exit_codes.REFUSED) from exc
 
 
 def _release_tag_prefixes_for_scope(

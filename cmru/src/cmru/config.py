@@ -784,6 +784,13 @@ _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
     "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
 })
+#: The whole ``CMRU_INTERNAL_`` namespace is cmru's own launch/log state
+#: (``CMRU_INTERNAL_BIN``, ``..._RUN_LOG``, ...): a project ``[env]`` may declare none of it.
+_RESERVED_CMRU_INTERNAL_PREFIX = "CMRU_INTERNAL_"
+
+
+def is_reserved_internal_env(name: str) -> bool:
+    return name in _RESERVED_CMRU_INTERNAL_ENV or name.startswith(_RESERVED_CMRU_INTERNAL_PREFIX)
 
 
 def _scalar_env(
@@ -803,7 +810,7 @@ def _scalar_env(
                 "supply tokens through GITHUB_PUSH_PAT/GITHUB_TOKEN in the invoking "
                 "environment or the ignored cmru.secret.toml file"
             )
-        if reject_credentials and key in _RESERVED_CMRU_INTERNAL_ENV:
+        if reject_credentials and is_reserved_internal_env(key):
             _error(
                 f"{where}.{key} is reserved for CMRU internal launch state and "
                 "cannot be declared in project or orchestration configuration"

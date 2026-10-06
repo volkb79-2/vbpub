@@ -233,6 +233,40 @@ def test_uncommitted_paths_refuse_with_exit_4(monkeypatch, tmp_path, estate, cap
     assert "alpha: uncommitted changes — alpha/file.txt" in capsys.readouterr().err
 
 
+def test_release_while_the_release_lock_is_held_is_a_refusal_exit_4(monkeypatch, tmp_path, estate, capsys):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def held(_root):
+        raise transaction.ReleaseLockHeld("Another cmru release transaction is already running.")
+        yield
+
+    monkeypatch.setattr(transaction, "release_lock", held)
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _p: root)
+    monkeypatch.setattr(cli, "_consume_release_snapshot_handoff", lambda *_a: None)
+    monkeypatch.setattr(cli, "_dispatch_independent_git_families", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_child_release_args", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        cli, "_preflight_multi_family_release_tag_support", lambda *_a, **_k: None,
+    )
+    _root, configs, order, *_rest = estate
+    vargs = SimpleNamespace(dry_run=False, resume=None, target=None, allow_uncommitted=False)
+
+    with pytest.raises(SystemExit) as refused:
+        cli._release_launcher(
+            [], vargs, tmp_path / "cmru.toml", tmp_path, configs, configs, order,
+            ["alpha"], None, None, None,
+        )
+
+    assert refused.value.code == exit_codes.REFUSED == 4
+    assert "already running" in capsys.readouterr().err
+
+
+def test_every_refusal_before_a_change_is_one_exception_type_mapped_to_exit_4():
+    assert issubclass(transaction.ReleaseLockHeld, transaction.RefusedBeforeChange)
+    assert issubclass(transaction.RefusedBeforeChange, RuntimeError)  # still a domain error
+
+
 # --- B4: publish ---------------------------------------------------------------
 
 
@@ -310,7 +344,7 @@ def test_a_held_release_lock_is_a_policy_refusal_exit_4(monkeypatch, tmp_path):
 
     class Held:
         def __enter__(self):
-            raise RuntimeError("Another cmru release transaction is already running.")
+            raise transaction.ReleaseLockHeld("Another cmru release transaction is already running.")
 
         def __exit__(self, *_exc):
             return False

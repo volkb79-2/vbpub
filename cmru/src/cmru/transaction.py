@@ -354,6 +354,14 @@ class _SyncLocalMainResult(NamedTuple):
     reason: str = ""
 
 
+class RefusedBeforeChange(RuntimeError):
+    """A refusal made before anything changed; the CLI maps it to exit 4 (REFUSED)."""
+
+
+class ReleaseLockHeld(RefusedBeforeChange):
+    """Another release/build/abandon already holds the repository's release lock."""
+
+
 @contextmanager
 def release_lock(repo_root: Path) -> Iterator[None]:
     """Serialize local release transactions without relying on a mutable checkout."""
@@ -363,7 +371,7 @@ def release_lock(repo_root: Path) -> Iterator[None]:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError("Another cmru release transaction is already running.") from exc
+            raise ReleaseLockHeld("Another cmru release transaction is already running.") from exc
         try:
             yield
         finally:

@@ -31,7 +31,7 @@ def test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace(monkeypatc
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {"demo": ["demo/input.py"]})
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: (_ for _ in ()).throw(AssertionError("fetch")))
     exc = cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
-    assert exc == 1
+    assert exc == 4  # refused before anything changed (W2-INTEG C7), not "failed after start"
 
 
 def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(monkeypatch, tmp_path, capsys):

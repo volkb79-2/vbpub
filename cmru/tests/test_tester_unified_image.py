@@ -309,7 +309,7 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     # PKG-4 N8: the literal default digest, verified against the downloaded
     # cli_extended-0.2.0 wheel; a changed pin must be a deliberate edit here too.
     assert digest == "84ec3db81e8a4eaa931e57786f9b07395382af2601562f067b56fadbf3f3b58b"
-    flat =" ".join(re.sub(r"\\\n\s*", " ", _dockerfile_run_lines()).split())
+    flat = " ".join(re.sub(r"\\\n\s*", " ", _dockerfile_run_lines()).split())
     # pinned branch passes the pin, latest branch passes only the pointer, anything else fails the build.
     assert re.search(r'pinned\) set -- --wheel-url "\$\{CLI_EXTENDED_WHEEL_URL\}" '
                      r'--sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)

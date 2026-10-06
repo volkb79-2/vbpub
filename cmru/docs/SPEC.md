@@ -483,9 +483,9 @@ verb (the former `cmru run-step` was absorbed into `run`).
 |---|---|---|
 | `cmru` | Operator CLI | Canonical installed commands for product operations; registered verbs are the operator grammar. |
 | `python -m cmru.handlers` | Bootstrap-only CLI | `build-initial-standalone.sh` uses it to build the first CMRU wheel before the installed `cmru` script exists. Project steps use `cmru handler <verb>` (the bound launcher); `cmru standards` flags the module form (BG-04/REL-07). |
-| `cmru run --step` | Single-step diagnostic CLI | Preview or reproduce one declared project step in the caller's checkout with its normal project config and registered grammar. The `cmru.runner.run_step` API is also consumed by MDT. |
+| `cmru run --step` | Single-step diagnostic CLI | Preview or reproduce one declared project step in the caller's checkout with its normal project config and registered grammar. It is the only supported way to run one step: the former `cmru.runner.run_step` Python function was removed (it had no production caller). |
 | `cmru.bundle` | Python library | Build a stack bundle from its dedicated TOML through `run_bundle`; PWMCP consumes the library. No CLI exists because no distinct operator workflow needs one. |
-| `cmru.runner.run_step`, `cmru.bundle.run_bundle` | Supported Python APIs | Compose the documented component behavior from Python. Other module internals are not promised as public API. |
+| `cmru.bundle.run_bundle` | Supported Python API | Compose the documented bundle behavior from Python. Other module internals (including `cmru.runner`) are not promised as public API. |
 | `worktree` package | Bundled shared library API | Stable, product-neutral Git workspace primitives shipped inside the CMRU wheel; its own consumer guide and spec define the API. CMRU layers release/transaction policy on top. |
 | Generated `get.py` | Standalone generated CLI | Runs without the CMRU wheel and intentionally keeps its own `argparse` parser. |
 
@@ -1694,16 +1694,24 @@ identical to, CIU S10.3 (redesign section E, CLI-16):
 
 | Code | Meaning |
 |---|---|
-| `0` | Done: success, a declined confirmation (`init`), or nothing to do |
+| `0` | Done: success, a declined confirmation, or nothing to do. Declining exits `0` in every verb that confirms: `init` (the write), `abandon` (the abandon, and the retained-build-worktree discard path of `abandon`), and `cleanup` (the pending-action list) |
 | `1` | The operation failed after it started: build/publish failure or native version-artifact writer failure |
 | `2` | Usage or configuration error (missing required field, unknown key, parse error, bad argument) |
 | `3` | Missing prerequisite, including an unavailable registry metadata source, required environment variable, external tool, a `tester-gate` missing its required configuration, and a cmru that is not installed as a distribution |
 | `4` | Refused by policy or verification; nothing was changed |
 
+A refusal made before anything changed exits `4` in EVERY verb that can refuse; `1` is reserved
+for failure after the operation started. The refusal is one exception type
+(`transaction.RefusedBeforeChange`, the held lock being `transaction.ReleaseLockHeld`), mapped to
+`4` by the verb dispatch, never recognised by message text.
+
 Verbs that exit `4` (root and delegates):
 
 - `release`: the release plan is refused (S12.2a/S12.2b, including stale tool-deps at the plan
-  stage) or uncommitted paths in a selected project block the run;
+  stage), uncommitted paths in a selected project block the run, or another release transaction
+  already holds the release lock;
+- `build`: uncommitted paths in a selected project block the build (it snapshots `origin/main`),
+  or another release transaction already holds the release lock;
 - `abandon`: ambiguous or published transactions block it (also on `--dry-run`), origin state
   changed on the post-confirmation re-check, or another release transaction already holds the lock;
 - `standards`: any standards issue is reported (delegate);
