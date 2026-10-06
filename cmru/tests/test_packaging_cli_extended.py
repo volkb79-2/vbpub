@@ -8,13 +8,14 @@ the ``installed-wheel`` gate lane (``tools/installed_wheel_smoke.py``).
 from __future__ import annotations
 
 import importlib.util
-import os
 import re
 import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
+
+from tests._cx_paths import CX_LIBRARY
 
 PROJECT = Path(__file__).resolve().parents[1]
 REPO = PROJECT.parent
@@ -70,17 +71,17 @@ def test_skills_ship_as_package_data_and_the_checkout_skill_dir_is_gone():
     assert re.search(r"^name: cmru-cli$", head, re.MULTILINE)
 
 
-def test_checkout_skill_discovery_is_a_relative_symlink_to_the_packaged_skill():
-    """D-2 bridge until `cmru skills install` (PKG-5): Claude Code discovers
-    `cmru/.claude/skills/cmru-cli`, which is a symlink (no second source of
-    truth) to the packaged skill; the wheel never sees it (it lives outside
-    the package source roots)."""
-    link = PROJECT / ".claude" / "skills" / "cmru-cli"
-    packaged = PROJECT / "src" / "cmru" / "skills" / "cmru-cli"
-    assert link.is_symlink()
-    assert os.readlink(link) == "../../src/cmru/skills/cmru-cli"
-    assert link.resolve() == packaged.resolve()
-    assert (link / "SKILL.md").read_text(encoding="utf-8") == (packaged / "SKILL.md").read_text(encoding="utf-8")
+def test_no_checkout_skill_tree_duplicates_the_packaged_skill():
+    """AC-19 / W2-PKG5: the D-2 discovery symlink is retired. `cmru skills install`
+    is the install path, so no `.claude/skills` entry in the project may carry a
+    packaged skill's name (a symlink, a copy, or a dangling link)."""
+    packaged = {
+        path.name for path in (PROJECT / "src" / "cmru" / "skills").iterdir() if path.is_dir()
+    }
+    assert "cmru-cli" in packaged
+    tree = PROJECT / ".claude" / "skills"
+    present = {entry.name for entry in tree.iterdir()} if tree.exists() else set()
+    assert not (packaged & present), packaged & present
     roots = PYPROJECT["tool"]["setuptools"]["packages"]["find"]["where"]
     assert all(not (PROJECT / root / ".claude").exists() for root in roots)
 
@@ -93,7 +94,7 @@ def test_checkout_skill_discovery_is_a_relative_symlink_to_the_packaged_skill():
 ])
 def test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path(relative):
     code = _code_lines(PROJECT / relative)
-    assert "libraries/cli-extended" not in code, relative
+    assert CX_LIBRARY not in code, relative
     assert "cli-extended/src" not in code and "cli_extended/src" not in code, relative
     # The split path form (`REPOSITORY_ROOT / "libraries" / "cli-extended" / "src"`),
     # which the literal greps above cannot see: "cli-extended" as a path component.

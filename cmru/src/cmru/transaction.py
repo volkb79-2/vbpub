@@ -43,6 +43,16 @@ from cmru.git_auth import (
     without_publisher_tokens,
 )
 from cmru.config_names import PROJECT_CONFIG_FILENAME
+# RefusedBeforeChange / ReleaseLockHeld live in the domain-error family
+# (``cmru.errors``); re-exported here because callers know them as
+# ``transaction.RefusedBeforeChange``.
+from cmru.errors import (  # noqa: F401
+    CmruError,
+    RefusedBeforeChange,
+    ReleaseLockHeld,
+    UnsafeRecord,
+    UsageRefusal,
+)
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -340,7 +350,7 @@ def source_git_root_for_projects(repo_root: Path, projects: Sequence[object]) ->
     groups = project_git_family_groups(repo_root, projects)
     if len(groups) != 1:
         details = ", ".join(str(root) for root in sorted(groups))
-        raise RuntimeError(
+        raise UsageRefusal(
             "selected CMRU projects belong to independent Git families; split the "
             f"transaction by family before allocating a worktree ({details})"
         )
@@ -352,14 +362,6 @@ class _SyncLocalMainResult(NamedTuple):
 
     ok: bool
     reason: str = ""
-
-
-class RefusedBeforeChange(RuntimeError):
-    """A refusal made before anything changed; the CLI maps it to exit 4 (REFUSED)."""
-
-
-class ReleaseLockHeld(RefusedBeforeChange):
-    """Another release/build/abandon already holds the repository's release lock."""
 
 
 @contextmanager
@@ -405,7 +407,7 @@ def local_main_divergence(repo_root: Path, *, ref: str = "main") -> tuple[int, i
         return int(ahead), int(behind)
     except (RuntimeError, ValueError) as exc:
         label = "local main" if ref == "main" else repr(ref)
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"Cannot compare {label} with origin/main; fetch/repair the ref, or pass a "
             "different --ref, before starting a release."
         ) from exc
@@ -421,7 +423,7 @@ def assert_local_main_not_ahead(repo_root: Path, *, ref: str = "main") -> int:
     ahead, behind = local_main_divergence(repo_root, ref=ref)
     if ahead:
         label = "Local main" if ref == "main" else repr(ref)
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{label} is {ahead} commit(s) ahead of origin/main. Push those commits (or "
             "explicitly base the intended change on origin/main) before release; an "
             "isolated release snapshots origin/main and would omit them."
@@ -571,7 +573,7 @@ def create_workspace(
     # which would not be "this ONE transaction exclusively owns the name it
     # created" if that ever happened (an allocation collision or stale leftover).
     if path.exists():
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"worktree path already exists: {path}; refusing to reuse an occupied transaction name"
         )
     try:
@@ -625,7 +627,7 @@ def resume_workspace(
     or legacy nested ``cmru/release/*``)."""
     path = path.resolve()
     if not path.is_dir():
-        raise RuntimeError(f"release worktree does not exist: {path}")
+        raise UsageRefusal(f"release worktree does not exist: {path}")
     shared = _shared_worktree()
     try:
         path_top, path_common, _path_branch, _path_head = shared.discover_git_context(path)
@@ -636,7 +638,7 @@ def resume_workspace(
     except RuntimeError:
         expected_common = None
     if expected_common is not None and path_common != expected_common:
-        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+        raise UsageRefusal(f"{path} is not a worktree of {repo_root}")
     # New transactions resume directly from their CMRU record. Legacy
     # candidates, including a removal-bridge record, must revalidate progress
     # and refresh origin/main before returning or completing adoption.
@@ -647,18 +649,18 @@ def resume_workspace(
             _require_cmru_record_purpose(record, "release", path)
             context = shared.ensure_workspace(record)
             if not _is_release_branch(context.branch):
-                raise RuntimeError(
+                raise UsageRefusal(
                     f"{path} is not a retained cmru release branch (got {context.branch!r})"
                 )
             if record.purpose == "cmru-legacy":
                 metadata = getattr(record, "metadata", None)
                 if not isinstance(metadata, Mapping):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"{path} has invalid legacy CMRU workspace metadata; refusing resume"
                     )
                 scope = metadata.get(_LEGACY_RESUME_METADATA_KEY)
                 if scope not in (None, _LEGACY_RESUME_METADATA_VALUE):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"{path} has an unrecognized legacy CMRU transaction scope; "
                         "refusing resume"
                     )
@@ -687,7 +689,7 @@ def resume_workspace(
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
-        raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
+        raise UsageRefusal(f"{path} is not a retained cmru release branch (got {branch!r})")
     if expected_common is None:
         raise RuntimeError(
             f"cannot validate legacy release worktree {path}: source Git family is unknown"
@@ -735,7 +737,7 @@ def assert_resume_workspace_committed(path: Path) -> None:
     """
     changes = _git(path, "status", "--porcelain=v1", "--untracked-files=normal")
     if changes:
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             "retained release worktree has uncommitted changes. Commit the fixes on "
             "that release branch, then rerun `cmru release --resume`; the resumed "
             "prepare and required gate will run against and ship that commit."
@@ -1358,7 +1360,7 @@ def read_release_scope_for_path(path: Path) -> list[str] | None:
     """
     path = Path(path).expanduser().resolve()
     if not path.is_dir():
-        raise RuntimeError(f"release worktree does not exist: {path}")
+        raise UsageRefusal(f"release worktree does not exist: {path}")
     shared = _shared_worktree()
     try:
         top, _common, branch, head = shared.discover_git_context(path)
@@ -1536,10 +1538,23 @@ def validate_build_output_tree(
     """Validate one retained artifact directory against its immutable build manifest.
 
     This shared validator is used by `cmru publish` and the built-in publisher
-    adapters, so the path and digest rules have one implementation.
+    adapters, so the path and digest rules have one implementation. Every way the
+    record can be unsafe, incomplete or tampered with is an ``UnsafeRecord`` (a
+    refusal, exit 4); a malformed ID is a ``UsageRefusal`` (exit 2).
     """
+    try:
+        return _validate_build_output_tree(artifact_root, project_name, output_id)
+    except CmruError:
+        raise
+    except RuntimeError as exc:
+        raise UnsafeRecord(str(exc)) from exc
+
+
+def _validate_build_output_tree(
+    artifact_root: Path, project_name: str, output_id: str,
+) -> dict[str, Any]:
     if not is_build_output_id(output_id):
-        raise RuntimeError(f"invalid retained build output ID: {output_id!r}")
+        raise UsageRefusal(f"invalid retained build output ID: {output_id!r}")
     if artifact_root.name != output_id or artifact_root.is_symlink() or not artifact_root.is_dir():
         raise RuntimeError(f"{project_name}: retained build output is missing or unsafe: {artifact_root}")
     manifest_path = artifact_root / "build.json"
@@ -1694,7 +1709,20 @@ def validate_build_output_tree(
 def validate_retained_build_output(
     project: object, project_name: str, output_id: str,
 ) -> dict[str, Any]:
-    """Validate the complete project build record before any publisher runs."""
+    """Validate the complete project build record before any publisher runs.
+
+    Any way the record is unsafe or incomplete is an ``UnsafeRecord`` (exit 4)."""
+    try:
+        return _validate_retained_build_output(project, project_name, output_id)
+    except CmruError:
+        raise
+    except RuntimeError as exc:
+        raise UnsafeRecord(str(exc)) from exc
+
+
+def _validate_retained_build_output(
+    project: object, project_name: str, output_id: str,
+) -> dict[str, Any]:
     raw_root = getattr(project, "project_root", None)
     if raw_root is None:
         raise RuntimeError(f"{project_name}: cannot resolve a retained build output without project_root")
@@ -1740,7 +1768,7 @@ def is_build_output_id(value: str) -> bool:
 
 def _require_build_output_id(output_id: str) -> None:
     if not is_build_output_id(output_id):
-        raise RuntimeError(
+        raise UsageRefusal(
             "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
             "coordinate printed by cmru build"
         )
@@ -2060,10 +2088,10 @@ def _retained_build_output_parent_fds(
             if descriptor is not None:
                 os.close(descriptor)
         if exc.errno == errno.ELOOP:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build output path is or crosses a symlink"
             ) from exc
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
@@ -2122,7 +2150,7 @@ def _read_regular_file_at(
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build record is incomplete or unsafe: {path}"
             )
         chunks = []
@@ -2159,10 +2187,10 @@ def _retained_build_output_cleanup_facts(
             if descriptor is not None:
                 os.close(descriptor)
         if exc.errno == errno.ELOOP:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build output path is or crosses a symlink"
             ) from exc
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
@@ -2198,7 +2226,7 @@ def _retained_build_output_identity_from_fds(
             artifact_fd, "build.json", project_name, manifest_path,
         )
     except OSError as exc:
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
@@ -2458,12 +2486,12 @@ def discard_build_workspace(
     path = path.resolve()
     expected_parent = (repo_root / ".worktrees").resolve()
     if path.parent != expected_parent:
-        raise RuntimeError(f"{path} is outside this repository's managed .worktrees directory")
+        raise UsageRefusal(f"{path} is outside this repository's managed .worktrees directory")
     if not path.is_dir() or _common_git_dir(path) != _common_git_dir(repo_root):
-        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+        raise UsageRefusal(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
     if not _is_build_branch(branch):
-        raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
+        raise UsageRefusal(f"{path} is not a retained cmru build worktree (got {branch!r})")
     context = None
     shared = _shared_worktree()
     try:

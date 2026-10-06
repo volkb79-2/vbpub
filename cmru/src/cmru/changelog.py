@@ -15,6 +15,7 @@ import re
 import subprocess
 from typing import Any
 
+from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
 from cmru.version import (
     _RELEASE_CONTROL_EXCLUDES,
     _external_version,
@@ -93,7 +94,7 @@ def _project_release_plan(
         )
     }
     if name not in changed:
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{name}: changelog generation requested but the project has no changes "
             "since its latest release tag"
         )
@@ -183,17 +184,17 @@ def _subject_groups(
 def _validate_changelog_path(project: Any, repo_root: Path) -> Path:
     configured = getattr(project, "changelog", None)
     if not configured:
-        raise RuntimeError(f"{project.name}: no release.changelog is configured")
+        raise StepUnavailable(f"{project.name}: no release.changelog is configured")
     raw_path = Path(configured)
     if raw_path.is_absolute() or ".." in raw_path.parts or raw_path.name in ("", "."):
-        raise RuntimeError(
+        raise UsageRefusal(
             f"{project.name}: release.changelog must be a non-empty project-relative path, "
             f"got {configured!r}"
         )
     project_root = (repo_root / (getattr(project, "cwd", None) or project.name)).resolve()
     candidate = (project_root / raw_path).resolve()
     if candidate != project_root and project_root not in candidate.parents:
-        raise RuntimeError(f"{project.name}: release.changelog escapes the project directory")
+        raise UsageRefusal(f"{project.name}: release.changelog escapes the project directory")
     return candidate
 
 
@@ -331,14 +332,14 @@ def generate_release_changelog(
         return False
     heading = version if version is not None else f"source-{source_end[:12]}"
     if heading in set(_UNRELEASED_HEADING_RE.findall(existing)):
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{project.name}: {path} already has a hand-authored [{heading}] - UNRELEASED "
             "section (KI-23); CMRU refuses to create a second, un-merged heading for the "
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
         )
     if version is not None and _unreleased_body(existing):
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{project.name}: {path} has a non-empty hand-written `## [Unreleased]` "
             "section (KI-30); CMRU does not fold it, so a tagged release would leave "
             "it orphaned and describing already-shipped work -- fold its content into "
@@ -352,7 +353,7 @@ def generate_release_changelog(
         next_heading = existing.find("\n## [", start + len(expected))
         section = existing[start:next_heading if next_heading >= 0 else len(existing)]
         if _GENERATED_MARKER not in section:
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{project.name}: {path} already has a hand-authored [{version}] section; "
                 "CMRU refuses to overwrite it"
             )
@@ -386,7 +387,7 @@ def generate_release_changelog(
         marker = f"{_HISTORY_MARKER}\n"
         marker_index = existing.find(marker)
         if marker_index < 0:
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{project.name}: {path} lacks {_HISTORY_MARKER}; add the marker where "
                 "CMRU may insert release sections"
             )
@@ -425,7 +426,7 @@ def backfill_release_changelog(
     path = _validate_changelog_path(project, repo_root)
     prefix = getattr(project, "prefix", None) or f"{project.name}-v"
     if not tag.startswith(prefix):
-        raise RuntimeError(
+        raise UsageRefusal(
             f"{project.name}: {tag!r} is not a release tag with prefix {prefix!r}"
         )
     source_end = _git(repo_root, "rev-parse", f"{tag}^{{commit}}").strip()
@@ -463,7 +464,7 @@ def backfill_release_changelog(
         marker = f"{_HISTORY_MARKER}\n"
         marker_index = existing.find(marker)
         if marker_index < 0:
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{project.name}: {path} lacks {_HISTORY_MARKER}; add the marker where "
                 "CMRU may insert release sections"
             )

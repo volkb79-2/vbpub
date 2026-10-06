@@ -148,7 +148,10 @@ def test_cleanup_no_longer_discards_build_worktrees(estate, capsys):
     assert "unrecognized arguments" in err and "--discard-build-worktree" in err
 
 
-def test_without_dry_run_the_same_plan_is_applied(estate, monkeypatch):
-    """Control: the spy is live, so a missing early return is observable."""
-    with pytest.raises(AssertionError, match="plan.apply\\(\\) ran"):
-        cli.main(["cleanup", "--remove-assets", "30d", "--yes"])
+def test_without_dry_run_the_same_plan_is_applied(estate, monkeypatch, capsys):
+    """Control: the spy is live, so a missing early return is observable.
+
+    The spy's AssertionError is an unexpected exception, so under the "report" policy it is the
+    library's one-line report with exit 1 (it used to escape ``main``)."""
+    assert cli.main(["cleanup", "--remove-assets", "30d", "--yes"]) == 1
+    assert "plan.apply() ran" in capsys.readouterr().err

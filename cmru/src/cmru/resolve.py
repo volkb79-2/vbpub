@@ -202,6 +202,13 @@ def _resolve_config_free(args) -> int | None:
         )
     except RuntimeError as exc:
         raise CliFailure(f"cannot resolve prefix {args.prefix!r}: {exc}") from exc
+    except OSError as exc:
+        # URLError and socket failures: registry metadata is unavailable, a missing
+        # prerequisite (exit 3), not a crash. Found by the W2-PKG5 surface review.
+        raise CliFailure(
+            f"cannot reach {args.repo} to resolve prefix {args.prefix!r}: {exc}",
+            exit_code=3,
+        ) from exc
     if not result:
         raise CliFailure(f"No releases found in {args.repo} (prefix {args.prefix!r})")
     print(format_result(result, args.format))
@@ -268,6 +275,13 @@ def _run_resolve(args, _runtime) -> int | None:
         except RuntimeError as exc:
             print(f"[ERROR] cannot resolve project {name!r}: {exc}", file=sys.stderr)
             return 1
+        except OSError as exc:
+            # Same contract as the config-free path: an unreachable registry is a
+            # missing prerequisite (exit 3), never a traceback.
+            raise CliFailure(
+                f"cannot reach {owner}/{repo} to resolve project {name!r}: {exc}",
+                exit_code=3,
+            ) from exc
         if not result:
             print(f"[ERROR] No releases found for project {name!r} (prefix {proj.prefix!r})", file=sys.stderr)
             return 1

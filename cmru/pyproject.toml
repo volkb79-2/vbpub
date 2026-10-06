@@ -33,6 +33,20 @@ interactive = ["cli-extended[interactive]>=0.2.0"]
 [project.scripts]
 cmru = "cmru.cli:main"
 
+# Surface lifecycle (cli-extended W3b). ONE entry covers every cmru route: the root
+# registry mounts the handlers registry as `cmru handler`, and `python -m cmru.handlers`
+# builds the identical registry (identity "cmru"), so a second entry would be a duplicate.
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "cmru"
+factory = "cmru.cli:_build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
+findings = "docs/cli-review-findings.toml"
+
 [tool.setuptools.packages.find]
 where = ["src", "../libraries/worktree/src"]
 

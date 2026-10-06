@@ -405,3 +405,124 @@ Oracles:
 
 **Provenance:** cmru KI-51 survey (gap N3), 2026-10-06, program package
 W2-PKG0.
+
+## CLI-EXT-26 — `register_skills_verbs` drops the consumer's global options
+
+**Status:** Open (planned)
+**Type:** Defect
+**Area:** Skills, surface export
+
+`register_skills_verbs(registry, package=...)` builds its child `CliRegistry`
+without `global_options=registry.global_options`
+(`cli_extended/skills.py`, the `CliRegistry(...)` call inside the function).
+A consumer that declares a global option on its registry (cmru:
+`--log-prefix-time-short`, a presentation option shared by every verb and
+every delegate) therefore gets `cmru skills install|uninstall|check|list`
+WITHOUT it: `cmru skills install --log-prefix-time-short` is a usage error
+while every other cmru verb accepts it. Worse, `cli-extended surface check`
+fails with `incomplete parser syntax: cmru skills: delegated parser does not
+register inherited global option(s): --log-prefix-time-short`, so a consumer
+with a global option cannot pass AC-17 at all after adopting the shared
+`skills` verbs (AC-19). Observed adopting cmru 2026-10-06 (W2-PKG5); the same
+applies to `register_doctor` only if it ever builds a delegate (today it
+does not).
+
+Wanted: forward `registry.global_options` (and any other consumer registry
+settings a delegate must share) to the child registry in
+`register_skills_verbs`, and add a `CONSUMERS.md` sentence that every
+library-built delegate inherits the parent's global options.
+
+Oracles:
+- A registry with a global option `--tag-prefix` and `register_skills_verbs`
+  accepts `skills list --tag-prefix`, and `surface check` reports no
+  incomplete-syntax finding for it.
+- The exported surface lists the global option on all four skills routes.
+- A controlled wrong implementation that forwards the options only to
+  `install` must fail the `check`/`list` route oracle.
+
+**Related (review volume):** the same adoption produced 346 review cases for
+32 routes, 60 of them identical `--debug-raw` and consumer-global
+cases repeated per route (plus a `--config`/`--dry-run`/`--json` case per verb); CLI-EXT-18 (one shared decision for common
+controls) would remove that repetition.
+
+**Provenance:** cmru W2-PKG5 surface adoption, 2026-10-06.
+
+## CLI-EXT-27 — `cli_extended.testing` prepends its own install directory to `PYTHONPATH`
+
+**Status:** Open (planned)
+**Type:** Defect
+**Area:** Testing helpers
+
+The subprocess helpers in `cli_extended.testing` put cli-extended's own
+install directory at the front of the child's `PYTHONPATH` unless the caller
+passes `python=`. A consumer test that runs its CLI in a subprocess therefore
+imports the library from the test environment's site-packages ahead of the
+consumer's own pinned or wheel-installed copy, which is the opposite of what a
+test of "the CLI as installed" must prove, and it hides a missing or
+mis-floored `cli-extended` dependency. Observed adopting cmru (W2-PKG5,
+2026-10-06): the black-box probe had to pass `python=` explicitly to get an
+honest import path.
+
+Wanted: no implicit `PYTHONPATH` edit (inherit the caller's environment
+unchanged), or an explicit opt-in parameter, documented in `CONSUMERS.md`.
+
+Oracles:
+- A subprocess started without `python=` sees the caller's `PYTHONPATH`
+  unchanged (no library directory prepended).
+- A controlled wrong implementation that still prepends must fail that
+  oracle.
+
+**Provenance:** cmru W2-PKG5 review round 1 (library backlog ask), 2026-10-06.
+
+## CLI-EXT-28 — a test cannot assert the absence of a path hack (audit AC-25)
+
+**Status:** Open (planned)
+**Type:** Feature
+**Area:** Audit, testing
+
+The AC-25 `no-path-hacks` heuristic scans test and source text for
+`sys.path`/`PYTHONPATH` manipulations that name the library. A consumer test
+that asserts the cli-extended source path is ABSENT from the import path (a
+legitimate regression guard) has to spell the needle in the test, which the
+heuristic then reports as a hack. cmru worked around it with
+`tests/_cx_paths.py`, which builds the needle at runtime solely to dodge the
+text scan; that is an honest guard but needs a workaround file and an
+explanation in the findings file.
+
+Wanted: a documented way for a test to assert absence (for example an
+`# cli-extended: allow-path-assertion` marker honoured by AC-25, or a
+`cli_extended.testing.assert_no_path_hack(...)` helper the audit recognises).
+
+Oracles:
+- A test that asserts absence with the sanctioned form passes AC-25.
+- A real `sys.path.insert(...)` naming the library still fails AC-25
+  (controlled wrong implementation: marker accepted anywhere must fail).
+
+**Provenance:** cmru W2-PKG5 review round 1 (library backlog ask), 2026-10-06.
+
+## CLI-EXT-29 — `expected_exceptions` cannot carry an exit code or hint
+
+**Status:** Open (planned)
+**Type:** Feature
+**Area:** Runner, error rendering
+
+`CliRegistry(expected_exceptions=(...))` renders a matching exception as
+`[ERROR] <str(exc)>` and always exits 1 (`parser.py`, the `except
+expected_exceptions` branch); there is no per-type exit code and no hint. A
+consumer with an exit-code taxonomy (cmru: 2 usage, 3 prerequisite missing, 4
+refused by policy) must make its domain errors subclass `CliFailure` instead,
+which also makes them library-specific types. Observed in cmru W2-PKG5 review
+fix round 1 (B1): after the policy flip to `unexpected_exceptions="report"`
+every deliberate refusal that was still a bare `RuntimeError` was labelled
+"unexpected".
+
+Wanted: `expected_exceptions` accepts a mapping `{type: exit_code}` or honours
+an `exit_code`/`hint` attribute on the exception, with the same rendering as
+`CliFailure`.
+
+Oracles:
+- An expected exception with `exit_code = 3` and a `hint` exits 3 and prints
+  the hint, with no "unexpected" label.
+- A controlled wrong implementation that ignores the code (exit 1) must fail.
+
+**Provenance:** cmru W2-PKG5 review fix round 1, 2026-10-06.

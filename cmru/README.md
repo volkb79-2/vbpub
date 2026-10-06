@@ -94,7 +94,9 @@ The wheel installs the operator command `cmru`. It also carries the bootstrap-on
 alias (it runs the same `cmru handler` builder; project steps and the templates always use
 `cmru handler <verb>`, and `python -m cmru.handlers` exists only for the fresh-checkout bootstrap above),
 the `cmru.bundle` and `cmru.runner` Python libraries, the `worktree` library they use, and its
-agent skill as package data (`cmru/skills/cmru-cli`). The `cli-extended` library is NOT inside
+agent skill as package data (`cmru/skills/cmru-cli`); install it with `cmru skills install`
+(`cmru skills check` verifies it, `cmru doctor` reports the whole environment; there is no
+`.claude/skills` source tree). The `cli-extended` library is NOT inside
 the wheel: it is the declared dependency above. Use installed console scripts
 for operator commands; the retired module CLI aliases for bundle, runner, and
 the operator scripts refuse and direct callers to the supported interface. See the

@@ -74,8 +74,10 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
         cli, "load_config",
         lambda _path: _loaded(tmp_path, {"alpha": project_without_cwd}),
     )
-    with pytest.raises(RuntimeError, match="derived project working directory is absent"):
-        cli.main(["run", "alpha", "--dry-run"])
+    assert cli.main(["run", "alpha", "--dry-run"]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] alpha: derived project working directory is absent" in err
+    assert "unexpected" not in err
 
 
 @pytest.mark.parametrize("mode", ["project-first", "step-first"])
@@ -188,8 +190,9 @@ def test_build_and_publish_dry_runs_share_the_declared_plan_without_credentials(
     assert "argv=python build.py" in output
 
     project.runner_steps = {}
-    with pytest.raises(RuntimeError, match=f"required declared step {step!r} is absent"):
-        cli.main([verb, "demo", *source, "--dry-run", "--config", "x"])
+    assert cli.main([verb, "demo", *source, "--dry-run", "--config", "x"]) == 3
+    err = capsys.readouterr().err
+    assert f"required declared step {step!r} is absent" in err and "unexpected" not in err
 
 
 def test_changelog_backfill_dry_run_prints_exact_diff_and_writes_nothing(

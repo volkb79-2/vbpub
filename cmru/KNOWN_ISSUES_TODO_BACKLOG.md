@@ -1716,3 +1716,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** either (a) `cmru standards` warns when a pinned helper-image digest is older than N days (needs a pin-date record next to the pin, e.g. a `CMRU_TESTER_PIN_DATE_<VAR>` or a `[pins]` table, and the freshness rule's 14-day vetting buffer in the other direction), or (b) a documented refresh procedure in `docs/CONSUMERS.md` (pull the new tag deliberately, read `docker image inspect --format '{{index .RepoDigests 0}}'`, update every estate pin in one change, run the KI-42 probe). (b) is the minimum; (a) is the guard.
 
 **Oracle:** for (a), a project whose recorded pin date is older than the threshold gets a standards warning naming the variable; for (b), the procedure is reproducible by someone who has never done it.
+
+### KI-61 — `cmru skills` lacks `--log-prefix-time-short`: the cli-extended surface check carries a one-message tolerance (W2-PKG5; library defect CLI-EXT-26) — *open, severity: minor*
+
+**Observed:** `cli-extended surface check` (and audit AC-17/AC-18) report `cmru skills: delegated parser does not register inherited global option(s): --log-prefix-time-short`. The cause is cli-extended 0.2.0 `register_skills_verbs`, which builds its child registry without the parent's `global_options` (filed in `libraries/cli-extended/BACKLOG.md` as CLI-EXT-26). The controller ruled (2026-10-06) to accept the gap for cmru 6.0.0 rather than re-implement the skills group with private library helpers. `tests/test_cli_spec_inventory.py::test_surface_check_reports_nothing_beyond_the_known_library_gap` asserts the findings EQUAL exactly that one message, so a library fix makes the test fail and forces this item.
+
+**Fix direction:** when cli-extended ships the CLI-EXT-26 fix, bump the `cli-extended>=` floor in `pyproject.toml` (and `CLI_EXTENDED_REQUIREMENT` / the doctor floor check) to that release, delete the tolerance and the exact-message assertion so the test requires an empty finding list, run `cli-extended surface sync`, and close finding `adoption-skills-global-option` in `docs/cli-review-findings.toml`.
+
+**Oracle:** `cli-extended surface check` and `cli-extended audit --cli cmru` both exit 0 with no tolerance in the test.
