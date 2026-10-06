@@ -501,9 +501,12 @@ to include lane startup and the R0/R1 and R3 steps.
 Every adopter had copied the same `_invoke`, and each copy decided differently
 what to scrub. The shared helper makes `home` a required keyword rather than a
 default: the 2026-10-04 run-gate test that leaked a fake `assay` into the real
-`~/.local/bin` is what a convenient default produces. It also prepends the
-imported library's directory to `PYTHONPATH` so the child runs the revision
-under test, not whatever is installed. Rejected: defaulting `home` to a
+`~/.local/bin` is what a convenient default produces. It deliberately does
+not edit `PYTHONPATH` beyond `pythonpath=` (CLI-EXT-27): the imported
+library's directory is a whole `site-packages` when installed, and prepending
+it shadowed the consumer's own pinned copy and hid a missing dependency.
+`library_path=True` is the explicit opt-in for a test that must pin the
+in-process library. Rejected: defaulting `home` to a
 temporary directory, which hides the isolation decision and makes failures
 harder to inspect.
 

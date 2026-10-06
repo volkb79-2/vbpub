@@ -1,5 +1,5 @@
 {
- "schema_version": 13,
+ "schema_version": 14,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "222222222222222222222222222222222222222b",
@@ -27,6 +27,8 @@
  "argv_modified": false,
  "env_declared": {},
  "env_effective": {},
+ "env_passthrough": [],
+ "env_effective_passthrough_sha256": {},
  "scope": "S1",
  "enforcement": "gate",
  "judgment": {
@@ -81,6 +83,34 @@
       "mutated_file_sha256": "34efd726c77173a9a76f46fd33ac9d4b3b8dfee0fe2d4a32aa866d202282a0a7",
       "execution": {
        "mode": "full"
+      },
+      "resource_limit_evidence": {
+       "cgroup_version": 2,
+       "pids_events": {
+        "max": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       },
+       "memory_events": {
+        "max": {
+         "after": 0,
+         "before": 0,
+         "delta": 0
+        },
+        "oom": {"before": 0, "after": 0, "delta": 0},
+        "oom_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_group_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       }
       }
      }
     ],
@@ -98,6 +128,34 @@
       "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
       "execution": {
        "mode": "full"
+      },
+      "resource_limit_evidence": {
+       "cgroup_version": 2,
+       "pids_events": {
+        "max": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       },
+       "memory_events": {
+        "max": {
+         "after": 0,
+         "before": 0,
+         "delta": 0
+        },
+        "oom": {"before": 0, "after": 0, "delta": 0},
+        "oom_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_group_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       }
       }
      }
     ],

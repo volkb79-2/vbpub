@@ -7151,3 +7151,129 @@ combined R2 from explicit base `db29266…`; keep that worktree unchanged
 until completion. The current-main tree changed only for controller records
 after the P1 short-gate receipts, so refresh short gates after the slot
 becomes free and before launching the combined campaign.
+
+### RW-463 — 2026-10-06 00:25:05 UTC — accept P1 socket-readiness test fix; preserve R3 PSI miss
+
+The same Sol reviewer accepted the scoped test-only fix on exact commit
+`1653143f752dfc612f6154514ee0ed85b3f35c7a` (tree
+`adeb558cf589dec98838422b2a6b708ce38b6ffd`). The failing test used socket
+pathname existence as readiness even though `_bind()` creates the pathname
+before `listen()` returns. It now uses `_start_ready_socket_server()`, which
+signals only after bind/listen completes. The behavioral assertions and
+shutdown path remain intact; production code is unchanged. The fix-verification
+record is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-SOCKET-READINESS-FIX-VERIFY-SOL-20261006.md`.
+
+The controller verified R0/R1 PASS on this exact commit (2,369 tests, 100%
+line/branch coverage; run `0f6746b7f6127a1bc16a593bd0143513`) and doctor
+(9 OK, 2 expected warnings, 0 failures, 2 info). R3 functionally passed with
+7/7 canaries rejected (run `6ea9635d8cd0a1de9c5a28cdfd2119fa`), but its
+run-gate launch sample was memory-full PSI `avg10=5.11%`, above the 5% launch
+threshold, despite the preflight reading of 3.80%. The run is recorded, but
+the launch-policy miss means R3 is not fully admissible evidence; rerun R3
+after this record commit on the final candidate when its fresh launch sample
+is at or below 5%. The reviewer did not independently verify these receipts.
+
+The diagnostic P1 R2 on exact tree `c24b0d2b882df96ee6549cf357a713943398a564`
+ended `2026-10-06T00:18:03Z`: 114/114 candidates, 109 killed, 5 survived,
+zero equivalent, budget-exceeded, crashed, or hung; verdict
+`FAIL/MUTANTS_SURVIVED`, exit 1. The separate clean/history-eligible run-gate
+record reports 4,109.126 seconds and request base
+`1882887511202d7e39f72599fcaa9fcc5e55b466`. All five survivor IDs match the
+P1 report's already-reviewed contract-equivalent table; this is diagnostic
+evidence only, not the final combined P1/P6 R2. The exact final combined-tree
+campaign and registered full gate remain required.
+
+### RW-464 — 2026-10-06 00:18:56 UTC — footprint has no current eligible profile history
+
+Read-only `run-gate footprint --json` on main commit
+`ac335808fb86c43644093a76c854c3032906ac5a` returned an empty `lanes` object.
+The tracked `run-gate-project/run-gate.footprint.json` still has
+`distilled_at=2026-09-12T21:01:24Z`; current main history has no completed,
+eligible profiled PASS lane (the latest R2 entry is aborted because the
+container could not reach Docker, and the selftest entry is dirty/unprofiled).
+No footprint write was attempted. After the released daemon is up, obtain at
+least three completed, profiled PASS runs in the project store, then run
+`footprint --write` and verify the tracked manifest and `footprint --json`.
+
+### RW-465 — 2026-10-06 21:32:07 UTC — P6 R2 terminal result and selective-reuse recovery
+
+The completed P6 R2 on commit `324eac950bf0b261d51d064d8a8152e3af0dbe31`
+is a history-eligible `FAIL/MUTANTS_SURVIVED`, exit 1: all 1,251 candidates
+were accounted for, with 1,210 killed and 41 survived; there were no
+equivalent, crashed, budget-exceeded, or hung candidates. The authoritative
+Assay v13 verdict and progress stream remain in
+`.worktrees/rg55-p6-r2-ciu/scripts/cgroup-profiler/.assay/`. Of the 1,210
+kills, 1,203 have call-phase failure witnesses and seven do not. The 41
+survivor IDs and mutation locations are in the verdict; candidate
+`45ca2247d28b5515ca007923efb2406f9c1b66f0792aeb2b62e6b8c9794ab131`
+(`placement.py:1882`) is the subject of a new test-only oracle commit.
+
+The first selective-rejudge worker did not invoke run-gate or start a
+container: it exited at `2026-10-06T18:33:54Z` with `bash: line 30: $1:
+unbound variable` (log `/tmp/rg55-p6-selective-r2-20261006-watch.log`). Treat
+this as a controller launch failure, not a mutation result. Its attempted
+`--resume --rejudge` route also needed correction: the new test tree has a new
+Assay judge identity, so ordinary per-tree resume records cannot be carried
+forward.
+
+The supported changed-tree route is `--reuse-from` the complete v13 verdict.
+On isolated diagnostic branch `rg55-p6-selective-reuse-20261006`, commits
+`6ebb9c13a` and `69f3fe673` opt the diagnostic command lane into run-gate
+argument forwarding and explicitly declare empty pytest `addopts`; they do
+not change cgprofile runtime code and are not merged into the package branch.
+On the clean exact diagnostic tree `69f3fe673534e45488bade0a1bf90bf861446a93`
+(tree `06e942f37b7f90015db8b5a24333e528cce9096c`), `assay plan r2` against
+request base `db29266f8a006b22a30609a74de7645d1e4c50b7` verified the same
+1,251 candidate IDs and the prior v13 artifact (`ddb4e19f…`). It classifies
+1,203 candidates for witness replay on the current suite and 48 for full-suite
+execution (the 41 prior survivors plus seven prior kills without witnesses).
+The target survivor is classified for a full run. This is a diagnostic
+campaign plan, not an acceptance R2 receipt; the final integrated P1/P6 tree
+still needs its own complete R2 and full gate.
+
+The run-gate dry run verified the explicit base, argument forwarding,
+`dev-gates.slice`, and the 3-CPU cap, and started no container. At the
+`2026-10-06T21:31Z` launch check, host memory PSI `full avg10` was 6.45%, above
+the 5% launch threshold, and a CMRU canary runner held the shared gate lock.
+Therefore the P6 diagnostic R2 remains unlaunched; retry only after the
+shared gate slot is available and a fresh memory-PSI preflight is at or below
+5%. On launch, check once at 90 seconds, then respect the 25-minute minimum
+progress-poll interval unless an earlier completion/error is expected.
+
+### RW-466 — 2026-10-06 21:58:06 UTC — rebase P6 R2 recovery on current Assay and resolve two-gate controls
+
+Main now includes Assay B145/B147 and source-backed Assay reports
+`7.2.1.dev804+g96fbf0599`. Its `reuse.py` treats verdict schema 12 and 13 as
+cold starts. On the new CIU-managed candidate worktree
+`.worktrees/rg55-p6-final-r2-20261006` (based on main `e65d4e4d`, clean and
+registered), the current-source plan against request base
+`db29266f8a006b22a30609a74de7645d1e4c50b7` found 1,261 candidates and
+classified all 1,261 `unproven-source` from the previous schema-13 verdict.
+This supersedes RW-465's 1,203 witness-replay / 48 full plan, which used an
+older Assay source. Its printed 105-hour estimate is the configured
+600-second-per-candidate ceiling, not a measured forecast; the earlier
+schema-13 campaign observed about 15 hours for 1,251 candidates. Do not claim
+selective reuse on the final tree from that old artifact.
+
+Assay's `--resume --rejudge-outcome survived` exists, but it operates on
+per-tree mutation state. It can re-run the old 41 survivors only against the
+exact old judged tree and matching Assay identity; that is diagnostic, not
+final evidence for current main. The final current-source tree needs a
+complete R2 campaign. The candidate CIU worktree carries the three-line
+placement-retirement oracle for candidate 45ca, plus run-gate argv forwarding
+and explicit empty pytest `addopts` needed to make targeted R2 requests
+expressible; no gates were launched on it in this checkpoint.
+
+For concurrency, the read-only `run-gate admission show` reports
+`enabled=false` and no published Docker admission object in
+`run-gate-project`. `tester-unified/run` itself atomically caps its own image
+at two live containers, but the shared exclusive `gate.lock` used by current
+controllers serializes a wider set of launchers; it is not the daemon-wide
+admission mechanism. At the due 21:56Z check one CMRU coverage container had
+just started, another runner was queued behind that lock, and memory `full
+avg10` was 0.00%. Do not bypass the held lock. A safe estate-wide two-gate
+policy needs all participating Run-Gate projects/launchers to join one
+Docker-daemon ticket cap of two, plus a read of current slice capacity and
+timeout/liveness behavior under that cap; no host or admission setting was
+changed here.

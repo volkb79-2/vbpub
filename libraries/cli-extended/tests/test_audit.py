@@ -930,6 +930,88 @@ def test_no_path_hacks_passes_when_only_the_gate_file_points_at_the_source(tmp_p
     )
 
 
+def test_cx28_marked_absence_assertions_pass_ac25(tmp_path):
+    files = {
+        "t_same_line.py": (
+            "assert 'libraries/cli-extended' not in sys.path"
+            "  # cli-extended: allow-path-assertion\n"
+        ),
+        "t_next_line.py": (
+            "# cli-extended: allow-path-assertion\n"
+            "assert 'libraries/cli-extended' not in os.environ['PYTHONPATH']\n"
+        ),
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == ("pass", ())
+
+
+def test_cx28_the_marker_does_not_exempt_a_real_hack(tmp_path):
+    files = {
+        "mixed.py": (
+            "# cli-extended: allow-path-assertion\n"
+            "assert 'libraries/cli-extended' not in sys.path\n"
+            "sys.path.insert(0, '/x/libraries/cli-extended/src')\n"
+        ),
+        "after_marker_only.py": (
+            "# cli-extended: allow-path-assertion\n"
+            "\n"
+            "sys.path.insert(0, '/x/libraries/cli-extended/src')\n"
+        ),
+        "plain.py": "sys.path.insert(0, '/x/libraries/cli-extended/src')\n",
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert item.status == "fail"
+    assert item.evidence == ("after_marker_only.py", "mixed.py", "plain.py")
+
+
+@pytest.mark.parametrize("sep", ["\x0c", " ", "\x1c", "\x85"])
+def test_cx22_ac25_line_separators_do_not_misalign_comment_stripping(tmp_path, sep):
+    hack = "sys.path.insert(0, 'libraries/cli-extended/src')\n"
+    files = {
+        # A trailing comment: a shifted row would blank the hack line itself.
+        "ff_line.py": f"x = 1\n{sep}\n{hack}# note\n",
+        "in_string.py": f"x = 'a{sep}b'\n{hack}# note\n",
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == ("fail", ("ff_line.py", "in_string.py"))
+
+
+def test_cx22_ac25_ignores_comments_but_not_code_or_strings(tmp_path):
+    clean = {
+        "notes.py": (
+            "# do not put libraries/cli-extended on sys.path\n"
+            "x = 1  # no PYTHONPATH to libraries/cli-extended either\n"
+        ),
+        "cfg.toml": "# libraries/cli-extended and PYTHONPATH are forbidden here\n",
+    }
+    assert _audit(tmp_path, files=clean)["no-path-hacks"].status == "pass"
+
+
+def test_cx22_ac25_still_flags_hacks_beside_comments(tmp_path):
+    files = {
+        "code.py": "sys.path.insert(0, 'libraries/cli-extended/src')  # temporary\n",
+        "string_hash.py": (
+            "sys.path.append('libraries/cli-extended/src#x')\n"
+        ),
+        "broken.py": "def f(:\nsys.path.insert(0, 'libraries/cli-extended')\n",
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == (
+        "fail", ("broken.py", "code.py", "string_hash.py")
+    )
+
+
+def test_cx22_ac01_ignores_test_files_but_not_product_code(tmp_path):
+    pinned = "CliIdentity(\nimport importlib.metadata\n"
+    only_tests = {"tests/test_id.py": pinned, "conftest.py": pinned, "x_test.py": pinned}
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert _audit(tmp_path / "a", files=only_tests)["version-source"].status == "manual"
+    mixed = {"tests/test_id.py": pinned, "src/ident.py": pinned}
+    item = _audit(tmp_path / "b", files=mixed)["version-source"]
+    assert (item.status, item.evidence) == ("fail", ("src/ident.py",))
+
+
 def test_run_audit_propagates_a_broken_factory(tmp_path):
     root = _setup(tmp_path)
     (root / "factory.py").write_text("def build_cli():\n    return 1\n", encoding="utf-8")

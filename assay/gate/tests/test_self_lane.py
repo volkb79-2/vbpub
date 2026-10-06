@@ -16,6 +16,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -100,13 +102,133 @@ def test_lane_name_matches_the_gate_id_p11_requires():
     assert GATE_ID in load_lane_file(SELF_LANE_FILE).lanes
 
 
-def test_lane_budget_agrees_with_the_gate_timeout():
-    # READ, do not invent (§4.2a): the budget is the gate's own
-    # timeout_seconds, so the two files cannot drift apart unnoticed.
+def test_inner_tester_budget_leaves_time_for_the_outer_sql_witness():
+    # The Assay lane bounds only the ordinary tester phase. The registered
+    # host gate separately reserves time for B145 probes, SQL, and cleanup.
     gate = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"][GATE_ID]
     lane = load_lane_file(SELF_LANE_FILE).lane(GATE_ID)
+    run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"][GATE_ID]
 
-    assert lane.budget_seconds == float(gate["timeout_seconds"])
+    assert lane.budget_seconds == 60 * 60
+    assert load_lane_file(SELF_LANE_FILE).lane("analysis").budget_seconds == 60 * 60
+    assert run_gate["budget"] == "5h"
+    assert gate["timeout_seconds"] == 6 * 60 * 60
+
+
+def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
+    run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))
+    lane = run_gate["lanes"][GATE_ID]
+    nyxloom = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))
+    gate = nyxloom["gates"][GATE_ID]
+    script = (PROJECT_ROOT / "tools" / "tester-unified-gate.sh").read_text(encoding="utf-8")
+
+    def seconds(value: str) -> int:
+        match = re.fullmatch(r"([0-9]+)([smh])", value)
+        assert match, f"unsupported duration in gate config: {value!r}"
+        scale = {"s": 1, "m": 60, "h": 3600}[match.group(2)]
+        return int(match.group(1)) * scale
+
+    sql_body = script.split("run_sql_qualification() {", 1)[1].split("# --- entry points", 1)[0]
+    sql_launch = re.search(
+        r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker run -d", sql_body
+    )
+    sql_wait = re.search(
+        r'timeout --signal=TERM --kill-after=([0-9]+)s ([0-9]+)s docker wait "\$container_id"',
+        sql_body,
+    )
+    sql_follower = re.search(
+        r'wait_for_container_log_follower "\$_assay_sql_runner_logs_pid" ([0-9]+)',
+        sql_body,
+    )
+    assert sql_launch and sql_wait and sql_follower, "SQL qualification needs bounded launch, wait and log collection"
+
+    b145_body = script.split("run_b145_bounded_wait_acceptance_probe() {", 1)[1].split(
+        "# --- the S1 receipt", 1
+    )[0]
+    b145_launches = [
+        (int(grace), int(limit))
+        for grace, limit in re.findall(
+            r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker run -d", b145_body
+        )
+    ]
+    assert len(b145_launches) == 2
+    bounded_wait = re.search(
+        r"timeout --signal=TERM --kill-after=([0-9]+)s ([0-9]+)s docker wait", b145_body
+    )
+    low_wait = re.search(
+        r"wait_timeout_seconds=([0-9]+).*?timeout --signal=TERM --kill-after=([0-9]+)s \"\$\{wait_timeout_seconds\}s\" docker wait",
+        b145_body,
+        re.DOTALL,
+    )
+    low_logs = re.findall(
+        r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker logs", b145_body
+    )
+    probe_cleanup = script.split("remove_owned_b145_probe_container() {", 1)[1].split("\n}", 1)[0]
+    probe_rm = re.search(
+        r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f", probe_cleanup
+    )
+    assert bounded_wait and low_wait and low_logs and probe_rm
+
+    inventory_body = script.split("container_inventory() {", 1)[1].split("\n}\n", 1)[0]
+    inventory_timeout = re.search(
+        r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker ps --all", inventory_body
+    )
+    cleanup_body = script.split("remove_owned_sql_container() {", 1)[1].split("\n}\n", 1)[0]
+    sql_rm = re.search(
+        r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f", cleanup_body
+    )
+    tester_body = script.split("run_registered_tester_container() {", 1)[1].split("\n}\n", 1)[0]
+    tester_follower = re.search(
+        r'wait_for_container_log_follower "\$_assay_gate_logs_pid" ([0-9]+)', tester_body
+    )
+    assert "remove_owned_gate_container" in tester_body
+    tester_rm_body = script.split("remove_owned_gate_container() {", 1)[1].split("\n}\n", 1)[0]
+    tester_rm = re.search(r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f", tester_rm_body)
+    ordinary_cleanup = script.split("cleanup_assay_gate_container() {", 1)[1].split("\n}\n", 1)[0]
+    assert "remove_owned_gate_container" in ordinary_cleanup
+    tester_exit_rm = tester_rm
+    assert inventory_timeout and sql_rm and tester_follower and tester_rm and tester_exit_rm
+
+    follower = script.split("wait_for_container_log_follower() {", 1)[1].split("\n}\n", 1)[0]
+    stop_grace = re.search(r'stop_grace_seconds="\$\{3:-([0-9]+)\}"', follower)
+    assert stop_grace
+
+    def cap(match: re.Match[str]) -> int:
+        return sum(int(value) for value in match.groups())
+
+    def follower_cap(match: re.Match[str]) -> int:
+        return int(match.group(1)) + 2 * int(stop_grace.group(1))
+
+    b145_seconds = sum(grace + limit for grace, limit in b145_launches)
+    b145_seconds += sum(int(value) for value in bounded_wait.groups())
+    b145_seconds += sum(int(value) for value in low_wait.groups())
+    b145_seconds += max(int(grace) + int(limit) for grace, limit in low_logs)
+    # Two probes each inspect on launch and removal; a failed removal adds one
+    # bounded EXIT retry, so budget three inventory/removal pairs per probe.
+    b145_seconds += 6 * cap(inventory_timeout)
+    b145_seconds += 4 * cap(probe_rm)
+
+    sql_seconds = cap(sql_launch) + cap(sql_wait) + follower_cap(sql_follower)
+    # The successful phase verifies/removes both containers; failure cleanup
+    # can retry each once. Count all four calls as though each needed an rm.
+    sql_cleanup_call = cap(inventory_timeout) + cap(sql_rm)
+    sql_seconds += 4 * sql_cleanup_call
+    # Normal removal and its EXIT retry each re-verify the exact ID/name/label.
+    tester_seconds = follower_cap(tester_follower) + 2 * (cap(inventory_timeout) + cap(tester_rm))
+    assay_lanes = load_lane_file(SELF_LANE_FILE)
+    inner_seconds = sum(
+        assay_lanes.lane(lane_id).budget_seconds for lane_id in (GATE_ID, "analysis")
+    )
+    setup_reserve = 20 * 60
+    failure_cleanup_reserve = 5 * 60
+    run_gate_seconds = seconds(lane["budget"])
+    controller_seconds = gate["timeout_seconds"]
+    assert run_gate_seconds >= (
+        inner_seconds + b145_seconds + sql_seconds + tester_seconds
+        + setup_reserve + failure_cleanup_reserve
+    )
+    admission_reserve = 60 * 60
+    assert controller_seconds >= run_gate_seconds + admission_reserve
 
 
 def test_assay_lanes_lists_assays_own_lane(monkeypatch):
@@ -165,6 +287,38 @@ def test_self_qualification_is_full_source_r0_through_r3():
     for out_of_scope in checker.OUT_OF_SCOPE_BY_DECISION:
         assert not any(target.startswith(out_of_scope) for target in declared)
         assert (PROJECT_ROOT / out_of_scope).is_dir()
+
+
+def test_self_qualification_git_wrapper_overrides_local_maintenance_settings(tmp_path: Path):
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    assert not any(line.lstrip().startswith("git ") for line in script.splitlines())
+    start = script.index("assay_git() {")
+    end = script.index("\n}\n", start) + 2
+    helper = tmp_path / "assay-git.sh"
+    helper.write_text(script[start:end] + "\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, timeout=30)
+    keys = ("maintenance.auto", "maintenance.autoDetach", "gc.autoDetach")
+    for key in keys:
+        subprocess.run(["git", "-C", str(repo), "config", "--local", key, "true"], check=True, timeout=30)
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; for key in maintenance.auto maintenance.autoDetach gc.autoDetach; do assay_git -C "$2" config --get "$key"; done',
+            "assay-git-test",
+            str(helper),
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["false", "false", "false"]
 
 
 def test_each_lane_declares_exactly_its_pinned_argv():

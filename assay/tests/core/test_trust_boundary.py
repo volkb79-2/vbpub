@@ -55,6 +55,7 @@ _VERDICT_NAMES = (
     "REASON_CODES",
     "ReasonCode",
     "RedFirstResult",
+    "ResourceLimitEvidence",
     "SnapshotPolicy",
     "SourcePosition",
     "VERDICT_SCHEMA_VERSION",

@@ -80,11 +80,23 @@ when another `run-gate-*` container is running; exit 3 always means rerun, and t
 receipt is left as it was. On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
 runs alongside other projects' `run-gate-*` containers (printing
 `ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
-SQL harness's own `--allow-shared-host` still refuses only another `run-gate-assay-sql-*`
-container. No collected judge test
+SQL phase starts a separate `tester-unified` container with `--cgroupns=host`
+and mounts the Docker socket only there, so its real Assay witness can observe
+the cgroup ancestors required by B145. Its `--allow-shared-host` still refuses
+another `run-gate-assay-sql-*` container after excluding its own runner. No collected judge test
 reads history or tags (A-475), so both lanes use the shallow snapshot default
 (`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so
 the seed holds only the judged commit), and snapshot refs/tags are not copied.
+The registered gate issues its receipt only after both qualification containers
+are removed; a failed removal is a failed gate, not a successful qualification.
+Both container lifecycles use their recorded Docker IDs for operations and
+cleanup. If Docker reports that a fixture or runner name is already in use, the
+gate leaves that container untouched because it has no cidfile proving it
+created the object, and reports the run as inconclusive. A confirmed refusal
+before PostgreSQL launch discards the clone; an ambiguous result after a launch
+attempt preserves it for recovery. The runner uses Docker `--mount` for repository and socket
+binds, so a missing daemon-side source fails at launch rather than creating a
+phantom directory.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
 the separate 60-minute R0/R1 preflight. This interim budget resets on a new
 invocation, so do not use resume/retry to bypass the overall ceiling. B110
@@ -119,6 +131,62 @@ cd assay
 
 A red preflight is a verified failure report and stops the full gate before
 mutation begins.
+
+### Native R2 resource-limit observation (B145)
+
+Native R2 requires visible cgroup v2 event counters and limit configuration
+through the hierarchy. Assay resolves the cgroup of the thread running the
+candidate sampler from `/proc/thread-self/cgroup`, so threaded cgroup v2
+placements do not inherit the process leader's identity. It checks the mount ID
+of the opened hierarchy and every opened counter/limit file against the
+selected cgroup2 mount in `/proc/self/mountinfo`; it reads each file through
+the descriptor whose mount ID it checked. An ancestor overmount that redirects
+those paths therefore refuses the lane. It also checks capabilities from
+`/proc/thread-self/status`, since a worker's capabilities can differ from the
+process leader's. Assay samples the candidate's
+`pids.events.max` when
+exposed, even if its own `pids.max` is unlimited, and every visible ancestor's
+event counter when available. A finite `pids.max` requires its event counter.
+Sampling unlimited active ancestors covers `pids_localevents`, where a
+rejected fork can increment the nearest active ancestor's local counter while
+a higher ancestor enforces the finite limit. Assay samples
+`memory.events.max`, `oom`, `oom_kill`, and `oom_group_kill` at the candidate
+and every visible ancestor with those interfaces. A finite `memory.max`
+requires its event file. If the candidate's memory controller is inactive,
+visible active ancestor counters are sampled too. `max` catches a memory limit boundary even when
+the OOM path does not run; `oom_kill` also catches a global OOM kill when the
+candidate's `memory.max` is unlimited. Run Docker lanes with `--cgroupns=host`
+so Assay can see the actual hierarchy root. A private cgroup namespace or a
+cgroup mount rooted below an ancestor cannot prove that a parent limit was
+untouched, so Assay refuses native R2 with `ERROR/EXEC_FAILED`. Every visible
+cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
+underlying `cgroup.procs` inode permissions on the candidate cgroup and all
+ancestors, since a read-only mount alone does not block
+`CLONE_INTO_CGROUP` into an existing child. The candidate must not have the
+permissions or capabilities to write those files. An overmount that shadows a
+sampled cgroup path also refuses native R2. There is no Assay config switch for
+this. This protection observes cgroup v2 events; it does not observe
+per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`, so consumers must not
+rely on it to distinguish failures caused by those limits. A change to the visible
+cgroup path, controller availability, or configured limits during a candidate
+also makes the run an infrastructure error. A counter increase at a shared
+finite ancestor can conservatively refuse a healthy candidate if sibling work
+hit that limit during the same window. If any sampled counter increases during
+a full candidate command, that candidate is recorded as `crashed` and the R2
+result is an infrastructure error, even if a test command also failed. A
+positive delta during a saved-witness replay instead stops the lane with a
+payload-free `ERROR/EXEC_FAILED` before Assay can retry the candidate; it does
+not produce a per-candidate outcome. Fix the runner's cgroup visibility or
+process/memory limit pressure, then rerun. If the lane budget expires before a
+candidate's full command starts, it stays `budget_exceeded`. Replacement
+materialization or a saved-witness replay may already have run. The zero-duration
+sample shared by `budget_exceeded` entries is taken after already-submitted work
+finishes; it does not bracket or describe that earlier work and does not prove
+that no earlier work ran. Pre-current
+B145 resume records are automatically cold starts under the new judge
+identity. Ingested third-party R2 reports have no local candidate process and
+do not carry these counters. See the
+[design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:
@@ -165,6 +233,20 @@ planned as ordinary assay lanes with large budgets, triggered remotely and
 invoked through the same project gate script; the bounded-long-judgment
 shape is the multi-target canary, which ships — see
 [Declare more than one canary probe](#declare-more-than-one-canary-probe-targets-and-aggregation-b007).
+
+## Automatic Git maintenance in Assay's own Git commands (B147)
+
+No lane or tester-image configuration change is needed. Run the lane as usual:
+
+```bash
+assay run unit
+```
+
+Assay replaces the environment of its own Git child processes, so image-level
+Git settings do not reach them. It pins `maintenance.auto=false`,
+`maintenance.autoDetach=false`, and `gc.autoDetach=false` directly on those
+commands. This does not change the consumer repository's `.git/config` or the
+Git configuration used by a separate process launched by the lane command.
 
 ## Obtain and verify an immutable release
 
@@ -224,6 +306,12 @@ Adopt R2 and R3 deliberately: mutation and canary runs execute isolated snapshot
 valuable on changed high-risk code, but cost materially more time and scratch disk. Set a small
 `max_mutants` and a lane budget first; expand only after observing real runs.
 
+When lanes share allowed environment names, declare an explicit project table
+`[defaults].env_passthrough` and omit the lane-level key where it adds nothing.
+The list is policy you write down: Assay has no built-in passthrough names, and
+fixed `env` values may not overlap the effective allowlist. See the
+[design rule](DESIGN-GUIDE.md#5-defaults-doctrine-dstdns-agents-42a-applied).
+
 ## Declare your snapshot selection
 
 Every lane that claims R1, R2 or R3 must add an `[isolation]` table — there is no default and no
@@ -272,6 +360,9 @@ copy and adapt:
 ```toml
 schema_version = 2
 
+[defaults]
+env_passthrough = ["PATH"]
+
 [isolation]
 dirty_ignore = ["nyxloom-trove/**", ".assay/**"]
 
@@ -284,7 +375,6 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "-q", "--cov=src", "--cov-report=json:cov.json"]
 env = {}
-env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
 
@@ -309,8 +399,11 @@ positive integer; `*_bytes` values are uncompressed logical bytes,
 `max_total_tree_blob_bytes` counts unique blobs in the judged tree, and it
 cannot exceed `max_total_object_bytes`. Limits are project-wide so `assay
 plan` and `assay run` cannot silently choose different transfer policy. The
-lane schema remains `2`, but an older assay rejects these new keys: repin the
-consumer before committing them.
+lane schema remains `2`, but an older assay rejects these new keys, including
+`[defaults]`: repin the consumer before committing them. Project defaults are
+the first entries in the effective list; lane entries follow, with duplicates
+removed in first-occurrence order. The verdict's `env_passthrough` records that
+effective list, even when an allowed name was absent at runtime.
 
 `dirty_ignore` uses repo-top-relative POSIX globs, shared with native R2's
 `identity_exclude`. It records matching pre-existing dirt on the verdict; it
@@ -327,6 +420,58 @@ The flag applies only to R1+ snapshot lanes; R0 remains strict. The verdict's
 warning, by `assay verify` but is refused by `assay analyze receipt` by
 default. `run-gate.py --allow-dirty` is a separate outer clean-tree policy;
 run-gate does not forward or reinterpret it as assay's flag.
+
+## Scope a changed-lines lane to one file (B141)
+
+In a monorepo, a lane can own a single file when a neighboring package's
+changed lines need different tests. `source_roots` is relative to the
+directory containing `assay.toml`; an existing regular file selects only that
+exact declared path, and the path must reach it without traversing a symlink.
+If the file is aliased, declare its resolved in-project path directly. Sibling
+files and sibling symlinks pointing to it stay out of R1 and native R2
+changed-line selection. An ingested R2 report must name that same lexical file
+path too; resolving a sibling symlink onto the file does not make the sibling
+part of the lane's evidence. Directory roots can still use an in-project
+directory symlink because their containment is checked after resolution.
+
+```toml
+schema_version = 2
+
+[lanes.dns_zone]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = [
+  "pytest", "tests/dns/test_zone.py", "-q",
+  "--cov=packages/dns/src", "--cov-report=json:coverage.json",
+]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.dns_zone.isolation]
+snapshot_selection = "repository"
+
+[lanes.dns_zone.judge]
+language = "python"
+source_roots = ["packages/dns/src/zone.py"]
+fail_under = 100.0
+allow_excluded = false
+base = "origin/main"
+
+[lanes.dns_zone.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+```
+
+The gate refuses a missing file, an absolute path, a file path traversing a
+symlink, a file absent from the judged commit, or a path resolving outside the
+project root. An ignored or untracked local file does not count: commit it
+before running the lane, or point `source_roots` at a tracked source file. A
+directory continues to select its descendants as before.
+See the [design rule](DESIGN-GUIDE.md#file-scoped-source-roots) for exact
+membership and containment behavior.
 
 If a disposable or vendored Go module root is where `assay.toml` must live,
 the lane file itself must be tracked in that checkout, or matched by a
@@ -749,14 +894,12 @@ mutant was never re-executed against the assertion that kills it.
 * **the lane's declared `env`, by name and value** — committed
   configuration, so a different declared `PYTHONPATH` really is a different
   judge, and the value is the same on every invocation;
-* **the NAMES — never the values — of everything else in the resolved
-  environment**: the `env_passthrough` names that were actually present, and
-  any `infrastructure` fact injected at plan resolution. Those values are
-  per-invocation by design (a worktree's own host path, a per-instance DSN,
-  `TERM`), so folding them by value would make resume impossible across
-  exactly the ephemeral-checkout case `--state-dir` exists for. If a
-  passed-through value genuinely must be part of the identity, declare it in
-  `env` instead;
+* **ambient environment identity**: every present `env_passthrough` name and
+  a SHA-256 fingerprint of its value are folded in; B142 emits the same
+  fingerprint in the verdict without exposing the value. A changed DSN,
+  credential, worktree path or `TERM` therefore makes saved candidate results
+  stale and they run again. Infrastructure facts remain name-only under
+  B088's existing rule;
 * **`cwd` and the project prefix** — which decide what the relative paths in
   `argv` resolve to;
 * **the declared `link_paths`** — declaring, dropping or re-pointing one
@@ -767,16 +910,16 @@ mutant was never re-executed against the assertion that kills it.
 
 Three consequences worth planning around:
 
-* **Resume is per-tree, not per-commit.** Two commits with identical trees
+* **Resume is per-tree and per-passthrough-value, not per-commit.** Two commits with identical trees
   (an amended message, a rebase that moved nothing) share one identity and
   resume each other. A commit that changed *any* file in the judged tree
   re-executes every candidate, including ones it cannot have affected. That
   is deliberate: an unnecessary re-execution costs time, a wrongly trusted
   verdict costs the whole point of running mutation testing. The uses
-  `--state-dir` exists for are unaffected — several worktrees of **one
-  commit**, budget-capped retries, and `--shard` fan-out all judge the same
-  tree with the same command, and a per-instance passthrough value does not
-  break them.
+  `--state-dir` exists for still apply when those worktrees use the same
+  passthrough values: cross-worktree retries, budget-capped retries, and
+  `--shard` fan-out can reuse records only when tree, command and environment
+  fingerprints all match.
 * **An assay upgrade re-executes.** Records produced by an earlier version
   are not replayed by a later one.
 * **A `link_paths` directory's contents are still outside the identity.**
@@ -2325,10 +2468,10 @@ A lane file that fails to load exits `2` with the loader's own message on
 stderr and **no JSON on stdout** — never a partial document — exactly like
 the text form of `assay lanes`.
 
-## Size a mutation lane before running it
+## Size a native mutation lane before running it
 
-For any R2 mutation lane, inspect the workload without executing its command or creating mutant
-snapshots:
+For a native R2 mutation lane, inspect the workload without executing its
+command or creating mutant snapshots:
 
 ```bash
 assay plan worker_lane --file assay.toml
@@ -2347,21 +2490,24 @@ plan` never executes anything at all). They are **not an upper bound**: a candid
 suite can take longer than the declared bound or the placeholder. Treat them as a sizing input for the
 optional per-candidate bound, never as a forecast.
 
-The plan JSON also carries `commit` and `tree` (the full object ids of the source it was made at),
-and `assay plan` prints a one-line hint on stderr (stdout stays one JSON document) naming the measured
-projection. To project the campaign from a measured baseline, save the plan and give it a progress
-file that holds a completed baseline (a preflight or an R0/R1 run at the same commit):
+The plan JSON also carries `lane`, `commit` and `tree` (the full object ids of
+the source it was made at), and `assay plan` prints a one-line hint on stderr
+(stdout stays one JSON document) naming the measured projection. To project
+the campaign from a measured baseline, save the plan and give it a progress
+file from a completed baseline at that same lane and commit, such as a
+preflight or an R0/R1 run:
 
 ```bash
 assay plan worker_lane --file assay.toml > plan.json
-assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-self-qualification-preflight.jsonl --workers 3
+assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-worker_lane.jsonl --workers 3
 ```
 
-It prints one JSON object (`schema_version`, `commit`, `tree`, `candidates`, `baseline_s`,
+It prints one JSON object (`schema_version`, `lane`, `commit`, `tree`, `candidates`, `baseline_s`,
 `per_candidate_s`, `workers`, `projected_worker_hours`, `projected_wall_hours`) and exits `0`, or exits
-`2` with one stderr line and empty stdout when the input is unusable (no completed baseline, a commit
-mismatch between plan and progress, an unreadable file). It is advisory: it never classifies a
-candidate. Use the plan's facts to choose an optional per-candidate bound:
+`2` with one stderr line and empty stdout when the input is unusable (no
+completed baseline, a lane or commit mismatch between plan and progress, an
+unreadable file). It is advisory: it never classifies a candidate. Use the
+plan's facts to choose an optional per-candidate bound:
 
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
@@ -2371,6 +2517,41 @@ max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
 ```
+
+### Size an ingested JavaScript R2 campaign (B137)
+
+`assay plan` enumerates Assay's native candidate inventory. An ingested lane
+such as the Stryker lane above has no such inventory: the foreign report does
+not provide the execution facts Assay needs for candidate-count estimates.
+`assay plan ui_mutation --file assay.toml` therefore returns JSON with
+`status = "unsupported"`, the lane, `reason_code = "MUTATION_UNSUPPORTED"`,
+and a named reason. Passing that result to `assay analyze plan-estimate`
+forwards the reason and exits `2`; it does not return a fabricated zero or
+projection.
+
+For the first run, set the lane's `budget` to the maximum per-job duration
+already allowed by your CI policy. Keep that ceiling within the job's actual
+timeout and configure Stryker's own per-mutant timeout below it. Then run the
+campaign under the normal gate so Assay records its verdict and progress:
+
+```bash
+if assay run ui_mutation --resume \
+  --progress .assay/progress-ui_mutation.jsonl \
+  --verdict-json .assay/verdict-ui_mutation.json; then
+  assay_exit=0
+else
+  assay_exit=$?
+fi
+assay analyze campaign ui_mutation --file assay.toml \
+  --expected-commit "$REVIEW_HEAD" \
+  --progress .assay/progress-ui_mutation.jsonl \
+  --verdict .assay/verdict-ui_mutation.json --command-exit "$assay_exit"
+```
+
+Review the recorded elapsed time after a complete run. Use it as an observation
+when adjusting the next run's budget, still bounded by CI policy and the
+consumer's own timeout. This first-run procedure produces no candidate count
+or forecast; the CI ceiling is the source for the initial budget.
 
 ### `budget_per_candidate = "auto"` (the default, B091/D-23)
 
@@ -2835,11 +3016,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v13 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v14 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
-  candidate inventory and remains a cold start for `--reuse-from`.
+  candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
+  under the v14 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -2849,7 +3031,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v13 verdict. On a later commit, Assay always
+each killed candidate. Keep that v14 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -2880,9 +3062,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 verdict is a cold start: `assay plan` marks its evidence
-unproven and `assay run` runs every candidate fully after the baseline;
-`assay verify` still refuses v12. Wrapped commands, xdist, custom test loops,
+that candidate. A v12 or v13 verdict is a cold start under v14: `assay plan`
+marks its evidence unproven and `assay run` runs every candidate fully after
+the baseline; `assay verify` refuses both versions. Wrapped commands, xdist, custom test loops,
 or uncertain pytest hooks also use full runs. `--reuse-from` cannot be combined
 with `--shard`, because the feature returns a complete unsharded campaign.
 The [B106 design](DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
@@ -2972,15 +3154,17 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-Verdict schema v13 and lane schema v2 are both hard cuts (no dual-version
-verifier, no compatibility shim, no upgrade-in-place — see
+The current verdict schema is v14, a hard cut from v13. Lane schema v2 was a
+hard cut from v1 and remains current (no dual-version verifier, no compatibility
+shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` also rejects v12
-verdicts on the schema version alone.
+table at all — it is simply an unknown key. `assay verify` rejects v13 and
+earlier verdicts on the schema version alone; see the [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14).
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
 
@@ -2994,6 +3178,83 @@ has nothing to do with your product: land the pin one commit and the schema bump
 commit in between either runs a v1 assay against a v2 file (rejected as an unknown key) or a v2
 assay against your still-v1 file (rejected as a missing `[isolation]` table) — a self-inflicted
 outage with a one-line fix that is obvious only once you already know why the gate went red.
+
+## Migration notes (v13 to v14)
+
+Verdict schema v14 is a **hard cut**. `assay verify` refuses a v13 verdict on
+the version field alone; there is no dual-version verifier or upgrade-in-place.
+Repin Assay and regenerate archived verdicts that still need verification.
+`--reuse-from` recognizes v13 and v12 artifacts only as cold starts, so no
+mutation witnesses are reused from them.
+
+Lane schema stays at v2. Existing v2 lane files continue to load unchanged, but
+this release adds the explicit top-level `[defaults].env_passthrough` key. An
+older Assay release treats `[defaults]` as unknown, so repin before adding it.
+When adopting it, write the project allowlist and the Assay pin together;
+project names precede lane names in the effective ordered, deduplicated list.
+
+Each resolved verdict now carries `env_passthrough`, the effective list of
+allowed names, even when a name was absent from the invoking environment.
+`env_effective` still contains only environment inputs that were present.
+Under B142, a present passthrough value is represented there by
+`"<passthrough>"`; its
+full SHA-256 appears in `env_effective_passthrough_sha256`. Fixed `env` values
+and infrastructure facts remain verbatim. Update consumers that previously
+read a passthrough value from `env_effective`.
+
+### Keep passthrough secrets out of verdicts (B142)
+
+Given two verdicts, compare a passthrough fingerprint without loading or
+printing the underlying value:
+
+```python
+import json
+from pathlib import Path
+
+name = "SCHEMA_GATE_DSN"
+before = json.loads(Path("before.json").read_text(encoding="utf-8"))
+after = json.loads(Path("after.json").read_text(encoding="utf-8"))
+old = before["env_effective_passthrough_sha256"].get(name)
+new = after["env_effective_passthrough_sha256"].get(name)
+if old is None or new is None:
+    raise SystemExit(f"{name} was absent from one verdict")
+if old != new:
+    raise SystemExit(f"{name} changed between runs")
+```
+
+The verifier validates that passthrough names carry the marker and that digest
+keys and values have the right shape. It cannot compare a saved verdict with
+the environment that produced it; compare fingerprints from separate verdicts
+when checking for a changed input. These are unkeyed SHA-256 fingerprints, so
+guessable values can be tested against them. They are not an authentication
+mechanism or a password hash. Fixed `env` values remain verbatim in verdicts;
+keep secrets in `env_passthrough`, not in the committed lane declaration.
+If stdout or stderr contains an exact passthrough value, Assay masks it before
+truncating the retained tail. This protects secrets that cross the tail
+boundary, where truncating first would hide the full value from the redactor.
+The same pre-truncation masking applies to crashed-candidate resume records,
+failed `environment_command` diagnostics, and the Go statement-position
+helper's stderr refusal. Records written by older Assay versions are not
+rewritten; inspect or remove old mutation-state files before sharing or
+archiving them if their commands may have echoed a credential.
+
+## Migration notes (v12 to v13)
+
+Verdict schema v13 was a **hard cut**. `assay verify` refuses a v12 verdict by
+schema version; it does not upgrade saved artifacts. Repin Assay before
+verifying archived v13-era artifacts, and regenerate any archived v12 verdict
+that still needs to pass `assay verify`.
+
+For `--reuse-from`, a v12 verdict is a cold start: it supplies no reusable
+mutation witness, so the current candidate runs in full. You may keep a v12
+artifact as historical evidence, but it cannot save candidate work. The v13
+cut did not change lane schema v2 or require a lane-file edit. When upgrading
+directly to v14, also apply the separate [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14).
+
+Adopt in this order: repin Assay, regenerate any archived verdicts that must
+verify under the new pin, then compare or reuse current-run evidence. No lane
+configuration change is needed for the v12-to-v13 cut.
 
 ## Migration notes (v11 → v12)
 

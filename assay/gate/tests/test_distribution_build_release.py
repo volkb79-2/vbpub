@@ -61,6 +61,15 @@ import build_release  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+def test_release_builder_git_argv_disables_automatic_maintenance():
+    argv = build_release._git_argv("-C", "/tmp/repo", "rev-parse", "HEAD")
+    pairs = tuple(zip(argv, argv[1:]))
+
+    assert ("-c", "maintenance.auto=false") in pairs
+    assert ("-c", "maintenance.autoDetach=false") in pairs
+    assert ("-c", "gc.autoDetach=false") in pairs
+
+
 def test_the_builder_is_a_standalone_stdlib_only_module():
     """A consumer runs the release path before assay is installed anywhere, so
     the builder may not import assay -- the same constraint `release_wheel.py`

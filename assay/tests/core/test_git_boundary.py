@@ -292,10 +292,10 @@ def test_a_resolved_git_dir_that_is_not_an_existing_absolute_directory_is_refuse
     assert "not an absolute, existing directory" in str(excinfo.value)
 
 
-def test_every_git_child_disables_optional_index_preload_threads(
+def test_every_git_child_pins_resource_and_maintenance_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The closed Git argv pins the resource-affecting option.
+    """The closed Git argv pins resource and automatic-maintenance options.
 
     ``GIT_CONFIG_*`` cannot be used for this assertion: the replacement
     environment deliberately removes ambient configuration. Capture both the
@@ -318,7 +318,25 @@ def test_every_git_child_disables_optional_index_preload_threads(
 
     assert len(captured) == 2
     for argv in captured:
-        assert ("-c", "core.preloadIndex=false") in tuple(zip(argv, argv[1:]))
+        pairs = tuple(zip(argv, argv[1:]))
+        assert ("-c", "core.preloadIndex=false") in pairs
+        assert ("-c", "maintenance.auto=false") in pairs
+        assert ("-c", "maintenance.autoDetach=false") in pairs
+        assert ("-c", "gc.autoDetach=false") in pairs
+
+
+def test_p22_git_child_pins_auto_maintenance_config():
+    argv = git_module._p22_argv(
+        Path("/usr/bin/git"),
+        git_dir=Path("/repo/.git"),
+        work_tree=Path("/repo"),
+        args=("rev-parse", "HEAD"),
+    )
+
+    pairs = tuple(zip(argv, argv[1:]))
+    assert ("-c", "maintenance.auto=false") in pairs
+    assert ("-c", "maintenance.autoDetach=false") in pairs
+    assert ("-c", "gc.autoDetach=false") in pairs
 
 
 def test_p22_git_child_retries_transient_resource_exhaustion(

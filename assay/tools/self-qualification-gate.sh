@@ -8,6 +8,14 @@ set -euo pipefail
 
 die() { printf 'self-qualification-gate: %s\n' "$*" >&2; exit 2; }
 
+assay_git() {
+  command git \
+    -c maintenance.auto=false \
+    -c maintenance.autoDetach=false \
+    -c gc.autoDetach=false \
+    "$@"
+}
+
 worktree="${1:?usage: self-qualification-gate.sh WORKTREE}"
 requested_lane="${2:-self-qualification}"
 project="$worktree/assay"
@@ -23,17 +31,17 @@ esac
 
 cd "$project"
 mkdir -p .assay
-source_commit="$(git rev-parse HEAD)"
-source_tree="$(git rev-parse 'HEAD^{tree}')"
-[[ "$(git rev-parse "${source_commit}^{tree}")" == "$source_tree" ]] \
+source_commit="$(assay_git rev-parse HEAD)"
+source_tree="$(assay_git rev-parse 'HEAD^{tree}')"
+[[ "$(assay_git rev-parse "${source_commit}^{tree}")" == "$source_tree" ]] \
   || die "captured source commit does not resolve to the captured tree"
 ensure_source_unchanged() {
   local worktree_status
-  [[ "$(git rev-parse HEAD)" == "$source_commit" ]] \
+  [[ "$(assay_git rev-parse HEAD)" == "$source_commit" ]] \
     || die "HEAD changed during B105 qualification"
-  [[ "$(git rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
+  [[ "$(assay_git rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
     || die "source tree changed during B105 qualification"
-  worktree_status="$(git status --porcelain --untracked-files=all)" \
+  worktree_status="$(assay_git status --porcelain --untracked-files=all)" \
     || die "cannot inspect worktree changes during B105 qualification"
   [[ -z "$worktree_status" ]] \
     || die "worktree files changed during B105 qualification"
@@ -50,13 +58,13 @@ trap cleanup EXIT
 # worktree cannot enter the judge artifact. The clone remains in the same
 # repository history, allowing setuptools-scm to derive the reviewed version.
 echo "B105_PHASE=clone-exact-source"
-git clone --no-local --no-checkout --quiet "$worktree" "$scratch/source"
-git -C "$scratch/source" sparse-checkout init --cone
-git -C "$scratch/source" sparse-checkout set assay
-git -C "$scratch/source" checkout --quiet --detach "$source_commit"
-[[ "$(git -C "$scratch/source" rev-parse HEAD)" == "$source_commit" ]] \
+assay_git clone --no-local --no-checkout --quiet "$worktree" "$scratch/source"
+assay_git -C "$scratch/source" sparse-checkout init --cone
+assay_git -C "$scratch/source" sparse-checkout set assay
+assay_git -C "$scratch/source" checkout --quiet --detach "$source_commit"
+[[ "$(assay_git -C "$scratch/source" rev-parse HEAD)" == "$source_commit" ]] \
   || die "private clone HEAD differs from selected source commit"
-[[ "$(git -C "$scratch/source" rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
+[[ "$(assay_git -C "$scratch/source" rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
   || die "private clone tree differs from selected source tree"
 
 # S1 (B123): the full lane needs the registered tester-unified gate to have passed
