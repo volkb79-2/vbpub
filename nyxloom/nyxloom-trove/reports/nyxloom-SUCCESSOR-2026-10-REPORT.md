@@ -34,6 +34,7 @@ Note: the venv `run-gate` (rev 46) cannot read this tree's `run-gate.root.toml`;
 |---|---|---|
 | tester-unified (R0+R1) | `9251423a9` | FAIL UNCOVERED_LINES: `cli_registry.py` 315-316 (negative `--brief-max-chars`), `cli.py` 893 branch |
 | tester-unified | `76cdf93fa` | **PASS** (R0 PASS, R1 PASS; verdict read separately from `.assay/verdict-tester-unified.json`) |
+| tester-unified | `ef538200b` (final source state; later commits touch only this report) | **PASS** (R0 PASS, R1 PASS) |
 | session-extract | `76cdf93fa` | R0 PASS, R1 FAIL UNCOVERED_LINES (the new test file was not in the lane argv; 126/248 branches), R2 over cap (46), R3 inconclusive (no R1 baseline) |
 | session-extract | `f055bf355` | R0 PASS, **R1 PASS 100%**, R3 PASS, R2 BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED |
 | session-extract | `1109d6de0` | same; R2 still over the (then 66) cap |
