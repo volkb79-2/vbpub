@@ -36,6 +36,16 @@ Host PSI cpu some avg10 was about 4-5 before runs; all runs serial under the flo
 * Full unit suite (`python -m pytest tests analysis/tests -q`): first run 137 failed, 7493 passed. 136 of the 137 fail identically on an untouched checkout of `b2c7522b6` (checked by rerunning exactly those ids in a temporary worktree, since removed); the cause visible in the logs is `cannot observe cgroup v2 process and memory limit events ... the cgroup namespace hides the process's parent cgroups` (B145 fail-closed on this devcontainer) plus the judge-provenance notice for an uninstalled source tree. The 137th was mine (`test_untrusted_json_parse_sweep`, an unguarded `json.loads`); fixed with `RecursionError` and a test. After the fix I reran only the focused set (failure-summary, sweep, import contracts, docs checks, plan-estimate): all pass except the one baseline cgroup failure `test_op5_...`. **I did not rerun the whole suite after the fix**; the controller's registered gate covers that.
 * So this devcontainer cannot execute native R2 tests; those 136 are unverified here either way. `tester-unified` and self-qualification lanes were not run (per instructions).
 
+## Review round 1
+
+1. `test_a_passed_test_is_never_named` added. Plants `PASSED` in `_PYTEST_SUMMARY` and `"pass"` accepted in `_go_json` each failed that test; both reverted.
+2. `test_a_passthrough_secret_in_a_failing_id_is_masked_in_the_summary` (real `main` run, `X_PASSWORD` passthrough): secret absent from stdout and stderr. Plant `safe = raw` in `runner._bounded_tail` (removing the source masking) failed it; reverted.
+3. CONSUMERS reworded. The coordinator asked for "up to four lines"; the real maximum is five (headline, optional `R0: FAIL`, commit, argv, optional appended-argv line, the last already conditional before B146), so the text says three to five and warns against fixed line positions.
+4. Parser: pytest ids now run to ` - ` or end of line (`t.py::test_x[a b-c]` kept whole); ANSI escapes are stripped before parsing; the old `[0m` pin is now `a > b`; tests added for spaces and for coloured pytest/go/vitest/jest output.
+5. `test_a_real_file_root_admits_only_that_file_not_its_package_siblings` (real files, parametrized over `source_root_files` of `("pkg/owned.zzz",)` and `()`) in `tests/core/test_evaluate_language_free.py`. Plant treating a file root as its parent directory failed 4 tests including both new cases; reverted.
+
+`failure_summary.py` still 100% line and branch (focused run). Full `tests` plus `analysis/tests` run: 136 failed, 7507 passed; the failing ids are a subset of the baseline set (zero new ids by `comm`), all cgroup-related as before.
+
 ## Files
 
 `assay/src/assay/failure_summary.py` (new), `assay/src/assay/cli.py`, `assay/tests/core/test_cli_run_failure_summary.py` (new), `assay/docs/CONSUMERS.md`, `assay/CHANGES.md`, `assay/nyxloom-trove/4-backlog.md`, this report.

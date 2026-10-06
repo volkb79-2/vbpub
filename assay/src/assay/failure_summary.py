@@ -32,7 +32,10 @@ __all__ = ["first_failing_test"]
 #: Display bound for one name; a longer one is cut, never rejected.
 MAX_NAME_CHARS = 200
 
-_PYTEST_SUMMARY = re.compile(r"^(?:FAILED|ERROR) (\S*(?:::|\.py)\S*)", re.MULTILINE)
+_PYTEST_SUMMARY = re.compile(
+    r"^(?:FAILED|ERROR) (\S*(?:::|\.py)(?:(?! - )[^\n])*)", re.MULTILINE
+)
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _PYTEST_HEADER = re.compile(r"^_{2,} (\S.*?) _{2,}$", re.MULTILINE)
 _GO_TEXT = re.compile(r"^\s*--- FAIL: (\S+)", re.MULTILINE)
 _VITEST = re.compile(r"^\s*FAIL +(\S.* > \S.*)$", re.MULTILINE)
@@ -95,6 +98,7 @@ def first_failing_test(*texts: str | None) -> str | None:
     for text in texts:
         if not text:
             continue
+        text = _ANSI.sub("", text)
         found: Iterable[tuple[int, str]] = (
             hit for hit in (read(text) for read in _RECOGNISERS) if hit is not None
         )

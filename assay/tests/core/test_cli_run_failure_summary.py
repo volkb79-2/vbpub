@@ -197,4 +197,70 @@ def test_a_name_is_single_line_and_bounded():
     got = failure_summary.first_failing_test(f"--- FAIL: {long_name}\n")
     assert got == "a" * failure_summary.MAX_NAME_CHARS
     assert failure_summary.first_failing_test("--- FAIL: \x01\n") is None
-    assert failure_summary.first_failing_test(" FAIL  a > b\x1b[0m\n") == "a > b [0m"
+    assert failure_summary.first_failing_test(" FAIL  a > b\x1b[0m\n") == "a > b"
+
+
+def test_a_pytest_id_with_spaces_is_kept_whole_up_to_the_reason_separator():
+    text = "FAILED tests/t.py::test_x[a b-c] - assert 1 == 2\n"
+    assert failure_summary.first_failing_test(text) == "tests/t.py::test_x[a b-c]"
+    assert failure_summary.first_failing_test("FAILED t.py::test_y[a b]\n") == (
+        "t.py::test_y[a b]"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\x1b[31mFAILED\x1b[0m t.py::t\n", "t.py::t"),
+        ("FAILED \x1b[1mt.py::t\x1b[0m\n", "t.py::t"),
+        ("\x1b[31m--- FAIL: TestC\x1b[0m (0.00s)\n", "TestC"),
+        ("\x1b[1m\x1b[41m FAIL \x1b[49m\x1b[22m a.test.ts > s > t\x1b[0m\n", "a.test.ts > s > t"),
+        ("\x1b[31m●\x1b[39m Suite › case\n", "Suite › case"),
+        ("\x1b[0m\x1b[1m\n", None),
+    ],
+)
+def test_ansi_colouring_does_not_hide_or_pollute_a_name(text, expected):
+    assert failure_summary.first_failing_test(text) == expected
+
+
+def test_a_passed_test_is_never_named():
+    assert (
+        failure_summary.first_failing_test("PASSED tests/a.py::ok\nFAILED tests/b.py::bad\n")
+        == "tests/b.py::bad"
+    )
+    stream = (
+        '{"Action":"pass","Test":"TestOk"}\n'
+        '{"Action":"fail","Test":"TestBad"}\n'
+    )
+    assert failure_summary.first_failing_test(stream) == "TestBad"
+    assert failure_summary.first_failing_test('{"Action":"pass","Test":"TestOk"}\n') is None
+
+
+def test_a_passthrough_secret_in_a_failing_id_is_masked_in_the_summary(
+    git_repo: GitRepo,
+):
+    secret = "s3cr3t-Value-9f2"
+    lane = set_key(
+        R0_LANE,
+        "argv",
+        f'["/bin/sh", "-c", "echo \\"FAILED tests/t.py::t[$X_PASSWORD]\\"; exit 1"]',
+    )
+    lane = set_key(lane, "env_passthrough", '["PATH", "X_PASSWORD"]')
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+    import os
+
+    previous = os.environ.get("X_PASSWORD")
+    os.environ["X_PASSWORD"] = secret
+    try:
+        code, out, err = _run(["run", "package", "--file", str(path)])
+    finally:
+        if previous is None:
+            del os.environ["X_PASSWORD"]
+        else:
+            os.environ["X_PASSWORD"] = previous
+
+    assert code == 1
+    assert "R0: FAIL (first failing test: tests/t.py::t[" in out
+    assert secret not in out
+    assert secret not in err

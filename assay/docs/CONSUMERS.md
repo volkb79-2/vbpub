@@ -3641,7 +3641,8 @@ assay: ERROR/FORMAT_MISMATCH: declared coverage format 'coverage-py-json', but t
 Where it goes:
 
 - **From the CLI**, to **stderr**. Machine output is unaffected: stdout still
-  carries the three-line run summary, or the whole verdict document under
+  carries the run summary (three to five lines: headline, optional `R0: FAIL`, commit, argv and an optional appended-argv line; do not read fixed line
+  positions, because the `R0: FAIL` line below is conditional), or the whole verdict document under
   `--verdict-json -`. A gate that captures stderr into its log needs no
   change to benefit. (B146) When the retained command output names a failing
   test (pytest, `go test` text or JSON, vitest, jest) and the headline is not
