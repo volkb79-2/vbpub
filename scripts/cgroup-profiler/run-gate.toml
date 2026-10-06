@@ -62,10 +62,14 @@ environment = "tester-unified"
 # `./run-gate.py --base <exact-ref> r2`, and inspect the exact Assay plan before
 # the campaign. run-gate can derive a base if the flag is omitted, so the
 # acceptance command must supply the recorded ref explicitly.
+# Selective Assay diagnostics may be appended after `--`; run-gate records
+# them as selective, non-gate runs. Omit them for an acceptance R2 campaign.
 argv = [
     "bash", "-c",
-    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --request-base {base} --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+    "set -euo pipefail && export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec \"$TESTER_VENV/bin/python3\" -m assay.cli run r2 --request-base {base} --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json \"$@\"",
+    "cgroup-profiler-r2",
 ]
+accepts_args = true
 clean_tree = false
 # The prior P6 counts/rate in RW-438 are historical, not an estimate for this
 # P1 request-base campaign. Inspect and record the exact plan for the supplied
