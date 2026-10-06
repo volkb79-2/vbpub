@@ -349,7 +349,12 @@ class Installer:
                     event=f"install complete (duration {duration}){key_event}", status="ok",
                 )
         except BaseException as exc:
-            self.state.save(status="failed", phase="stage2", last_error=str(exc))
+            # failure_notified_at lets the OnFailure notifier (failure_notify.py)
+            # skip its own post: this path is about to announce the failure.
+            self.state.save(
+                status="failed", phase="stage2", last_error=str(exc),
+                failure_notified_at=datetime.now(timezone.utc).isoformat(),
+            )
             self._notify(
                 f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
                 event="install FAILED", status="fail", excerpt=str(exc),

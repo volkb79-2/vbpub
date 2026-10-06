@@ -66,19 +66,46 @@ def hook_server():
     thread.join(timeout=5)
 
 
-def fake_journalctl(tmp_path: Path, hook_url: str) -> Path:
+CAUSE = "ModuleNotFoundError: No module named 'cli_extended'"
+
+
+def fake_journalctl(tmp_path: Path, hook_url: str = "") -> Path:
+    """The REAL journal shape (LT-01 host-logs/logs.txt): systemd lines only.
+
+    The unit redirects stdout/stderr to the output file, so the traceback is
+    never in the journal. One line carries a planted secret to test redaction.
+    """
     bin_dir = tmp_path / "fakebin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     script = bin_dir / "journalctl"
+    planted = f"echo 'sd: posting to {hook_url} with {TG_TOKEN}'\n" if hook_url else ""
     script.write_text(
         "#!/bin/sh\n"
-        "echo 'Traceback (most recent call last):'\n"
-        "echo \"ModuleNotFoundError: No module named 'cli_extended'\"\n"
-        f"echo 'posting to {hook_url} with {TG_TOKEN}'\n",
+        "echo 'systemd[1]: Starting vbpub-bootstrap-stage2.service - vbpub debian install stage2...'\n"
+        "echo \"systemd[1]: vbpub-bootstrap-stage2.service: Main process exited, code=exited, status=1/FAILURE\"\n"
+        "echo \"systemd[1]: vbpub-bootstrap-stage2.service: Failed with result 'exit-code'.\"\n"
+        + planted,
         encoding="utf-8",
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return bin_dir
+
+
+def write_output(tmp_path: Path, hook_url: str = "") -> Path:
+    """The stage output file as on the live host (logs.txt lines 37-44), plus planted secrets."""
+    path = tmp_path / "custom_script.output2"
+    planted = f"[INFO] using {hook_url} and {TG_TOKEN}\n" if hook_url else ""
+    path.write_text(
+        "[INFO] Confirmation accepted via --yes.\n"
+        + planted +
+        "Traceback (most recent call last):\n"
+        "  File \"<frozen runpy>\", line 198, in _run_module_as_main\n"
+        "  File \"/opt/vbpub-debian-install-v2/debian_install_v2/bootstrap.py\", line 9, in <module>\n"
+        "    from cli_extended import (\n"
+        f"{CAUSE}\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def seed_state(state_dir: Path, **config) -> Path:
@@ -99,9 +126,15 @@ def test_bare_host_failure_notification_end_to_end(staged, tmp_path, hook_server
     (creds / "mattermost_webhook_url").write_text(hook_server + "\n")
     units, _ = render_units(tmp_path, staged, state_dir=str(state_dir))
     argv = exec_argv(units["vbpub-bootstrap-failed@.service"])
+    output_file = write_output(tmp_path, hook_server)
+    # What the real unit gets from bootstrap.env: the stage output path.
+    env_file = next(v for k, v in render_units(tmp_path, staged, state_dir=str(state_dir))[1].items()
+                    if k == "/etc/vbpub/bootstrap.env")
+    assert "VBPUB_STAGE2_OUTPUT=" in env_file
     env = bare_env(
         tmp_path, PATH=str(fake_journalctl(tmp_path, hook_server)),
         VBPUB_STATE_DIR=str(state_dir), CREDENTIALS_DIRECTORY=str(creds),
+        VBPUB_STAGE2_OUTPUT=str(output_file),
     )
     # `-E -S`: no PYTHONPATH, no site-packages -- cli_extended is not importable.
     result = run_bare([argv[0], argv[1], STAGE2], str(staged), env)
@@ -112,23 +145,118 @@ def test_bare_host_failure_notification_end_to_end(staged, tmp_path, hook_server
     assert text.startswith("❌ **lt\\-host**") or text.startswith("❌ **lt-host**")
     assert "run `deadbeef`" in text
     assert "stage2" in text
-    assert f"{STAGE2} FAILED - see journalctl -u {STAGE2}" in text
-    assert "ModuleNotFoundError: No module named 'cli_extended'" in text
+    assert f"{STAGE2} FAILED" in text
+    # The cause comes from the OUTPUT FILE; the journal has only systemd lines.
+    assert CAUSE in text
+    assert "Main process exited" in text  # journal's systemd lines are included too
     assert "\n```\n" in text and text.endswith("\n```")
+    assert len(text) < 3500
 
     state = json.loads(state_path.read_text())
     assert state["status"] == "failed"
     assert state["failed_unit"] == STAGE2
     assert state["phase"] == "stage1"  # untouched
-    assert "ModuleNotFoundError" in state["failed_journal_tail"]
-    assert STAGE2 in state["last_error"]
+    assert CAUSE in state["failed_output_tail"]
+    assert "Main process exited" in state["failed_journal_tail"]
+    assert CAUSE not in state["failed_journal_tail"]
+    assert state["last_error"] == f"{CAUSE} (see {output_file})"
     assert oct(state_path.stat().st_mode & 0o777) == "0o600"
 
     everything = text + state_path.read_text() + result.stdout + result.stderr
     assert SECRET_ID not in everything
     assert TG_TOKEN not in everything
     assert "***REDACTED***" in text
+    assert "***REDACTED***" in state["failed_output_tail"]
     assert "***REDACTED***" in state["failed_journal_tail"]
+
+
+def test_no_exception_in_output_names_the_output_file_in_last_error(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_path = seed_state(state_dir)
+    out = tmp_path / "out.log"
+    out.write_text("just some lines\nno exception here\n")
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    env = {"VBPUB_STATE_DIR": str(state_dir), "VBPUB_STAGE2_OUTPUT": str(out)}
+    assert failure_notify.main([STAGE2], env) == 0
+    last_error = json.loads(state_path.read_text())["last_error"]
+    assert str(out) in last_error and "journalctl" in last_error
+
+
+def test_output_path_defaults_to_the_custom_script_output():
+    assert failure_notify.output_path({}) == "/root/custom_script.output2"
+    assert failure_notify.output_path({"VBPUB_STAGE2_OUTPUT": "relative"}) == "/root/custom_script.output2"
+    assert failure_notify.output_path({"VBPUB_STAGE2_OUTPUT": "/x/y"}) == "/x/y"
+
+
+def post_with_state(tmp_path, hook_server, **state_extra):
+    state_dir = tmp_path / "state"
+    state_path = seed_state(state_dir)
+    state = json.loads(state_path.read_text())
+    state.update(state_extra)
+    state_path.write_text(json.dumps(state))
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    (creds / "mattermost_webhook_url").write_text(hook_server + "\n")
+    output_file = write_output(tmp_path)
+    env = {
+        "VBPUB_STATE_DIR": str(state_dir), "CREDENTIALS_DIRECTORY": str(creds),
+        "VBPUB_STAGE2_OUTPUT": str(output_file),
+    }
+    return failure_notify.main([STAGE2], env), state_path
+
+
+def test_duplicate_guard_skips_the_post_when_the_installer_just_announced(tmp_path, hook_server, monkeypatch):
+    # Decision: SKIP the post (the installer's own message already carries the
+    # exception text) but still enrich state.json with the evidence tails and
+    # leave the installer's status/last_error untouched.
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    now = failure_notify.datetime.now(failure_notify.timezone.utc).isoformat()
+    rc, state_path = post_with_state(
+        tmp_path, hook_server, status="failed", phase="stage2",
+        last_error="boom from installer", failure_notified_at=now,
+    )
+    assert rc == 0
+    assert Hook.bodies == []
+    state = json.loads(state_path.read_text())
+    assert state["last_error"] == "boom from installer"
+    assert state["status"] == "failed" and state["phase"] == "stage2"
+    assert CAUSE in state["failed_output_tail"]
+    assert state["failed_unit"] == STAGE2
+
+
+def test_stale_installer_notice_does_not_suppress_a_new_crash(tmp_path, hook_server, monkeypatch):
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    rc, _ = post_with_state(
+        tmp_path, hook_server, status="running", failure_notified_at="2020-01-01T00:00:00+00:00",
+    )
+    assert rc == 0
+    assert len(Hook.bodies) == 1
+
+
+def test_installer_failure_path_records_the_notice_timestamp(tmp_path):
+    # The producer side of the duplicate guard: Installer.resume's failure path.
+    from debian_install_v2.actions import HostActions
+    from debian_install_v2.config import Config
+    from debian_install_v2.installer import Installer
+    from debian_install_v2.state import StateStore
+
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        never_reboot=True, auto_reboot_after_stage1=False, credential_mode="systemd",
+    )
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    installer = Installer(config, HostActions(dry_run=True))
+    installer.state.dry_run = False
+
+    def boom():
+        raise RuntimeError("stage2 exploded")
+
+    installer._stage2 = boom
+    with pytest.raises(RuntimeError):
+        installer.resume()
+    state = json.loads((Path(config.state_dir) / "state.json").read_text())
+    assert state["status"] == "failed" and state["last_error"] == "stage2 exploded"
+    assert failure_notify.recently_notified(state)
 
 
 def test_telegram_backend_uses_credentials_and_thread(tmp_path, monkeypatch):
@@ -145,10 +273,33 @@ def test_telegram_backend_uses_credentials_and_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(failure_notify, "send_telegram", lambda token, chat, text, thread: sent.update(
         token=token, chat=chat, text=text, thread=thread) or True)
     monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["boom"])
-    assert failure_notify.main([STAGE2], {"VBPUB_STATE_DIR": str(state_dir)}) == 0
+    output_file = write_output(tmp_path, "https://mm.example.test/hooks/zzz")
+    env = {"VBPUB_STATE_DIR": str(state_dir), "VBPUB_STAGE2_OUTPUT": str(output_file)}
+    assert failure_notify.main([STAGE2], env) == 0
     assert sent["token"] == TG_TOKEN and sent["chat"] == "42" and sent["thread"] == "77"
-    assert f"{STAGE2} FAILED" in sent["text"]
+    assert f"{STAGE2} FAILED: {CAUSE}" in sent["text"]
+    assert CAUSE in sent["text"].split("\n", 1)[1]
     assert TG_TOKEN not in sent["text"]
+    assert "hooks/zzz" not in sent["text"]
+
+
+def test_send_telegram_url_keeps_the_token_colon_unescaped():
+    seen = {}
+
+    def opener(request, timeout):
+        seen["url"] = request.full_url
+        seen["data"] = request.data
+
+        class Response:
+            def close(self):
+                pass
+
+        return Response()
+
+    assert failure_notify.send_telegram(TG_TOKEN, "42", "hi", "", opener=opener)
+    assert seen["url"] == f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    assert "%3A" not in seen["url"]
+    assert b"chat_id=42" in seen["data"]
 
 
 def test_journal_lines_are_redacted_with_known_secrets(tmp_path, monkeypatch):
@@ -158,7 +309,17 @@ def test_journal_lines_are_redacted_with_known_secrets(tmp_path, monkeypatch):
     joined = "\n".join(lines)
     assert "zzz999" not in joined
     assert TG_TOKEN not in joined
-    assert "ModuleNotFoundError" in joined
+    assert "Main process exited" in joined
+
+
+def test_output_tail_is_bounded_redacted_and_cause_found(tmp_path):
+    path = tmp_path / "o.log"
+    path.write_text("".join(f"line {i}\n" for i in range(100)) + f"secret https://h.test/hooks/zz9 x\n{CAUSE}\n")
+    lines = failure_notify.read_output_tail(str(path), ())
+    assert len(lines) == failure_notify.OUTPUT_LINES
+    assert lines[-1] == CAUSE and failure_notify.find_cause(lines) == CAUSE
+    assert "zz9" not in "\n".join(lines)
+    assert failure_notify.read_output_tail(str(tmp_path / "missing"), ()) == []
 
 
 def test_missing_journalctl_and_state_and_credentials_never_raise(tmp_path, monkeypatch, capsys):

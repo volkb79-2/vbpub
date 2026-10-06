@@ -57,3 +57,39 @@ from the saved output:
 - debian-install-v2 `r0-r1`: PASS, exit 0, 770 passed, 11 skipped.
 - netcup `suite`: PASS, exit 0, 683 passed.
 - r2 (mutation), the VM lane and any live-host test were not run.
+
+## Review fix round 1
+
+**B1 (blocker): the failure message carried no cause.** The stage2 unit redirects stdout/stderr to the
+stage output file, so the traceback never reaches the journal (live capture: `LT-01/host-logs/logs.txt`);
+my round-0 test faked a journal containing the traceback and hid this. Fixed in `failure_notify.py`:
+
+- Tails the stage output file (`VBPUB_STAGE2_OUTPUT` from bootstrap.env, default
+  `/root/custom_script.output2`): last 15 lines of the last 64 KiB, each redacted.
+- `find_cause` takes the last `...Error:`/`...Exception:` line of that tail.
+- Message: event `<unit> FAILED: <cause>`, excerpt = output tail (budgeted to keep its END, where the cause is)
+  then the journal's systemd lines. Telegram text carries the same.
+- `state.json`: `failed_output_tail` and `failed_journal_tail`; `last_error` is `<cause> (see <output file>)`,
+  or, with no exception found, a text naming the output file and the unit's journal.
+- Tests now use the real shapes: a journal of systemd lines only and an output file holding the traceback;
+  a webhook URL and Telegram token are planted in both and must be redacted everywhere (message, state.json,
+  stdout/stderr).
+- Only the stage2 unit has OnFailure, so the output path is not generalised further.
+
+**`send_telegram`**: `urllib.parse.quote(token, safe=":")`; test checks the built URL has the colon unescaped.
+
+**Duplicate notices.** Installer.resume's own failure path already posts "install FAILED" (with the exception
+text). It now records `failure_notified_at` next to `status=failed`/`last_error`. The notifier SKIPS its post
+when that timestamp is at most 300 s old, but still adds `failed_unit`/`failed_output_tail`/`failed_journal_tail`
+to state.json and leaves the installer's `status`/`last_error` untouched. Chosen over "post once with richer
+info" because the installer's message already carries the cause and the skip keeps one message per failure.
+A crash before the installer can report (the import error) never sets the timestamp, so it is always posted;
+a stale notice from an earlier run (older than 300 s) does not suppress it (tested). Known limit: the timestamp
+is recorded before the installer's post, so if that post itself fails, the notifier does not retry it.
+
+**Verification run (host pytest, flock/nice/ionice):** clean tree 777 passed, 11 skipped. Plants, each followed
+by a full-suite run and reverted: output tail dropped from the message -> 2 failed (end-to-end, Telegram);
+output-tail redaction removed -> 2 failed (end-to-end, redaction unit test); duplicate guard removed -> 1 failed
+(`test_duplicate_guard_skips_the_post_when_the_installer_just_announced`).
+
+Gates: see below.

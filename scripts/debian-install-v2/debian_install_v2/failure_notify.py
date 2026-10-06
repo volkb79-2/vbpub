@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -45,7 +46,15 @@ FIXED_CREDENTIAL_DIR ="/etc/vbpub/credentials"
 JOURNAL_LINES = 15
 JOURNAL_TIMEOUT_S = 10
 STATE_JOURNAL_LIMIT = 4000
-UNIT_RE_OK = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-_.\\@"
+DEFAULT_STAGE_OUTPUT = "/root/custom_script.output2"
+OUTPUT_LINES = 15
+OUTPUT_READ_BYTES = 65536
+DEDUP_WINDOW_S = 300
+#: Budgets inside notify.ERROR_EXCERPT_LIMIT (800), cause-bearing output tail first.
+OUTPUT_EXCERPT_CHARS = 520
+JOURNAL_EXCERPT_CHARS = 230
+_EXCEPTION_RE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Failure)\b(?::|$)")
+UNIT_RE_OK ="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-_.\\@"
 
 
 def _read(path: Path) -> str:
@@ -100,22 +109,79 @@ def read_journal(unit: str, secrets: tuple[str, ...]) -> list[str]:
     return [redact_text(line, secrets) for line in lines[-JOURNAL_LINES:]]
 
 
-def record_failure(state_path: Path, unit: str, journal: list[str]) -> bool:
-    """Mark state.json failed. Atomic, 0600. False when there is no state to update."""
+def output_path(environ: dict[str, str]) -> str:
+    """The stage output file the unit's StandardOutput/StandardError append to."""
+    value = environ.get("VBPUB_STAGE2_OUTPUT", "")
+    return value if value.startswith("/") else DEFAULT_STAGE_OUTPUT
+
+
+def read_output_tail(path: str, secrets: tuple[str, ...]) -> list[str]:
+    """Last lines of the stage output file (where the traceback really is), redacted."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - OUTPUT_READ_BYTES))
+            raw = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    return [redact_text(line, secrets) for line in lines[-OUTPUT_LINES:]]
+
+
+def find_cause(lines: list[str]) -> str:
+    """The last exception line (``SomeError: message``) of the output tail, or ''."""
+    for line in reversed(lines):
+        if _EXCEPTION_RE.match(line):
+            return line.strip()[:200]
+    return ""
+
+
+def recently_notified(state: dict, now: datetime | None = None) -> bool:
+    """True when the installer's own stage2 failure path already posted a failure.
+
+    That path (Installer.resume) records ``failure_notified_at`` in state.json
+    just before it re-raises, which is what makes systemd run this notifier. A
+    notice older than DEDUP_WINDOW_S belongs to an earlier run (a crash before
+    the installer could report, e.g. an import error, must still be posted).
+    """
+    stamp = state.get("failure_notified_at")
+    if not isinstance(stamp, str):
+        return False
+    try:
+        then = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    age = ((now or datetime.now(timezone.utc)) - then).total_seconds()
+    return 0 <= age <= DEDUP_WINDOW_S
+
+
+def record_failure(
+    state_path: Path, unit: str, journal: list[str], output: list[str], out_file: str,
+    *, cause: str = "", keep_status: bool = False,
+) -> bool:
+    """Record the failure in state.json. Atomic, 0600. False when there is no state to update.
+
+    ``keep_status`` (the installer already recorded and announced the failure):
+    only add the evidence, leave status/last_error as the installer wrote them.
+    """
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if not isinstance(state, dict):
             return False
     except (OSError, ValueError):
         return False
-    tail = "\n".join(journal)
-    if len(tail) > STATE_JOURNAL_LIMIT:
-        tail = tail[-STATE_JOURNAL_LIMIT:]
-    state["status"] = "failed"
     state["failed_unit"] = unit
     state["failed_at"] = datetime.now(timezone.utc).isoformat()
-    state["failed_journal_tail"] = tail
-    state["last_error"] = f"{unit} failed; see journalctl -u {unit}"
+    state["failed_journal_tail"] = "\n".join(journal)[-STATE_JOURNAL_LIMIT:]
+    state["failed_output_tail"] = "\n".join(output)[-STATE_JOURNAL_LIMIT:]
+    if not keep_status:
+        state["status"] = "failed"
+        state["last_error"] = (
+            f"{cause} (see {out_file})" if cause
+            else f"{unit} failed; see {out_file} and journalctl -u {unit}"
+        )
     descriptor, temporary = tempfile.mkstemp(prefix=f".{state_path.name}.", dir=state_path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -138,8 +204,21 @@ def stage_label(unit: str) -> str:
     return name or "bootstrap"
 
 
-def failure_event(unit: str) -> str:
-    return f"{unit} FAILED - see journalctl -u {unit}"
+def failure_event(unit: str, cause: str = "") -> str:
+    return f"{unit} FAILED: {cause}" if cause else f"{unit} FAILED - see journalctl -u {unit}"
+
+
+def build_excerpt(output: list[str], journal: list[str]) -> str:
+    """Output tail first (the traceback, cause at its end), then the systemd journal lines.
+
+    Each part is budgeted so the cause (last output line) is never the part cut:
+    the output tail keeps its END, the journal keeps its end too.
+    """
+    parts = []
+    if output:
+        parts.append("\n".join(output)[-OUTPUT_EXCERPT_CHARS:])
+    parts.append("--- journal ---\n" + "\n".join(journal)[-JOURNAL_EXCERPT_CHARS:])
+    return "\n".join(parts)
 
 
 def send_telegram(token: str, chat_id: str, text: str, thread_id: str,
@@ -148,7 +227,7 @@ def send_telegram(token: str, chat_id: str, text: str, thread_id: str,
     if thread_id:
         payload["message_thread_id"] = thread_id
     request = urllib.request.Request(
-        f"https://api.telegram.org/bot{urllib.parse.quote(token)}/sendMessage",
+        f"https://api.telegram.org/bot{urllib.parse.quote(token, safe=':')}/sendMessage",
         data=urllib.parse.urlencode(payload).encode("utf-8"),
     )
     try:
@@ -170,6 +249,9 @@ def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -
     creds = load_credentials(environ, state_dir)
     secrets = tuple(value for value in (creds["webhook"], creds["token"]) if value)
     journal = read_journal(unit, secrets)
+    out_file = output_path(environ)
+    output = read_output_tail(out_file, secrets)
+    cause = find_cause(output)
 
     state: dict = {}
     state_path = Path(state_dir) / "state.json" if state_dir.startswith("/") else None
@@ -179,10 +261,20 @@ def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -
             state = loaded if isinstance(loaded, dict) else {}
         except (OSError, ValueError):
             state = {}
-        recorded = record_failure(state_path, unit, journal)
+    already_announced = recently_notified(state)
+    if state_path is not None:
+        recorded = record_failure(
+            state_path, unit, journal, output, out_file, cause=cause, keep_status=already_announced,
+        )
         print(f"failure_notify: state.json {'updated' if recorded else 'not updated'} for {unit}")
+    if already_announced:
+        # The installer's own stage2 failure path already posted this failure
+        # (with its exception text); a second post would be a duplicate. The
+        # evidence (output/journal tails) was still added to state.json above.
+        print("failure_notify: installer already announced this failure; not posting again")
+        return 0
     config = state.get("config") if isinstance(state.get("config"), dict) else {}
-    excerpt = "\n".join(journal)
+    excerpt = build_excerpt(output, journal)
 
     if creds["webhook"]:
         text = format_mattermost_message(
@@ -190,7 +282,7 @@ def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -
             server_name=platform.node() or "unknown-host",
             run_id=str(state.get("run_id") or ""),
             stage=stage_label(unit),
-            event=failure_event(unit),
+            event=failure_event(unit, cause),
             status="fail",
             excerpt=excerpt,
             secrets=secrets,
@@ -199,7 +291,7 @@ def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -
         print(f"failure_notify: mattermost notification {'sent' if sent else 'FAILED'}")
     elif creds["token"] and creds["chat_id"]:
         text = redact_text(
-            f"FAILED: {platform.node() or 'unknown-host'} | {failure_event(unit)}\n{excerpt}", secrets
+            f"FAILED: {platform.node() or 'unknown-host'} | {failure_event(unit, cause)}\n{excerpt}", secrets
         )
         sent = send_telegram(creds["token"], creds["chat_id"], text,
                              str(state.get("telegram_thread_id") or ""))
