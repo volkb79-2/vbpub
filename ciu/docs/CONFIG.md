@@ -228,6 +228,7 @@ user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
 | `lease_ttl_hours` | absent (**no lease at all**) | S16.9 | `24` — `ciu up` claims a 24-hour `held` lease on this instance |
 | `exec_targets` | absent (no declared targets) | S16.7 | see [S16.7](SPEC.md#s167--declared-worktree-container-targets-exec---target) — per-alias sub-tables, own four-key grammar |
 | `up` | absent (whole default deploy set) | S16.1 | `["core", "db", "test"]` — profile list started together by `ciu worktree up` |
+| `shared_image_tags` | `false` | S17.6 | `true` — keep declared image tags shared by linked worktrees |
 
 `up` is a non-empty, duplicate-free array of names from `[deploy.profiles]`.
 `ciu check` validates every name before deployment. `ciu worktree up NAME`
@@ -253,14 +254,30 @@ for the record schema (v2), the `held`/`perpetual` expiry rule, and the
 resources it creates.
 
 These keys share ONE closed table: an unknown key in `[ciu.worktree]` is a hard
-refusal, never a silent ignore. Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
+refusal, never a silent ignore. The concurrency cap and lease TTL come only
+from the PRIMARY *Git* worktree's own CIU configuration root; see
 [S16.3](SPEC.md#s163--worktree-instance-concurrency-budget-ciu-24) for the
-full precedence, the git-root-to-CIU-root offset, and why this is
-deliberately not a `[governance]` value. `CIU_MAX_CONCURRENT_WORKTREES` is a
-process environment variable (ambient — never written by `ciu env generate`,
-so it is deliberately absent from the `ciu.env` Key Provenance Table below)
-that overrides the file value for that process; the file table is still
-validated even when the override is present.
+git-root-to-CIU-root offset and why capacity is not a `[governance]` value.
+`up` describes the selected checkout's startup profiles, while
+`shared_image_tags` is a repository-family policy read from the primary CIU
+root. `CIU_MAX_CONCURRENT_WORKTREES` is a process environment variable
+(ambient — never written by `ciu env generate`, so it is deliberately absent
+from the `ciu.env` Key Provenance Table below) that overrides the cap for that
+process; the primary file table is still validated when the override is
+present.
+
+`shared_image_tags` is the compatibility opt-out from CIU-117's default
+linked-worktree image isolation. When false or absent, CIU suffixes references
+for project-built images in linked worktrees with that checkout's instance id;
+the primary and pulled vendor images keep their declared references. Set it to
+`true` only when all checkouts are intentionally meant to build and run one
+shared tag. Before a scoped Compose or Bake build, CIU resolves the primary
+checkout's image references and refuses an exact tag collision; an unreadable
+primary image map refuses rather than being treated as empty. `ciu bake
+--allow-shared-tag` is the one-command equivalent for a single Bake
+invocation and bypasses that collision check. A linked Git checkout with no
+resolvable CIU root or generated identity refuses an unscoped Bake by default;
+use the explicit flag only when its declared tags are intentionally shared.
 
 ### `[deploy]` — project identity [S7]
 

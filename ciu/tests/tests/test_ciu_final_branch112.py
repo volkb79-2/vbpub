@@ -13,9 +13,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import activate, cli, diagnose, governance, provisioning, transport_ssh
+from ciu import activate, cli, diagnose, governance, provisioning, transport_ssh, worktree
 from ciu.deploy_pkg import registry
 from ciu.secrets.directives import parse_value
+
+
+@pytest.fixture(autouse=True)
+def _keep_legacy_bake_test_on_the_primary_contract(monkeypatch):
+    monkeypatch.setattr(
+        worktree, "resolve_worktree_image_tag_suffix", lambda *_a, **_kw: None
+    )
 
 
 def test_module_entrypoint_calls_cli_main(monkeypatch: pytest.MonkeyPatch) -> None:
