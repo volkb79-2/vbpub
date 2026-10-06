@@ -2595,6 +2595,9 @@ def test_no_stdlib_violations():
                # NOT in this set any more: the import was removed.
                }
     allowed.add("hashlib")  # RG-47 config provenance fingerprint
+    # collections: RG-84 (ff5786d66) imports `collections.abc.Callable` for
+    # type annotations only; stdlib, no runtime dependency.
+    allowed.add("collections")
     allowed.update({"copy", "contextlib", "dataclasses", "io", "signal", "stat",
                    "run_gate_admission"})
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
@@ -3270,11 +3273,34 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
     assert f"source rev {run_gate.__revision__}" in changes
-    assert f"RG-81, rev {run_gate.__revision__}" in changes
+    # The current-revision entry is RG-84 (rev 55); the RG-81 entry keeps its
+    # own historical rev 54, so pinning it to __revision__ broke at rev 55.
+    assert f"RG-84, filed as RG-83, rev {run_gate.__revision__}" in changes
+    assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes
     assert "--fresh` only for an ephemeral-container lane" in changes
     assert "lifecycle owner's confirmation" in changes
+
+
+def test_selftest_lane_creates_scratch_root_before_pytest_and_ceiling():
+    """The selftest lane's argv must create `.run-gate/selftest-tmp` first.
+
+    pytest `--basetemp` makes only the leaf directory (no parents), and in a
+    fresh checkout `.run-gate/` does not exist, so without the leading
+    `mkdir -p` pytest dies before collecting anything. The same path anchors
+    GIT_CEILING_DIRECTORIES, so the mkdir must run before both.
+    """
+    config = tomllib.loads((RUN_GATE_DIR / "run-gate.toml").read_text())
+    argv = config["lanes"]["selftest"]["argv"]
+
+    assert argv[:2] == ["bash", "-c"] and len(argv) == 3
+    script = argv[2]
+    mkdir = script.index("mkdir -p .run-gate/selftest-tmp && ")
+    assert mkdir == 0
+    assert mkdir < script.index("GIT_CEILING_DIRECTORIES=")
+    assert mkdir < script.index("-m pytest")
+    assert "--basetemp .run-gate/selftest-tmp" in script
 
 
 def test_source_and_external_assay_commands_have_distinct_probe_identity():

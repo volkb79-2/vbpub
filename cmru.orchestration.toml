@@ -17,23 +17,37 @@ registry = ["ghcr.io"]
 # CMRU PROJECT DEPENDENCY GRAPH
 #
 #   cli-extended <- none  (declared release order)
-#   ciu <- none  (declared release order)
-#   cmru <- none  (declared release order)
+#   cmru <- cli-extended  (declared release order)
+#   ciu <- cmru  (declared release order)
+#   run-gate-project <- cmru  (declared release order)
 #   assay <- cmru  (declared release order)
 #   topos <- cmru  (declared release order)
 #   nyxloom <- cmru  (declared release order)
-#   modern-debian-tools-python-debug <- ciu, cmru, topos, nyxloom  (declared release order)
-#     consumes first-party wheels: ciu, cmru, topos, nyxloom
+#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, topos, nyxloom  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
 #   pwmcp <- cmru  (declared release order)
 #   tls-edge <- cmru  (declared release order)
-#   run-gate-project <- none  (declared release order)
 #   cgroup-profiler <- cmru  (declared release order)
+#
+# LEVELS (a project releases after every project on a lower level; longest declared chain)
+#   L0: cli-extended
+#   L1: cmru
+#   L2: ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler
+#   L3: modern-debian-tools-python-debug
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
 [orchestration]
-project_order = ["cli-extended", "ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project", "cgroup-profiler"]
-default_projects = ["cli-extended", "ciu", "cmru", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "run-gate-project", "cgroup-profiler"]
+# LEVELS (W3-ZERO; `cmru dependencies` prints the derived level table):
+#   L0 cli-extended | L1 cmru | L2 projects whose build/release tooling is cmru
+#   (ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler)
+#   | L3 modern-debian-tools-python-debug (stages the wheels of L0-L2).
+# project_order must be a topological order of every level; the preflight enforces it.
+project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "cgroup-profiler"]
+# TODO(cmru-6.0 post-release): remove shim. cmru 6.0 ignores `default_projects`
+# (accepted with a one-line stderr warning, CLI-04); the OLD cmru 5.5 still REQUIRES
+# it, so this keeps main readable by a non-editable 5.5 during the landing window.
+default_projects = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -74,6 +88,13 @@ CMRU_TESTER_MEMORY_SWAP = "16g"
 # CPU ceiling per gate container (docker --cpus), same per-container rule.
 CMRU_TESTER_CPUS = "2.5"
 
+# Process ceiling per gate container (docker --pids-limit). Required, no code
+# default: without it the ceiling is systemd's DefaultTasksMax (~19k here), a
+# host-wide default shared with the production game server (2026-10-05: 19,108
+# zombies exhausted it). The gate also runs under --init and fails with exit 3
+# if the in-container pids.events 'max' counter is non-zero afterwards.
+CMRU_TESTER_PIDS_LIMIT = "4096"
+
 # Minimal image for the HOST-systemd preflight probes below (needs nsenter;
 # deliberately NOT tester-unified). tester-gate runs it --privileged
 # --pid=host and nsenters PID 1 to ask the real host systemd/kernel:
@@ -82,7 +103,11 @@ CMRU_TESTER_CPUS = "2.5"
 #     unit from Docker's fail-open transient), and
 #   - IO check: cgroup v2 with the io controller delegated (required before
 #     any --device-* cap is passed).
-CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+# Runs --privileged --pid=host with --pull=never, so it MUST be digest-pinned
+# and already present locally (tester-gate refuses a non-@sha256 reference).
+# Digest = `docker image inspect --format '{{index .RepoDigests 0}}' debian:trixie-slim`
+# read 2026-10-05.
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
 
 # GOVERNANCE SLICE for gate containers. Gate/lane containers belong to the
 # dedicated admission tier, not the long-running background tier. The value
@@ -119,13 +144,22 @@ CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 config = "libraries/cli-extended/cmru.toml"
 depends_on = []
 
-[orchestration.project.ciu]
-config = "ciu/cmru.toml"
-depends_on = []
-
+# cmru's own release tooling is cmru, but it can never depend on itself: the
+# first release uses the source-bootstrapped cmru (cmru/build-initial-standalone.sh,
+# docs/BOOTSTRAP-FROM-ZERO.md). Its REAL runtime dependency is the cli-extended
+# wheel (cmru/pyproject.toml `cli-extended>=0.3.0`); the pyproject guard in
+# `cmru dependencies` requires this edge. cli-extended does NOT depend on cmru here
+# although cmru releases it: that would be a cycle (see the bootstrap doc).
 [orchestration.project.cmru]
 config = "cmru/cmru.toml"
-depends_on = []
+depends_on = ["cli-extended"]
+
+# ciu (and run-gate-project below) have no first-party import of cmru, but every
+# release/gate step of theirs runs the installed cmru (`cmru tester-gate`,
+# `cmru handler ...`): a build-time edge, declared like assay/topos/pwmcp do.
+[orchestration.project.ciu]
+config = "ciu/cmru.toml"
+depends_on = ["cmru"]
 
 [orchestration.project.assay]
 config = "assay/cmru.toml"
@@ -141,7 +175,9 @@ depends_on = ["cmru"]
 
 [orchestration.project.modern-debian-tools-python-debug]
 config = "modern-debian-tools-python-debug/cmru.toml"
-depends_on = ["ciu", "cmru", "topos", "nyxloom"]
+# cli-extended: cmru's wheel requires it and the image install is `pip --no-index`
+# (pip/wheels.list stages it).
+depends_on = ["cli-extended", "ciu", "cmru", "topos", "nyxloom"]
 
 [orchestration.project.pwmcp]
 config = "pwmcp/cmru.toml"
@@ -151,12 +187,12 @@ depends_on = ["cmru"]
 config = "tls-edge/cmru.toml"
 depends_on = ["cmru"]
 
-# Release-ordered last: consumes nothing first-party (stdlib-only wheel), and
-# nothing releases AFTER it that would need its artifact today. id == directory
-# name is a cmru change-detection invariant — see run-gate-project/cmru.toml.
+# Consumes no first-party package (stdlib-only wheel); depends on cmru only as its
+# release tooling (build-time edge, like ciu). id == directory name is a cmru
+# change-detection invariant — see run-gate-project/cmru.toml.
 [orchestration.project.run-gate-project]
 config = "run-gate-project/cmru.toml"
-depends_on = []
+depends_on = ["cmru"]
 
 # RG-55 daemon image release. Its lifecycle is CIU-owned; CMRU builds and
 # publishes the tagged image, while the controller deploys it via `ciu up`.

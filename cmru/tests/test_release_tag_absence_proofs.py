@@ -39,6 +39,24 @@ def _absence_path(root: Path, workspace: transaction.ReleaseWorkspace) -> Path:
     return transaction._scope_dir(root) / f"{transaction._release_token(workspace)}.tag-absent.json"
 
 
+def test_rel14_sidecars_accept_sha256_object_ids_like_sha1(tmp_path):
+    root, workspace = _workspace(tmp_path)
+    refs = {"refs/tags/demo-v1": "a" * 64, "refs/tags/demo-v2": "b" * 40}
+
+    transaction.write_release_tag_snapshot(root, workspace, refs)
+    assert transaction.read_release_tag_snapshot(root, workspace) == refs
+
+    transaction.write_release_tag_attempts(root, workspace, refs)
+    assert transaction.read_release_tag_attempts(root, workspace) == refs
+
+
+@pytest.mark.parametrize("bad", ["a" * 41, "a" * 63, "A" * 40, "g" * 64, ""])
+def test_rel14_sidecars_still_reject_malformed_object_ids(tmp_path, bad):
+    root, workspace = _workspace(tmp_path)
+    with pytest.raises(RuntimeError):
+        transaction.write_release_tag_snapshot(root, workspace, {"refs/tags/demo-v1": bad})
+
+
 def test_absence_proofs_are_noop_when_unrelated_and_preserve_other_refs_when_cleared(
     tmp_path,
 ):

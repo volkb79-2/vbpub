@@ -1,5 +1,9 @@
 # Plan — `get.py`'s `enroll` subcommand (KI-24)
 
+> **Superseded (2026-10, W1-INSTALLER).** `enroll` moved to ciu (`ciu/installer/enroll.py`, a
+> `[project.installer] extensions` fragment) and the installer layout, verification and
+> rollback described below were replaced by SPEC S6 (S6.1-S6.17). Historical record only.
+
 Status: carved, ready for implementation. Blocks `vbpub/ciu` CIU-93 (`ciu
 host enroll`, `docs/SPEC.md` S14.7) — that package cannot start until this
 one ships and releases, since its step 1 prints a one-liner that runs the

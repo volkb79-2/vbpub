@@ -16,7 +16,7 @@ signing on, with a real pubkey-distribution plan rather than a rushed wire-up).
 - **Sign side:** `cmru/src/cmru/delegated.py` `minisign_sign(blob, *, secret_key, trusted_comment)`
   and the release hook (`delegated.py:308-336`) that reads `[project.<name>.delegated.minisign]`
   (`enabled`, `secret_key_env` | `secret_key_file`, `trusted_comment`, `required`).
-- **Verify side:** `cmru/templates/get.py.tmpl` `_verify_minisign()` runs `minisign -Vm manifest -P <pub>`
+- **Verify side:** `cmru/src/cmru/templates/get.py.tmpl` `_verify_minisign()` runs `minisign -Vm manifest -P <pub>`
   before extraction; CLI arg `--manifest-pubkey` / env `CMRU_MINISIGN_PUBKEY`.
 - **Tool:** minisign is now in the `mdt` toolchain image (`apt/packages.list`) and the cmru agent
   carries `minisign_pubkey` through enrollment (`agent/cli.py`).
@@ -57,7 +57,7 @@ Decide + implement how consumers obtain and pin the pubkey so verification is me
 3. Update the dstdns consumer/enrollment path to pass the pubkey (`agent enroll --minisign-pubkey`).
 
 ### Task C — make verification non-optional once distributed
-`get.py.tmpl:425` currently *skips* verification when no pubkey is supplied ("No --manifest-pubkey
+`cmru/src/cmru/templates/get.py.tmpl:425` currently *skips* verification when no pubkey is supplied ("No --manifest-pubkey
 provided; skipping"). After Task B, change the default in the release/install path so a missing pubkey
 is an error for first-party installs (keep the escape hatch only for explicit `--insecure`).
 

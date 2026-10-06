@@ -450,27 +450,6 @@ def test_cmd_wheel_build_rejects_non_git_source(tmp_path, monkeypatch):
         handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
 
 
-@pytest.mark.parametrize("command", [handlers.cmd_oci_image_build, handlers.cmd_oci_image_push])
-def test_direct_oci_repack_handler_fails_before_side_effects(command, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(handlers.subprocess, "run", lambda *args, **kwargs: calls.append(args))
-    monkeypatch.setattr(handlers, "_docker_login", lambda: calls.append("login"))
-    args = type("Args", (), {
-        "cwd": str(tmp_path),
-        "bake_file": "docker-bake.hcl",
-        "target": "img",
-        "repack": True,
-        "repack_target_size": "2GB",
-        "repack_compression": 9,
-    })()
-
-    with pytest.raises(SystemExit) as exc:
-        command(args)
-
-    assert exc.value.code == 2
-    assert calls == []
-
-
 @pytest.mark.parametrize(
     ("command", "terminal_flag"),
     [
@@ -492,8 +471,7 @@ def test_direct_oci_non_repack_handler_keeps_standard_bake_flow(
     args = type("Args", (), {
         "cwd": str(tmp_path),
         "bake_file": "docker-bake.hcl",
-        "target": "img",
-        "repack": False,
+        "bake_target": "img",
     })()
 
     command(args)

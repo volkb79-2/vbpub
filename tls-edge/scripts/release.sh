@@ -15,4 +15,4 @@ if [[ "$#" -ne 1 ]]; then
 fi
 
 version="${1#v}"
-exec cmru release --config "$TLS_EDGE_ROOT/cmru.toml" --project tls-edge --set-version "$version"
+exec cmru release tls-edge --config "$TLS_EDGE_ROOT/cmru.toml" --set-version "$version"

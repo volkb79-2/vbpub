@@ -63,6 +63,7 @@ materialised as a literal string/temp file at test time.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -340,7 +341,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -353,6 +354,8 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "argv_modified": False,
         "env_declared": {"PYTHONDONTWRITEBYTECODE": "1"},
         "env_effective": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {
@@ -689,6 +692,18 @@ def _expected_r2_artifact(
                 )
                 for item in mutation.get(name, [])
             ]
+            zero_resource_limit_evidence = {
+                "cgroup_version": 2,
+                "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
+                "memory_events": {
+                    "max": {"before": 0, "after": 0, "delta": 0},
+                    "oom": {"before": 0, "after": 0, "delta": 0},
+                    "oom_kill": {"before": 0, "after": 0, "delta": 0},
+                    "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+                },
+            }
+            for item in outcomes:
+                item["resource_limit_evidence"] = zero_resource_limit_evidence
             mutation["candidate_ids"] = [
                 item["candidate_id"]
                 for item in sorted(
@@ -699,7 +714,7 @@ def _expected_r2_artifact(
                 )
             ]
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -716,6 +731,8 @@ def _expected_r2_artifact(
         "argv_modified": False,
         "env_declared": {"PATH": "/usr/bin:/bin"},
         "env_effective": {"PATH": "/usr/bin:/bin"},
+        "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         # wave-1 §6 (A-269): declared_rigor names R2, a higher-rigor level,
@@ -806,7 +823,7 @@ def _assert_complete(real: dict, expected: dict) -> None:
         "result_stdout_dropped_bytes",
         "result_stderr_dropped_bytes",
     }
-    filtered = {k: v for k, v in real.items() if k not in volatile}
+    filtered = copy.deepcopy({k: v for k, v in real.items() if k not in volatile})
     # (B091/A1) `judgment.r2.budget_per_candidate_derived_s` is the SAME
     # class of value as the top-level `volatile` set -- measured from this
     # run's own real baseline wall-clock time, so no fixture can hand-inject
@@ -815,8 +832,56 @@ def _assert_complete(real: dict, expected: dict) -> None:
     # then stripped from a COPY before the exact-match assertion; `real`
     # itself, and the shared `judgment`/`r2` dict objects inside it, are
     # never mutated.
+    def normalize_resource_limit_evidence(mutation: object) -> None:
+        if not isinstance(mutation, dict):
+            return
+        counter_groups = {
+            "pids_events": ("max",),
+            "memory_events": ("max", "oom", "oom_kill", "oom_group_kill"),
+        }
+        for bucket in (
+            "killed",
+            "survived",
+            "crashed",
+            "budget_exceeded",
+            "equivalent",
+            "hung",
+        ):
+            for candidate in mutation.get(bucket, []):
+                evidence = candidate.get("resource_limit_evidence")
+                assert isinstance(evidence, dict)
+                assert set(evidence) == {
+                    "cgroup_version",
+                    "pids_events",
+                    "memory_events",
+                }
+                assert evidence.get("cgroup_version") == 2
+                for group, event_names in counter_groups.items():
+                    counters = evidence.get(group)
+                    assert isinstance(counters, dict)
+                    assert set(counters) == set(event_names)
+                    for event in event_names:
+                        sample = counters[event]
+                        assert set(sample) == {"before", "after", "delta"}
+                        before, after, delta = (
+                            sample["before"], sample["after"], sample["delta"]
+                        )
+                        assert after >= before
+                        assert delta == after - before == 0
+                        sample["before"] = 0
+                        sample["after"] = 0
+
+    # R2 outcome data is duplicated in the top-level claims and in the
+    # judgment summary. Validate and normalize both copies before comparing
+    # the complete artifact; their absolute cgroup counters are runtime facts.
+    for claim in filtered.get("claims", []):
+        if isinstance(claim, dict) and claim.get("rigor") == "R2":
+            normalize_resource_limit_evidence(claim.get("mutation"))
     judgment = filtered.get("judgment")
     r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    normalize_resource_limit_evidence(
+        r2.get("mutation") if isinstance(r2, dict) else None
+    )
     if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:
         derived = r2["budget_per_candidate_derived_s"]
         assert isinstance(derived, (int, float)) and not isinstance(derived, bool)
@@ -1228,7 +1293,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1241,6 +1306,8 @@ def _expected_r3_artifact(
         "argv_modified": False,
         "env_declared": env,
         "env_effective": env,
+        "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         # P33/V5-1 + A-223a: an R0,R3 lane records language and source roots
@@ -1597,7 +1664,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1610,6 +1677,8 @@ def _r1_r3_expected(
         "argv_modified": False,
         "env_declared": env,
         "env_effective": env,
+        "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {

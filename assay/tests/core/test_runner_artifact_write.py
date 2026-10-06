@@ -47,6 +47,7 @@ def _pass_verdict() -> Verdict:
         argv_effective=("/bin/sh", "-c", "exit 0"),
         env_declared={},
         env_effective={},
+        env_passthrough=(),
         scope="S1",
         enforcement="gate",
         claims=(
@@ -74,6 +75,7 @@ def _no_measurement_verdict() -> Verdict:
         argv_effective=("pytest", "tests", "-q"),
         env_declared={},
         env_effective={},
+        env_passthrough=(),
         scope="S1",
         enforcement="gate",
         claims=(

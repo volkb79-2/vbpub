@@ -164,7 +164,7 @@ Or invoke the same wrapper through the release runner:
 
 ```bash
 cmru build pwmcp
-cmru publish pwmcp
+cmru publish pwmcp --from-checkout
 ```
 
 The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`,
@@ -195,7 +195,7 @@ cmru release pwmcp
 ```
 
 For build-only inspection use `cmru build pwmcp`; for an already-reviewed
-candidate's low-level publication step use `cmru publish pwmcp`. A release
+candidate's low-level publication step use `cmru publish pwmcp --from-checkout`. A release
 commits and pushes the selected inputs before publishing. Publication must
 stop if that source push cannot fast-forward; otherwise GitHub could create
 the immutable release tag from an older remote tree.

@@ -519,7 +519,6 @@ class TestInstallerVariantDownloadName:
 
     def _ns(self, variants):
         ns = _ns_from(_render(variants=variants))
-        ns["MANIFEST_NAME"] = ""   # skip minisig extraction in this focused test
         return ns
 
     def _prepare_bundle(self, ns, workdir, asset_name):
@@ -546,7 +545,7 @@ class TestInstallerVariantDownloadName:
         self._prepare_bundle(ns, tmp_path, "naf-v1.0.0-py311.tar.xz")
         wd = tmp_path / "wd"
         wd.mkdir()
-        got = ns["download_and_verify"]("naf-v1.0.0", wd, None, None, "py311")
+        got = ns["download_and_verify"]("naf-v1.0.0", wd, None, "py311")
         assert got.name == "naf-v1.0.0-py311.tar.xz"
 
     def test_no_variant_download_uses_legacy_name(self, tmp_path):
@@ -554,7 +553,7 @@ class TestInstallerVariantDownloadName:
         self._prepare_bundle(ns, tmp_path, "naf-v1.0.0.tar.xz")
         wd = tmp_path / "wd"
         wd.mkdir()
-        got = ns["download_and_verify"]("naf-v1.0.0", wd, None, None)
+        got = ns["download_and_verify"]("naf-v1.0.0", wd, None)
         assert got.name == "naf-v1.0.0.tar.xz"
 
 
@@ -575,8 +574,8 @@ class TestInstallerVariantTransaction:
         )
         ns: dict = {}
         exec(compile(src, "<rendered-get.py>", "exec"), ns)
-        ns["MANIFEST_NAME"] = ""    # skip minisig extraction
-        ns["SIGNATURE_NAME"] = ""
+        # geteuid() is mocked to 0 in these tests, but the temp dirs belong to the test user
+        ns["_expected_owner"] = lambda: __import__("os").getuid()
         return ns
 
     def _bundles(self, workdir, tag="naf-v1.0.0"):
@@ -588,7 +587,11 @@ class TestInstallerVariantTransaction:
             asset_name = f"{tag}-{variant}.tar.xz"
             asset = workdir / asset_name
             with tarfile.open(asset, "w:xz") as tf:
-                for rel, content in (("VERSION", "1.0.0\n"), ("variant.txt", variant + "\n")):
+                shipped = (("VERSION", "1.0.0\n"), ("variant.txt", variant + "\n"))
+                manifest = json.dumps({"schema_version": 1, "tag": tag, "files": {
+                    rel: {"sha256": hashlib.sha256(c.encode()).hexdigest()}
+                    for rel, c in shipped}})
+                for rel, content in shipped + (("manifest.json", manifest),):
                     data = content.encode()
                     ti = tarfile.TarInfo(name=f"{tag}/{rel}")
                     ti.size = len(data)
@@ -607,7 +610,7 @@ class TestInstallerVariantTransaction:
                                   manifest_pubkey=None, variant=variant)
 
     def _installed_marker(self, ns):
-        return (Path(ns["INSTALL_DIR_SYSTEM"]) / "current").resolve() / "variant.txt"
+        return (Path(ns["INSTALL_DIR_SYSTEM"]) / "current").resolve() / "tree" / "variant.txt"
 
     def test_same_version_variant_switch_reinstalls(self, tmp_path):
         ns = self._ns(tmp_path)
@@ -623,7 +626,7 @@ class TestInstallerVariantTransaction:
         # Same version, DIFFERENT variant → must switch, not "nothing to do".
         with mock.patch.object(ns["os"], "geteuid", return_value=0):
             ns["do_update"](self._args("py311"), token=None)
-        assert (root / "current").resolve().name == "naf-v1.0.0"
+        assert (root / "current").resolve().name.startswith("naf-v1.0.0-")
         assert self._installed_marker(ns).read_text().strip() == "py311"
         assert (root / "shared" / ".variant").read_text().strip() == "py311"
 

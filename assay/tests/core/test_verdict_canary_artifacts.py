@@ -50,6 +50,7 @@ BASE = {
     "argv_effective": ("pytest", "tests", "-q", "--cov=pkg", "--cov-report=json:cov.json"),
     "env_declared": {},
     "env_effective": {},
+    "env_passthrough": (),
     "scope": "S1",
     "enforcement": "gate",
     # (wave-1 §6, A-269) none of these fixtures is itself testing the

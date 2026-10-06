@@ -325,7 +325,6 @@ consul_worker_io_token = "consul/worker-io/token"
 consul_worker_db_token = "consul/worker-db/token"
 consul_docker_stats_exporter_token = "consul/docker-stats-exporter/token"
 consul_mgmt_token = "consul/mgmt/token"
-consul_cmru_controller_token = "consul/cmru/controller/token"
 consul_cmru_viewer_token = "consul/cmru/viewer/token"
 consul_cmru_bootstrap_bearer_token = "consul/cmru/bootstrap-bearer-token"
 controller_vault_role_id = "vault/controller/role_id"
@@ -442,16 +441,6 @@ key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-db/" { policy = "write" }
 name = "dstdns-docker-stats-exporter"
 rules = """
 key_prefix "dstdns/__LANDSCAPE_ID__/services/docker-stats-exporter/" { policy = "write" }
-"""
-[registry.consul.policies.cmru_node]
-name = "dstdns-cmru-node"
-rules = """
-key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "read" }
-"""
-[registry.consul.policies.cmru_controller]
-name = "dstdns-cmru-controller"
-rules = """
-key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "write" }
 """
 [registry.consul.policies.cmru_viewer]
 name = "dstdns-cmru-viewer"

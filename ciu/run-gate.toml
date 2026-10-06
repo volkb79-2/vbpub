@@ -22,3 +22,22 @@ budget = "8h"
 cpus = "3"
 memory = "2g"
 memory_swap = "16g"
+
+# `get.py enroll` is ciu-owned (ciu/installer/enroll.py, inlined into ciu/get.py by
+# cmru's installer extensions; cmru program 2026-10 W1-CIU-ENROLL, O4). Its
+# security-critical container oracles (O2/O3: real user creation, authorized_keys
+# writes, modes/ownership, a fingerprint cross-check and a login against a REAL
+# sshd) moved here from cmru's former [lanes.enroll] (KI-25). They start their own
+# disposable docker containers from inside the test process, and tester-unified has
+# no docker-socket mount, so this runs bare-host on the invoking shell's python
+# (no /opt/tester-venv/ path: that venv exists only inside the tester-unified
+# image). CIU_ENROLL_REQUIRED=1 makes missing docker / CGROUP_PARENT_DEV_GATES /
+# a failed fixture-image build FAIL the lane instead of skipping O2/O3. No
+# [lanes.enroll.resources]: the fixture caps its own containers
+# (--cgroup-parent/--cpus/--memory). The pytest process needs cmru importable for
+# the gate-slice preflight (cmru.tester_gate), hence ../cmru/src on PYTHONPATH.
+[lanes.enroll]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q"]
+budget = "20m"

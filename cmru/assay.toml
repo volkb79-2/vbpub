@@ -30,15 +30,18 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1", "R3"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail=1",
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
   "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
 # A green run still executes the complete suite. These are project test facts,
 # not ambient conveniences: pytest must import the source snapshot it is
 # judging, and it must not create bytecode there. The separate R2 campaign
 # uses the highest-version published ancestor release tag, fail-fast candidates,
 # and a bounded timeout.
-# Source-checkout tests import CMRU's sibling shared libraries explicitly.
-env = { PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+# Source-checkout tests import CMRU's sibling `worktree` library explicitly
+# (it is packaged inside the cmru wheel). cli_extended is deliberately NOT a
+# source root: it is a real wheel dependency, imported from the gate
+# environment's installed release (CX-D1/CX-D3, BG-04).
+env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false

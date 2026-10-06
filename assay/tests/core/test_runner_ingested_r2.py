@@ -114,13 +114,16 @@ def _lane(
     staged: Path,
     mode: str = "changed_lines",
     targets=None,
+    source_roots: tuple[str, ...] = ("app/src",),
     base: str,
     mutation_fail_under: float = 100.0,
 ):
     judge = JudgeConfig(
         language="javascript",
-        source_roots=("app/src",),
-        source_root_paths=((git_repo.path / "app" / "src").resolve(),),
+        source_roots=source_roots,
+        source_root_paths=(
+            (git_repo.path / Path(source_roots[0])).resolve(),
+        ),
         fail_under=None,
         allow_excluded=None,
         coverage=None,
@@ -300,6 +303,39 @@ def test_wire_paths_are_repo_relative_and_carry_the_lane_cwd(ingested):
     paths = {outcome.path for outcome in r2.mutation.survived}
     assert all(path.startswith("app/src/") for path in paths), paths
     assert "app/src/format.ts" in paths
+
+
+def test_ingested_report_cannot_widen_file_root_through_sibling_symlink(
+    git_repo: GitRepo, tmp_path: Path
+):
+    document = _report_document()
+    source = document["files"]["src/format.ts"]
+    document["files"] = {"src/format-alias.ts": source}
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+
+    git_repo.write(".gitignore", "app/reports\n")
+    git_repo.commit_all("gitignore the mutation report")
+    target = git_repo.write("app/src/format.ts", source["source"])
+    alias = target.with_name("format-alias.ts")
+    alias.symlink_to(target.name)
+    git_repo.commit_all("add source and sibling symlink")
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+
+    verdict = _run(
+        git_repo,
+        _lane(
+            git_repo=git_repo,
+            staged=staged,
+            base=base,
+            source_roots=("app/src/format.ts",),
+        ),
+    )
+
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert r2.status is Outcome.ERROR
+    assert r2.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "src/format-alias.ts" in (r2.detail or "")
 
 
 def test_the_verdict_verifies_against_the_shipped_schema_and_the_raw_layer(

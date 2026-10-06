@@ -577,6 +577,9 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-126 | CIU rejects its own valid rootless worktree record and siblings can block lifecycle verbs | Medium | FIXED 2026-10-04 |
 | CIU-127 | `ciu down` cannot stop one stack without targeting the whole project | Medium | FIXED 2026-10-04 |
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
+| CIU-129 | `assay.toml` runs pytest with `--maxfail=1` plus coverage, so a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test | Medium | OPEN |
+| CIU-130 | `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path | Medium | OPEN — v8.2 (cmru program 2026-10, O9) |
+| CIU-131 | The real-system `get.py enroll` oracles (O2/O3, ciu `enroll` lane) are in no automated release gate since the move from cmru | High | OPEN |
 | CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 
 
@@ -4741,6 +4744,18 @@ Severity: High (credential loss; silent aliasing of a secret path). Type: bugfix
 
 **Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** scheduling, not design: the v8 form of this contract (SPEC-V8 S7.2.4, proposal V8-29) is part of **v8.2**, after v8.1 admission (D-666), so this entry describes the **v7 line's shipped defect**, which matters for repos that have not cut over: after a repo's 8.0 cutover remote deployment and enrollment are unavailable until v8.2 and there is no `ciu7` bridge (dstdns D-667); the references above to "draft.9 S7.2.4" and "enrollment proposal rev 3 §11" are draft.11 S7.2.4 (tagged v8.2) and rev 4 §11. The proposed contract is unchanged and matches draft.11 (pending generations, atomic promotion, `--revoke-old`, no-follow locks).
 
+**Moved here from cmru KI-50 (2026-10, cmru program O4, package W1-CIU-ENROLL): the installer-side half.** The enrollment code (`get.py enroll`) is now ciu-owned: `ciu/installer/enroll.py`, inlined into `ciu/get.py` by cmru's `[project.installer] extensions`. The move was verbatim; the defect below is unchanged and still open. Evidence as filed (2026-10-03, v8 round-4 third-party review T4-08, filed by the v8 spec writer, dstdns D-658; severity High; related KI-24, KI-25, cmru KI-49 now in CIU-123, CIU-93, SPEC-V8 draft.9 S7.2.4):
+
+> **cmru KI-50 — `get.py enroll` mutates root-trusted `authorized_keys` through attacker-controllable paths and an unvalidated `--from` pattern.**
+>
+> **Observed (source, then `get.py.tmpl:1066-1135`, now `ciu/installer/enroll.py` `_enroll_install_key` / `_build_key_line`).** The subcommand resolves the user, then `ssh_dir.mkdir(parents=True, exist_ok=True)`, `os.chmod(ssh_dir, 0o700)`, `os.chown(ssh_dir, …)`, reads `authorized_keys` as text and later `os.chmod`/`os.chown`s it. It does not validate the passwd record's home, shell or uid, does not open through directory descriptors or refuse symlinks, non-regular files or extra links, takes no lock against `sshd` or a concurrent enrollment, and rewrites the file without a verified atomic transaction. `--from PATTERN` is placed into an OpenSSH option string (`from="…"`) with no accepted grammar and no refusal of quotes, backslashes or CR/LF. A pre-existing deploy user whose `~/.ssh/authorized_keys` is a symlink to `/root/.ssh/authorized_keys` has root's file chowned and appended to.
+>
+> **Proposed contract.** Resolve the user through the account database and validate home, uid/gid and shell; walk home, `.ssh` and `authorized_keys` with no-follow directory descriptors and require the expected owner, type and link count (refuse, never repair); lock a dedicated file in the verified `.ssh`, parse the records, write a complete temporary file preserving unrelated bytes, `fsync`, rename atomically, `fsync` the directory; append at most once under that lock; serialize the record, never concatenate; accept `--from` only against a closed grammar (addresses, CIDRs, label patterns with `*`/`?`, each optionally negated) and refuse quotes, backslashes, whitespace and CR/LF; shell-quote every printed argument.
+>
+> **Oracles.** A symlinked, hard-linked or FIFO `authorized_keys` and a foreign-owned `.ssh` are refused with the target untouched; a concurrent second enrollment leaves one key line; a pre-existing unrelated key and comment survive byte-for-byte; a `--from` value with a quote, CR or LF is refused before anything is written; a controlled wrong implementation that follows the symlink fails the first oracle.
+
+The moved tests (`ciu/tests/tests/test_getpy_enroll.py`) and the bare-host container lane (`ciu/run-gate.toml` `[lanes.enroll]`) are the oracle base for this fix; cmru's `EXTENSION_API` contract limits the fragment to the documented template names.
+
 ## CIU-123 — `ciu host enroll` step 2 proves only that *some* `ciu version` exits zero; the printed command does not pin the installed release; the `known_host` grammar contradicts the transport; the no-fingerprint path trusts the scan
 
 Severity: High (the trust path of a root-level install). Type: bugfix. Spec owner: `docs/SPEC.md` S14.7 (v7); v8 SPEC-V8 S7.2.4. Filed 2026-10-03 from the v8 round-4 third-party review (T4-05, T4-07 host half, T4-10) by the v8 spec writer (dstdns D-658). Related: CIU-93, CIU-99 (asset resolution; a different defect), cmru KI-49/KI-50.
@@ -4756,6 +4771,21 @@ Severity: High (the trust path of a root-level install). Type: bugfix. Spec owne
 **Oracles.** A controlled wrong-version `ciu` and a PATH-shadowing `ciu` both fail step 2; a printed command without `--version` fails a lint test; a `known_host` with a host token is refused; step 2 without `--fingerprint` and without the env opt-in is refused.
 
 **Amendment (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11 and proposal rev 4.9):** scheduling only (see CIU-122): the v8 form is v8.2; this is the v7 line's defect and its contract names the D-661 trust root (the controller's wheel, `ciu/enroll_trust.json`), which draft.11 S7.2.4 states identically. cmru KI-49 must record the installer digest and manifest key into package data before any ciu release carries an enrollment trust entry; a release whose `get.py enroll` is unverified has no entry (R3-07).
+
+**Moved here from cmru KI-49 (2026-10, cmru program O4, package W1-CIU-ENROLL): the installer-side half.** `get.py enroll` is now ciu-owned (`ciu/installer/enroll.py`, inlined into `ciu/get.py` via cmru's installer extensions); the move was verbatim and the defect below is unchanged and open. Evidence as filed (2026-10-03, v8 round-4 third-party review T4-05/T4-07, filed by the v8 spec writer, dstdns D-658; severity High; related KI-24, CIU-93, CIU-122, SPEC-V8 draft.9 S7.2.4, `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 4 §11):
+
+> **cmru KI-49 — `get.py enroll` runs unauthenticated as root: the installer is not verified before it executes, minisign is skipped without a key, and the install is not pinned to the requested release.**
+>
+> **Observed (source, then `src/cmru/templates/get.py.tmpl`).**
+> - `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, template `:491-525`; this function stays in cmru's generic template).
+> - `--manifest-pubkey` absent → "skipping minisign verification" (template `:522-524`): an unsigned install proceeds.
+> - `--version` is optional; without it `resolve_latest_tag` runs (template `:1195-1205`, `:1262`), so the printed version-pinned URL authenticates neither the selected wheel nor the installed result. `_install_wheels` installs into a private venv and the subcommand defines no stable launcher path.
+>
+> **Proposed contract.** `enroll` requires `--version`, and requires `--manifest-pubkey` and refuses an absent signature; the installer's own digest is verified by the caller **before** execution (trust root ruled in dstdns D-661: the controller's installed ciu wheel carries the digest of that version's committed `get.py` and the release's manifest public key in `ciu/enroll_trust.json`; so `cmru release` must render and hash `get.py` and record the digest and the manifest public key into the project's package data **before the wheel is built**, and the `[project.installer]` table must name the file it writes); the subcommand reports the absolute launcher path (`<install_dir_system>/bin/ciu`) that ciu's step 2 invokes; prerequisite failures are raised before any payload fetch.
+>
+> **Oracles.** `enroll` without `--version` or without a signature refuses and installs nothing; a tampered `get.py` fails the caller's digest check before `sudo python3` runs; a published newer release does not change the installed version; a controlled wrong implementation that resolves `latest` fails the third; the reported launcher path exists and reports the pinned version.
+
+Split of ownership after the move: the generic installer's signature/digest/pinning behaviour (the first two Observed bullets) is cmru's installer-hardening package (W1-INSTALLER, GETPY-REDESIGN R1/R4); the `enroll`-specific requirements (mandatory `--version`/`--manifest-pubkey`, launcher path report) are this entry's, implemented in `ciu/installer/enroll.py`.
 
 ## CIU-124 — `ciu up --dir <stack>` rejects `--deploy`/`--healthcheck`, though `ciu up --help` lists them as actions of every `ciu up`
 
@@ -4897,6 +4927,45 @@ specific to a generic Git worktree containing multiple CIU roots; v8 has one
 instance per checkout, so that aggregate metadata detail is not applicable.
 
 **Disposition (2026-10-05): FIXED.** The ready transition now follows nested-root fact generation and locked shared metadata persistence. `ensure` verifies historical readiness and derives the original allocation commit from saved facts. A partial allocation with a recorded fork point repairs against that commit without resetting later work; an older no-fork-point record whose checkout moved is demoted to `recovery-required` and refused. The registered CIU gate passed on implementation commit `b588cd96ecf0f9e0fb2fa8f47654906e911def9a` (run `195b964ff850afc73eff9c6e708babb8`, 2026-10-05): R0/R1/R2/R3 PASS, 100% branch coverage, 28/28 mutation candidates killed, no budget overruns, and the import-break canary detected. The final gate covers this backlog disposition update.
+
+## CIU-129 — `assay.toml` runs pytest with `--maxfail=1` plus coverage: a failing run hides the failing test behind `NO_MEASUREMENT`
+
+Severity: Medium. Type: bugfix. Filed 2026-10-05 by the cmru program 2026-10 (package W0-GATE); not changed there.
+
+**Observed.** `ciu/assay.toml` (~:28) passes `--cov-fail-under=100 --maxfail=1` with `--cov-report=json:coverage.json`. pytest-cov writes its report after the `yield` in its `pytest_runtestloop` hookwrapper; under `--maxfail`, `session.Failed` is raised before that code runs, so a failing run writes no `coverage.json`. Assay then reports `NO_MEASUREMENT/EMPTY_COVERAGE`, ranked above the failed R0, and the headline never names the failing test. Reproduced for cmru (pytest 9.1.1 / coverage 7.16.2 / pytest-cov 7.1.0), where it hid 25 consecutive release failures.
+
+**Fix direction.** Keep `--maxfail=1` only on the mutation-candidate runs the comment at ~:34 describes (an R2 candidate stopping at its first failure); drop it from the R0/R1/R3 lane that also produces coverage, and consider declaring `--junitxml` as an artifact.
+
+**Related.** cmru BG-03 (fixed in cmru's own lanes), assay B146 (verdict summary should name an R0 FAIL and the first failure), nyxloom NL-31 (same pattern in `nyxloom/assay.toml`).
+
+## CIU-130 — `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path
+
+Severity: Medium. Type: feature. Target: **v8.2** (with the enrollment rewrite, CIU-122/CIU-123). Filed 2026-10-06 by the cmru program 2026-10 (package W1-CIU-ENROLL, operator decision O9, which retired cmru's agent/controller: push over SSH is the one remote path).
+
+**Gap.** Enrollment installs a pinned ciu on a host once; nothing upgrades it afterwards. With cmru's agent/controller deleted there is no pull-based update path either, so an enrolled host stays on the version it was enrolled with unless an operator re-runs the installer by hand on the host.
+
+**Proposed contract.**
+- `ciu host upgrade <host> --version X` runs from the controller over the existing push-over-SSH transport (the same SSH identity, pinned `known_host` and `exec_fn` path `host enroll` step 2 uses). `X` is required; there is no "latest".
+- It reuses the installer's **pinned-version install**: the rendered `get.py install --version <tag>` (GETPY-REDESIGN R3: `--version` is required, a different installed version is refused unless `--allow-version-change`, the same version is an idempotent no-op that re-verifies the recorded manifest digest; R1: the installer is verified against the digest/key the controller's wheel carries before it runs as root). Upgrade is therefore the explicit version-change case, and the `--allow-version-change` flag is what the verb passes.
+- Success is proven the way enrollment step 2 will prove it (GETPY-REDESIGN R8 / CIU-123): the installer reports the absolute launcher path and the installed tag in its `ENROLL-RESULT`-style line, and the controller runs `<launcher> version --json` over SSH and compares the exact version before updating the host's recorded version in the inventory. A failed proof leaves the previous release current (the installer's rollback applies) and the inventory row unchanged.
+
+**Oracles.** A host upgraded to X reports X from its launcher; `--version` omitted is refused with no SSH contact; a wrong-version or PATH-shadowing `ciu` fails the proof and the inventory row is byte-identical; a failed install leaves the prior release current; upgrading to the already-installed version is a no-op.
+
+**Related.** CIU-93 (enrollment), CIU-99 (asset resolution), CIU-122/CIU-123 (the enrollment hardening this builds on), cmru `GETPY-REDESIGN` R1/R3/R8 (`cmru/nyxloom-trove`/program 2026-10 installer review), cmru O9.
+
+## CIU-131 — the real-system `get.py enroll` oracles (O2/O3) are in no automated release gate since the move from cmru
+
+Severity: High (the root-level `authorized_keys` writer lost its automated real-system evidence). Type: gate gap. Filed 2026-10-06 by the cmru program 2026-10 (package W1-CIU-ENROLL review, controller ruling).
+
+**Observed.** Until the move, cmru's `gate` ran an `enroll` lane (`TestEnrollAgainstRealSystem`: real user creation, `authorized_keys` writes, modes/ownership, a host-key fingerprint cross-check and a real-sshd login) on every cmru release. The code and tests moved to ciu (`ciu/installer/enroll.py`, `ciu/tests/tests/test_getpy_enroll.py`) and cmru's lane was removed. ciu's `[lanes.enroll]` (`ciu/run-gate.toml`, `CIU_ENROLL_REQUIRED=1`, bare-host) exists but nothing runs it: ciu's release gate is the `ciu` assay lane in tester-unified, which has no docker socket, so the 8 container tests skip there.
+
+**Fix direction.** Wire the lane into ciu's release flow (for example a `cmru tester-gate --enable-docker` step in ciu's `[steps.run-tests]`, or an explicit pre-release step that runs `./run-gate.py enroll`), or document it as a mandatory manual pre-release run until that exists, recorded in the release evidence. Whichever is chosen must keep `CIU_ENROLL_REQUIRED=1` so a missing prerequisite fails rather than skips.
+
+**Cost to note.** The lane builds the image `ciu-enroll-fixture:local` (`apt-get install openssh-server ...` from `debian:bookworm-slim`) and starts non-privileged containers on the gates slice (`--cgroup-parent=$CGROUP_PARENT_DEV_GATES`, 3 CPUs, 2 GiB), which needs the Docker host and a loaded gates slice; it must not run next to production without that placement.
+
+**Oracles.** A ciu release cannot complete without the `enroll` lane verdict PASS (or a recorded manual run), and a controlled break of `_enroll_install_key` (e.g. appending a duplicate line) fails the lane.
+
+**Related.** CIU-122/CIU-123 (the fix work these oracles protect), cmru KI-25 (the original lane).
 
 ## CIU-132 — recovering a stopped prod stack across the identity-scheme change needs a hand-run `clean --identity`, a manual hostdir re-own, and a manual named-volume copy
 

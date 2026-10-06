@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import config, git_auth, transaction, version
+from tests._cx_paths import CX_SOURCE
 
 
 @pytest.mark.parametrize(
@@ -432,7 +433,6 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
     for relative in (
         "cmru/src/cmru/cli.py",
         "libraries/worktree/src",
-        "libraries/cli-extended/src",
     ):
         path = candidate / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -443,7 +443,7 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
 
     observed = {}
     monkeypatch.setenv("PYTHONPATH", "/inherited/python/path")
-    monkeypatch.setenv("CMRU_BIN", "/opt/cmru/bin/cmru")
+    monkeypatch.setattr(transaction.shutil, "which", lambda _name: "/opt/cmru/bin/cmru")
 
     def fake_run(argv, *, cwd, env):
         observed.update(argv=argv, cwd=cwd, env=env)
@@ -462,12 +462,40 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
     assert observed["cwd"] == candidate
     assert observed["argv"][0] == "/opt/cmru/bin/cmru"
     assert observed["env"]["CMRU_TRANSACTION_PROJECTS"] == "cmru"
-    assert observed["env"]["PYTHONPATH"].split(os.pathsep)[:3] == [
+    assert observed["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
         str(candidate / "cmru" / "src"),
         str(candidate / "libraries" / "worktree" / "src"),
-        str(candidate / "libraries" / "cli-extended" / "src"),
     ]
     assert observed["env"]["PYTHONPATH"].endswith("/inherited/python/path")
+
+
+def test_run_child_never_puts_a_candidate_cli_extended_source_root_on_pythonpath(
+    monkeypatch, tmp_path,
+):
+    """CX-D1: cli_extended is a wheel dependency. Even when the candidate tree
+    carries the cli-extended library source, the self-release child imports the
+    installed release, not that source."""
+    candidate = tmp_path / "candidate"
+    for relative in ("cmru/src/cmru/cli.py", "libraries/worktree/src", CX_SOURCE):
+        path = candidate / relative
+        if path.suffix:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# candidate source\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+    observed = {}
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setattr(
+        transaction.subprocess, "run",
+        lambda argv, *, cwd, env: (observed.update(env=env), SimpleNamespace(returncode=0))[1],
+    )
+    workspace = SimpleNamespace(
+        path=candidate, branch="b", base="a" * 40, workspace_id="id", repo_root=tmp_path,
+    )
+    assert transaction.run_child(workspace, ["cmru"], project_names=["cmru"]) == 0
+    roots = observed["env"]["PYTHONPATH"].split(os.pathsep)
+    assert str(candidate / "libraries" / "cli-extended" / "src") not in roots
+    assert str(candidate / "libraries" / "worktree" / "src") in roots
 
 
 @pytest.mark.parametrize("project_names", [None, [], ["other"], ["cmru"]])
@@ -487,7 +515,7 @@ def test_run_child_uses_only_the_candidate_roots_that_exist(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    monkeypatch.delenv("CMRU_BIN", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_BIN", raising=False)
     monkeypatch.setattr(transaction.shutil, "which", lambda _name: None)
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     workspace = SimpleNamespace(
@@ -511,7 +539,7 @@ def test_run_child_uses_only_the_candidate_roots_that_exist(
 
 def test_run_child_uses_path_cli_when_no_explicit_cmru_bin(monkeypatch, tmp_path):
     observed = {}
-    monkeypatch.delenv("CMRU_BIN", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_BIN", raising=False)
     monkeypatch.setattr(transaction.shutil, "which", lambda _name: "/found/cmru")
     monkeypatch.setattr(
         transaction.subprocess, "run",

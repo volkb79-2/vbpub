@@ -35,7 +35,11 @@ argv = [
 # R2 mutant's first failure terminate that candidate before later tests can
 # cascade into resource/lock failures; passing full-suite runs still execute
 # every test.
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+# cmru/cli-extended/worktree sources are on PYTHONPATH (W1-CIU-ENROLL review fix) so the
+# get.py drift guard and render tests (test_ciu_host_enroll.py, test_getpy_enroll.py)
+# can import cmru and FAIL, not skip, when it is missing. Coverage stays scoped to ciu
+# (--cov=ciu above; source_roots = ["src"] below).
+env = { PYTHONPATH = "src:../cmru/src:../libraries/cli-extended/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 # The suite genuinely reads these from the ambient environment: the four
 # governance tests read CGROUP_PARENT_DEV_BACKGROUND by design (S15.2), xdist
 # worker spawn + git/ssh detection need PATH, and HOME is required for tests

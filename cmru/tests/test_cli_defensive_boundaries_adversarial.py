@@ -36,14 +36,6 @@ def test_load_config_refuses_project_root_outside_orchestration_root(monkeypatch
         cli.load_config(tmp_path / "cmru.toml", validate_dependencies=False)
 
 
-def test_source_tree_version_returns_none_for_non_checkout_path(monkeypatch, tmp_path):
-    module = tmp_path / "installed" / "cmru" / "cli.py"
-    module.parent.mkdir(parents=True)
-    module.write_text("", encoding="utf-8")
-    monkeypatch.setattr(cli, "__file__", str(module))
-    assert cli._source_tree_version() is None
-
-
 def test_cli_module_guard_refuses_removed_module_alias(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cmru", "--help"])
     with pytest.raises(SystemExit) as raised:

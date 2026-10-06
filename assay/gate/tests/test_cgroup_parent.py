@@ -118,6 +118,9 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"
     assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
     assert '--cgroup-parent="$cgroup_parent"' in driver
+    assert "--cgroupns=host" in driver
+    assert 'run_b145_bounded_wait_acceptance_probe "$host_repo_root" "$cgroup_parent"' in driver
+    assert "run_b145_low_pids_probe \"$worktree\" \"$host_repo_root\" \"$cgroup_parent\"" in driver
     assert "nyxloom-gates.slice" not in driver
     assert "dev-background.slice" not in driver
     assert "ASSAY_GATE_HOST_REPO_ROOT" in driver

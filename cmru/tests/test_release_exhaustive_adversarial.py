@@ -1,0 +1,451 @@
+"""Exhaustive boundary witnesses for release, transaction, version and tester-gate contracts."""
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from cmru import release, resolve, tester_gate, transaction, version
+
+
+def _git(root: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
+
+
+def _repo(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "config", "user.name", "test")
+    (root / "demo").mkdir()
+    (root / "demo" / "x.py").write_text("x = 1\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "feat: initial")
+    return root
+
+
+class _Response:
+    def __init__(self, payload: str, status: int = 200):
+        self.payload, self.status = payload.encode(), status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+def test_release_client_handles_not_found_pagination_and_optional_target():
+    gh = release.GitHubReleases("o", "r", "")
+    calls = []
+
+    def request(method, url, data=None, content_type=None):
+        calls.append((method, url, data, content_type))
+        if "/tags/missing" in url:
+            return 404, "{}"
+        if "&page=1" in url:
+            return 200, '[{"tag_name":"a"}]'
+        if method == "POST":
+            return 201, '{"id": 3, "upload_url": "https://upload/{?name}"}'
+        return 200, "[]"
+
+    gh._request = request
+    assert gh.get_release_by_tag("missing") is None
+    assert gh.list_releases(per_page=1) == [{"tag_name": "a"}]
+    created = gh.create_release("demo-v1", "Demo", "notes", target_commitish="abc")
+    assert calls[0][0] == "GET"
+    assert created  # the request fixture returns a JSON object for POST below
+
+
+def test_release_client_failures_are_reported_at_each_http_boundary(tmp_path, capsys):
+    gh = release.GitHubReleases("o", "r", "token")
+    gh._request = lambda *args, **kwargs: (503, "unavailable")
+    asset = tmp_path / "asset"
+    asset.write_bytes(b"asset")
+    for operation in (
+        lambda: gh.get_release_by_tag("v1"),
+        lambda: gh.list_releases(),
+        lambda: gh.create_release("v1", "t", "n"),
+        lambda: gh.update_release(1, "t", "n"),
+        lambda: gh.delete_release(1),
+        lambda: gh.list_assets(1),
+        lambda: gh.delete_asset(1),
+        lambda: gh.upload_asset("https://upload/{?name}", asset, "x"),
+    ):
+        with pytest.raises(SystemExit) as error:
+            operation()
+        assert error.value.code == 1
+    assert "HTTP 503" in capsys.readouterr().err
+
+
+def test_publish_existing_release_updates_and_uploads_only_new_assets(tmp_path):
+    asset = tmp_path / "artifact.whl"
+    asset.write_bytes(b"wheel")
+    gh = release.GitHubReleases("o", "r", "t")
+    calls = []
+    gh.get_release_by_tag = lambda tag: {"id": 4, "upload_url": "https://upload/{?name}"}
+    gh.update_release = lambda *args: calls.append(("update", args)) or {"id": 4, "upload_url": "https://upload/{?name}"}
+    gh.list_assets = lambda rid: []
+    gh.upload_asset = lambda *args: calls.append(("upload", args[2]))
+    result = gh.publish("demo-v1", "title", "notes", [asset])
+    assert result["id"] == 4
+    assert calls[0][0] == "update"
+    assert {name for kind, name in calls[1:]} == {asset.name}
+
+
+def test_retained_publish_refuses_a_different_release_id_before_metadata_update(tmp_path):
+    asset = tmp_path / "artifact.whl"
+    asset.write_bytes(b"wheel")
+    gh = release.GitHubReleases("o", "r", "t")
+    gh.get_release_by_tag = lambda tag: {
+        "id": 8, "tag_name": tag, "upload_url": "https://upload/{?name}",
+    }
+    updates = []
+    gh.update_release = lambda *args: updates.append(args)
+
+    with pytest.raises(SystemExit):
+        gh.publish(
+            "demo-v1", "title", "notes", [asset],
+            require_existing_release=True,
+            expected_release_id=7,
+            expected_tag_commit="a" * 40,
+        )
+
+    assert updates == []
+
+
+def test_retained_publish_rechecks_tag_commit_after_metadata_before_asset_mutation(tmp_path):
+    asset = tmp_path / "artifact.whl"
+    asset.write_bytes(b"wheel")
+    gh = release.GitHubReleases("o", "r", "t")
+    gh.get_release_by_tag = lambda tag: {
+        "id": 7, "tag_name": tag, "upload_url": "https://upload/{?name}",
+    }
+    commits = iter(["a" * 40, "b" * 40])
+    gh.get_tag_commit = lambda _tag: next(commits)
+    updates = []
+    asset_actions = []
+    gh.update_release = lambda *args: updates.append(args)
+    gh.list_assets = lambda _release_id: asset_actions.append("list") or []
+    gh.upload_asset = lambda *args: asset_actions.append("upload")
+
+    with pytest.raises(SystemExit):
+        gh.publish(
+            "demo-v1", "title", "notes", [asset],
+            require_existing_release=True,
+            expected_release_id=7,
+            expected_tag_commit="a" * 40,
+        )
+
+    assert updates == [(7, "title", "notes")]
+    assert asset_actions == []
+
+
+def test_validate_latest_release_retries_then_returns_integrity_coordinates(monkeypatch):
+    gh = Mock()
+    gh.resolve_latest.side_effect = [None, {
+        "version": "1.2.3", "tag": "demo-v1.2.3", "assets": [
+            {"name": "demo.whl", "url": "wheel"},
+            {"name": "demo.whl.sha256", "url": "hash"},
+        ],
+    }]
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    assert release.validate_latest_release(gh, "demo-v", retries=2, delay=0) == {
+        "version": "1.2.3", "tag": "demo-v1.2.3", "asset": "demo.whl",
+        "url": "wheel", "sha256_url": "hash",
+    }
+
+
+@pytest.mark.parametrize("messages, expected", [
+    (["fix: patch", "feat: feature"], "minor"),
+    (["feat!: breaking"], "major"),
+    (["docs: text"], "patch"),
+])
+def test_conventional_commit_bump_precedence(messages, expected):
+    assert version._bump_from_commits(messages) == expected
+
+
+def test_version_strategies_dry_run_are_nonmutating_and_counter_is_numeric(tmp_path, capsys):
+    root = _repo(tmp_path)
+    _git(root, "tag", "demo-v1.0.0-r2")
+    assert version._apply_strategy_scm(root, "demo-v", "2.0.0", dry_run=True) == "demo-v2.0.0"
+    assert version._apply_strategy_counter(root, "demo-v", "1.0.0", dry_run=True) == "demo-v1.0.0-r3"
+    assert _git(root, "tag", "--list") == "demo-v1.0.0-r2"
+    assert "Would tag" in capsys.readouterr().out
+
+
+def test_file_strategy_commits_changed_version_and_is_idempotent(tmp_path):
+    root = _repo(tmp_path)
+    version_file = root / "demo" / "VERSION"
+    version_file.write_text("1.0.0\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "chore: version")
+    tag = version._apply_strategy_file(root, "demo-v", "1.1.0", "VERSION", root / "demo")
+    assert tag == "demo-v1.1.0"
+    assert version_file.read_text() == "1.1.0\n"
+    before = _git(root, "rev-parse", "HEAD")
+    same = version._apply_strategy_file(root, "demo-v", "1.1.0", "VERSION", root / "demo", dry_run=True)
+    assert same == tag and _git(root, "rev-parse", "HEAD") == before
+
+
+def test_detect_changed_projects_ignores_release_control_only_changes(tmp_path):
+    root = _repo(tmp_path)
+    _git(root, "tag", "demo-v1.0.0")
+    (root / "demo" / "cmru.toml").write_text("[project]\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "chore: adjust config")
+    project = SimpleNamespace(prefix="demo-v", paths=["demo"], cwd="demo", version=SimpleNamespace(bump="conventional"))
+    assert version.detect_changed_projects(root, {"demo": project}) == []
+
+
+def test_transaction_secret_overlay_is_private_and_rejects_outside_config(tmp_path):
+    root = _repo(tmp_path)
+    (root / "cmru.secret.toml").write_text("token = 'secret'\n")
+    child = tmp_path / "child"
+    _git(root, "worktree", "add", "-q", "-b", "cmru/release/secret", str(child), "main")
+    ws = transaction.ReleaseWorkspace(root, child, "cmru/release/secret", _git(root, "rev-parse", "HEAD"))
+    config = root / "demo" / "cmru.toml"
+    config.write_text("x")
+    transaction.copy_secret_overlays(root, ws, [config])
+    copied = child / "cmru.secret.toml"
+    assert copied.read_text() == "token = 'secret'\n" and copied.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
+        transaction.copy_secret_overlays(root, ws, [tmp_path / "outside.toml"])
+    _git(root, "worktree", "remove", "--force", str(child)); _git(root, "branch", "-D", "cmru/release/secret")
+
+
+def test_transaction_workspace_records_reject_corrupt_results_and_forget_markers(tmp_path):
+    root = _repo(tmp_path)
+    ws = transaction.ReleaseWorkspace(root, tmp_path / "ws", "cmru/release/token", "a" * 40)
+    transaction.write_release_scope(root, ws, ["demo"])
+    transaction.write_release_progress(root, ws, "b" * 40)
+    transaction.write_release_result(root, ws, "demo", "demo-v1")
+    assert transaction.read_release_results(root, ws) == {"demo": "demo-v1"}
+    marker = root / ".git" / "cmru-release-scopes" / "token.results.json"
+    marker.write_text("[]")
+    with pytest.raises(RuntimeError, match="invalid release result"):
+        transaction.read_release_results(root, ws)
+    transaction.forget_release_scope(root, ws)
+    assert transaction.read_release_scope(root, ws) is None
+    assert transaction.read_release_progress(root, ws) is None
+
+
+def test_transaction_delete_retained_output_requires_exact_verified_coordinate(tmp_path):
+    root = _repo(tmp_path)
+    project_root = root / "demo"
+    class ProjectRootMustNotBeRead:
+        @property
+        def project_root(self):
+            raise AssertionError("invalid ID validation must precede project-root resolution")
+
+    invalid_coordinate_message = (
+        "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+        "coordinate printed by cmru build"
+    )
+    for output_id in ("bad", "20240101T000000Z_" + "a" * 39):
+        with pytest.raises(RuntimeError) as raised:
+            transaction.delete_retained_build_output(
+                root, ProjectRootMustNotBeRead(), "demo", output_id, dry_run=False,
+            )
+        assert str(raised.value) == invalid_coordinate_message
+
+    project = SimpleNamespace(project_root=project_root)
+    output_id = "20240101T000000Z_" + "a" * 40
+    target = project_root / "artifacts" / output_id
+    target.mkdir(parents=True)
+    (project_root / "logs" / output_id).mkdir(parents=True)
+    (target / "build.json").write_text(json.dumps({
+        "schema_version": 1, "kind": "cmru-local-build", "publication": "forbidden",
+        "project": "demo", "build_id": output_id,
+    }))
+    assert transaction.delete_retained_build_output(root, project, "demo", output_id, dry_run=True) == [
+        project_root / "logs" / output_id, target,
+    ]
+    assert target.exists()
+
+
+def test_resolve_fast_path_falls_back_on_malformed_pointer(monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: _Response("not-json"))
+    assert resolve.resolve_via_latest_json("https://github/x/releases", "demo-v") is None
+    host = SimpleNamespace(resolve_latest=lambda prefix: {"version": "1", "tag": "demo-v1", "url": "u"})
+    assert resolve.resolve(host, "demo-v", use_latest_json=True, gh_releases_url="https://github/x/releases")["tag"] == "demo-v1"
+
+
+def test_resolve_format_env_and_url_are_stable():
+    result = {"version": "1.2.3", "tag": "demo-v1.2.3", "url": "https://x", "sha256": "abc"}
+    rendered = resolve.format_result(result, "env")
+    assert "DEMO_VERSION=1.2.3" in rendered and "DEMO_SHA256=abc" in rendered
+    assert resolve.format_result(result, "url") == "https://x"
+
+
+def test_tester_gate_resolvers_fail_closed_and_prefer_explicit(monkeypatch):
+    for name in ("CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS", "CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_DIND_IMAGE"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(SystemExit, match="memory limit"):
+        tester_gate.resolve_memory(None)
+    assert tester_gate.resolve_memory("1G") == "1G"
+    with pytest.raises(SystemExit, match="CPU limit"):
+        tester_gate.resolve_cpus(None)
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "2")
+    assert tester_gate.resolve_cpus(None) == "2"
+
+
+def test_tester_gate_cgroup_parent_declared_only(monkeypatch):
+    """No ambient reads, no hardcoded default: the resolver requires the
+    declared gates value and whatever resolves is slice-probed before launch."""
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_GATES",
+                 "CGROUP_PARENT_DEV_BACKGROUND"):
+        monkeypatch.delenv(name, raising=False)
+    # Ambient vars deliberately set to prove the resolver reads only its
+    # declared configuration binding.
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "ambient.slice")
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent(None)
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent("")
+
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "declared.slice")
+    assert tester_gate.resolve_cgroup_parent(None) == "declared.slice"
+    assert tester_gate.resolve_cgroup_parent("cli-wins.slice") == "cli-wins.slice"
+
+
+
+
+def _fake_io_probe(stdout: str):
+    return lambda *a, **kw: SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+
+def test_tester_gate_io_probe_verdicts(monkeypatch):
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda name: "/usr/bin/docker")
+    cases = {
+        "cgroup2fs\ncpu memory io pids\n": (True, "io controller"),
+        "cgroup2fs\ncpu memory pids\n": (False, "io controller is not delegated"),
+        "cgroup1fs\n\n": (False, "need cgroup v2"),
+        "garbage\n": (False, "could not determine"),
+    }
+    for stdout, (want_ok, want_note) in cases.items():
+        seen = {}
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
+        ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
+        assert ok is want_ok, (stdout, ok, note)
+        assert want_note in note
+        assert "--cgroup-parent=dev-gates.slice" in seen["argv"]
+
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda name: None)
+    ok, note = tester_gate._probe_io_support("debian:test", "dev-gates.slice")
+    assert ok is None and "skipping" in note
+
+
+def _clean_events_run(argv_seen, root):
+    """``subprocess.run`` fake: success, plus the clean cgroup-events file the
+    in-container wrapper would leave at the path ``main`` requested."""
+    from types import SimpleNamespace as NS
+
+    def run(*_a, **_k):
+        events = root / argv_seen["kwargs"]["events_file"]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        events.write_text("pids.events max 0\nmemory.events oom_kill 0\n")
+        return NS(returncode=0)
+    return run
+
+
+def _run_main_with_caps(monkeypatch, probe_result, root):
+    """Drive tester_gate.main with a device cap set and a mocked io probe."""
+    from types import SimpleNamespace as NS
+    import pytest as _pytest
+
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND",
+                 "CMRU_TESTER_DEVICE_READ_IOPS", "CMRU_TESTER_DEVICE_WRITE_IOPS",
+                 "CMRU_TESTER_DEVICE_READ_BPS", "CMRU_TESTER_DEVICE_WRITE_BPS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "img")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "1G")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "2G")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1")
+    monkeypatch.setenv("CMRU_TESTER_PIDS_LIMIT", "64")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "probe@sha256:" + "f" * 64)
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev.slice")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
+    monkeypatch.setattr(tester_gate, "_probe_io_support", lambda *_: probe_result)
+    argv_seen = {}
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *a, **kw: argv_seen.update(kwargs=kw) or ["true"],
+    )
+    monkeypatch.setattr(tester_gate.subprocess, "run", _clean_events_run(argv_seen, root))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: root))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context",
+                        lambda c, r: (root, r))
+    ei = tester_gate.main(["--cwd", ".", "--device-read-iops", "/dev/vda:1000",
+                          "--", "true"])
+    return ei, argv_seen
+
+
+def test_main_refuses_when_io_controller_unavailable(monkeypatch, tmp_path):
+    """Wiring-level contract: caps requested + unsupported host = named
+    refusal BEFORE any launch (deleting the gating block must fail this)."""
+    ei, seen = _run_main_with_caps(monkeypatch, (False, "io controller missing"), tmp_path)
+    assert ei != 0
+    assert "kwargs" not in seen  # never reached argv assembly
+
+
+def test_main_warns_and_proceeds_when_probe_indeterminate(monkeypatch, capsys, tmp_path):
+    ei, seen = _run_main_with_caps(monkeypatch, (None, "no docker here"), tmp_path)
+    assert ei == 0
+    assert "kwargs" in seen and seen["kwargs"]["device_read_iops"] == "/dev/vda:1000"
+    assert "no docker here" in capsys.readouterr().err  # probe note forwarded verbatim
+
+
+def test_main_strips_whitespace_device_caps(monkeypatch, tmp_path):
+    """Whitespace-only values are treated as unset everywhere: no preflight,
+    no half-empty flag reaching docker (review finding)."""
+    from types import SimpleNamespace as NS
+
+    for name in ("CMRU_TESTER_DEVICE_READ_IOPS", "CMRU_TESTER_DEVICE_READ_BPS",
+                 "CMRU_TESTER_DEVICE_WRITE_IOPS", "CMRU_TESTER_DEVICE_WRITE_BPS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "img")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "1G")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "2G")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1")
+    monkeypatch.setenv("CMRU_TESTER_PIDS_LIMIT", "64")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "probe@sha256:" + "f" * 64)
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev.slice")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
+    probe_called = []
+    monkeypatch.setattr(tester_gate, "_probe_io_support",
+                        lambda *_: probe_called.append(1) or (False, "x"))
+    argv_seen = {}
+    monkeypatch.setattr(tester_gate, "build_docker_command",
+                        lambda *a, **kw: argv_seen.update(kwargs=kw) or ["true"])
+    monkeypatch.setattr(tester_gate.subprocess, "run", _clean_events_run(argv_seen, tmp_path))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context",
+                        lambda c, r: (tmp_path, r))
+    ei = tester_gate.main(["--cwd", ".",
+                          "--device-read-iops", "   ", "--", "true"])
+    assert ei == 0
+    assert probe_called == []  # whitespace = unset: no preflight triggered
+    assert argv_seen["kwargs"]["device_read_iops"] == ""
+
+
+def test_main_proceeds_to_launch_when_io_caps_supported(monkeypatch, tmp_path):
+    """io_ok True skips both the refusal and the warning and proceeds to
+    argv assembly — the third verdict the gating block can produce."""
+    ei, seen = _run_main_with_caps(monkeypatch, (True, "io controller present"), tmp_path)
+    assert ei == 0
+    assert seen["kwargs"]["device_read_iops"] == "/dev/vda:1000"

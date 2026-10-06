@@ -48,6 +48,30 @@ def pytest_args(workers: str) -> list[str]:
     ]
 
 
+def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for the pytest child: repo sources first on PYTHONPATH.
+
+    Mirrors ``assay.toml``'s lane env: ciu's own ``src`` plus the repo-sibling
+    sources the suite imports (cmru for the committed-get.py drift guard,
+    cli-extended and worktree as cmru's/ciu's runtime deps). Resolved from this
+    script's location, never the cwd, so an image-installed (older) cmru can not
+    shadow the repo's. Any ambient PYTHONPATH stays after ours.
+    """
+    env = dict(os.environ if base is None else base)
+    repo = ROOT.parent
+    paths = [
+        ROOT / "src",
+        repo / "cmru" / "src",
+        repo / "libraries" / "cli-extended" / "src",
+        repo / "libraries" / "worktree" / "src",
+    ]
+    parts = [str(p) for p in paths]
+    if env.get("PYTHONPATH"):
+        parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
+
+
 def main() -> None:
     argv = sys.argv[1:]
     # The normal local gate uses xdist's automatic worker count.  The
@@ -60,7 +84,7 @@ def main() -> None:
     if workers != "auto" and (not workers.isdigit() or int(workers) < 0):
         raise SystemExit("CIU_PYTEST_WORKERS must be 'auto' or a non-negative integer")
     cmd = [sys.executable, *pytest_args(workers), *argv]
-    subprocess.run(cmd, check=True, cwd=str(ROOT))
+    subprocess.run(cmd, check=True, cwd=str(ROOT), env=child_env())
 
 
 if __name__ == "__main__":

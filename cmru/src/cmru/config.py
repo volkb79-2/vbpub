@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -76,6 +77,115 @@ class InstallerConfig:
     manifest_name: str               # default "manifest.json"
     signature_name: str              # default "manifest.json.minisig"
     wheels: List[InstallerWheel]     # bundled wheels to install into venv
+    # Project-relative ``.py`` fragments inlined into the rendered get.py at the
+    # ``# @@EXTENSIONS@@`` marker (W1-CIU-ENROLL / decision O4). Existence is
+    # checked at render time, not here.
+    extensions: List[str] = field(default_factory=list)
+    # minisign public key (base64). Empty = the project's releases are unsigned and get.py
+    # says so; non-empty = get.py REQUIRES `minisign` and a valid signature (W1-INSTALLER, R2).
+    manifest_pubkey: str = ""
+    # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd> (R8).
+    launchers: List[str] = field(default_factory=list)
+
+
+_INSTALLER_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_INSTALLER_COMMAND = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._+-]*")
+_MINISIGN_PUBKEY = re.compile(r"[A-Za-z0-9+/]{56}")
+
+
+def _relative_problem(value: str, what: str) -> Optional[str]:
+    if (not value or value.startswith("/") or ".." in value.replace("\\", "/").split("/")
+            or any(ch in value for ch in "\0\n\r")):
+        return f"{what} must be a relative path without '..': {value!r}"
+    return None
+
+
+# An install root is removed/rewritten wholesale by the installer; these (and "/") are never
+# acceptable as `install_dir_system`, however the path is spelled.
+_SYSTEM_ROOT_DIRS = frozenset({"usr", "etc", "bin", "sbin", "lib", "var", "boot", "home"})
+
+
+def _normalises_to_root(value: str) -> bool:
+    """True when a relative `value` collapses to the root itself (``.``, ``a/..``)."""
+    import posixpath
+    return posixpath.normpath(value) == "."
+
+
+def installer_problems(
+    *,
+    install_dir_system: str,
+    install_dir_user: str,
+    asset_suffix: str,
+    entrypoint: str,
+    manifest_name: str,
+    signature_name: str,
+    required_commands: List[str],
+    preserve: List[str],
+    wheels: List[tuple],
+    launchers: List[str],
+    manifest_pubkey: str,
+) -> List[str]:
+    """Grammar of the values that get.py bakes into code (INS-13 / R11); [] when valid."""
+    problems: List[str] = []
+    if (not install_dir_system.startswith("/") or ".." in install_dir_system.split("/")
+            or any(ch in install_dir_system for ch in "\0\n\r")):
+        problems.append(f"install_dir_system must be an absolute path without '..': "
+                        f"{install_dir_system!r}")
+    else:
+        import posixpath
+        parts = [p for p in install_dir_system.split("/") if p not in ("", ".")]
+        if (posixpath.normpath(install_dir_system) != install_dir_system
+                or install_dir_system.startswith("//")):
+            problems.append(f"install_dir_system must be a normalised path (no '//', '.' "
+                            f"or trailing '/'): {install_dir_system!r}")
+        elif len(parts) < 2 or (len(parts) == 1 and parts[0] in _SYSTEM_ROOT_DIRS):
+            problems.append(f"install_dir_system {install_dir_system!r} is the filesystem "
+                            "root, a top-level directory or a system directory; use a "
+                            "dedicated directory with at least two components "
+                            "(e.g. /opt/<name>)")
+    problem = _relative_problem(install_dir_user, "install_dir_user")
+    if problem:
+        problems.append(problem)
+    elif _normalises_to_root(install_dir_user):
+        problems.append(f"install_dir_user must name a sub-directory, not the data "
+                        f"directory itself: {install_dir_user!r}")
+    if asset_suffix != ".tar.xz":
+        problems.append(f"asset_suffix must be '.tar.xz' (the installer reads xz tarballs): "
+                        f"{asset_suffix!r}")
+    if entrypoint:
+        problem = _relative_problem(entrypoint, "entrypoint")
+        if problem:
+            problems.append(problem)
+    for label, name in (("manifest_name", manifest_name), ("signature_name", signature_name)):
+        if not _INSTALLER_SAFE_NAME.fullmatch(name):
+            problems.append(f"{label} must be a plain file name: {name!r}")
+    for command in required_commands:
+        if not _INSTALLER_COMMAND.fullmatch(command):
+            problems.append(f"required_commands entry is not a plain command name: {command!r}")
+    for path in preserve:
+        problem = _relative_problem(path, "preserve entry")
+        if problem:
+            problems.append(problem)
+        elif _normalises_to_root(path):
+            problems.append(f"preserve entry {path!r} names the release root itself, not "
+                            "a path inside it")
+    for glob_path, distribution in wheels:
+        problem = _relative_problem(glob_path, "wheels.path")
+        if problem:
+            problems.append(problem)
+        if not _INSTALLER_SAFE_NAME.fullmatch(distribution):
+            problems.append(f"wheels.distribution is not a plain name: {distribution!r}")
+    for launcher in launchers:
+        if not _INSTALLER_COMMAND.fullmatch(launcher):
+            problems.append(f"launchers entry is not a plain command name: {launcher!r}")
+    if launchers and not wheels:
+        problems.append("launchers need at least one [[project.installer.wheels]] entry "
+                        "(they point into the release venv)")
+    if manifest_pubkey and not _MINISIGN_PUBKEY.fullmatch(manifest_pubkey):
+        problems.append("manifest_pubkey must be a minisign public key in base64 "
+                        "(56 characters, as printed by `minisign -G` / in the .pub file's "
+                        "second line)")
+    return problems
 
 
 @dataclass(frozen=True)
@@ -138,7 +248,6 @@ class ProjectS2Config:
 @dataclass(frozen=True)
 class OrchestrationConfig:
     project_order: List[str]
-    default_projects: List[str]
     default_steps: List[str]
     execution_mode: str
     project_configs: Mapping[str, Path] = field(default_factory=dict)
@@ -193,8 +302,36 @@ def _git_scope(path: Path) -> dict[str, Optional[Path]]:
     is therefore not an error; each selected project supplies its own family.
     """
     candidate = path.resolve()
-    if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
-        return {}
+    # Let Git decide whether this is a repository (REL-11). Walking parents for
+    # any ``.git`` entry mistook a stray empty ``/tmp/.git`` for a repository
+    # and then hard-failed every project below it.
+    # GIT_* (GIT_DIR, GIT_WORK_TREE, ...) leaks in from hook contexts and would
+    # turn any directory into "the" repository; the probe must not inherit it.
+    probe_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    probe_env["LC_ALL"] = "C"
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False, env=probe_env,
+        )
+    except OSError as exc:
+        # No git binary: outside any repository that is the old "no Git here"
+        # answer; inside one it is a real failure.
+        if not any((directory / ".git").exists() for directory in (candidate, *candidate.parents)):
+            return {}
+        raise ValueError(f"could not resolve Git context for CMRU project {path}: {exc}") from exc
+    if probe.returncode != 0:
+        if "not a git repository" in probe.stderr.lower():
+            return {}
+        # Git aborts (instead of walking on) at an unparseable ``.git`` FILE. One in
+        # a parent directory is a stray, not this project's repository; one in the
+        # project's own directory is a genuinely broken checkout and stays an error.
+        stray = re.search(r"invalid gitfile format: (.+)", probe.stderr)
+        if stray and Path(stray.group(1).strip()).parent != candidate:
+            return {}
+        raise ValueError(
+            f"could not resolve Git context for CMRU project {path}: {probe.stderr.strip()}"
+        )
     try:
         try:
             import worktree
@@ -224,6 +361,10 @@ def _require(d: dict, key: str, section: str) -> object:
     if val is None:
         _error(f"{section}.{key} is required")
     return val
+
+
+# Config paths already warned about the deprecated orchestration.default_projects.
+_DEFAULT_PROJECTS_WARNED: set[str] = set()
 
 
 def _error(message: str) -> "None":
@@ -343,6 +484,7 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
     _KNOWN_INSTALLER_KEYS = {
         "install_dir_system", "install_dir_user", "asset_suffix", "entrypoint",
         "required_commands", "preserve", "manifest_name", "signature_name", "wheels",
+        "extensions", "manifest_pubkey", "launchers",
     }
     unknown = [k for k in raw if k not in _KNOWN_INSTALLER_KEYS]
     if unknown:
@@ -390,6 +532,27 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         wdist = str(_require(w, "distribution", f"project.{name}.installer.wheels[{i}]"))
         wheels.append(InstallerWheel(path=wpath, distribution=wdist))
 
+    extensions = _parse_installer_extensions(name, raw.get("extensions"))
+
+    manifest_pubkey = raw.get("manifest_pubkey", "")
+    if not isinstance(manifest_pubkey, str):
+        _error(f"project.{name}.installer.manifest_pubkey must be a string")
+    launchers_raw = raw.get("launchers") or []
+    if not isinstance(launchers_raw, list) or not all(isinstance(c, str) for c in launchers_raw):
+        _error(f"project.{name}.installer.launchers must be a list of command names")
+    launchers = [str(c) for c in launchers_raw]
+
+    problems = installer_problems(
+        install_dir_system=install_dir_system, install_dir_user=install_dir_user,
+        asset_suffix=asset_suffix, entrypoint=entrypoint or "",
+        manifest_name=manifest_name, signature_name=signature_name,
+        required_commands=required_commands, preserve=preserve,
+        wheels=[(w.path, w.distribution) for w in wheels],
+        launchers=launchers, manifest_pubkey=manifest_pubkey,
+    )
+    if problems:
+        _error(f"project.{name}.installer: {problems[0]}")
+
     return InstallerConfig(
         install_dir_system=install_dir_system,
         install_dir_user=install_dir_user,
@@ -400,7 +563,35 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         manifest_name=manifest_name,
         signature_name=signature_name,
         wheels=wheels,
+        extensions=extensions,
+        manifest_pubkey=manifest_pubkey,
+        launchers=launchers,
     )
+
+
+def _parse_installer_extensions(name: str, raw: object) -> List[str]:
+    """Validate ``[project.installer] extensions`` — project-relative ``.py`` paths."""
+    where = f"project.{name}.installer.extensions"
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        _error(f"{where} must be a list of project-relative .py paths")
+    extensions: List[str] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, str) or not item.strip():
+            _error(f"{where}[{i}] must be a non-empty string")
+        rel = item.strip()
+        candidate = Path(rel)
+        if candidate.is_absolute() or rel.startswith(("/", "\\")):
+            _error(f"{where}[{i}] must be project-relative, not absolute: {rel!r}")
+        if ".." in candidate.parts or ".." in rel.replace("\\", "/").split("/"):
+            _error(f"{where}[{i}] must stay inside the project directory (no '..'): {rel!r}")
+        if not rel.endswith(".py"):
+            _error(f"{where}[{i}] must end in .py: {rel!r}")
+        if rel in extensions:
+            _error(f"{where}[{i}] duplicates an earlier entry: {rel!r}")
+        extensions.append(rel)
+    return extensions
 
 
 # A variant name is used verbatim inside a release-asset filename, so keep it to a
@@ -593,6 +784,13 @@ _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
     "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
 })
+#: The whole ``CMRU_INTERNAL_`` namespace is cmru's own launch/log state
+#: (``CMRU_INTERNAL_BIN``, ``..._RUN_LOG``, ...): a project ``[env]`` may declare none of it.
+_RESERVED_CMRU_INTERNAL_PREFIX = "CMRU_INTERNAL_"
+
+
+def is_reserved_internal_env(name: str) -> bool:
+    return name in _RESERVED_CMRU_INTERNAL_ENV or name.startswith(_RESERVED_CMRU_INTERNAL_PREFIX)
 
 
 def _scalar_env(
@@ -612,7 +810,7 @@ def _scalar_env(
                 "supply tokens through GITHUB_PUSH_PAT/GITHUB_TOKEN in the invoking "
                 "environment or the ignored cmru.secret.toml file"
             )
-        if reject_credentials and key in _RESERVED_CMRU_INTERNAL_ENV:
+        if reject_credentials and is_reserved_internal_env(key):
             _error(
                 f"{where}.{key} is reserved for CMRU internal launch state and "
                 "cannot be declared in project or orchestration configuration"
@@ -975,7 +1173,7 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
         token=root_token or None,
     )
     orchestration = OrchestrationConfig(
-        project_order=[project.name], default_projects=[project.name],
+        project_order=[project.name],
         default_steps=["run-tests", "build", "push"], execution_mode="project-first",
         project_configs={project.name: config_path}, dependencies={project.name: []},
     )
@@ -1014,8 +1212,22 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         {"project_order", "default_projects", "default_steps", "execution_mode", "defaults", "project"},
         "orchestration",
     )
-    for key in ("project_order", "default_projects", "default_steps"):
+    for key in ("project_order", "default_steps"):
         _string_list(_require(orch_raw, key, "orchestration"), f"orchestration.{key}")
+    if "default_projects" in orch_raw and str(config_path) not in _DEFAULT_PROJECTS_WARNED:
+        # CLI-04: the key was required and validated but never read (an omitted
+        # target selects the current project, or every orchestrated project at
+        # the estate root). Accept it for one release, warn once per config
+        # path (a run loads the config more than once), ignore.
+        import sys
+
+        _DEFAULT_PROJECTS_WARNED.add(str(config_path))
+        print(
+            "[WARN] orchestration.default_projects is ignored and will be removed; "
+            "an omitted target selects the current project or every orchestrated "
+            "project at the estate root",
+            file=sys.stderr,
+        )
     execution_mode = _require(orch_raw, "execution_mode", "orchestration")
     if execution_mode not in {"project-first", "step-first"}:
         _error("orchestration.execution_mode must be 'project-first' or 'step-first'")
@@ -1083,10 +1295,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     }
     known = set(docs)
     root_token, project_tokens = _load_repository_secrets(config_path.parent, paths)
-    for field_name, values in (("project_order", orch_raw["project_order"]), ("default_projects", orch_raw["default_projects"])):
-        unknown = sorted(set(values) - known)
-        if unknown:
-            _error(f"orchestration.{field_name} names unknown project(s): {unknown}")
+    unknown = sorted(set(orch_raw["project_order"]) - known)
+    if unknown:
+        _error(f"orchestration.project_order names unknown project(s): {unknown}")
     for project_id, deps in dependencies.items():
         unknown = sorted(set(deps) - known)
         if unknown:
@@ -1118,7 +1329,6 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         github=github, targets=targets,
         orchestration=OrchestrationConfig(
             project_order=list(orch_raw["project_order"]),
-            default_projects=list(orch_raw["default_projects"]),
             default_steps=list(orch_raw["default_steps"]), execution_mode=str(execution_mode),
             project_configs=paths, dependencies=dependencies,
         ),

@@ -142,7 +142,7 @@ def test_build_transaction_child_dispatches_isolated_phases_without_transaction(
     assert calls == [(tmp_path, ["demo"])]
 
 
-def test_publish_dispatch_refuses_missing_project_credential_before_runner(monkeypatch, tmp_path):
+def test_publish_dispatch_refuses_missing_project_credential_before_runner(monkeypatch, tmp_path, capsys):
     cfg = tmp_path / "cmru.toml"; cfg.write_text("[project]\n")
     project = SimpleNamespace(name="demo", github_token="")
     monkeypatch.setattr(cli, "_resolve_config", lambda value: cfg)
@@ -150,8 +150,9 @@ def test_publish_dispatch_refuses_missing_project_credential_before_runner(monke
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
     ran = []
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: ran.append(True))
-    with pytest.raises(RuntimeError, match="Publishing requires"):
-        cli.main(["publish", "--config", str(cfg), "demo"])
+    assert cli.main(["publish", "--config", str(cfg), "--from-checkout", "demo"]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] Publishing requires" in err and "unexpected" not in err
     assert ran == []
 
 

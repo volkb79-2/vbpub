@@ -61,6 +61,38 @@
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1912
           }
@@ -80,6 +112,38 @@
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 254
           },
@@ -96,6 +160,38 @@
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 274
           },
@@ -112,6 +208,38 @@
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 363
           },
@@ -128,6 +256,38 @@
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 432
           },
@@ -144,6 +304,38 @@
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 549
           },
@@ -160,6 +352,38 @@
             "operator": "sql:widen-check-in",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "a90e5f2d959b0d1202dbc2277b970fbd43cffbbbf01c476d2ef925af2bb5cd30",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 576
           },
@@ -176,6 +400,38 @@
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 607
           },
@@ -192,6 +448,38 @@
             "operator": "sql:drop-foreign-key",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 740
           },
@@ -208,6 +496,38 @@
             "operator": "sql:weaken-delete-action",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 773
           },
@@ -224,6 +544,38 @@
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 881
           },
@@ -240,6 +592,38 @@
             "operator": "sql:drop-foreign-key",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 944
           },
@@ -256,6 +640,38 @@
             "operator": "sql:weaken-delete-action",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1013
           },
@@ -272,6 +688,38 @@
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "c0bfc598cb20360c87dbb3bbf888cfd41d6eca2d2c1003e06871bc328ad71b14",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1087
           },
@@ -288,6 +736,38 @@
             "operator": "sql:drop-check",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1162
           },
@@ -304,6 +784,38 @@
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1249
           },
@@ -320,6 +832,38 @@
             "operator": "sql:drop-unique",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1315
           },
@@ -336,6 +880,38 @@
             "operator": "sql:drop-foreign-key",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1658
           },
@@ -352,6 +928,38 @@
             "operator": "sql:weaken-delete-action",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 1713
           },
@@ -368,6 +976,38 @@
             "operator": "sql:drop-trigger",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 2273
           },
@@ -384,6 +1024,38 @@
             "operator": "sql:drop-trigger",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 2532
           },
@@ -400,6 +1072,38 @@
             "operator": "sql:drop-trigger",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 2914
           }
@@ -417,6 +1121,38 @@
             "operator": "sql:drop-not-null",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 394
           },
@@ -432,6 +1168,38 @@
             "operator": "sql:widen-check-in",
             "path": "db/schema/01-schema.sql",
             "replacement_sha256": "80e15b3d3b954f7f0fec09f006b5e69aa0a2954b7bbdeaac1a818f4a05df9912",
+            "resource_limit_evidence": {
+              "cgroup_version": 2,
+              "memory_events": {
+               "max": {
+                "after": 0,
+                "before": 0,
+                "delta": 0
+               },
+                "oom": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_group_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                },
+                "oom_kill": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              },
+              "pids_events": {
+                "max": {
+                  "after": 0,
+                  "before": 0,
+                  "delta": 0
+                }
+              }
+            },
             "source_sha256": "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1",
             "start_byte": 463
           }
@@ -459,6 +1227,8 @@
   "env_effective": {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   },
+  "env_effective_passthrough_sha256": {},
+  "env_passthrough": [],
   "evidence": [],
   "exit_code": 1,
   "judgment": {
@@ -497,7 +1267,7 @@
   "lane": "sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 13,
+  "schema_version": 14,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

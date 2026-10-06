@@ -16,7 +16,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order = [@@PROJECT_ORDER@@]
-default_projects = [@@PROJECT_ORDER@@]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in the gitignored root cmru.secret.toml; an
@@ -47,6 +46,11 @@ CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
 
+# Process ceiling per gate container (docker --pids-limit); required, no code
+# default. The gate also runs under --init and exits 3 if pids.events 'max'
+# or memory.events 'oom_kill' is non-zero afterwards.
+CMRU_TESTER_PIDS_LIMIT = "4096"
+
 # Minimal image for tester-gate's HOST-systemd preflight probes (needs
 # nsenter; deliberately NOT tester-unified). It verifies, before launch:
 #   - slice: LoadState=loaded AND non-empty FragmentPath (systemd
@@ -54,7 +58,9 @@ CMRU_TESTER_CPUS = "1.5"
 #     Docker's fail-open transient), and
 #   - IO: cgroup v2 with the io controller delegated (required for any
 #     --device-* cap below).
-CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+# Privileged + --pull=never: MUST be digest-pinned (placeholder below) and
+# already present locally.
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"
 
 # GOVERNANCE SLICE for gate containers — the dedicated admission tier. The
 # value is declared, resolves once at load, and must be supplied by the host

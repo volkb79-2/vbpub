@@ -245,10 +245,10 @@ else
 fi
 
 echo "[INFO] Step 6/7: release build"
-cmru build --project empyrion-translation
+cmru build empyrion-translation
 
 echo "[INFO] Step 7/7: release push"
-cmru publish --project empyrion-translation
+cmru publish empyrion-translation --from-checkout
 
 cp -f "${EMPYRION_WORKFLOW_LOG}" "${WORKFLOW_LOG_LATEST}"
 echo "[INFO] Workflow latest log updated: ${WORKFLOW_LOG_LATEST}"

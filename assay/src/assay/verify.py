@@ -117,6 +117,7 @@ from .verdict import (
     Mutation,
     MutationExecution,
     MutationWitnessReceipt,
+    ResourceLimitEvidence,
     MutationProducerTool,
     Outcome,
     ReasonCode,
@@ -132,7 +133,7 @@ from .verdict import (
 
 __all__ = ["build_verify_parser", "cmd_verify", "verify_document", "verify_text"]
 
-#: The ten-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
+#: The twelve-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
 #: minus the derived `argv_modified` — transcribed by hand rather than
 #: imported, the same independence `tests/core/test_errors.py` already applies to
 #: the outcome/reason_code tables (A-092's house style).
@@ -144,6 +145,8 @@ _LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "argv_effective",
     "env_declared",
     "env_effective",
+    "env_passthrough",
+    "env_effective_passthrough_sha256",
     "scope",
     "enforcement",
 )
@@ -242,6 +245,54 @@ def _check_lane_resolved_group(document: dict, failures: list[str]) -> None:
             f"argv_effective {effective!r} is not argv_declared + "
             f"argv_appended {expected_effective!r}"
         )
+    fixed_env = document["env_declared"]
+    passthrough = document["env_passthrough"]
+    # Malformed values are the schema/model layer's concern. Keep this raw
+    # cross-field check total over untrusted JSON: a list-valued name, for
+    # example, must be reported as invalid input rather than raising here.
+    if (
+        isinstance(fixed_env, dict)
+        and isinstance(passthrough, list)
+        and all(isinstance(name, str) for name in passthrough)
+    ):
+        collisions = sorted(set(fixed_env) & set(passthrough))
+        if collisions:
+            failures.append(
+                f"env_passthrough names {collisions!r} collide with env_declared"
+            )
+
+    effective_env = document["env_effective"]
+    digests = document["env_effective_passthrough_sha256"]
+    if not isinstance(digests, dict):
+        failures.append("env_effective_passthrough_sha256 must be an object")
+    if (
+        isinstance(effective_env, dict)
+        and isinstance(passthrough, list)
+        and all(isinstance(name, str) for name in passthrough)
+        and isinstance(digests, dict)
+    ):
+        present_passthrough = set(effective_env) & set(passthrough)
+        if set(digests) != present_passthrough:
+            failures.append(
+                "env_effective_passthrough_sha256 names must match the present "
+                "env_effective passthrough names"
+            )
+        for name, digest in digests.items():
+            if not (
+                isinstance(digest, str)
+                and len(digest) == 64
+                and all(character in "0123456789abcdef" for character in digest)
+            ):
+                failures.append(
+                    f"env_effective_passthrough_sha256[{name!r}] must be 64 "
+                    "lowercase hexadecimal characters"
+                )
+        for name in present_passthrough:
+            if effective_env[name] != "<passthrough>":
+                failures.append(
+                    f"env_effective[{name!r}] must be '<passthrough>' for a "
+                    "passthrough value"
+                )
 
     expected_modified = bool(appended)
     if "argv_modified" not in document:
@@ -1699,6 +1750,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
                     "recorded identity inputs"
                 )
         _check_b106_execution(bucket, entry.get("execution"), failures)
+        _check_b145_resource_limit_evidence(bucket, entry, failures)
 
     if len(outcome_ids) != len(set(outcome_ids)):
         failures.append("native mutation outcomes contain a duplicate candidate ID")
@@ -1758,6 +1810,82 @@ def _check_b106_execution(bucket: str, execution: Any, failures: list[str]) -> N
     ):
         failures.append(
             "witness-prefix prior, current and receipt node IDs must be identical"
+        )
+
+
+def _check_b145_resource_limit_evidence(
+    bucket: str, entry: dict[str, Any], failures: list[str]
+) -> None:
+    raw = entry.get("resource_limit_evidence")
+    if not isinstance(raw, dict):
+        failures.append(
+            f"native mutation.{bucket} entry requires resource_limit_evidence"
+        )
+        return
+    if set(raw) != {"cgroup_version", "pids_events", "memory_events"}:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid resource_limit_evidence fields"
+        )
+        return
+    if type(raw["cgroup_version"]) is not int or raw["cgroup_version"] != 2:
+        failures.append(
+            f"native mutation.{bucket} entry resource_limit_evidence requires cgroup v2"
+        )
+        return
+    pids = raw["pids_events"]
+    memory = raw["memory_events"]
+    if not isinstance(pids, dict) or set(pids) != {"max"}:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid pids_events evidence"
+        )
+        return
+    if not isinstance(memory, dict) or set(memory) != {
+        "max",
+        "oom",
+        "oom_kill",
+        "oom_group_kill",
+    }:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid memory_events evidence"
+        )
+        return
+
+    positive_delta = False
+    for name, raw_delta in (
+        ("pids_events.max", pids["max"]),
+        ("memory_events.max", memory["max"]),
+        ("memory_events.oom", memory["oom"]),
+        ("memory_events.oom_kill", memory["oom_kill"]),
+        ("memory_events.oom_group_kill", memory["oom_group_kill"]),
+    ):
+        if not isinstance(raw_delta, dict) or set(raw_delta) != {
+            "before", "after", "delta"
+        }:
+            failures.append(
+                f"native mutation.{bucket} entry has invalid {name} counter evidence"
+            )
+            continue
+        before = raw_delta["before"]
+        after = raw_delta["after"]
+        delta = raw_delta["delta"]
+        if any(
+            type(value) is not int or value < 0
+            for value in (before, after, delta)
+        ):
+            failures.append(
+                f"native mutation.{bucket} entry has invalid non-negative integer {name} counters"
+            )
+            continue
+        if after < before or delta != after - before:
+            failures.append(
+                f"native mutation.{bucket} entry has inconsistent {name} counter arithmetic"
+            )
+            continue
+        positive_delta = positive_delta or delta > 0
+    if positive_delta and bucket != "crashed":
+        failures.append(
+            f"native mutation.{bucket} entry has a positive cgroup resource-limit "
+            "counter delta; it cannot be classified as a test kill or survival"
         )
 
 
@@ -2198,6 +2326,11 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         source_sha256=raw.get("source_sha256"),
         mutated_file_sha256=raw.get("mutated_file_sha256"),
         execution=execution,
+        resource_limit_evidence=(
+            ResourceLimitEvidence.from_dict(raw["resource_limit_evidence"])
+            if isinstance(raw.get("resource_limit_evidence"), dict)
+            else None
+        ),
     )
     _reject_unknown_keys(raw, item.to_dict(), "mutant outcome")
     return item
@@ -2339,6 +2472,14 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             argv_effective=tuple(document["argv_effective"]),
             env_declared=MappingProxyType(dict(document["env_declared"])),
             env_effective=MappingProxyType(dict(document["env_effective"])),
+            env_passthrough=tuple(document["env_passthrough"]),
+            env_effective_passthrough_sha256=MappingProxyType(
+                dict(
+                    document["env_effective_passthrough_sha256"]
+                    if isinstance(document["env_effective_passthrough_sha256"], dict)
+                    else {}
+                )
+            ),
             scope=document["scope"],
             enforcement=document["enforcement"],
         )
@@ -2439,12 +2580,11 @@ _BASELINE_NEVER_READ = object()
 #: ``judge_mutation``'s ``mutation is None`` branch propagates the baseline's
 #: own ``(outcome, reason_code)`` verbatim, which is correct for exactly one
 #: cause: mutation testing never began because the lane's command did not
-#: PASS (A-116). But ``run_lane`` renders SIX other payload-free R2 claims
+#: PASS (A-116). But ``run_lane`` renders SEVEN other payload-free R2 claims
 #: from a caught :class:`~assay.errors.AssayError` while R0 passed, and each
-#: was being compared against that passing baseline and rejected -- so
-#: ``assay run`` emitted artifacts its own ``assay verify`` refused. The one
-#: this package itself makes reachable is the discovery boundary; the rest
-#: predate it on the same branch:
+#: must be distinguished from that passing baseline -- otherwise ``assay run``
+#: emits artifacts its own ``assay verify`` refuses. The earlier independent
+#: terminals were:
 #:
 #: * ``MUTATION_DISCOVERY_FAILED`` -- ``run_mutation``'s discovery boundary
 #:   (P21 work item 4 / A-171), reachable today for unparseable Python.
@@ -2454,6 +2594,8 @@ _BASELINE_NEVER_READ = object()
 #: * ``GIT_FAILED`` -- the diff R2 resolves its targets from.
 #: * ``UNREADABLE_ARTIFACT`` -- the bounded source read during target
 #:   resolution (P20 work item 5).
+#: * ``EXEC_FAILED`` -- B145's required cgroup counters are unavailable before
+#:   native candidates start, or a resource-limit event aborts witness replay.
 #:
 #: This is NOT a licence to accept any pairing: the STATUS is re-derived from
 #: the closed vocabulary below rather than taken from the artifact, so a
@@ -2484,6 +2626,7 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
         ReasonCode.BASE_IS_HEAD,
         ReasonCode.GIT_FAILED,
         ReasonCode.UNREADABLE_ARTIFACT,
+        ReasonCode.EXEC_FAILED,
     }
 )
 
@@ -2491,13 +2634,13 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #: baseline's REASON but not of whether the baseline PASSED at all.
 #:
 #: ``_INDEPENDENT_R2_TERMINALS`` stopped after re-deriving the OUTCOME, so a
-#: payload-free R2 claim could name any of the six beside any baseline -- and
-#: three of them are producible only on a branch ``run_lane`` reaches after
+#: payload-free R2 claim could name any of the seven beside any baseline -- and
+#: four of them are producible only on a branch ``run_lane`` reaches after
 #: the command PASSED, because target resolution and mutation discovery are
 #: both inside ``if r2_declared and result.outcome is Outcome.PASS``
 #: (``runner.py``); the not-PASS arm renders
 #: ``build_mutation_claim(result, None)``, which propagates the baseline's own
-#: pair verbatim (A-116). So one of these three beside a non-passing baseline
+#: pair verbatim (A-116). So one of these four beside a non-passing baseline
 #: is a misreported reason code, and that was accepted.
 #:
 #: The other three are deliberately NOT here, each with a producer path that
@@ -2513,15 +2656,23 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #:   ``R0 = FAIL/COMMAND_FAILED`` beside ``R2 = NO_MEASUREMENT/DIRTY_TREE`` is
 #:   a truthful artifact.
 #:
+#: ``EXEC_FAILED`` joins this subset under B145: native R2 either refuses
+#: before candidate execution when required counters are unavailable, or
+#: stops on a resource-limit event during candidate/witness execution. Both
+#: paths are reached only after R0 passes; when R0 does not pass, the producer
+#: propagates its pair and never starts native R2.
+#:
 #: A-241's own headline example was ``ERROR``/``GIT_FAILED`` against an
 #: ``ERROR``/``EXEC_FAILED`` baseline. That example is WRONG -- it is exactly
-#: the cleanup path above and is legitimate; the gap is real for the other
-#: three. Recorded here because the wrong example is the more memorable half.
+#: the cleanup path above and is legitimate; the gap is real for the four
+#: post-baseline-only terminals. Recorded here because the wrong example is
+#: the more memorable half.
 _POST_BASELINE_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
     {
         ReasonCode.MUTATION_DISCOVERY_FAILED,
         ReasonCode.BASE_IS_HEAD,
         ReasonCode.UNREADABLE_ARTIFACT,
+        ReasonCode.EXEC_FAILED,
     }
 )
 
@@ -2675,9 +2826,9 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
                 f"{claim.reason_code.value} is "
                 f"{'no outcome' if expected_outcome is None else expected_outcome.value}"
             )
-        # (A-245, closing A-241) "Independent of the baseline's REASON" is not
-        # "independent of whether the baseline ran". For the three terminals
-        # only a PASSING baseline can lead to, a non-passing R0 sibling means
+        # (A-245, closing A-241; B145) "Independent of the baseline's REASON"
+        # is not "independent of whether the baseline ran". A non-passing R0
+        # sibling cannot accompany these four post-baseline-only terminals,
         # the producer would have propagated ITS pair verbatim instead
         # (A-116) -- so the recorded reason code is a misreport, and only the
         # OUTCOME agreeing was hiding it.

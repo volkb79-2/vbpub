@@ -111,15 +111,17 @@ def test_resumed_release_refuses_scope_changed_while_waiting_for_lock(
         "release", "--resume", str(workspace.path),
         "--config", str(tmp_path / "cmru.toml"),
     ])
-    assert result == 1
-    assert "retained release scope changed while acquiring its lock" in capsys.readouterr().err
+    assert result == 4  # a refusal made before anything changed
+    err = capsys.readouterr().err
+    assert "retained release scope changed while acquiring its lock" in err
+    assert "unexpected" not in err
     assert child_calls == []
 
 
 def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp_path, capsys):
     retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
-    exc = cli.main(["release", "--resume", str(workspace.path), "--discard-artifacts-on-release", "--config", str(tmp_path / "cmru.toml")])
+    exc = cli.main(["release", "--resume", str(workspace.path), "--discard", "artifacts", "--config", str(tmp_path / "cmru.toml")])
     assert exc == 0
     assert seen[0][0][3] == {"demo": "demo-v1"}
     assert seen[0][1] == {
@@ -132,7 +134,7 @@ def test_resumed_release_existing_discard_flags_skip_undeclared_evidence_retenti
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, [])
     exc = cli.main([
             "release", "--resume", str(workspace.path),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
             "--config", str(tmp_path / "cmru.toml"),
         ])
     assert exc == 0
@@ -149,7 +151,7 @@ def test_resumed_release_discarding_logs_and_artifacts_still_retains_declared_ev
     )
     exc = cli.main([
             "release", "--resume", str(workspace.path),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
             "--config", str(tmp_path / "cmru.toml"),
         ])
     assert exc == 0
@@ -163,7 +165,7 @@ def test_resumed_release_discard_evidence_flag_is_independent(monkeypatch, tmp_p
     retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
     workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
     exc = cli.main([
-            "release", "--resume", str(workspace.path), "--discard-evidence-on-release",
+            "release", "--resume", str(workspace.path), "--discard", "evidence",
             "--config", str(tmp_path / "cmru.toml"),
         ])
     assert exc == 0

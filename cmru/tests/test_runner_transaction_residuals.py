@@ -590,12 +590,20 @@ def test_handlers_and_tester_gate_reject_or_report_boundary_conditions(tmp_path,
     monkeypatch.setattr(tester_gate, "resolve_cgroup_parent", lambda explicit: explicit or "slice")
     monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda explicit: explicit or "probe")
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (None, "probe unavailable"))
-    monkeypatch.setattr(tester_gate, "build_docker_command", lambda *args, **kwargs: ["true"])
-    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    built = {}
+    monkeypatch.setattr(tester_gate, "build_docker_command", lambda *args, **kwargs: built.update(kwargs) or ["true"])
+
+    def clean_run(*args, **kwargs):
+        events = tmp_path / built["events_file"]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        events.write_text("pids.events max 0\nmemory.events oom_kill 0\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", clean_run)
     assert tester_gate.main([
         "--cwd", ".", "--image", "img", "--cgroup-parent", "slice",
         "--cgroup-probe-image", "probe", "--memory", "1G", "--memory-swap", "2G",
-        "--cpus", "1", "--", "true",
+        "--cpus", "1", "--pids-limit", "64", "--", "true",
     ]) == 0
     assert "probe unavailable" in capsys.readouterr().err
 

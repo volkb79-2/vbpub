@@ -15,6 +15,7 @@ import re
 import subprocess
 from typing import Any
 
+from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
 from cmru.version import (
     _RELEASE_CONTROL_EXCLUDES,
     _external_version,
@@ -35,6 +36,29 @@ _HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
 # of blocking the release -- recurred on six consecutive ciu releases.
 _UNRELEASED_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - UNRELEASED$", re.MULTILINE)
 _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
+
+
+_PLAIN_UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _unreleased_body(existing: str) -> str:
+    """Return the non-comment text of a plain ``## [Unreleased]`` section (KI-30).
+
+    The body runs to the next ``## `` heading or the history marker. HTML comments
+    and whitespace do not count, so a cleared section that keeps an explanatory
+    comment is empty.
+    """
+    match = _PLAIN_UNRELEASED_RE.search(existing)
+    if match is None:
+        return ""
+    rest = existing[match.end():]
+    ends = [i for i in (
+        rest.find(_HISTORY_MARKER),
+        *(m.start() for m in re.finditer(r"^## ", rest, re.MULTILINE)),
+    ) if i >= 0]
+    body = rest[:min(ends)] if ends else rest
+    return _HTML_COMMENT_RE.sub("", body).strip()
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -70,7 +94,7 @@ def _project_release_plan(
         )
     }
     if name not in changed:
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{name}: changelog generation requested but the project has no changes "
             "since its latest release tag"
         )
@@ -100,6 +124,27 @@ def _project_release_plan(
     else:
         version = "0.1.0"
     return version, last_tag
+
+
+def pending_release_tag(
+    repo_root: Path,
+    project: Any,
+    *,
+    minor: bool = False,
+    major: bool = False,
+    set_version: str | None = None,
+) -> str | None:
+    """The tag a release of *project* will create, or ``None`` for a no-tag project.
+
+    Same plan the generated history heading uses, so a commit trailer naming this
+    tag (REL-08) always agrees with the changelog section.
+    """
+    version, _previous = _project_release_plan(
+        repo_root, project, minor=minor, major=major, set_version=set_version,
+    )
+    if version is None:
+        return None
+    return f"{getattr(project, 'prefix', None) or project.name + '-v'}{version}"
 
 
 def _subject_groups(
@@ -139,17 +184,17 @@ def _subject_groups(
 def _validate_changelog_path(project: Any, repo_root: Path) -> Path:
     configured = getattr(project, "changelog", None)
     if not configured:
-        raise RuntimeError(f"{project.name}: no release.changelog is configured")
+        raise StepUnavailable(f"{project.name}: no release.changelog is configured")
     raw_path = Path(configured)
     if raw_path.is_absolute() or ".." in raw_path.parts or raw_path.name in ("", "."):
-        raise RuntimeError(
+        raise UsageRefusal(
             f"{project.name}: release.changelog must be a non-empty project-relative path, "
             f"got {configured!r}"
         )
     project_root = (repo_root / (getattr(project, "cwd", None) or project.name)).resolve()
     candidate = (project_root / raw_path).resolve()
     if candidate != project_root and project_root not in candidate.parents:
-        raise RuntimeError(f"{project.name}: release.changelog escapes the project directory")
+        raise UsageRefusal(f"{project.name}: release.changelog escapes the project directory")
     return candidate
 
 
@@ -166,6 +211,39 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
     outputs = [relative_changelog, *getattr(project, "commit_generated", ())]
     cwd = getattr(project, "cwd", None) or project.name
     return [f"{cwd}/{path}" for path in outputs]
+
+
+def _project_commits_after_cursor(
+    repo_root: Path, project: Any, changelog_path: Path, section: str,
+) -> bool:
+    """Whether project commits exist after a generated section's ``source-end``.
+
+    A section without a readable cursor, or whose cursor is not a commit in this
+    repository, is treated as current (kept byte-identical): regenerating cannot
+    be justified without evidence.
+    """
+    cursor = _last_generated_source_end(section)
+    if cursor is None:
+        return False
+    try:
+        newer = _subject_groups(
+            repo_root,
+            cursor,
+            list(getattr(project, "paths", None) or [getattr(project, "cwd", None) or project.name]),
+            exclude_paths=_generated_exclusions(project, changelog_path, repo_root),
+        )
+    except RuntimeError:
+        return False
+    # cmru's own ``file:`` version-bump commit lands AFTER the section is generated
+    # and is release machinery, not project work: a resumed release must not count it
+    # (it would regenerate the section with a self-referential "chore: bump" entry
+    # and re-tag a new commit).
+    bump_subject = f"chore: bump {getattr(project, 'prefix', None) or project.name + '-v'} to "
+    return any(
+        not item.startswith(bump_subject)
+        for items in newer.values()
+        for item in items
+    )
 
 
 def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
@@ -254,11 +332,19 @@ def generate_release_changelog(
         return False
     heading = version if version is not None else f"source-{source_end[:12]}"
     if heading in set(_UNRELEASED_HEADING_RE.findall(existing)):
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{project.name}: {path} already has a hand-authored [{heading}] - UNRELEASED "
             "section (KI-23); CMRU refuses to create a second, un-merged heading for the "
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
+        )
+    if version is not None and _unreleased_body(existing):
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has a non-empty hand-written `## [Unreleased]` "
+            "section (KI-30); CMRU does not fold it, so a tagged release would leave "
+            "it orphaned and describing already-shipped work -- fold its content into "
+            "the commit history / next section by hand, then empty its body (keep a "
+            "comment if you like) before releasing"
         )
     existing_versions = set(_HEADING_RE.findall(existing))
     if heading in existing_versions:
@@ -267,11 +353,26 @@ def generate_release_changelog(
         next_heading = existing.find("\n## [", start + len(expected))
         section = existing[start:next_heading if next_heading >= 0 else len(existing)]
         if _GENERATED_MARKER not in section:
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{project.name}: {path} already has a hand-authored [{version}] section; "
                 "CMRU refuses to overwrite it"
             )
-        return False
+        # REL-02: a generated section for the pending version is reused ONLY
+        # while nothing in the project changed after its recorded source cursor
+        # (a retained --resume sees just the history commit, which is excluded
+        # from the range). If project commits landed after the cursor, the section
+        # is stale -- it would ship without them -- so regenerate it in place.
+        if not _project_commits_after_cursor(
+            repo_root, project, path, section,
+        ):
+            return False
+        regenerated = _render_section(heading, groups, source_end=source_end)
+        new_content = (
+            existing[:start] + regenerated
+            + (existing[next_heading:] if next_heading >= 0 else "")
+        )
+        path.write_text(new_content, encoding="utf-8")
+        return True
 
     section = _render_section(heading, groups, source_end=source_end)
     if not existing:
@@ -286,7 +387,7 @@ def generate_release_changelog(
         marker = f"{_HISTORY_MARKER}\n"
         marker_index = existing.find(marker)
         if marker_index < 0:
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{project.name}: {path} lacks {_HISTORY_MARKER}; add the marker where "
                 "CMRU may insert release sections"
             )
@@ -325,7 +426,7 @@ def backfill_release_changelog(
     path = _validate_changelog_path(project, repo_root)
     prefix = getattr(project, "prefix", None) or f"{project.name}-v"
     if not tag.startswith(prefix):
-        raise RuntimeError(
+        raise UsageRefusal(
             f"{project.name}: {tag!r} is not a release tag with prefix {prefix!r}"
         )
     source_end = _git(repo_root, "rev-parse", f"{tag}^{{commit}}").strip()
@@ -363,7 +464,7 @@ def backfill_release_changelog(
         marker = f"{_HISTORY_MARKER}\n"
         marker_index = existing.find(marker)
         if marker_index < 0:
-            raise RuntimeError(
+            raise RefusedBeforeChange(
                 f"{project.name}: {path} lacks {_HISTORY_MARKER}; add the marker where "
                 "CMRU may insert release sections"
             )

@@ -387,9 +387,92 @@ def test_remove_workspace_wraps_shared_removal_failure(monkeypatch, tmp_path):
         transaction.remove_workspace(legacy)
 
 
+def _git_init(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    return path
+
+
+def test_git_scope_still_rejects_a_broken_dot_git_file_in_the_project_itself(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".git").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid gitfile format"):
+        config._git_scope(project)
+
+
+def test_git_scope_ignores_a_stray_empty_dot_git_directory_in_a_parent(tmp_path):
+    # REL-11: a bare, empty ``.git`` above the project is not a repository.
+    (tmp_path / ".git").mkdir()
+    project = tmp_path / "a" / "b"
+    project.mkdir(parents=True)
+    assert config._git_scope(project) == {}
+
+
+def test_git_scope_ignores_a_stray_dot_git_file_in_a_parent(tmp_path):
+    (tmp_path / ".git").write_text("", encoding="utf-8")
+    project = tmp_path / "proj"
+    project.mkdir()
+    assert config._git_scope(project) == {}
+
+
+def test_git_scope_finds_a_real_repository_from_a_subdirectory(tmp_path):
+    repo = _git_init(tmp_path / "repo")
+    sub = repo / "x" / "y"
+    sub.mkdir(parents=True)
+    scope = config._git_scope(sub)
+    assert scope["source_git_root"] == repo.resolve()
+
+
+def test_git_scope_reports_other_git_failures_and_a_missing_git_binary(monkeypatch, tmp_path):
+    repo = _git_init(tmp_path / "repo")
+    real_run = subprocess.run
+
+    def failing(argv, **kwargs):
+        return SimpleNamespace(returncode=128, stderr="fatal: detected dubious ownership\n")
+
+    monkeypatch.setattr(config.subprocess, "run", failing)
+    with pytest.raises(ValueError, match="dubious ownership"):
+        config._git_scope(repo)
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(config.subprocess, "run", missing)
+    with pytest.raises(ValueError, match="could not resolve Git context"):
+        config._git_scope(repo)
+    monkeypatch.setattr(config.subprocess, "run", real_run)
+
+
+def test_git_scope_without_a_git_binary_is_empty_outside_a_repository(monkeypatch, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(config.subprocess, "run", missing)
+    assert config._git_scope(plain) == {}
+
+
+def test_git_scope_probe_does_not_inherit_git_environment_variables(monkeypatch, tmp_path):
+    # A hook context exports GIT_DIR/GIT_WORK_TREE; inherited, they would make a
+    # plain directory look like the repository they point at.
+    repo = _git_init(tmp_path / "repo")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(repo))
+    assert config._git_scope(plain) == {}
+
+
 def test_config_git_scope_success_and_error_are_distinct(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo = _git_init(tmp_path / "repo")
     fake = SimpleNamespace(
         discover_git_context=lambda path: (repo, repo / ".git", "main", "a" * 40)
     )
@@ -402,8 +485,7 @@ def test_config_git_scope_success_and_error_are_distinct(monkeypatch, tmp_path):
 
 
 def test_config_git_scope_source_fallback_and_missing_dependency(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo = _git_init(tmp_path / "repo")
     real_import = builtins.__import__
     fake_worktree = SimpleNamespace(
         discover_git_context=lambda _path: (repo, repo / ".git", "main", "a" * 40)
@@ -686,20 +768,23 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
     with pytest.raises(RuntimeError, match="resume must target"):
         cli._dispatch_independent_git_families(
             "release", ["--resume", "x"], config_path, tmp_path, configs,
-            ["left", "right"], original_target=None,
+            ["left", "right"], original_target=None, forward_from=None,
         )
 
-    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "/usr/bin/cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _root: True)
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 3))
     assert cli._dispatch_independent_git_families(
         "release", [], config_path, tmp_path, configs, ["left", "right"], original_target=None,
+        forward_from=None,
     ) == 3
 
-    monkeypatch.delenv("CMRU_BIN")
+    monkeypatch.delenv("CMRU_INTERNAL_BIN")
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0))
     assert cli._dispatch_independent_git_families(
         "build", [], config_path, tmp_path, configs, ["left", "right"], original_target=None,
+        forward_from=None,
     ) == 0
 
     def fail(*_args, **_kwargs):
@@ -709,6 +794,7 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
     with pytest.raises(RuntimeError, match="could not dispatch"):
         cli._dispatch_independent_git_families(
             "build", [], config_path, tmp_path, configs, ["left", "right"], original_target=None,
+            forward_from=None,
         )
 
 
@@ -721,10 +807,10 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
     )
     assert cli._dispatch_independent_git_families(
         "build", [], tmp_path / "cmru.toml", tmp_path, {"demo": project}, ["demo"],
-        original_target=None,
+        original_target=None, forward_from=None,
     ) is None
 
-    monkeypatch.setenv("CMRU_BIN", "")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "")
     monkeypatch.setattr(shutil, "which", lambda _name: "/found/cmru")
     monkeypatch.setattr(
         transaction, "project_git_family_groups",
@@ -737,7 +823,7 @@ def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeyp
     assert cli._dispatch_independent_git_families(
         "build", [], tmp_path / "cmru.toml", tmp_path,
         {"demo": project, "other": SimpleNamespace(name="other")}, ["demo", "other"],
-        original_target=None,
+        original_target=None, forward_from=None,
     ) == 0
     assert called[0][0] == "/found/cmru"
 
@@ -754,7 +840,8 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
         tmp_path / "right": "b" * 40,
     }
     monkeypatch.setattr(transaction, "project_git_family_groups", lambda *_args: roots)
-    monkeypatch.setenv("CMRU_BIN", "/usr/bin/cmru")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "/usr/bin/cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _root: True)
     seen = []
 
     def fake_run(argv, **kwargs):
@@ -773,20 +860,20 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
     with pytest.raises(RuntimeError, match="do not match the selected release families"):
         cli._dispatch_independent_git_families(
             "release", [], tmp_path / "cmru.toml", tmp_path, configs,
-            ["left", "right"], original_target=None,
+            ["left", "right"], original_target=None, forward_from=None,
             origin_main_snapshots={tmp_path / "left": "a" * 40},
         )
     with pytest.raises(RuntimeError, match="do not match the selected release families"):
         cli._dispatch_independent_git_families(
             "build", [], tmp_path / "cmru.toml", tmp_path, configs,
-            ["left", "right"], original_target=None,
+            ["left", "right"], original_target=None, forward_from=None,
             origin_main_snapshots=snapshots,
         )
     assert seen == []
 
     assert cli._dispatch_independent_git_families(
         "release", [], tmp_path / "cmru.toml", tmp_path, configs,
-        ["left", "right"], original_target=None,
+        ["left", "right"], original_target=None, forward_from=None,
         origin_main_snapshots=snapshots,
     ) == 0
     assert [
@@ -801,13 +888,31 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
     )
 
 
-def test_child_release_args_removes_only_the_first_original_target(tmp_path):
+def test_child_release_args_finds_the_target_structurally(tmp_path):
+    """CLI-19: an option VALUE equal to the target text is not the target."""
     config_path = tmp_path / "cmru.toml"
     config_path.write_text("x")
     assert cli._child_release_args(
-        ["--dry-run", "other", "demo", "demo"], config_path, tmp_path,
-        original_target="demo",
-    ) == ["--dry-run", "other", "demo", "--config", "cmru.toml"]
+        ["--set-version", "demo", "demo", "--dry-run"], config_path, tmp_path,
+        original_target="demo", target_override="demo", forward_from=None,
+    ) == ["demo", "--set-version", "demo", "--dry-run", "--config", "cmru.toml"]
+    # A value-taking option's value is never mistaken for the (later) target:
+    # the previous assertion is symmetric, this one is not.
+    assert cli._child_release_args(
+        ["--set-version", "1.2.3", "demo"], config_path, tmp_path,
+        original_target="demo", target_override="demo", forward_from=None,
+    ) == ["demo", "--set-version", "1.2.3", "--config", "cmru.toml"]
+    # The target may also come after the options, and --config/--resume (with
+    # either spelling) never reach the child.
+    assert cli._child_release_args(
+        ["--config=x.toml", "--resume", "/w", "--no-build", "demo"], config_path, tmp_path,
+        original_target=("demo",), target_override="demo", forward_from=None,
+    ) == ["demo", "--no-build", "--config", "cmru.toml"]
+    # No target given: nothing positional is dropped, and the deprecated --ref
+    # spelling is rewritten so the child does not warn a second time.
+    assert cli._child_release_args(
+        ["--ref", "origin/main", "--ref=other"], config_path, tmp_path, forward_from=None,
+    ) == ["--ahead-check-ref", "origin/main", "--ahead-check-ref=other", "--config", "cmru.toml"]
 
 
 def _main_config_tuple(tmp_path: Path):

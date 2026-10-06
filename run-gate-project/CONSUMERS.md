@@ -283,7 +283,7 @@ no second view is derivable — the lane refuses rather than silently mounting
 once; declare the alias with `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`
 (host side must equal the repo root).
 
-**What an ephemeral container sees (RG-85).** Only the worktree under test
+**What an ephemeral container sees (RG-86).** Only the worktree under test
 and the git metadata it needs — never the main checkout or any other
 worktree, so another checkout's git-ignored files (secrets, local configs)
 are not visible. Concretely, for a linked worktree: the worktree itself
@@ -1207,7 +1207,7 @@ docker run … -e GIT_DIR="$common" …
 ```
 
 Note that `run-gate`'s OWN container/exec lanes never hit this: `R-23`
-dual-mounts the judged worktree AND the git common dir (RG-85), so the gitdir
+dual-mounts the judged worktree AND the git common dir (RG-86), so the gitdir
 is inside the mounts by construction.
 Related: an auto-derived host path for a worktree (e.g. `SRDM_HOST_REPO_ROOT`)
 cannot be inferred from `docker inspect`, which maps only the devcontainer's

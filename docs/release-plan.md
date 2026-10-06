@@ -28,11 +28,11 @@ git -C /workspaces/vbpub push origin HEAD:main          # CONFIRM FIRST
 cmru status ; cmru release --dry-run
 # 3. (optional) install minisign for bundle signing
 # 4. Release in order:
-cmru release --project cmru                          # -> cmru-v1.1.0 wheel + GitHub Release
-cmru release --project ciu --set-version 4.0.0       # -> ciu-v4.0.0 wheel
-cmru release --project tls-edge ; git -C /workspaces/vbpub push origin HEAD:main  # push VERSION commit
-cmru release --project modern-debian-tools-python-debug   # -> ghcr images
-cmru release --project pwmcp                         # -> ghcr 1.60+1.61 + bundle (minisign first!)
+cmru release cmru                          # -> cmru-v1.1.0 wheel + GitHub Release
+cmru release ciu --set-version 4.0.0       # -> ciu-v4.0.0 wheel
+cmru release tls-edge ; git -C /workspaces/vbpub push origin HEAD:main  # push VERSION commit
+cmru release modern-debian-tools-python-debug   # -> ghcr images
+cmru release pwmcp                         # -> ghcr 1.60+1.61 + bundle (minisign first!)
 # 5. Verify: cmru status  (should report no changes)
 ```
 

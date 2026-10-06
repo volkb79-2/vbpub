@@ -16,16 +16,7 @@ from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
-from cli_extended import (
-    ArgumentSpec,
-    CliFailure,
-    CliRegistry,
-    OptionSpec,
-    VerbGroup,
-    VerbSpec,
-)
-from cmru.cli_support import cmru_identity, cmru_presentation_options
-
+from cmru.errors import CredentialMissing, StepFailed
 
 
 @dataclass(frozen=True)
@@ -71,7 +62,7 @@ def render_step_plan(step: StepConfig, project_root: Path) -> list[str]:
 
     Environment commands may compute values at runtime, so a dry-run names that
     unresolved input instead of executing it and pretending to know its output.
-    The same formatter is used by run, run-step, build, and publish.
+    The same formatter is used by run, run --step, build, and publish.
     """
     lines = [f"Would run declared step {step.name} from {project_root}"]
     for relative in step.clean_dirs:
@@ -233,7 +224,7 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
 def ensure_required_env(required: Iterable[str]) -> None:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
-        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+        raise CredentialMissing(f"Missing required environment variables: {', '.join(missing)}")
 
 
 def apply_env_command(env_command: Optional[list[str]], cwd: Path) -> None:
@@ -283,10 +274,10 @@ def maybe_login(login: Optional[dict]) -> None:
     token = os.getenv(token_env)
     if not token:
         if required:
-            raise RuntimeError(f"{token_env} is required for registry login")
+            raise CredentialMissing(f"{token_env} is required for registry login")
         return
     if not username:
-        raise RuntimeError(f"{username_env} is required for registry login")
+        raise CredentialMissing(f"{username_env} is required for registry login")
     _docker_login(registry, username, token)
 
 
@@ -302,7 +293,7 @@ def maybe_login_multi(login: Optional[dict], registries: Optional[list]) -> None
     token = os.getenv("GITHUB_PUSH_PAT")
     if not username or not token:
         missing = "GITHUB_USERNAME" if not username else "GITHUB_PUSH_PAT"
-        raise RuntimeError(
+        raise CredentialMissing(
             f"{missing} is required for additional registry login"
         )
     for reg in registries[1:]:
@@ -314,7 +305,9 @@ ERROR_LINES_ON_FAILURE = 20
 # Matches this codebase's own "[ERROR] ..." convention (wherever it appears in a line,
 # e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
 # top-level "ERROR: target ... failed to solve" summary line.
-_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:")
+# pytest's short-summary lines ("FAILED tests/x.py::t - ...", "ERROR tests/x.py::t")
+# must surface too, or a quiet console never names the failing test (BG-03).
+_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:|^(?:FAILED|ERROR) ")
 _PYTEST_SUCCESS_RE = re.compile(r"=+ .*?\b\d+ passed(?:, \d+ skipped)? in [^=]+ =+")
 _UNITTEST_RUN_RE = re.compile(r"^Ran \d+ tests? in .+$")
 _UNITTEST_OK_RE = re.compile(r"^OK(?: \(.+\))?$")
@@ -352,7 +345,7 @@ def _open_aggregate_log(local_log: Path, *, quiet: bool):
     without the wrapper still has its stable per-step file and does not invent a
     repository-wide log path.
     """
-    raw_path = (os.getenv("CMRU_RUN_LOG") or "").strip()
+    raw_path = (os.getenv("CMRU_INTERNAL_RUN_LOG") or "").strip()
     if not quiet or not raw_path:
         return None
     aggregate_path = Path(raw_path).expanduser().resolve()
@@ -406,18 +399,25 @@ def run_command(
     # failure produces more than ERROR_LINES_ON_FAILURE matches.
     error_lines: list[str] = []
     evidence_lines: deque[str] = deque(maxlen=300)
-    for line in process.stdout:
-        _write_line(log_handle, line)
-        if mirror_handle is not None:
-            _write_line(mirror_handle, line)
-        evidence_lines.append(line)
-        if quiet:
-            tail.append(line)
-            if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
-                error_lines.append(line)
-        else:
-            print(line, end="", flush=True)
-    exit_code = process.wait()
+    try:
+        for line in process.stdout:
+            _write_line(log_handle, line)
+            if mirror_handle is not None:
+                _write_line(mirror_handle, line)
+            evidence_lines.append(line)
+            if quiet:
+                tail.append(line)
+                if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
+                    error_lines.append(line)
+            else:
+                print(line, end="", flush=True)
+        exit_code = process.wait()
+    except BaseException:
+        # Ctrl-C / SystemExit from a SIGTERM handler: never leave the child
+        # running (or unreaped) behind us (BG-02).
+        process.kill()
+        process.wait()
+        raise
     elapsed_seconds = monotonic() - start
     if exit_code != 0:
         if quiet and error_lines:
@@ -442,7 +442,8 @@ def execute_step(
     path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
-    """Execute a pre-parsed StepConfig. Called by both run_step() and the orchestrator.
+    """Execute a pre-parsed StepConfig. Reached through ``cli.run_project_step``, which both the
+    orchestrator (``cmru run``/``release``/``build``) and the ``run_step()`` API call.
 
     This is the single execution path every build step flows through (S3 contract).
     ``extra_env`` carries project-level declared environment from the orchestrator.
@@ -504,8 +505,8 @@ def _execute_step(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     log_file = log_dir / f"{step.name}.log"
-    quiet = step.quiet and not _truthy_env("CMRU_SHOW_RUN_DETAILS")
-    append = _truthy_env("CMRU_LOG_APPEND")
+    quiet = step.quiet and not _truthy_env("CMRU_INTERNAL_SHOW_RUN_DETAILS")
+    append = _truthy_env("CMRU_INTERNAL_LOG_APPEND")
     if quiet:
         log_info(f"Details: {log_file} (kept out of the console; use --show-run-details to stream them)")
     else:
@@ -551,14 +552,26 @@ def _execute_step(
                 if aggregate_handle is not None:
                     _write_line(aggregate_handle, command_header)
                 log_info(label)
-                result = run_command(
-                    effective_argv,
-                    cwd,
-                    handle,
-                    quiet=quiet,
-                    log_path=log_file,
-                    mirror_handle=aggregate_handle,
-                )
+                try:
+                    result = run_command(
+                        effective_argv,
+                        cwd,
+                        handle,
+                        quiet=quiet,
+                        log_path=log_file,
+                        mirror_handle=aggregate_handle,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    # A failing project step is an expected outcome, not an
+                    # internal error. ``StepFailed`` is still a
+                    # ``CalledProcessError`` (and a ``RuntimeError``), so every
+                    # existing handler and ``.returncode`` consumer keeps working.
+                    raise StepFailed(
+                        f"step '{step.name}' of project '{project_root.name}' failed "
+                        f"(exit {exc.returncode}); see {log_file}",
+                        returncode=exc.returncode,
+                        cmd=exc.cmd,
+                    ) from exc
                 evidence = f"; {result.evidence}" if result.evidence else ""
                 log_info(
                     f"{label}: succeeded in {result.elapsed_seconds:.1f}s{evidence} "
@@ -583,6 +596,7 @@ def _prepend_path_entries(entries: Optional[Iterable[Path]]) -> None:
 def run_step(project_config_path: Path, step_name: str) -> None:
     """Run one named step from the strict project-local ``cmru.toml``.
 
+    Supported Python API (consumed by ``modern-debian-tools-python-debug/build-push.py``).
     This is intentionally a thin direct entry point over the same parser and
     executor as orchestration.  There is no standalone runner configuration,
     shell-evaluation adapter, or inferred release config to drift from it.
@@ -609,7 +623,10 @@ def run_step(project_config_path: Path, step_name: str) -> None:
         project = matches[0]
     else:
         if len(projects) != 1:
-            raise RuntimeError(f"run-step requires a project-local {PROJECT_CONFIG_FILENAME}")
+            raise RuntimeError(
+                f"cmru.runner.run_step requires a project-local {PROJECT_CONFIG_FILENAME} "
+                "that declares exactly one project"
+            )
         project = next(iter(projects.values()))
     apply_project_release_env(github, env, project)
     step = project.runner_steps.get(step_name) if project.runner_steps else None
@@ -623,93 +640,5 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     )
 
 
-def runner_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru run-step",
-        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}.",
-        single_command=True,
-        no_args_action=True,
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
-    )
-    registry.register(VerbSpec(
-        "run-step",
-        description="Execute exactly one declared step for one selected project.",
-        group=VerbGroup.MODIFICATION.value,
-        mutating=True,
-        include_confirmation=False,
-        arguments=(ArgumentSpec(
-            "target", "registered project target; omitted uses the current project",
-            metavar="[all|PROJECT[,PROJECT...]]",
-            parser_kwargs={"nargs": "?", "default": None},
-        ),),
-        options=(
-            OptionSpec(("--config",), "path to project or orchestration config", metavar="FILE", parser_kwargs={"default": None}),
-            OptionSpec(("--step",), "step name to execute", metavar="NAME", parser_kwargs={"required": True}),
-            OptionSpec(("--show-run-details",), "stream full subprocess output to this console", parser_kwargs={"action": "store_true", "default": False}),
-            OptionSpec(("--log-append",), "append a divider and retain the stable step log", parser_kwargs={"action": "store_true", "default": False}),
-            OptionSpec(("--dry-run",), "show step commands and file cleanup without executing them", parser_kwargs={"action": "store_true", "default": False}),
-        ),
-        include_json=False,
-        include_progress=False,
-        handler=_run_step_cli,
-    ))
-    return registry.build()
-
-
-def _run_step_cli(args, _runtime) -> int | None:
-    if args.show_run_details:
-        os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
-    if args.log_append:
-        os.environ["CMRU_LOG_APPEND"] = "1"
-    from cmru.cli_support import TargetSelectionError, select_target_names
-    from cmru.cli import _resolve_config, load_config
-    from cmru.config import load_forge_config, resolve_invocation_context
-
-    config_path = _resolve_config(args.config)
-    loaded = load_config(config_path)
-    projects, project_order = loaded[1], loaded[2]
-    if args.target is None and config_path.name == "cmru.toml" and len(projects) == 1:
-        context_project = next(iter(projects))
-        estate_scope = False
-    elif args.target is None:
-        context = resolve_invocation_context(config_path)
-        context_project = context.project_name
-        estate_scope = context.scope == "estate"
-    else:
-        context_project = None
-        estate_scope = False
-    try:
-        names = select_target_names(
-            args.target, projects, project_order,
-            context_project=context_project,
-            estate_scope=estate_scope,
-        )
-    except TargetSelectionError as exc:
-        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
-    if len(names) != 1:
-        raise CliFailure("run-step requires exactly one project target", exit_code=2, show_help=True)
-    if args.dry_run:
-        project = projects[names[0]]
-        step = (project.runner_steps or {}).get(args.step)
-        if step is None:
-            raise CliFailure(
-                f"{names[0]}: step {args.step!r} is not declared",
-                exit_code=2, show_help=False,
-            )
-        project_root = project.project_root
-        for line in render_step_plan(step, project_root):
-            print(f"[DRY RUN] {names[0]}:{args.step}: {line}")
-        return
-    forge = load_forge_config(config_path)
-    project_path = (
-        forge.orchestration.project_configs[names[0]]
-        if forge.orchestration is not None
-        else config_path
-    )
-    run_step(project_path, args.step)
-
-
 if __name__ == "__main__":
-    raise SystemExit("Use the installed 'cmru run-step' command; cmru.runner is not a CLI.")
+    raise SystemExit("Use the installed 'cmru run --step' command; cmru.runner is not a CLI.")

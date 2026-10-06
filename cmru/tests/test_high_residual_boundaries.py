@@ -56,9 +56,9 @@ def test_runner_evidence_accepts_unittest_and_rejects_similar_noise():
 
 def test_runner_aggregate_log_does_not_duplicate_local_log(tmp_path, monkeypatch):
     local = tmp_path / "step.log"
-    monkeypatch.setenv("CMRU_RUN_LOG", str(local))
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(local))
     assert runner._open_aggregate_log(local, quiet=True) is None
-    monkeypatch.setenv("CMRU_RUN_LOG", str(tmp_path / "all.log"))
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(tmp_path / "all.log"))
     handle = runner._open_aggregate_log(local, quiet=True)
     assert handle is not None
     handle.close()

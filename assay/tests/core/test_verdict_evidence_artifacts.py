@@ -35,6 +35,7 @@ BASE = {
     "argv_effective": ("pytest", "tests", "-q"),
     "env_declared": {},
     "env_effective": {},
+    "env_passthrough": (),
     "scope": "S1",
     "enforcement": "gate",
 }

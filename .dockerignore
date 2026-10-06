@@ -21,6 +21,24 @@ libraries/cli-extended/*
 !libraries/cli-extended/src
 libraries/cli-extended/src/*
 !libraries/cli-extended/src/cli_extended
+# tester-unified builds cmru OFFLINE from its COPYed source (never from an
+# index; BG-05); cmru's pyproject packages `../libraries/worktree/src` alongside
+# it. It does NOT copy cli-extended: that is a real wheel dependency installed
+# from its release by sha256 (KI-51 / D8), so no cli-extended pyproject/README is
+# whitelisted for it. (The `src/cli_extended` whitelist above is nyxloomd's.)
+!libraries/worktree
+libraries/worktree/*
+!libraries/worktree/src
+libraries/worktree/src/*
+!libraries/worktree/src/worktree
+# tester-unified's requirements generator and cli-extended release fetcher (the
+# only files of that directory the image COPYs; the parent must be re-included first).
+!tester-unified
+tester-unified/*
+!tester-unified/gen-requirements.py
+!tester-unified/fetch-cli-extended.py
+# Zero-release path: a locally built cli-extended wheel (CLI_EXTENDED_RESOLVE=local).
+!tester-unified/local-wheel
 # scripts/ is otherwise excluded wholesale; whitelist just the one project
 # tester-unified installs from (its pyproject is the closure's source of truth).
 # The parent directory must be re-included first or the child is never reached.

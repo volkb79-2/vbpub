@@ -46,6 +46,13 @@ required_commands = ["python3"]
 preserve = []
 manifest_name = "manifest.json"
 signature_name = "manifest.json.minisig"
+# Host enrollment (`get.py enroll`, CIU S14.7) is ciu-owned code inlined into the
+# rendered get.py by cmru's extensions mechanism (cmru W1-CIU-ENROLL, O4).
+# Hardening: CIU-122 / CIU-123.
+# TODO(cmru-6.0 post-release): remove shim. The line `extensions = ["installer/enroll.py"]`
+# is REMOVED here because the OLD cmru 5.5 refuses the unknown key; restore it once cmru 6.0
+# is the installed release. Until then cmru 6.0 renders ciu's get.py WITHOUT the enroll
+# extension, so do not release ciu inside the landing window.
 
 [[project.installer.wheels]]
 path = "vendor/ciu-*.whl"
@@ -60,7 +67,7 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "CIU: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "CIU: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
@@ -69,7 +76,7 @@ commands = [
   # --extra-asset get.py (S14.7a): the enroll one-liner names
   # releases/download/ciu-v<version>/get.py, so the committed installer must
   # ride along on every ciu release as its own asset.
-  { label = "CIU: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES", "--extra-asset", "get.py"], cwd = "." },
+  { label = "CIU: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES", "--extra-asset", "get.py"], cwd = "." },
 ]
 
 [versions]

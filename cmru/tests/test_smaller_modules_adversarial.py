@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import dependencies, ghcr, manifest, output, resolve, standards
-from cmru.agent import protocol, selfupdate, state
 from cmru.hosts.github import GitHubReleaseHost
 
 
@@ -131,17 +130,20 @@ def test_manifest_validation_and_canonical_write(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="missing required"):
         manifest._validate_images({"web": {"repository": "r", "tag": "t"}}, "demo")
     assert manifest._version_from_wheel_name(Path("ciu-1.2.3-py3-none-any.whl")) == "1.2.3"
-    assert manifest._version_from_wheel_name(Path("invalid.whl")) == "0.0.0"
+    for bad in ("invalid.whl", "cmru-.whl"):
+        with pytest.raises(ValueError, match="cannot read a version"):
+            manifest._version_from_wheel_name(Path(bad))
     out = tmp_path / "nested" / "manifest.json"
     assert manifest.write_manifest({"b": 1, "a": 2}, out) == out
     assert out.read_text() == '{"a":2,"b":1}\n'
 
 
-def test_manifest_build_uses_fallback_cmru_version_and_image_facts(tmp_path, monkeypatch):
-    cmru_wheel = tmp_path / "cmru-1.whl"; cmru_wheel.write_bytes(b"cmru")
+def test_manifest_build_takes_the_cmru_version_from_the_wheel_name(tmp_path, monkeypatch):
+    cmru_wheel = tmp_path / "cmru-6.1.0-py3-none-any.whl"; cmru_wheel.write_bytes(b"cmru")
     ciu_wheel = tmp_path / "ciu-2.3.4-py3-none-any.whl"; ciu_wheel.write_bytes(b"ciu")
     import importlib.metadata
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    # D3: the installed distribution is irrelevant (and even absent) here.
     monkeypatch.setattr(importlib.metadata, "version", lambda name: (_ for _ in ()).throw(importlib.metadata.PackageNotFoundError()))
     result = manifest.build_manifest(
         project="demo", tag="demo-v1", source_commit="abc", cmru_wheel=cmru_wheel,
@@ -149,8 +151,15 @@ def test_manifest_build_uses_fallback_cmru_version_and_image_facts(tmp_path, mon
         installer_schema_version=1, host_config_schema_version=2,
         platform={"min_python": "3.11", "arch": "amd64"}, upgrade={"min_from": "1", "rollback_to": "0"},
     )
-    assert result["cmru"]["version"] == "0.0.0"
+    assert result["cmru"]["version"] == "6.1.0"
     assert result["ciu"]["version"] == "2.3.4"
+    nameless = tmp_path / "cmru.whl"; nameless.write_bytes(b"cmru")
+    with pytest.raises(ValueError, match="cannot read a version"):
+        manifest.build_manifest(
+            project="demo", tag="demo-v1", source_commit="abc", cmru_wheel=nameless,
+            ciu_wheel=ciu_wheel, images=None, installer_schema_version=1,
+            host_config_schema_version=2, platform={}, upgrade={},
+        )
 
 
 def test_output_stream_handles_partial_prefix_and_literal_passthrough():
@@ -164,45 +173,6 @@ def test_output_stream_handles_partial_prefix_and_literal_passthrough():
     assert stream.getvalue() == "[INFO] ok\n"
 
 
-def test_selfupdate_handoff_updates_link_and_reports_restart_failure(tmp_path, monkeypatch):
-    venv = tmp_path / "venvs" / "v2"; venv.mkdir(parents=True)
-    current = venv.parent / "venv-current"
-    selfupdate.handoff_via_systemd("2", venv, scope="user", dry_run=True)
-    assert current.is_symlink() and current.resolve() == venv
-    monkeypatch.setattr(selfupdate.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stderr="failed"))
-    with pytest.raises(SystemExit) as error:
-        selfupdate.handoff_via_systemd("2", venv, scope="system")
-    assert error.value.code == 0
-
-
-def test_protocol_and_state_reject_malformed_inputs_and_write_atomically(tmp_path, monkeypatch):
-    raw = {"schema_version": 1, "generation": 1, "action": "hold",
-           "release": {"tag": "t", "manifest_url": "u", "manifest_sha256": "s"},
-           "profiles": [""]}
-    with pytest.raises(protocol.DesiredStateError, match="profile"):
-        protocol.validate_desired(raw)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    state.write_observed(protocol.ObservedState(applied_generation=4), "user")
-    assert state.read_observed("user").applied_generation == 4
-    state_dir = state.state_dir("user")
-    (state_dir / "identity.json").write_text("not-json")
-    (state_dir / "current_generation").write_text("not-an-int")
-    assert state.read_identity("user") is None
-    assert state.read_current_generation("user") is None
-
-
-def test_protocol_accepts_generation_zero_as_the_first_valid_generation():
-    """Zero is a valid coordinate; only negative integers are rejected."""
-    desired = protocol.validate_desired({
-        "schema_version": 1,
-        "generation": 0,
-        "action": "hold",
-        "release": {"tag": "t", "manifest_url": "u", "manifest_sha256": "s"},
-        "profiles": ["core"],
-    })
-    assert desired.generation == 0
-
-
 def test_github_host_filters_releases_and_surfaces_sha_retry_failure(monkeypatch):
     host = GitHubReleaseHost("o", "r", "t")
     host._gh.list_releases = lambda: [
@@ -212,6 +182,6 @@ def test_github_host_filters_releases_and_surfaces_sha_retry_failure(monkeypatch
     ]
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
-    result = host.resolve_latest("demo-v")
-    assert result["version"] == "1.0.0" and result["sha256"] is None
+    with pytest.raises(RuntimeError, match="cannot read the checksum sidecar a.whl.sha256"):
+        host.resolve_latest("demo-v")  # INS-18: no silent sha256=None
     assert host.list_releases("demo-v")[0]["tag"] == "demo-v1.0.0"

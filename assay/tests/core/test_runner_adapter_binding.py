@@ -76,7 +76,7 @@ class _BindingAdapter:
     def statement_spans(self, text: str):
         return None
 
-    def statement_blocks(self, repo_top, rel_paths, *, remaining=None):
+    def statement_blocks(self, repo_top, rel_paths, *, remaining=None, sensitive_values=()):
         return None
 
 

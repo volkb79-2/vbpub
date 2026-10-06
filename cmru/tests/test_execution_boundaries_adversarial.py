@@ -62,9 +62,9 @@ class TestGithubReleaseHost:
         class Resp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
-            def read(self): return b"abc123  bundle\n"
+            def read(self): return b"ab12" * 16 + b"  bundle\n"
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: Resp())
-        assert h.resolve_latest("p-")["sha256"] == "abc123"
+        assert h.resolve_latest("p-")["sha256"] == "ab12" * 16
 
     def test_latest_returns_none_for_no_release_or_no_primary_asset(self):
         h = self._host()
@@ -168,10 +168,10 @@ class TestTesterGateContracts:
             gate._resolve_worktree_context(tmp_path, "../outside")
         monkeypatch.setattr(gate, "_physical_path", lambda p: Path("/host/repo"))
         monkeypatch.setattr(gate, "_git_common_dir", lambda p: None)
-        argv = gate.build_docker_command(tmp_path, "cmru", ["pytest", "-q"], image="tester", cgroup_parent="dev.slice", memory="1g", memory_swap="2g", cpus="1")
+        argv = gate.build_docker_command(tmp_path, "cmru", ["pytest", "-q"], image="tester", cgroup_parent="dev.slice", memory="1g", memory_swap="2g", cpus="1", pids_limit="64")
         assert "--cgroup-parent=dev.slice" in argv and "/host/repo" in " ".join(argv)
         with pytest.raises(ValueError, match="command"):
-            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1", cgroup_parent="dev-gates.slice")
+            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1", pids_limit="64", cgroup_parent="dev-gates.slice")
 
     @pytest.mark.parametrize("fn,env,label", [
         ("resolve_cgroup_parent", "CMRU_TESTER_CGROUP_PARENT", "cgroup_parent"),
@@ -200,8 +200,14 @@ class TestTesterGateContracts:
             assert gate.resolve_cpus(None) == "1.5"
             assert gate.resolve_cpus("0.75") == "0.75"
         else:
-            monkeypatch.setenv(env, "from-env")
-            assert getattr(gate, fn)("explicit") == "explicit"
+            # Privileged images must be digest-pinned (BG-06), so their
+            # "from-env"/"explicit" stand-ins are digests.
+            pinned = fn in ("resolve_cgroup_probe_image", "resolve_dind_image")
+            from_env = "img@sha256:" + "1" * 64 if pinned else "from-env"
+            explicit = "img@sha256:" + "2" * 64 if pinned else "explicit"
+            monkeypatch.setenv(env, from_env)
+            assert getattr(gate, fn)(None) == from_env
+            assert getattr(gate, fn)(explicit) == explicit
 
     def test_slice_probe_distinguishes_loaded_transient_and_no_docker(self, monkeypatch):
         import cmru.tester_gate as gate
@@ -210,130 +216,3 @@ class TestTesterGateContracts:
         monkeypatch.setattr(gate.shutil, "which", lambda name: "/usr/bin/docker")
         monkeypatch.setattr(gate.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="LoadState=loaded\nFragmentPath=\n", stderr=""))
         assert gate.check_slice_unit("typo.slice", "probe", "dev-gates.slice")[0] is False
-
-
-class TestCliExecutionContracts:
-    def _args(self, **overrides):
-        values = dict(plan=None, landscape=None, generation=None,
-                      scope="user", node_id=None, token=None, minisign_pubkey=None,
-                      release_root=None, consul_addr=None, dry_run=False,
-                      log_level="INFO")
-        values.update(overrides)
-        return SimpleNamespace(**values)
-
-    def _plan_file(self, tmp_path):
-        p = tmp_path / "plan.json"
-        p.write_text("""[plan]
-id = "p"
-landscape = "prod"
-release_tag = "v1"
-manifest_url = "u"
-manifest_sha256 = "s"
-
-[[plan.waves]]
-phase = 1
-name = "canary"
-type = "canary"
-nodes = ["n"]
-profiles = []
-""")
-        return p
-
-    def test_controller_commands_dispatch_success_and_failure(self, tmp_path, monkeypatch, capsys):
-        from cmru.controller import cli
-        plan = self._plan_file(tmp_path)
-        events = []
-        engine = SimpleNamespace(
-            publish=lambda p: events.append("publish"),
-            approve=lambda p: events.append(("approve", p)),
-            hold=lambda p: events.append(("hold", p)),
-            rollback=lambda p, **kw: events.append(("rollback", kw)),
-            status=lambda p: {"ok": True},
-        )
-        monkeypatch.setattr(cli, "_build_engine", lambda *a: engine)
-        assert cli.cmd_publish(self._args(plan=str(plan))) == 0
-        assert cli.cmd_approve(self._args(plan="p")) == 0
-        assert cli.cmd_hold(self._args(plan="p")) == 0
-        assert cli.cmd_rollback(self._args(plan=str(plan), generation=8)) == 0
-        assert cli.cmd_status(self._args(plan=str(plan))) == 0
-        assert events[:3] == ["publish", ("approve", "p"), ("hold", "p")]
-        assert '"ok": true' in capsys.readouterr().out
-
-        broken = SimpleNamespace(publish=lambda p: (_ for _ in ()).throw(RuntimeError("boom")))
-        monkeypatch.setattr(cli, "_build_engine", lambda *a: broken)
-        assert cli.cmd_publish(self._args(plan=str(plan))) == 1
-        assert "Publish failed" in capsys.readouterr().err
-
-    def test_controller_status_catalog_and_malformed_plan_refuse(self, monkeypatch, capsys):
-        from cmru.controller import cli
-        assert cli.cmd_status(self._args()) == 2
-        class Backend:
-            def _get(self, path): return 200, b"not-json", {}
-        monkeypatch.setattr(cli, "_build_backend", lambda args: Backend())
-        assert cli.cmd_status(self._args(landscape="prod")) == 0
-        assert "Could not parse" in capsys.readouterr().out
-
-    def test_agent_cli_backend_env_and_command_outcomes(self, tmp_path, monkeypatch, capsys):
-        import cmru.agent.cli as cli
-        monkeypatch.setenv("CONSUL_HTTP_ADDR", "http://env")
-        monkeypatch.setenv("CONSUL_HTTP_TOKEN", "env-token")
-        backend = cli._build_backend(self._args())
-        assert backend._addr == "http://env" and backend._token == "env-token"
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        args = self._args(node_id="n", landscape="l", token="arg-token", minisign_pubkey="pub")
-        identity = SimpleNamespace(node_id="n", landscape="l", token_path=None, public_key="pub")
-        fake_backend = SimpleNamespace(_token=None, enroll=lambda seed: identity)
-        monkeypatch.setattr(cli, "_build_backend", lambda args: fake_backend)
-        assert cli.cmd_enroll(args) == 0
-        monkeypatch.setattr(cli, "_load_identity", lambda scope: ("n", {"landscape": "l", "public_key": "p"}))
-        rec = SimpleNamespace(run=lambda: None, once=lambda: False)
-        monkeypatch.setattr("cmru.agent.reconciler.Reconciler", lambda **kw: rec)
-        assert cli.cmd_run(args) == 0 and cli.cmd_once(args) == 0
-        assert "no change" in capsys.readouterr().out
-
-    def test_agent_cli_enroll_and_status_refuse_bad_inputs(self, tmp_path, monkeypatch, capsys):
-        import cmru.agent.cli as cli
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        args = self._args()
-        assert cli.cmd_enroll(args) == 2
-        args = self._args(node_id="n")
-        assert cli.cmd_enroll(args) == 2
-        monkeypatch.setattr(cli, "_build_backend", lambda args: SimpleNamespace(enroll=lambda seed: (_ for _ in ()).throw(RuntimeError("down")), _token=None))
-        args = self._args(node_id="n", landscape="l")
-        assert cli.cmd_enroll(args) == 1
-        from cmru.agent.state import write_node_id, write_current_generation, write_observed
-        from cmru.agent.protocol import ObservedState
-        write_node_id("n"); write_current_generation(4); write_observed(ObservedState(applied_generation=4, health="failed", error_class="bad", started_at="s", finished_at="f"))
-        assert cli.cmd_status(self._args()) == 0
-        assert "error_class" in capsys.readouterr().out
-
-
-class TestRolloutStateTransitions:
-    def _plan(self):
-        from cmru.controller.planner import load_plan_json
-        return load_plan_json(json.dumps({"plan": {"id": "p", "landscape": "prod",
-            "release_tag": "v1", "manifest_url": "u", "manifest_sha256": "s",
-            "waves": [{"phase": 1, "name": "canary", "type": "canary", "nodes": ["n"], "profiles": []},
-                       {"phase": 2, "name": "prod", "type": "production", "nodes": ["m"], "profiles": []}]}}))
-
-    def test_approval_and_hold_are_polled_before_production(self, monkeypatch):
-        from cmru.controller.rollout import RolloutEngine, _plan_approval_key, _plan_hold_key
-        plan = self._plan()
-        class Backend:
-            def __init__(self): self.approved = False; self.released = False; self.writes = []
-            def _put(self, path, body, params=None): self.writes.append((path, body)); return 200, b"true"
-            def _get(self, path, params=None):
-                if path.endswith("/approved") and self.approved: return 200, b"approved", {}
-                if path.endswith("/hold") and not self.released: return 200, b"hold", {}
-                return 404, b"", {}
-            def read_observed(self, node, landscape):
-                from cmru.agent.protocol import ObservedState
-                return ObservedState(applied_generation=201, health="healthy").to_json() if node == "m" else ObservedState(applied_generation=101, health="healthy").to_json()
-        b = Backend(); calls = [0]
-        def sleep(_):
-            calls[0] += 1
-            if calls[0] == 1: b.released = True
-            else: b.approved = True
-        monkeypatch.setattr("cmru.controller.rollout.time.sleep", sleep)
-        RolloutEngine(b, "prod", poll_interval=1, wave_timeout=1).publish(plan)
-        assert any(path.endswith("/status") and b'complete' in body for path, body in b.writes)

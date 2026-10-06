@@ -29,15 +29,24 @@ _ALL_REQUIRED = (
     "CMRU_TESTER_MEMORY",
     "CMRU_TESTER_MEMORY_SWAP",
     "CMRU_TESTER_CPUS",
+    "CMRU_TESTER_PIDS_LIMIT",
     "CMRU_TESTER_CGROUP_PROBE_IMAGE",
     "CMRU_TESTER_CGROUP_PARENT",
 )
+_ALL_DIND = (
+    "CMRU_TESTER_DIND_IMAGE",
+    "CMRU_TESTER_DIND_MEMORY",
+    "CMRU_TESTER_DIND_CPUS",
+    "CMRU_TESTER_DIND_PIDS_LIMIT",
+)
+_DIGEST = "debian@sha256:" + "a" * 64
 
 
 def _args(**overrides) -> argparse.Namespace:
     base = dict(
-        image=None, memory=None, memory_swap=None, cpus=None,
+        image=None, memory=None, memory_swap=None, cpus=None, pids_limit=None,
         cgroup_probe_image=None, cgroup_parent=None, dind_image=None,
+        dind_memory=None, dind_cpus=None, dind_pids_limit=None,
         enable_docker=False,
     )
     base.update(overrides)
@@ -45,13 +54,13 @@ def _args(**overrides) -> argparse.Namespace:
 
 
 def _clear_env(monkeypatch) -> None:
-    for name in (*_ALL_REQUIRED, "CMRU_TESTER_DIND_IMAGE"):
+    for name in (*_ALL_REQUIRED, *_ALL_DIND):
         monkeypatch.delenv(name, raising=False)
 
 
 def test_reports_every_missing_variable_at_once_not_one_at_a_time(monkeypatch):
     """The core KI-17 (a) behaviour: with nothing set, the report lists ALL
-    six required variables in one shot, in declared order."""
+    seven required variables in one shot, in declared order."""
     _clear_env(monkeypatch)
     assert tester_gate._missing_orchestration_env(_args()) == list(_ALL_REQUIRED)
 
@@ -76,7 +85,7 @@ def test_explicit_flags_suppress_missing_env_matching_resolver_precedence(monkey
     even with the environment empty, exactly as the real resolvers do."""
     _clear_env(monkeypatch)
     args = _args(
-        image="img", memory="3g", memory_swap="16g", cpus="1.5",
+        image="img", memory="3g", memory_swap="16g", cpus="1.5", pids_limit="64",
         cgroup_probe_image="debian:test", cgroup_parent="dev-gates.slice",
     )
     assert tester_gate._missing_orchestration_env(args) == []
@@ -100,13 +109,20 @@ def test_dind_required_only_under_enable_docker(monkeypatch):
         monkeypatch.setenv(name, "value")
 
     assert tester_gate._missing_orchestration_env(_args(enable_docker=False)) == []
-    assert tester_gate._missing_orchestration_env(_args(enable_docker=True)) == [
-        "CMRU_TESTER_DIND_IMAGE"
-    ]
-    # An explicit --dind-image resolves it even under --enable-docker.
+    assert tester_gate._missing_orchestration_env(_args(enable_docker=True)) == list(_ALL_DIND)
+    assert tuple(tester_gate.DIND_TESTER_ENV) == _ALL_DIND
+    # Explicit flags resolve each one even under --enable-docker.
     assert tester_gate._missing_orchestration_env(
-        _args(enable_docker=True, dind_image="dind:test")
+        _args(enable_docker=True, dind_image="dind:test", dind_memory="1g",
+              dind_cpus="1", dind_pids_limit="64")
     ) == []
+    # A single missing DinD limit is reported alone (BG-07).
+    monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "dind:test")
+    monkeypatch.setenv("CMRU_TESTER_DIND_MEMORY", "1g")
+    monkeypatch.setenv("CMRU_TESTER_DIND_CPUS", "1")
+    assert tester_gate._missing_orchestration_env(_args(enable_docker=True)) == [
+        "CMRU_TESTER_DIND_PIDS_LIMIT"
+    ]
 
 
 def test_blank_or_whitespace_values_count_as_missing(monkeypatch):
@@ -199,6 +215,8 @@ def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
 def test_tester_gate_dry_run_skips_privileged_io_probe(monkeypatch, tmp_path, capsys):
     for name in _ALL_REQUIRED:
         monkeypatch.setenv(name, "value")
+    monkeypatch.setenv("CMRU_TESTER_PIDS_LIMIT", "64")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", _DIGEST)
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_args: (True, "ok"))
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_args: (tmp_path, "."))
     monkeypatch.setattr(
@@ -211,9 +229,10 @@ def test_tester_gate_dry_run_skips_privileged_io_probe(monkeypatch, tmp_path, ca
     )
     args = _args(
         cwd=".", image="tester", cgroup_parent="dev-gates.slice",
-        memory="1g", memory_swap="2g", cpus="1", command=["true"],
+        memory="1g", memory_swap="2g", cpus="1", pids_limit=None, command=["true"],
         device_read_iops="/dev/vda:10", device_write_iops="",
         device_read_bps="", device_write_bps="", dry_run=True,
+        forward_background_slice=None, forward_gates_slice=None,
     )
     assert tester_gate._run_tester_gate(args, None) == 0
     output = capsys.readouterr().out

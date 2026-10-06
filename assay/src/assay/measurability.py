@@ -60,12 +60,16 @@ def check_dirty_tree(
     would mean "the diff cannot see what is actually being tested", not
     "nothing changed" (DESIGN-GUIDE §6).
 
-    *source_roots* must already be resolved, existing, absolute directories —
+    *source_roots* must already be resolved, existing absolute directories or
+    regular files —
     :attr:`assay.config.JudgeConfig.source_root_paths`'s own contract. This
     function trusts that and does no filesystem validation of its own.
 
-    Membership is decided by **resolved filesystem path**
-    (:meth:`pathlib.Path.is_relative_to`), never by string prefix:
+    Directory-root membership is decided by **resolved filesystem path**
+    (:meth:`pathlib.Path.is_relative_to`), never by string prefix. An exact
+    file root instead matches only that lexical repository path: an unrelated
+    dirty symlink pointing into the file must not make the exact-file scope
+    look dirty when candidate selection excludes the alias. In either case,
     ``git status --porcelain`` paths are relative to the repository's top
     level (:func:`assay.git.repo_top` converts them to absolute), so a sibling
     directory whose name merely starts with a source root's name — ``src/foo``
@@ -75,11 +79,15 @@ def check_dirty_tree(
     ``"...src/foo"``.
     """
     top = git.repo_top(repo, remaining=remaining)
-    dirty = sorted(
-        rel
-        for rel in git.dirty_paths(repo, remaining=remaining)
-        if any((top / rel).resolve().is_relative_to(root) for root in source_roots)
-    )
+    dirty: list[str] = []
+    for rel in git.dirty_paths(repo, remaining=remaining):
+        path = top / rel
+        if any(
+            path == root if root.is_file() else path.resolve().is_relative_to(root)
+            for root in source_roots
+        ):
+            dirty.append(rel)
+    dirty.sort()
     if dirty:
         roots = ", ".join(str(root) for root in source_roots)
         raise AssayError(

@@ -15,6 +15,7 @@ import pytest
 
 from assay.candidate_identity import candidate_id_from_fields
 from assay.errors import Outcome, ReasonCode
+from assay.resource_limits import CounterDelta, ResourceLimitEvidence
 from assay.verdict import (
     Claim,
     JudgmentR1,
@@ -126,6 +127,13 @@ def _native_outcome(**overrides) -> MutantOutcome:
             operator="python:compare-swap",
         ),
         execution=MutationExecution(mode="full"),
+        resource_limit_evidence=ResourceLimitEvidence(
+            pids_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
+        ),
     )
     fields.update(overrides)
     return MutantOutcome(**fields)

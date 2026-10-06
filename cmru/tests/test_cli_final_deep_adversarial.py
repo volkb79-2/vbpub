@@ -139,11 +139,12 @@ def test_main_build_unknown_project_exits_before_external_transaction(monkeypatc
     assert exc == 2 and "unknown project(s): missing" in capsys.readouterr().err
 
 
-def test_main_publish_requires_project_credentials_before_running_push(monkeypatch, tmp_path):
+def test_main_publish_requires_project_credentials_before_running_push(monkeypatch, tmp_path, capsys):
     project = _project()
     project.github_token = ""
     loaded = (tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {}, SimpleNamespace(), cli.GitHubConfig("o", "r", "", "user"), cli.ReleaseEnvConfig({}, None))
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
-    with pytest.raises(RuntimeError, match="Publishing requires"):
-        cli.main(["publish", "demo", "--config", str(tmp_path / "cmru.toml")])
+    assert cli.main(["publish", "demo", "--from-checkout", "--config", str(tmp_path / "cmru.toml")]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] Publishing requires" in err and "unexpected" not in err

@@ -16,7 +16,7 @@ def _synthetic_document(*, policy=None, mutation=None, claim=None):
     if claim is None:
         claim = {"rigor": "R2", "mutation": mutation}
     return {
-        "schema_version": 13,
+        "schema_version": 14,
         "claims": [claim],
         "judgment": {"r2": policy},
     }
@@ -31,7 +31,7 @@ def _write_document(tmp_path: Path, document) -> Path:
 def _source(*, complete=True, cold_start=False, outcomes=None, candidates=()):
     return ReuseSource(
         path=Path("prior.json"),
-        schema_version=12 if cold_start else 13,
+        schema_version=12 if cold_start else 14,
         sha256="a" * 64,
         document={} if not cold_start else None,
         cold_start=cold_start,
@@ -90,8 +90,8 @@ def test_reuse_reader_rejects_json_recursion_error(tmp_path, monkeypatch):
 
 
 def test_current_schema_artifact_must_pass_the_current_verifier(tmp_path):
-    path = _write_document(tmp_path, {"schema_version": 13, "claims": []})
-    with pytest.raises(AssayError, match="current v13 verifier rejected"):
+    path = _write_document(tmp_path, {"schema_version": 14, "claims": []})
+    with pytest.raises(AssayError, match="current v14 verifier rejected"):
         reuse.load_reuse_source(path)
 
 

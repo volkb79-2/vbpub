@@ -231,8 +231,9 @@ MDT’s OCI layout/digest contract; do not promise a universal resume mechanism 
 **Status:** resolved. Every runner step writes a line-flushed project-local
 `<project>/logs/cmru/<step>.log`, overwriting by default and inserting `\n---\n` with
 `--log-append`. In a transaction that path is inside the retained worktree, so a failed
-release or build is self-contained for debugging. Successful releases remove it with the
-worktree unless `--retain-logs-on-release` moves it project-side. A successful normal
+release or build is self-contained for debugging. A successful release moves it project-side
+before the worktree is removed, unless `--discard-logs-on-release` is given (an earlier version
+of this entry named a nonexistent `--retain-logs-on-release`; corrected by CLI-D5). A successful normal
 `cmru build` instead copies it into its commit-addressed local output record before removing its
 worktree; a failed build retains the worktree and prints the exact path. The root wrapper also
 creates/overwrites the full `cmru.release.log`; `--show-run-details` restores raw console flow
@@ -1230,7 +1231,7 @@ surface and normative details are synced in `README.md`, `docs/DESIGN-GUIDE.md`,
 
 ### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
 
-**Status:** OPEN 2026-09-23; filed from assay Wave C P0.
+**Status:** FIXED 2026-10-05 (program 2026-10 W0-REL, REL-10). A tagged release now refuses while a plain `## [Unreleased]` has a non-empty body (HTML comments and whitespace do not count), in the KI-23 guard's style (`changelog.py::_unreleased_body`). Tests: `tests/test_changelog.py::test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section`, `::test_rel10_cleared_unreleased_section_with_a_comment_is_accepted`. Originally OPEN 2026-09-23; filed from assay Wave C P0.
 
 The assay changelog's hand-written `## [Unreleased]` block was left in place
 through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already
@@ -1287,7 +1288,9 @@ The old reproduction and failed workaround attempts above are retained as
 historical evidence; they describe the pre-fix code and do not represent current
 behavior.
 
-### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved*
+### KI-32 — controller rollback tag can disagree with its manifest identity — *resolved; obsolete (retired 2026-10-05)*
+
+> `cmru-controller` was retired and deleted on 2026-10-05 (operator decision O5); kept as history only.
 
 **Decision:** keep controller rollback and remove `--to`. Rollback always uses
 the first wave's complete release coordinate from the plan: tag, manifest URL,
@@ -1313,7 +1316,13 @@ that the normalized deterministic writer is guaranteed for `xztar`, while the
 other accepted archive formats use the platform archive writer. There is no
 bundle CLI help surface left to overstate this guarantee.
 
-### KI-35 — retained worktrees of published or ambiguous releases have no supported cleanup path — *open*
+### KI-35 — retained worktrees of published or ambiguous releases have no supported cleanup path — *open (partly fixed in source by W3-PREP, 2026-10-06)*
+
+**W3-PREP status.** Wanted item 1 is now covered for the origin-only case that remains in practice: `cmru abandon BRANCH` retires an
+origin-only `cmru-release-*` branch whose commits are all on `origin/main` (lease delete, sidecars removed, tags and assets untouched);
+a branch with other commits is withheld with the exact `git log` and manual delete command (exit 4). Still open: a retained LOCAL
+worktree of a published/ambiguous transaction (items 2 and 3), and orphan sidecars with no branch (no command; see the sweep plan
+`nyxloom-trove/reports/PROGRAM-2026-10-W3-SWEEP-PLAN.md`). At planning time all 16 remaining origin branches were origin-only.
 
 **Reported by:** an estate worktree cleanup, 2026-09-28 (vbpub `main` at `c57cac82`).
 
@@ -1470,6 +1479,21 @@ minimum supported value remains `0.00001`; docs explain why CMRU does not send `
 The argv regression test asserts the accepted command shape. A live tester-gate acceptance
 probe is required before the release is considered complete.
 
+**What the live probe must show (BG review, 2026-10-05; the controller runs it in Wave 3).** Run
+the real ciu tester-gate step through `cmru run-step` with the candidate's bound launcher, plus
+one synthetic gate whose command prints its own limits:
+`cmru tester-gate --cwd . -- sh -c 'cat /sys/fs/cgroup/{cpu.max,memory.max,memory.swap.max,pids.max}; cat /proc/1/comm; exit 7'`.
+It must show: (1) no exit 125, and cmru's exit code is 7 (the command's own code survives the
+events wrapper; the counters are clean); (2) `cpu.max` = `250000 100000` for 2.5 CPUs, and a
+`docker inspect` taken while it runs (the container is now named `cmru-tester-<uuid8>`) shows
+`NanoCpus=2500000000`, `CpuPeriod=0`, `CpuQuota=0`; (3) `memory.max` = 1 GiB,
+`memory.swap.max` = 15 GiB, and the cgroup parent is `dev-gates.slice`; (4) the slice probe really
+ran (`FragmentPath` reported, probe image digest-pinned and present locally because of
+`--pull=never`); (5) PID 1 is `docker-init`, `pids.max` equals the declared
+`CMRU_TESTER_PIDS_LIMIT`, a 200-commit loop leaves 0 zombies, and a command that exhausts a low
+pids limit ends exit 3 naming `pids.events max`. Also verify once that `--init` is accepted by
+the DinD sidecar with the cgroup-v2 nesting script (`--enable-docker` step).
+
 ### KI-43 — Read-only handler validation crashed without `--dry-run` — *fixed in source, pending release*
 
 **Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
@@ -1481,7 +1505,9 @@ raised `AttributeError` before reaching their read-only validation handler.
 **Resolution.** The dispatcher now treats an absent `dry_run` field as false. Regression coverage
 invokes both registered validation verbs without adding a meaningless dry-run option.
 
-### KI-44 — Plan status crashed because the read-only parser has no `dry_run` field — *fixed in source, pending release*
+### KI-44 — Plan status crashed because the read-only parser has no `dry_run` field — *obsolete (retired 2026-10-05)*
+
+> `cmru-controller` and its `status --plan` verb were deleted on 2026-10-05 (operator decision O5); kept as history only.
 
 **Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
 
@@ -1547,26 +1573,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 ### KI-49 — `get.py enroll` runs unauthenticated as root: the installer is not verified before it executes, minisign is skipped without a key, and the install is not pinned to the requested release
 
-**Reported:** 2026-10-03, v8 round-4 third-party review (T4-05, T4-07), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: a root-level trust path). **Related:** KI-24 (the feature), ciu CIU-93/CIU-122/CIU-123, SPEC-V8 draft.9 S7.2.4 and `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 4 §11 (the v8 contract).
-
-**Observed (source, `src/cmru/templates/get.py.tmpl`).**
-- `curl … | sudo python3 -` gives the downloaded bytes root execution authority. The SHA-256 sidecar and the optional minisign check run **inside** those bytes and cover the later bundle, not the verifier itself (`download_and_verify`, `:491-525`).
-- `--manifest-pubkey` absent → "skipping minisign verification" (`:522-524`): an unsigned install proceeds.
-- `--version` is optional; without it `resolve_latest_tag` runs (`:1195-1205`, `:1262`), so the printed version-pinned URL authenticates neither the selected wheel nor the installed result. `_install_wheels` installs into a private venv and the subcommand defines no stable launcher path.
-
-**Proposed contract.** `enroll` requires `--version`, and requires `--manifest-pubkey` and refuses an absent signature; the installer's own digest is verified by the caller **before** execution (trust root ruled in dstdns D-661: the controller's installed ciu wheel carries the digest of that version's committed `get.py` and the release's manifest public key in `ciu/enroll_trust.json`; so `cmru release` must render and hash `get.py` and record the digest and the manifest public key into the project's package data **before the wheel is built**, and the `[project.installer]` table must name the file it writes); the subcommand reports the absolute launcher path (`<install_dir_system>/bin/ciu`) that ciu's step 2 invokes; prerequisite failures are raised before any payload fetch.
-
-**Oracles.** `enroll` without `--version` or without a signature refuses and installs nothing; a tampered `get.py` fails the caller's digest check before `sudo python3` runs; a published newer release does not change the installed version; a controlled wrong implementation that resolves `latest` fails the third; the reported launcher path exists and reports the pinned version.
+**Status: moved to ciu CIU-123 (2026-10, cmru program O4, W1-CIU-ENROLL).** `get.py enroll` is ciu-owned code now (`ciu/installer/enroll.py`, inlined by the installer `extensions` mechanism); the full finding, evidence, contract and oracles are preserved in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` CIU-123. The generic installer's verification/pinning half is cmru's installer-hardening package (GETPY-REDESIGN R1-R4), not this entry.
 
 ### KI-50 — `get.py enroll` mutates root-trusted `authorized_keys` through attacker-controllable paths and an unvalidated `--from` pattern
 
-**Reported:** 2026-10-03, v8 round-4 third-party review (T4-08), filed by the v8 spec writer (dstdns D-658). **Severity:** High (security: root follows paths an existing user controls). **Related:** KI-24, KI-25, KI-49, ciu CIU-93, SPEC-V8 draft.9 S7.2.4.
-
-**Observed (source, `get.py.tmpl:1066-1135`).** The subcommand resolves the user, then `ssh_dir.mkdir(parents=True, exist_ok=True)`, `os.chmod(ssh_dir, 0o700)`, `os.chown(ssh_dir, …)`, reads `authorized_keys` as text and later `os.chmod`/`os.chown`s it. It does not validate the passwd record's home, shell or uid, does not open through directory descriptors or refuse symlinks, non-regular files or extra links, takes no lock against `sshd` or a concurrent enrollment, and rewrites the file without a verified atomic transaction. `--from PATTERN` is placed into an OpenSSH option string (`from="…"`, `:951-966`) with no accepted grammar and no refusal of quotes, backslashes or CR/LF. A pre-existing deploy user whose `~/.ssh/authorized_keys` is a symlink to `/root/.ssh/authorized_keys` has root's file chowned and appended to.
-
-**Proposed contract.** Resolve the user through the account database and validate home, uid/gid and shell; walk home, `.ssh` and `authorized_keys` with no-follow directory descriptors and require the expected owner, type and link count (refuse, never repair); lock a dedicated file in the verified `.ssh`, parse the records, write a complete temporary file preserving unrelated bytes, `fsync`, rename atomically, `fsync` the directory; append at most once under that lock; serialize the record, never concatenate; accept `--from` only against a closed grammar (addresses, CIDRs, label patterns with `*`/`?`, each optionally negated) and refuse quotes, backslashes, whitespace and CR/LF; shell-quote every printed argument.
-
-**Oracles.** A symlinked, hard-linked or FIFO `authorized_keys` and a foreign-owned `.ssh` are refused with the target untouched; a concurrent second enrollment leaves one key line; a pre-existing unrelated key and comment survive byte-for-byte; a `--from` value with a quote, CR or LF is refused before anything is written; a controlled wrong implementation that follows the symlink fails the first oracle.
+**Status: moved to ciu CIU-122 (2026-10, cmru program O4, W1-CIU-ENROLL).** The code moved to `ciu/installer/enroll.py`; the full finding, evidence, contract and oracles are preserved in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` CIU-122.
 
 ### KI-51 — Adopt cli-extended (unified adoption, order 2 of 8) — *planned*
 
@@ -1577,9 +1588,9 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 - Vendoring (AC-24, CX-D1): `pyproject.toml:28` adds `../libraries/cli-extended/src` to `packages.find` and `:32` maps `cli_extended = "../libraries/cli-extended/src/cli_extended"` through `[tool.setuptools.package-dir]` (`:30`). `dependencies = []` at `:14`; no `cli-extended` requirement. `README.md:64` tells readers to use installed console scripts because of the vendored libraries.
 - Library path hacks (AC-25): none toward `libraries/cli-extended` in `src/` (the `sys.path.insert` calls at `src/cmru/config.py:206` and `src/cmru/transaction.py:248` point at `libraries/worktree/src`, a different shared library with the same shape; they are out of this entry's scope but should be tracked with the worktree library's own adoption). Gate lanes carry the library checkout on `PYTHONPATH`: `assay.toml:41`, `run-gate.toml:58,116,171` (`PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src`), plus `tools/run_release_gate.py:49` and `tools/project_fixture.py:15` copying `libraries/cli-extended` into release-gate fixtures. Under CX-D3 a gate lane may keep the worktree source for the revision under test; decide per lane in the carve.
 - Version reader (AC-01): `src/cmru/cli.py:2345-2358` (`_cmru_version`: `_source_tree_version()`, then `importlib.metadata.version("cmru")`, then the literal `"dev"`), and `src/cmru/cli_support.py:20-33` (a second reader that calls it and falls back to `importlib.metadata` and then `"dev"`, with a `pragma`-marked bootstrap branch). `src/cmru/manifest.py:134-146` reads the installed cmru version again for the release manifest. `cmru_identity` at `cli_support.py:35` builds `CliIdentity(...)` from that string. `CliIdentity.resolve` replaces all three, removing the literal fallback; the manifest reader needs a decision (it must not hide a missing version).
-- Exception wrapper (AC-10, AC-11): no `unexpected_exceptions=`/`expected_exceptions=` and no `--traceback` anywhere in `src/`. `except Exception as exc:` handlers: 17 in `src/cmru/cli.py`, 8 in `src/cmru/controller/cli.py` (lines 81-185), 1 in `src/cmru/agent/cli.py:109`. Each must be classified: domain error to `CliFailure`/`expected_exceptions`, or boundary to `unexpected_exceptions="report"`.
-- Registries (AC-03): `CliRegistry(` is constructed at 12 sites, not the 5 groups the program table names: `src/cmru/cli.py:5484`, `controller/cli.py:212`, `agent/cli.py:246`, `handlers.py:592`, `tester_gate.py:636`, `runner.py:627`, `tool_deps.py:572`, `scaffold.py:403`, `getpy.py:185`, `resolve.py:102`, `versions.py:2053`, `standards.py:168`. Consolidate into one registry (cli, agent, controller, handlers, tester plus the seven per-feature ones) so one surface manifest and one skills/doctor registration cover cmru.
-- `--dry-run` copies (AC-05, AC-12): hand-declared `OptionSpec(("--dry-run",), ...)` at `runner.py:652`, `tool_deps.py:609`, `standards.py:202`, `handlers.py:648`, `scaffold.py:428`, `getpy.py:222`, `versions.py:2068`, `tester_gate.py:675`, `agent/cli.py:262` and `:272`; a `--yes` literal is passed to a delegated tool at `delegated.py:55` (not a CLI option). These collide with the library-owned `--dry-run` and become `VerbSpec(dry_run=True)` on mutating verbs; the carve must check each verb against KI-43/KI-44 (read-only parsers whose handlers read `args.dry_run`), because `--dry-run` on a verb without `dry_run=True` is refused with exit 2.
+- Exception wrapper (AC-10, AC-11): no `unexpected_exceptions=`/`expected_exceptions=` and no `--traceback` anywhere in `src/`. `except Exception as exc:` handlers: 17 in `src/cmru/cli.py` (~~8 in `src/cmru/controller/cli.py` and 1 in `src/cmru/agent/cli.py:109`~~: retired 2026-10-05). Each must be classified: domain error to `CliFailure`/`expected_exceptions`, or boundary to `unexpected_exceptions="report"`.
+- Registries (AC-03): `CliRegistry(` is constructed at 12 sites, not the 5 groups the program table names: `src/cmru/cli.py:5484`, ~~`controller/cli.py:212`, `agent/cli.py:246`~~ (retired 2026-10-05: 10 sites remain), `handlers.py:592`, `tester_gate.py:636`, `runner.py:627`, `tool_deps.py:572`, `scaffold.py:403`, `getpy.py:185`, `resolve.py:102`, `versions.py:2053`, `standards.py:168`. Consolidate into one registry (cli, agent, controller, handlers, tester plus the seven per-feature ones) so one surface manifest and one skills/doctor registration cover cmru.
+- `--dry-run` copies (AC-05, AC-12): hand-declared `OptionSpec(("--dry-run",), ...)` at `runner.py:652`, `tool_deps.py:609`, `standards.py:202`, `handlers.py:648`, `scaffold.py:428`, `getpy.py:222`, `versions.py:2068`, `tester_gate.py:675`, ~~`agent/cli.py:262` and `:272`~~ (retired); a `--yes` literal is passed to a delegated tool at `delegated.py:55` (not a CLI option). These collide with the library-owned `--dry-run` and become `VerbSpec(dry_run=True)` on mutating verbs; the carve must check each verb against KI-43/KI-44 (read-only parsers whose handlers read `args.dry_run`), because `--dry-run` on a verb without `dry_run=True` is refused with exit 2.
 - `parse_target_names` (AC-09): `src/cmru/cli_support.py:82-98` (empty name, duplicate, exclusive `all`, raising `TargetSelectionError`) is the reference semantics for `SelectorList` (W2 documents any intentional difference); `select_target_names` at `:101` stays as the registry-resolving layer.
 - Surface lifecycle (AC-16..AC-18): S-CLI.9's audit is hand-maintained (`docs/SPEC.md:373`, `docs/reviews/cli-extended-adoption-review.md`); it becomes `cli-extended surface sync/check` with a review catalog and findings file.
 - Skills (AC-19): `.claude/skills/cmru-cli/SKILL.md` is the source tree; `pyproject.toml:47-48` package-data lists only `templates/*`. Move the skill to package data and call `register_skills_verbs`.
@@ -1602,9 +1613,16 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracles.** Installing the built cmru wheel into a scratch venv with `--no-index` and no cli-extended wheel fails with the dependency named; with the verified cli-extended wheel it passes `cmru --version`; the installer test in `tests/test_installer.py` gains a case where the tool wheel `Requires-Dist: cli-extended` and installation order is wrong (must fail) versus right (must pass); a controlled wrong implementation that leaves the vendored copy in the wheel fails a wheel-contents check.
 
-### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *open, severity: critical (silent false kills)*
+### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *fixed in source (a, a', c', b), pending release; (b) is bypassed by assay's hermetic git and filed as assay B147; severity was critical (silent false kills)*
 
-**Status:** open (filed 2026-10-05, investigated on the host with `host-escape`, read-only).
+**Status:** fixed in source 2026-10-05 by program 2026-10 package W0-TESTER (filed 2026-10-05, investigated on the host with `host-escape`, read-only).
+
+**Resolution (W0-TESTER).**
+- (a) `--init` on the gate workload and on the privileged DinD sidecar (`tester_gate.build_docker_command`, `_dind_start_argv`); `tests/test_w0_tester_hardening.py::test_every_container_cmru_starts_has_the_declared_argv_policy` drives a real `main()` against a recording fake `docker` and asserts the argv of every container it starts.
+- (a') `CMRU_TESTER_PIDS_LIMIT` is a required `REQUIRED_TESTER_ENV` member passed as `--pids-limit` (positive integer, no default; the 19,117 ceiling was systemd's DefaultTasksMax, not a declared limit). Declared as `4096` in `cmru.orchestration.toml`, both templates and both samples.
+- (c') the gate command runs inside an in-container wrapper that, after the command exits, copies the container's own `pids.events` and `memory.events` into `.cmru/tester-gate-events-<uuid>.txt` on the mounted worktree (`--rm` deletes the cgroup, so nothing outside could read it afterwards). cmru reads and removes it: a missing/incomplete file, a non-zero `pids.events max`, or a non-zero `memory.events oom_kill` is an infrastructure failure (exit 3, naming the counter) even when the command exited 0; otherwise the command's own exit status is preserved.
+- (b) `tester-unified/Dockerfile` sets `maintenance.autoDetach false` and `gc.autoDetach false` system-wide (asserted at build time; README documents it). **Not sufficient alone:** assay's hermetic git environment sets `GIT_CONFIG_NOSYSTEM=1` and bypasses `/etc/gitconfig`; filed as assay B147 (`assay/nyxloom-trove/4-backlog.md`).
+- The image build and the `docker run` behaviour were NOT exercised live in W0-TESTER (no docker builds, no real containers); the KI-42 live probe below covers (a)/(a').
 
 **Observed (2026-10-05, host-wide 19,109 zombies):**
 - 19,108 zombies had one parent: PID 1414479, `python3 ./run-gate.py --base main assay-r2`, which is PID 1 of container `pedantic_antonelli` (`tester-unified:local`, cgroup `dev.slice/dev-gates.slice/docker-df361f8a….scope`). 19,057 of them are `git`, 42 `sleep`, 9 `docker`.
@@ -1645,12 +1663,80 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracles:** `tests/test_builtin_handlers.py::test_wheel_build_nested_project_mounts_the_worktree_root` (real linked worktree, `libraries/pkg`: mount is the worktree root, none of only `libraries`), `..._top_level_project_argv_is_unchanged`, `..._copied_one_project_repo_mounts_the_parent`, `..._forwards_build_env_by_name_only`, `..._forwards_no_env_when_unset`; each fix was reverted by hand and a test failed.
 
-### KI-54 — `release --dry-run` with an internal snapshot handoff escapes as an uncaught `RuntimeError` instead of exit 1, and its test has been red on main since 2026-10-04 — *open, severity: major (the coverage and canary lanes stop on it with `--maxfail=1`, so no cmru change can earn a green gate)*
+### KI-54 — `release --dry-run` with an internal snapshot handoff escapes as an uncaught `RuntimeError` instead of exit 1, and its test has been red on main since 2026-10-04 — *FIXED 2026-10-05 (program 2026-10 W0-REL, REL-01), severity: major*
 
-**Status:** open (filed 2026-10-05 by the cli-extended program while gating KI-53; not caused by that program — reproduced identically at main `c0d1f4410`, before the cli-extended merge).
+**Fixed:** BOTH handoff guards in `_release_or_status` (`cli.py`: "valid only for a new family release launcher" and "cannot span Git families") now `log_error(msg); sys.exit(exit_codes.FAILURE)` instead of raising `RuntimeError`. The review found the sibling guard had the identical defect (its test was also red). Tests: `tests/test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run` and `::test_release_rejects_an_internal_snapshot_spanning_multiple_git_families`.
+
+**Status (historical):** was open (filed 2026-10-05 by the cli-extended program while gating KI-53; not caused by that program — reproduced identically at main `c0d1f4410`, before the cli-extended merge).
 
 **Observed:** `tests/test_cli_release_snapshot_boundaries.py::test_release_rejects_internal_handoff_on_dry_run` (`:137`) expects `cli.main(["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]) == 1` and the message "valid only for a new family release launcher" on stderr. `cli.py` (around `:4581`) raises `RuntimeError("the internal origin/main snapshot handoff is valid only for a new family release launcher")` when `_ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT` is set and `transaction_child or vargs.dry_run or vargs.resume`; the exception propagates out of `cli.main` uncaught, so the test fails. The guard and test arrived with the 2026-10-04 snapshot-boundary work (`071046398`, `fccd44be3`, `0f96d124f`).
 
 **Fix direction:** either convert the refusal to the CLI's failure type (exit 1 with the message on stderr, matching the sibling multi-family refusal at the next guard) or, if escaping is intended for an internal-only path, correct the test; whichever the snapshot-boundary owner intended. Then re-run the `coverage` and `canary` lanes on main.
 
 **Oracle:** the test passes; a controlled wrong implementation that lets the `RuntimeError` escape fails it; the `coverage` lane on main is green.
+
+### KI-55 — The durable candidate backup branch is not re-pushed after a merge-promote (REL-04 follow-up) — *open, severity: minor*
+
+**Observed:** `transaction.promote_workspace` now merges `origin/main` into the candidate when main advanced (`_merge_origin_main_into_candidate`), then pushes `HEAD` to `main`. The origin backup branch `cmru-release-...` (refreshed by `push_backup_branch` before the gate and after each tag commit) still points at the pre-merge tip until the transaction is cleaned up. If promotion then stops (a later retry fails, or the process dies between merge and push), the durable copy on origin lacks the merge commit that exists only in the local retained worktree.
+
+**Fix direction:** call `push_backup_branch` after each successful merge inside the promote loop, before the retry push.
+
+**Oracle:** an end-to-end case where main advances twice and the second promotion attempt fails: the origin candidate branch equals the local worktree tip. Fails on the current code.
+
+### KI-56 — Nothing prevents a publishing step inside the REL-05 tag-rollback window (`build_step = "push"`) — *open, severity: minor*
+
+**Observed:** the REL-05 rollback treats the `build_step` phase as non-publishing and deletes the freshly pushed tag when it fails. A project that sets `build_step = "push"` (or whose build step publishes) would have already published when the rollback runs, so the rollback could delete a tag whose artifacts are public. Config validation accepts it today.
+
+**Fix direction:** refuse `build_step = "push"` (and any step the project declares as publishing) at config validation, with a message naming the rollback guarantee.
+
+**Oracle:** a config with `build_step = "push"` is rejected at load; a normal `build` step is accepted.
+
+### KI-57 — No multi-project or nested-project end-to-end case for merge-promote (REL-15 follow-up) — *open, severity: minor*
+
+**Observed:** `tests/test_release_end_to_end_real_git.py` drives a single project under `demo/`. Merge-promote's project-path check (`project_paths`), the per-project promotion order and the checkpointing are never exercised with two projects in one transaction or a project nested more than one level deep.
+
+**Fix direction:** add an end-to-end case with two projects (one gated while main advances touching only the other project's path) and one nested project.
+
+**Oracle:** the new tests pass; planting the path check as always-true or always-false fails one of them.
+
+### KI-58 — Non-empty `## [Unreleased]` bodies in three estate changelogs will make their next tagged releases fail (KI-30 follow-up, estate) — *open, severity: major (blocks releases)*
+
+**Observed:** since W0-REL (REL-10 / KI-30) a tagged release is refused while a plain `## [Unreleased]` section has a non-empty body. `assay/CHANGES.md`, `run-gate-project/CHANGES.md` and `scripts/cgroup-profiler/CHANGES.md` carry non-empty bodies today, so their next releases will be refused.
+
+**Fix direction:** per project, move the text into the release notes (generated section) or empty it, keeping a comment. Out of W0-REL's scope; an estate follow-up for the controller.
+
+**Oracle:** `cmru release --dry-run` for each of the three projects passes the changelog check.
+
+### KI-59 — The `file:` resume bump-commit skip matches any subject starting with `chore: bump <prefix> to ` (W0-REL review nit) — *open, severity: minor*
+
+**Observed:** `changelog._project_commits_after_cursor` ignores cmru's own version-bump commit so a resumed `file:` release re-tags the gated commit. The match is a subject prefix only. The W0-REL reviewer committed a real code change to `demo/core.py` with subject `chore: bump demo-v to 9.9.9 and rewrite core`; `generate_release_changelog` then returned False, so that work was missed by the changelog and by the resume decision.
+
+**Fix direction:** skip only a commit whose subject equals `chore: bump <prefix> to <pending_version>` exactly AND whose diff touches only the declared version file (plus the generated changelog cmru wrote).
+
+**Oracle:** the reviewer's probe (a real change with a look-alike subject) is counted as project work; the existing `file:VERSION` resume e2e case stays green.
+
+### KI-60 — Digest pins of locally present helper images age and have no refresh policy (W0-TESTER review) — *open, severity: minor*
+
+**Observed:** since W0-TESTER the privileged probe and DinD images must be `@sha256:` pinned and are started `--pull=never`, so the pin must name an image already on the host. `cmru.orchestration.toml` (`debian@sha256:d7e1...`) and mdt's `cmru.toml` (`docker@sha256:5efe...`) were pinned on 2026-10-05 from the local `RepoDigests`. Nothing records when, nothing warns when a pin gets old (base-image CVEs), and nothing says how to refresh one; a refresh is also the only moment a pull happens, so it is easy to forget.
+
+**Fix direction:** either (a) `cmru standards` warns when a pinned helper-image digest is older than N days (needs a pin-date record next to the pin, e.g. a `CMRU_TESTER_PIN_DATE_<VAR>` or a `[pins]` table, and the freshness rule's 14-day vetting buffer in the other direction), or (b) a documented refresh procedure in `docs/CONSUMERS.md` (pull the new tag deliberately, read `docker image inspect --format '{{index .RepoDigests 0}}'`, update every estate pin in one change, run the KI-42 probe). (b) is the minimum; (a) is the guard.
+
+**Oracle:** for (a), a project whose recorded pin date is older than the threshold gets a standards warning naming the variable; for (b), the procedure is reproducible by someone who has never done it.
+
+### KI-61 — `cmru skills` lacks `--log-prefix-time-short`: the cli-extended surface check carries a one-message tolerance (W2-PKG5; library defect CLI-EXT-26) — *resolved 2026-10-06 (cli-extended-v0.3.0), severity: minor*
+
+**Resolved 2026-10-06:** cli-extended `cli-extended-v0.3.0` ships CLI-EXT-26. cmru's floor is now `cli-extended>=0.3.0`; the tolerance test `test_surface_check_reports_nothing_beyond_the_known_library_gap` is deleted and `tests/test_cli_spec_inventory.py::test_surface_check_reports_no_findings` requires an empty finding list; finding `adoption-skills-global-option` is `fixed`. (Package CMRU-FLOOR, report `nyxloom-trove/reports/cmru-FLOOR-2026-10-REPORT.md`.)
+
+**Observed:** `cli-extended surface check` (and audit AC-17/AC-18) report `cmru skills: delegated parser does not register inherited global option(s): --log-prefix-time-short`. The cause is cli-extended 0.2.0 `register_skills_verbs`, which builds its child registry without the parent's `global_options` (filed in `libraries/cli-extended/BACKLOG.md` as CLI-EXT-26). The controller ruled (2026-10-06) to accept the gap for cmru 6.0.0 rather than re-implement the skills group with private library helpers. `tests/test_cli_spec_inventory.py::test_surface_check_reports_nothing_beyond_the_known_library_gap` asserts the findings EQUAL exactly that one message, so a library fix makes the test fail and forces this item.
+
+**Fix direction:** when cli-extended ships the CLI-EXT-26 fix, bump the `cli-extended>=` floor in `pyproject.toml` (and `CLI_EXTENDED_REQUIREMENT` / the doctor floor check) to that release, delete the tolerance and the exact-message assertion so the test requires an empty finding list, run `cli-extended surface sync`, and close finding `adoption-skills-global-option` in `docs/cli-review-findings.toml`.
+
+**Oracle:** `cli-extended surface check` and `cli-extended audit --cli cmru` both exit 0 with no tolerance in the test.
+
+### KI-62 — R2 mutation campaign for 6.0.0 postponed by operator decision 2026-10-06; run it against the `cmru-v6.0.0` tag and backport fixes (LANDPREP) — *open, severity: major (release evidence gap)*
+
+**Observed:** the operator decided to merge and release cmru 6.0.0 with the R2 mutation campaign postponed. The release step (`cmru.toml` `[steps.run-tests]`) therefore runs `./run-gate.py gate-provisional`, which is `tools/run_release_gate.py --postpone-mutation KI-62`: every lane except `mutation` runs as in `gate`, and `.assay/mutation-postponed-cmru.json` (tracking id, timestamp, reason) is retained with the gate evidence next to one WARN line. The 6.0.0 release therefore has NO mutation evidence.
+
+**Fix direction:** after the release, run `./run-gate.py gate` (full, including R2) against the `cmru-v6.0.0` tag, triage survivors, and backport fixes. Then revert `cmru.toml` `[steps.run-tests]` to `./run-gate.py gate`, delete the `gate-provisional` lane in `run-gate.toml`, and grep for `TODO(cmru-6.0 post-release)`.
+
+**Oracle:** a full `gate` verdict (with `.assay/mutation-cmru.json`) exists for the `cmru-v6.0.0` tag, every survivor is fixed or recorded, and no `TODO(cmru-6.0 post-release)` marker remains that this item owns.

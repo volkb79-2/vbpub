@@ -50,15 +50,16 @@ from urllib.request import Request, urlopen
 
 from cmru import exit_codes
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.errors import CmruError
 from cli_extended import (
-    ArgumentSpec,
     CliFailure,
-    CliRegistry,
+    Conflicts,
     OptionSpec,
+    Requires,
     VerbGroup,
     VerbSpec,
 )
-from cmru.cli_support import cmru_identity, cmru_presentation_options
+from cmru.cli_support import cmru_registry, target_argument
 
 if TYPE_CHECKING:
     from cmru.config import ToolDependency
@@ -490,21 +491,21 @@ def refresh_tool_dependency(
     calls this on its own."""
     resolved = resolve_latest_release(owner, repo, provider_prefix, timeout=timeout)
     if resolved is None:
-        raise RuntimeError(
+        raise CmruError(
             f"cannot refresh {dependency.project!r}: no published release exists yet for tag "
             f"prefix {provider_prefix!r}"
         )
     new_version = resolved["version"]
     old_name = Path(dependency.path).name
     if dependency.version not in old_name:
-        raise RuntimeError(
+        raise CmruError(
             f"cannot infer the refreshed filename: {dependency.path!r} does not contain the "
             f"pinned version {dependency.version!r}"
         )
     new_name = old_name.replace(dependency.version, new_version)
     asset = next((a for a in resolved["assets"] if a["name"] == new_name), None)
     if asset is None:
-        raise RuntimeError(
+        raise CmruError(
             f"published release {resolved['tag']!r} has no asset named {new_name!r}"
         )
 
@@ -569,31 +570,35 @@ def _rewrite_tool_dependency_toml(
 # --- CLI verb ------------------------------------------------------------------
 
 def tool_deps_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru tool-deps",
-        description=(
-            "Verify declared first-party tool dependencies (S15): integrity (bytes match "
-            "the recorded hash), authenticity (that hash matches the PUBLISHED release "
-            "asset's bytes -- never the filename or version string), and freshness (the "
-            "pin is the highest published version). Performs network I/O."
-        ),
+    registry = cmru_registry(
+        "cmru tool-deps",
+        "Verify declared first-party tool dependencies (S15): integrity (bytes match "
+        "the recorded hash), authenticity (that hash matches the PUBLISHED release "
+        "asset's bytes -- never the filename or version string), and freshness (the "
+        "pin is the highest published version). Performs network I/O.",
         single_command=True,
         no_args_action=True,
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
     )
     registry.register(VerbSpec(
         "tool-deps",
         description="Verify declared dependencies or explicitly refresh one provider pin.",
         group=VerbGroup.MIXED.value,
+        # Conditionally mutating (D4): read-only unless --refresh is given.
         mutating=True,
+        dry_run=True,
         include_confirmation=False,
-        arguments=(ArgumentSpec(
-            "target", "project target; omitted uses the current project or estate default",
-            metavar="[all|PROJECT[,PROJECT...]]",
-            parser_kwargs={"nargs": "?", "default": None},
-        ),),
+        arguments=(target_argument(),),
+        constraints=(
+            Requires(
+                "--dry-run", ("--refresh",),
+                "without --refresh the check writes nothing, so there is nothing to preview",
+            ),
+            Conflicts(("--refresh", "--json"), "a refresh prints progress lines, not a report"),
+            Conflicts(
+                ("--refresh", "--allow-stale-tool-deps"),
+                "a refresh re-vendors the latest artifact, so staleness cannot be allowed",
+            ),
+        ),
         options=(
             OptionSpec(
                 ("--config",),
@@ -606,7 +611,6 @@ def tool_deps_cli():
             OptionSpec(("--refresh",),
                 "re-vendor this provider's latest artifact and rewrite the selected pin",
                 metavar="PROVIDER_PROJECT", parser_kwargs={"default": None}),
-            OptionSpec(("--dry-run",), "fetch and verify the planned refresh without writing files; requires --refresh", parser_kwargs={"action": "store_true", "default": False}),
             OptionSpec(("--timeout",), "network timeout for each GitHub request",
                 metavar="SECONDS", parser_kwargs={"type": int, "default": DEFAULT_TIMEOUT}),
         ),
@@ -621,44 +625,18 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> int:
     return tool_deps_cli().run(argv=argv)
 
 
-def _run_tool_deps(args, _runtime) -> None:
-    from cmru.cli_support import TargetSelectionError, select_target_names
+def _run_tool_deps(args, runtime) -> None:
+    from cmru.delegate_targets import resolve_target
 
     # Import lazily: cli dispatches this verb, and is itself the configuration
     # model used by the report (same pattern as cmru.standards.standards_main).
     from cmru.cli import _resolve_config, load_config
 
-    if args.refresh and (args.json or args.allow_stale_tool_deps):
-        raise CliFailure(
-            "--refresh cannot be combined with --json or --allow-stale-tool-deps",
-            exit_code=2, show_help=True,
-        )
-    if args.dry_run and not args.refresh:
-        raise CliFailure("tool-deps --dry-run requires --refresh", exit_code=2, show_help=True)
-
     config_path = _resolve_config(args.config)
     repo_root, projects, project_order, *_rest = load_config(config_path)
     github_config = _rest[-2]
 
-    from cmru.config import resolve_invocation_context
-    if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
-        context_project = next(iter(projects))
-        estate_scope = False
-    elif args.target is None:
-        context = resolve_invocation_context(config_path)
-        context_project = context.project_name
-        estate_scope = context.scope == "estate"
-    else:
-        context_project = None
-        estate_scope = False
-    try:
-        selected = select_target_names(
-            args.target, projects, project_order,
-            context_project=context_project,
-            estate_scope=estate_scope,
-        )
-    except TargetSelectionError as exc:
-        raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
+    selected = resolve_target(args.target, config_path, projects, project_order)
 
     # S15.6/B2: a single-project load (`cmru.toml`, e.g. run from a project
     # directory, or `--config <project>/cmru.toml`) only EVER sees its own
@@ -700,13 +678,13 @@ def _run_tool_deps(args, _runtime) -> None:
 
     if not statuses:
         if args.json:
-            print(json.dumps([]))
+            runtime.output.primary([])
         else:
             print("[INFO] cmru tool-deps: no project declares a tool dependency.", flush=True)
         return
 
     if args.json:
-        print(json.dumps([status_as_dict(s) for s in statuses], indent=2, sort_keys=True))
+        runtime.output.primary([status_as_dict(s) for s in statuses])
     else:
         for status in statuses:
             print(render_status(status), flush=True)
@@ -714,13 +692,13 @@ def _run_tool_deps(args, _runtime) -> None:
     blocking = [s for s in statuses if is_blocking(s, allow_stale=args.allow_stale_tool_deps)]
     if blocking:
         plural = "y is" if len(statuses) == 1 else "ies are"
-        print(
-            f"[ERROR] cmru tool-deps: {len(blocking)} of {len(statuses)} declared dependenc{plural} "
+        # Refused by verification policy; nothing was changed (redesign E).
+        raise CliFailure(
+            f"cmru tool-deps: {len(blocking)} of {len(statuses)} declared dependenc{plural} "
             "blocking (a stale or mismatched tool dependency is an error by default; "
             "--allow-stale-tool-deps overrides staleness only).",
-            file=sys.stderr, flush=True,
+            exit_code=exit_codes.REFUSED,
         )
-        raise SystemExit(exit_codes.CONFIG_ERROR)
     if not args.json:
         plural = "y is" if len(statuses) == 1 else "ies are"
         print(f"[INFO] cmru tool-deps: {len(statuses)} declared dependenc{plural} OK.", flush=True)

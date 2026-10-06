@@ -14,13 +14,13 @@ from cmru import cli, config
 
 
 def test_output_options_export_only_explicit_flags(monkeypatch):
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
     cli._apply_output_options(SimpleNamespace(show_run_details=False, log_append=False))
-    assert "CMRU_SHOW_RUN_DETAILS" not in os.environ
+    assert "CMRU_INTERNAL_SHOW_RUN_DETAILS" not in os.environ
     cli._apply_output_options(SimpleNamespace(show_run_details=True, log_append=True))
-    assert os.environ["CMRU_SHOW_RUN_DETAILS"] == "1"
-    assert os.environ["CMRU_LOG_APPEND"] == "1"
+    assert os.environ["CMRU_INTERNAL_SHOW_RUN_DETAILS"] == "1"
+    assert os.environ["CMRU_INTERNAL_LOG_APPEND"] == "1"
 
 
 class _Response:
@@ -162,14 +162,6 @@ def test_resolve_versions_from_git_skips_projects_without_exact_tag(monkeypatch,
     monkeypatch.delenv("SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEMO", raising=False)
     cli.resolve_versions_from_git(tmp_path, {"demo": project})
     assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEMO" not in os.environ
-
-
-def test_source_version_and_installed_version_fallbacks_are_distinct(monkeypatch):
-    monkeypatch.setattr(cli, "_source_tree_version", lambda: None)
-    monkeypatch.setattr("importlib.metadata.version", lambda _name: "9.9.9")
-    assert cli._cmru_version() == "9.9.9"
-    monkeypatch.setattr("importlib.metadata.version", lambda _name: (_ for _ in ()).throw(RuntimeError("none")))
-    assert cli._cmru_version() == "dev"
 
 
 def test_ordered_configs_omits_unorchestrated_projects_and_tag_selection_filters_latest(monkeypatch, tmp_path):

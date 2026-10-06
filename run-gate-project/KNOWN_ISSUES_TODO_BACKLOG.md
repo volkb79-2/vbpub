@@ -102,7 +102,8 @@ SPEC §9.
 | RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
 | RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | OPEN (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36, not deleted) |
 | RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
-| RG-85 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
+| RG-85 | assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it) | Minor | OPEN |
+| RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5771,7 +5772,7 @@ return a closed recovery refusal before inventory or admission.
 
 **Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).
 
-## RG-85 — every ephemeral gate container sees the whole main checkout (all ignored files, all worktrees) and the git remote credential
+## RG-86 — every ephemeral gate container sees the whole main checkout (all ignored files, all worktrees) and the git remote credential
 
 **Status:** IN PROGRESS (filed 2026-10-06, package RG-NARROW; implementation and tests landed on branch `run-gate-narrow-mount`, awaiting independent review; no revision bump yet, the release owner bumps it).
 
@@ -5788,3 +5789,16 @@ return a closed recovery refusal before inventory or admission.
 **Consequence.** cmru's gate-side masking of its secret file (`cmru/tools/run_release_gate.py`) becomes removable once this ships; cmru tracks that. Callers that ran ephemeral lanes from a main checkout (nyxloom-merge-p post-merge gates, Buildkite agents) must use a worktree or opt in; listed in the RG-NARROW report.
 
 **Oracles.** Mount-set unit tests for both checkout kinds, sanitizer tests for every credential form, refusal and opt-in tests, an exec-lane-on-main test, and a real-container smoke test asserting that a planted ignored secret, the main checkout's files and a sibling worktree are absent, the worktree's own ignored file is present, no credential is visible, and `git log`/`status`/`diff`/`rev-parse` work. Planted regressions (whole repo mounted, sanitizer skipped, main checkout allowed without opt-in) are each killed.
+
+## RG-85 — assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it)
+
+**Status:** OPEN. Filed 2026-10-06 during the 23.10.0 release-prep review (`run-gate-2310-adopt`). Severity Minor: the release gate (`selftest`) is unaffected, because it creates its own scratch root.
+
+**Observed.**
+- `assay.toml:43` and `:84` set `TMPDIR` and `GIT_CEILING_DIRECTORIES` to `/worktree/.run-gate`.
+- In a fresh checkout that directory does not exist. Python silently ignores a nonexistent `TMPDIR`, so tests fall back to `/tmp`.
+- Result: `assay-r1 --base main` failed with 116 tests, and it returned NOT_RUN when no writable `.run-gate` state mount existed. Both passed once `.run-gate/` was created by hand.
+
+**Fix direction.** Either give the assay lanes the same `mkdir -p .run-gate` prelude that the selftest lane got in 23.10.0 (`623332171`), or have run-gate create the lane scratch root before it launches any lane.
+
+**Oracles.** From a fresh `git worktree add` of main, with no `.run-gate/` present, `assay-r1 --base main` reaches PASS with no manual setup. A plant that drops the prelude, or the pre-launch creation, fails a test.

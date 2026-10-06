@@ -397,11 +397,13 @@ operators = ["python:compare-swap"]
         "source_sha256",
         "mutated_file_sha256",
         "execution",
+        "resource_limit_evidence",
     }
     assert len(killed["candidate_id"]) == 64
     assert len(killed["source_sha256"]) == 64
     assert len(killed["mutated_file_sha256"]) == 64
     assert killed["execution"] == {"mode": "full"}
+    assert killed["resource_limit_evidence"]["cgroup_version"] == 2
     assert mutation["candidate_ids"] == [killed["candidate_id"]]
     assert killed["operator"] == "python:compare-swap"
     assert killed["start_byte"] < killed["end_byte"]

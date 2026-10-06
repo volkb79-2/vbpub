@@ -166,8 +166,10 @@ series       = "nyxloom-trove/handoffs/README.md"
 # before -- the single easiest thing to break while restructuring the rest of
 # this script (O4).
 #
-# The Topos qualification phase is retired (A-475). `timeout_seconds` below is
-# unchanged and is pinned against the lane budget by `test_self_lane.py`.
+# The Topos qualification phase is retired (A-475). The registered tester gate
+# now includes the SQL witness after the sequential 60m tester and analysis
+# lanes. run-gate's 5h execution budget starts after admission; this 6h
+# controller timeout also leaves 1h for admission and startup.
 
 [gates.tester-unified]
 # SSOT pointer (D-110/D-111): the lane lives in assay/run-gate.toml (host lane
@@ -176,7 +178,7 @@ series       = "nyxloom-trove/handoffs/README.md"
 argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} tester-unified"]
 phase = "implementation"
 asserts = ["tests-pass"]
-timeout_seconds = 3600
+timeout_seconds = 21600
 environment = "tester-unified"
 
 [gates.self-qualification]

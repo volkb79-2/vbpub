@@ -15,7 +15,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order = ["example-wheel"]
-default_projects = ["example-wheel"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in the gitignored root cmru.secret.toml; an
@@ -29,7 +28,9 @@ CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
 CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
-CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+CMRU_TESTER_PIDS_LIMIT = "4096"
+# Privileged + --pull=never: digest-pin a locally present image (placeholder below).
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"
 
 # GOVERNANCE SLICE for gate containers — declared, never ambient. The gates
 # tier is required; an unset reference is a load error rather than an
