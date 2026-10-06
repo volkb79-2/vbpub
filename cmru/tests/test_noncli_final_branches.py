@@ -48,19 +48,26 @@ def test_handlers_omit_optional_urls_when_the_release_has_none(tmp_path, monkeyp
 def test_tester_gate_cli_keeps_command_without_separator(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
     commands = []
+    events = []
     monkeypatch.setattr(
         tester_gate, "build_docker_command",
-        lambda *args, **kwargs: commands.append(args[2]) or ["true"],
+        lambda *args, **kwargs: commands.append(args[2]) or events.append(kwargs["events_file"]) or ["true"],
     )
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))
-    monkeypatch.setattr(
-        tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0),
-    )
+
+    def clean_run(*args, **kwargs):
+        # What the in-container wrapper leaves behind after a clean run.
+        (tmp_path / events[0]).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / events[0]).write_text("pids.events max 0\nmemory.events oom_kill 0\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", clean_run)
     parsed = SimpleNamespace(
-        cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe",
-        memory="1G", memory_swap="2G", cpus="1", device_read_iops="",
+        cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe@sha256:" + "e" * 64,
+        memory="1G", memory_swap="2G", cpus="1", pids_limit="64", device_read_iops="",
         device_write_iops="", device_read_bps="", device_write_bps="",
-        enable_docker=False, dind_image=None, command=["true"], dry_run=False,
+        enable_docker=False, dind_image=None, dind_memory=None, dind_cpus=None,
+        dind_pids_limit=None, command=["true"], dry_run=False,
     )
     with patch.object(tester_gate.argparse.ArgumentParser, "parse_args", return_value=parsed):
         raised = tester_gate.main([])

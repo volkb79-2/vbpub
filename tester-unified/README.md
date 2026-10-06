@@ -9,6 +9,31 @@ Build the image from the repository root:
 docker build -f tester-unified/Dockerfile -t tester-unified:local .
 ```
 
+Image contents worth knowing (KI-52 / BG-05, 2026-10):
+
+- **git maintenance is foreground-only.** The image sets
+  `git config --system maintenance.autoDetach false` and `gc.autoDetach false`
+  (asserted at build time). Detached `git gc --auto` daemons are orphaned to
+  PID 1; a gate makes thousands of commits, and on 2026-10-05 that left 19,108
+  zombies and exhausted the host pids ceiling. This is defence in depth: the
+  launchers (`tester-unified/run`, `cmru tester-gate`) also run under
+  `docker run --init` with an explicit `--pids-limit`. A caller that sets
+  `GIT_CONFIG_NOSYSTEM=1` (assay's hermetic git environment) bypasses
+  `/etc/gitconfig` and must set the same keys in its own git config (assay
+  backlog B147).
+- **Estate-internal packages never come from an index.**
+  `tester-unified/gen-requirements.py` derives the third-party closure from the
+  copied `pyproject.toml` files and REFUSES any estate-internal name
+  (`cli-extended`, `worktree`, `cmru`, `assay`, `ciu`, ...) or direct-URL
+  requirement, because the closure goes to a PyPI-default `pip` and an
+  unclaimed or look-alike name would be installed into an image that is handed
+  the host Docker socket. `cli-extended` and `cmru` are built offline from the
+  COPYed `libraries/*` and `cmru/` sources (`pip wheel --no-index --no-deps
+  --no-build-isolation`, in a throwaway venv holding only their pinned build
+  backends) with a `+tester.unified` local version, and the build asserts that
+  `cli_extended` and `worktree` import from `/opt/tester-venv`. The repo-root
+  `.dockerignore` whitelists exactly the files this needs.
+
 Run a gate through the canonical launcher:
 
 ```bash

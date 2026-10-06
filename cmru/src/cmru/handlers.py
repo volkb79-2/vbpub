@@ -256,7 +256,9 @@ def _host_bind_source(container_path: Path) -> str:
             continue
         mount_root, mount_point = fields[3], fields[4]
         if path_str == mount_point or path_str.startswith(mount_point.rstrip("/") + "/"):
-            if best is None or len(mount_point) > len(best[1]):
+            # ``>=``: on equal-length mount points the LAST mountinfo entry is
+            # the visible one (an earlier entry at the same point is shadowed).
+            if best is None or len(mount_point) >= len(best[1]):
                 best = (mount_root, mount_point)
     if best is None:
         raise RuntimeError(

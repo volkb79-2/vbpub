@@ -12,7 +12,7 @@ kind = "none"
 [project]
 id = "@@PROJECT_ID@@"
 description = "@@DESCRIPTION@@"
-template_revision = 4
+template_revision = 5
 prefix = "@@PROJECT_ID@@-v"
 artifacts = ["wheel"]
 scm_dist = "@@SCM_DIST@@"

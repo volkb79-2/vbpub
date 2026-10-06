@@ -1,4 +1,4 @@
-# cmru-project-template-revision: 4
+# cmru-project-template-revision: 5
 # Complete portable CMRU project contract. Copy to <project>/cmru.toml.
 # In a monorepo with a cmru.orchestration.toml, delete the [github] and
 # [targets] tables below: they are central orchestration facts there.
@@ -25,12 +25,14 @@ CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
 CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
-CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+CMRU_TESTER_PIDS_LIMIT = "4096"
+# Privileged + --pull=never: digest-pin a locally present image (placeholder below).
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"
 
 [project]
 id = "example"
 description = "Describe the product and consumer."
-template_revision = 4
+template_revision = 5
 prefix = "example-v"
 artifacts = ["wheel"]
 scm_dist = "example"

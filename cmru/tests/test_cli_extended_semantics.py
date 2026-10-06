@@ -270,7 +270,7 @@ def test_standards_dry_run_updates_only_the_marker_preview(monkeypatch, tmp_path
         "demo", "--config", str(config), "--update", "--dry-run",
     ]) == 2
     output = capsys.readouterr().out
-    assert "template_revision = 4" in output
+    assert f"template_revision = {standards.PROJECT_TEMPLATE_REVISION}" in output
     assert "Marker updates were previewed" in output
     assert "template_revision=3" in project_config.read_text(encoding="utf-8")
 
@@ -531,25 +531,28 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
     monkeypatch.setattr(tester_gate, "_git_common_dir", lambda _path: None)
     monkeypatch.setattr(tester_gate, "_probe_io_support", lambda *_: pytest.fail("dry-run probed privileged Docker IO"))
     monkeypatch.setattr(tester_gate, "dind_sidecar", lambda *_: pytest.fail("dry-run launched DinD"))
-    if enable_docker:
-        monkeypatch.setattr(tester_gate, "resolve_dind_image", lambda _value: "dind:test")
-
+    dind_image = "docker@sha256:" + "c" * 64
     argv = [
         "--cwd", ".", "--dry-run", "--image", "tester:test",
-        "--cgroup-parent", "gates.slice", "--cgroup-probe-image", "debian:test",
-        "--memory", "1g", "--memory-swap", "2g", "--cpus", "1",
+        "--cgroup-parent", "gates.slice", "--cgroup-probe-image", "debian@sha256:" + "d" * 64,
+        "--memory", "1g", "--memory-swap", "2g", "--cpus", "1", "--pids-limit", "64",
     ]
     if enable_docker:
-        argv += ["--enable-docker", "--dind-image", "dind:test"]
+        argv += [
+            "--enable-docker", "--dind-image", dind_image,
+            "--dind-memory", "2g", "--dind-cpus", "1.5", "--dind-pids-limit", "128",
+        ]
     argv += ["--device-read-iops", "/dev/sda:10", "--", "pytest", "-q"]
     assert tester_gate.main(argv) == 0
     output = capsys.readouterr().out
     assert "Host gates-slice verification skipped" in output
-    assert "docker run --cgroup-parent=gates.slice --rm" in output
-    assert "tester:test pytest -q" in output
-    assert ("docker run --cgroup-parent=gates.slice -d --rm --privileged" in output) is enable_docker
+    assert "docker run --cgroup-parent=gates.slice --rm --init" in output
+    assert "--pids-limit 64" in output
+    assert "tester:test sh -c" in output and "pytest -q" in output
+    assert ("docker run --cgroup-parent=gates.slice -d --rm --init --privileged --pull=never" in output) is enable_docker
     if enable_docker:
-        assert "dind:test" in output and "cmru-dry-run-dind-sidecar" in output
+        assert dind_image in output and "cmru-dry-run-dind-sidecar" in output
+        assert "--memory 2g --cpus 1.5 --pids-limit 128" in output
 
 
 @pytest.mark.parametrize("cpus", ["0", "-1", "NaN", "Infinity", "0.0000099"])

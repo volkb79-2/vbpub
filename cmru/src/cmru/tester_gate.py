@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -54,7 +55,9 @@ def _physical_path(path: Path, mountinfo: str | None = None) -> Path:
         if destination == Path("/"):
             continue
         if destination == resolved or destination in resolved.parents:
-            if best is None or len(destination.parts) > len(best[1].parts):
+            # ``>=``: on equal-length mount points the LAST mountinfo entry is
+            # the visible one (an earlier entry at the same point is shadowed).
+            if best is None or len(destination.parts) >= len(best[1].parts):
                 best = (source, destination)
     if best is None:
         return resolved
@@ -132,13 +135,37 @@ _DIND_READY_TIMEOUT = 30.0
 # Flat, per-container safe bounds for the tester workload (host dev-tier cgroup
 # governance rollout — nyxloom/docs/plan-resource-governance.md + the mdt
 # host-setup companion). They are not a fraction of the slice's aggregate cap.
-# The optional DinD sidecar currently receives only the gates slice; its
-# separate per-container resource policy remains an open CLI decision.
+# The optional DinD sidecar has its own required limits (BG-07), separate from
+# the workload's so the two envelopes are not doubled or silently shared.
 #
 _SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
 _CPUS_ENV = "CMRU_TESTER_CPUS"
+_PIDS_LIMIT_ENV = "CMRU_TESTER_PIDS_LIMIT"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
+_DIND_MEMORY_ENV = "CMRU_TESTER_DIND_MEMORY"
+_DIND_CPUS_ENV = "CMRU_TESTER_DIND_CPUS"
+_DIND_PIDS_LIMIT_ENV = "CMRU_TESTER_DIND_PIDS_LIMIT"
+#: Required with ``--enable-docker`` only; shared with ``cmru standards``.
+DIND_TESTER_ENV = (
+    _DIND_IMAGE_ENV, _DIND_MEMORY_ENV, _DIND_CPUS_ENV, _DIND_PIDS_LIMIT_ENV,
+)
 _CGROUP_PARENT_ENV = "CMRU_TESTER_CGROUP_PARENT"
+_PIDS_LIMIT_PATTERN = re.compile(r"[1-9][0-9]*\Z")
+_DIGEST_PATTERN = re.compile(r"@sha256:[0-9a-f]{64}\Z")
+_IMAGE_REF_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*\Z")
+#: In-container location of the worktree mount; the events file lives under it.
+_WORKTREE_MOUNT = "/worktree"
+_EVENTS_DIR = ".cmru"
+# Runs INSIDE the gate container: execute the gate command, then copy this
+# container's own cgroup counters into a cmru-owned file on the mounted
+# worktree (``--rm`` deletes the cgroup at exit, so nothing outside can read
+# them afterwards). The command's own exit status is preserved.
+_EVENTS_WRAPPER = (
+    'events=$1; shift; "$@"; rc=$?; '
+    'for f in pids.events memory.events; do '
+    'sed "s|^|$f |" "/sys/fs/cgroup/$f"; '
+    'done > "$events" 2>/dev/null; exit "$rc"'
+)
 _CPU_LIMIT_PATTERN = re.compile(r"\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
 _MIN_CPU_LIMIT = Decimal("0.00001")
 _CPU_LIMIT_ERROR = (
@@ -154,6 +181,84 @@ def _docker_run_argv(cgroup_parent: str, *arguments: str) -> list[str]:
         raise ValueError("tester-gate Docker containers require a cgroup parent")
     return ["docker", "run", f"--cgroup-parent={parent}", *arguments]
 
+
+def _container_name(kind: str) -> str:
+    """Unique, exact container name (``cmru-<kind>-<uuid8>``) so cleanup never
+    needs a filter."""
+    return f"cmru-{kind}-{uuid.uuid4().hex[:8]}"
+
+
+def _remove_container(name: str) -> None:
+    """Best-effort ``docker stop`` then ``docker rm -f`` by EXACT name."""
+    for argv in (["docker", "stop", "-t", "5", name], ["docker", "rm", "-f", name]):
+        try:
+            subprocess.run(argv, capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """Turn SIGTERM/SIGHUP into ``SystemExit`` so ``finally`` cleanup runs
+    (same pattern as ``tools/run_release_gate.py``)."""
+    previous: dict[int, object] = {}
+
+    def _handler(signum, _frame) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, _handler)
+    except ValueError:  # not the main thread: nothing can be installed
+        previous.clear()
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def validate_image_reference(value: str, label: str) -> str:
+    """Refuse an image reference docker could parse as an option (BG-13)."""
+    candidate = (value or "").strip()
+    if not _IMAGE_REF_PATTERN.fullmatch(candidate):
+        raise SystemExit(
+            f"tester-gate: invalid {label} {value!r}: an image reference must start "
+            "with a letter or digit and contain only [A-Za-z0-9._/:@-]"
+        )
+    return candidate
+
+
+def require_digest_pinned(value: str, label: str) -> str:
+    """Images run privileged / with host PID must be ``@sha256:`` pinned (BG-06)."""
+    # Shape first: the shipped templates carry a `<digest>` placeholder, which
+    # the generic character check would only call "invalid".
+    if "<" in (value or "") or ">" in (value or ""):
+        raise SystemExit(
+            f"tester-gate: {label} {value!r} is the template placeholder; replace it with "
+            "the real pinned reference of a locally present image: "
+            "docker image inspect --format '{{index .RepoDigests 0}}' <image>"
+        )
+    candidate = validate_image_reference(value, label)
+    if not _DIGEST_PATTERN.search(candidate):
+        raise SystemExit(
+            f"tester-gate: {label} {candidate!r} is not digest-pinned. It runs "
+            "privileged and is started with --pull=never; pin it as "
+            "<repo>@sha256:<64 hex> (docker image inspect --format "
+            "'{{index .RepoDigests 0}}' <image>)."
+        )
+    return candidate
+
+
+def _positive_pids_limit(value: str, label: str = "pids limit") -> str:
+    candidate = str(value).strip()
+    if not _PIDS_LIMIT_PATTERN.fullmatch(candidate):
+        raise SystemExit(
+            f"tester-gate: {label} {value!r} must be a positive integer "
+            "(unlimited / 0 / -1 are refused)"
+        )
+    return candidate
+
 # The orchestration-injected environment every tester-gate step depends on
 # (KI-17). These are normally supplied by ``cmru.orchestration.toml [env]`` and
 # reach the step through ``cmru release`` -- they are NOT usually set in the
@@ -167,9 +272,37 @@ REQUIRED_TESTER_ENV = (
     "CMRU_TESTER_MEMORY",
     "CMRU_TESTER_MEMORY_SWAP",
     _CPUS_ENV,
+    _PIDS_LIMIT_ENV,
     _SLICE_PROBE_IMAGE_ENV,
     _CGROUP_PARENT_ENV,
 )
+
+
+def _run_probe(
+    cgroup_parent: str, probe_image: str, *probe_command: str,
+) -> subprocess.CompletedProcess:
+    """Run one privileged host probe under a unique exact name.
+
+    ``--pull=never``: the probe image is privileged with host PID, so it must
+    already be present locally (digest-pinned) and is never pulled implicitly.
+    ``timeout`` only kills the docker CLI, so a probe that did not finish
+    normally (timeout, signal) has its container removed by exact name.
+    """
+    name = _container_name("probe")
+    finished = False
+    try:
+        result = subprocess.run(
+            _docker_run_argv(
+                cgroup_parent, "--rm", "--name", name, "--pull=never",
+                "--privileged", "--pid=host", probe_image, *probe_command,
+            ),
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        finished = True
+        return result
+    finally:
+        if not finished:
+            _remove_container(name)
 
 
 def check_slice_unit(
@@ -229,17 +362,11 @@ def check_slice_unit(
         )
 
     try:
-        result = subprocess.run(
-            _docker_run_argv(
-                cgroup_parent, "--rm", "--privileged", "--pid=host", probe_image,
-                "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "-p",
-                "systemctl", "show", slice_name,
-                "--property=LoadState,FragmentPath", "--no-pager",
-            ),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+        result = _run_probe(
+            cgroup_parent, probe_image,
+            "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "-p",
+            "systemctl", "show", slice_name,
+            "--property=LoadState,FragmentPath", "--no-pager",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"could not probe the Docker host for {slice_name!r} ({exc})"
@@ -293,13 +420,10 @@ def _probe_io_support(
             "no docker on this host — skipping the IO-controller preflight"
         )
     try:
-        result = subprocess.run(
-            _docker_run_argv(
-                cgroup_parent, "--rm", "--privileged", "--pid=host", probe_image,
-                "sh", "-c",
-                "stat -fc %T /sys/fs/cgroup; cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null",
-            ),
-            capture_output=True, text=True, timeout=30, check=False,
+        result = _run_probe(
+            cgroup_parent, probe_image,
+            "sh", "-c",
+            "stat -fc %T /sys/fs/cgroup; cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"could not probe the Docker host's IO support ({exc})"
@@ -450,34 +574,89 @@ def resolve_cpus(explicit: str | None) -> str:
         raise SystemExit(f"tester-gate: {exc}") from exc
 
 
+def resolve_image(explicit: str | None) -> str:
+    """Resolve the gate workload image (validated, not required to be pinned)."""
+    return validate_image_reference(
+        _resolve_required(explicit, "CMRU_TESTER_UNIFIED_IMAGE", "tester image"),
+        "tester image",
+    )
+
+
 def resolve_cgroup_probe_image(explicit: str | None) -> str:
-    """Resolve the host-systemd probe image as an explicit, pinned input."""
-    return _resolve_required(explicit, _SLICE_PROBE_IMAGE_ENV, "cgroup probe image")
+    """Resolve the host-systemd probe image. It runs ``--privileged
+    --pid=host`` so it must be digest-pinned (BG-06)."""
+    return require_digest_pinned(
+        _resolve_required(explicit, _SLICE_PROBE_IMAGE_ENV, "cgroup probe image"),
+        "cgroup probe image",
+    )
 
 
 def resolve_dind_image(explicit: str | None) -> str:
-    """Resolve the nested-Docker image only for an explicit Docker-enabled gate."""
-    return _resolve_required(explicit, _DIND_IMAGE_ENV, "nested Docker image")
+    """Resolve the nested-Docker image only for an explicit Docker-enabled gate.
+    It runs ``--privileged`` so it must be digest-pinned (BG-06)."""
+    return require_digest_pinned(
+        _resolve_required(explicit, _DIND_IMAGE_ENV, "nested Docker image"),
+        "nested Docker image",
+    )
+
+
+def resolve_pids_limit(explicit: str | None) -> str:
+    """Resolve the gate container's ``--pids-limit``: required, no default.
+
+    Without it the ceiling is systemd's DefaultTasksMax, a host-wide default
+    shared with the production game server (2026-10-05 zombie incident)."""
+    return _positive_pids_limit(
+        _resolve_required(explicit, _PIDS_LIMIT_ENV, "pids limit"), "pids limit",
+    )
+
+
+def resolve_dind_memory(explicit: str | None) -> str:
+    return _resolve_required(explicit, _DIND_MEMORY_ENV, "nested Docker memory limit")
+
+
+def resolve_dind_cpus(explicit: str | None) -> str:
+    value = _resolve_required(explicit, _DIND_CPUS_ENV, "nested Docker CPU limit")
+    try:
+        return _positive_cpu_limit(value)
+    except argparse.ArgumentTypeError as exc:
+        raise SystemExit(f"tester-gate: {exc}") from exc
+
+
+def resolve_dind_pids_limit(explicit: str | None) -> str:
+    return _positive_pids_limit(
+        _resolve_required(explicit, _DIND_PIDS_LIMIT_ENV, "nested Docker pids limit"),
+        "nested Docker pids limit",
+    )
+
+
+_DIND_PROBE_TIMEOUT = 10.0
 
 
 def _dind_ready(name: str) -> bool:
-    probe = subprocess.run(
-        ["docker", "exec", name, "docker", "version", "--format", "{{.Server.Version}}"],
-        capture_output=True, text=True,
-    )
+    try:
+        probe = subprocess.run(
+            ["docker", "exec", name, "docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True, text=True, timeout=_DIND_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return probe.returncode == 0 and bool(probe.stdout.strip())
 
 
-def _dind_start_argv(image: str, name: str, cgroup_parent: str) -> list[str]:
+def _dind_start_argv(
+    image: str, name: str, cgroup_parent: str, *, memory: str, cpus: str, pids_limit: str,
+) -> list[str]:
     return _docker_run_argv(
-        cgroup_parent, "-d", "--rm", "--privileged", "--name", name,
-        "-e", "DOCKER_TLS_CERTDIR=", image,
+        cgroup_parent, "-d", "--rm", "--init", "--privileged", "--pull=never",
+        "--name", name, "--memory", memory, "--cpus", cpus,
+        "--pids-limit", pids_limit, "-e", "DOCKER_TLS_CERTDIR=", image,
     )
 
 
 @contextmanager
 def dind_sidecar(
-    image: str, *, cgroup_parent: str, ready_timeout: float = _DIND_READY_TIMEOUT,
+    image: str, *, cgroup_parent: str, memory: str, cpus: str, pids_limit: str,
+    ready_timeout: float = _DIND_READY_TIMEOUT,
 ) -> Iterator[str]:
     """Start an ephemeral, fully isolated nested Docker daemon; yield its
     container name once ready. Always torn down, even on failure.
@@ -491,11 +670,14 @@ def dind_sidecar(
     `--privileged` (the nested dockerd manages its own cgroups/namespaces).
     """
     name = f"cmru-tester-dind-{uuid.uuid4().hex[:12]}"
-    subprocess.run(
-        _dind_start_argv(image, name, cgroup_parent),
-        check=True, capture_output=True, text=True,
-    )
     try:
+        subprocess.run(
+            _dind_start_argv(
+                image, name, cgroup_parent,
+                memory=memory, cpus=cpus, pids_limit=pids_limit,
+            ),
+            check=True, capture_output=True, text=True,
+        )
         deadline = time.monotonic() + ready_timeout
         while not _dind_ready(name):
             if time.monotonic() >= deadline:
@@ -505,7 +687,7 @@ def dind_sidecar(
             time.sleep(0.5)
         yield name
     finally:
-        subprocess.run(["docker", "stop", "-t", "5", name], capture_output=True)
+        _remove_container(name)
 
 
 def build_docker_command(
@@ -521,6 +703,9 @@ def build_docker_command(
     memory: str,
     memory_swap: str,
     cpus: str,
+    pids_limit: str,
+    container_name: str | None = None,
+    events_file: str | None = None,
     device_read_iops: str = "",
     device_write_iops: str = "",
     device_read_bps: str = "",
@@ -536,9 +721,18 @@ def build_docker_command(
     modern-debian-tools-python-debug/scripts/test_oci_layout_push.py) should
     request it. Every other project's gate is unaffected.
 
-    ``memory``/``memory_swap``/``cpus`` are required (see :func:`resolve_memory`,
-    :func:`resolve_memory_swap`, and :func:`resolve_cpus` — no hardcoded
-    fallback here, matching ``cgroup_parent``'s own no-implicit-default rule).
+    ``memory``/``memory_swap``/``cpus``/``pids_limit`` are required (see
+    :func:`resolve_memory`, :func:`resolve_memory_swap`, :func:`resolve_cpus`
+    and :func:`resolve_pids_limit` — no hardcoded fallback here, matching
+    ``cgroup_parent``'s own no-implicit-default rule). The gate runs a command
+    cmru does not control (git auto-maintenance, test subprocesses), so it
+    always gets ``--init`` (a reaper as PID 1) and a pids ceiling.
+
+    ``container_name`` gives the container an exact name so the caller can stop
+    and remove it on termination. ``events_file`` (a path relative to the
+    worktree) wraps the command so that, after it exits, the container copies
+    its own ``pids.events``/``memory.events`` there; see
+    :func:`gate_exit_code`.
     ``cpus`` is a flat
     per-container safe bound, always applied (host dev-tier cgroup
     governance) — genuine per-container guarantees, distinct from and
@@ -573,15 +767,20 @@ def build_docker_command(
         cpus = _positive_cpu_limit(cpus)
     except argparse.ArgumentTypeError as exc:
         raise ValueError(str(exc)) from exc
+    image = validate_image_reference(image, "tester image")
+    pids_limit = _positive_pids_limit(pids_limit)
     host_root = _physical_path(repo_root)
     argv = _docker_run_argv(
         cgroup_parent,
         "--rm",
-        "--mount", f"type=bind,src={host_root},dst=/worktree",
-        "--workdir", str(Path("/worktree") / relative),
+        "--init",
+        *(["--name", container_name] if container_name else []),
+        "--mount", f"type=bind,src={host_root},dst={_WORKTREE_MOUNT}",
+        "--workdir", str(Path(_WORKTREE_MOUNT) / relative),
         "--memory", memory,
         "--memory-swap", memory_swap,
         "--cpus", cpus,
+        "--pids-limit", pids_limit,
     )
     common_dir = _git_common_dir(repo_root)
     if common_dir is not None:
@@ -601,7 +800,67 @@ def build_docker_command(
         argv += ["-e", f"CGROUP_PARENT_DEV_GATES={cgroup_parent_dev_gates}"]
     if sidecar_name:
         argv += ["--network", f"container:{sidecar_name}", "-e", "DOCKER_HOST=tcp://localhost:2375"]
+    if events_file:
+        return [
+            *argv, image, "sh", "-c", _EVENTS_WRAPPER, "cmru-events-wrapper",
+            f"{_WORKTREE_MOUNT}/{events_file}", *command,
+        ]
     return [*argv, image, *command]
+
+
+#: Counters that make a gate run an INFRASTRUCTURE failure (exit 3) even when
+#: the command itself exited 0: ``(events file, key, human meaning)``.
+_EVENT_COUNTERS = (
+    ("pids.events", "max", "the pids limit was hit (fork refused, possible zombie/process flood)"),
+    ("memory.events", "oom_kill", "the kernel OOM-killed a process in the gate's cgroup"),
+)
+EXIT_INFRASTRUCTURE = 3
+
+
+def read_events_problems(events_path: Path) -> list[str]:
+    """Problems found in the in-container cgroup events file; empty means clean.
+
+    A missing, unreadable or incomplete file is itself a problem: without it
+    a limit hit cannot be ruled out (a missing file proves nothing)."""
+    try:
+        text = events_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [
+            f"the cgroup events file {events_path} is missing or unreadable ({exc}); the container "
+            "user (the uid baked into the image) must be able to write .cmru/ in the mounted "
+            "worktree, and a host/image uid mismatch is the usual cause"
+        ]
+    values: dict[tuple[str, str], int] = {}
+    problems = []
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if len(parts) == 3 and parts[2].isdigit():
+            values[(parts[0], parts[1])] = int(parts[2])
+        else:
+            problems.append(f"malformed line {line!r} in {events_path}")
+    for events, key, meaning in _EVENT_COUNTERS:
+        if (events, key) not in values:
+            problems.append(f"{events} has no '{key}' counter in {events_path}")
+        elif values[(events, key)] > 0:
+            problems.append(f"{events} {key}={values[(events, key)]}: {meaning}")
+    return problems
+
+
+def gate_exit_code(command_returncode: int, events_path: Path) -> int:
+    """cmru's exit status for one gate run: the command's own code, unless the
+    cgroup counters show an infrastructure fault (then :data:`EXIT_INFRASTRUCTURE`,
+    even if the command exited 0)."""
+    problems = read_events_problems(events_path)
+    if not problems:
+        return command_returncode
+    print(
+        f"tester-gate: INFRASTRUCTURE failure (command exit status {command_returncode}): "
+        + "; ".join(problems),
+        file=sys.stderr,
+    )
+    return EXIT_INFRASTRUCTURE
 
 
 def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
@@ -619,6 +878,7 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
         "CMRU_TESTER_MEMORY": args.memory,
         "CMRU_TESTER_MEMORY_SWAP": args.memory_swap,
         _CPUS_ENV: args.cpus,
+        _PIDS_LIMIT_ENV: args.pids_limit,
         _SLICE_PROBE_IMAGE_ENV: args.cgroup_probe_image,
         _CGROUP_PARENT_ENV: args.cgroup_parent,
     }
@@ -627,8 +887,17 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
         for name in REQUIRED_TESTER_ENV
         if not (explicit_for[name] or os.environ.get(name) or "").strip()
     ]
-    if args.enable_docker and not (args.dind_image or os.environ.get(_DIND_IMAGE_ENV) or "").strip():
-        missing.append(_DIND_IMAGE_ENV)
+    if args.enable_docker:
+        dind_explicit = {
+            _DIND_IMAGE_ENV: args.dind_image,
+            _DIND_MEMORY_ENV: args.dind_memory,
+            _DIND_CPUS_ENV: args.dind_cpus,
+            _DIND_PIDS_LIMIT_ENV: args.dind_pids_limit,
+        }
+        missing.extend(
+            name for name in DIND_TESTER_ENV
+            if not (dind_explicit[name] or os.environ.get(name) or "").strip()
+        )
     return missing
 
 
@@ -651,8 +920,12 @@ def tester_gate_cli():
         (("--memory",), "Docker memory cap; defaults to $CMRU_TESTER_MEMORY", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY")}),
         (("--memory-swap",), "Docker combined memory-plus-swap total", "MEMORY", {"default": os.environ.get("CMRU_TESTER_MEMORY_SWAP")}),
         (("--cpus",), "CPU ceiling >= 0.00001; otherwise read $CMRU_TESTER_CPUS", "N", {"default": None, "type": _positive_cpu_limit}),
-        (("--cgroup-probe-image",), "host-systemd probe image; otherwise read $CMRU_TESTER_CGROUP_PROBE_IMAGE", "IMG", {"default": None}),
-        (("--dind-image",), "nested Docker daemon image; required with --enable-docker", "IMG", {"default": None}),
+        (("--pids-limit",), "container process ceiling (positive integer); otherwise read $CMRU_TESTER_PIDS_LIMIT", "N", {"default": None}),
+        (("--cgroup-probe-image",), "digest-pinned host-systemd probe image; otherwise read $CMRU_TESTER_CGROUP_PROBE_IMAGE", "IMG", {"default": None}),
+        (("--dind-image",), "digest-pinned nested Docker daemon image; required with --enable-docker", "IMG", {"default": None}),
+        (("--dind-memory",), "nested Docker memory cap; otherwise read $CMRU_TESTER_DIND_MEMORY (--enable-docker)", "MEMORY", {"default": None}),
+        (("--dind-cpus",), "nested Docker CPU ceiling; otherwise read $CMRU_TESTER_DIND_CPUS (--enable-docker)", "N", {"default": None}),
+        (("--dind-pids-limit",), "nested Docker process ceiling; otherwise read $CMRU_TESTER_DIND_PIDS_LIMIT (--enable-docker)", "N", {"default": None}),
         (("--device-read-iops",), "per-container read IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", "")}),
         (("--device-write-iops",), "per-container write IOPS cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", "")}),
         (("--device-read-bps",), "per-container read bandwidth cap (Docker path:rate)", "DEV:RATE", {"default": os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", "")}),
@@ -685,6 +958,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_tester_gate(args, _runtime) -> int:
+    # SIGTERM/SIGHUP become SystemExit so every container started below is
+    # stopped and removed by its exact name (BG-02).
+    with _terminate_as_exit():
+        return _run_tester_gate_body(args)
+
+
+def _run_tester_gate_body(args) -> int:
     dry_run = args.dry_run
     command = list(args.command)
     if command[:1] == ["--"]:
@@ -702,13 +982,23 @@ def _run_tester_gate(args, _runtime) -> int:
 
     # Guaranteed non-empty by the preflight above; resolvers below stay as
     # defense-in-depth for direct callers.
-    image = (args.image or os.environ.get("CMRU_TESTER_UNIFIED_IMAGE") or "").strip()
+    image = resolve_image(args.image)
 
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
     probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)
     memory = resolve_memory(args.memory)
     memory_swap = resolve_memory_swap(args.memory_swap)
     cpus = resolve_cpus(args.cpus)
+    pids_limit = resolve_pids_limit(args.pids_limit)
+    dind: dict[str, str] = {}
+    if args.enable_docker:
+        # Resolved (and refused if unpinned/invalid) BEFORE any container starts.
+        dind = dict(
+            image=resolve_dind_image(args.dind_image),
+            memory=resolve_dind_memory(args.dind_memory),
+            cpus=resolve_dind_cpus(args.dind_cpus),
+            pids_limit=resolve_dind_pids_limit(args.dind_pids_limit),
+        )
     if dry_run:
         print(
             "[DRY RUN] Host gates-slice verification skipped; it starts a temporary "
@@ -760,6 +1050,7 @@ def _run_tester_gate(args, _runtime) -> int:
         memory=memory,
         memory_swap=memory_swap,
         cpus=cpus,
+        pids_limit=pids_limit,
         device_read_iops=args.device_read_iops,
         device_write_iops=args.device_write_iops,
         device_read_bps=args.device_read_bps,
@@ -767,13 +1058,18 @@ def _run_tester_gate(args, _runtime) -> int:
     )
 
     repo_root, container_cwd = _resolve_worktree_context(Path.cwd(), args.cwd)
+    gate_name = _container_name("tester")
+    events_rel = f"{_EVENTS_DIR}/tester-gate-events-{uuid.uuid4().hex}.txt"
+    build_kwargs.update(container_name=gate_name, events_file=events_rel)
     if dry_run:
         if args.enable_docker:
-            dind_image = resolve_dind_image(args.dind_image)
             dind_name = "cmru-dry-run-dind-sidecar"
             print(
                 "[DRY RUN] "
-                + shlex.join(_dind_start_argv(dind_image, dind_name, cgroup_parent))
+                + shlex.join(_dind_start_argv(
+                    dind["image"], dind_name, cgroup_parent,
+                    memory=dind["memory"], cpus=dind["cpus"], pids_limit=dind["pids_limit"],
+                ))
             )
             docker_argv = build_docker_command(
                 repo_root, container_cwd, command,
@@ -786,13 +1082,23 @@ def _run_tester_gate(args, _runtime) -> int:
         print("[DRY RUN] " + shlex.join(docker_argv))
         return 0
 
-    if args.enable_docker:
-        dind_image = resolve_dind_image(args.dind_image)
-        with dind_sidecar(dind_image, cgroup_parent=cgroup_parent) as sidecar:
-            docker_argv = build_docker_command(
-                repo_root, container_cwd, command, sidecar_name=sidecar, **build_kwargs,
-            )
-            raise SystemExit(subprocess.run(docker_argv, check=False).returncode)
-
-    docker_argv = build_docker_command(repo_root, container_cwd, command, **build_kwargs)
-    raise SystemExit(subprocess.run(docker_argv, check=False).returncode)
+    events_path = repo_root / events_rel
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if args.enable_docker:
+            with dind_sidecar(cgroup_parent=cgroup_parent, **dind) as sidecar:
+                docker_argv = build_docker_command(
+                    repo_root, container_cwd, command, sidecar_name=sidecar, **build_kwargs,
+                )
+                code = gate_exit_code(subprocess.run(docker_argv, check=False).returncode, events_path)
+        else:
+            docker_argv = build_docker_command(repo_root, container_cwd, command, **build_kwargs)
+            code = gate_exit_code(subprocess.run(docker_argv, check=False).returncode, events_path)
+    finally:
+        _remove_container(gate_name)
+        events_path.unlink(missing_ok=True)
+        try:
+            events_path.parent.rmdir()  # only if cmru's own directory is now empty
+        except OSError:
+            pass
+    raise SystemExit(code)

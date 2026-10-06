@@ -213,10 +213,19 @@ supplied through `--cpus` or `CMRU_TESTER_CPUS`. It uses Docker's `--cpus` field
 Docker rejects a HostConfig that supplies both `NanoCPUs` (from `--cpus`) and `CpuPeriod`
 (from `--cpu-period`). The value is checked before starting privileged host probes.
 
-The optional DinD sidecar is a separate container. It receives the same gates-slice parent,
-but currently has no per-container CPU or memory cap. The CMRU S-CLI.9 audit records this as
-an open policy decision because reusing workload limits can double the per-step resource
-envelope, while separate sidecar limits add required inputs for the Docker-enabled path.
+The optional DinD sidecar is a separate container. It receives the same gates-slice parent and,
+decided 2026-10-05 (BG-07), its own required memory, CPU and pids limits
+(`CMRU_TESTER_DIND_MEMORY`/`_CPUS`/`_PIDS_LIMIT`): reusing the workload's limits would double the
+per-step envelope, so the Docker-enabled path pays for three extra required inputs instead.
+
+Process accounting (KI-52). The gate command is one cmru does not control, and git's detached
+auto-maintenance orphans one process per commit; with the command as PID 1 nothing reaps them,
+and on 2026-10-05 they filled the host-default pids ceiling (systemd `DefaultTasksMax`, not a
+declared limit), which made assay record false kills. So the workload and the sidecar run under
+`--init`, the workload gets a required `--pids-limit`, and, because `--rm` removes the cgroup at
+exit, an in-container wrapper copies the container's own `pids.events`/`memory.events` to a
+cmru-owned file on the mounted worktree. A non-zero `pids.events max` or `memory.events
+oom_kill`, or a missing file, is an infrastructure failure (exit 3), never a pass.
 
 Docker also rejects a `--memory-swap` total below `--memory` before creating the gate
 workload. Keep the value documented as a combined memory-plus-swap total; it is not the

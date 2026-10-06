@@ -339,6 +339,8 @@ cmru.secret.toml
 .ghcr-auth.json
 cmru.vars
 cmru/build/
+# cmru tester-gate's in-container cgroup events handoff (removed after each run)
+.cmru/
 
 # assay / manual test
 .assay/

@@ -179,7 +179,7 @@ def render_project_toml(
             "[targets]\nhost = \"github\"\nregistry = [\"ghcr.io\"]\n",
             1,
         )
-    text = text.replace("template_revision = 4",
+    text = text.replace("template_revision = 5",
                         f"template_revision = {_expected_template_revision()}")
     notes_key = f"{project_id.upper().replace('-', '_')}_RELEASE_NOTES"
     selected_artifacts = artifacts or ([artifact_type] if artifact_type else ["wheel"])

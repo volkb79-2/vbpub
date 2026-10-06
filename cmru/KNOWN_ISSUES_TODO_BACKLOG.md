@@ -1473,6 +1473,21 @@ minimum supported value remains `0.00001`; docs explain why CMRU does not send `
 The argv regression test asserts the accepted command shape. A live tester-gate acceptance
 probe is required before the release is considered complete.
 
+**What the live probe must show (BG review, 2026-10-05; the controller runs it in Wave 3).** Run
+the real ciu tester-gate step through `cmru run-step` with the candidate's bound launcher, plus
+one synthetic gate whose command prints its own limits:
+`cmru tester-gate --cwd . -- sh -c 'cat /sys/fs/cgroup/{cpu.max,memory.max,memory.swap.max,pids.max}; cat /proc/1/comm; exit 7'`.
+It must show: (1) no exit 125, and cmru's exit code is 7 (the command's own code survives the
+events wrapper; the counters are clean); (2) `cpu.max` = `250000 100000` for 2.5 CPUs, and a
+`docker inspect` taken while it runs (the container is now named `cmru-tester-<uuid8>`) shows
+`NanoCpus=2500000000`, `CpuPeriod=0`, `CpuQuota=0`; (3) `memory.max` = 1 GiB,
+`memory.swap.max` = 15 GiB, and the cgroup parent is `dev-gates.slice`; (4) the slice probe really
+ran (`FragmentPath` reported, probe image digest-pinned and present locally because of
+`--pull=never`); (5) PID 1 is `docker-init`, `pids.max` equals the declared
+`CMRU_TESTER_PIDS_LIMIT`, a 200-commit loop leaves 0 zombies, and a command that exhausts a low
+pids limit ends exit 3 naming `pids.events max`. Also verify once that `--init` is accepted by
+the DinD sidecar with the cgroup-v2 nesting script (`--enable-docker` step).
+
 ### KI-43 — Read-only handler validation crashed without `--dry-run` — *fixed in source, pending release*
 
 **Reported:** 2026-10-01, Sol xhigh follow-up review of the unreleased CMRU changes.
@@ -1607,9 +1622,16 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracles.** Installing the built cmru wheel into a scratch venv with `--no-index` and no cli-extended wheel fails with the dependency named; with the verified cli-extended wheel it passes `cmru --version`; the installer test in `tests/test_installer.py` gains a case where the tool wheel `Requires-Dist: cli-extended` and installation order is wrong (must fail) versus right (must pass); a controlled wrong implementation that leaves the vendored copy in the wheel fails a wheel-contents check.
 
-### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *open, severity: critical (silent false kills)*
+### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *fixed in source (a, a', c', b), pending release; (b) is bypassed by assay's hermetic git and filed as assay B147; severity was critical (silent false kills)*
 
-**Status:** open (filed 2026-10-05, investigated on the host with `host-escape`, read-only).
+**Status:** fixed in source 2026-10-05 by program 2026-10 package W0-TESTER (filed 2026-10-05, investigated on the host with `host-escape`, read-only).
+
+**Resolution (W0-TESTER).**
+- (a) `--init` on the gate workload and on the privileged DinD sidecar (`tester_gate.build_docker_command`, `_dind_start_argv`); `tests/test_w0_tester_hardening.py::test_every_container_cmru_starts_has_the_declared_argv_policy` drives a real `main()` against a recording fake `docker` and asserts the argv of every container it starts.
+- (a') `CMRU_TESTER_PIDS_LIMIT` is a required `REQUIRED_TESTER_ENV` member passed as `--pids-limit` (positive integer, no default; the 19,117 ceiling was systemd's DefaultTasksMax, not a declared limit). Declared as `4096` in `cmru.orchestration.toml`, both templates and both samples.
+- (c') the gate command runs inside an in-container wrapper that, after the command exits, copies the container's own `pids.events` and `memory.events` into `.cmru/tester-gate-events-<uuid>.txt` on the mounted worktree (`--rm` deletes the cgroup, so nothing outside could read it afterwards). cmru reads and removes it: a missing/incomplete file, a non-zero `pids.events max`, or a non-zero `memory.events oom_kill` is an infrastructure failure (exit 3, naming the counter) even when the command exited 0; otherwise the command's own exit status is preserved.
+- (b) `tester-unified/Dockerfile` sets `maintenance.autoDetach false` and `gc.autoDetach false` system-wide (asserted at build time; README documents it). **Not sufficient alone:** assay's hermetic git environment sets `GIT_CONFIG_NOSYSTEM=1` and bypasses `/etc/gitconfig`; filed as assay B147 (`assay/nyxloom-trove/4-backlog.md`).
+- The image build and the `docker run` behaviour were NOT exercised live in W0-TESTER (no docker builds, no real containers); the KI-42 live probe below covers (a)/(a').
 
 **Observed (2026-10-05, host-wide 19,109 zombies):**
 - 19,108 zombies had one parent: PID 1414479, `python3 ./run-gate.py --base main assay-r2`, which is PID 1 of container `pedantic_antonelli` (`tester-unified:local`, cgroup `dev.slice/dev-gates.slice/docker-df361f8a….scope`). 19,057 of them are `git`, 42 `sleep`, 9 `docker`.
@@ -1701,3 +1723,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** skip only a commit whose subject equals `chore: bump <prefix> to <pending_version>` exactly AND whose diff touches only the declared version file (plus the generated changelog cmru wrote).
 
 **Oracle:** the reviewer's probe (a real change with a look-alike subject) is counted as project work; the existing `file:VERSION` resume e2e case stays green.
+
+### KI-60 — Digest pins of locally present helper images age and have no refresh policy (W0-TESTER review) — *open, severity: minor*
+
+**Observed:** since W0-TESTER the privileged probe and DinD images must be `@sha256:` pinned and are started `--pull=never`, so the pin must name an image already on the host. `cmru.orchestration.toml` (`debian@sha256:d7e1...`) and mdt's `cmru.toml` (`docker@sha256:5efe...`) were pinned on 2026-10-05 from the local `RepoDigests`. Nothing records when, nothing warns when a pin gets old (base-image CVEs), and nothing says how to refresh one; a refresh is also the only moment a pull happens, so it is easy to forget.
+
+**Fix direction:** either (a) `cmru standards` warns when a pinned helper-image digest is older than N days (needs a pin-date record next to the pin, e.g. a `CMRU_TESTER_PIN_DATE_<VAR>` or a `[pins]` table, and the freshness rule's 14-day vetting buffer in the other direction), or (b) a documented refresh procedure in `docs/CONSUMERS.md` (pull the new tag deliberately, read `docker image inspect --format '{{index .RepoDigests 0}}'`, update every estate pin in one change, run the KI-42 probe). (b) is the minimum; (a) is the guard.
+
+**Oracle:** for (a), a project whose recorded pin date is older than the threshold gets a standards warning naming the variable; for (b), the procedure is reproducible by someone who has never done it.

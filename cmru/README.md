@@ -349,7 +349,7 @@ Each project owns one complete `cmru.toml` contract: identity, versioning, relea
 environment, and every runner step. That file is portable to a fresh repository root. A
 monorepo's nearest `cmru.orchestration.toml` contains central GitHub/target facts,
 selection, order/dependencies, cleanup, and no project commands. It establishes the CMRU root.
-`template_revision = 4` lets
+`template_revision = 5` lets
 `cmru standards` identify stale adoption without inventing project behavior. Ready-to-copy
 examples are [`templates/cmru.toml.tmpl`](templates/cmru.toml.tmpl) and
 [`templates/cmru.orchestration.toml.tmpl`](templates/cmru.orchestration.toml.tmpl).
@@ -363,18 +363,28 @@ execution setting fails before it can alter a release. `cmru.build.toml`, shell 
 configuration aliases are retired; there is no compatibility parser.
 
 The stock `tester-gate` command additionally requires an explicit tester image, memory,
-combined memory/swap, CPU ceiling, host-systemd probe image, and the host gates slice
+combined memory/swap, CPU ceiling, process ceiling (`CMRU_TESTER_PIDS_LIMIT`, passed as
+`--pids-limit`), host-systemd probe image, and the host gates slice
 (`CMRU_TESTER_CGROUP_PARENT`, normally `${CGROUP_PARENT_DEV_GATES}`) in `[env]`. A gate that
-uses `--enable-docker` must also declare its nested-Docker image. The stock `wheel-build`
+uses `--enable-docker` must also declare its nested-Docker image and that sidecar's own limits
+(`CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT`). The probe
+and DinD images run privileged, so they must be `@sha256:`-pinned and already present locally:
+they are started with `--pull=never`. The stock `wheel-build`
 handler requires an explicit wheel-builder image. These are release inputs, not CMRU
 defaults; pin immutable digests in a production contract.
 The CPU ceiling must be a finite decimal Docker can enforce (at least `0.00001` CPUs). CMRU
 uses Docker's `--cpus` limit and refuses values below that bound before host probes. Docker
 rejects `--cpus` and `--cpu-period` together, so CMRU does not set a separate CPU period.
 See the [tester-gate CPU ceiling rationale](docs/DESIGN-GUIDE.md#tester-gate-workload-cpu-ceiling).
-These CPU and memory inputs currently bound the tester workload; the optional DinD sidecar
-shares the gates slice but has no separate per-container resource cap yet, as recorded in
-[the canonical CLI audit](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
+The workload and the DinD sidecar run under `--init` and, with the CPU, memory and pids
+inputs, are bounded separately (the sidecar by its own `CMRU_TESTER_DIND_*` values). After the
+command exits, cmru reads the container's own `pids.events`/`memory.events` (written by an
+in-container wrapper to `.cmru/tester-gate-events-<uuid>.txt` in the worktree): a non-zero
+`pids.events max` or `memory.events oom_kill`, or a missing/malformed file, makes the step exit
+3 even if the command exited 0 (this includes tests that provoke an OOM kill on purpose). The
+image's uid must be able to write `.cmru/` in the mounted worktree; a host/image uid mismatch
+shows up as a missing events file. See [the tester-gate
+contract](docs/SPEC.md#s26a--tester-gate-environment-preflight-ki-17).
 
 `cmru tester-gate --dry-run` prints the exact workload Docker command and, when
 `--enable-docker` is selected, the DinD startup command. It starts no container and skips

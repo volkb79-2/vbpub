@@ -11958,6 +11958,17 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Related:** cmru KI-52 (the no-init launcher and the git auto-maintenance mechanism, with the image-level `maintenance.autoDetach=false` hardening), run-gate RG-84, B107 (resource-stall liveness evidence), B108 (campaign summaries), dstdns D-670 TEST-RUNNER-INIT (same zombie mechanism, different launcher).
 
+## B147 — assay's hermetic git environment bypasses the image's `maintenance.autoDetach=false`: set the detach-off keys in assay's own git config
+
+**Status: OPEN, severity major (filed 2026-10-05 from the cmru W0-TESTER package, finding BG-01/KI-52(b); sibling of B145). The id follows B145 and the parallel cmru W0-GATE package's B146; renumber on merge if either moved.**
+
+**Observed.** cmru KI-52 (b) hardens the `tester-unified` image with `git config --system maintenance.autoDetach false` and `gc.autoDetach false`, so detached git auto-maintenance (one orphaned daemon per commit, the 2026-10-05 zombie flood behind B145) is gone for any git invocation that reads `/etc/gitconfig`. assay's own git calls do not read it: `src/assay/git.py` `_REPLACEMENT_ENV` (~:132-133) sets `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL` to `os.devnull` by design (A-173, a closed environment), and the per-command `-c` set (the hooks/fsmonitor/signing/`core.excludesFile` block below it) does not mention maintenance. Every commit assay itself makes (mutation worktrees, snapshot seeds, `--allow-dirty` fixtures) can therefore still spawn a detached `git gc --auto`/`git maintenance run --auto` that is orphaned to the container's PID 1.
+
+**Expected.** assay's closed git configuration disables auto-maintenance itself, independent of the host or image: add `maintenance.auto=false`, `gc.auto=0` and `gc.autoDetach=false` (and `maintenance.autoDetach=false`) to the substantive-command `-c` set next to `core.fsmonitor`/`commit.gpgsign`, so a commit made through assay never forks a background job. It is a closed-environment key like the others, so it cannot be defeated by a repository-local config.
+
+**Oracles.** With a repository whose `.git/config` sets `gc.auto=1` and many loose objects, a commit through assay's git wrapper leaves no `git gc`/`git maintenance` process and no zombie after the call returns (a controlled wrong implementation that omits the keys leaves one); `assay verify`/the JIT probe still pass in `tester-unified`; the closed-environment tests that pin the exact `-c` list are updated together.
+
+**Related:** B145 (false kills at `pids.max`), cmru KI-52, `tester-unified/README.md` (the image-level setting this entry mirrors for the NOSYSTEM caller).
 ## B146 — the verdict summary ranks `NO_MEASUREMENT/EMPTY_COVERAGE` above a failing R0 and never names the first failure
 
 **Status: OPEN, severity major (filed 2026-10-05 from the cmru program review, finding BG-03; reproduced with pytest 9.1.1 / coverage 7.16.2 / pytest-cov 7.1.0).**

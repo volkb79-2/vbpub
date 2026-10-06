@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
-from cmru.tester_gate import REQUIRED_TESTER_ENV
+from cmru.tester_gate import DIND_TESTER_ENV, REQUIRED_TESTER_ENV
 from cli_extended import (
     ArgumentSpec,
     CliFailure,
@@ -26,7 +26,7 @@ from cli_extended import (
 from cmru.cli_support import cmru_identity, cmru_presentation_options
 
 
-PROJECT_TEMPLATE_REVISION = 4
+PROJECT_TEMPLATE_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -106,10 +106,15 @@ def assess_projects(
                 "tester-gate" in command.argv and "--enable-docker" in command.argv
                 for command in commands
             )
-            if docker_gate and not str(env.get("CMRU_TESTER_DIND_IMAGE", "")).strip():
-                problems.append(
-                    "Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_IMAGE in [env]"
-                )
+            if docker_gate:
+                dind_missing = [
+                    key for key in DIND_TESTER_ENV if not str(env.get(key, "")).strip()
+                ]
+                if dind_missing:
+                    problems.append(
+                        "Docker-enabled tester-gate requires explicit "
+                        + ", ".join(dind_missing) + " in [env]"
+                    )
 
         # BG-04/REL-07: `python3 -m cmru.handlers` resolves cmru from whatever
         # interpreter/site-packages the step inherits, bypassing the bound

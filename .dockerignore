@@ -21,6 +21,22 @@ libraries/cli-extended/*
 !libraries/cli-extended/src
 libraries/cli-extended/src/*
 !libraries/cli-extended/src/cli_extended
+# tester-unified builds cli-extended and cmru OFFLINE from these COPYed sources
+# (never from an index; BG-05): the cli-extended build needs its pyproject and
+# the README its metadata names; cmru's pyproject packages
+# `../libraries/worktree/src` alongside it.
+!libraries/cli-extended/pyproject.toml
+!libraries/cli-extended/README.md
+!libraries/worktree
+libraries/worktree/*
+!libraries/worktree/src
+libraries/worktree/src/*
+!libraries/worktree/src/worktree
+# tester-unified's requirements generator (the only file of that directory the
+# image needs; the parent must be re-included first).
+!tester-unified
+tester-unified/*
+!tester-unified/gen-requirements.py
 # scripts/ is otherwise excluded wholesale; whitelist just the one project
 # tester-unified installs from (its pyproject is the closure's source of truth).
 # The parent directory must be re-included first or the child is never reached.

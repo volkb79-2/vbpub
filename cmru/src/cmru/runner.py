@@ -408,18 +408,25 @@ def run_command(
     # failure produces more than ERROR_LINES_ON_FAILURE matches.
     error_lines: list[str] = []
     evidence_lines: deque[str] = deque(maxlen=300)
-    for line in process.stdout:
-        _write_line(log_handle, line)
-        if mirror_handle is not None:
-            _write_line(mirror_handle, line)
-        evidence_lines.append(line)
-        if quiet:
-            tail.append(line)
-            if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
-                error_lines.append(line)
-        else:
-            print(line, end="", flush=True)
-    exit_code = process.wait()
+    try:
+        for line in process.stdout:
+            _write_line(log_handle, line)
+            if mirror_handle is not None:
+                _write_line(mirror_handle, line)
+            evidence_lines.append(line)
+            if quiet:
+                tail.append(line)
+                if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
+                    error_lines.append(line)
+            else:
+                print(line, end="", flush=True)
+        exit_code = process.wait()
+    except BaseException:
+        # Ctrl-C / SystemExit from a SIGTERM handler: never leave the child
+        # running (or unreaped) behind us (BG-02).
+        process.kill()
+        process.wait()
+        raise
     elapsed_seconds = monotonic() - start
     if exit_code != 0:
         if quiet and error_lines:

@@ -168,10 +168,10 @@ class TestTesterGateContracts:
             gate._resolve_worktree_context(tmp_path, "../outside")
         monkeypatch.setattr(gate, "_physical_path", lambda p: Path("/host/repo"))
         monkeypatch.setattr(gate, "_git_common_dir", lambda p: None)
-        argv = gate.build_docker_command(tmp_path, "cmru", ["pytest", "-q"], image="tester", cgroup_parent="dev.slice", memory="1g", memory_swap="2g", cpus="1")
+        argv = gate.build_docker_command(tmp_path, "cmru", ["pytest", "-q"], image="tester", cgroup_parent="dev.slice", memory="1g", memory_swap="2g", cpus="1", pids_limit="64")
         assert "--cgroup-parent=dev.slice" in argv and "/host/repo" in " ".join(argv)
         with pytest.raises(ValueError, match="command"):
-            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1", cgroup_parent="dev-gates.slice")
+            gate.build_docker_command(tmp_path, ".", [], image="tester", memory="1g", memory_swap="2g", cpus="1", pids_limit="64", cgroup_parent="dev-gates.slice")
 
     @pytest.mark.parametrize("fn,env,label", [
         ("resolve_cgroup_parent", "CMRU_TESTER_CGROUP_PARENT", "cgroup_parent"),
@@ -200,8 +200,14 @@ class TestTesterGateContracts:
             assert gate.resolve_cpus(None) == "1.5"
             assert gate.resolve_cpus("0.75") == "0.75"
         else:
-            monkeypatch.setenv(env, "from-env")
-            assert getattr(gate, fn)("explicit") == "explicit"
+            # Privileged images must be digest-pinned (BG-06), so their
+            # "from-env"/"explicit" stand-ins are digests.
+            pinned = fn in ("resolve_cgroup_probe_image", "resolve_dind_image")
+            from_env = "img@sha256:" + "1" * 64 if pinned else "from-env"
+            explicit = "img@sha256:" + "2" * 64 if pinned else "explicit"
+            monkeypatch.setenv(env, from_env)
+            assert getattr(gate, fn)(None) == from_env
+            assert getattr(gate, fn)(explicit) == explicit
 
     def test_slice_probe_distinguishes_loaded_transient_and_no_docker(self, monkeypatch):
         import cmru.tester_gate as gate

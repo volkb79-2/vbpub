@@ -24,7 +24,9 @@ CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
 CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
-CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+CMRU_TESTER_PIDS_LIMIT = "4096"
+# Privileged + --pull=never: digest-pin a locally present image (placeholder below).
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"
 
 # GOVERNANCE SLICE for gate containers — declared, never ambient:
 #   CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"
@@ -40,7 +42,7 @@ EXAMPLE_RELEASE_NOTES = "## example-wheel\n\nInstall with `pipx install example-
 [project]
 id = "example-wheel"
 description = "One sentence describing the product and its consumer."
-template_revision = 4
+template_revision = 5
 prefix = "example-wheel-v"
 artifacts = ["wheel"]
 scm_dist = "example-wheel"

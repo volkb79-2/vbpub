@@ -186,16 +186,28 @@ def test_runner_metadata_evidence_clean_dir_and_unset_bake_variable(tmp_path, mo
 def test_tester_gate_public_cli_strips_separator_command(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
     commands = []
-    monkeypatch.setattr(tester_gate, "build_docker_command", lambda *args, **kwargs: commands.append(args[2]) or ["true"])
+    built = {}
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *args, **kwargs: commands.append(args[2]) or built.update(kwargs) or ["true"],
+    )
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))
-    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+
+    def clean_run(*args, **kwargs):
+        events = tmp_path / built["events_file"]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        events.write_text("pids.events max 0\nmemory.events oom_kill 0\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", clean_run)
     for key, value in {
         "CMRU_TESTER_UNIFIED_IMAGE": "img",
         "CMRU_TESTER_CGROUP_PARENT": "slice",
-        "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe",
+        "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "9" * 64,
         "CMRU_TESTER_MEMORY": "1G",
         "CMRU_TESTER_MEMORY_SWAP": "2G",
         "CMRU_TESTER_CPUS": "1",
+        "CMRU_TESTER_PIDS_LIMIT": "64",
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
