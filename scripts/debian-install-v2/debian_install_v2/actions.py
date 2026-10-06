@@ -132,9 +132,6 @@ class HostActions:
             raise ActionError(f"executable is not on the action allowlist: {command}")
         allowed = _SAFE_COMMANDS[command]
         if allowed:
-            if command in {"apt-get", "git", "systemctl"}:
-                if not any(arg in allowed for arg in argv[1:]):
-                    raise ActionError(f"{command} operation is not allowlisted")
             if command == "apt-get":
                 args = argv[1:]
                 for index, arg in enumerate(args):
@@ -144,6 +141,9 @@ class HostActions:
                             raise ActionError(f"apt-get -o value is not allowlisted: {value!r}")
                     elif arg.startswith("-o") or arg.startswith("--option"):
                         raise ActionError(f"apt-get option form is not allowlisted: {arg!r}")
+            if command in {"apt-get", "git", "systemctl"}:
+                if not any(arg in allowed for arg in argv[1:]):
+                    raise ActionError(f"{command} operation is not allowlisted")
             elif command != "blkid" and not all(arg in allowed for arg in argv[1:] if arg.startswith("-")):
                 unexpected = [arg for arg in argv[1:] if arg.startswith("-") and arg not in allowed]
                 if unexpected:
