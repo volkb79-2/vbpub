@@ -282,6 +282,7 @@ CLEAN = "pids.events max 0\nmemory.events low 0\nmemory.events oom_kill 0\n"
         ("pids.events max abc\nmemory.events oom_kill 0\n", 0, 3, "malformed line 'pids.events max abc'"),
         ("pids.events max -1\nmemory.events oom_kill 0\n", 0, 3, "malformed line"),
         ("pids.events max 0 9\nmemory.events oom_kill 0\n", 0, 3, "malformed line"),
+        ("pids.events max 0\n\n  \nmemory.events oom_kill 0\n", 5, 5, None),  # blank lines are ignored
         (None, 0, 3, "missing or unreadable"),  # a missing file proves nothing
         (None, 0, 3, "uid baked into the image"),  # ... and the message says why it usually happens
     ],
@@ -352,7 +353,8 @@ def test_pids_limit_refuses_unlimited_or_malformed_values(value):
 
 
 @pytest.mark.skipif(
-    not (REPO_ROOT / "cmru.orchestration.toml").exists(),
+    not (REPO_ROOT / "cmru.orchestration.toml").exists()
+    or not (REPO_ROOT / "modern-debian-tools-python-debug" / "cmru.toml").exists(),
     reason="repository-root configs absent (isolated canary tree)",
 )
 def test_estate_configs_declare_the_pids_limit_and_pinned_helper_images():

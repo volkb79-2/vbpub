@@ -132,6 +132,12 @@ run through `scratchpad/pt.py`; all edits in this round used Edit/Write only.
 | 7 | Template revision | `PROJECT_TEMPLATE_REVISION` 4 -> 5 (`standards.py`), `templates/cmru.toml.tmpl` (marker + value), `src/cmru/templates/project-wheel.toml`, `scaffold.py` literal replace, `cmru.project.sample.toml`, README/CONSUMERS/SPEC samples; tests that pinned 4 now use the constant or 5. CHANGES notes it. | existing suites |
 | 8 | Backlog | **KI-60** filed (digest pins age; no refresh policy; propose a standards age warning or a documented refresh procedure) | n/a |
 
+Gate-found follow-ups (first merged-tree lane runs): the `coverage` lane failed at 99.98% because taking the integration
+side of `test_standards.py` had silently dropped my four standards tests (the DinD-limits-present branch) and the blank-line
+branch of the new events parser was unexercised; both are covered now (all `src/cmru` files 100% line and branch in a
+local `--cov` run). The `canary` lane failed on my estate-config test, whose skip guard looked only at the root toml while the
+canary copy lacks `modern-debian-tools-python-debug/`; the guard now checks both files.
+
 NOT done by me, for the controller: the estate's own project files still say `template_revision = 4`
 (`ciu`, `topos`, `nyxloom`, `pwmcp`, `tls-edge`, `run-gate-project`, `cmru`, `assay`, `mdt`,
 `scripts/cgroup-profiler`, `libraries/cli-extended`). `cmru standards --update` rewrites exactly that marker; run it
