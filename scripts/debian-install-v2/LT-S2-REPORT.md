@@ -112,3 +112,35 @@ post returns False -> timestamp absent, notifier posts once with the cause; inst
 Gates on commit `fa5940abd` (clean tree, foreground, flock/nice/ionice, verdicts read separately):
 debian-install-v2 `r0-r1` PASS exit 0 (780 passed, 11 skipped); netcup `suite` PASS exit 0 (683 passed).
 r2, the VM lane and live hosts were not run.
+
+## LT-S2b: follow-ups from the LT-S2 review (S1, S2, S3)
+
+- **S1(a)**: `Installer.resume` now clears `failure_notified_at` (saves `None`; `StateStore.save` only merges, and the
+  notifier treats a non-string as not announced) right after loading state, before anything that can fail.
+- **S1(b)**: the notifier compares the mark to the failed unit's current start. `unit_activation_time(unit)` runs
+  `systemctl show --timestamp=unix -p ExecMainStartTimestamp <unit>` (chosen over ActiveEnterTimestamp, which oneshot
+  units lack while activating; the unix format avoids locale/timezone parsing; rationale in the code comment). A mark older
+  than the start is not an announcement. When the start time cannot be determined (no systemctl, old systemd, empty or odd
+  output) `main` fails open: it posts rather than trust the mark. Tests stub the function (autouse fixture, so in-process
+  tests never reach the real systemctl); one test drives the real function against a fake `subprocess.run`.
+- **S3**: a future-dated mark (negative age) counts as NOT announced. The existing `0 <= age` bound already did this; it is
+  now documented and pinned by tests.
+- **S2 tests** (`test_failure_notify.py`): future mark posts (unit + end-to-end); window edges 299 s and 300 s suppressed,
+  301 s posts; Telegram partial chunk (chunk 2 fails) returns False from `_notify`, sends no later chunk, and via
+  `Installer.resume` leaves the mark unset; S1(a) fresh stale mark + failing post -> mark gone and notifier posts; S1(b) mark
+  older than activation posts, mark after activation still suppresses, unknown activation posts.
+
+Verification (host pytest `python3 -m pytest debian_install_v2/tests`, flock/nice/ionice): clean tree 792 passed, 11 skipped.
+Each plant followed by a full-suite run, reverted after:
+
+| Plant | Result | Killed by |
+|---|---|---|
+| drop the clear in `Installer.resume` | 1 failed | `test_resume_clears_a_stale_mark_so_an_early_crash_is_not_silenced` |
+| drop the activation comparison | 1 failed | `test_mark_older_than_the_unit_activation_does_not_suppress` |
+| future marks suppress (`0 <=` removed) | 2 failed | `test_future_dated_mark_counts_as_not_announced`, `test_future_dated_mark_makes_the_notifier_post` |
+| partial Telegram chunk counted as delivered (`continue` for `return False`) | 2 failed | `test_telegram_partial_chunk_failure_is_not_delivery_and_leaves_the_mark_unset`, `test_notify_returns_false_when_a_later_telegram_chunk_fails` |
+
+Gates on commit `1c1056ab9` (clean tree, foreground, flock/nice/ionice, `./run-gate.py --worktree <lt-s2b> <lane>`,
+verdicts read in a separate step from the saved output): debian-install-v2 `r0-r1` PASS exit 0 (792 passed, 11 skipped);
+netcup `suite` PASS exit 0 (683 passed). r2, the VM lane and live hosts were not run. Not verified: the real
+`systemctl show --timestamp=unix` output on a live host (only a fake was exercised).
