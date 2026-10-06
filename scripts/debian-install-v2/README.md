@@ -210,6 +210,22 @@ other package with a backports build) to the backports series. This is an
 operator decision (2026-10-06). Priority 100 would be the "only when explicitly
 requested" setting.
 
+**What `apt_auto_upgrade_mode` allows.** The installer writes
+`/etc/apt/apt.conf.d/51-vbpub-unattended-upgrades`, which starts with
+`#clear Unattended-Upgrade::Origins-Pattern;` and `#clear Unattended-Upgrade::Allowed-Origins;`
+(apt MERGES list entries across `apt.conf.d` files, so without the clears the
+package's own `50unattended-upgrades` defaults stay allowed, including the main
+pocket `origin=Debian,codename=<release>,label=Debian`). After the clears:
+`security-only` allows ONLY `<release>-security` (plus the legacy
+`codename=<release>,label=Debian-Security` spelling, which matches no real trixie
+stanza); `full` allows release, `-updates`, `-security` and `-backports`;
+`notify-only` runs no upgrade, only a count. `apt_upgrade_at_install` (default
+true) runs one `unattended-upgrade` during stage1 under that mode, after the apt
+timers are held and `apt-daily(-upgrade).service` have finished (waited for, up to
+600 s). The run is retried on the lock-contention messages of unattended-upgrade
+and of apt; a failed run is a warning (step `apt_upgrade_at_install` = `warned`,
+with the last lines of its output) and never fails the install.
+
 ### Stage2 launch and failure notification
 
 The stage2 systemd unit runs the installed entrypoint
@@ -278,8 +294,17 @@ no way back in — a real bug found and fixed live, 2026-09-09).
 deliberately leaves that exact line in `authorized_keys` after successful
 stage2 (step `controller_ssh_key_retained`, and the install-complete message
 says "controller key retained on host"); failure paths retain it for
-diagnosis regardless of this setting. The operator's persistent account key
-is never removed. When netcup `install-host.py` sees host retention in the
+diagnosis regardless of this setting, including a failure before stage1 starts
+(unplannable config, `show_plan`): the key is installed then too. The one
+exception is a host-identity refusal (unsupported or undetected Debian release,
+root not a plain block-device mount): that posts the failure and installs
+nothing (no key, no state, no timer change). A successful stage2 also prunes
+stale `vbpub-controller-ephemeral-*` keys left by earlier failed runs: all of
+them with `retain_controller_ssh_key=false`, all but the current run's key with
+`true`. Keys without that comment marker are never touched. The operator's
+persistent account key is never removed. An early failure on a host that already
+has a `state.json` from a DIFFERENT run leaves that file untouched and says so in
+the post. When netcup `install-host.py` sees host retention in the
 customScript it refuses `--local-controller-key remove`.
 `credential_mode` (`root-storage` / `systemd`) selects how the Telegram
 token / Mattermost webhook URL and controller pubkey are stored on disk.

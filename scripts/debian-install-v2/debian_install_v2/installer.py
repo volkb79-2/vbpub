@@ -91,6 +91,22 @@ _APT_LOCK_ERROR_MARKERS = (
     "Unable to lock directory",
     "Unable to lock the administration directory",
 )
+# unattended-upgrade (2.12, trixie) takes the apt system lock ONCE via
+# apt_pkg.pkgsystem_lock() and has no retry loop of its own (verified live on
+# v1001, LT-UPG fix round 1). Its own wordings for "someone else holds a lock":
+_UU_LOCK_ERROR_MARKERS = (
+    "Lock could not be acquired (another package manager running?)",
+    "Cache lock can not be acquired",
+    "Lock file is already taken",  # /var/run/unattended-upgrades.lock
+)
+# After the apt timers are disabled a service run already in flight keeps
+# going (disable --now stops the TIMER only): wait for it, bounded.
+APT_SERVICE_WAIT_S = 600
+APT_SERVICE_POLL_S = 10
+_APT_SERVICES = ("apt-daily.service", "apt-daily-upgrade.service")
+# Controller keys the installer places carry this comment marker; only keys
+# with it are ever pruned by a successful stage2.
+CONTROLLER_KEY_MARKER = "vbpub-controller-ephemeral-"
 
 # io.cost benchmark (see IO-BENCHMARK-DESIGN.md). The 2 GiB floor is the
 # smallest partition whose 75% test file still gives fio a meaningful working
@@ -113,6 +129,24 @@ IOBENCH_FINAL_STATUSES = {"success", "skipped", "warned"}
 
 class InstallerError(RuntimeError):
     """Expected host-precondition or installer-operation failure."""
+
+
+class HostIdentityRefusal(InstallerError):
+    """This is not the kind of host the config/installer is for.
+
+    The failure guard posts it and installs NOTHING on the host (no controller
+    key, no state, no timer changes): a key left on a machine we should not be
+    touching would be a root credential with nothing to remove it (controller
+    ruling D1). Raised ONLY by the host-shape checks in inspect(): unsupported
+    or undetected Debian release, and a root that is not a plain block-device
+    mount. Plan-level refusals (disk too small, preserve_root_size_gb below the
+    filesystem minimum, mounted partitions, ...) are NOT identity refusals: the
+    host is the right one, so the key stays for diagnosis.
+    """
+
+
+class UnsupportedHostRelease(HostIdentityRefusal, ConfigError):
+    """Release not in SUPPORTED_RELEASES (stays a ConfigError for existing callers)."""
 
 
 def _is_docker_interface(name: object) -> bool:
@@ -167,6 +201,14 @@ class Installer:
         # The exception the failure guard last reported (identity, not a flag:
         # one Installer may see several runs), so nested guards post ONCE.
         self._reported_failure: BaseException | None = None
+        # run_id of the state THIS run created (None until install() saved it).
+        self._run_id: str | None = None
+        # True while handling a failure whose state.json belongs to ANOTHER run:
+        # the state is then left strictly untouched (no step marks, no mark).
+        self._state_frozen = False
+        # True while the failure guard runs its bookkeeping: telegram-verbose
+        # step posts are suppressed so the ONE failure post is the first message.
+        self._in_failure_handling = False
         if inspect_host:
             self.inspect()
 
@@ -207,7 +249,7 @@ class Installer:
                     values[key] = value.strip().strip('"')
         release = values.get("VERSION_CODENAME", "trixie" if self.actions.dry_run else "")
         if release not in SUPPORTED_RELEASES:
-            raise ConfigError(f"unsupported or undetected Debian release: {release!r}")
+            raise UnsupportedHostRelease(f"unsupported or undetected Debian release: {release!r}")
         return release
 
     def _discover_root(self) -> tuple[str, str, int]:
@@ -215,10 +257,10 @@ class Installer:
             return "vda", "/dev/vda3", 3
         root = self._run(["/usr/bin/findmnt", "-n", "-o", "SOURCE", "/"], "find root device")
         if not root.startswith("/dev/"):
-            raise InstallerError(f"root is not a plain block-device mount: {root!r}")
+            raise HostIdentityRefusal(f"root is not a plain block-device mount: {root!r}")
         match = re.fullmatch(r"/dev/(?P<disk>.+?)(?:p)?(?P<number>[0-9]+)", root)
         if not match:
-            raise InstallerError(f"cannot derive root disk and partition number from {root!r}")
+            raise HostIdentityRefusal(f"cannot derive root disk and partition number from {root!r}")
         return match.group("disk"), root, int(match.group("number"))
 
     @property
@@ -287,31 +329,81 @@ class Installer:
             raise
 
     def _handle_failure(self, exc: BaseException, phase: str) -> None:
-        """Failure bookkeeping. Every step is best-effort; it never raises."""
-        if not self.actions.dry_run:  # a dry run never writes state or touches the host
-            try:
-                if not self.state.path.is_file():
-                    # Failed before install() created the state (e.g. show_plan).
-                    self.state.save_new(StateStore.new(self.config))
-                self.state.save(status="failed", phase=phase, last_error=str(exc))
-            except Exception as state_exc:
-                _LOG.warning("could not record the failed state: %s", state_exc)
-            self._ensure_controller_key_after_failure()
-            self._restore_apt_timers_after_failure()
+        """Failure bookkeeping. Every step is best-effort; it never raises.
+
+        * HostIdentityRefusal (D1): post ONLY. No state, no controller key, no
+          timer change -- this is not the host the config is for.
+        * Otherwise: failed state.json (see _record_failed_state for the rule
+          about a state that belongs to another run), the controller key
+          (idempotent), the apt timers ONLY if this run held them, then ONE post.
+        * failure_notified_at is written only when the post was delivered AND
+          the state is this run's.
+        """
+        self._in_failure_handling = True
+        self._state_frozen = False
         try:
-            delivered = self._notify(
-                f"<b>Install FAILED</b> during {phase}: {_code(str(exc))}",
-                event="install FAILED", status="fail", excerpt=str(exc),
-            )
-        except Exception:
-            delivered = False
-        if delivered:
-            # Same dedup mark the stage2 path writes: the OnFailure notifier
-            # skips its own post when this one was delivered.
+            refusal = isinstance(exc, HostIdentityRefusal)
+            owns_state = False
+            note = ""
+            if refusal:
+                self._state_frozen = True  # never touch (or quote) any state.json
+                if not self.actions.dry_run:
+                    note = " (host-identity refusal: nothing was installed or changed on this host)"
+            elif not self.actions.dry_run:  # a dry run never writes state or touches the host
+                owns_state, note = self._record_failed_state(exc, phase)
+                self._ensure_controller_key_after_failure()
+                self._restore_apt_timers_after_failure()
             try:
-                self.state.save(failure_notified_at=datetime.now(timezone.utc).isoformat())
-            except Exception as state_exc:
-                _LOG.warning("could not record failure_notified_at: %s", state_exc)
+                delivered = self._notify(
+                    f"<b>Install FAILED</b> during {phase}: {_code(str(exc) + note)}",
+                    event="install FAILED", status="fail", excerpt=str(exc) + note,
+                )
+            except Exception:
+                delivered = False
+            if delivered and owns_state:
+                # Same dedup mark the stage2 path writes: the OnFailure notifier
+                # skips its own post when this one was delivered. Never set for
+                # an undelivered post (the failure would go completely silent).
+                try:
+                    self.state.save(failure_notified_at=datetime.now(timezone.utc).isoformat())
+                except Exception as state_exc:
+                    _LOG.warning("could not record failure_notified_at: %s", state_exc)
+        finally:
+            self._in_failure_handling = False
+
+    def _record_failed_state(self, exc: BaseException, phase: str) -> tuple[bool, str]:
+        """Mark THIS run's state failed. Returns (state is this run's, note for the post).
+
+        S6 decision: a state.json that already exists but was NOT created by
+        this run (different run_id, or unreadable) is left strictly untouched
+        -- it may describe an install that is still running or completed, and
+        flipping it to failed would be the surprising side effect of a re-run
+        that was refused early. The refusal is reported in the post, with the
+        existing run's id. When no state exists, a fresh one is created for
+        this run so the failure is on record.
+        """
+        try:
+            if self.state.path.is_file():
+                existing_id = self.state.load().get("run_id")
+                if self._run_id is None or existing_id != self._run_id:
+                    self._state_frozen = True
+                    return False, (
+                        f" (an existing state.json from a different run, {existing_id!r}, "
+                        "was left untouched)"
+                    )
+            else:
+                # Failed before install() created the state (e.g. show_plan).
+                fresh = StateStore.new(self.config)
+                self.state.save_new(fresh)
+                self._run_id = fresh["run_id"]
+            self.state.save(status="failed", phase=phase, last_error=str(exc))
+            return True, ""
+        except Exception as state_exc:
+            _LOG.warning("could not record the failed state: %s", state_exc)
+            if self._run_id is None and self.state.path.is_file():
+                self._state_frozen = True
+                return False, " (an existing state.json could not be read and was left untouched)"
+            return False, ""
 
     def _ensure_controller_key_after_failure(self) -> None:
         """A failed install leaves the controller key for diagnosis -- even when
@@ -320,7 +412,8 @@ class Installer:
         if not self.config.controller_ssh_pubkey.strip():
             return
         try:
-            step = self.state.load().get("steps", {}).get("controller_ssh_key")
+            # A foreign (frozen) state says nothing about THIS run's key step.
+            step = None if self._state_frozen else self.state.load().get("steps", {}).get("controller_ssh_key")
             if isinstance(step, dict) and step.get("status") == "success":
                 return
         except Exception:
@@ -335,7 +428,9 @@ class Installer:
             self._install_guarded()
 
     def _install_guarded(self) -> None:
-        self.state.save_new(StateStore.new(self.config))
+        new_state = StateStore.new(self.config)
+        self.state.save_new(new_state)
+        self._run_id = new_state["run_id"]
         if self._notifications_enabled:
             # This is a courtesy notification, not part of the install
             # itself -- a bug in facts-collection/plan-preview code here
@@ -438,6 +533,7 @@ class Installer:
             # actually already succeeded.
             if self._controller_key_retained():
                 self._mark_step("controller_ssh_key_retained", "success", "configured to retain after successful stage2")
+                self._prune_stale_controller_keys()
             else:
                 self._remove_controller_ssh_key()
             if self._notifications_enabled:
@@ -557,13 +653,30 @@ class Installer:
         contention (see APT_LOCK_* above). Other failures raise immediately."""
         return self._run_lock_retry(["/usr/bin/apt-get", *APT_LOCK_OPTION, *args], description, dangerous)
 
-    def _run_lock_retry(self, argv: list[str], description: str, dangerous: bool = False) -> str:
-        """Run ``argv``; on apt/dpkg lock contention retry (bounded, see APT_LOCK_*)."""
+    def _run_lock_retry(
+        self,
+        argv: list[str],
+        description: str,
+        dangerous: bool = False,
+        *,
+        markers: tuple[str, ...] = _APT_LOCK_ERROR_MARKERS,
+        markers_in_output: bool = False,
+    ) -> str:
+        """Run ``argv``; on apt/dpkg lock contention retry (bounded, see APT_LOCK_*).
+
+        ``markers_in_output``: also treat a run that EXITED 0 but printed one of
+        the markers as contention (unattended-upgrade prints its lock message
+        and exits; do not trust that the exit code says so).
+        """
         for attempt in range(1, APT_LOCK_RETRY_ATTEMPTS + 1):
             try:
-                return self._run(argv, description, dangerous=dangerous)
+                out = self._run(argv, description, dangerous=dangerous)
+                if not (markers_in_output and any(marker in out for marker in markers)):
+                    return out
+                # Exit 0 but the lock message was printed: handled as contention below.
+                raise ActionError(f"action failed (0): {description}\n{out}")
             except ActionError as exc:
-                locked = any(marker in str(exc) for marker in _APT_LOCK_ERROR_MARKERS)
+                locked = any(marker in str(exc) for marker in markers)
                 if not locked or attempt == APT_LOCK_RETRY_ATTEMPTS:
                     raise
                 _LOG.warning(
@@ -909,6 +1022,30 @@ MaxFileSec=1month
         names = [n for n in names if re.search(r"\d", n)]
         return max(names, key=self._kernel_key) if names else self._running_kernel()
 
+    _TAIL_LINES = 4
+    _TAIL_LINE_MAX = 160
+    _TAIL_MAX = 600
+
+    def _failure_tail(self, exc: BaseException) -> str:
+        """The cause of a failed command, for a step detail / post.
+
+        The real ActionError text is ``action failed (N): <description>\\n<output>``
+        (actions.py), so line 1 only names the step; the cause is the last few
+        non-empty output lines. Each is truncated, secrets are redacted, and
+        ``<>&`` are dropped so the text is safe in the Telegram HTML post.
+        """
+        lines = str(exc).splitlines()
+        header = lines[0].strip() if lines else ""
+        body = [line.strip() for line in lines[1:] if line.strip()][-self._TAIL_LINES:]
+        body = [
+            line if len(line) <= self._TAIL_LINE_MAX else line[: self._TAIL_LINE_MAX - 1] + "…"
+            for line in body
+        ]
+        text = " | ".join([header, *body] if body else [header])
+        text = re.sub(r"[<>&]", " ", text)
+        text = redact_text(text, (self.config.mattermost_webhook_url, self.config.telegram_bot_token))
+        return text if len(text) <= self._TAIL_MAX else text[: self._TAIL_MAX - 1] + "…"
+
     def _upgrade_at_install(self) -> None:
         """Run unattended-upgrade ONCE now (stage1), instead of waiting for the
         first daily timer. Called after the apt sources, pins and the
@@ -932,7 +1069,15 @@ MaxFileSec=1month
             self._mark_step(step, "skipped", "apt_upgrade_at_install is off")
             return
         if mode == "notify-only":
-            out = self._apt_get(["-s", "full-upgrade"], "count pending upgrades (simulation only)")
+            # The count is informational: a broken-deps simulation must not
+            # fail the install (it is "warned", never fatal).
+            try:
+                out = self._apt_get(["-s", "full-upgrade"], "count pending upgrades (simulation only)")
+            except ActionError as exc:
+                tail = self._failure_tail(exc)
+                self._mark_step(step, "warned", f"notify-only: pending-upgrade simulation failed: {tail}")
+                self._upgrade_summary = f"⚠️ apt upgrade simulation failed (notify-only), install continued: {tail}"
+                return
             pending = sum(1 for line in out.splitlines() if line.startswith("Inst "))
             self._mark_step(step, "skipped", f"notify-only: nothing installed; {pending} package(s) pending")
             self._upgrade_summary = f"apt upgrade skipped (notify-only): {pending} package(s) pending"
@@ -942,11 +1087,15 @@ MaxFileSec=1month
             out = self._run_lock_retry(
                 ["/usr/bin/unattended-upgrade", "-v"],
                 f"install-time unattended-upgrade ({mode})", dangerous=True,
+                markers=_APT_LOCK_ERROR_MARKERS + _UU_LOCK_ERROR_MARKERS,
+                markers_in_output=True,
             )
         except ActionError as exc:
-            detail = f"{mode}: unattended-upgrade failed: {str(exc).splitlines()[0]}"
-            self._mark_step(step, "warned", detail)
-            self._upgrade_summary = f"⚠️ apt upgrade failed ({mode}), install continued"
+            # ActionError text is "action failed (N): <description>\n<stdout>":
+            # line 1 names only the step, the CAUSE is the end of the output.
+            tail = self._failure_tail(exc)
+            self._mark_step(step, "warned", f"{mode}: unattended-upgrade failed: {tail}")
+            self._upgrade_summary = f"⚠️ apt upgrade failed ({mode}), install continued: {tail}"
             return
         matches = self._UU_UPGRADED_RE.findall(out)
         count = len(matches[-1].split()) if matches else 0
@@ -976,7 +1125,10 @@ MaxFileSec=1month
             if image.suffix in {".dpkg-bak", ".new", ".bak"}:
                 continue
             listing = self._run(["/usr/bin/lsinitramfs", str(image)], f"list contents of {image.name}")
-            result[image.name] = self._SHRINK_HOOK_NAME in listing
+            # The EXACT premount entry, not a substring: any listing line that
+            # merely contains the name (a backup, a different path) must not count.
+            entries = {line.strip().removeprefix("./") for line in listing.splitlines()}
+            result[image.name] = f"scripts/local-premount/{self._SHRINK_HOOK_NAME}" in entries
         return result
 
     _APT_TIMERS = ("apt-daily.timer", "apt-daily-upgrade.timer")
@@ -993,10 +1145,75 @@ MaxFileSec=1month
         DPkg::Lock::Timeout on every installer apt-get (_apt_get) remains the
         primary defence for anything else holding the lock.
         """
+        # Recorded BEFORE the command: even a partially applied disable counts as
+        # "this run held the timers", so a failure restores them. The state step
+        # (silent, not _mark_step) lets stage2, a new process, know it too.
+        self._apt_timers_held = True
+        try:
+            self.state.mark_step("apt_timers_held", "success", " ".join(self._APT_TIMERS))
+        except Exception as exc:
+            _LOG.warning("could not record apt_timers_held in the state: %s", exc)
         self._run(
             ["/usr/bin/systemctl", "disable", "--now", *self._APT_TIMERS],
             "hold apt timers until the install is finished", dangerous=True,
         )
+        self._wait_apt_services_idle()
+
+    def _wait_apt_services_idle(self) -> None:
+        """Wait (bounded) until apt-daily(-upgrade).service are no longer active.
+
+        `disable --now` stops the TIMER only: a service run that already started
+        (a leftover apt-daily-upgrade from the image's first boot) keeps going
+        and holds the apt lock, and unattended-upgrade does not wait for locks
+        itself. Never stops the service (a running upgrade is waited for).
+        """
+        busy_states = {"active", "activating", "deactivating", "reloading"}
+        waited = 0
+        while True:
+            busy = []
+            for unit in _APT_SERVICES:
+                state = self._run(
+                    ["/usr/bin/systemctl", "show", "--property=ActiveState", "--value", unit],
+                    f"check whether {unit} is still running",
+                )
+                if state.strip() in busy_states:
+                    busy.append(f"{unit} ({state.strip()})")
+            if not busy:
+                return
+            if waited >= APT_SERVICE_WAIT_S:
+                _LOG.warning(
+                    "apt services still active after %ss: %s; continuing (lock retries follow)",
+                    waited, ", ".join(busy),
+                )
+                return
+            _LOG.warning(
+                "waiting for %s to finish (%ss of %ss waited)", ", ".join(busy), waited, APT_SERVICE_WAIT_S,
+            )
+            time.sleep(APT_SERVICE_POLL_S)
+            waited += APT_SERVICE_POLL_S
+
+    #: True once THIS process disabled the apt timers (see _hold_apt_timers).
+    _apt_timers_held = False
+
+    def _this_run_holds_apt_timers(self) -> bool:
+        """This run disabled the timers and has not yet re-enabled them.
+
+        In-memory flag (stage1, same process) or the state step written by
+        _hold_apt_timers (stage2 is a new process). An install that never got
+        as far as holding them (e.g. show_plan refusing the machine) must not
+        touch the timers an operator may have disabled on purpose.
+        """
+        if self._state_frozen:  # the state on disk belongs to another run
+            return self._apt_timers_held
+        try:
+            steps = self.state.load().get("steps", {})
+        except Exception:
+            return self._apt_timers_held
+        held = steps.get("apt_timers_held")
+        if isinstance(held, dict) and held.get("status") == "success":
+            released = steps.get("apt_timers")
+            return not (isinstance(released, dict) and released.get("status") == "success")
+        return self._apt_timers_held
 
     def _release_apt_timers(self) -> None:
         """Last stage2 step (after every apt-get): enable + start the apt timers."""
@@ -1015,12 +1232,20 @@ MaxFileSec=1month
         Idempotent (stage2 runs in a new process, so no in-memory flag). Never raises."""
         if self.actions.dry_run:
             return
+        # Only what THIS run disabled: never touch timers it did not hold.
+        if not self._this_run_holds_apt_timers():
+            return
         try:
             self._run(
                 ["/usr/bin/systemctl", "enable", "--now", *self._APT_TIMERS],
                 "re-enable apt timers after install failure", dangerous=True,
             )
             _LOG.warning("install failed: apt timers re-enabled")
+            self._apt_timers_held = False
+            try:
+                self.state.mark_step("apt_timers_held", "restored", "re-enabled after install failure")
+            except Exception:
+                pass
         except Exception as exc:
             _LOG.warning("install failed and apt timers could not be re-enabled: %s", exc)
 
@@ -1735,11 +1960,19 @@ MaxFileSec=1month
             )
             detail = f"root shrunk to {root_size} sectors (target {target_sectors})"
             if not self.actions.dry_run:
-                stale = [name for name, has in self._initramfs_hook_state().items() if has]
-                if stale:
-                    # Harmless (the hook no-ops once root is at target) but untidy: report, don't fail.
-                    detail += f"; WARNING hook still in initramfs of: {', '.join(stale)}"
-                    _LOG.warning("root-shrink hook still in initramfs of: %s", ", ".join(stale))
+                # Report, never fail: the shrink already succeeded, and this check
+                # (lsinitramfs per image) must not turn a successful install into
+                # a failed one.
+                try:
+                    stale = [name for name, has in self._initramfs_hook_state().items() if has]
+                except Exception as exc:
+                    detail += f"; WARNING could not check initramfs for a stale hook: {self._failure_tail(exc)}"
+                    _LOG.warning("stale-hook check failed (install continues): %s", exc)
+                else:
+                    if stale:
+                        # Harmless (the hook no-ops once root is at target) but untidy: report, don't fail.
+                        detail += f"; WARNING hook still in initramfs of: {', '.join(stale)}"
+                        _LOG.warning("root-shrink hook still in initramfs of: %s", ", ".join(stale))
             self._mark_step("root_shrink", "success", detail)
             return True
         self._mark_step("root_shrink", "failed", f"root is still {root_size} sectors, target was {target_sectors}")
@@ -2692,7 +2925,15 @@ MaxFileSec=1month
         messages are separate explicit _notify() calls, not routed through
         this wrapper.
         """
-        self.state.mark_step(name, status, detail)
+        if self._state_frozen:
+            # The state on disk belongs to another run (see _record_failed_state).
+            _LOG.warning("step %s: %s %s (not recorded: foreign state left untouched)", name, status, detail)
+        else:
+            self.state.mark_step(name, status, detail)
+        if self._in_failure_handling:
+            # The failure post must be the FIRST (and only) post of a failed
+            # run: bookkeeping steps done by the guard stay silent.
+            return
         if self.config.telegram_verbose_progress:
             self._notify(
                 f"<b>{name}</b>: {status}" + (f" — {detail}" if detail else ""),
@@ -2713,7 +2954,7 @@ MaxFileSec=1month
     def _mattermost_text(self, event: str, status: str, excerpt: str) -> str:
         """Build the Mattermost message (layout lives in notify.format_mattermost_message)."""
         try:
-            run_id = str(self.state.load().get("run_id") or "")
+            run_id = "" if self._state_frozen else str(self.state.load().get("run_id") or "")
         except Exception:
             run_id = ""
         return format_mattermost_message(
@@ -2748,7 +2989,8 @@ MaxFileSec=1month
         chat_id = self.config.telegram_chat_id
         thread_id = None
         try:
-            thread_id = self.state.load().get("telegram_thread_id") or None
+            if not self._state_frozen:
+                thread_id = self.state.load().get("telegram_thread_id") or None
         except Exception:
             pass
         for index, chunk in enumerate(_split_for_telegram(message)):
@@ -2880,13 +3122,64 @@ MaxFileSec=1month
             self._mark_step("controller_ssh_key_removed", "skipped", "authorized_keys not present")
             return
         lines = authorized_keys.read_text(encoding="utf-8").splitlines()
-        remaining = [line for line in lines if line.strip() != pubkey_line]
+        # D2: besides this run's own key, drop EVERY installer-marked ephemeral
+        # key (stale ones from earlier failed runs kept for diagnosis). A key
+        # without the marker is never touched.
+        remaining = [
+            line for line in lines
+            if line.strip() != pubkey_line and not self._is_ephemeral_controller_key(line)
+        ]
         if len(remaining) == len(lines):
             self._mark_step("controller_ssh_key_removed", "skipped", "controller pubkey not found (already removed?)")
             return
         content = "\n".join(remaining) + ("\n" if remaining else "")
         self.actions.write_file(str(authorized_keys), content, 0o600)
-        self._mark_step("controller_ssh_key_removed", "success", "no further controller access needed")
+        detail = "no further controller access needed"
+        stale = len(lines) - len(remaining) - sum(1 for line in lines if line.strip() == pubkey_line)
+        if stale:
+            detail += f"; also removed {stale} stale {CONTROLLER_KEY_MARKER}* key(s) from earlier runs"
+        self._mark_step("controller_ssh_key_removed", "success", detail)
+
+    @staticmethod
+    def _is_ephemeral_controller_key(line: str) -> bool:
+        """An authorized_keys line carrying the installer's comment marker.
+
+        Matched on a whole whitespace-separated field starting with the marker
+        (the comment), so a key that merely mentions it in its options or blob
+        position, or an unrelated key, is never matched.
+        """
+        fields = line.split()
+        return len(fields) >= 3 and any(field.startswith(CONTROLLER_KEY_MARKER) for field in fields[2:])
+
+    def _prune_stale_controller_keys(self) -> None:
+        """retain_controller_ssh_key=true: keep ONLY this run's key, drop stale
+        ephemeral ones from earlier failed runs. Best-effort: never fails a
+        successful install (a problem is recorded as a 'warned' step)."""
+        pubkey_line = self.config.controller_ssh_pubkey.strip()
+        if not pubkey_line or self.actions.dry_run:
+            return
+        try:
+            authorized_keys = Path("/root/.ssh/authorized_keys")
+            if not authorized_keys.is_file():
+                return
+            lines = authorized_keys.read_text(encoding="utf-8").splitlines()
+            remaining = [
+                line for line in lines
+                if line.strip() == pubkey_line or not self._is_ephemeral_controller_key(line)
+            ]
+            if len(remaining) == len(lines):
+                return
+            self.actions.write_file(str(authorized_keys), "\n".join(remaining) + "\n", 0o600)
+            self._mark_step(
+                "controller_ssh_key_pruned", "success",
+                f"removed {len(lines) - len(remaining)} stale {CONTROLLER_KEY_MARKER}* key(s) from earlier runs; current key kept",
+            )
+        except Exception as exc:
+            _LOG.warning("could not prune stale controller keys: %s", exc)
+            try:
+                self._mark_step("controller_ssh_key_pruned", "warned", f"could not prune stale keys: {self._failure_tail(exc)}")
+            except Exception:
+                pass
 
     _BOOTSTRAP_DIR = Path("/root")
 

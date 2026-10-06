@@ -148,7 +148,14 @@ def _boom():
 def test_failed_install_reenables_apt_timers_best_effort(tmp_path, monkeypatch, phase, fail_enable):
     """D1: a failure must not leave the timers disabled; a failing re-enable never masks the cause."""
     inst = _failing_installer(tmp_path, fail_enable)
-    monkeypatch.setattr(inst, "_stage1" if phase == "stage1" else "_stage2", _boom)
+
+    def hold_then_boom():
+        # Fix round 1 (S4): only a run that HELD the timers restores them, so the
+        # failing stage must have disabled them first (as the real stages do).
+        inst._hold_apt_timers()
+        _boom()
+
+    monkeypatch.setattr(inst, "_stage1" if phase == "stage1" else "_stage2", hold_then_boom)
     with pytest.raises(RuntimeError, match="boom"):
         inst.install() if phase == "stage1" else inst.resume()
     assert ("/usr/bin/systemctl", "enable", "--now", *TIMERS) in inst.actions.calls
