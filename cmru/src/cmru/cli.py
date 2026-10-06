@@ -5389,9 +5389,8 @@ def _abandon(args, runtime) -> int:
         with transaction.release_lock(repo_root):
             return _abandon_locked(args, runtime, repo_root)
     except CliFailure:
+        # ``ReleaseLockHeld`` is a ``CmruError`` (hence a ``CliFailure``) with exit 4.
         raise
-    except transaction.ReleaseLockHeld as exc:
-        raise CliFailure(str(exc), exit_code=exit_codes.REFUSED) from exc
 
 
 def _release_tag_prefixes_for_scope(

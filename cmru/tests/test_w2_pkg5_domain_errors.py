@@ -337,6 +337,38 @@ def test_a_malformed_build_output_id_is_a_usage_error_2(tmp_path):
     assert raised.value.exit_code == exit_codes.CONFIG_ERROR
 
 
+def test_the_multi_family_preflight_keeps_a_refusal_exit_code(monkeypatch, tmp_path, capsys):
+    def refuse(*_a, **_k):
+        raise errors.UsageRefusal("preflight says no", hint="fix the config")
+
+    monkeypatch.setattr(cli, "_preflight_multi_family_release_tag_support", refuse)
+    vargs = SimpleNamespace(dry_run=False, resume=None)
+    with pytest.raises(SystemExit) as exited:
+        cli._release_launcher(
+            [], vargs, tmp_path / "cmru.toml", tmp_path, {}, [], [], [], None, None, None,
+        )
+    assert exited.value.code == exit_codes.CONFIG_ERROR
+    err = capsys.readouterr().err
+    assert "preflight says no" in err and "unexpected" not in err
+
+
+def test_a_held_release_lock_in_abandon_is_still_refused_with_exit_4(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+
+    class Held:
+        def __enter__(self):
+            raise transaction.ReleaseLockHeld("another release holds the lock")
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: Held())
+    with pytest.raises(CliFailure) as raised:
+        cli._abandon(SimpleNamespace(), SimpleNamespace())
+    assert raised.value.exit_code == exit_codes.REFUSED
+    assert "another release holds the lock" in str(raised.value)
+
+
 def test_missing_required_step_environment_is_exit_3(monkeypatch):
     monkeypatch.delenv("CMRU_SWEEP_NEEDED", raising=False)
     with _raises(errors.CredentialMissing, "CMRU_SWEEP_NEEDED") as raised:
