@@ -454,6 +454,10 @@ class Installer:
         self._stage1()
 
     def resume(self) -> None:
+        # Stage2 appends to custom_script.output2 (systemd StandardOutput=append:
+        # creates it 0644), so restrict /root/custom_script* before anything can
+        # write to or fail around it.
+        self._secure_bootstrap_files()
         # Before anything below can fail: a failure message must say stage2.
         self._notify_stage = "stage2"
         saved = self.state.load()
@@ -3217,7 +3221,7 @@ MaxFileSec=1month
         candidates.update(root.glob("custom_script.output*"))
         for path in sorted(candidates):
             try:
-                if path.is_file():
+                if path.is_file() and not path.is_symlink():
                     path.chmod(0o600)
             except OSError as exc:
                 _LOG.warning("could not chmod 0600 %s: %s", path, exc)

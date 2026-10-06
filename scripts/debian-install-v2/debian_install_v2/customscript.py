@@ -29,6 +29,26 @@ def _validate_source(value: str, name: str, *, url: bool = True) -> str:
     return value
 
 
+def redact_url(url: str) -> str:
+    """Return `url` with any userinfo (user, user:token) removed, for DISPLAY only.
+
+    A repo URL such as https://user:TOKEN@host/x.git passes `_validate_source`;
+    printing it would leak the credential into logs and terminals. The real URL
+    is still used for the fetch and `git ls-remote`.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        if "@" not in parts.netloc:
+            return url
+        if ":" in host:  # IPv6 literal
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+    except ValueError:
+        return "<unparseable url redacted>"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def _bootstrap_launcher_source(bootstrap_url: str) -> str:
     """Return a Python launcher that downloads and executes the bootstrap.
 
@@ -179,12 +199,14 @@ def describe_fetch_source(
     remote = git(["ls-remote", repo_url, f"refs/heads/{repo_branch}"])
     remote_commit = remote.split()[0] if remote else ""
     info.append(
-        f"the host will fetch branch '{repo_branch}' of {repo_url}, commit "
+        f"the host will fetch branch '{repo_branch}' of {redact_url(repo_url)}, commit "
         + (remote_commit if remote_commit else "(unresolved: could not query the remote)")
     )
     local_branch = git(["rev-parse", "--abbrev-ref", "HEAD"], checkout_dir)
     local_commit = git(["rev-parse", "HEAD"], checkout_dir)
-    if local_branch and local_branch != repo_branch:
+    # A detached HEAD reports the literal "HEAD": it is not a branch, so only the
+    # commit comparison below applies.
+    if local_branch and local_branch != "HEAD" and local_branch != repo_branch:
         warnings.append(
             f"WARNING: the local checkout is on branch '{local_branch}' ({local_commit[:12]}) "
             f"but the host will fetch '{repo_branch}'. Code on '{local_branch}' will NOT run "

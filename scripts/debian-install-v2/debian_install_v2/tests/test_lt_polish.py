@@ -313,3 +313,115 @@ def test_journald_precedes_every_other_stage1_step(tmp_path, monkeypatch):
     monkeypatch.setattr(installer, "_packages", lambda *a, **k: order.append("_packages"))
     installer._stage1()
     assert order[:3] == ["_secure_bootstrap_files", "_configure_controller_ssh_key", "_configure_journald"]
+
+
+# --- review round 1 fixes ------------------------------------------------------------
+
+_CREDENTIAL_URLS = [
+    "https://alice:SEKRET-TOKEN@git.example.org/x.git",
+    "https://SEKRET-TOKEN@git.example.org/x.git",
+    "https://alice:SEKRET-TOKEN@git.example.org:8443/x.git",
+]
+
+
+@pytest.mark.parametrize("url", _CREDENTIAL_URLS)
+def test_fetch_source_never_emits_url_credentials(url):
+    git = _git({"ls-remote": "abc123def456\trefs/heads/main", "rev-parse-abbrev": "feature-x", "rev-parse": "999999999999aaaa"})
+    info, warnings = describe_fetch_source(url, "main", git=git)
+    for line in info + warnings:
+        assert "@" not in line and "alice" not in line and "SEKRET" not in line
+    assert "git.example.org" in info[0]
+    if ":8443" in url:
+        assert "git.example.org:8443/x.git" in info[0]
+
+
+def test_fetch_source_uses_the_real_url_for_ls_remote():
+    seen: list[list[str]] = []
+
+    def git(argv, cwd=None):
+        seen.append(argv)
+        return ""
+
+    describe_fetch_source(_CREDENTIAL_URLS[0], "main", git=git)
+    assert seen[0] == ["ls-remote", _CREDENTIAL_URLS[0], "refs/heads/main"]
+
+
+@pytest.mark.parametrize("url", _CREDENTIAL_URLS)
+def test_cli_build_stderr_never_contains_url_credentials(url, capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr(customscript, "_git_output", lambda argv, cwd=None: "abc123def456\trefs/heads/main" if argv[0] == "ls-remote" else "")
+    config_path = tmp_path / "install.json"
+    config_path.write_text(json.dumps({"schema_version": 1, "fresh_install": True}))
+    rc = main(["build-customscript", "--config", str(config_path), "--repo-url", url,
+               "--bootstrap-url", "https://example.org/bootstrap-remote.py"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "SEKRET" not in captured.err and "alice" not in captured.err and "@" not in captured.err
+
+
+@pytest.mark.parametrize("url", _CREDENTIAL_URLS)
+def test_bootstrap_remote_fetch_errors_and_debug_output_are_redacted(url, tmp_path, monkeypatch, capsys):
+    module = _bootstrap_module()
+    import urllib.error
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", boom)
+    with pytest.raises(SystemExit) as excinfo:
+        module.fetch_subtree(url, "main", tmp_path / "inst", debug=True)
+    text = str(excinfo.value.code) + capsys.readouterr().err
+    assert "SEKRET" not in text and "alice" not in text and "@" not in text
+    assert "git.example.org" in text
+
+
+def test_fetch_source_detached_head_only_compares_commits():
+    same = _git({"ls-remote": "abc123def456\trefs/heads/main", "rev-parse-abbrev": "HEAD", "rev-parse": "abc123def456"})
+    _, warnings = describe_fetch_source("https://github.com/volkb79-2/vbpub", "main", git=same)
+    assert warnings == []
+    differs = _git({"ls-remote": "abc123def456\trefs/heads/main", "rev-parse-abbrev": "HEAD", "rev-parse": "999999999999aaaa"})
+    _, warnings = describe_fetch_source("https://github.com/volkb79-2/vbpub", "main", git=differs)
+    assert len(warnings) == 1 and "unpushed or stale" in warnings[0]
+    assert "branch 'HEAD'" not in warnings[0] and "--repo-branch HEAD" not in warnings[0]
+
+
+def test_stage2_resume_restricts_provider_files_before_anything_else(tmp_path, monkeypatch):
+    config = Config(state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+                    telegram_bot_token="", telegram_chat_id="")
+    installer = Installer(config, HostActions(dry_run=True))
+    monkeypatch.setattr(installer.actions, "dry_run", False)
+    monkeypatch.setattr(Installer, "_BOOTSTRAP_DIR", tmp_path)
+    files = _provider_files(tmp_path)
+    link = tmp_path / "custom_script.link"
+    link.symlink_to(files[0])
+    target = tmp_path / "other"
+    target.write_text("x")
+    target.chmod(0o644)
+    (tmp_path / "custom_script.sym").symlink_to(target)
+
+    def stop():
+        raise RuntimeError("stop right after the entry")
+
+    monkeypatch.setattr(installer.state, "load", stop)
+    with pytest.raises(RuntimeError, match="stop right after"):
+        installer.resume()
+    assert [_mode(path) for path in files] == [0o600, 0o600, 0o600]
+    assert _mode(target) == 0o644  # a symlink is never followed
+
+
+def test_restrict_provider_files_runs_before_the_env_parsing(tmp_path, monkeypatch):
+    module = _bootstrap_module()
+    monkeypatch.setattr(module, "PROVIDER_FILE_DIR", tmp_path)
+    files = _provider_files(tmp_path)
+    modes_at_parse: list[list[int]] = []
+    real_env_bool = module._env_bool
+
+    def spying_env_bool(name):
+        modes_at_parse.append([_mode(path) for path in files])
+        return real_env_bool(name)
+
+    monkeypatch.setattr(module, "_env_bool", spying_env_bool)
+    monkeypatch.setenv("DEBUG_MODE", "banana")  # _env_bool raises on this
+    with pytest.raises(SystemExit, match="not yes/no"):
+        module.main()
+    assert modes_at_parse == [[0o600, 0o600, 0o600]]  # already restricted when parsing started
+    assert [_mode(path) for path in files] == [0o600, 0o600, 0o600]

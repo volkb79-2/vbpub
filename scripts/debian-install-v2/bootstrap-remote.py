@@ -288,10 +288,27 @@ def build_config() -> dict:
     return config
 
 
+def redact_url(url: str) -> str:
+    """`url` without userinfo (user[:token]@), for DISPLAY only (logs, errors,
+    stage output and notifications); the real URL is still used for the fetch."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if "@" not in parts.netloc:
+            return url
+        host = parts.hostname or ""
+        if ":" in host:  # IPv6 literal
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+    except ValueError:
+        return "<unparseable url redacted>"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool) -> None:
     tarball_url = f"{repo_url}/archive/refs/heads/{branch}.tar.gz"
+    shown_url = redact_url(tarball_url)
     if debug:
-        print(f"[bootstrap-remote] downloading {tarball_url}", file=sys.stderr)
+        print(f"[bootstrap-remote] downloading {shown_url}", file=sys.stderr)
     request = urllib.request.Request(tarball_url, headers={"User-Agent": USER_AGENT})
     written = 0
     try:
@@ -322,16 +339,16 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                         target.chmod(target.stat().st_mode | 0o111)
                     written += 1
     except urllib.error.URLError as exc:
-        raise BootstrapError(f"could not fetch {tarball_url}: {exc}") from None
+        raise BootstrapError(f"could not fetch {shown_url}: {exc}") from None
     except tarfile.TarError as exc:
         # A flaky connection on an unattended remote host can truncate the
         # gzip/tar stream mid-download -- tarfile.ReadError and friends are
         # not URLError subclasses, and would otherwise surface as a bare
         # traceback instead of this tool's own diagnostic.
-        raise BootstrapError(f"corrupt or truncated download from {tarball_url}: {exc}") from None
+        raise BootstrapError(f"corrupt or truncated download from {shown_url}: {exc}") from None
     if written == 0:
         raise BootstrapError(
-            f"downloaded {tarball_url} but required source tree was empty or missing: "
+            f"downloaded {shown_url} but required source tree was empty or missing: "
             f"{'/'.join(SUBTREE)} — wrong REPO_URL/REPO_BRANCH, or the tree moved"
         )
     if debug:
