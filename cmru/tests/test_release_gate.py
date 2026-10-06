@@ -194,6 +194,28 @@ def test_overlay_inventory_skips_vanished_unreadable_directory(
     assert str(gone) in capsys.readouterr().err
 
 
+def test_overlay_inventory_skips_bare_filenotfound_from_the_walk(
+    tmp_path, monkeypatch, capsys,
+):
+    gone = tmp_path / "removed-worktree"
+    root, found = _inventory_with_walk_error(
+        tmp_path, monkeypatch,
+        FileNotFoundError(2, "No such file or directory", str(gone)),
+    )
+    assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "WARN" in err and str(gone) in err
+
+
+def test_overlay_inventory_fails_closed_on_filenotfound_without_filename(
+    tmp_path, monkeypatch,
+):
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(
+            tmp_path, monkeypatch, FileNotFoundError(2, "No such file or directory"),
+        )
+
+
 def test_overlay_inventory_fails_closed_on_unreadable_directory_we_own(
     tmp_path, monkeypatch,
 ):

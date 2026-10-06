@@ -361,17 +361,25 @@ def _secret_overlay_paths(
         # use nor expose one to the container: skip it (e.g. a live service
         # data dir such as a postgres volume). Everything else fails closed,
         # including PermissionError on a directory we own and an unknown path.
-        if isinstance(error, PermissionError) and error.filename is not None:
-            try:
-                foreign = os.lstat(error.filename).st_uid != os.geteuid()
-            except FileNotFoundError:
-                foreign = True  # vanished mid-walk: nothing left to inventory
-            except OSError:
-                foreign = False
+        # A path that vanished between listing and scanning (worktrees come
+        # and go on the shared tree) cannot expose an overlay either: skip it.
+        if (
+            isinstance(error, (PermissionError, FileNotFoundError))
+            and error.filename is not None
+        ):
+            if isinstance(error, FileNotFoundError):
+                foreign = True
+            else:
+                try:
+                    foreign = os.lstat(error.filename).st_uid != os.geteuid()
+                except FileNotFoundError:
+                    foreign = True  # vanished mid-walk: nothing left to inventory
+                except OSError:
+                    foreign = False
             if foreign:
                 print(
-                    "cmru-release-gate: WARN: skipping unreadable directory owned "
-                    f"by another uid during secret-overlay inventory: {error.filename}",
+                    "cmru-release-gate: WARN: skipping vanished or other-uid "
+                    f"unreadable directory during secret-overlay inventory: {error.filename}",
                     file=sys.stderr,
                 )
                 return
