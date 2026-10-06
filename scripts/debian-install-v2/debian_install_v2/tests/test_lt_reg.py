@@ -162,6 +162,64 @@ def test_resume_ignores_unknown_state_keys_with_one_warning(tmp_path, monkeypatc
     assert "retired_future_option" in warnings[0].getMessage()
 
 
+@pytest.fixture(autouse=True)
+def _reset_unknown_key_warning_memory():
+    from debian_install_v2 import config as config_module
+
+    config_module._WARNED_UNKNOWN_KEYS.clear()
+    yield
+    config_module._WARNED_UNKNOWN_KEYS.clear()
+
+
+def test_stage2_entry_config_tolerates_unknown_keys_and_stray_chat_id(tmp_path):
+    """bootstrap._stage2_config is the first stage2 reader of state.json."""
+    from debian_install_v2 import bootstrap
+
+    installer = _installer(tmp_path)
+    path = installer.state.path
+    manifest = json.loads(path.read_text())
+    manifest["config"]["retired_future_option"] = True
+    manifest["config"]["telegram_chat_id"] = "42"
+    path.write_text(json.dumps(manifest))
+    config = bootstrap._stage2_config(installer.config.state_dir)
+    assert isinstance(config, Config)
+    assert config.telegram_chat_id == "" and not hasattr(config, "retired_future_option")
+
+
+def test_real_stage2_path_reloads_webhook_and_warns_once(tmp_path, monkeypatch, caplog):
+    from debian_install_v2 import bootstrap
+
+    installer = _installer(tmp_path)
+    path = installer.state.path
+    manifest = json.loads(path.read_text())
+    manifest["config"]["retired_future_option"] = True
+    manifest["config"]["telegram_chat_id"] = "42"
+    path.write_text(json.dumps(manifest))
+    cred = tmp_path / "creddir"
+    cred.mkdir()
+    (cred / "mattermost_webhook_url").write_text(HOOK + "\n")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(cred))
+    posts: list[str] = []
+    monkeypatch.setattr(
+        "debian_install_v2.installer.post_webhook",
+        lambda url, text, **kw: posts.append(url) or True,
+    )
+    with caplog.at_level(logging.WARNING, logger="debian_install_v2.config"):
+        config = bootstrap._stage2_config(installer.config.state_dir)
+        real = Installer(config, HostActions(dry_run=False), inspect_host=False)
+        monkeypatch.setattr(real, "_stage2", lambda: None)
+        monkeypatch.setattr(real, "_remove_controller_ssh_key", lambda: None)
+        monkeypatch.setattr("debian_install_v2.installer.collect_host_facts", lambda i: {})
+        monkeypatch.setattr("debian_install_v2.installer.format_facts_html", lambda f: "")
+        real.resume()
+    assert real.config.mattermost_webhook_url == HOOK
+    assert real.config.notify_backend == "mattermost"
+    assert posts and all(url == HOOK for url in posts)
+    assert real.state.load()["status"] == "success"
+    # one warning for the whole stage2 run, not one per reader
+    assert len([r for r in caplog.records if "unknown key" in r.getMessage()]) == 1
+
+
 def test_operator_config_stays_strict_about_unknown_keys():
     with pytest.raises(ConfigError, match="unknown configuration key"):
         load_config(raw_json=json.dumps({"schema_version": 1, "retired_future_option": True}))

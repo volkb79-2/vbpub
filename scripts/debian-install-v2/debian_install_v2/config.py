@@ -13,6 +13,7 @@ from typing import Any, Literal
 from .notify import NotifyConfigError, effective_backend, validate_host_label, validate_webhook_url
 
 _LOG = logging.getLogger("debian_install_v2.config")
+_WARNED_UNKNOWN_KEYS: set[str] = set()
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -355,10 +356,14 @@ def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
     allowed = {item.name for item in fields(Config)}
     secret = {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
     unknown = sorted(str(key) for key in saved if key not in allowed)
-    if unknown:
+    # bootstrap._stage2_config and Installer.resume both filter the same state
+    # in one stage2 process: warn once per process for each distinct key name.
+    fresh = [key for key in unknown if key not in _WARNED_UNKNOWN_KEYS]
+    if fresh:
+        _WARNED_UNKNOWN_KEYS.update(fresh)
         _LOG.warning(
             "ignoring unknown key(s) in the saved state configuration: %s",
-            ", ".join(unknown),
+            ", ".join(fresh),
         )
     return {key: value for key, value in saved.items() if key in allowed and key not in secret}
 

@@ -146,3 +146,9 @@ Reviewer REJECT of dab136dfa, blocker B1: on a re-run, Docker's own bridge (e.g.
 
 ### round 3
 `_is_docker_interface` now fullmatches Docker's own naming: `docker0`, `br-[0-9a-f]{12}`, `veth[0-9a-f]+`. Operator bridges `br0`, `br-lan`, `virbr0` (and near-misses `br-0123456789abc`, `br-0123456789AB`, `vethz`) inside the pool still fail; `br-0123456789ab` passes. Mutation "widen to startswith('br')" planted and killed (5 failed), then reverted. Own run: 678 passed, 11 skipped. Edit only.
+
+## LT-REG review fix round 1
+- B1 (mutation 5d survived): added `test_stage2_entry_config_tolerates_unknown_keys_and_stray_chat_id` (state.json with an unknown key and a stray `telegram_chat_id` through `bootstrap._stage2_config`) and `test_real_stage2_path_reloads_webhook_and_warns_once` (`_stage2_config`, then `Installer(..., inspect_host=False).resume()` with `CREDENTIALS_DIRECTORY`, patched `post_webhook`: webhook reloaded from the credential file, backend mattermost, posts sent to it, status success). Plant 5d (`_stage2_config` filters only credentials, not unknown keys): both new tests failed; restored.
+- Nit (double warning): `config._WARNED_UNKNOWN_KEYS` makes the unknown-key warning once per process per key name, so `_stage2_config` and `Installer.resume` log it once. Plant (never recording warned names): `test_real_stage2_path_reloads_webhook_and_warns_once` failed; restored. An autouse fixture in `test_lt_reg.py` clears the set between tests.
+- D1 (controller ruling): cross-credential errors kept unchanged.
+- Own run: debian_install_v2/tests 680 passed, 11 skipped.
