@@ -1193,7 +1193,7 @@ def test_subcommand_help_separates_actions_from_options(explore_mod, monkeypatch
     assert explore_mod.main(["snapshots", "--help"]) == 0
     out = capsys.readouterr().out
     assert "ACTIONS:" in out
-    assert "{create,dryrun}" in out
+    assert "{create,dryrun,delete}" in out
     assert "--create" not in out
     assert "--yes" in out
 
