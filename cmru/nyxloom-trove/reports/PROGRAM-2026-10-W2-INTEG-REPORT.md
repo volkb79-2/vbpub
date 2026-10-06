@@ -113,7 +113,8 @@ Edit/Write only; no image built; nothing pushed.
 project contracts on disk independently of `_SKIP_PARTS` (`*/cmru.toml`, `*/*/cmru.toml`, minus `.worktrees`/`.git`) and requires every one
 to be among the scanned files; for each of `ciu nyxloom assay topos pwmcp tls-edge run-gate-project` that has a `cmru.toml` on disk (the
 first canary attempt showed the sparse snapshot has a bare `run-gate-project/` dir, the target of the `cmru/run-gate.py` symlink, with no
-contract, so a mere directory is not enough to require one), that file must be scanned; when any exists (a full checkout) at least 8 distinct project contracts must be on disk. The sparse canary snapshot
+contract, so a mere directory is not enough to require one), that file must be scanned; when `ciu/cmru.toml` exists (a full checkout; the canary snapshot holds only some siblings, e.g. `nyxloom` and
+`topos`, which my first attempt at a bare count of 8 tripped on) at least 8 distinct project contracts must be on disk. The sparse canary snapshot
 still needs only cmru's own contract and the `init` template.
 **C3 (string / shell blind spot).** The guard now tokenises every TOML string value with `shlex` (descending into `bash -c`/`sh -c`
 payloads, splitting on `&&`, `||`, `;`, `|`, newlines; a segment counts only when `cmru` is its command word after `VAR=x`/`exec`/`sudo`...)

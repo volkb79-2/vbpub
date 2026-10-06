@@ -467,7 +467,9 @@ def test_the_estate_scan_actually_finds_the_project_contracts():
     ]
     for sibling in siblings:
         assert f"{sibling}/cmru.toml" in names, f"{sibling}/ exists but its cmru.toml is not scanned"
-    if siblings:  # a full checkout: a minimum count of distinct project contracts
+    # A full checkout (ciu present; the canary snapshot holds only some siblings,
+    # e.g. nyxloom and topos): a minimum count of distinct project contracts.
+    if (REPO_ROOT / "ciu" / "cmru.toml").is_file():
         assert len(on_disk) >= 8, sorted(on_disk)
 
 
