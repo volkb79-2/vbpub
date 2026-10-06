@@ -3,8 +3,9 @@
 # verifies the configured gates cgroup through cgroup-parent.sh, launches
 # tester-unified with the network disabled, and emits the final receipt marker
 # only after Docker returns zero AND the SQL qualification phase (W5, A-480)
-# has passed on the host, against a real PostgreSQL the tester container cannot
-# reach. The inner mode is invoked only inside that container.
+# has passed in a separate cgroup-visible tester-unified container, against a
+# real PostgreSQL reached through a socket mounted only into that phase. The
+# inner mode is invoked only inside the ordinary self-hosting container.
 #
 # P24 (A-198-A-201): the wheel this gate self-hosts through is no longer built
 # from the bind-mounted worktree with an ambient-setuptools PYTHONPATH shim.
@@ -35,12 +36,17 @@ make_exact_oid_clone() {
   oid="$(git -C "$worktree" rev-parse HEAD)"
   [[ -n "$oid" ]] || die "could not resolve the source OID for $worktree"
 
-  git clone --no-local --no-checkout --quiet "$worktree" "$scratch/clone"
-  git -C "$scratch/clone" sparse-checkout init --cone
-  git -C "$scratch/clone" sparse-checkout set assay
-  git -C "$scratch/clone" checkout --quiet --detach "$oid"
+  git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false \
+    clone --no-local --no-checkout --quiet "$worktree" "$scratch/clone"
+  git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false \
+    -C "$scratch/clone" sparse-checkout init --cone
+  git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false \
+    -C "$scratch/clone" sparse-checkout set assay
+  git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false \
+    -C "$scratch/clone" checkout --quiet --detach "$oid"
 
-  clone_head="$(git -C "$scratch/clone" rev-parse HEAD)"
+  clone_head="$(git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false \
+    -C "$scratch/clone" rev-parse HEAD)"
   [[ "$clone_head" == "$oid" ]] || \
     die "private clone HEAD ($clone_head) does not match source OID ($oid)"
 }
@@ -513,21 +519,145 @@ run_inner() {
 }
 
 _assay_gate_container_name=""
+_assay_gate_container_id=""
+_assay_gate_container_ownership_file=""
+_assay_gate_scratch=""
 _assay_gate_container_launch_attempted=0
 _assay_gate_container_started=0
 _assay_gate_logs_pid=""
 _assay_gate_receipt_to_clear=""
 _assay_sql_container_name=""
+_assay_sql_ownership_file=""
 _assay_sql_scratch=""
+_assay_sql_runner_container_name=""
+_assay_sql_runner_container_id=""
+_assay_sql_runner_ownership_file=""
+_assay_sql_runner_launch_attempted=0
+_assay_sql_runner_started=0
+_assay_sql_runner_launch_evidence_ambiguous=0
+_assay_sql_runner_logs_pid=""
+_assay_sql_ownership_token=""
 _assay_b145_probe_container_name=""
 
+sql_container_inventory() {
+  local container_id="$1"
+  timeout --kill-after=5s 30s docker ps --all --no-trunc \
+    --filter "id=$container_id" \
+    --format '{{.ID}}|{{.Names}}|{{.Label "assay.sql-gate.owner"}}'
+}
+
+remove_owned_sql_container() {
+  local container_id="$1" expected_name="$2" ownership_token="$3" with_volumes="$4"
+  local inventory
+  if ! inventory="$(sql_container_inventory "$container_id")"; then
+    printf 'tester-unified-gate: cannot inspect SQL container ownership for %s\n' "$expected_name" >&2
+    return 1
+  fi
+  # An empty successful inventory is the daemon's affirmative evidence that
+  # this exact full ID is already absent. A name or label match alone never
+  # authorizes removal; both must bind the ID to this launch's nonce.
+  [[ -n "$inventory" ]] || return 0
+  if [[ "$inventory" != "$container_id|$expected_name|$ownership_token" ]]; then
+    printf 'tester-unified-gate: SQL ownership ID for %s resolves to unexpected container %s; refusing removal\n' \
+      "$expected_name" "$inventory" >&2
+    return 1
+  fi
+  if [[ "$with_volumes" == 1 ]]; then
+    timeout --kill-after=5s 20s docker rm -f -v "$container_id" >/dev/null || {
+      printf 'tester-unified-gate: failed to remove owned SQL container %s\n' "$expected_name" >&2
+      return 1
+    }
+  else
+    timeout --kill-after=5s 20s docker rm -f "$container_id" >/dev/null || {
+      printf 'tester-unified-gate: failed to remove owned SQL container %s\n' "$expected_name" >&2
+      return 1
+    }
+  fi
+}
+
 cleanup_assay_gate_container() {
-  local result=$?
+  local result=$? sql_container_id sql_runner_container_id gate_container_id
+  local preserve_sql_scratch=0
   trap - EXIT
-  # (W5) The SQL phase's throwaway PostgreSQL container and clone. Nothing may
-  # run before `local result=$?` / `trap - EXIT` above: any command resets `$?`.
-  if [[ -n "$_assay_sql_container_name" ]]; then
-    docker rm -f -v "$_assay_sql_container_name" >/dev/null 2>&1 || true
+  # (W5) Stop the SQL runner before the final PostgreSQL ownership check: its
+  # failed launch can be accepted while its first Docker request is still in
+  # flight, writing postgres.cid after this EXIT trap begins. Nothing may run
+  # before `local result=$?` / `trap - EXIT` above: any command resets `$?`.
+  if [[ -n "$_assay_sql_runner_logs_pid" ]]; then
+    if ! wait_for_container_log_follower "$_assay_sql_runner_logs_pid" 5; then
+      printf 'tester-unified-gate: SQL log follower did not stop during cleanup\n' >&2
+      [[ $result -ne 0 ]] || result=1
+    fi
+    _assay_sql_runner_logs_pid=""
+  fi
+  if [[ "$_assay_sql_runner_started" == 1 || "$_assay_sql_runner_launch_attempted" == 1 ]]; then
+    sql_runner_container_id=""
+    if [[ "$_assay_sql_runner_started" == 1 && "$_assay_sql_runner_container_id" =~ ^[0-9a-f]{64}$ ]]; then
+      sql_runner_container_id="$_assay_sql_runner_container_id"
+    elif [[ -n "$_assay_sql_runner_ownership_file" && -f "$_assay_sql_runner_ownership_file" ]]; then
+      sql_runner_container_id="$(<"$_assay_sql_runner_ownership_file")"
+    fi
+    if [[ "$sql_runner_container_id" =~ ^[0-9a-f]{64}$ ]]; then
+      if ! remove_owned_sql_container "$sql_runner_container_id" \
+        "$_assay_sql_runner_container_name" "$_assay_sql_ownership_token" 0; then
+        [[ $result -ne 0 ]] || result=1
+        preserve_sql_scratch=1
+      fi
+    elif [[ "$_assay_sql_runner_started" == 1 || "$_assay_sql_runner_launch_attempted" == 1 ]]; then
+      printf 'tester-unified-gate: SQL qualification container %s has no valid ownership id; refusing name-based removal and preserving scratch\n' \
+        "$_assay_sql_runner_container_name" >&2
+      [[ $result -ne 0 ]] || result=1
+      preserve_sql_scratch=1
+    else
+      _assay_sql_runner_started=0
+      _assay_sql_runner_launch_attempted=0
+    fi
+    if [[ $preserve_sql_scratch -eq 0 ]]; then
+      _assay_sql_runner_started=0
+      _assay_sql_runner_launch_attempted=0
+    fi
+  fi
+  if [[ $_assay_sql_runner_launch_evidence_ambiguous -eq 1 ]]; then
+    printf 'tester-unified-gate: preserving SQL scratch after runner launch returned a candidate cidfile\n' >&2
+    [[ $result -ne 0 ]] || result=1
+    preserve_sql_scratch=1
+  fi
+  if [[ -n "$_assay_sql_scratch" && -f "$_assay_sql_scratch/postgres.launch-attempted" ]] && \
+    [[ "$(<"$_assay_sql_scratch/postgres.launch-attempted")" == cidfile-ambiguous ]]; then
+    printf 'tester-unified-gate: preserving SQL scratch after PostgreSQL ownership became ambiguous\n' >&2
+    [[ $result -ne 0 ]] || result=1
+    preserve_sql_scratch=1
+  fi
+  if [[ -n "$_assay_sql_container_name" && -n "$_assay_sql_ownership_file" && -f "$_assay_sql_ownership_file" ]]; then
+    sql_container_id="$(<"$_assay_sql_ownership_file")"
+    if [[ ! "$sql_container_id" =~ ^[0-9a-f]{64}$ ]]; then
+      printf 'tester-unified-gate: invalid PostgreSQL ownership id for %s\n' \
+        "$_assay_sql_container_name" >&2
+      [[ $result -ne 0 ]] || result=1
+      preserve_sql_scratch=1
+    else
+      if ! remove_owned_sql_container "$sql_container_id" \
+        "$_assay_sql_container_name" "$_assay_sql_ownership_token" 1; then
+        [[ $result -ne 0 ]] || result=1
+        preserve_sql_scratch=1
+      fi
+    fi
+    if [[ $preserve_sql_scratch -eq 0 ]]; then
+      _assay_sql_container_name=""
+      _assay_sql_ownership_file=""
+    fi
+  elif [[ -n "$_assay_sql_container_name" ]]; then
+    if [[ ( -n "$_assay_sql_scratch" && -e "$_assay_sql_scratch/postgres.launch-attempted" ) || \
+      $_assay_sql_runner_launch_attempted -eq 1 || $_assay_sql_runner_started -eq 1 || \
+      $preserve_sql_scratch -eq 1 ]]; then
+      printf 'tester-unified-gate: SQL qualification for %s has no PostgreSQL ownership ID; preserving scratch\n' \
+        "$_assay_sql_container_name" >&2
+      [[ $result -ne 0 ]] || result=1
+      preserve_sql_scratch=1
+    else
+      _assay_sql_container_name=""
+      _assay_sql_ownership_file=""
+    fi
   fi
   if [[ -n "$_assay_b145_probe_container_name" ]]; then
     if ! timeout --kill-after=5s 20s docker rm -f "$_assay_b145_probe_container_name" >/dev/null 2>&1; then
@@ -537,26 +667,45 @@ cleanup_assay_gate_container() {
     fi
     _assay_b145_probe_container_name=""
   fi
-  if [[ -n "$_assay_sql_scratch" ]]; then
+  if [[ -n "$_assay_sql_scratch" && $preserve_sql_scratch -eq 0 ]]; then
     rm -rf -- "$_assay_sql_scratch" || true
+    _assay_sql_scratch=""
+  elif [[ -n "$_assay_sql_scratch" ]]; then
+    printf 'tester-unified-gate: preserving SQL qualification scratch for recovery: %s\n' \
+      "$_assay_sql_scratch" >&2
+    [[ $result -ne 0 ]] || result=1
   fi
   if [[ -n "$_assay_gate_logs_pid" ]]; then
-    kill "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
-    wait "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
+    if ! wait_for_container_log_follower "$_assay_gate_logs_pid" 5; then
+      printf 'tester-unified-gate: container log follower did not stop during cleanup\n' >&2
+      [[ $result -ne 0 ]] || result=1
+    fi
     _assay_gate_logs_pid=""
   fi
-  if [[ "$_assay_gate_container_started" == 1 ]]; then
-    if ! docker rm -f "$_assay_gate_container_name" >/dev/null; then
-      printf 'tester-unified-gate: failed to remove container %s\n' \
+  if [[ "$_assay_gate_container_started" == 1 || "$_assay_gate_container_launch_attempted" == 1 ]]; then
+    gate_container_id="$_assay_gate_container_id"
+    if [[ -z "$gate_container_id" && -n "$_assay_gate_container_ownership_file" && \
+      -f "$_assay_gate_container_ownership_file" ]]; then
+      gate_container_id="$(<"$_assay_gate_container_ownership_file")"
+    fi
+    if [[ "$gate_container_id" =~ ^[0-9a-f]{64}$ ]]; then
+      if ! timeout --kill-after=5s 20s docker rm -f "$gate_container_id" >/dev/null; then
+        printf 'tester-unified-gate: failed to remove owned container %s\n' \
+          "$gate_container_id" >&2
+        [[ $result -ne 0 ]] || result=1
+      fi
+    elif [[ "$_assay_gate_container_started" == 1 ]]; then
+      printf 'tester-unified-gate: started container %s has no valid ownership id; refusing name-based removal\n' \
         "$_assay_gate_container_name" >&2
       [[ $result -ne 0 ]] || result=1
     fi
     _assay_gate_container_started=0
-  elif [[ "$_assay_gate_container_launch_attempted" == 1 ]]; then
-    # A failed Docker transport can report an error after the daemon accepted
-    # the named container. Best-effort removal closes that ambiguous window.
-    docker rm -f "$_assay_gate_container_name" >/dev/null 2>&1 || true
     _assay_gate_container_launch_attempted=0
+  fi
+  if [[ -n "$_assay_gate_scratch" ]]; then
+    rm -rf -- "$_assay_gate_scratch" || true
+    _assay_gate_scratch=""
+    _assay_gate_container_ownership_file=""
   fi
   # (B123, S1) After launch, a non-zero exit never leaves a receipt behind: not
   # one the container itself wrote into the bind-mounted worktree, and not one a
@@ -567,10 +716,68 @@ cleanup_assay_gate_container() {
   exit "$result"
 }
 
+wait_for_container_log_follower() {
+  local pid="$1" timeout_seconds="$2" stop_grace_seconds="${3:-5}" deadline state stop_deadline
+  deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    if state="$(ps -o stat= -p "$pid" 2>/dev/null)"; then
+      if [[ -z "$state" || "$state" == Z* ]]; then
+        # Only wait after ps confirms this child has exited; an inspection
+        # error is indeterminate and must not bypass the deadline.
+        if wait "$pid"; then return 0; else return $?; fi
+      fi
+    elif ! kill -0 "$pid" 2>/dev/null; then
+      # Bash may already have reaped the child, in which case ps reports no
+      # such PID. Its wait status remains cached and `wait` returns at once.
+      if wait "$pid"; then return 0; else return $?; fi
+    fi
+    sleep 0.2
+  done
+  kill -TERM "$pid" >/dev/null 2>&1 || true
+  stop_deadline=$((SECONDS + stop_grace_seconds))
+  while (( SECONDS < stop_deadline )); do
+    if state="$(ps -o stat= -p "$pid" 2>/dev/null)"; then
+      if [[ -z "$state" || "$state" == Z* ]]; then
+        wait "$pid" >/dev/null 2>&1 || true
+        return 124
+      fi
+    elif ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 0.2
+  done
+  # A process in uninterruptible sleep may still be present after SIGKILL.
+  # Give it one more bounded interval, and never use a blocking wait while its
+  # state remains live or cannot be inspected.
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" >/dev/null 2>&1 || true
+    return 124
+  fi
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  stop_deadline=$((SECONDS + stop_grace_seconds))
+  while (( SECONDS < stop_deadline )); do
+    if state="$(ps -o stat= -p "$pid" 2>/dev/null)"; then
+      if [[ -z "$state" || "$state" == Z* ]]; then
+        wait "$pid" >/dev/null 2>&1 || true
+        break
+      fi
+    elif ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" >/dev/null 2>&1 || true
+      break
+    fi
+    sleep 0.2
+  done
+  return 124
+}
+
 run_registered_tester_container() {
   local worktree="$1" host_repo_root="$2" cgroup_parent="$3"
-  local forwarded_env=() container_id wait_status logs_status
+  local forwarded_env=() container_id cidfile_id wait_status logs_status
   _assay_gate_container_name="run-gate-assay-selfhosted-${BASHPID}-${RANDOM}-$(date +%s)"
+  _assay_gate_scratch="$(mktemp -d "${TMPDIR:-/tmp}/assay-gate.XXXXXXXX")" \
+    || die 'could not create private tester container ownership scratch'
+  _assay_gate_container_ownership_file="$_assay_gate_scratch/container.cid"
   _assay_gate_container_launch_attempted=1
   _assay_gate_container_started=0
   _assay_gate_logs_pid=""
@@ -582,6 +789,7 @@ run_registered_tester_container() {
 
   printf 'ASSAY_GATE_CONTAINER=%s\n' "$_assay_gate_container_name"
   container_id="$(docker run -d \
+    --cidfile "$_assay_gate_container_ownership_file" \
     --name "$_assay_gate_container_name" \
     --init \
     --cgroupns=host \
@@ -595,17 +803,25 @@ run_registered_tester_container() {
     bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree")" \
     || die "could not start named tester-unified container"
   [[ -n "$container_id" ]] || die "docker run returned an empty container ID"
+  [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'Docker returned a malformed tester-unified container ID'
+  _assay_gate_container_id="$container_id"
   _assay_gate_container_launch_attempted=0
   _assay_gate_container_started=1
+  [[ -f "$_assay_gate_container_ownership_file" ]] \
+    || die 'Docker did not write the tester-unified container cidfile'
+  cidfile_id="$(<"$_assay_gate_container_ownership_file")"
+  [[ "$cidfile_id" == "$container_id" ]] \
+    || die 'Docker tester-unified container cidfile does not match its returned ID'
 
-  docker logs --follow "$_assay_gate_container_name" &
+  docker logs --follow "$container_id" &
   _assay_gate_logs_pid=$!
-  wait_status="$(docker wait "$_assay_gate_container_name")" \
+  wait_status="$(docker wait "$container_id")" \
     || die "could not collect exit status from $_assay_gate_container_name"
   [[ "$wait_status" =~ ^[0-9]+$ ]] \
     || die "docker wait returned a non-decimal exit status: $wait_status"
 
-  if wait "$_assay_gate_logs_pid"; then
+  if wait_for_container_log_follower "$_assay_gate_logs_pid" 30; then
     logs_status=0
   else
     logs_status=$?
@@ -615,6 +831,11 @@ run_registered_tester_container() {
     || die "could not collect logs from $_assay_gate_container_name (exit $logs_status)"
 
   printf 'ASSAY_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+  if [[ "$wait_status" == 0 ]]; then
+    timeout --kill-after=5s 20s docker rm -f "$container_id" >/dev/null \
+      || die "could not remove completed tester-unified container $_assay_gate_container_name"
+    _assay_gate_container_started=0
+  fi
   return "$wait_status"
 }
 
@@ -782,39 +1003,197 @@ finish_registered_gate() {
 
 # --- the SQL qualification phase (W5, A-480) ----------------------------------
 #
-# Real-PostgreSQL evidence the tester container cannot produce (it has no Docker
-# socket). It runs on the HOST, only after a green tester container (a red one
-# already ended the script under `set -e`), from a private exact-OID clone of the
-# gated commit, with the host `python3` (>= 3.11) and one throwaway container in
-# the gates cgroup. Reads the caller's `worktree` (bash dynamic scope).
-# Exit 3 from the harness means the environment could not answer: the gate passes
-# it through as exit 3 (no receipt, no COMPLETE); every other failure is real.
+# Real-PostgreSQL evidence the ordinary tester suite cannot produce because it
+# has no Docker socket. It runs only after that suite exits green, in a separate
+# tester-unified container with `--cgroupns=host`, from a private exact-OID clone
+# of the gated commit. The socket is scoped to this qualification runner so its
+# real Assay witness can use B145's cgroup counters while driving the pinned
+# PostgreSQL container. Reads `worktree` and `host_repo_root` from the caller's
+# dynamic scope. Exit 3 means the environment could not answer; it passes
+# through with no receipt or COMPLETE marker.
 run_sql_qualification() {
-  local commit="$1" cgroup="$2" out rc=0 shared_args=()
+  local commit="$1" cgroup="$2" socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
+  local shared=0 docker_socket=/var/run/docker.sock run_id runner_launch_status runner_launch_stderr
+  local forwarded_env=() sql_runner_script
   # (CD50) The harness opt-in follows the gate's, and only for the exact value 1.
   if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
-    shared_args=(--allow-shared-host)
+    shared=1
   fi
-  _assay_sql_scratch="$(mktemp -d)" || die 'cannot create the SQL scratch directory'
+  git -C "$worktree" check-ignore -q assay/.assay/sql-gate-probe \
+    || die 'assay/.assay must be git-ignored for SQL qualification scratch'
+  mkdir -p "$worktree/assay/.assay"
+  _assay_sql_scratch="$(mktemp -d "$worktree/assay/.assay/sql-gate.XXXXXXXX")" \
+    || die 'cannot create the SQL scratch directory'
+  _assay_sql_ownership_file="$_assay_sql_scratch/postgres.cid"
+  chmod 1733 "$_assay_sql_scratch" \
+    || die 'cannot make the shared SQL scratch directory writable to tester-unified'
   make_exact_oid_clone "$worktree" "$_assay_sql_scratch"
-  [[ "$(git -C "$_assay_sql_scratch/clone" rev-parse HEAD)" == "$commit" ]] \
+  [[ "$(git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false \
+    -C "$_assay_sql_scratch/clone" rev-parse HEAD)" == "$commit" ]] \
     || die "SQL clone is not the gated commit $commit"
-  _assay_sql_container_name="run-gate-assay-sql-${BASHPID}-$(date +%s)"
-  out="$(nice -n 19 python3 -I "$_assay_sql_scratch/clone/assay/gate/python/qualify_sql.py" \
-    --scratch "$_assay_sql_scratch/sql" \
-    --container-name "$_assay_sql_container_name" \
-    --cgroup-parent "$cgroup" \
-    ${shared_args[@]+"${shared_args[@]}"})" || rc=$?
-  if [[ $rc -eq 3 ]]; then
+  [[ -S "$docker_socket" ]] \
+    || die "Docker socket $docker_socket is unavailable to the SQL qualification launcher"
+  socket_gid="$(stat -Lc %g "$docker_socket")" \
+    || die "could not read Docker socket group for $docker_socket"
+  [[ "$socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $socket_gid"
+  if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
+    forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
+  fi
+  run_id="${BASHPID}-$(date +%s%N)"
+  _assay_sql_container_name="run-gate-assay-sql-${run_id}"
+  _assay_sql_runner_container_name="run-gate-assay-sql-runner-${run_id}"
+  _assay_sql_ownership_token="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
+  [[ "$_assay_sql_ownership_token" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'could not generate a SQL container ownership token'
+  _assay_sql_runner_ownership_file="$_assay_sql_scratch/runner.cid"
+  runner_launch_stderr="$_assay_sql_scratch/runner-launch.stderr"
+  [[ ! -e "$_assay_sql_runner_ownership_file" ]] \
+    || die 'SQL qualification runner cidfile already exists in fresh scratch'
+  sql_runner_script='
+set -euo pipefail
+worktree=$1
+scratch=$2
+commit=$3
+cgroup=$4
+postgres_name=$5
+runner_name=$6
+allow_shared=$7
+ownership_token=$8
+git config --global --replace-all safe.directory "*"
+actual=$(git -C "$worktree" rev-parse HEAD)
+[[ "$actual" == "$commit" ]] || { printf "SQL runner worktree is not the gated commit %s\\n" "$commit" >&2; exit 1; }
+clone_head=$(git -C "$scratch/clone" rev-parse HEAD)
+[[ "$clone_head" == "$commit" ]] || { printf "SQL runner clone is not the gated commit %s\\n" "$commit" >&2; exit 1; }
+args=(--scratch "$scratch/sql" --container-name "$postgres_name" --runner-name "$runner_name" --ownership-token "$ownership_token" --cgroup-parent "$cgroup")
+if [[ "$allow_shared" == 1 ]]; then args+=(--allow-shared-host); fi
+set +e
+nice -n 19 /opt/tester-venv/bin/python -I "$scratch/clone/assay/gate/python/qualify_sql.py" "${args[@]}" >"$scratch/qualifier.stdout" 2>"$scratch/qualifier.stderr"
+rc=$?
+set -e
+cat "$scratch/qualifier.stderr" >&2
+if [[ $rc -ne 0 ]]; then cat "$scratch/qualifier.stdout" >&2; exit "$rc"; fi
+out=$(<"$scratch/qualifier.stdout")
+printf "%s\\n" "ASSAY_SQL_QUALIFIED=1" > "$scratch/expected.marker"
+if ! cmp -s "$scratch/qualifier.stdout" "$scratch/expected.marker"; then
+  printf "SQL qualification printed no exact marker: %s\\n" "$out" >&2
+  exit 1
+fi
+cp "$scratch/expected.marker" "$scratch/qualified.marker"
+cat "$scratch/expected.marker"
+'
+  _assay_sql_runner_launch_attempted=1
+  if container_id="$(timeout --kill-after=10s 30s docker run -d \
+    --cidfile "$_assay_sql_runner_ownership_file" \
+    --label "assay.sql-gate.owner=$_assay_sql_ownership_token" \
+    --name "$_assay_sql_runner_container_name" \
+    --init \
+    --cgroupns=host \
+    --cgroup-parent="$cgroup" \
+    --cpus=3 \
+    --group-add "$socket_gid" \
+    -e "CGROUP_PARENT_DEV_GATES=$cgroup" \
+    "${forwarded_env[@]}" \
+    -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
+    --network=none \
+    --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
+    --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    --mount "type=bind,src=$docker_socket,dst=$docker_socket" \
+    -w /workspaces/vbpub \
+    tester-unified:local \
+    bash -c "$sql_runner_script" assay-sql-qualification \
+      "$worktree" "$_assay_sql_scratch" "$commit" "$cgroup" \
+      "$_assay_sql_container_name" "$_assay_sql_runner_container_name" "$shared" \
+      "$_assay_sql_ownership_token" 2>"$runner_launch_stderr")"; then
+    cat "$runner_launch_stderr" >&2
+  else
+    runner_launch_status=$?
+    cat "$runner_launch_stderr" >&2 || true
+    runner_cidfile_id=""
+    if [[ -f "$_assay_sql_runner_ownership_file" ]]; then
+      runner_cidfile_id="$(<"$_assay_sql_runner_ownership_file")"
+    fi
+    if [[ -s "$_assay_sql_runner_ownership_file" ]]; then
+      _assay_sql_runner_launch_evidence_ambiguous=1
+    fi
+    if [[ $runner_launch_status -eq 125 && ! "$runner_cidfile_id" =~ ^[0-9a-f]{64}$ ]] && \
+      grep -Fq "The container name \"/$_assay_sql_runner_container_name\" is already in use" \
+        "$runner_launch_stderr" && [[ ! -s "$_assay_sql_runner_ownership_file" ]]; then
+      # A name conflict with no Docker-created ID is a confirmed prelaunch
+      # refusal. No SQL container can exist, so exit cleanup can remove scratch.
+      _assay_sql_runner_launch_attempted=0
+      _assay_sql_runner_ownership_file=""
+      echo 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-runner-name-conflict'
+      printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification-runner-name-conflict — rerun\n' >&2
+      exit 3
+    fi
+    die 'could not start the cgroup-visible SQL qualification container'
+  fi
+  [[ -n "$container_id" ]] || die 'Docker returned an empty SQL qualification container ID'
+  _assay_sql_runner_container_id="$container_id"
+  _assay_sql_runner_launch_attempted=0
+  _assay_sql_runner_started=1
+  [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'Docker returned a malformed SQL qualification container ID'
+  [[ -f "$_assay_sql_runner_ownership_file" ]] \
+    || die 'Docker did not write the SQL qualification runner cidfile'
+  runner_cidfile_id="$(<"$_assay_sql_runner_ownership_file")"
+  [[ "$runner_cidfile_id" == "$container_id" ]] \
+    || die 'Docker SQL qualification runner cidfile does not match its returned ID'
+  runner_inventory="$(sql_container_inventory "$container_id")" \
+    || die 'could not verify Docker SQL qualification runner ownership'
+  [[ "$runner_inventory" == "$container_id|$_assay_sql_runner_container_name|$_assay_sql_ownership_token" ]] \
+    || die 'Docker SQL qualification runner ID does not match this launch'
+  printf 'ASSAY_SQL_RUNNER_CONTAINER=%s\n' "$_assay_sql_runner_container_name"
+  docker logs --follow "$container_id" &
+  _assay_sql_runner_logs_pid=$!
+  if wait_status="$(timeout --signal=TERM --kill-after=30s 4800s docker wait "$container_id")"; then
+    wait_rc=0
+  else
+    wait_rc=$?
+  fi
+  if [[ $wait_rc -ne 0 ]]; then
+    if [[ $wait_rc -eq 124 || $wait_rc -eq 137 ]]; then
+      die 'SQL qualification exceeded its 80 minute outer failsafe'
+    fi
+    die "could not collect SQL qualification exit status (docker wait exit $wait_rc)"
+  fi
+  [[ "$wait_status" =~ ^[0-9]+$ ]] \
+    || die "Docker returned a non-decimal SQL qualification exit status: $wait_status"
+  if wait_for_container_log_follower "$_assay_sql_runner_logs_pid" 30; then
+    logs_status=0
+  else
+    logs_status=$?
+  fi
+  _assay_sql_runner_logs_pid=""
+  [[ $logs_status -eq 0 ]] \
+    || die "could not collect SQL qualification logs (exit $logs_status)"
+  if [[ "$wait_status" == 3 ]]; then
     echo 'ASSAY_GATE_DIAGNOSTIC=sql-qualification-inconclusive'
     printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification — rerun\n' >&2
     exit 3
   fi
-  [[ $rc -eq 0 ]] || die "SQL qualification failed (exit $rc)"
-  [[ "$out" == 'ASSAY_SQL_QUALIFIED=1' ]] || die 'SQL qualification printed no exact marker'
+  [[ "$wait_status" == 0 ]] || die "SQL qualification failed (exit $wait_status)"
+  printf '%s\n' 'ASSAY_SQL_QUALIFIED=1' > "$_assay_sql_scratch/expected.marker"
+  cmp -s "$_assay_sql_scratch/qualified.marker" "$_assay_sql_scratch/expected.marker" \
+    || die 'SQL qualification printed no exact marker'
+  remove_owned_sql_container "$container_id" "$_assay_sql_runner_container_name" \
+    "$_assay_sql_ownership_token" 0 \
+    || die "could not remove SQL qualification container $_assay_sql_runner_container_name"
+  _assay_sql_runner_started=0
+  [[ -f "$_assay_sql_ownership_file" ]] \
+    || die 'SQL qualification completed without a PostgreSQL ownership id'
+  postgres_container_id="$(<"$_assay_sql_ownership_file")"
+  [[ "$postgres_container_id" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'SQL qualification completed with a malformed PostgreSQL ownership id'
+  remove_owned_sql_container "$postgres_container_id" "$_assay_sql_container_name" \
+    "$_assay_sql_ownership_token" 1 \
+    || die "could not verify or remove PostgreSQL qualification container $_assay_sql_container_name"
   rm -rf -- "$_assay_sql_scratch"
   _assay_sql_scratch=""
   _assay_sql_container_name=""
+  _assay_sql_ownership_file=""
+  _assay_sql_runner_ownership_file=""
+  _assay_sql_ownership_token=""
   echo 'ASSAY_GATE_PHASE=sql-qualified'
 }
 

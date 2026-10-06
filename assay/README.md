@@ -721,13 +721,20 @@ for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
 The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
-(A-480), with no consumer checkout: an outer phase of the registered
-`tester-unified` gate runs `gate/python/qualify_sql.py` on the host after a green
-tester container, against assay's own schema
+(A-480), with no consumer checkout: after the ordinary registered
+`tester-unified` suite passes, a dedicated `tester-unified` qualification
+container runs `gate/python/qualify_sql.py` from an exact-OID clone with
+`--cgroupns=host`. Only this qualification container receives the Docker socket,
+so its real `assay run` witness can observe the cgroup ancestors required by
+B145 while driving assay's own schema
 (`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
-matrix and a witnessed `assay run`, in one digest-pinned, never-pulled container
-named `run-gate-assay-sql-<pid>-<epoch>`. A busy host or an absent image is an
-inconclusive run (`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. See
+matrix and a witnessed `assay run` against one digest-pinned, never-pulled
+PostgreSQL container named `run-gate-assay-sql-<pid>-<epoch>`. A busy host,
+name conflict, or absent image is an inconclusive run
+(`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. Failure to remove the PostgreSQL fixture or its qualification
+runner also fails the gate before it can issue a registered receipt. The driver
+uses Docker IDs for both container lifecycles and fails closed when a daemon-side
+repository or socket bind source is missing. See
 [§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
 
 The two B015 semantic families, `python:uuid-equality-swap` and

@@ -3252,13 +3252,16 @@ trusted silently.
 
 The mask/lexer tests prove which bytes assay replaces; only a real catalog can
 say the replacement *means* something. The gate proves that with assay's own
-material and no consumer checkout. It runs as an **outer phase of the
-registered `tester-unified` gate**: the tester container has no Docker socket,
-so after it exits green the host script builds an exact-OID clone of the gated
-commit and runs `gate/python/qualify_sql.py` from it with the host `python3`
-(>= 3.11). A red tester ends the script first, so PostgreSQL never runs after a
-red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified` between the
-tester and the receipt.
+material and no consumer checkout. After the ordinary registered
+`tester-unified` suite exits green, the outer driver starts a second, dedicated
+`tester-unified` container for SQL qualification. It uses `--cgroupns=host` so
+the real `assay run` witness can see the cgroup hierarchy B145 requires; only
+this phase receives the Docker socket, which it uses to run the pinned
+PostgreSQL fixture. The driver mounts the exact-OID clone of the gated commit
+and runs `gate/python/qualify_sql.py` there with the image's Python 3.14
+interpreter. A red ordinary tester ends the script first, so PostgreSQL never
+runs after a red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified`
+between the tester and the receipt.
 
 **Inputs, all in the repository.** The schema is
 `tests/fixtures/mutation/sql/qualification/01-schema.sql` (sha256 pinned in
@@ -3267,12 +3270,37 @@ tester and the receipt.
 `K01`-`K25`, `K12` unused). The image is
 `postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`
 (PostgreSQL 18.6), pinned by digest and **never pulled**: an absent image is an
-inconclusive run. One container runs at a time, `--network none`, `--cpus 1`,
+inconclusive run. One PostgreSQL container runs at a time, `--network none`, `--cpus 1`,
 `--memory 512m`, on a 256 MiB tmpfs data directory, in the gate's own cgroup
 slice, named `run-gate-assay-sql-<pid>-<epoch>` so a peer's `docker ps` sees
-it; it is removed by its exact name on every path, including SIGTERM. Before
-`docker run` the harness looks once at `docker ps`: any other `run-gate-*`
-container makes the run **inconclusive** (exit 3, `host busy`); it never polls. With `--allow-shared-host` (CD50; the gate passes it when `ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another `run-gate-assay-sql-*` container is still `host busy`.
+it. Docker's `--cidfile` records the container ID only when this run creates
+it; all fixture operations and the outer cleanup address that ID, so renaming
+the fixture cannot redirect cleanup to a replacement at its old name. The SQL
+scratch directory has sticky write/search permission for the tester UID but
+does not allow listing. A random per-run ownership label binds both SQL
+container IDs to this invocation. `postgres.launch-attempted` distinguishes a
+confirmed prelaunch refusal, whose clone can be discarded, from an ambiguous
+postlaunch result without an ID, whose recovery evidence must be preserved. A
+planted cidfile or stale `postgres.removed` marker cannot authorize removal or
+discard recovery evidence. The SQL runner
+has its own cidfile and is also waited on and removed by ID; a container name
+conflict leaves the existing container untouched. Its host repository and Docker socket use Docker's
+`--mount` bind form, which refuses a missing daemon-side source instead of
+creating a phantom directory. Cleanup is attempted on every
+path, including SIGTERM, and an unconfirmed removal keeps the gate red. Before
+`docker run` the harness looks once at `docker ps`, excluding only the named
+qualification runner that contains it. Any other `run-gate-*` container makes
+the run **inconclusive** (exit 3, `host busy`); it never polls. With
+`--allow-shared-host` (CD50; the gate passes it when
+`ASSAY_GATE_ALLOW_SHARED_HOST=1`) other projects' `run-gate-*` containers are
+tolerated and named on stderr as `ASSAY_SQL_SHARED_HOST=<names>`, but another
+`run-gate-assay-sql-*` container is still `host busy`.
+The PostgreSQL fixture and qualification runner are removed with bounded
+Docker calls before the gate writes its receipt or prints its completion
+marker. A failed removal keeps the gate red and triggers the outer cleanup
+retry. The registered 5h outer timeout covers the sequential 60m tester and
+analysis lanes, the B145 probes and the SQL runner's 80m failsafe, with cleanup
+time remaining.
 
 **Two derivations, no assertion of the consumer's.** Each row's mutant is
 applied to a fresh database and its bucket is *derived*, never trusted: the

@@ -13,7 +13,8 @@ checkout.
 **Flow.** (1) :func:`check_sites` -- the sites the shipped adapter finds in the
 schema, mapped to the ``[Knn]`` tags by the tag rule (a line's tags name its
 sites left to right by ascending ``start_byte``), equal the matrix rows.
-(2) Host checks, one throwaway container, the fixture files copied in.
+(2) Host checks from the cgroup-visible qualification runner, one throwaway
+container, the fixture files copied in.
 (3) Baseline: the unmutated schema applies, dumps and passes every probe; two
 dumps taken WITHOUT ``--restrict-key`` differ (O5). (4) Every matrix row: the
 mutant is applied to a fresh database, and the bucket is DERIVED
@@ -34,18 +35,26 @@ busy, a failing ``docker ps``, readiness failsafe, a command timeout, a
 container name in use, the docker environment lost mid-run, an
 incomplete witness): visible and rerunnable, never skipped and never green.
 
-**Environment.** The container runs ``--network none`` in the cgroup slice the
-caller passes, one at a time, named ``run-gate-assay-sql-<pid>-<epoch>`` so a
-peer's ``docker ps`` sees it, and is removed by its exact name. Before
-``docker run`` the harness looks once at ``docker ps``; any ``run-gate-*`` name
-means ``host busy`` (exit 3) -- it never polls or waits; ``--allow-shared-host``
-(CD50) tolerates other projects' ``run-gate-*`` containers (printing
-``ASSAY_SQL_SHARED_HOST=`` on stderr) but still refuses another ``run-gate-assay-sql-*``. The witness lane strips
-``DOCKER_HOST`` (its ``env`` is ``PATH`` only) and relies on
-``/var/run/docker.sock`` reaching the same daemon as this process's docker CLI.
-The witness lane imports :mod:`assay` from this checkout's ``src/``: it
-qualifies THIS tree's adapter, so there is no separate wheel boundary.
-Requires Python >= 3.11 (host ``python3``, run with ``-I``).
+**Environment.** The registered gate runs this harness in a dedicated
+``tester-unified`` container with ``--cgroupns=host``. That is required by
+B145: native R2 must see the cgroup hierarchy through its root. Only this
+qualification container receives the Docker socket, because it owns the
+pinned PostgreSQL fixture; the ordinary installed-wheel suite never receives
+it. The qualification container runs ``--network none`` in the cgroup slice
+the caller passes. Its visible name starts ``run-gate-assay-sql-`` so peer
+gates see it. The harness addresses PostgreSQL by its Docker ID and records
+that ID so the outer gate can retry cleanup without risking a same-name
+container. Before PostgreSQL starts the
+harness checks ``docker ps`` once, excluding only its own runner name; any
+other ``run-gate-*`` name means ``host busy`` (exit 3), never a wait.
+``--allow-shared-host`` (CD50) tolerates other projects' ``run-gate-*``
+containers (printing ``ASSAY_SQL_SHARED_HOST=`` on stderr) but still refuses
+another Assay SQL qualification. The witness lane strips ``DOCKER_HOST`` (its
+``env`` is ``PATH`` only) and uses ``/var/run/docker.sock`` to reach the same
+daemon as the harness. It imports :mod:`assay` from the exact-OID clone's
+``src/``: it qualifies THIS tree's adapter, so there is no separate wheel
+boundary. Requires Python >= 3.11 (the tester image interpreter, run with
+``-I``).
 """
 
 from __future__ import annotations
@@ -103,6 +112,8 @@ ALL_OPERATORS: tuple[str, ...] = (
 BUCKETS = ("killed", "survived", "equivalent", "crashed", "hung", "budget_exceeded")
 
 _CONTAINER_NAME_RE = re.compile(r"run-gate-assay-sql-[0-9]+-[0-9]+")
+_RUNNER_NAME_RE = re.compile(r"run-gate-assay-sql-runner-[0-9]+-[0-9]+")
+_OWNERSHIP_TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 _TAG_RE = re.compile(r"\[(K[0-9]{2})\]")
 _SIGNAL_RE = re.compile(
     r"schema test command failed \(exit [1-9][0-9]*\): ASSAY_SQL_FAILED=(none|K[0-9]{2}(,K[0-9]{2})*)"
@@ -299,15 +310,40 @@ class RunResult:
 
 class ThrowawayPostgres:
     """One pinned PostgreSQL container, ``--network none``, named by the
-    caller, always removed by its exact name (never ``--rm``: the removal
-    must be ordered after the ``df`` receipt and be signal-safe)."""
+    caller. Docker's cidfile records which object this run created; all later
+    operations use that ID, and any failed removal fails qualification so the
+    outer gate can retry by the recorded ID. ``--rm`` is avoided because the
+    removal must follow the ``df`` receipt and be signal-safe."""
 
-    def __init__(self, name: str, cgroup_parent: str, fixture_root: Path, *, allow_shared_host: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        cgroup_parent: str,
+        fixture_root: Path,
+        *,
+        allow_shared_host: bool = False,
+        runner_name: str | None = None,
+        ownership_file: Path | None = None,
+        ownership_token: str,
+    ) -> None:
         self.name = name
         self.allow_shared_host = allow_shared_host
+        self.runner_name = runner_name
+        self.ownership_file = ownership_file
+        self.ownership_token = ownership_token
         self.cgroup_parent = cgroup_parent
         self.fixture_root = fixture_root
         self._owned = False
+        self._container_id: str | None = None
+
+    @property
+    def launch_marker(self) -> Path | None:
+        return self.ownership_file.with_name("postgres.launch-attempted") if self.ownership_file else None
+
+    @property
+    def docker_ref(self) -> str:
+        """Stable Docker identity after creation; the generated name is only a label."""
+        return self._container_id or self.name
 
     def __enter__(self) -> "ThrowawayPostgres":
         try:
@@ -318,7 +354,12 @@ class ThrowawayPostgres:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self._remove()
+        removal_error = self._remove()
+        if removal_error is None:
+            return
+        if exc is None:
+            raise removal_error
+        print(f"ASSAY_SQL_CLEANUP_FAILED={removal_error}", file=sys.stderr)
 
     # -- lifecycle --
 
@@ -330,7 +371,11 @@ class ThrowawayPostgres:
         ps = _run(["docker", "ps", "--no-trunc", "--format", "{{.Names}}"], check=False, timeout=60)
         if ps.returncode != 0:
             raise InconclusiveError("host check failed (docker ps)")
-        busy = [name for name in ps.stdout.splitlines() if name.startswith("run-gate-")]
+        busy = [
+            name
+            for name in ps.stdout.splitlines()
+            if name.startswith("run-gate-") and name != self.runner_name
+        ]
         if not self.allow_shared_host:
             if busy:
                 raise InconclusiveError(f"host busy — rerun: {','.join(busy)}")
@@ -342,8 +387,9 @@ class ThrowawayPostgres:
             print(f"ASSAY_SQL_SHARED_HOST={','.join(busy)}", file=sys.stderr)
 
     def _docker_run_argv(self) -> list[str]:
-        return [
+        argv = [
             "docker", "run", "-d", "--pull=never", "--network", "none",
+            "--label", f"assay.sql-gate.owner={self.ownership_token}",
             "--name", self.name,
             f"--cgroup-parent={self.cgroup_parent}",
             "--cpus", "1", "--memory", "512m", "--memory-swap", "512m", "--pids-limit", "256",
@@ -352,28 +398,91 @@ class ThrowawayPostgres:
             IMAGE,
             "postgres", "-c", "max_wal_size=64MB", "-c", "min_wal_size=32MB",
         ]  # fmt: skip
+        if self.ownership_file is not None:
+            argv[argv.index("--name"):argv.index("--name")] = ["--cidfile", str(self.ownership_file)]
+        return argv
 
     def _start(self) -> None:
         self._check_host()
-        self._owned = True  # from here a removal is due, even if `docker run` itself fails
-        proc = _run(self._docker_run_argv(), check=False)
+        self._owned = False
+        if self.launch_marker is not None:
+            try:
+                self.launch_marker.touch(exist_ok=False)
+            except OSError as exc:
+                raise QualificationError(f"cannot record PostgreSQL launch attempt: {exc!r}") from exc
+        try:
+            proc = _run(self._docker_run_argv(), check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            # A transport timeout can arrive after Docker accepted the create.
+            # The cidfile is only a candidate ID here; `_remove` also requires
+            # this launch's private label before it can issue `docker rm`.
+            self._container_id = self._read_ownership_id()
+            self._owned = self._container_id is not None
+            self._mark_ambiguous_launch_ownership()
+            raise
         if proc.returncode != 0:
-            if "Conflict" in proc.stderr:
-                self._owned = False  # the name belongs to another process: never touch it
+            expected_name_conflict = f'The container name "/{self.name}" is already in use'
+            if proc.returncode == 125 and expected_name_conflict in proc.stderr:
+                # Docker name conflicts are known pre-create refusals. If the
+                # cidfile is absent or empty, clear the attempt marker so the
+                # outer gate can discard its clone. Any non-empty content is
+                # ambiguous ownership evidence and must fail closed.
+                if self.ownership_file is not None:
+                    try:
+                        cidfile_bytes = (
+                            self.ownership_file.read_bytes() if self.ownership_file.exists() else b""
+                        )
+                        if cidfile_bytes:
+                            self._mark_ambiguous_launch_ownership()
+                            raise QualificationError(
+                                "Docker reported a name conflict but the PostgreSQL cidfile contains candidate ownership data"
+                            )
+                        self.ownership_file.unlink(missing_ok=True)
+                        if self.launch_marker is not None:
+                            self.launch_marker.unlink(missing_ok=True)
+                    except (OSError, UnicodeError) as exc:
+                        raise QualificationError(
+                            f"cannot clear PostgreSQL launch evidence after a name conflict: {exc!r}"
+                        ) from exc
                 raise InconclusiveError(f"container name in use: {self.name}")
+            self._container_id = self._read_ownership_id()
+            self._owned = self._container_id is not None
+            self._mark_ambiguous_launch_ownership()
             raise QualificationError(f"docker run failed ({proc.returncode}): {proc.stderr[-2000:]}")
+        self._owned = True
+        container_id = proc.stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+            self._container_id = self._read_ownership_id()
+            if self._container_id is None:
+                self._mark_ambiguous_launch_ownership()
+                raise QualificationError("docker run returned success without a valid container id")
+            container_id = self._container_id
+        else:
+            self._container_id = container_id
+        if self.ownership_file is not None:
+            try:
+                if self.ownership_file.exists():
+                    recorded_id = self.ownership_file.read_text(encoding="ascii").strip()
+                else:
+                    self.ownership_file.write_text(f"{container_id}\n", encoding="ascii")
+                    recorded_id = container_id
+            except (OSError, UnicodeError) as exc:
+                raise QualificationError(f"cannot persist PostgreSQL ownership id: {exc!r}") from exc
+            if recorded_id != container_id:
+                self._mark_ambiguous_launch_ownership()
+                raise QualificationError("Docker cidfile does not match the created PostgreSQL container id")
         self._wait_ready()
         for source, target in (
             (self.fixture_root / "schema-gate.sh", "/schema-gate.sh"),
             (self.fixture_root / "run-assertions.sh", "/run-assertions.sh"),
             (self.fixture_root / "tests", "/tests"),
         ):
-            _run(["docker", "cp", str(source), f"{self.name}:{target}"])
+            _run(["docker", "cp", str(source), f"{self.docker_ref}:{target}"])
 
     def _wait_ready(self, attempts: int = _READY_ATTEMPTS) -> None:
         for _ in range(attempts):
             proc = _run(
-                ["docker", "exec", self.name, "psql", "-h", "127.0.0.1", "-U", "postgres", "-tAc", "SELECT 1"],
+                ["docker", "exec", self.docker_ref, "psql", "-h", "127.0.0.1", "-U", "postgres", "-tAc", "SELECT 1"],
                 check=False,
                 timeout=30,
             )
@@ -382,38 +491,91 @@ class ThrowawayPostgres:
             _sleep(1)
         raise InconclusiveError(f"readiness failsafe: {self.name} never became ready after {attempts} attempts")
 
-    def _remove(self) -> None:
-        """(1) ignore SIGTERM, (2) log the tmpfs use, (3) remove by exact name
-        (the last command), (4) restore the saved handler."""
-        if not self._owned:
-            return
+    def _remove(self) -> QualificationError | None:
+        """(1) ignore SIGTERM, (2) log the tmpfs use, (3) remove by container id
+        (the last Docker command), (4) restore the saved handler. Return an
+        error if Docker cannot confirm removal so qualification cannot go green
+        while the fixture remains live."""
+        container_id = self._container_id
+        if container_id is None:
+            if not self._owned:
+                return None
+            container_id = self._read_ownership_id()
+        if container_id is None:
+            return QualificationError(
+                f"owned PostgreSQL qualification container {self.name} has no valid id; refusing name-based removal"
+            )
+        identity = _run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                '{{.Name}}|{{index .Config.Labels "assay.sql-gate.owner"}}',
+                container_id,
+            ],
+            check=False,
+            timeout=30,
+        )
+        expected_identity = f"/{self.name}|{self.ownership_token}"
+        if identity.returncode != 0 or identity.stdout.strip() != expected_identity:
+            actual = identity.stdout.strip() or "unavailable"
+            return QualificationError(
+                f"refusing PostgreSQL cleanup for {self.name}: ownership id resolves to {actual}, expected {expected_identity}"
+            )
+        self._container_id = container_id
         self._owned = False
         saved = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        removal_error: QualificationError | None = None
         try:
             try:
-                df = _run(["docker", "exec", self.name, "df", "-Pk", "/var/lib/postgresql"], check=False, timeout=30)
+                df = _run(["docker", "exec", container_id, "df", "-Pk", "/var/lib/postgresql"], check=False, timeout=30)
                 print(f"ASSAY_SQL_DF={df.stdout.strip()!r}", file=sys.stderr)
             except (subprocess.TimeoutExpired, OSError) as exc:
                 print(f"ASSAY_SQL_DF_FAILED={exc!r}", file=sys.stderr)
             try:
-                removal = _run(["docker", "rm", "-f", "-v", self.name], check=False, timeout=120)
+                removal = _run(["docker", "rm", "-f", "-v", container_id], check=False, timeout=120)
                 if removal.returncode != 0:
                     print(f"ASSAY_SQL_RM_FAILED=exit {removal.returncode}: {removal.stderr.strip()!r}", file=sys.stderr)
+                    removal_error = QualificationError(
+                        f"could not remove PostgreSQL qualification container {self.name} (exit {removal.returncode})"
+                    )
             except (subprocess.TimeoutExpired, OSError) as exc:
                 print(f"ASSAY_SQL_RM_FAILED={exc!r}", file=sys.stderr)
+                removal_error = QualificationError(
+                    f"could not remove PostgreSQL qualification container {self.name}: {exc!r}"
+                )
         finally:
             signal.signal(signal.SIGTERM, saved)
+        return removal_error
+
+    def _read_ownership_id(self) -> str | None:
+        if self.ownership_file is None:
+            return None
+        try:
+            container_id = self.ownership_file.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            return None
+        return container_id if re.fullmatch(r"[0-9a-f]{64}", container_id) else None
+
+    def _mark_ambiguous_launch_ownership(self) -> None:
+        if self.ownership_file is None or self.launch_marker is None:
+            return
+        try:
+            if self.ownership_file.exists() and self.ownership_file.read_bytes():
+                self.launch_marker.write_text("cidfile-ambiguous\n", encoding="ascii")
+        except OSError as exc:
+            raise QualificationError(f"cannot preserve ambiguous PostgreSQL ownership evidence: {exc!r}") from exc
 
     # -- operations --
 
     def exec(self, argv: Sequence[str], *, check: bool = True, timeout: int = 180) -> subprocess.CompletedProcess[str]:
-        return _run(["docker", "exec", self.name, *argv], check=check, timeout=timeout)
+        return _run(["docker", "exec", self.docker_ref, *argv], check=check, timeout=timeout)
 
     def replace_corpus(self, host_dir: Path) -> None:
         """Swap the container's ``/corpus`` for *host_dir*'s contents: always a
         full copy, so a scenario never sees a stale file."""
         self.exec(["rm", "-rf", "/corpus", "/corpus_new"])
-        _run(["docker", "cp", str(host_dir), f"{self.name}:/corpus_new"])
+        _run(["docker", "cp", str(host_dir), f"{self.docker_ref}:/corpus_new"])
         self.exec(["mv", "/corpus_new", "/corpus"])
 
     def create_database(self, name: str = _DBNAME) -> None:
@@ -493,7 +655,7 @@ def _assay_argv(python: str, *args: str) -> list[str]:
 
 
 def _witness_wrapper_script(*, container_name: str, dbname: str, restrict_key: str) -> str:
-    """The host-side wrapper the disposable lane's ``argv`` runs.
+    """The runner-side wrapper the disposable lane's ``argv`` runs.
 
     assay executes a lane's ``argv`` as a HOST subprocess inside the
     materialized snapshot, so this thin wrapper bridges it to the isolated
@@ -561,7 +723,7 @@ def capture_witness(
     (repo / "db" / "schema" / _SCHEMA_NAME).write_bytes(schema_bytes)
     (repo / "tools").mkdir()
     (repo / "tools" / "witness-gate.sh").write_text(
-        _witness_wrapper_script(container_name=container.name, dbname=_WITNESS_DB, restrict_key=RESTRICT_KEY),
+        _witness_wrapper_script(container_name=container.docker_ref, dbname=_WITNESS_DB, restrict_key=RESTRICT_KEY),
         encoding="utf-8",
     )
     lane_toml = _WITNESS_LANE_TEMPLATE.format(
@@ -573,9 +735,19 @@ def capture_witness(
     head_oid = _git(repo, "rev-parse", "HEAD")
 
     artifact_path = scratch / "verdict.json"
+    progress_path = repo / ".assay" / f"progress-{_WITNESS_LANE}.jsonl"
     _run(
         _assay_argv(
-            python, "run", _WITNESS_LANE, "--file", str(repo / "assay.toml"), "--verdict-json", str(artifact_path)
+            python,
+            "run",
+            _WITNESS_LANE,
+            "--resume",
+            "--progress",
+            str(progress_path),
+            "--file",
+            str(repo / "assay.toml"),
+            "--verdict-json",
+            str(artifact_path),
         ),
         cwd=repo,
         check=False,
@@ -805,6 +977,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--container-name", required=True)
     parser.add_argument("--cgroup-parent", required=True)
+    parser.add_argument("--runner-name")
+    parser.add_argument("--ownership-token", required=True)
     parser.add_argument("--witness-out", type=Path, default=None)
     parser.add_argument("--fixture-root", type=Path, default=FIXTURE_ROOT)
     parser.add_argument("--allow-shared-host", action="store_true")
@@ -815,13 +989,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--scratch must be absent")
     if _CONTAINER_NAME_RE.fullmatch(args.container_name) is None:
         parser.error("--container-name must match run-gate-assay-sql-<pid>-<epoch>")
+    if args.runner_name is not None and _RUNNER_NAME_RE.fullmatch(args.runner_name) is None:
+        parser.error("--runner-name must match run-gate-assay-sql-runner-<pid>-<epoch>")
+    if _OWNERSHIP_TOKEN_RE.fullmatch(args.ownership_token) is None:
+        parser.error("--ownership-token must be 64 lowercase hexadecimal characters")
     if not args.cgroup_parent:
         parser.error("--cgroup-parent must not be empty")
+    ownership_file = args.scratch.parent / "postgres.cid"
+    removed_marker = ownership_file.with_name("postgres.removed")
+    launch_marker = ownership_file.with_name("postgres.launch-attempted")
+    if ownership_file.exists() or removed_marker.exists() or launch_marker.exists():
+        parser.error("the PostgreSQL ownership files must be absent in a fresh SQL scratch directory")
 
     previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(3))
     try:
         container = ThrowawayPostgres(
-            args.container_name, args.cgroup_parent, args.fixture_root, allow_shared_host=args.allow_shared_host
+            args.container_name,
+            args.cgroup_parent,
+            args.fixture_root,
+            allow_shared_host=args.allow_shared_host,
+            runner_name=args.runner_name,
+            ownership_file=ownership_file,
+            ownership_token=args.ownership_token,
         )
         try:
             run_qualification(

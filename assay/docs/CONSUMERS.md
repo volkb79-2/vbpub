@@ -80,11 +80,23 @@ when another `run-gate-*` container is running; exit 3 always means rerun, and t
 receipt is left as it was. On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
 runs alongside other projects' `run-gate-*` containers (printing
 `ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
-SQL harness's own `--allow-shared-host` still refuses only another `run-gate-assay-sql-*`
-container. No collected judge test
+SQL phase starts a separate `tester-unified` container with `--cgroupns=host`
+and mounts the Docker socket only there, so its real Assay witness can observe
+the cgroup ancestors required by B145. Its `--allow-shared-host` still refuses
+another `run-gate-assay-sql-*` container after excluding its own runner. No collected judge test
 reads history or tags (A-475), so both lanes use the shallow snapshot default
 (`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so
 the seed holds only the judged commit), and snapshot refs/tags are not copied.
+The registered gate issues its receipt only after both qualification containers
+are removed; a failed removal is a failed gate, not a successful qualification.
+Both container lifecycles use their recorded Docker IDs for operations and
+cleanup. If Docker reports that a fixture or runner name is already in use, the
+gate leaves that container untouched because it has no cidfile proving it
+created the object, and reports the run as inconclusive. A confirmed refusal
+before PostgreSQL launch discards the clone; an ambiguous result after a launch
+attempt preserves it for recovery. The runner uses Docker `--mount` for repository and socket
+binds, so a missing daemon-side source fails at launch rather than creating a
+phantom directory.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
 the separate 60-minute R0/R1 preflight. This interim budget resets on a new
 invocation, so do not use resume/retry to bypass the overall ceiling. B110

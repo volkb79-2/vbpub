@@ -2,7 +2,8 @@
 # assay project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
 # The self-hosting driver (tools/tester-unified-gate.sh) owns its own
 # container mechanics: exact-OID private clone, hash-pinned offline build
-# closure, two-venv install, detached run with verified cgroup placement.
+# closure, two-venv install, detached run with verified cgroup placement, and
+# a cgroup-visible SQL qualification runner with a phase-scoped Docker socket.
 # run-gate owns uniform invocation only; putting that driver INSIDE an
 # ephemeral container would be wrong (it launches its own). Host lane.
 # Judgment policy stays in assay.toml. `tester-unified` remains the ordinary
@@ -13,9 +14,9 @@
 # 2026-09-03): as of rev 36, plain "host" is a CONTAINER default with no
 # docker-socket mount (verified live via --dry-run: its own `docker run`
 # argv carries no `-v /var/run/docker.sock:...`) — this driver needs REAL
-# docker access to launch its own nested build container, the same trap
-# debian-install-v2's r1-vm-real-commit/gate lanes hit and were fixed
-# the same way (scripts/debian-install-v2/run-gate.toml).
+# docker access to launch its own nested build and SQL qualification
+# containers, the same trap debian-install-v2's r1-vm-real-commit/gate lanes
+# hit and were fixed the same way (scripts/debian-install-v2/run-gate.toml).
 # =============================================================================
 schema_version = 1
 
@@ -28,7 +29,10 @@ argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
 # not evidence contamination on this path. (The doctrine default returns with
 # any future in-container assay lane.)
 clean_tree = false
-budget = "60m"
+# This outer bound covers the two sequential 60m assay lanes, B145's explicit
+# launch/wait/log/removal bounds, and the SQL runner's bounded wait. Keep a
+# further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
+budget = "5h"
 
 [lanes.self-qualification]
 kind = "command"

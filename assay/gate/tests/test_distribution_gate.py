@@ -63,13 +63,13 @@ def gate_functions(tmp_path_factory) -> Path:
     body = source.split(marker, 1)[0]
 
     if not Path(AMBIENT_TESTER_VENV_PYTHON).exists():
-        # 5 since B145: its live low-pids probe adds a reference to the
+        # 6 since B145: its live low-pids probe and cgroup-visible SQL runner add references to the
         # image's interpreter; `build_lint_venv` resolves the same base prefix
         # the build/run venvs are cut from, so the lint closure is built by the
         # image's own interpreter and not by whatever is first on PATH.
         occurrences = body.count(AMBIENT_TESTER_VENV_PYTHON)
-        assert occurrences == 5, (
-            f"expected exactly 5 uses of {AMBIENT_TESTER_VENV_PYTHON} in the "
+        assert occurrences == 6, (
+            f"expected exactly 6 uses of {AMBIENT_TESTER_VENV_PYTHON} in the "
             f"function definitions, found {occurrences}; update this test's "
             "substitution if the script changed"
         )
@@ -140,7 +140,7 @@ def test_gate_script_has_valid_bash_syntax() -> None:
     assert proc.returncode == 0, proc.stderr
 
 
-def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
+def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     tmp_path: Path, gate_functions: Path
 ) -> None:
     """The inner tester container is named, detached, logged, waited, and removed.
@@ -154,19 +154,24 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     fake_docker = fake_bin / "docker"
     fake_docker.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
+        "import json, os, pathlib, sys\n"
         "args = sys.argv[1:]\n"
         "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out:\n"
         "    out.write(json.dumps(args) + '\\n')\n"
         "if args[:2] == ['run', '-d']:\n"
-        "    print('fake-container-id')\n"
+        "    cid = 'a' * 64\n"
+        "    if os.environ.get('DOCKER_CID_ON_FAILED_LAUNCH') == '1' or not os.environ.get('DOCKER_RUN_STATUS'):\n"
+        "        pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid + '\\n', encoding='ascii')\n"
+        "    print(cid)\n"
         "    if os.environ.get('DOCKER_RUN_STATUS'):\n"
         "        raise SystemExit(int(os.environ['DOCKER_RUN_STATUS']))\n"
         "elif args[:2] == ['logs', '--follow']:\n"
         "    print('fake nested gate output')\n"
         "elif args[:1] == ['wait']:\n"
         "    print(os.environ['DOCKER_WAIT_STATUS'])\n"
-        "elif args[:2] != ['rm', '-f']:\n"
+        "elif args[:2] == ['rm', '-f']:\n"
+        "    pass\n"
+        "else:\n"
         "    raise SystemExit(90)\n",
         encoding="utf-8",
     )
@@ -192,8 +197,10 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     assert "ASSAY_GATE_CONTAINER_EXIT=17" in proc.stdout
     calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
     run = next(argv for argv in calls if argv[:2] == ["run", "-d"])
-    assert run[2] == "--name"
-    name = run[3]
+    assert run[2] == "--cidfile"
+    assert run[3].endswith("/container.cid")
+    assert run[4] == "--name"
+    name = run[5]
     assert name in proc.stdout
     assert "--init" in run
     assert "--cgroupns=host" in run
@@ -203,10 +210,12 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
+    assert not any("docker.sock" in value for value in run)
     assert run.index("tester-unified:local") < run.index("bash")
-    assert ["logs", "--follow", name] in calls
-    assert ["wait", name] in calls
-    assert calls[-1] == ["rm", "-f", name]
+    container_id = "a" * 64
+    assert ["logs", "--follow", container_id] in calls
+    assert ["wait", container_id] in calls
+    assert calls[-1] == ["rm", "-f", container_id]
 
     calls_path.unlink()
     env["DOCKER_RUN_STATUS"] = "18"
@@ -218,8 +227,104 @@ def test_registered_self_gate_uses_named_detached_container_and_wait_exit(
     )
     assert failed_launch.returncode != 0
     failed_calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
-    attempted_name = next(argv[3] for argv in failed_calls if argv[:2] == ["run", "-d"])
-    assert failed_calls[-1] == ["rm", "-f", attempted_name]
+    assert not any(argv[:2] == ["rm", "-f"] for argv in failed_calls)
+
+    calls_path.unlink()
+    env["DOCKER_CID_ON_FAILED_LAUNCH"] = "1"
+    accepted_but_transport_failed = run_bash(
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+    assert accepted_but_transport_failed.returncode != 0
+    failed_calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    assert failed_calls[-1] == ["rm", "-f", container_id]
+
+
+@pytest.mark.parametrize("ps_mode", ["error", "uninterruptible"])
+def test_registered_tester_log_follower_has_a_bound(
+    tmp_path: Path, gate_functions: Path, ps_mode: str
+) -> None:
+    fake_bin = tmp_path / "log-bin"
+    fake_bin.mkdir()
+    calls_path = tmp_path / "log-docker-calls.jsonl"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys, time\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out: out.write(json.dumps(args) + '\\n')\n"
+        "if args[:2] == ['run', '-d']:\n"
+        "    cid = 'b' * 64\n"
+        "    pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid + '\\n', encoding='ascii')\n"
+        "    print(cid)\n"
+        "elif args[:2] == ['logs', '--follow']:\n"
+        "    time.sleep(60)\n"
+        "elif args[:1] == ['wait']:\n"
+        "    print('0')\n"
+        "elif args[:2] == ['rm', '-f']:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit(90)\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    fake_ps = fake_bin / "ps"
+    fake_ps.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$PS_MODE" == error ]]; then exit 41; fi\n'
+        'printf "D\\n"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_ps.chmod(0o755)
+    wait_marker = tmp_path / "wait-was-called"
+    env = {
+        **_host_environ(),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls_path),
+        "DOCKER_WAIT_STATUS": "0",
+        "PS_MODE": ps_mode,
+        "WAIT_MARKER": str(wait_marker),
+    }
+    source = gate_functions.read_text(encoding="utf-8")
+    production_wait = 'wait_for_container_log_follower "$_assay_gate_logs_pid" 30'
+    assert production_wait in source
+    short_functions = tmp_path / "gate-functions-short-ordinary-log-wait.sh"
+    short_functions.write_text(source.replace(production_wait, production_wait[:-2] + "1 1"), encoding="utf-8")
+
+    proc = run_bash(
+        'wait() { if command kill -0 "$1" 2>/dev/null; then printf "live\\n" > "$WAIT_MARKER"; else printf "exited\\n" > "$WAIT_MARKER"; fi; return 0; }\n'
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice"',
+        gate_functions=short_functions,
+        env=env,
+        timeout=15,
+    )
+
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "could not collect logs" in proc.stderr and "exit 124" in proc.stderr
+    assert not wait_marker.exists() or wait_marker.read_text(encoding="utf-8") != "live\n"
+    calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    assert calls[-1] == ["rm", "-f", "b" * 64]
+
+
+def test_log_follower_collects_saved_wait_status_after_ps_reports_no_pid(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    wait_marker = tmp_path / "wait-status-collected"
+    proc = run_bash(
+        'ps() { return 1; }\n'
+        'kill() { if [[ "$1" == "-0" ]]; then return 1; fi; command kill "$@"; }\n'
+        'wait() { printf "%s\\n" "$1" > "$WAIT_MARKER"; return 23; }\n'
+        "wait_for_container_log_follower 12345 1",
+        gate_functions=gate_functions,
+        env={**_host_environ(), "WAIT_MARKER": str(wait_marker)},
+    )
+
+    assert proc.returncode == 23
+    assert wait_marker.read_text(encoding="utf-8").strip() == "12345"
 
 
 def test_b145_probe_is_capped_placed_and_waited_before_logs(
@@ -541,6 +646,7 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         "--no-build-isolation",
         "--no-index",
         "--cgroup-parent=",
+        "--cgroupns=host",
     ):
         assert required in source, f"missing required gate flag: {required}"
 

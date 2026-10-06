@@ -57,9 +57,9 @@ argv = ["python", "-m", "pytest", "tests", "gate/tests", "-q", "--ignore=gate/te
 env = {}
 env_passthrough = ["PATH"]
 
-# Read from the gate's own timeout_seconds = 3600 in nyxloom-trove/nyxloom.toml
-# rather than invented. This budget moves with it -- test_self_lane.py asserts
-# the two never drift apart.
+# This is the ordinary inner tester phase's budget. The host registered gate
+# has a separate 5h budget for both sequential assay lanes, B145 probes, the
+# SQL witness and cleanup; test_self_lane.py checks that these bounds fit.
 budget = "60m"
 
 allow_argv_append = false
