@@ -23,7 +23,7 @@ for real and re-pin to the release.
 Run `cmru dependencies` for the authoritative, current levels. A project is
 released only after every project on a lower level (its transitive providers are
 all on lower levels). The block below is checked against that graph by
-`cmru/tests/test_bootstrap_doc_order.py`; if the graph changes, regenerate this
+`cmru/tests/test_dependency_levels_pyproject.py`; if the graph changes, regenerate this
 block from `cmru dependencies` (the `LEVELS` section).
 
 ```project-order
@@ -45,6 +45,11 @@ Preconditions: Docker, the wheel-builder image (`CMRU_WHEEL_BUILDER_IMAGE`) and 
 governed cgroup parent (`CMRU_BOOTSTRAP_CGROUP_PARENT` or `CGROUP_PARENT_DEV_BACKGROUND`).
 Run on a quiet host; every step is serial.
 
+Not offline: the wheel builder's isolated `python -m build` installs its pinned build
+backends (setuptools, wheel, setuptools_scm; see the `wheel-builder/Dockerfile` header)
+per invocation, so step 1 needs a package index or a populated pip cache. Zero *releases*
+is the premise here, not zero network.
+
 1. **Build cli-extended from source and bootstrap cmru (one command).**
    `CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh`
    builds `libraries/cli-extended` with cmru's own wheel builder
@@ -56,6 +61,11 @@ Run on a quiet host; every step is serial.
    The default mode `release` (no variable) FAILS with exit 2 when no release exists and names
    this variable; it never falls back by itself. `CMRU_BOOTSTRAP_CLI_EXTENDED=<wheel-path>`
    plus `CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256` is the explicit prebuilt-wheel form.
+   Afterwards remove the ignored build leftovers before running any gate:
+   `git clean -fdX cmru/build cmru/cmru.egg-info libraries/cli-extended/build libraries/cli-extended/src/cli_extended.egg-info`
+   (keep the wheels in `cmru/dist` and `libraries/cli-extended/dist` until step 2 has copied
+   them). A stale `*.egg-info` makes `importlib.metadata` report the bootstrap version instead
+   of the image's, and the cmru version-contract tests fail on it.
 2. **Build the tester image with the local wheel.** Copy the cli-extended wheel
    (`libraries/cli-extended/dist/cli_extended-*+bootstrap.source-*.whl`) into
    `tester-unified/local-wheel/` and build with
