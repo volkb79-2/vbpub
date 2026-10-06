@@ -113,3 +113,19 @@ matrix or witness comparison ran. The canary was left alone and had finished by
 the next check. This is an environment refusal, not a product failure. Retry
 with the documented shared-host opt-in for other projects; Assay still refuses
 a concurrent Assay gate.
+
+## Final registered gate (2026-10-06)
+
+`./run-gate.py tester-unified --worktree
+/workspaces/vbpub/.worktrees/assay-b136-b141` returned PASS on commit
+`8ffa26b9eb7f48a6128d19edb0479cb1c4f6b616` (tree
+`4a278ca57365a61dc6390439ce3f7f4d6bc131e8`, `GATE_EXIT=0`). The run used
+`ASSAY_GATE_ALLOW_SHARED_HOST=1` while a separate CMRU coverage lane was active;
+the gate recorded that peer and Assay still refused any concurrent Assay gate.
+The B145 live probes, package build and install, self-hosted suite, analysis
+lane, independent self-hosting, lint, SQL controls, all 24 matrix rows, and
+frozen SQL witness passed. The registered receipt is
+`assay/.assay/registered-gate/tester-unified.json`.
+
+B145 and B147 are ready to merge. B146 remains deferred. No separate release is
+planned; these fixes remain grouped with the planned v14 / 8.0.0 wave.
