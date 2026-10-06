@@ -51,4 +51,9 @@ Evidence: live v1001 lane (LT-F-v1001-01/-02/-04). Base head `aff124ba1`.
 
 ## Gates
 
-See the section appended below by the implementer after the run-gate verdicts.
+Run on commit `820a79973` (clean tree), serially under flock/nice/ionice, verdicts read in a separate step
+from the saved output:
+
+- debian-install-v2 `r0-r1`: PASS, exit 0, 770 passed, 11 skipped.
+- netcup `suite`: PASS, exit 0, 683 passed.
+- r2 (mutation), the VM lane and any live-host test were not run.
