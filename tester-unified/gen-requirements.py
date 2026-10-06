@@ -35,7 +35,7 @@ ESTATE_INTERNAL = frozenset({
 })
 
 #: Estate-internal names that are SKIPPED rather than refused: since cmru
-#: declares ``cli-extended>=0.2.0`` (KI-51 / CX-D1) its requirement line reaches
+#: declares ``cli-extended>=0.3.0`` (KI-51 / CX-D1) its requirement line reaches
 #: this generator, but the Dockerfile installs the RELEASED wheel itself, by
 #: sha256 (tester-unified/fetch-cli-extended.py), before cmru. No ``cli-extended``
 #: line may ever reach pip.

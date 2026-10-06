@@ -10,7 +10,7 @@ explicit operator choice, never a silent fallback.
 
 ```
 cli-extended release -> needs cmru (every cmru.toml calls it) + the tester image
-cmru wheel           -> needs the cli-extended WHEEL (cmru/pyproject.toml, floor 0.2.0)
+cmru wheel           -> needs the cli-extended WHEEL (cmru/pyproject.toml, floor 0.3.0)
 tester-unified image -> installs the cli-extended wheel (pinned release asset)
 ```
 
@@ -81,7 +81,7 @@ is the premise here, not zero network.
    `local-wheel` input is no longer needed. Reinstall cmru from a normal bootstrap
    (`cmru/build-initial-standalone.sh`, default `release` mode) when convenient.
 6. **Release cmru:** `cmru release cmru` (its gate runs in the pinned image; the wheel
-   declares `cli-extended>=0.2.0`, now satisfied by a real release).
+   declares `cli-extended>=0.3.0`, now satisfied by a real release).
 7. **Continue in graph order:** the remaining levels from the block above, L2 then L3
    (`cmru release <project>` each, or the whole set in `project_order`).
 

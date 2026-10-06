@@ -1723,7 +1723,9 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** for (a), a project whose recorded pin date is older than the threshold gets a standards warning naming the variable; for (b), the procedure is reproducible by someone who has never done it.
 
-### KI-61 — `cmru skills` lacks `--log-prefix-time-short`: the cli-extended surface check carries a one-message tolerance (W2-PKG5; library defect CLI-EXT-26) — *open, severity: minor*
+### KI-61 — `cmru skills` lacks `--log-prefix-time-short`: the cli-extended surface check carries a one-message tolerance (W2-PKG5; library defect CLI-EXT-26) — *resolved 2026-10-06 (cli-extended-v0.3.0), severity: minor*
+
+**Resolved 2026-10-06:** cli-extended `cli-extended-v0.3.0` ships CLI-EXT-26. cmru's floor is now `cli-extended>=0.3.0`; the tolerance test `test_surface_check_reports_nothing_beyond_the_known_library_gap` is deleted and `tests/test_cli_spec_inventory.py::test_surface_check_reports_no_findings` requires an empty finding list; finding `adoption-skills-global-option` is `fixed`. (Package CMRU-FLOOR, report `nyxloom-trove/reports/cmru-FLOOR-2026-10-REPORT.md`.)
 
 **Observed:** `cli-extended surface check` (and audit AC-17/AC-18) report `cmru skills: delegated parser does not register inherited global option(s): --log-prefix-time-short`. The cause is cli-extended 0.2.0 `register_skills_verbs`, which builds its child registry without the parent's `global_options` (filed in `libraries/cli-extended/BACKLOG.md` as CLI-EXT-26). The controller ruled (2026-10-06) to accept the gap for cmru 6.0.0 rather than re-implement the skills group with private library helpers. `tests/test_cli_spec_inventory.py::test_surface_check_reports_nothing_beyond_the_known_library_gap` asserts the findings EQUAL exactly that one message, so a library fix makes the test fail and forces this item.
 

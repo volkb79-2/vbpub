@@ -67,7 +67,7 @@ def _run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> No
 
 
 #: The dependency cmru's wheel must declare (floor per the estate version policy).
-CLI_EXTENDED_REQUIREMENT = "cli-extended>=0.2.0"
+CLI_EXTENDED_REQUIREMENT = "cli-extended>=0.3.0"
 
 
 def check_wheel_contents(wheel: Path) -> None:

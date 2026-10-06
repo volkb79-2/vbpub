@@ -86,7 +86,7 @@ def test_module_invocations_import_cli_extended_from_the_installed_distribution(
 
 # --- build-initial-standalone.sh: the verified cli-extended wheel (D8-style, sha256) ---
 
-_WHEEL_NAME = "cli_extended-0.2.0-py3-none-any.whl"
+_WHEEL_NAME = "cli_extended-0.3.0-py3-none-any.whl"
 
 
 def _toy_wheel(directory: Path) -> tuple[Path, str]:
@@ -135,7 +135,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         # Source mode: the cli-extended wheel-build call. The real handler needs docker (faked
         # above), so this stand-in records the call and builds the same wheel with the real
         # interpreter's pip; the handler's own contract (dist/ in --cwd) is what it reproduces.
-        '  *"-m cmru.handlers wheel-build --cwd "*"/libraries/cli-extended")\n'
+        '  *"-m cmru.handlers wheel-build --cwd "*"/cli-extended")\n'
         '    lib="${*##*--cwd }"\n'
         f'    {{ echo "CXB_ARGS=$*"; echo "CXB_PP=$PYTHONPATH"; echo "CXB_VERSION=$SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED"\n'
         '      echo "CXB_EPOCH=$SOURCE_DATE_EPOCH"; echo "CXB_IMAGE=$CMRU_WHEEL_BUILDER_IMAGE"\n'
@@ -273,7 +273,7 @@ def test_bootstrap_without_a_supplied_wheel_delegates_to_the_digest_verifying_fe
     _run_bootstrap(tree)
 
     fetched = args.read_text(encoding="utf-8").split()
-    assert fetched[fetched.index("--min-version") + 1] == "0.2.0"  # the floor from cmru's pyproject
+    assert fetched[fetched.index("--min-version") + 1] == "0.3.0"  # the floor from cmru's pyproject
     assert "--dest" in fetched
     assert _record(tree)["CX"] == "MARKER = 'released-wheel'"
 
@@ -342,13 +342,13 @@ def test_source_mode_builds_the_wheel_offline_logs_its_sha256_and_stages_it(tmp_
     (built,) = list((library / "dist").glob("cli_extended-*.whl"))
     digest = hashlib.sha256(built.read_bytes()).hexdigest()
     # The run log records the digest of exactly the built wheel, and its +local version.
-    assert f"cli-extended source wheel sha256={digest} file=cli_extended-0.2.0+bootstrap.source-py3-none-any.whl" \
+    assert f"cli-extended source wheel sha256={digest} file=cli_extended-0.3.0+bootstrap.source-py3-none-any.whl" \
         in result.stderr, result.stderr
-    assert built.name == "cli_extended-0.2.0+bootstrap.source-py3-none-any.whl"
+    assert built.name == "cli_extended-0.3.0+bootstrap.source-py3-none-any.whl"
     # It was built by cmru's own wheel-build handler, with the pretend version and the builder image.
     build = dict(line.split("=", 1) for line in Path(f"{tree['record']}.cxbuild").read_text("utf-8").splitlines())
     assert build["CXB_ARGS"].startswith("-s -m cmru.handlers wheel-build --cwd ")
-    assert build["CXB_VERSION"] == "0.2.0+bootstrap.source" and build["CXB_IMAGE"] == "wheel-builder:test"
+    assert build["CXB_VERSION"] == "0.3.0+bootstrap.source" and build["CXB_IMAGE"] == "wheel-builder:test"
     # The library source is on the path for THAT step only ...
     assert str(library / "src") in build["CXB_PP"].split(os.pathsep)
     # ... and the cmru wheel build uses the staged wheel like any other mode.
@@ -379,7 +379,7 @@ def test_the_real_registry_builds_in_a_bare_interpreter_with_the_source_built_wh
     raw = probe_out.read_text(encoding="utf-8") if probe_out.exists() else ""
     lines = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
     assert lines.get("DIST") == "1.2.3" and lines.get("IDENTITY") == "1.2.3", raw
-    assert lines.get("CXV") == "0.2.0+bootstrap.source", raw
+    assert lines.get("CXV") == "0.3.0+bootstrap.source", raw
     assert "site-packages" not in lines["CX"] and "libraries" not in lines["CX"], raw
 
 
@@ -429,7 +429,7 @@ def test_a_wheel_path_mode_value_is_verified_by_sha256_like_the_wheel_variable(t
 
 def _real_cli_extended_wheel(directory: Path) -> tuple[Path, str]:
     """A wheel carrying the REAL installed ``cli_extended`` package (the released
-    0.2.0 in this environment), so the probe below runs the real module."""
+    0.3.0 in this environment), so the probe below runs the real module."""
     import cli_extended
 
     directory.mkdir(parents=True, exist_ok=True)

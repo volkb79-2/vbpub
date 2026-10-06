@@ -25,17 +25,6 @@ from cmru.handlers import handlers_cli
 SPEC = Path(__file__).parents[1] / "docs" / "SPEC.md"
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 
-# The one problem `surface check` still reports: the library's `register_skills_verbs`
-# builds its child registry without the consumer's global options (cli-extended CLI-EXT-26;
-# cmru backlog KI-61). The test requires EXACTLY this message, so a stale manifest, spec
-# region, catalog row or finding fails it, and so does the library fix (which must remove
-# this tolerance).
-_KNOWN_LIBRARY_GAP = {
-    "incomplete parser syntax: cmru skills: delegated parser does not register inherited "
-    "global option(s): --log-prefix-time-short",
-}
-
-
 def _option_strings(parser: argparse.ArgumentParser) -> set[str]:
     return {
         spelling
@@ -51,7 +40,7 @@ def _registered_parsers(registry):
         yield from _registered_parsers(child)
 
 
-def test_surface_check_reports_nothing_beyond_the_known_library_gap():
+def test_surface_check_reports_no_findings():
     from cli_extended import check_cli_surface
     from cli_extended.config import load_project_config
 
@@ -65,9 +54,9 @@ def test_surface_check_reports_nothing_beyond_the_known_library_gap():
         spec_path=cli.spec,
         findings_path=cli.findings,
     )
-    # EQUALITY, not "at most": when cli-extended fixes CLI-EXT-26 this fails and the maintainer
-    # must delete the tolerance and bump the floor (backlog KI-61).
-    assert list(report.findings) == sorted(_KNOWN_LIBRARY_GAP), report.render()
+    # Strict: no tolerance. A stale manifest, spec region, catalog row or finding fails here
+    # (the CLI-EXT-26 tolerance, KI-61, was removed once cli-extended 0.3.0 shipped the fix).
+    assert list(report.findings) == [], report.render()
 
 
 def test_one_cli_entry_covers_root_and_handlers_module_adapter():

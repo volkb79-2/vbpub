@@ -12,12 +12,15 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
 # cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored.
-# Floor 0.2.0: the first release carrying the public API cmru's CLI is built on
-# (CliRegistry/CliIdentity/SelectorList/runtime, CLI-EXT contract_version 1).
+# Floor 0.3.0 (raised from 0.2.0 on 2026-10-06): 0.2.0 was the first release carrying
+# the public API cmru's CLI is built on (CliRegistry/CliIdentity/SelectorList/runtime,
+# CLI-EXT contract_version 1); 0.3.0 is the first whose `register_skills_verbs`
+# forwards the consumer's global options to the skills child registry (CLI-EXT-26),
+# which cmru's `skills` group needs to accept --log-prefix-time-short (KI-61).
 # It is published to GitHub Releases only; the bare name is unclaimed on PyPI, so
 # every install of cmru MUST be `--no-index --find-links <wheelhouse>` (or
 # `--no-deps` after installing cli-extended first); see README "Install" (CX-D2).
-dependencies = ["cli-extended>=0.2.0"]
+dependencies = ["cli-extended>=0.3.0"]
 
 [project.optional-dependencies]
 # tester-unified SoT: cmru's test closure, including coverage and property
@@ -25,10 +28,10 @@ dependencies = ["cli-extended>=0.2.0"]
 test = ["pytest>=8", "pytest-cov>=5.0", "hypothesis>=6.140"]
 versions-templates = ["Jinja2>=3.1,<4"]
 # `cmru init` asks its questions with the cli-extended prompt driver, which needs
-# questionary. cli-extended 0.2.0 declares `interactive = ["questionary>=2.1.1"]`
+# questionary. cli-extended 0.3.0 declares `interactive = ["questionary>=2.1.1"]`
 # (Provides-Extra verified in the released wheel's METADATA); cmru re-exports the
 # extra because the bare cli-extended name is not installable by a cmru user.
-interactive = ["cli-extended[interactive]>=0.2.0"]
+interactive = ["cli-extended[interactive]>=0.3.0"]
 
 [project.scripts]
 cmru = "cmru.cli:main"

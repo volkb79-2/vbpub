@@ -28,7 +28,7 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   requirement, because the closure goes to a PyPI-default `pip` and an
   unclaimed or look-alike name would be installed into an image that is handed
   the host Docker socket. The one exception is `cli-extended` (cmru declares
-  `cli-extended>=0.2.0`): the generator SKIPS that line, so no cli-extended
+  `cli-extended>=0.3.0`): the generator SKIPS that line, so no cli-extended
   requirement ever reaches pip, and the image installs the RELEASED wheel
   instead: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
   (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, currently the

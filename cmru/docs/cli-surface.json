@@ -3147,16 +3147,20 @@
     {
       "id": "case:route:entrypoint:cmru/skills/check/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:cmru/skills/check/--log-prefix-time-short"
+      ],
       "route_id": "route:entrypoint:cmru/skills/check",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:cmru/skills/check/--log-prefix-time-short"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:c3455886abb7155ce4f1e780a5ab257d7d781be62bf08f2be4ce9fb252070727"
+      "signature": "sha256:e8a82f9efdea3d5e97a0b5bb0a835a795a1526072204f5238e5bf63d1a880ccd"
     },
     {
       "id": "case:route:entrypoint:cmru/skills/check/option-choice/option:route:entrypoint:cmru/skills/check/--harness/389432cbf8",
@@ -3250,6 +3254,19 @@
       "signature": "sha256:c92d0c9d071ba128d91aac9c9f39aeb0d3b53b8057c5f4cd0ca974fa00b5861d"
     },
     {
+      "id": "case:route:entrypoint:cmru/skills/check/option-spelling/option:route:entrypoint:cmru/skills/check/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/skills/check/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/skills/check/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:9dad10f1e8e9ba1389d5b8b12081567047fc03d2f1ee593f6af6b5508fa79387"
+    },
+    {
       "id": "case:route:entrypoint:cmru/skills/install/exclusive-conflict/target/option:route:entrypoint:cmru/skills/install/--dest/option:route:entrypoint:cmru/skills/install/--harness",
       "kind": "exclusive-conflict",
       "members": [
@@ -3298,11 +3315,13 @@
       "id": "case:route:entrypoint:cmru/skills/install/minimum",
       "kind": "minimum",
       "members": [
+        "option:route:entrypoint:cmru/skills/install/--log-prefix-time-short",
         "option:route:entrypoint:cmru/skills/install/--overwrite-modified"
       ],
       "route_id": "route:entrypoint:cmru/skills/install",
       "shape": {
         "defaulted_options": [
+          "option:route:entrypoint:cmru/skills/install/--log-prefix-time-short",
           "option:route:entrypoint:cmru/skills/install/--overwrite-modified"
         ],
         "required_argument_values": {},
@@ -3310,7 +3329,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:bd15547ca58bfc1cf81855d8e6249f94e7aff214be607c52c0ebfdf2b018973f"
+      "signature": "sha256:a950d33c4100e4fc23536baf2f17607b10c99d9c54dc27dad14eeda803e5ec21"
     },
     {
       "id": "case:route:entrypoint:cmru/skills/install/option-choice/option:route:entrypoint:cmru/skills/install/--harness/389432cbf8",
@@ -3404,6 +3423,19 @@
       "signature": "sha256:cf1846c84664b30440f477183e1901ecfa44f798a26794ece39b43aec9921bbd"
     },
     {
+      "id": "case:route:entrypoint:cmru/skills/install/option-spelling/option:route:entrypoint:cmru/skills/install/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/skills/install/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/skills/install/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:558f1c873439a9dd694955812a4d4c7d480e3bba7cdb4f798bf41c026ba916cb"
+    },
+    {
       "id": "case:route:entrypoint:cmru/skills/install/option-spelling/option:route:entrypoint:cmru/skills/install/--overwrite-modified/--overwrite-modified",
       "kind": "option-spelling",
       "members": [
@@ -3464,16 +3496,20 @@
     {
       "id": "case:route:entrypoint:cmru/skills/list/minimum",
       "kind": "minimum",
-      "members": [],
+      "members": [
+        "option:route:entrypoint:cmru/skills/list/--log-prefix-time-short"
+      ],
       "route_id": "route:entrypoint:cmru/skills/list",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:cmru/skills/list/--log-prefix-time-short"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:a80725ce1e64c59cad864d990fc247dda98a72309e7a7b83130381496eb3e269"
+      "signature": "sha256:6afe9e180e3e4d19e036499e15a401a0bdec5795fd0be3ff1c52de0ad32c723d"
     },
     {
       "id": "case:route:entrypoint:cmru/skills/list/option-choice/option:route:entrypoint:cmru/skills/list/--harness/389432cbf8",
@@ -3567,6 +3603,19 @@
       "signature": "sha256:3cbc02ef9887f825ba5d4747f61f02a5e2796e823fe31e55d9236ecc14c97f6c"
     },
     {
+      "id": "case:route:entrypoint:cmru/skills/list/option-spelling/option:route:entrypoint:cmru/skills/list/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/skills/list/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/skills/list/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:864ff2cc410996f1a1a9ff1f4e92f9ca7a807800a4d929b263c47857b918f8ee"
+    },
+    {
       "id": "case:route:entrypoint:cmru/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:cmru/skills/uninstall/--dest/option:route:entrypoint:cmru/skills/uninstall/--harness",
       "kind": "exclusive-conflict",
       "members": [
@@ -3615,11 +3664,13 @@
       "id": "case:route:entrypoint:cmru/skills/uninstall/minimum",
       "kind": "minimum",
       "members": [
+        "option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short",
         "option:route:entrypoint:cmru/skills/uninstall/--overwrite-modified"
       ],
       "route_id": "route:entrypoint:cmru/skills/uninstall",
       "shape": {
         "defaulted_options": [
+          "option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short",
           "option:route:entrypoint:cmru/skills/uninstall/--overwrite-modified"
         ],
         "required_argument_values": {},
@@ -3627,7 +3678,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:aafe8fcf4b894b7b3b086968695f49cd156e322110130a5e0c78d8606634671f"
+      "signature": "sha256:cafe484849cd35304d58e66a421857cc5b22c1b90b9f92481b243538f0be17ed"
     },
     {
       "id": "case:route:entrypoint:cmru/skills/uninstall/option-choice/option:route:entrypoint:cmru/skills/uninstall/--harness/389432cbf8",
@@ -3719,6 +3770,19 @@
         "spelling": "--harness"
       },
       "signature": "sha256:94b63d0a515e28d09245a77dd572e16c1a72d8a4a5d35f812d87afea7e919ff3"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/skills/uninstall/option-spelling/option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:7d00850f2850604c1c30d7b9bbd9594f7affaaef75ae53ab6a0974b435a43f1b"
     },
     {
       "id": "case:route:entrypoint:cmru/skills/uninstall/option-spelling/option:route:entrypoint:cmru/skills/uninstall/--overwrite-modified/--overwrite-modified",
@@ -4928,9 +4992,7 @@
     "prog": "cmru",
     "single_command": false
   },
-  "incomplete": [
-    "cmru skills: delegated parser does not register inherited global option(s): --log-prefix-time-short"
-  ],
+  "incomplete": [],
   "interaction_issues": [],
   "library_contract": {
     "name": "cli-extended",
@@ -11217,11 +11279,56 @@
       ],
       "summary": "install, check, or remove this tool's packaged agent skills",
       "synopsis_override": null,
-      "syntax_complete": false,
+      "syntax_complete": true,
       "usage_override": null
     },
     {
       "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/skills/check/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
@@ -11344,7 +11451,9 @@
       "id": "route:entrypoint:cmru/skills/check",
       "kind": "invocation",
       "no_args_action": false,
-      "opaque_fields": [],
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/skills/check/--log-prefix-time-short.action"
+      ],
       "parser_configured_by_callback": false,
       "parser_settings": [
         {
@@ -11399,11 +11508,56 @@
       "subcommands_required": false,
       "summary": "exit 1 unless every packaged skill is current",
       "synopsis_override": null,
-      "syntax_complete": false,
+      "syntax_complete": true,
       "usage_override": null
     },
     {
       "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/skills/install/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
@@ -11569,7 +11723,9 @@
       "id": "route:entrypoint:cmru/skills/install",
       "kind": "invocation",
       "no_args_action": false,
-      "opaque_fields": [],
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/skills/install/--log-prefix-time-short.action"
+      ],
       "parser_configured_by_callback": false,
       "parser_settings": [
         {
@@ -11624,11 +11780,56 @@
       "subcommands_required": false,
       "summary": "install or update the packaged skills, removing orphans [mutating; dry-run]",
       "synopsis_override": null,
-      "syntax_complete": false,
+      "syntax_complete": true,
       "usage_override": null
     },
     {
       "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/skills/list/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
@@ -11751,7 +11952,9 @@
       "id": "route:entrypoint:cmru/skills/list",
       "kind": "invocation",
       "no_args_action": false,
-      "opaque_fields": [],
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/skills/list/--log-prefix-time-short.action"
+      ],
       "parser_configured_by_callback": false,
       "parser_settings": [
         {
@@ -11806,11 +12009,56 @@
       "subcommands_required": false,
       "summary": "list packaged skills and their installed state",
       "synopsis_override": null,
-      "syntax_complete": false,
+      "syntax_complete": true,
       "usage_override": null
     },
     {
       "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
@@ -11976,7 +12224,9 @@
       "id": "route:entrypoint:cmru/skills/uninstall",
       "kind": "invocation",
       "no_args_action": false,
-      "opaque_fields": [],
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short.action"
+      ],
       "parser_configured_by_callback": false,
       "parser_settings": [
         {
@@ -12031,7 +12281,7 @@
       "subcommands_required": false,
       "summary": "remove the skills this tool installed [mutating; dry-run]",
       "synopsis_override": null,
-      "syntax_complete": false,
+      "syntax_complete": true,
       "usage_override": null
     },
     {
@@ -14683,5 +14933,5 @@
     }
   ],
   "schema_version": 7,
-  "syntax_complete": false
+  "syntax_complete": true
 }

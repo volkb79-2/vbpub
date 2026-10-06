@@ -7,7 +7,7 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 
 ## Install
 
-cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.2.0`, the shared CLI
+cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
 contract layer). It is published to GitHub Releases only, never PyPI: the bare name is
 unclaimed there, so a plain `pip install cmru` or `pip install -e .` would query the
 index for it. Install it first, from the release, verified by the sha256 in

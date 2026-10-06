@@ -71,7 +71,7 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 # generator REFUSES any estate-internal name (worktree, cmru, assay, ciu, ...):
 # `worktree` is an unrelated PyPI project and `cli-extended` is unclaimed on
 # PyPI, i.e. a dependency-confusion path into an image that is handed the host
-# Docker socket. cmru declares `cli-extended>=0.2.0`; the generator SKIPS that
+# Docker socket. cmru declares `cli-extended>=0.3.0`; the generator SKIPS that
 # one line (no cli-extended requirement ever reaches pip), and the image installs
 # the RELEASED cli-extended wheel instead: fetch-cli-extended.py downloads the
 # pinned release asset (default; or `cli-extended-latest/latest.json` as an opt-in),
@@ -80,7 +80,7 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 # COPYed source, in a throwaway venv holding only its pinned build backends
 # (`--no-index --no-deps --no-build-isolation`), and installed from that local
 # wheel, whose local version segment (+tester.unified) no PyPI release can have.
-# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.2.0 asset
+# PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.3.0 asset
 # and its sha256 IN THIS REPOSITORY, so the digest is an independent pin and not
 # something `latest.json` can vouch for over the same TLS channel. Because the pin
 # is build-arg text, a changed pin is a changed RUN layer: no stale cache. TO BUMP:
@@ -107,8 +107,8 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
-ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.2.0/cli_extended-0.2.0-py3-none-any.whl
-ARG CLI_EXTENDED_WHEEL_SHA256=84ec3db81e8a4eaa931e57786f9b07395382af2601562f067b56fadbf3f3b58b
+ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.3.0/cli_extended-0.3.0-py3-none-any.whl
+ARG CLI_EXTENDED_WHEEL_SHA256=a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50
 RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
@@ -128,7 +128,7 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       mkdir -p /tmp/cli-extended-release && cp "$1" /tmp/cli-extended-release/; \
     else \
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
-        --dest /tmp/cli-extended-release --min-version 0.2.0 "$@"; \
+        --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
     fi
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \

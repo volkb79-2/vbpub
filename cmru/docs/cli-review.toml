@@ -3954,7 +3954,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/check/exc
 id = "case:route:entrypoint:cmru/skills/check/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:c3455886abb7155ce4f1e780a5ab257d7d781be62bf08f2be4ce9fb252070727"
+reviewed_signature = "sha256:e8a82f9efdea3d5e97a0b5bb0a835a795a1526072204f5238e5bf63d1a880ccd"
 rationale = "Nothing is required: it checks every harness (the default) and exits 1 unless every packaged skill is current."
 invocation = ["skills", "check"]
 expected_exit_status = 1
@@ -4055,6 +4055,19 @@ effects = ["Read-only under the sandbox HOME; machine output only."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/check/option-spelling/--json/--json]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/skills/check/option-spelling/option:route:entrypoint:cmru/skills/check/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9dad10f1e8e9ba1389d5b8b12081567047fc03d2f1ee593f6af6b5508fa79387"
+rationale = "Consumer-global presentation option, inherited by the library's skills group since cli-extended 0.3.0 (CLI-EXT-26); the parser must accept it (a parse error would exit 2) and the check must still run and report the real, absent skill state."
+invocation = ["skills", "check", "--log-prefix-time-short"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "skill(s) are not current"
+effects = ["Presentation only; the check stays read-only under the sandbox HOME."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/check/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/skills/install/exclusive-conflict/target/option:route:entrypoint:cmru/skills/install/--dest/option:route:entrypoint:cmru/skills/install/--harness"
 state = "active"
 decision = "refuse"
@@ -4097,7 +4110,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/install/e
 id = "case:route:entrypoint:cmru/skills/install/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:bd15547ca58bfc1cf81855d8e6249f94e7aff214be607c52c0ebfdf2b018973f"
+reviewed_signature = "sha256:a950d33c4100e4fc23536baf2f17607b10c99d9c54dc27dad14eeda803e5ec21"
 rationale = "Nothing is required: it installs the packaged skill into every harness directory (the default); a locally modified skill is never overwritten without --overwrite-modified."
 invocation = ["skills", "install"]
 expected_exit_status = 0
@@ -4211,6 +4224,19 @@ effects = ["Writes only under the sandbox HOME."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/install/option-spelling/--overwrite-modified/--overwrite-modified]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/skills/install/option-spelling/option:route:entrypoint:cmru/skills/install/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:558f1c873439a9dd694955812a4d4c7d480e3bba7cdb4f798bf41c026ba916cb"
+rationale = "Consumer-global presentation option, inherited by the library's skills group since cli-extended 0.3.0 (CLI-EXT-26); the parser must accept it (a parse error would exit 2) and the install must still happen."
+invocation = ["skills", "install", "--log-prefix-time-short"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cmru-cli"
+expected_stderr_contains = ""
+effects = ["Presentation only; writes only under the sandbox HOME."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/install/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/skills/list/exclusive-conflict/target/option:route:entrypoint:cmru/skills/list/--dest/option:route:entrypoint:cmru/skills/list/--harness"
 state = "active"
 decision = "refuse"
@@ -4253,7 +4279,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/list/excl
 id = "case:route:entrypoint:cmru/skills/list/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:a80725ce1e64c59cad864d990fc247dda98a72309e7a7b83130381496eb3e269"
+reviewed_signature = "sha256:6afe9e180e3e4d19e036499e15a401a0bdec5795fd0be3ff1c52de0ad32c723d"
 rationale = "Nothing is required: it prints each packaged skill's installed state per harness and always exits 0."
 invocation = ["skills", "list"]
 expected_exit_status = 0
@@ -4354,6 +4380,19 @@ effects = ["Read-only under the sandbox HOME; machine output only."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/list/option-spelling/--json/--json]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/skills/list/option-spelling/option:route:entrypoint:cmru/skills/list/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:864ff2cc410996f1a1a9ff1f4e92f9ca7a807800a4d929b263c47857b918f8ee"
+rationale = "Consumer-global presentation option, inherited by the library's skills group since cli-extended 0.3.0 (CLI-EXT-26); the parser must accept it (a parse error would exit 2) and the listing must still show the real, absent skill state."
+invocation = ["skills", "list", "--log-prefix-time-short"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Presentation only; read-only under the sandbox HOME."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/list/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:cmru/skills/uninstall/--dest/option:route:entrypoint:cmru/skills/uninstall/--harness"
 state = "active"
 decision = "refuse"
@@ -4396,7 +4435,7 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/uninstall
 id = "case:route:entrypoint:cmru/skills/uninstall/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:aafe8fcf4b894b7b3b086968695f49cd156e322110130a5e0c78d8606634671f"
+reviewed_signature = "sha256:cafe484849cd35304d58e66a421857cc5b22c1b90b9f92481b243538f0be17ed"
 rationale = "Nothing is required: it removes the packaged skill from every harness directory; a locally modified skill is kept without --overwrite-modified."
 invocation = ["skills", "uninstall"]
 expected_exit_status = 0
@@ -4508,5 +4547,18 @@ expected_stdout_contains = "skipped cmru-cli"
 expected_stderr_contains = ""
 effects = ["Removes only under the sandbox HOME (absent here, so skipped)."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/uninstall/option-spelling/--overwrite-modified/--overwrite-modified]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/skills/uninstall/option-spelling/option:route:entrypoint:cmru/skills/uninstall/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7d00850f2850604c1c30d7b9bbd9594f7affaaef75ae53ab6a0974b435a43f1b"
+rationale = "Consumer-global presentation option, inherited by the library's skills group since cli-extended 0.3.0 (CLI-EXT-26); the parser must accept it (a parse error would exit 2) and the uninstall must still run (nothing installed in the sandbox, so it skips)."
+invocation = ["skills", "uninstall", "--log-prefix-time-short"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cmru-cli"
+expected_stderr_contains = ""
+effects = ["Presentation only; removes only under the sandbox HOME (absent here, so skipped)."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[skills/uninstall/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 # --END-OF-CATALOG-CHUNKS--

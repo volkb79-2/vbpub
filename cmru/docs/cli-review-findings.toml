@@ -3,17 +3,17 @@ cli_id = "cmru"
 
 # Judged 2026-10-06 (W2-PKG5) with the cli-extended-review rubric over `cli-extended surface pack`
 # for the whole surface (root, 9 delegates, 2 groups, 35 routes), plus `cli-extended audit --cli cmru`
-# (13 pass, 0 warn, 0 manual, 2 fail = the CLI-EXT-26 gap below; 0 `manual` items were produced, so
-# nothing is recorded for them).
+# (13 pass, 0 warn, 0 manual, 2 fail = the CLI-EXT-26 gap below, since fixed by cli-extended 0.3.0
+# and re-verified 2026-10-06; 0 `manual` items were produced, so nothing is recorded for them).
 
 [[findings]]
 id = "adoption-skills-global-option"
-status = "open"
+status = "fixed"
 severity = "minor"
 category = "adoption"
 route = "route:entrypoint:cmru/skills"
-summary = "`cmru skills` does not accept the root global option --log-prefix-time-short (cli-extended 0.2.0 register_skills_verbs builds its child registry without global_options; CLI-EXT-26). `surface check` and audit AC-17/AC-18 report it."
-remedy = "Accepted for cmru 6.0.0 by controller ruling: do not re-implement the group with private helpers. When cli-extended ships the CLI-EXT-26 fix, bump the cli-extended floor, delete the tolerance in tests/test_cli_spec_inventory.py (backlog KI-61) and close this finding."
+summary = "`cmru skills` did not accept the root global option --log-prefix-time-short (cli-extended 0.2.0 register_skills_verbs built its child registry without global_options; CLI-EXT-26). `surface check` and audit AC-17/AC-18 reported it."
+remedy = "Fixed upstream in cli-extended 0.3.0 (CLI-EXT-26); cmru's floor is now `cli-extended>=0.3.0`, the tolerance in tests/test_cli_spec_inventory.py is deleted (the surface check is strict again) and the skills/--log-prefix-time-short catalog cases are reviewed (backlog KI-61 resolved 2026-10-06)."
 
 [[findings]]
 id = "bug-bundle-manifest-traceback"

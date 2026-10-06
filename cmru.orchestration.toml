@@ -143,7 +143,7 @@ depends_on = []
 # cmru's own release tooling is cmru, but it can never depend on itself: the
 # first release uses the source-bootstrapped cmru (cmru/build-initial-standalone.sh,
 # docs/BOOTSTRAP-FROM-ZERO.md). Its REAL runtime dependency is the cli-extended
-# wheel (cmru/pyproject.toml `cli-extended>=0.2.0`); the pyproject guard in
+# wheel (cmru/pyproject.toml `cli-extended>=0.3.0`); the pyproject guard in
 # `cmru dependencies` requires this edge. cli-extended does NOT depend on cmru here
 # although cmru releases it: that would be a cycle (see the bootstrap doc).
 [orchestration.project.cmru]

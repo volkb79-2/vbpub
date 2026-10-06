@@ -307,15 +307,15 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     assert fetcher._at_least(named["version"], spec.replace(" ", "").split(">=")[1])
     assert re.fullmatch(r"[0-9a-f]{64}", digest)
     # PKG-4 N8: the literal default digest, verified against the downloaded
-    # cli_extended-0.2.0 wheel; a changed pin must be a deliberate edit here too.
-    assert digest == "84ec3db81e8a4eaa931e57786f9b07395382af2601562f067b56fadbf3f3b58b"
+    # cli_extended-0.3.0 wheel (release cli-extended-v0.3.0); a changed pin must be a deliberate edit here too.
+    assert digest == "a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50"
     flat = " ".join(re.sub(r"\\\n\s*", " ", _dockerfile_run_lines()).split())
     # pinned branch passes the pin, latest branch passes only the pointer, anything else fails the build.
     assert re.search(r'pinned\) set -- --wheel-url "\$\{CLI_EXTENDED_WHEEL_URL\}" '
                      r'--sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
     assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" ;;', flat)
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
-    assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.2.0 "$@"' in flat
+    assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"' in flat
 
 
 def _local_mode_script(tmp_path: Path) -> str:
