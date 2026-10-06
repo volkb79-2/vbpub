@@ -11807,7 +11807,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B140 — no project-level default for `env_passthrough`
 
-**Status: OPEN (filed 2026-09-30 from dstdns; 118 of dstdns's lanes declare `env_passthrough`, only about 40 carry `BUILD_VERSION`).**
+**Status: IMPLEMENTED on `assay-73-A` (2026-10-06; the code and its oracle tests were already on `main` from the v14 bundle `9ae442998`, found unmarked and re-verified against every oracle here; plant `effective_env_passthrough` = lane-list-or-default is killed by 2 tests; report `reports/assay-73-A-REPORT.md`). Filed 2026-09-30 from dstdns; 118 of dstdns's lanes declare `env_passthrough`, only about 40 carry `BUILD_VERSION`.**
 
 **Observed:** `src/assay/config.py` (l.1555) reads `table["env_passthrough"]` per lane with no inherited default, and the file-level schema has no defaults table. dstdns has a common set of names (BUILD_VERSION and others) that every lane needs; a new lane that omits one fails its first run `COMMAND_FAILED` (for example a test that reads `BUILD_VERSION`), after a full run's cost, and the fix is to add the name and rerun.
 
@@ -11819,7 +11819,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B141 — changed-lines lanes cannot scope to files: `judge.source_roots` must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests
 
-**Status: OPEN (filed 2026-09-30 from dstdns, P214/P2xx R2 campaign, `nyxloom-trove/decisions.md` D-577; source-grounded for the directory requirement, the false-survivor mechanism is dstdns's measured rationale for D-577, not re-run here).**
+**Status: IMPLEMENTED on `assay-73-A` (2026-10-06; the code and its oracle tests were already on `main` from the v14 bundle `9ae442998` and the exact-file tracked check in `runner.py`, found unmarked and re-verified here; plant "file root treated as its parent directory" is killed by 2 tests; report `reports/assay-73-A-REPORT.md`). Filed 2026-09-30 from dstdns, P214/P2xx R2 campaign, `nyxloom-trove/decisions.md` D-577; source-grounded for the directory requirement, the false-survivor mechanism is dstdns's measured rationale for D-577, not re-run here).**
 
 **Observed:** `src/assay/config.py` (l.~3655) rejects any `judge.source_roots` entry that is not an existing directory (`if not resolved.is_dir(): raise LaneConfigError(... does not exist under the project root)`); `measurability.py` (l.~52-84) selects changed files by `is_relative_to(root)` for the roots. A changed-lines R2 lane (`base_source = "request"`) whose package owns one or two files in a shared directory therefore must declare the whole directory. Run at a later HEAD than its package's merge, the changed-line set (base..HEAD) also contains OTHER packages' edits to sibling files in that directory; those lines are mutated and judged against THIS lane's test suite, which does not cover them, yielding false survivors.
 
@@ -11835,7 +11835,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B142 — passthrough secrets and command-output echoes land in verdict JSON
 
-**Status: OPEN (filed 2026-10-04 from dstdns, P241 gate diagnosis; source-grounded; assay 7.2.0).**
+**Status: IMPLEMENTED on `assay-73-A` (2026-10-06; the contract below was already on `main` from the v14 bundle and the B142 review repairs, found unmarked; `assay-73-A` adds `tests/core/test_cli_passthrough_secret_e2e.py`, a real-CLI run that plants fake secrets and greps the whole output directory, the repository checkout and captured stdout/stderr; the plant "write passthrough values verbatim" is killed by it and by 7 existing tests; report `reports/assay-73-A-REPORT.md`). Filed 2026-10-04 from dstdns, P241 gate diagnosis; source-grounded; assay 7.2.0.**
 
 **Observed:** `resolve_command_plan` (`src/assay/runner.py` l.~877) copies every `env_passthrough` name's value into `env_effective`, and `verdict.py` l.~5438 serialises it unchanged (`payload["env_effective"] = dict(self.env_effective or {})`). dstdns's `[lanes.mock]` passes through the test-runner's database credentials, so `.assay/verdict-mock.json` holds `POSTGRES_PASSWORD=<value>` in clear text. `[lanes.schema-*]` passes `SCHEMA_GATE_DSN` (a DSN with credentials) the same way. The value then travels wherever a verdict goes: a controller printing a verdict to diagnose a failure, a review that quotes it, `run-gate history`/evidence copies, CI artifacts. In dstdns it reached a session transcript while diagnosing a LANE_TIMEOUT.
 
