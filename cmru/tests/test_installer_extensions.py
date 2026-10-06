@@ -517,6 +517,14 @@ class TestRealProjects:
     def test_ciu_inlines_its_own_enroll_fragment_and_matches_the_committed_file(self):
         if not (REPO / "ciu" / "installer" / "enroll.py").exists():
             pytest.skip("ciu enroll fragment not present")
+        # TODO(cmru-6.0 post-release): remove shim. LANDPREP removed the `extensions`
+        # line from ciu/cmru.toml so the OLD cmru 5.5 can read main; restore it and
+        # delete this skip together.
+        import tomllib
+
+        declared = tomllib.loads((REPO / "ciu" / "cmru.toml").read_text(encoding="utf-8"))
+        if "extensions" not in declared["project"]["installer"]:
+            pytest.skip("ciu/cmru.toml extensions shim active (LANDPREP compat window)")
         out = render_from_config("ciu", self.CENTRAL)
         raw = (REPO / "ciu" / "installer" / "enroll.py").read_bytes()
         assert f"# --- extension: installer/enroll.py sha256={hashlib.sha256(raw).hexdigest()} ---" in out
