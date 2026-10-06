@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -45,6 +46,9 @@ def raw_bundle(workdir: Path, tag: str, entries, *, sidecar: bool = True) -> Pat
         for name, kind, payload, mode in entries:
             info = tarfile.TarInfo(name)
             info.mode = mode
+            # owned by the test user, so a (mocked-root) extraction's chown succeeds and the
+            # chmod after it runs: that is what makes a kept setuid bit observable
+            info.uid, info.gid = os.getuid(), os.getgid()
             if kind == "file":
                 info.size = len(payload)
                 tf.addfile(info, io.BytesIO(payload))
@@ -614,15 +618,14 @@ class TestSurvivorsKilled:
         _unchanged_after_failure(tmp_path, V2, _std(
             V2, files, extra=[(f"{V2}/VERSION", "file", b"2", 0o644)]))
 
-    def test_m05_manifest_that_is_a_symlink_refused(self, tmp_path):
+    def test_m05_manifest_that_is_a_symlink_to_a_valid_manifest_is_refused(self, tmp_path):
+        """`manifest.json` -> `manifest.json.minisig`, whose bytes are a perfectly valid
+        manifest. Both names are exempt from the unlisted-member rule (they are read
+        separately), so only the manifest-must-be-a-regular-file rule stops it."""
         files = {"VERSION": b"2"}
         entries = [(f"{V2}/VERSION", "file", b"2", 0o644),
-                   (f"{V2}/manifest.json", "sym", "VERSION", 0o777)]
-        _unchanged_after_failure(tmp_path, V2, entries)
-
-    def test_m05_manifest_that_is_a_directory_refused(self, tmp_path):
-        entries = [(f"{V2}/VERSION", "file", b"2", 0o644),
-                   (f"{V2}/manifest.json", "dir", None, 0o755)]
+                   (f"{V2}/manifest.json", "sym", "manifest.json.minisig", 0o777),
+                   (f"{V2}/manifest.json.minisig", "file", manifest_for(V2, files), 0o644)]
         _unchanged_after_failure(tmp_path, V2, entries)
 
     def test_m08_recorded_manifest_digest_is_compared_on_reuse(self, tmp_path):
@@ -725,9 +728,12 @@ class TestSurvivorsKilled:
         wd = tmp_path / "w"
         cx = make_wheel(wd, "cli-extended", "1.0.0")
         t1 = make_wheel(wd, "demotool", "1.0.0", console="demotool")
-        t2 = make_wheel(wd, "demotool", "1.0.1", console="demotool")
-        make_bundle(tmp_path / "b", V1,
-                    wheels=[("cli-extended", cx), ("demotool", t1), ("demotool", t2)])
+        # a byte-identical second copy under another name: the manifest's hash (no `wheel`
+        # name given) fits BOTH, so only the exactly-one-match rule can refuse the bundle
+        entry = {"sha256": sha(t1.read_bytes()), "size": t1.stat().st_size}
+        make_bundle(tmp_path / "b", V1, wheels=[("cli-extended", cx), ("demotool", t1)],
+                    manifest_extra={"demotool": entry},
+                    extra_members=[("vendor/demotool-1.0.1-py3-none-any.whl", t1.read_bytes())])
         use_bundles(ns, tmp_path / "b")
         with _exits(1):
             install(ns, version=V1)
@@ -769,8 +775,12 @@ class TestSurvivorsKilled:
         install(ns, version=V1)
         root = root_of(ns)
         half = root / "releases" / "demo-v9.9.9-halfway"
-        half.mkdir()
+        shutil.copytree((root / "current").resolve(), half, symlinks=True)
+        (half / ".complete").unlink()  # a valid release.json, but never completed
         (half / ".incomplete").write_text("")
+        meta = json.loads((half / "release.json").read_text())
+        meta.update(name=half.name, tag="demo-v9.9.9")  # not the version asked for below
+        (half / "release.json").write_text(json.dumps(meta))
         (root / "current.new").symlink_to(half)
         os.replace(root / "current.new", root / "current")
         with _exits(1):
