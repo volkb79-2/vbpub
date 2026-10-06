@@ -105,11 +105,21 @@ def test_delegate_built_with_the_factory_inherits_the_global_option(monkeypatch)
     assert os.environ[output._TIME_ENV] == "1"
 
 
-def test_module_entry_and_root_builders_agree_on_the_policy():
-    # Every builder that has been switched over shares the constant; this pins
-    # the root so PKG-1/2 cannot drift from it unnoticed.
-    root = cli._build_cli()
-    assert root.unexpected_exceptions == cli_support.UNEXPECTED_EXCEPTIONS_POLICY
+def test_module_entry_and_root_builders_agree_on_the_policy(monkeypatch):
+    # The root goes through the factory, so flipping the one constant moves it
+    # (non-vacuous: a root built with its own literal would stay "raise").
+    assert cli._build_cli().unexpected_exceptions == "raise"
+    monkeypatch.setattr(cli_support, "UNEXPECTED_EXCEPTIONS_POLICY", "report")
+    flipped = cli._build_cli  # delegates still build their own registries
+    try:
+        built = flipped()
+    except ValueError as mismatch:
+        # Until every delegate module uses the factory the library refuses the
+        # parent/delegate mismatch: that refusal IS the proof the root follows
+        # the constant while an un-migrated delegate does not.
+        assert "differs from" in str(mismatch)
+    else:
+        assert built.unexpected_exceptions == "report"
 
 
 # --- selector ----------------------------------------------------------------
@@ -135,7 +145,7 @@ def test_target_argument_shape_and_parse_results():
 
 
 def _legacy(raw, *, projects=PROJECTS, order=ORDER, context=None, monkeypatch=None):
-    """cli._select_projects is the behavioural oracle (explicit target: no discovery)."""
+    """cli._select_projects (explicit target: no discovery) for the failure paths."""
     if raw is None:
         from types import SimpleNamespace
 
@@ -146,15 +156,54 @@ def _legacy(raw, *, projects=PROJECTS, order=ORDER, context=None, monkeypatch=No
     return cli._select_projects(Path("cmru.toml"), raw, projects, order)
 
 
+# Literal expectations, derived from the pre-change behaviour
+# (``git show 839e8841c:cmru/src/cmru/cli_support.py``): matching is
+# case-sensitive, ``all`` (also padded) means the whole declared order, and any
+# named subset comes back in DECLARED order, never the order given.
 @pytest.mark.parametrize(
-    "raw",
-    ["all", " all ", "mid", "mid,zeta", "zeta,mid,alpha", "alpha, mid", "mid,alpha,zeta"],
+    "raw, expected",
+    [
+        ("all", ["zeta", "alpha", "mid"]),
+        (" all ", ["zeta", "alpha", "mid"]),
+        ("mid", ["mid"]),
+        ("mid,zeta", ["zeta", "mid"]),
+        ("zeta,mid,alpha", ["zeta", "alpha", "mid"]),
+        ("alpha, mid", ["alpha", "mid"]),
+        ("mid,alpha,zeta", ["zeta", "alpha", "mid"]),
+    ],
 )
-def test_adapter_matches_the_legacy_selection_on_the_library_result(raw):
-    parsed = SelectorList()(raw)
-    expected = _legacy(raw)
-    assert select_target_names(parsed, PROJECTS, ORDER) == expected
+def test_adapter_selection_matches_the_recorded_legacy_results(raw, expected):
+    assert select_target_names(SelectorList()(raw), PROJECTS, ORDER) == expected
     assert select_target_names(raw, PROJECTS, ORDER) == expected  # legacy string still works
+    assert _legacy(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["All", "ALL"])
+def test_all_is_case_sensitive_so_other_spellings_are_unknown_projects(raw):
+    # Legacy: "All"/"ALL" are project names, hence "unknown project(s)".
+    with pytest.raises(TargetSelectionError, match=f"unknown project.*{raw}"):
+        select_target_names(SelectorList()(raw), PROJECTS, ORDER)
+    with pytest.raises(TargetSelectionError, match=f"unknown project.*{raw}"):
+        select_target_names(raw, PROJECTS, ORDER)
+
+
+def test_all_with_a_registry_project_absent_from_the_order_returns_only_ordered_ones():
+    projects = {"alpha": 1, "extra": 2}
+    # Legacy: ``all`` is the project_order filtered by the registry; "extra" is
+    # loaded but not orchestrated, so it is never selected by ``all``.
+    assert select_target_names(SelectorList.ALL, projects, ["alpha"]) == ["alpha"]
+    # Legacy quirk kept: naming it selects nothing, because results are filtered
+    # through the declared order.
+    assert select_target_names(("extra",), projects, ["alpha"]) == []
+
+
+def test_target_argument_accepts_a_non_default_name_and_description():
+    spec = target_argument("pick projects", name="projects")
+    parser = argparse.ArgumentParser(prog="t")
+    parser.add_argument(spec.name, **dict(spec.parser_kwargs))
+    assert spec.name == "projects" and spec.description == "pick projects"
+    assert parser.parse_args(["mid,zeta"]).projects == ("mid", "zeta")
+    assert parser.parse_args([]).projects is None
 
 
 def test_adapter_all_keeps_declared_order_not_given_order():

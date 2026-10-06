@@ -68,12 +68,12 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     )
     exc = cli.main([
             "release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml"),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
         ])
     assert exc == 0
     assert calls[:2] == [
         "copy",
-        ("child", ["demo", "--discard-logs-on-release", "--discard-artifacts-on-release", "--config", "cmru.toml"], {"project_names": ["demo"]}),
+        ("child", ["demo", "--discard", "logs", "--discard", "artifacts", "--config", "cmru.toml"], {"project_names": ["demo"]}),
     ]
     assert calls[2:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out

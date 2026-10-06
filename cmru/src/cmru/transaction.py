@@ -3430,10 +3430,12 @@ def run_child(
         env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
         candidate_cmru = workspace.path / "cmru" / "src"
         if "cmru" in project_names and (candidate_cmru / "cmru" / "cli.py").is_file():
+            # D10: a self-release runs the candidate cmru against the
+            # installed cli-extended wheel its floor names, never a candidate
+            # source checkout of the library.
             source_roots = [
                 candidate_cmru,
                 workspace.path / "libraries" / "worktree" / "src",
-                workspace.path / "libraries" / "cli-extended" / "src",
             ]
             source_paths = [str(path) for path in source_roots if path.is_dir()]
             inherited = env.get("PYTHONPATH", "")

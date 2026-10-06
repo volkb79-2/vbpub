@@ -1458,7 +1458,7 @@ def test_bound_cmru_launcher_precedes_ambient_path_and_checks_identity(monkeypat
         cli._create_bound_cmru_launcher(mismatched)
 
 
-def test_bound_cmru_launcher_imports_sibling_sources_with_isolated_python(
+def test_bound_cmru_launcher_imports_only_the_worktree_sibling_source_with_isolated_python(
     monkeypatch, tmp_path,
 ):
     repo_root = tmp_path / "repo"
@@ -1483,11 +1483,13 @@ def test_bound_cmru_launcher_imports_sibling_sources_with_isolated_python(
     monkeypatch.delenv("PYTHONPATH", raising=False)
 
     def write_cli(import_worktree: bool) -> None:
-        imports = "from cli_extended import SOURCE_MARKER as CLI_EXTENDED_MARKER\n"
-        expected = "CLI_EXTENDED_MARKER == 'source'"
+        # D10: cli-extended is an installed wheel dependency, so its checkout
+        # (present here) must NOT be put on the launcher's import path.
+        imports = ""
+        expected = "not any('cli-extended' in entry for entry in sys.path)"
         if import_worktree:
             imports += "from worktree import SOURCE_MARKER as WORKTREE_MARKER\n"
-            expected = "CLI_EXTENDED_MARKER == WORKTREE_MARKER == 'source'"
+            expected += " and WORKTREE_MARKER == 'source'"
         (cmru_package / "cli.py").write_text(
             imports
             + "import sys\n"

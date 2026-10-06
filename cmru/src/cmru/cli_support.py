@@ -26,31 +26,37 @@ def cmru_headline() -> str:
 
 
 def cmru_version() -> str:
-    """Return CMRU's authoritative source or installed version."""
-    try:
-        from cmru.cli import _cmru_version
+    """Return CMRU's version from installed distribution metadata only (D2).
 
-        version = _cmru_version()
-    except Exception:  # pragma: no cover - only protects bootstrap diagnostics
-        try:
-            from importlib.metadata import version
-
-            version = version("cmru")
-        except Exception:
-            version = "dev"
-    return version
+    Raises ``cli_extended.identity.VersionLookupError`` when ``cmru`` is not
+    installed as a distribution; there is no source-tree or literal fallback.
+    """
+    return cmru_identity(command=CMRU_COMMAND, long_name=CMRU_LONG_NAME).version
 
 
 def cmru_identity(*, command: str, long_name: str) -> CliIdentity:
     """Build the identity shared by CMRU's installed command entrypoints."""
     from cli_extended import CliIdentity
 
-    return CliIdentity(
+    return CliIdentity.resolve(
         name="CMRU",
-        version=cmru_version(),
         long_name=long_name,
         command=command,
+        distribution=CMRU_DISTRIBUTION,
     )
+
+
+NOT_INSTALLED_MESSAGE = (
+    "cmru is not installed as a distribution; install the wheel (see README)"
+)
+
+
+def report_not_installed() -> int:
+    """Print the one-line prerequisite diagnostic and return exit code 3."""
+    from cmru import exit_codes
+
+    print(f"[ERROR] {NOT_INSTALLED_MESSAGE}", file=sys.stderr, flush=True)
+    return exit_codes.PREREQ_MISSING
 
 
 class _ShortTimePrefixAction(argparse.Action):

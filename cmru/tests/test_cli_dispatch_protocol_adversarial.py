@@ -151,7 +151,7 @@ def test_publish_dispatch_refuses_missing_project_credential_before_runner(monke
     ran = []
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: ran.append(True))
     with pytest.raises(RuntimeError, match="Publishing requires"):
-        cli.main(["publish", "--config", str(cfg), "demo"])
+        cli.main(["publish", "--config", str(cfg), "--from-checkout", "demo"])
     assert ran == []
 
 

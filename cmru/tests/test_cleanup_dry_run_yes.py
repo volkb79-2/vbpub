@@ -96,11 +96,10 @@ def estate(monkeypatch, tmp_path):
 
 
 MODES = {
-    "policy": ["demo"],
+    "policy": ["demo", "--policy"],
     "remove-assets": ["--remove-assets", "30d"],
     "unmanaged-release-tag": ["demo", "--delete-unmanaged-release-tag", "demo-unmanaged-old"],
     "build-output": ["demo", "--delete-build-output", "20260101_000000-" + "a" * 40],
-    "build-worktree": ["--discard-build-worktree", "/tmp/cmru-build-x"],
 }
 
 
@@ -125,6 +124,27 @@ def test_remove_assets_refuses_a_project_target_before_touching_anything(estate,
         capsys.readouterr().err
     )
     assert not _SpyPlan.created or not _SpyPlan.created[0].actions
+
+
+def test_a_bare_cleanup_names_the_required_modes_and_changes_nothing(estate, capsys):
+    """Redesign B5: the most destructive mode is never the implicit default."""
+    rc = cli.main(["cleanup", "--dry-run"])
+
+    err = capsys.readouterr().err
+    assert rc == 2
+    for mode in ("--policy", "--remove-assets", "--delete-unmanaged-release-tag", "--delete-build-output"):
+        assert mode in err
+    assert not _SpyPlan.created
+
+
+def test_cleanup_no_longer_discards_build_worktrees(estate, capsys):
+    """Redesign B6: that object belongs to ``abandon [BRANCH|PATH]``."""
+    rc = cli.main(["cleanup", "--discard-build-worktree", "/tmp/cmru-build-x", "--dry-run"])
+
+    assert rc == 2
+    # argparse refuses before any work; the mode list it prints has no such mode
+    err = capsys.readouterr().err
+    assert "--delete-build-output" in err and "--discard-build-worktree" not in err.split("--config")[0]
 
 
 def test_without_dry_run_the_same_plan_is_applied(estate, monkeypatch):

@@ -49,7 +49,7 @@ def test_run_keeps_configured_default_steps_and_dry_run_never_executes(monkeypat
     assert "resolve-env (not executed during dry-run)" in output
     assert "No project command was started" in output
 
-    assert cli.main(["run", "demo", "--validate", "--dry-run"]) == 0
+    assert cli.main(["run", "demo", "--step", "validate", "--dry-run"]) == 0
     output = capsys.readouterr().out
     assert "Run plan: validate; projects: demo" in output
     assert "demo:validate" in output

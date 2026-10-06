@@ -32,15 +32,6 @@ def test_cli_load_config_rejects_missing_orchestration_selection(monkeypatch, tm
         cli.load_config(tmp_path / "cmru.toml", validate_dependencies=False)
 
 
-@pytest.mark.parametrize("description, expected", [
-    ("cmru-v1.2.3-0-gabc123", "1.2.3"),
-    ("cmru-v1.2.3-2-gabc123", "1.2.4.dev2+gabc123"),
-    ("other-v1.2.3-2-gabc123", None),
-])
-def test_source_version_describe_contract_does_not_invent_unknown_shapes(description, expected):
-    assert cli._dev_version_from_describe(description) == expected
-
-
 def test_config_hint_is_actionable_only_when_config_exists(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert cli._config_hint(tmp_path) == ""

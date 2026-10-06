@@ -883,13 +883,25 @@ def test_release_dispatch_passes_exact_preflight_snapshot_to_each_family(
     )
 
 
-def test_child_release_args_removes_only_the_first_original_target(tmp_path):
+def test_child_release_args_finds_the_target_structurally(tmp_path):
+    """CLI-19: an option VALUE equal to the target text is not the target."""
     config_path = tmp_path / "cmru.toml"
     config_path.write_text("x")
     assert cli._child_release_args(
-        ["--dry-run", "other", "demo", "demo"], config_path, tmp_path,
-        original_target="demo",
-    ) == ["--dry-run", "other", "demo", "--config", "cmru.toml"]
+        ["--set-version", "demo", "demo", "--dry-run"], config_path, tmp_path,
+        original_target="demo", target_override="demo",
+    ) == ["demo", "--set-version", "demo", "--dry-run", "--config", "cmru.toml"]
+    # The target may also come after the options, and --config/--resume (with
+    # either spelling) never reach the child.
+    assert cli._child_release_args(
+        ["--config=x.toml", "--resume", "/w", "--no-build", "demo"], config_path, tmp_path,
+        original_target=("demo",), target_override="demo",
+    ) == ["demo", "--no-build", "--config", "cmru.toml"]
+    # No target given: nothing positional is dropped, and the deprecated --ref
+    # spelling is rewritten so the child does not warn a second time.
+    assert cli._child_release_args(
+        ["--ref", "origin/main", "--ref=other"], config_path, tmp_path,
+    ) == ["--ahead-check-ref", "origin/main", "--ahead-check-ref=other", "--config", "cmru.toml"]
 
 
 def _main_config_tuple(tmp_path: Path):

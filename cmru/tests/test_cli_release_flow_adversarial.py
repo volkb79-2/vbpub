@@ -41,23 +41,6 @@ def _project(root: Path, *, steps=None, generated=()):
     )
 
 
-def test_source_version_uses_exact_and_dev_git_describe_shapes(tmp_path, monkeypatch):
-    source = Path(cli.__file__).resolve().parents[2]
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if "--exact-match" in argv:
-            return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(returncode=0, stdout="cmru-v1.2.3-4-gabcdef0\n")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(cli.Path, "cwd", lambda: tmp_path)
-    assert cli._source_tree_version() is None or isinstance(cli._source_tree_version(), str)
-    assert cli._dev_version_from_describe("cmru-v1.2.3-4-gabcdef0") == "1.2.4.dev4+gabcdef0"
-    assert cli._dev_version_from_describe("other-v1.2.3-4-gabc") is None
-
-
 def test_default_and_explicit_config_resolution_uses_nearest_central_root(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "cmru.orchestration.toml").write_text(
@@ -195,7 +178,7 @@ def test_tag_on_head_ignores_latest_pointer_and_selects_highest_version(tmp_path
 
 
 def test_main_routes_version_help_and_unknown_verb_without_config(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cmru_version", lambda: "9.9.9")
+    monkeypatch.setattr("cli_extended.identity.installed_version", lambda _dist: "9.9.9")
     cli.main(["version"])
     assert "cmru 9.9.9" in capsys.readouterr().out
     cli.main(["--help"])
@@ -215,6 +198,7 @@ def test_orchestrate_step_first_respects_project_order_and_selected_subset(monke
     project_a = _project(tmp_path, steps={"run-tests": object()})
     project_b = _project(tmp_path, steps={"run-tests": object()})
     project_b.name = "beta"
+    # _project sets runner_steps from the same mapping: both declare run-tests
     configs = {"demo": project_a, "beta": project_b}
     loaded = (tmp_path, configs, ["beta", "demo"], ["beta", "demo"], ["run-tests"],
               "step-first", {"run-tests": ["beta", "demo"]}, SimpleNamespace(),

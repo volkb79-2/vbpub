@@ -38,19 +38,6 @@ def test_cleanup_dispatches_exact_local_build_deletion_and_requires_scope(monkey
     assert cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "bad"]) == 2
 
 
-def test_cleanup_dispatches_discard_worktree_and_rejects_project_mix(monkeypatch, tmp_path):
-    project = SimpleNamespace(name="demo", prefix="demo-v", github_token="token")
-    cfg, loaded = _cmru_config(tmp_path, project)
-    monkeypatch.setattr(cmru_cli, "_resolve_config", lambda value: cfg)
-    monkeypatch.setattr(cmru_cli, "load_config", lambda path: loaded)
-    workspace = SimpleNamespace(path=tmp_path / "w", branch="cmru/build/x")
-    calls = []
-    monkeypatch.setattr(cmru_cli.transaction, "discard_build_workspace", lambda *args, **kwargs: calls.append(kwargs) or workspace)
-    cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "--dry-run"])
-    assert calls == [{"dry_run": True}]
-    assert cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "demo", "--dry-run"]) == 2
-
-
 def test_cleanup_age_mode_forwards_cutoff_policy(monkeypatch, tmp_path):
     project = SimpleNamespace(name="demo", prefix="demo-v", github_token="token")
     cfg, loaded = _cmru_config(tmp_path, project)

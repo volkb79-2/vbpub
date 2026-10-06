@@ -496,7 +496,7 @@ def test_abandon_refuses_an_unverifiable_base_commit(
         SimpleNamespace(confirm=lambda _prompt: pytest.fail("dry-run prompted")),
     )
 
-    assert result == 2
+    assert result == 4  # exit_codes.REFUSED
     assert "original snapshot commit is unavailable" in capsys.readouterr().out
 
 
@@ -515,7 +515,7 @@ def test_abandon_preserves_remote_inspection_error_detail(monkeypatch, tmp_path,
         SimpleNamespace(confirm=lambda _prompt: pytest.fail("dry-run prompted")),
     )
 
-    assert result == 2
+    assert result == 4  # exit_codes.REFUSED
     assert "network unreachable" in capsys.readouterr().out
 
 

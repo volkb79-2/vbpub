@@ -83,11 +83,8 @@ def test_orchestrate_all_selection_runs_requested_validate_step(monkeypatch, tmp
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     seen = []
     monkeypatch.setattr(cli, "run_project_step", lambda project, step, root, logs: seen.append((project.name, step)))
-    monkeypatch.setattr(cli.sys, "argv", ["cmru", "all", "--validate"])
+    monkeypatch.setattr(cli.sys, "argv", ["cmru", "all", "--step", "validate"])
     cli._orchestrate()
     assert seen == [("demo", "validate")]
 
 
-def test_source_tree_version_returns_none_when_git_describe_has_no_tag(monkeypatch):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""))
-    assert cli._source_tree_version() is None
