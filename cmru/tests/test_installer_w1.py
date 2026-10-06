@@ -292,6 +292,11 @@ class TestRendering:
         assert ns["VARIANTS"] == [{"name": "py39", "label": label}]
         assert ns["PRESERVE_PATHS"] == ['a"b/c']
 
+    def test_unrenderable_value_type_is_a_render_error(self):
+        from cmru.getpy import _py_literal
+        with pytest.raises(RenderError, match="cannot render int"):
+            _py_literal(3)
+
     def test_unreplaced_placeholder_is_fatal(self, tmp_path):
         tmpl = tmp_path / "t.tmpl"
         tmpl.write_text('X = [[NOPE]]\n[[REPO_OWNER]]\n')
