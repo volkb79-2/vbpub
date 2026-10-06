@@ -520,3 +520,133 @@ def test_successor_brief_locates_a_bare_agent_id(tmp_path, capsys, monkeypatch):
     code, out, err = _run(capsys, agent, "--successor-brief")
     assert code == 0, err
     assert "stopped by the USER" in out
+
+
+# --- edge branches (coverage of the new modules) -------------------------
+
+def _text_rec(kind, uid, ts, content):
+    return _rec(type=kind, uuid=uid, timestamp=ts, message={"role": kind, "content": content})
+
+
+def test_stop_state_tolerates_junk_lines_and_odd_blocks(tmp_path):
+    fp = tmp_path / "agent-junk.jsonl"
+    lines = [
+        "",
+        "{not json",
+        json.dumps(_brief()),
+        json.dumps(_text_rec("assistant", "a1", "2026-01-01T00:00:01Z",
+                             ["junk", {"type": "text", "text": "  "}, {"type": "tool_use", "name": "Bash",
+                                                                       "input": {"command": "ls"}}])),
+        json.dumps(_text_rec("user", "u1", "2026-01-01T00:00:02Z", ["junk", {"type": "image"}])),
+    ]
+    fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    state = build_stop_state(fp)
+    # the call has no id -> anonymous id; no result was recorded for it
+    assert state.in_flight == "Bash: $ ls"
+    assert state.last_text == ""
+    assert "last assistant text: (none)" in state.render()
+
+
+def test_stop_state_failed_result_is_not_in_flight_and_user_text_is_not_a_stop(tmp_path):
+    fp = _write(tmp_path, [
+        _brief(),
+        _call("a1", "t1", "Bash", "2026-01-01T00:00:01Z", command="false"),
+        _result("u1", "t1", "2026-01-01T00:00:02Z", "Exit code 1\nboom"),
+        _text_rec("user", "u2", "2026-01-01T00:00:03Z", [{"type": "text", "text": "carry on please"}]),
+    ])
+    state = build_stop_state(fp)
+    assert state.in_flight is None
+    assert "last record kind: user_text" in state.cause
+    assert "in-flight call: none" in state.render()
+
+
+def test_stop_state_plain_string_user_records(tmp_path):
+    base = [_brief(), _call("a1", "t1", "Bash", "2026-01-01T00:00:01Z", command="ls"),
+            _result("u1", "t1", "2026-01-01T00:00:02Z", "ok")]
+    plain = _write(tmp_path, base + [_text_rec("user", "u2", "2026-01-01T00:00:03Z", "hello again")],
+                   name="agent-plain.jsonl")
+    assert "last record kind: user_text" in build_stop_state(plain).cause
+    stopped = _write(tmp_path, base + [_text_rec("user", "u2", "2026-01-01T00:00:03Z",
+                                                  "[Request interrupted by user]")],
+                     name="agent-intr.jsonl")
+    assert "no `.meta.json` is available" in build_stop_state(stopped).cause
+    assert "interrupted" in build_stop_state(stopped).cause
+
+
+def test_stop_state_ignores_other_record_types_and_callless_sessions(tmp_path):
+    fp = _write(tmp_path, [
+        _brief(),
+        _rec(type="system", uuid="s1", timestamp="2026-01-01T00:00:01Z", content="note"),
+        _text_rec("user", "u1", "2026-01-01T00:00:02Z", None),
+        _text_rec("assistant", "a1", "2026-01-01T00:00:03Z", [{"type": "text", "text": "All done."}]),
+    ])
+    state = build_stop_state(fp)
+    assert state.in_flight is None
+    assert state.cause.startswith("ended normally")
+    assert state.last_text == "All done."
+
+
+def test_ledger_effect_from_a_call_without_an_id(tmp_path, capsys):
+    block = {"type": "tool_use", "name": "Bash", "input": {"command": "git push origin main"}}
+    fp = _write(tmp_path, [
+        _brief(),
+        _text_rec("assistant", "a1", "2026-01-01T00:00:01Z", [block]),
+    ])
+    code, out, err = _run(capsys, fp, "--ledger", "--profile", "all")
+    assert code == 0, err
+    assert "git push origin main" in out
+
+
+def test_stop_state_ended_after_tool_result_only(tmp_path):
+    fp = _write(tmp_path, [
+        _brief(),
+        _call("a1", "t1", "Bash", "2026-01-01T00:00:01Z", command="ls"),
+        _result("u1", "t1", "2026-01-01T00:00:02Z", "fine"),
+    ])
+    assert "last record kind: user_result" in build_stop_state(fp).cause
+
+
+def test_first_user_record_list_content_and_skips(tmp_path):
+    from nyxloom.session_extract.successor import first_user_record
+
+    fp = tmp_path / "agent-lists.jsonl"
+    lines = [
+        "", "{bad",
+        json.dumps(_rec(type="assistant", uuid="x", message={"content": "no"})),
+        json.dumps(_text_rec("user", "e1", "t", 42)),                      # unusable content type
+        json.dumps(_text_rec("user", "e2", "t", [{"type": "text", "text": "   "}])),  # blank text
+        json.dumps(_text_rec("user", "b1", "t", ["junk", {"type": "text", "text": "part one "},
+                                                  {"type": "text", "text": "part two"}])),
+    ]
+    fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert first_user_record(fp) == ("b1", "part one part two")
+    empty = tmp_path / "agent-none.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert first_user_record(empty) is None
+
+
+def test_toolresult_odd_shapes():
+    assert toolresult.result_text({"content": [{"type": "image"}]}) == json.dumps([{"type": "image"}])
+    assert toolresult.result_text({}) == ""
+    assert toolresult.result_text({"content": {"a": 1}}) == '{"a": 1}'
+    assert toolresult.summarize_call("Task", {"x": {1, 2}}) == ""        # unserialisable input
+    assert toolresult.summarize_call("Task", {"x": 1}) == '{"x": 1}'
+    assert toolresult.summarize_call("Grep", {"pattern": "foo"}) == "pattern=foo"
+    assert toolresult.summarize_call("Read", {"file_path": "/a/b"}) == "/a/b"
+    assert toolresult.summarize_call("Bash", "ls") == "ls"
+    assert toolresult.summarize_call("Bash", 7) == ""
+
+
+def test_session_ledger_renders_branches_and_tests(tmp_path, capsys):
+    fp = _write(tmp_path, [
+        _brief(),
+        _call("a1", "t1", "Bash", "2026-01-01T00:00:01Z", command="git checkout -b feat/x"),
+        _result("u1", "t1", "2026-01-01T00:00:02Z", "Switched to a new branch"),
+        _call("a2", "t2", "Bash", "2026-01-01T00:00:03Z", command="pytest -q"),
+        _result("u2", "t2", "2026-01-01T00:00:04Z", "12 passed in 1.2s"),
+        _call("a3", "t3", "Bash", "2026-01-01T00:00:05Z", command=["not", "a", "string"]),
+    ])
+    code, out, err = _run(capsys, fp, "--ledger", "--profile", "all")
+    assert code == 0, err
+    assert "branches involved: feat/x" in out
+    assert "tests: " in out and "passed" in out

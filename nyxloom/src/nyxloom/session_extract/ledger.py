@@ -303,6 +303,8 @@ def build_ledger_claude_code(
                             bucket.append(_relativize(fp, root))
                     elif name == "Bash":
                         command = tinput.get("command", "")
+                        if not isinstance(command, str):
+                            command = ""
                         if re.search(r"git\s+commit\b", command):
                             tool_id = block.get("id")
                             if tool_id:
@@ -310,7 +312,7 @@ def build_ledger_claude_code(
                         m = _BRANCH_CHECKOUT_RE.search(command)
                         if m:
                             ledgers[current].branches.append(m.group(1))
-                        hits = effect_segments(command, effect_patterns) if isinstance(command, str) else []
+                        hits = effect_segments(command, effect_patterns)
                         if hits:
                             effects = ledgers[current].external_effects
                             effects.append(
