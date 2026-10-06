@@ -41,6 +41,8 @@ from assay.runner import default_process_runner, execute_command
 from assay.verdict import MUTATION_BUCKETS, MutantOutcome, Mutation
 from assay.verify import _check_b145_resource_limit_evidence
 
+_REAL_MOUNT_ID_FOR_FD = resource_limits._mount_id_for_fd
+
 
 @pytest.fixture(autouse=True)
 def _synthetic_cgroup_mount_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -957,7 +959,9 @@ def test_worker_start_failure_is_a_payload_free_execution_error(
     os.environ.get("ASSAY_B145_LOW_PIDS_PROBE") != "1",
     reason="requires the dedicated tester-unified --pids-limit acceptance container",
 )
-def test_low_pids_limit_event_cannot_become_a_kill(tmp_path: Path):
+def test_low_pids_limit_event_cannot_become_a_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     source = "def flags():\n    return True\n"
     repo = GitRepo(path=tmp_path / "repo")
     repo.path.mkdir()
@@ -1008,6 +1012,12 @@ def test_low_pids_limit_event_cannot_become_a_kill(tmp_path: Path):
         lane, cwd=repo.path, process_runner=default_process_runner
     )
     assert baseline.outcome is Outcome.PASS
+    # This is the one real container acceptance probe in this module. Its
+    # cgroup paths and mount IDs must come from the kernel, not the synthetic
+    # mount identity installed by the fixture for filesystem-backed unit cases.
+    monkeypatch.setattr(
+        resource_limits, "_mount_id_for_fd", _REAL_MOUNT_ID_FOR_FD
+    )
     scratch_root = tmp_path / "scratch"
     scratch_root.mkdir()
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
