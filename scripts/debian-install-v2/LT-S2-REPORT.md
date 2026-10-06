@@ -84,8 +84,8 @@ when that timestamp is at most 300 s old, but still adds `failed_unit`/`failed_o
 to state.json and leaves the installer's `status`/`last_error` untouched. Chosen over "post once with richer
 info" because the installer's message already carries the cause and the skip keeps one message per failure.
 A crash before the installer can report (the import error) never sets the timestamp, so it is always posted;
-a stale notice from an earlier run (older than 300 s) does not suppress it (tested). Known limit: the timestamp
-is recorded before the installer's post, so if that post itself fails, the notifier does not retry it.
+a stale notice from an earlier run (older than 300 s) does not suppress it (tested). (Round-1 known limit that the
+timestamp was recorded before the installer's post is SUPERSEDED by round 2 below.)
 
 **Verification run (host pytest, flock/nice/ionice):** clean tree 777 passed, 11 skipped. Plants, each followed
 by a full-suite run and reverted: output tail dropped from the message -> 2 failed (end-to-end, Telegram);
@@ -94,4 +94,21 @@ output-tail redaction removed -> 2 failed (end-to-end, redaction unit test); dup
 
 Gates on commit `d1ae51382` (clean tree, foreground, flock/nice/ionice, verdicts read separately):
 debian-install-v2 `r0-r1` PASS exit 0 (777 passed, 11 skipped); netcup `suite` PASS exit 0 (683 passed).
+r2, the VM lane and live hosts were not run.
+
+## Review fix round 2: `failure_notified_at` only after a successful post
+
+The round-1 "known limit" (timestamp recorded before the installer's post) defeated "fail loudly". Now
+`Installer._notify` returns True only when a message was actually delivered (False for no backend, dry run, or a
+failed post; Telegram returns False on the first failed chunk), and `Installer.resume`'s failure path records
+`failure_notified_at` only after `_notify` returned True. A failed post or a raising post (caught) leaves it
+unset, so the OnFailure notifier posts.
+
+Tests (`test_failure_notify.py`): installer post succeeds -> timestamp set, notifier posts nothing; installer
+post returns False -> timestamp absent, notifier posts once with the cause; installer post raises -> same;
+`_notify` return value for no backend / failed post / delivered. Plant "timestamp set before the post": 2 failed
+(both post-failed cases); reverted. Clean tree: 780 passed, 11 skipped (host pytest).
+
+Gates on commit `fa5940abd` (clean tree, foreground, flock/nice/ionice, verdicts read separately):
+debian-install-v2 `r0-r1` PASS exit 0 (780 passed, 11 skipped); netcup `suite` PASS exit 0 (683 passed).
 r2, the VM lane and live hosts were not run.
