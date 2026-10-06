@@ -729,8 +729,13 @@ def register_skills_verbs(
         ),
         prog=f"{registry.prog} skills",
         description=f"Manage the agent skills packaged with {parent.command_name}.",
+        # CLI-EXT-26: every library-built delegate inherits the parent's
+        # global options, or the delegated parser rejects them.
+        global_options=registry.global_options,
         logging_logger=registry.logging_logger,
         unexpected_exceptions=registry.unexpected_exceptions,
+        identity_banner=registry.identity_banner,
+        error_help=registry.error_help,
     )
     mutating = {"mutating": True, "dry_run": True, "confirmation_required": False,
                 "include_json": False}

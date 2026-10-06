@@ -80,6 +80,9 @@ SOURCE_SUFFIXES = (".py", ".toml")
 PLUGIN_SUFFIXES = (".py", ".toml", ".ini", ".cfg")
 PLUGIN_MODULE = "cli_extended.pytest_plugin"
 GATE_FILE_NAME = "run-gate.toml"
+# CLI-EXT-28: a test that asserts the library path is ABSENT marks that line
+# (or the line after a marker-only line); only marked lines are exempt.
+PATH_ASSERTION_MARKER = "# cli-extended: allow-path-assertion"
 _REVIEW_ERRORS = (
     ReviewCatalogError,
     SurfaceError,
@@ -570,15 +573,36 @@ def _dependency_declared(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -
     )
 
 
+def _without_allowed_assertions(text: str) -> str:
+    """Drop lines the author marked as path-absence assertions (CLI-EXT-28)."""
+
+    kept: list[str] = []
+    skip_next = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if skip_next:
+            skip_next = False
+            continue
+        if stripped == PATH_ASSERTION_MARKER:
+            skip_next = True
+            continue
+        if stripped.endswith(PATH_ASSERTION_MARKER):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _no_path_hacks(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -> AuditItem:
     files, unreadable = _scan(cli.root, SOURCE_SUFFIXES)
-    hits = [
-        _relative(path, cli.root)
-        for path, text in files
-        if path.name != GATE_FILE_NAME
-        and "libraries/cli-extended" in text
-        and ("sys.path" in text or "PYTHONPATH" in text)
-    ]
+    hits = []
+    for path, raw in files:
+        text = _without_allowed_assertions(raw)
+        if (
+            path.name != GATE_FILE_NAME
+            and "libraries/cli-extended" in text
+            and ("sys.path" in text or "PYTHONPATH" in text)
+        ):
+            hits.append(_relative(path, cli.root))
     if hits:
         return _verified(
             "no-path-hacks",

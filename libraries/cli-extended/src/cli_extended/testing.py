@@ -24,7 +24,7 @@ def _child_environment(
     scrub_prefixes: Sequence[str],
     env: Mapping[str, str | None] | None,
     pythonpath: Sequence[Path | str],
-    same_interpreter: bool,
+    library_path: bool,
 ) -> dict[str, str]:
     if not str(home):
         raise ValueError("home must be a non-empty directory")
@@ -48,11 +48,14 @@ def _child_environment(
     child["XDG_CACHE_HOME"] = str(home_path / ".cache")
     child["XDG_STATE_HOME"] = str(home_path / ".local" / "state")
     child["NO_COLOR"] = "1"
-    paths = [str(_LIBRARY_ROOT)] if same_interpreter else []
+    # CLI-EXT-27: the library directory is never added implicitly; it could
+    # be a whole site-packages that shadows the consumer's own copy.
+    paths = [str(_LIBRARY_ROOT)] if library_path else []
     paths.extend(str(item) for item in pythonpath)
     if child.get("PYTHONPATH"):
         paths.append(child["PYTHONPATH"])
-    child["PYTHONPATH"] = os.pathsep.join(paths)
+    if paths:
+        child["PYTHONPATH"] = os.pathsep.join(paths)
     for key, value in (env or {}).items():
         if value is None:
             child.pop(key, None)
@@ -70,11 +73,11 @@ def _run(
     cwd: Path | str | None,
     timeout: float,
     pythonpath: Sequence[Path | str],
-    same_interpreter: bool,
+    library_path: bool,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
-        env=_child_environment(home, scrub_prefixes, env, pythonpath, same_interpreter),
+        env=_child_environment(home, scrub_prefixes, env, pythonpath, library_path),
         cwd=cwd,
         text=True,
         capture_output=True,
@@ -94,22 +97,25 @@ def invoke_script(
     cwd: Path | str | None = None,
     timeout: float = 60,
     pythonpath: Sequence[Path | str] = (),
+    library_path: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``script`` in a subprocess with a hermetic, tested-library environment.
+    """Run ``script`` in a subprocess with a hermetic environment.
 
     ``home`` is required: the child gets ``HOME`` and the four ``XDG_*_HOME``
     directories under it, so a test can never read or write the real home.
     ``home`` must be absolute, and ``env`` may not set ``HOME`` or any
     ``XDG_*_HOME`` (``ValueError``); an empty ``scrub_prefixes`` entry is also
-    refused. The imported library root is prepended to ``PYTHONPATH`` only when
-    ``python`` is None (same interpreter); with an explicit ``python`` pass
-    ``pythonpath=`` yourself.
+    refused. ``PYTHONPATH`` is ``pythonpath`` followed by the inherited value;
+    nothing else is added, so the child imports the consumer's own packages
+    and the ``cli_extended`` the caller's environment resolves (CLI-EXT-27).
+    Pass ``library_path=True`` to put the directory of the imported
+    ``cli_extended`` first; that directory is a whole ``site-packages`` when
+    the library is installed, so it can shadow the consumer's own copy and
+    is for tests that deliberately pin the in-process library.
     ``NO_COLOR=1`` is set; ``FORCE_COLOR``, ``CLICOLOR_FORCE`` and
     ``CLAUDE_CONFIG_DIR`` and every variable starting with a ``scrub_prefixes``
-    entry are removed. ``PYTHONPATH`` begins with the directory of the imported
-    ``cli_extended`` package, then ``pythonpath``, then the inherited value.
-    ``env`` is applied last; a ``None`` value deletes the key. ``timeout`` is
-    only a failsafe.
+    entry are removed. ``env`` is applied last; a ``None`` value deletes the
+    key. ``timeout`` is only a failsafe.
     """
 
     return _run(
@@ -120,7 +126,7 @@ def invoke_script(
         cwd=cwd,
         timeout=timeout,
         pythonpath=pythonpath,
-        same_interpreter=python is None,
+        library_path=library_path,
     )
 
 
@@ -135,6 +141,7 @@ def invoke_module(
     cwd: Path | str | None = None,
     timeout: float = 60,
     pythonpath: Sequence[Path | str] = (),
+    library_path: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """The ``python -m MODULE`` twin of :func:`invoke_script`."""
 
@@ -146,7 +153,7 @@ def invoke_module(
         cwd=cwd,
         timeout=timeout,
         pythonpath=pythonpath,
-        same_interpreter=python is None,
+        library_path=library_path,
     )
 
 

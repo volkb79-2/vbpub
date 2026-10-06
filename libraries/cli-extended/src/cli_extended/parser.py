@@ -23,7 +23,13 @@ from .constraints import (
     rule_lines,
 )
 from .identity import CliIdentity
-from .output import CliOutput, LogLevel, logging_context
+from .output import (
+    ERROR_HELP_POLICIES,
+    IDENTITY_BANNER_POLICIES,
+    CliOutput,
+    LogLevel,
+    logging_context,
+)
 from .progress import ProgressMode, ProgressRenderer
 from .prompts import PromptAPI, PromptCancelled, PromptDriver
 
@@ -1360,6 +1366,8 @@ class RegisteredCli:
     expected_exceptions: tuple[type[BaseException], ...] = ()
     unexpected_exceptions: str = "raise"
     skills_package: tuple[str, str] | None = None
+    identity_banner: str = "once"
+    error_help: str = "full"
 
     @property
     def catalog(self) -> HelpCatalog | None:
@@ -1394,6 +1402,8 @@ class RegisteredCli:
             interactive_extra=interactive_extra,
             expected_exceptions=expected,
             unexpected_exceptions=self.unexpected_exceptions,
+            identity_banner=self.identity_banner,
+            error_help=self.error_help,
             **kwargs,
         )
 
@@ -1430,10 +1440,23 @@ class CliRegistry:
         allow_abbrev: bool = False,
         expected_exceptions: tuple[type[BaseException], ...] = (),
         unexpected_exceptions: str = "raise",
+        identity_banner: str = "once",
+        error_help: str = "full",
     ) -> None:
         if not isinstance(expected_exceptions, tuple):
             raise TypeError("expected_exceptions must be a tuple of exception types")
         _check_unexpected_policy(unexpected_exceptions)
+        if identity_banner not in IDENTITY_BANNER_POLICIES:
+            raise ValueError(
+                f"identity_banner must be one of {IDENTITY_BANNER_POLICIES}, "
+                f"got {identity_banner!r}"
+            )
+        if error_help not in ERROR_HELP_POLICIES:
+            raise ValueError(
+                f"error_help must be one of {ERROR_HELP_POLICIES}, got {error_help!r}"
+            )
+        self.identity_banner = identity_banner
+        self.error_help = error_help
         self.expected_exceptions = expected_exceptions
         self.unexpected_exceptions = unexpected_exceptions
         self.identity = identity
@@ -1708,6 +1731,8 @@ class CliRegistry:
             self.expected_exceptions,
             self.unexpected_exceptions,
             getattr(self, "_cli_extended_skills", None),
+            self.identity_banner,
+            self.error_help,
         )
 
 
@@ -1723,6 +1748,8 @@ def _runtime_from_args(
     command_argv: Sequence[str] = (),
     prompt_driver: PromptDriver | None = None,
     interactive_extra: str = "cli-extended[interactive]",
+    identity_banner: str = "once",
+    error_help: str = "full",
 ) -> CliRuntime:
     debug_raw = bool(getattr(args, "debug_raw", False))
     quiet = bool(getattr(args, "quiet", False))
@@ -1766,6 +1793,8 @@ def _runtime_from_args(
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
+        identity_banner=identity_banner,
+        error_help=error_help,
     )
     output.raw_warning()
     return CliRuntime(
@@ -1840,6 +1869,13 @@ def _print_error_with_help(
         output.debug(debug_detail)
     output.stderr.write("\n")
     output.stderr.flush()
+    if output.error_help == "usage":
+        # CLI-EXT-23: short usage plus a pointer; the identity headline is
+        # left out so the error stays the first thing the user reads.
+        usage = argparse.ArgumentParser.format_usage(parser).rstrip("\n")
+        output.stderr.write(f"{usage}\nRun '{parser.prog} --help' for full help.\n")
+        output.stderr.flush()
+        return
     _print_help(
         parser.format_help(),
         output.stderr,
@@ -1861,6 +1897,8 @@ def run_cli(
     delegates: Mapping[str, RegisteredCli] | None = None,
     expected_exceptions: tuple[type[BaseException], ...] = (),
     unexpected_exceptions: str = "raise",
+    identity_banner: str = "once",
+    error_help: str = "full",
     secrets: Sequence[str] = (),
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
@@ -1888,6 +1926,8 @@ def run_cli(
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
+        identity_banner=identity_banner,
+        error_help=error_help,
     )
     for command_parser in (parser, *command_parsers.values()):
         command_parser._cli_help_stream = stdout
@@ -2074,6 +2114,8 @@ def run_cli(
             ),
             prompt_driver=prompt_driver,
             interactive_extra=interactive_extra,
+            identity_banner=identity_banner,
+            error_help=error_help,
         )
         if logging_logger is None:
             result = handler(args, runtime)
@@ -2128,15 +2170,23 @@ def run_cli(
             help_output.error(exc.message, hint=exc.hint)
         return exc.exit_code
     except expected_exceptions as exc:
+        # CLI-EXT-29: an expected exception may carry ``exit_code`` (an int)
+        # and ``hint`` (a str); anything else keeps the plain ``[ERROR]``/1.
+        code = getattr(exc, "exit_code", 1)
+        if not isinstance(code, int) or isinstance(code, bool):
+            code = 1
+        hint = getattr(exc, "hint", None)
+        if not isinstance(hint, str) or not hint:
+            hint = None
         if "runtime" in locals():
-            runtime.output.error(str(exc))
+            runtime.output.error(str(exc), hint=hint)
             if runtime.debug:
                 runtime.output.debug(
                     f"handled {type(exc).__name__} in {verb or parser.prog}"
                 )
         else:
-            help_output.error(str(exc))
-        return 1
+            help_output.error(str(exc), hint=hint)
+        return code
     except Exception as exc:
         # In the default "raise" policy unexpected programming failures remain
         # tracebacks: the outer Python entrypoint prints one traceback, so do

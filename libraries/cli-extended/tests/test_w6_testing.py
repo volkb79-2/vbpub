@@ -76,7 +76,6 @@ def test_invoke_script_builds_the_hermetic_environment(tmp_path, dirty_environme
     assert env["XDG_STATE_HOME"] == str(home / ".local" / "state")
     assert env["NO_COLOR"] == "1"
     assert env["PYTHONPATH"].split(os.pathsep) == [
-        LIBRARY_ROOT,
         "/extra/one",
         str(tmp_path),
         "/inherited/path",
@@ -90,7 +89,7 @@ def test_invoke_script_without_inherited_pythonpath_and_default_scrub(
     monkeypatch.setenv("SCRUBME_TOKEN", "survives-without-prefixes")
     dump, _home = _dump(tmp_path)
 
-    assert dump["env"]["PYTHONPATH"] == LIBRARY_ROOT
+    assert "PYTHONPATH" not in dump["env"]
     assert dump["env"]["SCRUBME_TOKEN"] == "survives-without-prefixes"
     assert dump["cwd"] == str(Path.cwd())
 
@@ -140,22 +139,43 @@ def test_empty_scrub_prefix_is_refused(tmp_path):
         invoke_script("x.py", [], home=tmp_path, scrub_prefixes=("OK_", ""))
 
 
-def test_library_root_is_prepended_only_for_the_same_interpreter(
-    tmp_path, monkeypatch
-):
-    monkeypatch.delenv("PYTHONPATH", raising=False)
+def test_cx27_library_root_is_never_added_implicitly(tmp_path, monkeypatch):
+    """CLI-EXT-27: the caller's PYTHONPATH reaches the child unchanged."""
+
+    monkeypatch.setenv("PYTHONPATH", "/inherited")
+    seen = []
+    monkeypatch.setattr(
+        testing_module.subprocess,
+        "run",
+        lambda command, **kw: seen.append(kw["env"].get("PYTHONPATH")),
+    )
+    invoke_script("x.py", [], home=tmp_path)
+    invoke_script("x.py", [], home=tmp_path, pythonpath=["/mine"])
+    invoke_script("x.py", [], home=tmp_path, python="/other/py")
+    invoke_module("m", [], home=tmp_path)
+    monkeypatch.delenv("PYTHONPATH")
+    invoke_module("m", [], home=tmp_path)
+
+    assert seen == ["/inherited", "/mine" + os.pathsep + "/inherited", "/inherited",
+                    "/inherited", None]
+    assert all(LIBRARY_ROOT not in (item or "").split(os.pathsep) for item in seen)
+
+
+def test_cx27_library_path_true_prepends_the_imported_library(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/inherited")
     seen = []
     monkeypatch.setattr(
         testing_module.subprocess,
         "run",
         lambda command, **kw: seen.append(kw["env"]["PYTHONPATH"]),
     )
-    invoke_script("x.py", [], home=tmp_path, pythonpath=["/mine"])
-    invoke_script("x.py", [], home=tmp_path, python="/other/py", pythonpath=["/mine"])
-    invoke_module("m", [], home=tmp_path, python="/other/py")
-    invoke_module("m", [], home=tmp_path)
+    invoke_script("x.py", [], home=tmp_path, pythonpath=["/mine"], library_path=True)
+    invoke_module("m", [], home=tmp_path, library_path=True)
+    make_invoker("m", module=True, home=tmp_path, library_path=True)([])
 
-    assert seen == [LIBRARY_ROOT + os.pathsep + "/mine", "/mine", "", LIBRARY_ROOT]
+    prefix = LIBRARY_ROOT + os.pathsep
+    assert seen == [prefix + "/mine" + os.pathsep + "/inherited",
+                    prefix + "/inherited", prefix + "/inherited"]
 
 
 def test_invoke_script_runs_in_cwd(tmp_path):

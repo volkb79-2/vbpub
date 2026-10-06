@@ -930,6 +930,40 @@ def test_no_path_hacks_passes_when_only_the_gate_file_points_at_the_source(tmp_p
     )
 
 
+def test_cx28_marked_absence_assertions_pass_ac25(tmp_path):
+    files = {
+        "t_same_line.py": (
+            "assert 'libraries/cli-extended' not in sys.path"
+            "  # cli-extended: allow-path-assertion\n"
+        ),
+        "t_next_line.py": (
+            "# cli-extended: allow-path-assertion\n"
+            "assert 'libraries/cli-extended' not in os.environ['PYTHONPATH']\n"
+        ),
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == ("pass", ())
+
+
+def test_cx28_the_marker_does_not_exempt_a_real_hack(tmp_path):
+    files = {
+        "mixed.py": (
+            "# cli-extended: allow-path-assertion\n"
+            "assert 'libraries/cli-extended' not in sys.path\n"
+            "sys.path.insert(0, '/x/libraries/cli-extended/src')\n"
+        ),
+        "after_marker_only.py": (
+            "# cli-extended: allow-path-assertion\n"
+            "\n"
+            "sys.path.insert(0, '/x/libraries/cli-extended/src')\n"
+        ),
+        "plain.py": "sys.path.insert(0, '/x/libraries/cli-extended/src')\n",
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert item.status == "fail"
+    assert item.evidence == ("after_marker_only.py", "mixed.py", "plain.py")
+
+
 def test_run_audit_propagates_a_broken_factory(tmp_path):
     root = _setup(tmp_path)
     (root / "factory.py").write_text("def build_cli():\n    return 1\n", encoding="utf-8")

@@ -1311,3 +1311,46 @@ def test_w8c_dry_run_notice_survives_quiet(pkg, tmp_path, verb):
     assert code == 0
     assert "Dry run: no changes made." in err
     assert not dest.exists()
+
+
+# ------------------------------------ CLI-EXT-26: delegates inherit global options
+
+
+def _registry_with_global(package):
+    from cli_extended import OptionSpec
+
+    identity = CliIdentity("MYTOOL", "1.0.0", "My tool", "mytool")
+    registry = CliRegistry(
+        identity, prog="mytool", description="My tool.",
+        global_options=(OptionSpec(
+            ("--tag-prefix",), "prefix", parser_kwargs={"action": "store_true"},
+        ),),
+    )
+    registry.register(VerbSpec("own", description="own", handler=lambda *_: 0))
+    register_skills_verbs(registry, package=package)
+    return registry
+
+
+@pytest.mark.parametrize("verb", ["install", "uninstall", "check", "list"])
+def test_cx26_skills_verbs_accept_the_consumer_global_option(pkg, tmp_path, verb):
+    app = _registry_with_global(pkg).build()
+    out, err = io.StringIO(), io.StringIO()
+    code = app.run(
+        argv=["skills", verb, "--tag-prefix", "--dest", str(tmp_path / "d")],
+        stdout=out, stderr=err,
+    )
+    assert "unrecognized arguments" not in err.getvalue()
+    assert code in (0, 1)
+
+
+def test_cx26_surface_has_no_incomplete_syntax_and_lists_the_global(pkg):
+    from cli_extended.surface import export_cli_surface
+
+    surface = export_cli_surface(_registry_with_global(pkg).build())
+    assert not [r for r in surface["incomplete"] if "inherited global" in r]
+    leaves = {r["id"].rsplit("/", 1)[-1]: r for r in surface["routes"]
+              if r["id"].startswith("route:entrypoint:mytool/skills/")}
+    assert set(leaves) == {"install", "uninstall", "check", "list"}
+    for name, route in leaves.items():
+        flags = {f for a in route["actions"] for f in a.get("flags", ())}
+        assert "--tag-prefix" in flags, name

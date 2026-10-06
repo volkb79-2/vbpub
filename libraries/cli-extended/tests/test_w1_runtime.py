@@ -432,3 +432,116 @@ def test_help_and_markdown_show_new_controls():
     assert "**Behavior:** mutating; dry-run." in md
     _, show_help, _ = _run(cli, ["show", "--help"])
     assert "--dry-run" not in show_help and "--traceback" in show_help
+
+
+# ------------------------------------------- CLI-EXT-29: exit code and hint
+
+
+class _Refused(Exception):
+    exit_code = 3
+    hint = "ask an owner"
+
+
+class _BadAttrs(Exception):
+    exit_code = True  # bool is not an exit code
+    hint = ""
+
+
+class _Plain(Exception):
+    pass
+
+
+def _raiser(exc):
+    def handler(args, runtime):
+        raise exc
+
+    return handler
+
+
+def test_cx29_expected_exception_carries_exit_code_and_hint():
+    cli = _cli(
+        _raiser(_Refused("denied")),
+        expected_exceptions=(_Refused,), unexpected_exceptions="report",
+    )
+    code, _out, err = _run(cli, ["go"])
+    assert code == 3
+    assert "[ERROR] denied" in err
+    assert "Hint: ask an owner" in err
+    assert "unexpected" not in err
+
+
+def test_cx29_plain_tuples_keep_exit_one_and_no_hint():
+    cli = _cli(_raiser(_Plain("nope")), expected_exceptions=(_Plain,))
+    code, _out, err = _run(cli, ["go"])
+    assert code == 1
+    assert "[ERROR] nope" in err
+    assert "Hint:" not in err
+
+
+def test_cx29_invalid_attributes_fall_back_to_the_plain_rendering():
+    cli = _cli(_raiser(_BadAttrs("bad")), expected_exceptions=(_BadAttrs,))
+    code, _out, err = _run(cli, ["go"])
+    assert code == 1
+    assert "Hint:" not in err
+
+
+# --------------------------- CLI-EXT-23: identity banner and parser-error help
+
+
+def _fail(args, runtime):
+    runtime.output.error("first")
+    runtime.output.error("second")
+    return 1
+
+
+def _opts_cli(**kw):
+    verb = VerbSpec(
+        "go", description="Go.", handler=_fail,
+        options=(OptionSpec(("--n",), "a number", parser_kwargs={"type": int}),),
+    )
+    return _cli(None, verbs=[verb], **kw)
+
+
+def test_cx23_defaults_are_unchanged_banner_once_and_full_help():
+    code, _out, err = _run(_opts_cli(), ["go"])
+    assert code == 1
+    assert err.count(IDENT.headline) == 1
+    assert err.index(IDENT.headline) > err.index("first")  # banner after 1st error
+    assert err.rstrip().splitlines()[-1].endswith("second")
+    code, _out, err = _run(_opts_cli(), ["go", "--n", "x"])
+    assert code == 2
+    assert "usage: tool go" in err
+    assert "Run 'tool go --help'" not in err
+    assert len(err.splitlines()) > 6  # the whole help block
+
+
+def test_cx23_identity_banner_never_leaves_the_error_last():
+    code, _out, err = _run(_opts_cli(identity_banner="never"), ["go"])
+    assert code == 1
+    assert IDENT.headline not in err
+    assert err.rstrip().splitlines()[-1].endswith("second")
+
+
+def test_cx23_error_help_usage_prints_usage_and_a_pointer_with_exit_two():
+    code, _out, err = _run(_opts_cli(error_help="usage"), ["go", "--n", "x"])
+    assert code == 2
+    assert "tool go: argument --n: invalid int value: 'x'" in err
+    lines = err.rstrip().splitlines()
+    assert lines[-1] == "Run 'tool go --help' for full help."
+    assert sum(line.startswith("usage: tool go") for line in lines) == 1
+    assert "options:" not in err and "OPTIONS" not in err
+    assert IDENT.headline not in err
+
+
+def test_cx23_error_help_usage_covers_unknown_verb_and_missing_verb():
+    for argv in (["help", "nope"], ["nope"], ["go", "--bogus"]):
+        code, _out, err = _run(_opts_cli(error_help="usage"), argv)
+        assert code == 2, argv
+        assert "for full help." in err, argv
+        assert IDENT.headline not in err, argv
+
+
+@pytest.mark.parametrize("kw", [{"identity_banner": "sometimes"}, {"error_help": "short"}])
+def test_cx23_invalid_policies_are_refused(kw):
+    with pytest.raises(ValueError, match="must be one of"):
+        CliRegistry(IDENT, prog="t", description="d", **kw)
