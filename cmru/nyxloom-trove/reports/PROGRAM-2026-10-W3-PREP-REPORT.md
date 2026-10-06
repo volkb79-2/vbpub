@@ -88,8 +88,20 @@ removes its own worktree). They concern retained local worktrees, of which there
 
   Caution: once other projects are at r5, an installed cmru 5.5 `standards` reports them as "expected 4" (item 5).
 
-## 4. CHANGES for 6.0.0
-`cmru/CHANGES.md`: `## [Unreleased]` is now an empty comment-only section (KI-30 accepts that) and the whole body moved under
+## 4. CHANGES for 6.0.0 (REVISED after review: controller ruling option (a))
+**Superseding note.** The review found that the drafted `## [6.0.0] - UNRELEASED` heading blocked `cmru release cmru --set-version 6.0.0` (KI-23).
+Resolution: the operator narrative moved to `cmru/docs/UPGRADING-6.0.md` (the 5.5 to 6.0 upgrade guide, now also carrying `--traceback`, `--progress`, global
+`--json`, `--dry-run` on `handler`/`versions`, and the removed agent-only variables `CMRU_CONSUL_TOKEN`, `CMRU_LANDSCAPE`, `CMRU_MINISIGN_PUBKEY`,
+`CMRU_NODE_ID` and the `CMRU_AGENT_SERVICE_TEMPLATE` constant), and the whole `## [6.0.0] - UNRELEASED` section was removed from `CHANGES.md`. `CHANGES.md` now holds
+`## [Unreleased]` (comment-only body, which KI-30 accepts) followed by the history marker and the dated 5.5.0 section; the wave's Added/Changed/Fixed/Testing text is not
+duplicated there (recoverable from `git show 1be285b09:cmru/CHANGES.md`; the generator builds the 6.0.0 section from commit subjects).
+`tests/test_w3_prep_changelog_preflight.py` runs `generate_release_changelog(..., set_version="6.0.0")` directly over a copy of this tree's real `CHANGES.md` in a
+throwaway git repo (no release) and proves it passes; a paired test proves the re-added heading is refused with the KI-23 message.
+**Landing note:** the release tool generates the 6.0.0 section; the generator has no hook for a hand-written line before generation, so after the release a post-release
+docs commit adds one line to the generated `## [6.0.0]` section: `Upgrading from 5.5: see docs/UPGRADING-6.0.md.` (the operator-visible pointer).
+Everything below in this section describes the superseded draft and is kept for history.
+
+`cmru/CHANGES.md` (superseded draft): `## [Unreleased]` is now an empty comment-only section (KI-30 accepts that) and the whole body moved under
 `## [6.0.0] - UNRELEASED`, headed by operator-facing sections: BREAKING grammar table (old to new), exit codes and `CmruError`, dependencies/packaging/new
 verbs (`cli-extended` dependency, `cmru[interactive]`, `doctor`, `skills`, retired agent/controller, `get.py` split with `[project.installer] extensions`,
 `CMRU_INTERNAL_*`, `run_step` kept, KI-35 abandon), and "How to upgrade from 5.5" (8 steps naming every command an operator script must change). The pre-wave
