@@ -402,6 +402,8 @@ def test_resolve_context_and_multi_formats(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "tag": "demo-v1", "url": "https://x"})
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: loaded)
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _p: SimpleNamespace(projects={
+        "demo": SimpleNamespace(installer=None), "other": SimpleNamespace(installer=None)}))
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
     assert resolve_module.resolve_main(["all", "--format", "env"]) == 0
@@ -417,6 +419,7 @@ def test_resolve_standalone_implicit_target(monkeypatch, tmp_path, capsys):
     project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _p: SimpleNamespace(projects={"demo": project}))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
     assert resolve_module.resolve_main([]) == 0
@@ -428,6 +431,7 @@ def test_resolve_orchestration_context_without_explicit_target(monkeypatch, tmp_
     project = SimpleNamespace(prefix="demo-v", github_token="", installer=None)
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _arg: cfg)
     monkeypatch.setattr("cmru.cli.load_config", lambda _path: _loaded({"demo": project}))
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _p: SimpleNamespace(projects={"demo": project}))
     monkeypatch.setattr("cmru.config.resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: {"version": "1", "url": "https://x"})
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", lambda **_kwargs: object())
