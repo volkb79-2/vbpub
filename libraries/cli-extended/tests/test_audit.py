@@ -968,8 +968,9 @@ def test_cx28_the_marker_does_not_exempt_a_real_hack(tmp_path):
 def test_cx22_ac25_line_separators_do_not_misalign_comment_stripping(tmp_path, sep):
     hack = "sys.path.insert(0, 'libraries/cli-extended/src')\n"
     files = {
-        "ff_line.py": f"x = 1\n{sep}\n{hack}",
-        "in_string.py": f"x = 'a{sep}b'\n# note\n{hack}",
+        # A trailing comment: a shifted row would blank the hack line itself.
+        "ff_line.py": f"x = 1\n{sep}\n{hack}# note\n",
+        "in_string.py": f"x = 'a{sep}b'\n{hack}# note\n",
     }
     item = _audit(tmp_path, files=files)["no-path-hacks"]
     assert (item.status, item.evidence) == ("fail", ("ff_line.py", "in_string.py"))

@@ -85,6 +85,22 @@ unaffected in the runs above.
 5. **Release note:** 27 is a behaviour change for the testing helpers; confirm it ships in the next 0.x without a
    contract-version bump (the library contract concerns the CLI controls, not the test helpers).
 
+## Review round 1 fixes
+
+- C3 (audit bypass): `audit.py` now splits on `"\n"` only (`_without_comments`, `_without_allowed_assertions`), like the
+  tokenizer; `splitlines()` also breaks on `\x0c`, `\x1c`, `\x85`, ` `, which shifted token rows and blanked a real
+  `sys.path.insert(...)`. Tests: `test_cx22_ac25_line_separators_do_not_misalign_comment_stripping` (4 separators, a
+  separator line and one inside a string, each followed by a real hack with a trailing comment).
+- C1: an expected exception's `exit_code` and `CliFailure.exit_code` outside 1..255 (0, negative, above 255, bool) become 1
+  (`_valid_exit_code`); test `test_cx29_exit_codes_outside_1_to_255_fall_back_to_one` covers 0, -2, 300, True, False for both.
+- Skills child forwarding of `identity_banner`/`error_help`: `test_skills_child_forwards_identity_banner_and_error_help`.
+- Pytest strict-mode error now names `--cli-case-partial` (the opt-out already existed); BACKLOG CLI-EXT-31.
+- Docs: CHANGES release-policy ruling, marker-in-non-test-files, `version_probe` has no timeout; BACKLOG CLI-EXT-30/31 filed,
+  17/18/20/25 statuses updated with the 2026-10-06 rulings.
+- Plants (each killed and reverted): splitlines restored in `_without_comments` (4 audit tests fail); `1 <= code <= 255`
+  clamp removed (3 cx29 cases fail: 0, -2, 300); skills forwarding of `identity_banner`/`error_help` removed (the new
+  forwarding test fails).
+
 ## Not done / open
 
 - CLI-EXT-24's UNVERIFIED route-metadata question (delegate wrapper with `mutating=True` and no `dry_run`) was not
