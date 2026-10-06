@@ -122,3 +122,91 @@ VM lane were not run.
   target (patch 0002 is trusted, not re-tested here).
 - Config, wizard, `_validate_plan_geometry`, controller-key and docker code
   were not touched.
+
+
+## Review fix round 1 + W9b merge
+
+Fix commit `64aa2adc1`; merge of `cli-ext-w9b-debian` (d74b0beb5) is `8c72a3f38`.
+Still nothing run against a real disk, loop device, swap, fio or the VM harness; the
+only real child processes were harmless `sh`/`sleep` in the timeout tests.
+
+### Item -> fix -> test
+
+1. Timeouts/scheduler: `HostActions.run(timeout=)` (passed only when supplied via `Installer._run`),
+   `Popen(start_new_session=True)` + `communicate(timeout)` (not `subprocess.run`), SIGTERM to the
+   process group, grace, SIGKILL, then `ActionUnreapable` if still not reaped (also `ActionTimeout`).
+   Tool timeout `6*duration*3 + testfile_gb*30 + 120` (690 s in the tests); sync/umount 120, mkfs 300,
+   dd 120. Scheduler and `nomerges` snapshotted before the tool, restored in a `finally` with `tee` +
+   `input=`. An unreapable child marks the step `failed`, skips all cleanup actions and stops.
+   Tests: `test_commands_carry_timeouts_and_tool_timeout_formula`, `test_hung_tool_cleans_up_restores_scheduler_and_install_continues`,
+   `test_hung_umount_or_sync_stops_the_install`, `test_unreapable_tool_child_stops_the_install`,
+   `test_unreapable_umount_stops_the_install`, `test_timeout_kwarg_is_only_forwarded_when_supplied`,
+   `test_bounded_run_*` (real group kill of a grandchild, TERM-ignoring child, fake unreapable child, new session).
+2. Case B resume wedge: `_stage2()` also derives "swap already written" from the live table
+   (`_swap_partitions_already_planned_in_table`: all planned swap partitions present with exact start/size/type);
+   partial/mismatching presence still refuses; `_validate_plan_geometry()` untouched.
+   Tests: `test_resume_with_swap_partitions_already_written_does_not_wedge` (reviewer repro),
+   `test_resume_after_benchmark_cleanup_stop_continues_to_swap_activation`, `test_partial_swap_presence_still_refuses`,
+   `test_mismatching_swap_presence_still_refuses`, `test_swap_written_flag_decides_the_requirement`.
+   I did not run the new regression test against the pre-fix code except via the "resume derivation disabled" plant, which reproduces the wedge.
+3. Escaping: failure text wrapped in `_code()`. Test: `test_failure_notification_is_html_escaped`.
+4. Cleanup robustness: `udevadm settle` before the restore; restore uses `--no-reread` (deliberate change to the
+   shared rollback path; `test_fake_integration.py::test_mismatched_readback_rolls_back` updated: rollback is the second
+   `--no-reread` write, settle count 3); `partx -d`/`-u` retried 5x with 1 s backoff. Tests: `test_cleanup_settles_before_restore_and_restore_uses_no_reread`,
+   `test_cleanup_partx_retries_then_succeeds`, `test_cleanup_partx_gives_up_after_five_attempts`.
+5. Stale signature: `dd if=/dev/zero of=<part> bs=1M count=1 conv=fsync` after umount, before the restore (skipped when the
+   device node does not exist, e.g. a node-less leftover). Tests: `test_stale_signature_zeroed_before_partition_is_deleted`,
+   `test_leftover_without_a_device_node_skips_the_zeroing`.
+6. Tool integrity: `build-iocost-generator.py` writes `tools/iocost_coef_gen.py.sha256` and `--check` verifies it
+   (ran: regenerate, `--check` OK; the generated tool bytes did not change). Installer compares the body digest before running;
+   mismatch -> step `warned` "tool integrity check failed", benchmark skipped, install continues.
+   Tests: `test_tampered_tool_body_with_valid_header_is_refused`, `test_committed_digest_matches_shipped_tool`,
+   `test_integrity_failure_marks_warned_skips_benchmark_and_continues`, `test_generator_verification_rejects_bad_artifacts` (updated).
+7. Readback strictness: post-restore readback also compares uuid and name of preserved partitions and the disk label-id.
+   Test: `test_cleanup_readback_compares_uuid_name_and_label_id` (uuid, name, label-id variants).
+8. Case B decision: tail-partition approach kept; `IO-BENCHMARK-DESIGN.md` documents it (runs after swap partitions exist in the table,
+   before mkswap/activation, needs >= 2 GiB tail; the "usually skips" claim is withdrawn).
+9. Missing tests: `test_apt_failure_is_advisory`, `test_partial_write_failure_still_triggers_cleanup`,
+   `test_swap_written_flag_decides_the_requirement`, `test_success_notification_is_sent_with_the_values`.
+
+### Plant table (each applied by hand-script to a committed tree, full suite run, reverted; suite was 648 passed before)
+
+| Plant | Result (tests that failed) |
+|---|---|
+| apt failure fatal | killed (test_apt_failure_is_advisory) |
+| `created=True` moved after the write | killed (test_partial_write_failure_still_triggers_cleanup) |
+| `swap_written` ignored | killed (test_swap_written_flag_decides_the_requirement) |
+| success notification removed | killed (test_success_notification_is_sent_with_the_values) |
+| tool timeout removed | killed (test_commands_carry_timeouts_...) |
+| umount timeout removed | killed (same) |
+| group kill -> `os.kill` of the leader only | killed ONLY by the fake-unreapable test (signals recorded); the real grandchild test survives it because the post-reap straggler `killpg(SIGKILL)` still kills the group (partly equivalent) |
+| unreapable -> plain `ActionTimeout` | killed (test_bounded_run_unreapable_child_raises_unreapable) |
+| no SIGKILL escalation | killed (2 tests) |
+| scheduler not restored | killed (6 tests) |
+| unreapable treated as advisory | killed (test_unreapable_tool_child_stops_the_install) |
+| unreapable still runs cleanup | killed (same) |
+| resume derivation disabled | killed (2 tests; this is the reviewer's wedge) |
+| resume ignores start mismatch | killed (test_mismatching_swap_presence_still_refuses) |
+| resume ignores type mismatch | killed (same) |
+| escaping removed | killed (test_failure_notification_is_html_escaped) |
+| no settle before restore | killed (2 tests) |
+| restore without `--no-reread` | killed (2 tests) |
+| partx single attempt | killed (2 tests) |
+| no dd zeroing | killed (3 tests) |
+| identity (uuid/name/label-id) check removed | killed (3 tests) |
+| tool body sha not checked | killed (2 tests) |
+
+All 22 plants were captured (the runner's output is `scratchpad/ltplant/plants.out`); the tree was clean after the run.
+
+### W9b merge (`8c72a3f38`)
+
+Single textual conflict, in the `installer.py` import block: kept `ActionError, ActionUnreapable, HostActions` (this branch) and
+`persisted_config_data` (w9b). Everything else auto-merged: the LT-KEY/LT-REG changes (controller-key retention, docker default
+address pools, stage2 config handling) came from `cli-ext-w9b-debian`; the benchmark step and the round-1 fixes from this branch.
+`git diff --check` clean; no conflict markers left.
+
+### Gates on the merged head (verdicts read in a separate step from the saved output)
+
+- debian-install-v2 `r0-r1`: PASS, exit 0, 751 passed, 11 skipped.
+- netcup `suite` (scripts/netcup): PASS, exit 0, 683 passed.
+- r2 (mutation) and the VM lane were not run.
