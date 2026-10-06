@@ -7,6 +7,7 @@ replacing GitHub's single repo-global "Latest" badge.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
@@ -41,9 +42,10 @@ def resolve_via_latest_json(
     try:
         with urlopen(latest_json_url, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (OSError, ValueError):
-        # Network failure (HTTPError/URLError/timeout are OSError) or a body that
-        # is not UTF-8 JSON: the fast path is unavailable, scan the releases
+    except (OSError, ValueError, http.client.HTTPException):
+        # Network failure (HTTPError/URLError/timeout are OSError; a truncated
+        # or malformed response is http.client.HTTPException, e.g. IncompleteRead,
+        # BadStatusLine) or a body that is not UTF-8 JSON: the fast path is unavailable, scan the releases
         # instead. A programming error is deliberately NOT swallowed here.
         return None
     if isinstance(data, dict) and data.get("version") and data.get("url"):
@@ -214,8 +216,12 @@ def _run_resolve(args, _runtime) -> int | None:
         return _resolve_config_free(args)
 
     from cmru.cli import load_config, _resolve_config
+    from cmru.config import load_forge_config
     cfg_path = _resolve_config(args.config)
     result_tuple = load_config(cfg_path)
+    # The installer section lives on the strict ForgeConfig, the same loader
+    # get-py uses for [project.installer]; cli.ProjectConfig has no such field.
+    forge_projects = load_forge_config(cfg_path).projects
     configs = result_tuple[1]
     project_order = result_tuple[2]
     github_cfg = result_tuple[8]
@@ -253,10 +259,11 @@ def _run_resolve(args, _runtime) -> int | None:
         proj = configs[name]
         token = proj.github_token or github_cfg.token
         host = GitHubReleaseHost(owner=owner, repo=repo, token=token)
+        installer = forge_projects[name].installer
         try:
             result = resolve(
                 host, proj.prefix, gh_releases_url=gh_releases_url,
-                asset_suffix=proj.installer.asset_suffix if proj.installer else "",
+                asset_suffix=installer.asset_suffix if installer else "",
             )
         except RuntimeError as exc:
             print(f"[ERROR] cannot resolve project {name!r}: {exc}", file=sys.stderr)

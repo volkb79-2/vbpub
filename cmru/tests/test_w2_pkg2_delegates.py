@@ -7,9 +7,11 @@ multi-project refusal, standards --json, and the narrowed exception sites.
 """
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -196,7 +198,8 @@ def test_every_tester_gate_env_fallback_is_named_as_a_default_in_its_help(capsys
     assert tester_gate.main(["--help"]) == 0
     help_text = " ".join(capsys.readouterr().out.split())
     for name in (*_ENV, *_OPTIONAL_ENV):
-        assert f"(default: ${name}" in help_text, name
+        # Delimiter-exact: `$CMRU_TESTER_MEMORY` must not match `..._MEMORY_SWAP)`.
+        assert re.search(rf"\(default: \${name}[,)]", help_text), name
 
 
 def test_tester_gate_missing_configuration_exits_3(monkeypatch, capsys):
@@ -271,6 +274,10 @@ def _loaded(tmp_path, names):
 def _resolve_env(monkeypatch, tmp_path, names, *, context=None):
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _a: tmp_path / "cmru.orchestration.toml")
     monkeypatch.setattr("cmru.cli.load_config", lambda _p: _loaded(tmp_path, names))
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config",
+        lambda _p: SimpleNamespace(projects={n: SimpleNamespace(installer=None) for n in names}),
+    )
     monkeypatch.setattr(
         "cmru.config.resolve_invocation_context",
         lambda *_a, **_k: SimpleNamespace(project_name=context, scope="estate"),
@@ -351,6 +358,11 @@ def test_resolve_config_free_mode_reads_no_configuration_and_uses_the_given_pref
         (["--prefix", "p"], "--prefix requires --repo"),
         (["alpha", "--repo", "o/r", "--prefix", "p"], "cannot be combined with a project target"),
         (["--repo", "not-a-repo", "--prefix", "p"], "must look like OWNER/REPO"),
+        # fullmatch, not match: a valid prefix followed by garbage is refused.
+        (["--repo", "a/b/c", "--prefix", "p"], "must look like OWNER/REPO"),
+        (["--repo", "a/b c", "--prefix", "p"], "must look like OWNER/REPO"),
+        (["--repo", "a/b!", "--prefix", "p"], "must look like OWNER/REPO"),
+        (["--repo", "/b", "--prefix", "p"], "must look like OWNER/REPO"),
     ],
 )
 def test_resolve_config_free_mode_refuses_conflicting_or_malformed_input(argv, message, capsys):
@@ -408,8 +420,14 @@ def test_latest_json_pointer_is_read_and_a_valid_body_returned(monkeypatch):
         lambda *_a, **_k: _Body(b"\xff\xfe"),
         lambda *_a, **_k: _Body(b"[1, 2]"),
         lambda *_a, **_k: _Body(b'{"version": "1"}'),
+        # http.client failures are HTTPException, not OSError (review B2).
+        lambda *_a, **_k: (_ for _ in ()).throw(http.client.IncompleteRead(b"par", 10)),
+        lambda *_a, **_k: (_ for _ in ()).throw(http.client.BadStatusLine("garbage")),
     ],
-    ids=["urlerror", "timeout", "bad-json", "bad-utf8", "non-object", "missing-url"],
+    ids=[
+        "urlerror", "timeout", "bad-json", "bad-utf8", "non-object", "missing-url",
+        "incomplete-read", "bad-status-line",
+    ],
 )
 def test_latest_json_failures_fall_back_to_the_release_scan(monkeypatch, behaviour):
     assert _latest(monkeypatch, behaviour) is None
@@ -525,3 +543,87 @@ def test_run_step_delegate_still_resolves_one_project_through_the_shared_helper(
     )
     assert runner.runner_cli().run(argv=["demo,other", "--step", "build"]) == 2
     assert "run-step requires exactly one project target" in capsys.readouterr().err
+
+
+# --- review fix round 1 -------------------------------------------------------
+
+
+def _real_config(tmp_path, installer: str = ""):
+    """An on-disk cmru.toml loaded by the REAL loaders (no fakes)."""
+    from tests.test_installer import _minimal_toml
+
+    path = tmp_path / "cmru.toml"
+    path.write_text(_minimal_toml(installer), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("argv", "shape"),
+    [(["demo"], "object"), ([], "object"), (["all"], "map")],
+    ids=["explicit", "omitted-standalone", "all"],
+)
+def test_resolve_runs_against_a_real_config_with_an_installer_section(
+    monkeypatch, tmp_path, capsys, argv, shape,
+):
+    """B1: ProjectConfig has no `installer`; the section comes from the same
+    strict loader get-py uses. A real file, real load_config / load_forge_config."""
+    config = _real_config(tmp_path, '\n[project.installer]\ninstall_dir_system = "/opt/demo"\n'
+                          'install_dir_user = "demo"\nasset_suffix = ".tar.xz"\n')
+    seen = []
+
+    def fake_resolve(host, prefix, **kwargs):
+        seen.append((prefix, kwargs["asset_suffix"]))
+        return {"version": "1.0.0", "tag": f"{prefix}1.0.0", "asset": "a", "sha256": None, "url": "https://u"}
+
+    monkeypatch.setattr(resolve, "resolve", fake_resolve)
+    assert resolve.resolve_main([*argv, "--config", str(config)]) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert seen == [("demo-v", ".tar.xz")]  # the real installer asset_suffix reached resolve()
+    assert (set(document) == {"demo"}) if shape == "map" else (document["version"] == "1.0.0")
+
+
+def test_resolve_runs_against_a_real_config_without_an_installer_section(monkeypatch, tmp_path, capsys):
+    config = _real_config(tmp_path)
+    seen = []
+    monkeypatch.setattr(
+        resolve, "resolve",
+        lambda host, prefix, **kw: seen.append(kw["asset_suffix"]) or {"version": "1", "url": "u", "tag": "t"},
+    )
+    assert resolve.resolve_main(["demo", "--config", str(config)]) == 0
+    assert seen == [""]
+
+
+def test_get_py_without_an_installer_section_is_a_clean_exit_2_with_a_hint(tmp_path, capsys):
+    config = _real_config(tmp_path)
+    assert getpy.getpy_main(["demo", "--config", str(config)]) == 2
+    captured = capsys.readouterr()
+    assert "has no [project.demo.installer] section" in captured.err
+    assert "add one to its cmru.toml" in captured.err
+    assert "Traceback" not in captured.err and captured.out == ""
+
+
+@pytest.mark.parametrize("expression", ["{{ 1/0 }}", "{{ 'a' + 1 }}"])
+def test_a_user_template_that_raises_anything_is_a_versions_error(tmp_path, expression):
+    """The one justified broad catch: the render evaluates user-authored data."""
+    (tmp_path / "t.j2").write_text(expression, encoding="utf-8")
+    with pytest.raises(versions.VersionsError, match="could not render version output 'x'"):
+        versions._template_artifacts(
+            tmp_path, {"x": {"template": "t.j2", "path": "out", "dated_path": "out-{date}"}}, {}, "20260924",
+        )
+
+
+def test_an_unreadable_user_template_is_a_versions_error(tmp_path):
+    (tmp_path / "t.j2").write_bytes(b"\xff\xfe")
+    with pytest.raises(versions.VersionsError, match="could not read version template 'x'"):
+        versions._template_artifacts(
+            tmp_path, {"x": {"template": "t.j2", "path": "out", "dated_path": "out-{date}"}}, {}, "20260924",
+        )
+
+
+def test_a_template_error_exits_2_through_the_versions_entry(monkeypatch, tmp_path, capsys):
+    def boom(_args):
+        raise versions.VersionsError("could not render version output 'x': division by zero")
+
+    monkeypatch.setattr(versions, "_dispatch_versions", boom)
+    assert versions.versions_cli().run(argv=["check"]) == 2
+    assert "division by zero" in capsys.readouterr().err

@@ -197,6 +197,20 @@ def test_complete_options_with_yes_write_the_validated_contract(git_repo, capsys
     assert "Dry-run the estate graph" not in out
 
 
+def test_a_plan_the_real_loader_rejects_is_refused_before_anything_is_written(
+    git_repo, monkeypatch, capsys,
+):
+    """D6 validate-before-write: the throwaway real-loader pass runs before the
+    confirmation and the write, so a bad plan leaves the tree untouched (exit 2)."""
+    monkeypatch.setattr(
+        scaffold, "build_files",
+        lambda plan, root: [(Path(root) / "cmru.toml", "schema_version = 1\n[github\n")],
+    )
+    assert _init(git_repo, *COMPLETE, "--yes") == 2
+    assert not (git_repo / "cmru.toml").exists()
+    assert [p.name for p in git_repo.iterdir() if p.name != ".git"] == []
+
+
 def test_complete_options_without_yes_refuse_on_a_non_terminal(git_repo, capsys):
     assert _init(git_repo, *COMPLETE) == 2
     assert "confirmation is required" in capsys.readouterr().err

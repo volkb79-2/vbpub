@@ -216,10 +216,10 @@ cmru changelog all \
   --backfill-tag assay-v0.8.1
 ```
 
-`get-py all` likewise emits a headed section per project on stdout. When
-writing files, its all-project form takes an output directory and writes one
-named script per project; the single-project `--output FILE` contract remains
-unchanged.
+`get-py all` (or any multi-project selection) is refused on stdout with exit 2
+(CLI-12, W2-PKG2): concatenated installers are not a runnable file. Its
+all-project form takes an output directory and writes one named script per
+project; the single-project `--output FILE` contract remains unchanged.
 
 ### 4. Make `init` an adoption wizard
 

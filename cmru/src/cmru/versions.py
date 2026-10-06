@@ -664,7 +664,7 @@ def _template_artifacts(
     if not outputs:
         return []
     try:
-        from jinja2 import Environment, StrictUndefined, TemplateError
+        from jinja2 import Environment, StrictUndefined
     except ImportError as exc:
         raise VersionsError(
             "configured [versions.outputs] require Jinja2; install CMRU with its "
@@ -703,8 +703,16 @@ def _template_artifacts(
         if not template_path.is_file():
             raise VersionsError(f"configured version template does not exist: {template_path}")
         try:
-            rendered = environment.from_string(template_path.read_text(encoding="utf-8")).render(**context)
-        except (TemplateError, OSError, UnicodeDecodeError) as exc:
+            source = template_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise VersionsError(f"could not read version template {output_id!r}: {exc}") from exc
+        try:
+            rendered = environment.from_string(source).render(**context)
+        except Exception as exc:  # noqa: BLE001
+            # The one justified broad catch (CMRU-C): the render evaluates
+            # user-authored template expressions, which may raise anything
+            # ({{ 1/0 }}, {{ 'a' + 1 }}). That is bad user data (exit 2), not a
+            # programmer error; every other site keeps a narrow tuple.
             raise VersionsError(f"could not render version output {output_id!r}: {exc}") from exc
         stable_path = _safe_relative_path(project_root, config["path"], label=f"versions.outputs.{output_id}.path")
         dated_name = config["dated_path"].replace("{date}", date_string)

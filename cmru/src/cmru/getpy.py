@@ -501,8 +501,9 @@ def render_from_config(project_name: str, config_path: Path) -> str:
     if not proj:
         raise ValueError(f"Project '{project_name}' not found in config")
     if not proj.installer:
-        raise ValueError(
-            f"Project '{project_name}' has no [project.{project_name}.installer] section"
+        raise RenderError(
+            f"Project '{project_name}' has no [project.{project_name}.installer] section; "
+            f"add one to its cmru.toml (see `cmru get-py --help`) to render a standalone installer"
         )
 
     ins = proj.installer
