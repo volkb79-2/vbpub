@@ -134,23 +134,11 @@ to 0% in seconds to minutes, and it does not recover once disabled. A
 userspace fill-watermark governor is designed but **not implemented**; set
 `zswap_shrinker_enabled=false` on hosts where that matters.
 
-  **Know this before relying on it under real memory pressure with
-  multiple cgroups on the same host**: a separate live incident
-  (`TODO.md`, `zswap-shrinker-threshold-feasibility.md`, gstammtisch game
-  host, 2026-09-08) found this shrinker has no per-cgroup floor and no
-  rate limit — under sustained pressure it can walk a *single* selected
-  cgroup's zswap pool from a healthy level to **0%** in seconds to a few
-  minutes (observed: a 2.7GB pool drained in ~150s, in-game FPS crashed
-  25→8.3, a sibling cgroup untouched the whole time), and it does not
-  recover once disabled. A userspace fill-watermark governor to bound this
-  is designed (`zswap-shrinker-threshold-feasibility.md` §7) but **not
-  implemented** — currently nothing paces or floors this on hosts v2
-  provisions.
-
 ### KSM and THP (tmpfiles.d)
 
 KSM and THP are `systemd-tmpfiles` `w!` entries (as on gstammtisch), applied
-immediately with `systemd-tmpfiles --create` and again at every boot. They
+immediately with `systemd-tmpfiles --create --boot` (`--boot` is required:
+without it `w!` lines are skipped silently) and again at every boot. They
 replace the earlier `ksm-config.service` / `thp-config.service` units; on a
 re-run or resume those old units are disabled and removed if present.
 
@@ -182,10 +170,16 @@ oneshot unit resolves the root disk's `MAJ:MIN` at boot (so a device rename
 cannot misconfigure it), writes `/sys/fs/cgroup/io.cost.model` from the
 persisted coefficients (`ctrl=user model=linear rbps= rseqiops= rrandiops=
 wbps= wseqiops= wrandiops=`) and enables `/sys/fs/cgroup/io.cost.qos` with
-`rpct=95 wpct=95 min=1 max=100` (from the mdt iocost plan); `rlat`/`wlat` stay
-at kernel defaults and the I/O scheduler is untouched. With no valid result no
-unit is installed and the completion notification says so; this is not a
-failure. The health gate reads the model and qos back.
+`enable=1 ctrl=user` **only**. There are deliberately no `rpct`/`wpct`/`min`/
+`max` tokens: no latency-based vrate throttling, the cost model alone gives
+proportional `io.weight` control. Operator-set `rlat`/`wlat` latency targets are
+a future option (mdt iocost plan D4: do not enable latency QoS without them).
+The I/O scheduler is untouched. With no valid result no unit is installed and
+the completion notification says so; this is not a failure. io.cost is
+advisory: if the boot unit fails to start, or the health gate's model/qos
+read-back does not match, the install continues, the `iocost` step is marked
+`warned` and the failure text appears in the completion notification. Setting
+`iocost_enabled=false` on a re-run removes a previously installed unit.
 
 ### `vbpub-swap-health`
 
@@ -196,8 +190,10 @@ zswap stats, compression ratio, writeback ratio and PSI. It works on 6.12 and
 ### User ergonomics
 
 Root and `/etc/skel` receive mc, htop, iftop and top rc files, nano settings
-and a few shell aliases (`df -h`, `du -h`, `free -h`, `catlog`, ...),
-idempotently.
+and a few shell aliases (`df -h`, `du -h`, `free -h`, `catlog`, ...). A file
+is written only when it does not exist yet: an existing file (hand-edited, or
+rewritten by htop/mc itself) is operator-owned and is never overwritten, so a
+re-run or resume is safe.
 
 ### apt
 

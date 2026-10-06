@@ -14,7 +14,7 @@ import pytest
 
 from debian_install_v2 import config as config_module
 from debian_install_v2 import templates
-from debian_install_v2.actions import HostActions
+from debian_install_v2.actions import ActionError, HostActions
 from debian_install_v2.config import Config, ConfigError, load_config, persisted_config_data
 from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2.state import StateStore
@@ -188,8 +188,29 @@ def test_thp_and_ksm_are_tmpfiles_entries_with_gstammtisch_values(tmp_path):
     assert "/etc/systemd/system/thp-config.service" not in writes
     assert "/etc/systemd/system/ksm-config.service" not in writes
     argvs = [a.argv for a in installer.actions.planned]
-    assert ("/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/vbpub-thp.conf") in argvs
-    assert ("/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/vbpub-ksm.conf") in argvs
+    # --boot is mandatory: without it systemd-tmpfiles silently skips `w!` lines (rc=0).
+    assert ("/usr/bin/systemd-tmpfiles", "--create", "--boot", "/etc/tmpfiles.d/vbpub-thp.conf") in argvs
+    assert ("/usr/bin/systemd-tmpfiles", "--create", "--boot", "/etc/tmpfiles.d/vbpub-ksm.conf") in argvs
+    for argv in argvs:
+        if argv[:1] == ("/usr/bin/systemd-tmpfiles",):
+            assert "--boot" in argv, argv
+
+
+def test_tmpfiles_allowlist_permits_create_and_boot():
+    HostActions(dry_run=True).run(["/usr/bin/systemd-tmpfiles", "--create", "--boot", "/etc/tmpfiles.d/x.conf"])
+
+
+@pytest.mark.skipif(not Path("/usr/bin/systemd-tmpfiles").exists(), reason="no systemd-tmpfiles on this host")
+def test_real_systemd_tmpfiles_applies_w_bang_only_with_boot(tmp_path):
+    """The real binary: `w!` lines are skipped by --create alone and applied by --create --boot."""
+    target = tmp_path / "knob"
+    conf = tmp_path / "vbpub-test.conf"
+    conf.write_text(f"w! {target} - - - - madvise\n")
+    target.write_text("always\n")
+    subprocess.run(["/usr/bin/systemd-tmpfiles", "--create", str(conf)], check=True, capture_output=True)
+    assert target.read_text() == "always\n"  # the silent no-op this fix exists for
+    subprocess.run(["/usr/bin/systemd-tmpfiles", "--create", "--boot", str(conf)], check=True, capture_output=True)
+    assert target.read_text() == "madvise"
 
 
 def test_gstammtisch_tmpfiles_content_is_what_v2_ships():
@@ -366,6 +387,22 @@ def test_iocost_disabled_by_config_even_with_a_result(tmp_path):
     assert not [p for p in installer.actions.dry_run_writes if "iocost" in p]
 
 
+def test_iocost_disabled_on_a_rerun_removes_the_installed_unit(tmp_path, monkeypatch):
+    write_fixture(tmp_path)
+    installer = make(tmp_path, iocost_enabled=False)
+    monkeypatch.setattr(installer.actions, "exists", lambda p: p == "/etc/systemd/system/vbpub-iocost.service")
+    installer._configure_iocost()
+    argvs = [a.argv for a in installer.actions.planned]
+    assert ("/usr/bin/systemctl", "disable", "vbpub-iocost.service") in argvs
+    for path in ("/etc/systemd/system/vbpub-iocost.service", "/etc/vbpub/iocost-model", "/usr/local/sbin/vbpub-iocost-setup"):
+        assert path in installer.actions.dry_run_removals
+    # and with no unit installed there is nothing to disable
+    clean = make(tmp_path / "clean", iocost_enabled=False)
+    monkeypatch.setattr(clean.actions, "exists", lambda p: False)
+    clean._configure_iocost()
+    assert not clean.actions.dry_run_removals
+
+
 def test_result_installs_model_file_script_and_unit(tmp_path):
     write_fixture(tmp_path)
     installer = make(tmp_path)
@@ -424,8 +461,56 @@ def test_boot_script_writes_model_line_then_qos_for_the_resolved_disk(tmp_path):
         "wbps=600000000 wseqiops=9001 wrandiops=8002"
     )
     qos = (cg / "io.cost.qos").read_text().strip()
-    assert qos.startswith("254:0 enable=1 ctrl=user")
-    assert "rpct=95.00" in qos and "max=100.00" in qos
+    # Controller ruling: enable=1 ctrl=user ONLY -- no latency-QoS tokens at all.
+    assert qos == "254:0 enable=1 ctrl=user"
+
+
+QOS_KEYS = {"enable", "ctrl", "rpct", "rlat", "wpct", "wlat", "min", "max"}
+
+
+def assert_strict_qos_line(line: str) -> None:
+    """Kernel io.cost.qos grammar: `MAJ:MIN key=value key=value ...`, single spaces."""
+    assert line == line.strip() and "  " not in line and "\n" not in line, repr(line)
+    devno, *tokens = line.split(" ")
+    assert re.fullmatch(r"\d+:\d+", devno), devno
+    assert tokens, "no qos tokens"
+    seen = set()
+    for token in tokens:
+        assert token.count("=") == 1, f"token is not key=value: {token!r}"
+        key, value = token.split("=")
+        assert key in QOS_KEYS, f"unknown qos key {key!r}"
+        assert key not in seen, f"duplicate qos key {key!r}"
+        seen.add(key)
+        if key == "enable":
+            assert value in {"0", "1"}, token
+        elif key == "ctrl":
+            assert value in {"auto", "user"}, token
+        elif key in {"rpct", "wpct"}:
+            assert re.fullmatch(r"\d+\.\d{2}", value) and 0 <= float(value) <= 100, token
+        elif key in {"rlat", "wlat"}:
+            assert re.fullmatch(r"\d+", value), token
+        else:  # min / max
+            assert re.fullmatch(r"\d+\.\d{2}", value) and 1 <= float(value) <= 10000, token
+    assert "enable" in seen
+
+
+def test_strict_qos_parser_rejects_malformed_lines():
+    for bad in ("254:0 enable=1,ctrl=user", "254:0 enable=1  ctrl=user", "254:0 rpct=95,wpct=95.00",
+                "254:0 enable=1 rpct=95", "254:0 enable=1 bogus=1", "254:0 enable=1 min=0.00", "254:0 enable=1 max=20000.00",
+                "254:0 enable=1 ctrl=user\n", "enable=1 ctrl=user"):
+        with pytest.raises(AssertionError):
+            assert_strict_qos_line(bad)
+    assert_strict_qos_line("254:0 enable=1 ctrl=user rpct=95.00 rlat=5000 wpct=95.00 wlat=5000 min=1.00 max=100.00")
+
+
+def test_rendered_qos_line_is_strictly_valid(tmp_path):
+    script, env, cg = iocost_sandbox(tmp_path)
+    subprocess.run(["sh", str(script)], env=env, check=True, capture_output=True)
+    text = (cg / "io.cost.qos").read_text()
+    assert text.endswith("\n") and text.count("\n") == 1
+    assert_strict_qos_line(text.rstrip("\n"))
+    assert "rpct" not in text and "wpct" not in text and "min=" not in text and "max=" not in text
+    assert templates.IOCOST_QOS_TOKENS == "enable=1 ctrl=user"
 
 
 def test_boot_script_resolves_majmin_at_boot_not_install_time(tmp_path):
@@ -485,16 +570,57 @@ def test_health_gate_iocost_reads_model_and_qos_back(tmp_path):
     (cg / "io.cost.model").write_text(model)
     (cg / "io.cost.qos").write_text(qos)
     installer._health_gate_iocost()
+    assert installer._iocost_note == ""
+    # io.cost is advisory: every mismatch warns and marks the step, never raises.
+    def step():
+        return StateStore(installer.config.state_dir).load()["steps"]["iocost"]
     (cg / "io.cost.qos").write_text(qos.replace("enable=1", "enable=0"))
-    with pytest.raises(InstallerError, match="io.cost.qos is not enabled"):
-        installer._health_gate_iocost()
+    installer._health_gate_iocost()
+    assert "io.cost.qos is not enabled" in installer._iocost_note
+    assert step()["status"] == "warned" and "io.cost.qos is not enabled" in step()["detail"]
+    installer._iocost_note = ""
     (cg / "io.cost.qos").write_text(qos)
     (cg / "io.cost.model").write_text(model.replace("rbps=1481338880", "rbps=1"))
-    with pytest.raises(InstallerError, match="io.cost.model does not read back"):
-        installer._health_gate_iocost()
+    installer._health_gate_iocost()
+    assert "io.cost.model does not read back" in installer._iocost_note
+    assert step()["status"] == "warned"
+    installer._iocost_note = ""
     (cg / "io.cost.model").write_text("")
-    with pytest.raises(InstallerError, match="io.cost.model"):
-        installer._health_gate_iocost()
+    installer._health_gate_iocost()
+    assert "io.cost.model" in installer._iocost_note
+    # and the real health gate entry point does not raise on it either
+    installer._health_gate_iocost()  # (InstallerError would propagate here)
+
+
+def test_health_gate_iocost_mismatch_is_not_an_install_failure_even_without_qos_file(tmp_path):
+    write_fixture(tmp_path)
+    installer = make(tmp_path, dry_run=False)
+    cg = tmp_path / "cg"
+    cg.mkdir()
+    (cg / "io.cost.model").write_text("254:0 ctrl=user model=linear rbps=1\n")
+    installer._CGROUP_ROOT = cg
+    installer._SYS_CLASS_BLOCK = tmp_path / "blk"
+    installer._health_gate_iocost()  # must not raise
+    assert installer._iocost_note
+
+
+def test_iocost_enable_failure_warns_and_does_not_abort(tmp_path):
+    write_fixture(tmp_path)
+    installer = make(tmp_path)
+    real_run = installer._run
+
+    def failing_run(argv, description=""):
+        if list(argv[:3]) == ["/usr/bin/systemctl", "enable", "--now"] and "vbpub-iocost.service" in argv:
+            raise ActionError("vbpub-iocost-setup: cannot resolve the root device\nsecond line")
+        return real_run(argv, description)
+
+    installer._run = failing_run
+    installer._configure_iocost()  # ActionError must not propagate
+    assert "cannot resolve the root device" in installer._iocost_note
+    assert "second line" not in installer._iocost_note
+    state = StateStore(installer.config.state_dir).load()["steps"]["iocost"]
+    assert state["status"] == "warned" and "cannot resolve the root device" in state["detail"]
+    assert "/etc/systemd/system/vbpub-iocost.service" in installer.actions.dry_run_writes
 
 
 def test_health_gate_iocost_is_a_noop_without_a_result(tmp_path):
@@ -580,6 +706,22 @@ def test_swap_health_survives_missing_zswap_and_empty_pool(tmp_path):
     assert "n/a (pool empty)" in out and "n/a (nothing stored yet)" in out
 
 
+def test_swap_health_never_uses_errexit(tmp_path):
+    """A diagnostic view must keep printing when one probe fails: no `set -e` in any spelling."""
+    for line in templates.SWAP_HEALTH_SCRIPT.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        for match in re.finditer(r"\bset\s+((?:-[A-Za-z]+\s+|-o\s+\w+\s+)*(?:-[A-Za-z]+|-o\s+\w+))", stripped):
+            flags = match.group(1)
+            assert "errexit" not in flags, line
+            for word in flags.split():
+                assert not (word.startswith("-") and not word.startswith("--") and "e" in word[1:]), line
+    # and a totally empty proc/sys tree still ends in a full (exit 0) report
+    out = swap_health(tmp_path, proc_files={}, sys_files={})
+    assert "ZSWAP  not available" in out and "PSI" in out.upper()
+
+
 def test_swap_health_is_installed_executable_at_the_operator_path(tmp_path):
     installer = make(tmp_path)
     installer._configure_zswap()
@@ -587,8 +729,37 @@ def test_swap_health_is_installed_executable_at_the_operator_path(tmp_path):
     assert any(a.argv == ("/usr/bin/tee", "/usr/local/sbin/vbpub-swap-health") for a in installer.actions.planned)
 
 
-def test_user_ergonomics_written_for_root_and_skel(tmp_path):
+def fake_existing(installer, monkeypatch, existing=()):
+    """Make the rc-file existence check independent of the machine running the tests."""
+    monkeypatch.setattr(installer.actions, "exists", lambda path: path in set(existing))
+
+
+def test_existing_rc_files_are_never_overwritten(tmp_path, monkeypatch):
     installer = make(tmp_path)
+    existing = {"/root/.config/htop/htoprc", "/etc/skel/.nanorc"}
+    fake_existing(installer, monkeypatch, existing)
+    installer._configure_users()
+    writes = installer.actions.dry_run_writes
+    for path in existing:
+        assert path not in writes, f"operator-owned {path} was overwritten"
+    # the missing ones are still written, for root and skel alike
+    assert writes["/root/.nanorc"] == dict(USER_RC_FILES)[".nanorc"]
+    assert writes["/etc/skel/.config/htop/htoprc"] == dict(USER_RC_FILES)[".config/htop/htoprc"]
+    detail = StateStore(installer.config.state_dir).load()["steps"]["user_config"]["detail"]
+    assert "kept existing" in detail and "/root/.config/htop/htoprc" in detail
+
+
+def test_all_rc_files_existing_means_no_rc_writes(tmp_path, monkeypatch):
+    installer = make(tmp_path)
+    every = {f"{home}/{rel}" for home in ("/root", "/etc/skel") for rel, _ in USER_RC_FILES}
+    fake_existing(installer, monkeypatch, every)
+    installer._configure_users()
+    assert not (every & set(installer.actions.dry_run_writes))
+
+
+def test_user_ergonomics_written_for_root_and_skel(tmp_path, monkeypatch):
+    installer = make(tmp_path)
+    fake_existing(installer, monkeypatch)
     installer._configure_users()
     writes = installer.actions.dry_run_writes
     for home in ("/root", "/etc/skel"):
@@ -602,10 +773,12 @@ def test_user_ergonomics_written_for_root_and_skel(tmp_path):
     assert "fields=" not in writes["/root/.config/htop/htoprc"]
 
 
-def test_user_ergonomics_are_idempotent(tmp_path):
+def test_user_ergonomics_are_idempotent(tmp_path, monkeypatch):
     first = make(tmp_path)
+    fake_existing(first, monkeypatch)
     first._configure_users()
     second = make(tmp_path)
+    fake_existing(second, monkeypatch)
     second._configure_users()
     assert first.actions.dry_run_writes == second.actions.dry_run_writes
 

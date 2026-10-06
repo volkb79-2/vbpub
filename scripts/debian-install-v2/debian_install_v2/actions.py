@@ -79,8 +79,9 @@ _SAFE_COMMANDS = {
         "start",
     },
     "systemd-detect-virt": set(),
-    # THP/KSM tmpfiles.d entries are applied immediately with --create.
-    "systemd-tmpfiles": {"--create"},
+    # THP/KSM tmpfiles.d entries are applied immediately with --create --boot
+    # (`w!` lines are skipped without --boot).
+    "systemd-tmpfiles": {"--create", "--boot"},
     # Used only to schedule the delayed, detached stage1->stage2 reboot
     # (see installer.py's _reboot()) -- "--" is required so systemd-run's
     # own option parsing doesn't try to interpret the target command as

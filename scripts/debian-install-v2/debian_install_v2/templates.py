@@ -345,11 +345,13 @@ LEGACY_TUNING_UNITS = ("thp-config.service", "ksm-config.service")
 # root mount, never at install time, so a device rename/renumbering cannot
 # misconfigure another disk. Model first (ctrl=user, linear), then QoS enable.
 # The root cgroup's io.cost.* files take one line per device.
-# QoS parameters follow modern-debian-tools plan-iocost-integration.md D5
-# (rpct/wpct 95.00, vrate bounds min=1.00 max=100.00); rlat/wlat are an open
-# operator choice there, so they stay at the kernel defaults.
+# QoS: `enable=1 ctrl=user` ONLY (controller ruling, review round 1). No
+# rpct/wpct/min/max tokens, so there is no latency-based vrate throttling; the
+# cost model alone gives proportional io.weight control. Operator-set
+# rlat/wlat latency targets are a future option (mdt plan D4: qos must not be
+# enabled with latency targets without operator-set rlat/wlat).
 IOCOST_MODEL_PATH = "/etc/vbpub/iocost-model"
-IOCOST_QOS_PARAMS = "rpct=95.00 wpct=95.00 min=1.00 max=100.00"
+IOCOST_QOS_TOKENS = "enable=1 ctrl=user"
 
 IOCOST_SCRIPT = """\
 #!/bin/sh
@@ -363,7 +365,6 @@ set -eu
 SYS="${VBPUB_SYS:-/sys}"
 CG="${VBPUB_CGROUP_ROOT:-$SYS/fs/cgroup}"
 MODEL_FILE="${VBPUB_IOCOST_MODEL:-@MODEL_PATH@}"
-QOS_PARAMS="@QOS_PARAMS@"
 
 if [ ! -s "$MODEL_FILE" ]; then
   echo "vbpub-iocost-setup: no model file $MODEL_FILE" >&2
@@ -394,9 +395,9 @@ MAJMIN=$(head -n 1 "$DEVFILE")
 case "$MAJMIN" in [0-9]*:[0-9]*) ;; *) echo "vbpub-iocost-setup: bad MAJ:MIN '$MAJMIN'" >&2; exit 1 ;; esac
 
 echo "$MAJMIN ctrl=user model=linear $COEFFS" > "$CG/io.cost.model"
-echo "$MAJMIN enable=1 ctrl=user $QOS_PARAMS" > "$CG/io.cost.qos"
+echo "$MAJMIN @QOS_TOKENS@" > "$CG/io.cost.qos"
 echo "vbpub-iocost-setup: io.cost enabled on $DISK ($MAJMIN)"
-""".replace("@MODEL_PATH@", IOCOST_MODEL_PATH).replace("@QOS_PARAMS@", IOCOST_QOS_PARAMS)
+""".replace("@MODEL_PATH@", IOCOST_MODEL_PATH).replace("@QOS_TOKENS@", IOCOST_QOS_TOKENS)
 
 
 IOCOST_SERVICE = """\

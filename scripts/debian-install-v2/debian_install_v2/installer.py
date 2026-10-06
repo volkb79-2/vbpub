@@ -500,13 +500,23 @@ class Installer:
     def _configure_users(self) -> None:
         packages = ["htop", "iftop", "less", "man-db", "mc", "nano"]
         self._packages(packages, "users")
-        # root AND /etc/skel (new users inherit it). write_file replaces each
-        # file atomically, so a re-run or resume rewrites identical content.
+        # root AND /etc/skel (new users inherit it). A file is written only when
+        # it is missing: an existing one (hand-edited, or rewritten by htop/mc
+        # itself) is operator-owned and never overwritten, so a re-run or resume
+        # is a no-op for files we already placed and safe for ones the operator changed.
+        kept = []
         for home, mode in (("/root", 0o600), ("/etc/skel", 0o644)):
             for relative, content in USER_RC_FILES:
-                self.actions.write_file(f"{home}/{relative}", content, mode)
+                path = f"{home}/{relative}"
+                if self.actions.exists(path):
+                    kept.append(path)
+                    continue
+                self.actions.write_file(path, content, mode)
             self._ensure_bashrc_sources_aliases(f"{home}/.bashrc")
-        self._mark_step("user_config", "success", ", ".join(packages) + "; rc files for root and /etc/skel")
+        detail = ", ".join(packages) + "; rc files for root and /etc/skel"
+        if kept:
+            detail += f"; kept existing: {', '.join(kept)}"
+        self._mark_step("user_config", "success", detail)
 
     def _ensure_bashrc_sources_aliases(self, bashrc: str) -> None:
         """Make .bashrc source ~/.bash_aliases, once (Debian's skel .bashrc already does)."""
@@ -775,8 +785,10 @@ MaxFileSec=1month
 
         Best effort: a `w!` line whose knob is absent on this kernel fails that
         line only, and must not abort the install. Returns the failure text.
+        `--boot` is required: systemd-tmpfiles skips `w!` lines without it, so
+        a bare `--create` would exit 0 and change nothing.
         """
-        return self._try_run(["/usr/bin/systemd-tmpfiles", "--create", path], f"apply {path} now")
+        return self._try_run(["/usr/bin/systemd-tmpfiles", "--create", "--boot", path], f"apply {path} now")
 
     def _retire_legacy_tuning_units(self) -> None:
         """Disable and delete the old thp-config/ksm-config units when present."""
@@ -933,6 +945,8 @@ MaxFileSec=1month
     def _configure_iocost(self) -> None:
         """io.cost for the root disk from the benchmark; skipped (not failed) without a result."""
         if not self.config.iocost_enabled:
+            # A re-run with iocost off must not leave an earlier unit configuring io.cost at boot.
+            self._remove_iocost_units()
             self._mark_step("iocost", "skipped", "iocost_enabled is false")
             return
         results = self._load_io_benchmark_result()
@@ -948,8 +962,19 @@ MaxFileSec=1month
         self.actions.write_file("/usr/local/sbin/vbpub-iocost-setup", IOCOST_SCRIPT, 0o755)
         self.actions.write_file("/etc/systemd/system/vbpub-iocost.service", IOCOST_SERVICE)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
-        self._run(["/usr/bin/systemctl", "enable", "--now", "vbpub-iocost.service"], "enable and start io.cost unit")
+        # io.cost is advisory: the boot script exits 1 when it cannot resolve the
+        # root device or the kernel refuses the write. That must not abort the install.
+        error = self._try_run(["/usr/bin/systemctl", "enable", "--now", "vbpub-iocost.service"], "enable and start io.cost unit")
+        if error:
+            self._iocost_warn(f"io.cost unit failed to start: {error}")
+            return
         self._mark_step("iocost", "planned" if self.actions.dry_run else "success", coefficients)
+
+    def _iocost_warn(self, text: str) -> None:
+        """Advisory io.cost problem: log it, mark the step warned, surface it in the notification."""
+        _LOG.warning("%s", text)
+        self._iocost_note = f"{self._iocost_note}; {text}" if self._iocost_note else text
+        self._mark_step("iocost", "warned", text)
 
     @staticmethod
     def _cgroup_io_lines(text: str) -> list[dict[str, str]]:
@@ -968,7 +993,10 @@ MaxFileSec=1month
     _SYS_CLASS_BLOCK = Path("/sys/class/block")
 
     def _health_gate_iocost(self) -> None:
-        """Model and qos read back as configured (only when io.cost was set up)."""
+        """Model and qos read back as configured (only when io.cost was set up).
+
+        io.cost is advisory: a mismatch warns and marks the step, it never raises.
+        """
         if self.actions.dry_run or not self.config.iocost_enabled:
             return
         results = self._load_io_benchmark_result()
@@ -982,11 +1010,13 @@ MaxFileSec=1month
         models = [m for m in self._cgroup_io_lines(model_path.read_text(encoding="utf-8")) if devno in (None, m["dev"])]
         wanted = {key: str(value) for key, value in results.items()}
         if not any(m.get("model") == "linear" and all(m.get(k) == v for k, v in wanted.items()) for m in models):
-            raise InstallerError(f"health gate failed: io.cost.model does not read back the benchmark coefficients for {devno or 'the root disk'}")
+            self._iocost_warn(f"io.cost.model does not read back the benchmark coefficients for {devno or 'the root disk'}")
+            return
         qos_path = self._CGROUP_ROOT / "io.cost.qos"
-        qos = [q for q in self._cgroup_io_lines(qos_path.read_text(encoding="utf-8")) if devno in (None, q["dev"])]
+        qos_text = qos_path.read_text(encoding="utf-8") if qos_path.exists() else ""
+        qos = [q for q in self._cgroup_io_lines(qos_text) if devno in (None, q["dev"])]
         if not any(q.get("enable") == "1" for q in qos):
-            raise InstallerError(f"health gate failed: io.cost.qos is not enabled for {devno or 'the root disk'}")
+            self._iocost_warn(f"io.cost.qos is not enabled for {devno or 'the root disk'}")
 
     def _disk_facts(self) -> tuple[int, int, int]:
         if self.actions.dry_run:
