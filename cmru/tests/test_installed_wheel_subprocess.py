@@ -1,7 +1,7 @@
 """Subprocess tests for the installed-wheel world (W2-PKG4, KI-51).
 
 cmru depends on the RELEASED cli-extended wheel: no test here (or in the gate
-environment) puts ``libraries/cli-extended/src`` on a ``PYTHONPATH``. The two
+environment) puts the cli-extended library source on an import path. The two
 module-entry tests moved out of ``test_cli_dispatch.py`` run against the
 interpreter's installed ``cli_extended`` through the library's hermetic
 ``invoke_module`` (``home`` is required, AC-23); the bootstrap tests cover
@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 from cli_extended.testing import invoke_module
+
+from tests._cx_paths import CX_SOURCE
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_DIR.parent
@@ -183,7 +185,7 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
     assert "python3 -m cmru.handlers" not in source
     assert "-m cmru.handlers wheel-build" in source
     # BG-10: -s and an epoch; cli_extended is the verified RELEASED wheel, never a source root.
-    assert "libraries/cli-extended/src" not in source
+    assert CX_SOURCE not in source
     assert "libraries/worktree/src" in source
     assert '"${python_bin}" -s -m cmru.handlers' in source
     assert "CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256" in source and "fetch-cli-extended.py" in source

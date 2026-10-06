@@ -60,11 +60,11 @@ def test_registry_has_no_literal_version_fallback(monkeypatch):
 
 
 def test_registry_uses_the_single_policy_constant(monkeypatch):
-    assert cli_support.UNEXPECTED_EXCEPTIONS_POLICY == "raise"
-    assert cmru_registry("cmru", "d").unexpected_exceptions == "raise"
-    monkeypatch.setattr(cli_support, "UNEXPECTED_EXCEPTIONS_POLICY", "report")
+    assert cli_support.UNEXPECTED_EXCEPTIONS_POLICY == "report"
+    assert cmru_registry("cmru", "d").unexpected_exceptions == "report"
+    monkeypatch.setattr(cli_support, "UNEXPECTED_EXCEPTIONS_POLICY", "raise")
     parent, child = _parent_and_delegate()
-    assert parent.unexpected_exceptions == child.unexpected_exceptions == "report"
+    assert parent.unexpected_exceptions == child.unexpected_exceptions == "raise"
     parent.build()  # the library refuses a parent/delegate policy mismatch
 
 
@@ -110,18 +110,41 @@ def test_delegate_built_with_the_factory_inherits_the_global_option(monkeypatch)
 def test_module_entry_and_root_builders_agree_on_the_policy(monkeypatch):
     # The root goes through the factory, so flipping the one constant moves it
     # (non-vacuous: a root built with its own literal would stay "raise").
+    assert cli._build_cli().unexpected_exceptions == "report"
+    monkeypatch.setattr(cli_support, "UNEXPECTED_EXCEPTIONS_POLICY", "raise")
+    # Every delegate builds through the factory too, so the whole tree follows.
     assert cli._build_cli().unexpected_exceptions == "raise"
-    monkeypatch.setattr(cli_support, "UNEXPECTED_EXCEPTIONS_POLICY", "report")
-    flipped = cli._build_cli  # delegates still build their own registries
-    try:
-        built = flipped()
-    except ValueError as mismatch:
-        # Until every delegate module uses the factory the library refuses the
-        # parent/delegate mismatch: that refusal IS the proof the root follows
-        # the constant while an un-migrated delegate does not.
-        assert "differs from" in str(mismatch)
-    else:
-        assert built.unexpected_exceptions == "report"
+
+
+def test_an_unexpected_exception_in_a_real_verb_is_reported_not_raised(monkeypatch, capsys):
+    """Policy "report": library report + exit 1, no traceback; ``--traceback`` shows the stack."""
+    from cmru import cli as cli_module
+
+    def boom(*_args, **_kwargs):
+        raise ZeroDivisionError("planted unexpected failure")
+
+    monkeypatch.setattr(cli_module, "_current_git_root", boom)
+    assert cli_module.main(["worktrees"]) == 1
+    captured = capsys.readouterr()
+    assert "planted unexpected failure" in captured.err
+    assert "Traceback" not in captured.err and "Traceback" not in captured.out
+    assert "--traceback" in captured.err
+
+    # `--traceback` lets the exception propagate to the outer entrypoint, which prints the stack.
+    with pytest.raises(ZeroDivisionError, match="planted unexpected failure"):
+        cli_module.main(["worktrees", "--traceback"])
+
+
+def test_policy_raise_would_let_the_exception_escape(monkeypatch):
+    """The plant for the flip: under "raise" the same failure is a raw exception."""
+    from cmru import cli as cli_module
+
+    monkeypatch.setattr(cli_support, "UNEXPECTED_EXCEPTIONS_POLICY", "raise")
+    monkeypatch.setattr(
+        cli_module, "_current_git_root", lambda *_a, **_k: (_ for _ in ()).throw(ZeroDivisionError("x")),
+    )
+    with pytest.raises(ZeroDivisionError):
+        cli_module.main(["worktrees"])
 
 
 # --- selector ----------------------------------------------------------------

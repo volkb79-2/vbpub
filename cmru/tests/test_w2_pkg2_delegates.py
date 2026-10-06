@@ -322,6 +322,20 @@ def test_resolve_json_shape_follows_the_selector_syntax(
         assert all(entry["version"] == "1.0.0" for entry in document.values())
 
 
+def test_config_based_resolve_with_an_unreachable_registry_exits_3_without_a_traceback(
+    monkeypatch, tmp_path, capsys,
+):
+    _resolve_env(monkeypatch, tmp_path, ["alpha"], context="alpha")
+
+    def offline(*_a, **_k):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(resolve, "resolve", offline)
+    assert resolve.resolve_main([]) == 3
+    err = capsys.readouterr().err
+    assert "cannot reach octo/vbpub" in err and "Traceback" not in err
+
+
 def test_resolve_config_free_mode_reads_no_configuration_and_uses_the_given_prefix(
     monkeypatch, tmp_path, capsys,
 ):

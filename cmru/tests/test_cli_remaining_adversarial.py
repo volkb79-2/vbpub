@@ -101,7 +101,7 @@ def test_list_releases_paginates_and_stops_on_empty_page(monkeypatch):
     assert "page=2" in calls[1]
 
 
-def test_main_orchestration_builds_selected_steps_and_refuses_missing_credentials(monkeypatch, tmp_path):
+def test_main_orchestration_builds_selected_steps_and_refuses_missing_credentials(monkeypatch, tmp_path, capsys):
     project = SimpleNamespace(
         name="demo", github_token="", env={}, prefix="demo-v", runner_steps={"push": object()},
     )
@@ -109,5 +109,5 @@ def test_main_orchestration_builds_selected_steps_and_refuses_missing_credential
               cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "", "org"), cli.ReleaseEnvConfig({}, None))
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda *_: loaded)
-    with pytest.raises(RuntimeError, match="Publishing"):
-        cli.main(["run", "--step", "push", "--config", "x"])
+    assert cli.main(["run", "--step", "push", "--config", "x"]) == 1
+    assert "Publishing requires" in capsys.readouterr().err

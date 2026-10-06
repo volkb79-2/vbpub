@@ -5062,6 +5062,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version",
         "--yes"
       ],
@@ -5331,6 +5332,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -5560,6 +5562,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -5918,6 +5921,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version",
         "--yes"
       ],
@@ -6115,6 +6119,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -6275,6 +6280,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -6538,6 +6544,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": true,
@@ -6885,6 +6892,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -7147,6 +7155,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -7409,6 +7418,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -7791,6 +7801,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -8011,6 +8022,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -8195,6 +8207,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -8537,6 +8550,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -8717,6 +8731,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -9383,6 +9398,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version",
         "--yes"
       ],
@@ -9749,6 +9765,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -10452,6 +10469,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -10759,6 +10777,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -11102,6 +11121,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -11302,6 +11322,7 @@
         "--no-color",
         "--progress",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -11526,6 +11547,7 @@
         "--no-color",
         "--progress",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -11707,6 +11729,7 @@
         "--no-color",
         "--progress",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -11931,6 +11954,7 @@
         "--no-color",
         "--progress",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -12183,6 +12207,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": true,
@@ -12547,6 +12572,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -13413,6 +13439,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": true,
@@ -13736,6 +13763,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": true,
@@ -14010,6 +14038,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -14232,6 +14261,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -14454,6 +14484,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,
@@ -14595,6 +14626,7 @@
         "--log-level",
         "--no-color",
         "--quiet",
+        "--traceback",
         "--version"
       ],
       "confirmation": false,

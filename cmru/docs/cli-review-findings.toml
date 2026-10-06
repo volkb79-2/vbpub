@@ -1,2 +1,112 @@
 schema_version = 1
 cli_id = "cmru"
+
+# Judged 2026-10-06 (W2-PKG5) with the cli-extended-review rubric over `cli-extended surface pack`
+# for the whole surface (root, 9 delegates, 2 groups, 35 routes), plus `cli-extended audit --cli cmru`
+# (13 pass, 0 warn, 0 manual, 2 fail = the CLI-EXT-26 gap below; 0 `manual` items were produced, so
+# nothing is recorded for them).
+
+[[findings]]
+id = "adoption-skills-global-option"
+status = "open"
+severity = "minor"
+category = "adoption"
+route = "route:entrypoint:cmru/skills"
+summary = "`cmru skills` does not accept the root global option --log-prefix-time-short (cli-extended 0.2.0 register_skills_verbs builds its child registry without global_options; CLI-EXT-26). `surface check` and audit AC-17/AC-18 report it."
+remedy = "Accepted for cmru 6.0.0 by controller ruling: do not re-implement the group with private helpers. When cli-extended ships the CLI-EXT-26 fix, bump the cli-extended floor, delete the tolerance in tests/test_cli_spec_inventory.py (backlog KI-61) and close this finding."
+
+[[findings]]
+id = "bug-bundle-manifest-traceback"
+status = "fixed"
+severity = "major"
+category = "semantics"
+route = "route:entrypoint:cmru/handler/bundle-manifest"
+summary = "`cmru handler bundle-manifest` without SOURCE_DATE_EPOCH escaped a RuntimeError traceback instead of a diagnosed prerequisite failure. Found by the sandbox probes of the review cases."
+remedy = "Fixed in 7e99b63eb: cmd_bundle_manifest catches RuntimeError and prints one [ERROR] line, exit 3; catalog rows handler/bundle-manifest/* pin it."
+
+[[findings]]
+id = "bug-resolve-config-free-network"
+status = "fixed"
+severity = "major"
+category = "semantics"
+route = "route:entrypoint:cmru/resolve"
+summary = "`cmru resolve --repo O/R --prefix P` with the registry unreachable escaped a URLError traceback (exit status via raw exception)."
+remedy = "Fixed in 7e99b63eb: OSError becomes CliFailure 'cannot reach ...' exit 3; catalog rows resolve/option-spelling/--repo and --prefix pin it."
+
+[[findings]]
+id = "bug-resolve-config-based-network"
+status = "fixed"
+severity = "major"
+category = "semantics"
+route = "route:entrypoint:cmru/resolve"
+summary = "Config-based `cmru resolve [PROJECT]` had the same unguarded network call (URLError traceback) as the --repo/--prefix path."
+remedy = "Fixed in W2-PKG5 item 4: _run_resolve converts OSError to CliFailure exit 3 naming OWNER/REPO and the project; test_config_based_resolve_with_an_unreachable_registry_exits_3_without_a_traceback."
+
+[[findings]]
+id = "help-no-examples"
+status = "open"
+severity = "minor"
+category = "help"
+summary = "No verb declares VerbSpec.examples, so no verb help carries a pasteable example, including the verbs with more than one meaningful input (release, tester-gate, resolve --repo/--prefix, publish --build-output, cleanup modes, abandon BRANCH|PATH). The generated S-CLI.9 region and the packaged SKILL.md carry the examples today."
+remedy = "Add `examples=(...)` to release, publish, cleanup, abandon, tester-gate, resolve, get-py and versions resolve, copied from the skill's parse-tested example lines, then run `cli-extended surface sync`."
+
+[[findings]]
+id = "help-description-style"
+status = "open"
+severity = "note"
+category = "consistency"
+route = "route:entrypoint:cmru/doctor"
+summary = "Library-built verbs (`doctor`, `skills`, `skills *`) use lowercase descriptions without a final period and no `(read-only)` mark, while cmru verbs use sentence case with a period and a (read-only) suffix on exploration verbs. `resolve` (network read) and `handler *-validate` are exploration verbs without the suffix."
+remedy = "Library wording is not cmru-owned; for cmru's own verbs append `(read-only)` to resolve and handler wheel-validate/tarball-validate descriptions at the next help pass. No behaviour change."
+
+[[findings]]
+id = "grammar-resolve-format-vs-json"
+status = "open"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:cmru/resolve"
+summary = "`resolve` selects output with its own `--format {url,env,json}` and does not offer the library `--json`, unlike worktrees, status, dependencies, standards, tool-deps and versions check. `handler wheel-validate`/`tarball-validate` (exploration) offer no machine-readable output at all."
+remedy = "Controller decision D5 (partial output depth) kept the converted-result subset. Follow-up: accept `--json` on resolve as the alias of `--format json` (Conflicts with --format), and give the two validate verbs `--json` through runtime.output.primary."
+
+[[findings]]
+id = "semantics-publishing-verbs-dry-run-only"
+status = "wontfix"
+severity = "minor"
+category = "semantics"
+route = "route:entrypoint:cmru/release"
+summary = "`release`, `publish`, `build`, `run`, `changelog`, `tester-gate` and the handler publish steps change remote or local state and offer `--dry-run` but no `--yes` confirmation prompt."
+rationale = "Deliberate: these are automation verbs run by pipelines and agents; the rubric's blocker applies only to a destructive verb with neither dry-run nor confirmation, and each has --dry-run. The destructive verbs with human use (`cleanup`, `abandon`) and `init` do carry --yes confirmation. Isolation (release from an origin/main snapshot, transaction ledger, refusal exit 4) is the safety mechanism, specified in SPEC S-CLI.9."
+
+[[findings]]
+id = "semantics-abandon-bare-selects-all"
+status = "wontfix"
+severity = "minor"
+category = "semantics"
+route = "route:entrypoint:cmru/abandon"
+summary = "Bare `cmru abandon` (no BRANCH|PATH) selects every retained release transaction, a broad default."
+rationale = "The default is inspect-first: the verb lists what it would remove and requires confirmation (--yes to skip) and supports --dry-run; it also refuses transactions with publication or promotion evidence. A required argument would remove the useful bare inspection mode."
+
+[[findings]]
+id = "adoption-doctor-cli-extended-floor-warn"
+status = "open"
+severity = "note"
+category = "adoption"
+route = "route:entrypoint:cmru/doctor"
+summary = "In an editable development venv whose stale dist metadata predates the cli-extended floor, doctor's `cli-extended` check warns instead of passing; it reads the requirement from installed cmru metadata."
+remedy = "Reinstall the cmru wheel (or `pip install -e` again) so dist metadata carries `cli-extended>=0.2.0`; no code change."
+
+[[findings]]
+id = "semantics-domain-runtimeerror-reported-as-unexpected"
+status = "open"
+severity = "minor"
+category = "semantics"
+summary = "Under the report policy (flipped in W2-PKG5) deliberate domain refusals that are still raised as bare RuntimeError (for example `Publishing requires GITHUB_PUSH_PAT/...` from require_project_publish_credentials, `required declared step ... is absent`, `derived project working directory is absent`, `retained build record is incomplete or unsafe`) are rendered as `unexpected RuntimeError: <message>` with a `rerun with --traceback` hint and exit 1, instead of a plain refusal with the taxonomy exit code (3 missing prerequisite / 4 refused by policy)."
+remedy = "Convert each diagnosed RuntimeError raise site in cli.py/transaction.py into CliFailure(message, exit_code=3 or 4, hint=...) (missing credential -> 3, refused record -> 4); the pinned tests (test_cli_final_deep_adversarial, test_cli_remaining_adversarial, test_cli_dispatch_protocol_adversarial, test_cli_extended_semantics, test_release_candidate_changed_line_gaps) then assert the specific exit code."
+
+[[findings]]
+id = "adoption-audit-path-hack-heuristic"
+status = "fixed"
+severity = "minor"
+category = "adoption"
+summary = "Audit AC-25 (no-path-hacks) failed on five guard tests that name the library checkout path to assert it is absent from import paths (a heuristic false positive: a file naming the library tree and an import-path variable)."
+remedy = "Fixed: the guard tests take the needle from tests/_cx_paths.py (CX_LIBRARY, CX_SOURCE); AC-25 passes. The library heuristic cannot tell a negative guard from a path hack; consider a CLI-EXT backlog item to let a test assert absence."

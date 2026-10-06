@@ -10,10 +10,11 @@ import sys
 from collections.abc import Iterable, Mapping
 
 # The ONE exception policy for every CMRU registry (root and delegates). The
-# library refuses a delegate whose policy differs from its parent's, so this
-# is flipped to "report" in a single commit once every parser uses
-# ``cmru_registry`` (program W2 plan).
-UNEXPECTED_EXCEPTIONS_POLICY = "raise"
+# library refuses a delegate whose policy differs from its parent's, so it is a
+# single constant used by ``cmru_registry``. "report": an unexpected exception
+# becomes the library's one-line report and exit 1, with the stack behind the
+# library-provided ``--traceback`` (W2-PKG5 item 4; program W2 plan).
+UNEXPECTED_EXCEPTIONS_POLICY = "report"
 CMRU_DISTRIBUTION = "cmru"
 CMRU_COMMAND = "cmru"
 CMRU_LONG_NAME = "Configurable Multi Release Utility"

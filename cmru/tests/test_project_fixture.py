@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 
+from tests._cx_paths import CX_LIBRARY
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from project_fixture import copy_project_fixture  # noqa: E402
@@ -47,7 +49,7 @@ def test_disposable_project_fixture_copies_worktree_library_never_cli_extended_a
     assert (copied_project / "src/cmru/__init__.py").is_file()
     # CX-D1: cli-extended is a wheel dependency of the gate environment; a fixture
     # (and so every mutated candidate) never carries a vendored copy of its source.
-    assert not (workspace / "libraries/cli-extended").exists()
+    assert not (workspace / CX_LIBRARY).exists()
     assert (workspace / "libraries/worktree/src/worktree/__init__.py").is_file()
     assert (workspace / "topos/cmru.toml").is_file()
     assert (workspace / "nyxloom/cmru.toml").is_file()

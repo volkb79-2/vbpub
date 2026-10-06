@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import config, git_auth, transaction, version
+from tests._cx_paths import CX_SOURCE
 
 
 @pytest.mark.parametrize(
@@ -472,11 +473,10 @@ def test_run_child_never_puts_a_candidate_cli_extended_source_root_on_pythonpath
     monkeypatch, tmp_path,
 ):
     """CX-D1: cli_extended is a wheel dependency. Even when the candidate tree
-    carries ``libraries/cli-extended/src``, the self-release child imports the
+    carries the cli-extended library source, the self-release child imports the
     installed release, not that source."""
     candidate = tmp_path / "candidate"
-    for relative in ("cmru/src/cmru/cli.py", "libraries/worktree/src",
-                     "libraries/cli-extended/src"):
+    for relative in ("cmru/src/cmru/cli.py", "libraries/worktree/src", CX_SOURCE):
         path = candidate / relative
         if path.suffix:
             path.parent.mkdir(parents=True, exist_ok=True)

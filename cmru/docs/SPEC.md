@@ -648,41 +648,41 @@ The manifest records registered syntax. The review catalog owns expected behavio
 
 ### Library common controls
 
-- `route:entrypoint:cmru/abandon`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version, --yes
-- `route:entrypoint:cmru/build`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/changelog`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/cleanup`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version, --yes
-- `route:entrypoint:cmru/dependencies`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --json, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/doctor`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/get-py`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
+- `route:entrypoint:cmru/abandon`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version, --yes
+- `route:entrypoint:cmru/build`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/changelog`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/cleanup`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version, --yes
+- `route:entrypoint:cmru/dependencies`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/doctor`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/get-py`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/handler`: Common controls: none
-- `route:entrypoint:cmru/handler/bundle-manifest`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/oci-image-build`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/oci-image-push`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/tarball-publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/tarball-validate`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/wheel-build`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/wheel-publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/handler/wheel-validate`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/init`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version, --yes
-- `route:entrypoint:cmru/publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/release`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/resolve`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/run`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
+- `route:entrypoint:cmru/handler/bundle-manifest`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/oci-image-build`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/oci-image-push`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/tarball-publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/tarball-validate`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/wheel-build`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/wheel-publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/handler/wheel-validate`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/init`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version, --yes
+- `route:entrypoint:cmru/publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/release`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/resolve`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/run`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/skills`: Common controls: none
-- `route:entrypoint:cmru/skills/check`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --progress, --quiet, --version
-- `route:entrypoint:cmru/skills/install`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --progress, --quiet, --version
-- `route:entrypoint:cmru/skills/list`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --progress, --quiet, --version
-- `route:entrypoint:cmru/skills/uninstall`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --progress, --quiet, --version
-- `route:entrypoint:cmru/standards`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --json, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/status`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/tester-gate`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/tool-deps`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --json, --log-level, --no-color, --quiet, --version
+- `route:entrypoint:cmru/skills/check`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --progress, --quiet, --traceback, --version
+- `route:entrypoint:cmru/skills/install`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --progress, --quiet, --traceback, --version
+- `route:entrypoint:cmru/skills/list`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --progress, --quiet, --traceback, --version
+- `route:entrypoint:cmru/skills/uninstall`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --progress, --quiet, --traceback, --version
+- `route:entrypoint:cmru/standards`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/status`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/tester-gate`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/tool-deps`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/versions`: Common controls: none
-- `route:entrypoint:cmru/versions/check`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/versions/init`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/versions/resolve`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --version
-- `route:entrypoint:cmru/worktrees`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --version
+- `route:entrypoint:cmru/versions/check`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/versions/init`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/versions/resolve`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/worktrees`: Common controls: --color, --debug, --debug-raw, --help, --json, --log-level, --no-color, --quiet, --traceback, --version
 
 ### Constraints
 
@@ -1060,7 +1060,12 @@ The invocation is an argv token list passed to the registered CLI, excluding the
 
 ### Open review findings
 
-None.
+- **minor** `adoption-skills-global-option` (route: route:entrypoint:cmru/skills): `cmru skills` does not accept the root global option --log-prefix-time-short (cli-extended 0.2.0 register_skills_verbs builds its child registry without global_options; CLI-EXT-26). `surface check` and audit AC-17/AC-18 report it. Remedy: Accepted for cmru 6.0.0 by controller ruling: do not re-implement the group with private helpers. When cli-extended ships the CLI-EXT-26 fix, bump the cli-extended floor, delete the tolerance in tests/test_cli_spec_inventory.py (backlog KI-61) and close this finding.
+- **minor** `grammar-resolve-format-vs-json` (route: route:entrypoint:cmru/resolve): `resolve` selects output with its own `--format {url,env,json}` and does not offer the library `--json`, unlike worktrees, status, dependencies, standards, tool-deps and versions check. `handler wheel-validate`/`tarball-validate` (exploration) offer no machine-readable output at all. Remedy: Controller decision D5 (partial output depth) kept the converted-result subset. Follow-up: accept `--json` on resolve as the alias of `--format json` (Conflicts with --format), and give the two validate verbs `--json` through runtime.output.primary.
+- **minor** `help-no-examples` (route: none): No verb declares VerbSpec.examples, so no verb help carries a pasteable example, including the verbs with more than one meaningful input (release, tester-gate, resolve --repo/--prefix, publish --build-output, cleanup modes, abandon BRANCH|PATH). The generated S-CLI.9 region and the packaged SKILL.md carry the examples today. Remedy: Add `examples=(...)` to release, publish, cleanup, abandon, tester-gate, resolve, get-py and versions resolve, copied from the skill's parse-tested example lines, then run `cli-extended surface sync`.
+- **minor** `semantics-domain-runtimeerror-reported-as-unexpected` (route: none): Under the report policy (flipped in W2-PKG5) deliberate domain refusals that are still raised as bare RuntimeError (for example `Publishing requires GITHUB_PUSH_PAT/...` from require_project_publish_credentials, `required declared step ... is absent`, `derived project working directory is absent`, `retained build record is incomplete or unsafe`) are rendered as `unexpected RuntimeError: <message>` with a `rerun with --traceback` hint and exit 1, instead of a plain refusal with the taxonomy exit code (3 missing prerequisite / 4 refused by policy). Remedy: Convert each diagnosed RuntimeError raise site in cli.py/transaction.py into CliFailure(message, exit_code=3 or 4, hint=...) (missing credential -> 3, refused record -> 4); the pinned tests (test_cli_final_deep_adversarial, test_cli_remaining_adversarial, test_cli_dispatch_protocol_adversarial, test_cli_extended_semantics, test_release_candidate_changed_line_gaps) then assert the specific exit code.
+- **note** `adoption-doctor-cli-extended-floor-warn` (route: route:entrypoint:cmru/doctor): In an editable development venv whose stale dist metadata predates the cli-extended floor, doctor's `cli-extended` check warns instead of passing; it reads the requirement from installed cmru metadata. Remedy: Reinstall the cmru wheel (or `pip install -e` again) so dist metadata carries `cli-extended>=0.2.0`; no code change.
+- **note** `help-description-style` (route: route:entrypoint:cmru/doctor): Library-built verbs (`doctor`, `skills`, `skills *`) use lowercase descriptions without a final period and no `(read-only)` mark, while cmru verbs use sentence case with a period and a (read-only) suffix on exploration verbs. `resolve` (network read) and `handler *-validate` are exploration verbs without the suffix. Remedy: Library wording is not cmru-owned; for cmru's own verbs append `(read-only)` to resolve and handler wheel-validate/tarball-validate descriptions at the next help pass. No behaviour change.
 <!-- cli-extended-surface:end -->
 
 #### Invocation roles and support policy

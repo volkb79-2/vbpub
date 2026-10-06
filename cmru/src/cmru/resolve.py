@@ -275,6 +275,13 @@ def _run_resolve(args, _runtime) -> int | None:
         except RuntimeError as exc:
             print(f"[ERROR] cannot resolve project {name!r}: {exc}", file=sys.stderr)
             return 1
+        except OSError as exc:
+            # Same contract as the config-free path: an unreachable registry is a
+            # missing prerequisite (exit 3), never a traceback.
+            raise CliFailure(
+                f"cannot reach {owner}/{repo} to resolve project {name!r}: {exc}",
+                exit_code=3,
+            ) from exc
         if not result:
             print(f"[ERROR] No releases found for project {name!r} (prefix {proj.prefix!r})", file=sys.stderr)
             return 1

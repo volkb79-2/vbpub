@@ -13,6 +13,7 @@ import pytest
 from cli_extended import CliFailure
 
 from cmru import cli, exit_codes, manifest, transaction
+from tests._cx_paths import CX_SOURCE
 
 
 def _loaded(tmp_path, names=("alpha", "beta")):
@@ -372,7 +373,7 @@ def test_the_bound_launcher_reports_the_installed_metadata_version(tmp_path):
 
 def test_run_child_self_release_never_prefers_a_candidate_cli_extended(monkeypatch, tmp_path):
     candidate = tmp_path / "candidate"
-    for relative in ("cmru/src/cmru/cli.py", "libraries/worktree/src", "libraries/cli-extended/src"):
+    for relative in ("cmru/src/cmru/cli.py", "libraries/worktree/src", CX_SOURCE):
         path = candidate / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix:

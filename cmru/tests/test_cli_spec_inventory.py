@@ -25,11 +25,11 @@ from cmru.handlers import handlers_cli
 SPEC = Path(__file__).parents[1] / "docs" / "SPEC.md"
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 
-# The one problem `surface check` may still report: the library's `register_skills_verbs`
-# builds its child registry without the consumer's global options (cli-extended backlog entry
-# filed by W2-PKG5). The test tolerates ONLY this item, so a stale manifest, spec region,
-# catalog row or finding still fails it; once the library forwards the options this set
-# is simply never reported.
+# The one problem `surface check` still reports: the library's `register_skills_verbs`
+# builds its child registry without the consumer's global options (cli-extended CLI-EXT-26;
+# cmru backlog KI-61). The test requires EXACTLY this message, so a stale manifest, spec
+# region, catalog row or finding fails it, and so does the library fix (which must remove
+# this tolerance).
 _KNOWN_LIBRARY_GAP = {
     "incomplete parser syntax: cmru skills: delegated parser does not register inherited "
     "global option(s): --log-prefix-time-short",
@@ -65,7 +65,9 @@ def test_surface_check_reports_nothing_beyond_the_known_library_gap():
         spec_path=cli.spec,
         findings_path=cli.findings,
     )
-    assert set(report.findings) <= _KNOWN_LIBRARY_GAP, report.render()
+    # EQUALITY, not "at most": when cli-extended fixes CLI-EXT-26 this fails and the maintainer
+    # must delete the tolerance and bump the floor (backlog KI-61).
+    assert list(report.findings) == sorted(_KNOWN_LIBRARY_GAP), report.render()
 
 
 def test_one_cli_entry_covers_root_and_handlers_module_adapter():

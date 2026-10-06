@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._cx_paths import CX_LIBRARY
+
 PROJECT = Path(__file__).resolve().parents[1]
 REPO = PROJECT.parent
 
@@ -92,7 +94,7 @@ def test_no_checkout_skill_tree_duplicates_the_packaged_skill():
 ])
 def test_no_gate_or_bootstrap_config_puts_cli_extended_source_on_a_path(relative):
     code = _code_lines(PROJECT / relative)
-    assert "libraries/cli-extended" not in code, relative
+    assert CX_LIBRARY not in code, relative
     assert "cli-extended/src" not in code and "cli_extended/src" not in code, relative
     # The split path form (`REPOSITORY_ROOT / "libraries" / "cli-extended" / "src"`),
     # which the literal greps above cannot see: "cli-extended" as a path component.
