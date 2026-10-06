@@ -4,6 +4,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+Hand-authored draft for the SUCCESSOR package (nyxloom-successor-2026-10); fold into the generated
+section at release time (cmru KI-23). Note: a stale `## [Unreleased] - UNRELEASED` block from an
+older wave still sits further down this file; reconcile both before `cmru release`.
+
+### Added
+- feat(nyxloom): `nyxloom extract --successor-brief [--order TEXT|@FILE] [--brief-max-chars N]` -- one markdown document that primes a FRESH agent from a stopped subagent's transcript: header, the predecessor's original brief (verbatim, or a pointer + sha256 when longer than the cap), later turns, timeline, whole-session ledger, stop state, and the controller's order. Claude Code adapter only.
+- feat(nyxloom): `--tool-calls none|intent|intent-or-call|call` and `--tool-errors show|hide` (default show: failed tool results are rendered, truncated, whatever the call mode). `--show-tool-calls` / `--show-tool-call-intent` stay as deprecated aliases with byte-identical output and a stderr note.
+- feat(nyxloom): whole-session ledger with an external-effects bucket detected from Bash commands (`--effect-pattern`, repeatable; `--no-default-effect-patterns`), and `--stop-state` (cause from `.meta.json` `stoppedByUser`, in-flight call, last intent).
+- feat(nyxloom): `.claude/skills/nyxloom-successor` skill; standing Bash-`description` line added to the nyxloom-dispatch implementer and reviewer checklists.
+
+### Changed
+- fix(nyxloom): a harness interrupt record (`[Request interrupted by user ...]`) is classified as a STOP marker, no longer rendered as `OPERATOR:`; `--task` banner now says the order is "supplied by the requester of this extract -- the controller or the operator".
+
+### Documentation
+- docs: E-020 (resume matrix: who stopped a subagent decides resumability; `claude attach/respawn` apply to `--bg` sessions, not Agent-tool subagents); E-015 corrected in place. Follow-ups NL-31..NL-34.
+
 ## [0.9.0] - 2026-09-26
 <!-- cmru: generated -->
 <!-- cmru: source-end=cd9f35482becb1c18a514fde3322b941e50ff6c1 -->

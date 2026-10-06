@@ -126,6 +126,11 @@ notice, or would it carry forward unexamined?* Concretely:
   self-authored `/compact` retention prompt → commit → return. Reviewers: the
   designated boundary is end-of-phase (blind → reconcile); name it in the prompt.
   Never "one emergency checkpoint near the ceiling" — that shape fires on nobody.
+- **Standing Bash-description line (every dispatch prompt, any role)**: "Every Bash tool call
+  MUST set the tool's `description` parameter to a short plain-language statement of what the
+  command does and why; a successor reads these." Measured (E-020, 2026-10-06): without this
+  line, realistic rule-heavy dispatch prompts got 0/141 Bash descriptions; with it, 6/6. The
+  descriptions are what `nyxloom extract --tool-calls intent` shows a successor.
 - Closing line: "claim only what you ran — a fresh adversarial reviewer verifies".
 
 ## Code-reviewer prompt must contain
@@ -141,6 +146,7 @@ notice, or would it carry forward unexamined?* Concretely:
   never improvised.
 - Blind phase first (no LOG/REPORT), then reconcile against the implementer's
   claims.
+- The standing Bash-description line (see the implementer checklist; verbatim, same wording).
 
 ## Fix-verification message (to the SAME reviewer) must contain
 - The repair commit hash; "re-run YOUR OWN probes verbatim"; per-blocker checklist;

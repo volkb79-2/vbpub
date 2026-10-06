@@ -2374,6 +2374,13 @@ session's own direct filesystem inspection resolved the discrepancy:
   not determined here — this is a real discrepancy between Claude Code's own documented mechanism
   and at least one lived operator experience, worth escalating/filing upstream rather than treating
   as resolved by "the docs say it should work."
+  **CORRECTION 2026-10-06 (history above left as written; see E-020):** the `claude attach <id>` /
+  `claude respawn <id>` resume applies to BACKGROUND SESSIONS (`claude --bg`), not to Agent-tool
+  subagents. `claude agents --json --all` listed none of the Agent-tool subagents of the
+  experiment session, so the docs-sourced claim above conflated the two mechanisms and was never
+  verified for subagents. What E-020 did verify: the transcript persists; whether a stopped
+  subagent can be RESUMED (by `SendMessage`) depends on WHO stopped it (controller TaskStop:
+  resumable; user stop: refused); the host-restart case is still untested.
 - **Nested subagents (a subagent that itself dispatches another subagent) get their own separate
   file too** — verified directly on real data, not assumed. A depth-1 subagent's own file using
   the Agent tool was found; the resulting depth-2 child file exists as a **flat sibling** under the
@@ -2936,3 +2943,67 @@ Bash-heavy gap segments, rendered both ways side by side.
 `session_extract` only, does not depend on the pack-orientation pause and
 could proceed independently of it. Tracked as nyxloom backlog feature `NL-22`
 (`nyxloom-trove/backlog/NL-22-...md`).
+
+## E-020 · 2026-10-06 · who stopped a subagent decides whether it can be resumed; successor-from-transcript SHIPPED
+
+**Method and versions.** Claude Code 2.1.290; controller Opus 5.5; probes Sonnet 5.5
+general-purpose subagents dispatched with `run_in_background`. Each probe was told a nonce in its
+prompt (never to write it down); recall after resume = context survived. Cache numbers are
+`cache_creation` (cw) / `cache_read` (cr) from the resumed turn's usage in the agent's own
+transcript. Evidence (controller scratchpad, not in the repo): `resume-exp/evidence.md`,
+`resume-exp/intent-exp.md`.
+
+**Resume matrix.**
+
+| Probe | Setup | Stop | SendMessage | Recall | Resumed-turn cache |
+|---|---|---|---|---|---|
+| P1 | no tools, completed | none | resumes, same agentId | correct | cw ~21.6k (miss) |
+| P2 | no tools, completed | TaskStop: "is not running (completed)" | resumes | correct | cw ~21.6k (miss) |
+| P3b | foreground python sleep | TaskStop mid-run, "stopped by Claude", child gone | resumes | correct | cw 372 / cr 38.4k (hit) |
+| P4 | background sleep, turn ended | TaskStop, child gone | resumes | correct | cw 96 / cr 40.5k (hit) |
+| P5 | foreground python sleep | stopped by the USER from the task list | REFUSED: "stopped by the user and was not resumed. Treat its work as cancelled; only start a new agent for it if the user explicitly asks." | n/a | n/a |
+
+(P3 was invalid: the harness blocked a bare `sleep 300`; re-run as P3b.)
+
+- **TaskStop = resumable, 4/4, context intact.** Not a transcript property: the agent's own
+  transcript renders BOTH kinds of stop identically (tool_result "The user doesn't want to proceed
+  with this tool use... rejected" + "[Request interrupted by user for tool use]"), so the agent
+  believes the user declined. The only distinction is the sidecar `.meta.json`
+  `"stoppedByUser": true` (P5) and the harness-side refusal, a policy keyed on WHO stopped it.
+- **User stop = not resumable by anyone.** The operator found no UI path to open or message a
+  stopped subagent; `/list-agents` shows only RUNNING subagents, anonymously
+  ("[running] general-purpose, started Nm ago"). The transcript file survives, so the only
+  recovery is a fresh successor primed from it. That is what this package ships.
+- **Cache.** P1/P2 (zero tools) missed and re-wrote a ~21.5k agent-specific prefix; P3b/P4 (one
+  tool call each) hit. n=2 per shape, unexplained, repeat needed (NL-32).
+- **`claude attach/respawn/agents` are for `--bg` sessions, not Agent-tool subagents.**
+  `claude --help` (2.1.290): attach takes the short id that `claude --bg` prints. `claude agents
+  --json --all` listed 4 background sessions plus interactive sessions and none of P1-P7. A
+  `claude-code-guide` docs agent answered that they cover subagents (while saying the docs do not
+  state it); that was wrong. E-015's claim and the user-global note that subagents are resumable via
+  attach/respawn are therefore corrected (E-015 in place, repo `CLAUDE.md`).
+- **Bash `description` (intent) fill rate** (feeds `--tool-calls intent`): trivial short prompts,
+  5/5 on both Sonnet and Opus with or without a rule. Realistic rule-heavy dispatch prompts
+  (context + rules block + `cd ... &&` compounds): 0/6 without a rule, 6/6 with one line ("Every
+  Bash tool call MUST set the tool's `description` parameter ... a successor reads these");
+  four real lanes without the line: 0/135 (0/141 with the 6). Descriptions written under the rule
+  include the "why". n is one realistic pair; re-measure on the next real wave (NL-32). Adopted as
+  a standing line in the nyxloom-dispatch checklists.
+
+**OPEN (not tested, do not infer):** (1) host / Claude Code restart: P6 `a6aa06aa949843fa8`
+(completed) and P7 `ad441305d9912cded` (running) were prepared, the operator quit/restart step was
+not done; (2) Ctrl-C in the MAIN controller session, which stops all subagents: unknown whether it
+counts as a user stop. Both in NL-32. An upstream request is NL-34.
+
+**What the package shipped (nyxloom-successor-2026-10).** `nyxloom extract` gained
+`--tool-calls none|intent|intent-or-call|call` (the old `--show-tool-calls` /
+`--show-tool-call-intent` remain as deprecated aliases with identical output), `--tool-errors
+show|hide` (default show; failed results rendered regardless of the call mode), a whole-session
+ledger with an external-effects bucket (configurable `--effect-pattern`; defaults: git push/merge/
+tag, ssh, mutating curl, snapshot/install verbs, docker rm/stop, systemctl, apt), `--stop-state`
+(cause from `.meta.json`, in-flight call, last intent; interrupt records classified as STOP, no
+longer `OPERATOR:`), and `--successor-brief` (header, verbatim original brief, later turns,
+timeline, ledger, stop state, `--order`). Per the operator's decision there is NO redaction
+feature: the extract is agnostic and summarizes what the transcript already contains. Skill:
+`.claude/skills/nyxloom-successor/SKILL.md`. Limits and the real-lane size measurement are in
+`nyxloom-trove/reports/nyxloom-SUCCESSOR-2026-10-REPORT.md`. Claude-Code adapter only (NL-31).
