@@ -71,5 +71,29 @@ keyword in `_child_release_args` and `_dispatch_independent_git_families` (all 2
 | (c) `--target` in `cmru/cmru.toml`'s wheel-build argv | `test_every_estate_cmru_argv_parses_against_the_registry` |
 | (d) `POLICY_REFUSED = REFUSED` re-added | `test_refused_is_the_only_exit_code_name_for_four` |
 
-## For part C
-`cmru/run-gate.toml` still points at `:local`; the controller names the image tag, then I commit the switch with `# TODO(cmru-6.0 landing)`.
+## Part C (image `tester-unified:cmru6-integ`)
+**Image switch.** The only `image =` line in `cmru/run-gate.toml` belonged to the `cmru-mutation` environment; `coverage` and `canary` run in the
+root `tester-unified` environment (`run-gate.root.toml`, still `:local`). So I added a project environment `cmru-tester` (mirrors the root one:
+ephemeral, `CGROUP_PARENT_DEV_GATES`, forwards `CGROUP_PARENT_DEV_BACKGROUND`) on the new image, pointed `coverage` and `canary` at it, and also
+switched `cmru-mutation`'s image; each carries `# TODO(cmru-6.0 landing): back to tester-unified:local after the retag`. The `assay` and
+`installed-wheel` lanes still use the root environment (not run). At landing: restore the two images, delete `cmru-tester`, and point the
+two lanes back at `tester-unified`.
+
+**A8.** The module-entry test in `test_installed_wheel_subprocess.py` is now exact: the child inherits the test process's environment, so the test
+asks `importlib.metadata.version("cmru")` and asserts exit 0 plus help when installed, exit 3 plus the one-line message when not (no either-or).
+It passes on the host (no distribution) and inside the image (distribution baked): the lane ran it with 3512 passed, 6 skipped.
+
+**Version `0.0.0+tester.unified`.** Consumers of the cmru version: `cli_support.cmru_version()` (headlines, `--version`) and `cli.py:404`, which
+compares the bound launcher's reported version with the active runtime (both read the same metadata, so they agree). The manifest derives the
+version from the wheel name (D3), not metadata, and no floor check reads cmru's own version. So `0.0.0` does not matter in the lane. I did not
+test other consumers of the image.
+
+**Lanes (each read in a separate step):**
+- `coverage` PASS, exit 0: 3512 passed, 6 skipped, total coverage 100.00%; log `/tmp/run-gate/lanes/coverage/0854a03c81a5d3eda24e9ff18257f0f4.log`
+  (at commit `5150de172`).
+- `canary` first run FAIL: a lane-only failure. The canary control runs a sparse snapshot with no sibling projects, so
+  `test_the_estate_scan_actually_finds_the_project_contracts` (which demanded `ciu/cmru.toml`) failed. Fixed by requiring only cmru's own contract and the
+  `init` template (>= 4 argvs, a handler and a tester-gate argv). The full-estate guard test is unaffected and passed in the sparse run.
+- `canary` after the fix PASS, exit 0; log `/tmp/run-gate/lanes/canary/d4fddfb5e38902cce59607b4690928d3.log`. The coverage lane was NOT re-run after the
+  test-only fix (test_w2_integ.py passes under pt.py, 19 passed).
+- `mutation`, `assay`, `installed-wheel`, `gate` lanes not run.
