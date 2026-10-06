@@ -7151,3 +7151,47 @@ combined R2 from explicit base `db29266…`; keep that worktree unchanged
 until completion. The current-main tree changed only for controller records
 after the P1 short-gate receipts, so refresh short gates after the slot
 becomes free and before launching the combined campaign.
+
+### RW-463 — 2026-10-06 00:25:05 UTC — accept P1 socket-readiness test fix; preserve R3 PSI miss
+
+The same Sol reviewer accepted the scoped test-only fix on exact commit
+`1653143f752dfc612f6154514ee0ed85b3f35c7a` (tree
+`adeb558cf589dec98838422b2a6b708ce38b6ffd`). The failing test used socket
+pathname existence as readiness even though `_bind()` creates the pathname
+before `listen()` returns. It now uses `_start_ready_socket_server()`, which
+signals only after bind/listen completes. The behavioral assertions and
+shutdown path remain intact; production code is unchanged. The fix-verification
+record is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-SOCKET-READINESS-FIX-VERIFY-SOL-20261006.md`.
+
+The controller verified R0/R1 PASS on this exact commit (2,369 tests, 100%
+line/branch coverage; run `0f6746b7f6127a1bc16a593bd0143513`) and doctor
+(9 OK, 2 expected warnings, 0 failures, 2 info). R3 functionally passed with
+7/7 canaries rejected (run `6ea9635d8cd0a1de9c5a28cdfd2119fa`), but its
+run-gate launch sample was memory-full PSI `avg10=5.11%`, above the 5% launch
+threshold, despite the preflight reading of 3.80%. The run is recorded, but
+the launch-policy miss means R3 is not fully admissible evidence; rerun R3
+after this record commit on the final candidate when its fresh launch sample
+is at or below 5%. The reviewer did not independently verify these receipts.
+
+The diagnostic P1 R2 on exact tree `c24b0d2b882df96ee6549cf357a713943398a564`
+ended `2026-10-06T00:18:03Z`: 114/114 candidates, 109 killed, 5 survived,
+zero equivalent, budget-exceeded, crashed, or hung; verdict
+`FAIL/MUTANTS_SURVIVED`, exit 1. The separate clean/history-eligible run-gate
+record reports 4,109.126 seconds and request base
+`1882887511202d7e39f72599fcaa9fcc5e55b466`. All five survivor IDs match the
+P1 report's already-reviewed contract-equivalent table; this is diagnostic
+evidence only, not the final combined P1/P6 R2. The exact final combined-tree
+campaign and registered full gate remain required.
+
+### RW-464 — 2026-10-06 00:18:56 UTC — footprint has no current eligible profile history
+
+Read-only `run-gate footprint --json` on main commit
+`ac335808fb86c43644093a76c854c3032906ac5a` returned an empty `lanes` object.
+The tracked `run-gate-project/run-gate.footprint.json` still has
+`distilled_at=2026-09-12T21:01:24Z`; current main history has no completed,
+eligible profiled PASS lane (the latest R2 entry is aborted because the
+container could not reach Docker, and the selftest entry is dirty/unprofiled).
+No footprint write was attempted. After the released daemon is up, obtain at
+least three completed, profiled PASS runs in the project store, then run
+`footprint --write` and verify the tracked manifest and `footprint --json`.
