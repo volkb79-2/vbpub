@@ -63,6 +63,16 @@ kind = "assay"
 assay_lane = "r2"
 environment = "tester-unified"
 resource_observer = "cgprofile"
+# `assay.toml` delegates the changed-lines base to the request. Invoke with
+# `./run-gate.py --base <exact-ref> r2`, and inspect the exact Assay plan before
+# the campaign: run-gate can derive a base if the flag is omitted, so the
+# acceptance command must supply the recorded ref explicitly.
+# Selective diagnostics use run-gate's assay-only request controls
+# (`--reuse-from`, repeatable `--rejudge`, `--rejudge-outcome`, RG-66); it
+# records those runs as selective, non-gate runs. Arbitrary arguments after
+# `--` are refused for an assay lane (`accepts_args` is command-lane only), so
+# there is deliberately no `accepts_args` here. Omit the controls for an
+# acceptance R2 campaign.
 clean_tree = true
 # The prior P6 counts/rate in RW-438 are historical, not an estimate for this
 # P1 request-base campaign. Inspect and record the exact plan for the supplied
