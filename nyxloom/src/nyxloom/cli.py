@@ -879,7 +879,7 @@ def cmd_extract(args) -> int:
     --no-strip-cd-prefix and --prose-only/--no-prose cancel boolean
     members). --prose-only keeps only operator messages and assistant prose
     (timestamped, coloured per --color/--no-color; --jsonl emits
-    {ts, role, text, agent?} lines; works with --follow). --no-prose drops
+    {v, ts, role, text, agent?} lines, v=1; works with --follow). --no-prose drops
     all events and keeps only the derived sections. --successor-brief emits ONE markdown document for priming a
     fresh agent (original brief verbatim or path+sha256, the extract with the
     successor preset applied, whole-session ledger, stop state, then --order

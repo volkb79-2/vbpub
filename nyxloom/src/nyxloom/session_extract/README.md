@@ -745,6 +745,25 @@ then matches each segment against the patterns, so a missed effect is possible. 
 the live-state checks the CLI does not do: `.claude/skills/nyxloom-successor/SKILL.md`.
 Follow-ups: NL-31 (other adapters), NL-33 (wrapper, JSON form).
 
+## Presets, watch and `--jsonl` (SUCCESSOR-2)
+
+`--preset watch|successor|review|ledger` bundle options from the five `--help` groups
+(`presets.py`; the exact expansions are printed by `--help`, listed in `docs/CLI-REFERENCE.md`
+and pinned by `tests/test_session_extract_presets.py`). An explicit option always wins.
+`successor` includes `--stop-state`; `--successor-brief` implies it.
+
+`watch` (= `--profile all --timestamps all --prose-only`) is the live view: operator messages and
+assistant prose only. An AskUserQuestion interview is operator content and stays, compactly: each
+question is one assistant line, the selected answer plus free-text notes an OPERATOR line
+(`watch.items`). `--jsonl` emits `{"v": 1, "ts", "role", "text", "agent"?}`, a stable versioned
+contract for the VS Code extension: keys are pinned by tests, and a change needs a new `v`.
+
+Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
+Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:
+NL-35 (shell-variable indirection hides an effect), NL-36 (Edit/Write intent is only a
+best-effort `Intent:` line pairing). Re-verify the interrupt/denial/error classification for each
+new Claude Code version per the steps in `harness.py`.
+
 ## Delta extraction
 
 Two ways to resume from a known point instead of re-walking a whole

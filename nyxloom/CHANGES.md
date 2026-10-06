@@ -16,7 +16,13 @@ older wave still sits further down this file; reconcile both before `cmru releas
 - feat(nyxloom): whole-session ledger with an external-effects bucket detected from Bash commands (`--effect-pattern`, repeatable; `--no-default-effect-patterns`), and `--stop-state` (cause from `.meta.json` `stoppedByUser`, in-flight call, last intent).
 - feat(nyxloom): `.claude/skills/nyxloom-successor` skill; standing Bash-`description` line added to the nyxloom-dispatch implementer and reviewer checklists.
 
+- feat(nyxloom): `nyxloom extract` options are grouped in `--help` (source, content selection, tool/effect rendering, derived sections, output) and four named presets `--preset watch|successor|review|ledger` bundle them (exact expansions in `--help`, `docs/CLI-REFERENCE.md`, pinned by `tests/test_session_extract_presets.py`); an explicit option always wins. The `successor` preset includes `--stop-state`.
+- feat(nyxloom): `--prose-only` (operator messages + assistant prose; interviews kept compactly as one question line plus the operator's answer), `--no-prose`, `--no-ledger`, `--no-stop-state`, and `--jsonl`, a STABLE VERSIONED line format `{"v": 1, "ts", "role", "text", "agent"?}` for the VS Code extension (keys pinned by tests; additions need a new `v`).
+- feat(nyxloom): agent-control calls (Agent, SendMessage, TaskStop) appear in the `--ledger` external effects; a harness-version warning when a transcript's Claude Code version is not in `VERIFIED_HARNESS_VERSIONS`.
+- test(nyxloom): real-corpus fixture `tests/fixtures/real_interview_2_1_289.jsonl` (verbatim records of a 2.1.289 transcript) and an opt-in whole-transcript smoke test (`NYXLOOM_REAL_TRANSCRIPT`).
+
 ### Changed
+- fix(nyxloom): failed tool results are shown by default (also in `--json`); `--ledger` always appends the whole-session block; the default effect patterns detect MUTATING forms only (D2 narrowing; residuals NL-35).
 - fix(nyxloom): a harness interrupt record (`[Request interrupted by user ...]`) is classified as a STOP marker, no longer rendered as `OPERATOR:`; `--task` banner now says the order is "supplied by the requester of this extract -- the controller or the operator".
 
 ### Documentation

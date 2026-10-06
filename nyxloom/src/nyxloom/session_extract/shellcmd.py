@@ -148,10 +148,11 @@ def normalized_segments(command: str, depth: int = 0) -> list[str]:
     expanded in place (bounded depth)."""
     out: list[str] = []
     for raw in split_segments(command):
+        # split_segments never yields an empty segment and strip_wrappers cannot
+        # empty one (every wrapper regexp needs a following word), so there is
+        # no empty-segment guard here.
         seg = strip_wrappers(raw)
-        if not seg:
-            continue
-        m = _SHELL_C_RE.match(seg)
+        m =_SHELL_C_RE.match(seg)
         if m is not None and depth < _MAX_DEPTH:
             out.extend(normalized_segments(_first_arg(m.group("arg")), depth + 1))
             continue

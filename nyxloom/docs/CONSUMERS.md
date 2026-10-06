@@ -224,8 +224,8 @@ always --timestamps gaps`; an explicit flag wins.
 `--preset` names four documented bundles of those options (exact expansions in
 `extract --help` and `docs/CLI-REFERENCE.md`; an explicit option always wins):
 `watch` follows a live session for an operator (operator messages and assistant
-prose only, timestamped, coloured on a terminal; `--jsonl` emits
-`{ts, role, text, agent?}` lines for an editor extension), `successor` primes a
+prose only, timestamped, coloured on a terminal, interviews kept compactly; `--jsonl` emits
+`{v, ts, role, text, agent?}` lines, a stable versioned format for the VS Code extension), `successor` primes a
 fresh agent, `review` audits what an agent did at full fidelity, and `ledger`
 prints only external effects, touched files and stop state:
 

@@ -38,6 +38,14 @@ is already done, the stop conditions). Then:
 ```
 nyxloom extract --successor-brief --order @$SCRATCH/succ-$ID/ORDER.md $ID > $SCRATCH/succ-$ID/SUCCESSOR.md
 ```
+`--successor-brief` implies `--preset successor`; the other presets are `--preset review` (audit an
+agent at full fidelity), `--preset ledger` (only effects, files, stop state) and `--preset watch`
+(operator + assistant prose of a live session; `--jsonl` for tooling). `nyxloom extract --help`
+prints every expansion. Edit/Write tool calls carry no `description`, so an agent's edit intent is
+only visible when it wrote an `Intent:` line in the same assistant message (best-effort pairing:
+measured 0/3, 1/3, 5/5 without/with weaker/with a strict rule; NL-36). Re-verify the harness
+assumptions on each new Claude Code version (see `session_extract/harness.py`); the extract warns
+when the transcript version is not in `VERIFIED_HARNESS_VERSIONS`.
 Defaults inside `--successor-brief` are the successor defaults: `--tool-calls intent-or-call`
 (the tool's own description when present, else the call itself, one line, truncated),
 `--tool-errors show` (failed results always rendered), whole-session ledger incl. the

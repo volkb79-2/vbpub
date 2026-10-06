@@ -704,7 +704,8 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt(
                 "--prose-only",
                 "Keep ONLY operator messages and assistant prose, one timestamped block each "
-                "(no tool calls/results, Q&A, compaction or interrupt markers, gap notes or "
+                "(interviews kept compactly: question line, then the operator's answer; "
+                "no tool calls/results, compaction or interrupt markers, gap notes or "
                 "cursor comments); coloured per --color/--no-color; works with --follow",
                 group=_G_CONTENT, action="store_true",
             ),
@@ -850,8 +851,8 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt(
                 "--jsonl",
                 "With --prose-only (--preset watch): one JSON object per line, "
-                '{"ts", "role": "operator"|"assistant", "text", "agent"?}, for an editor '
-                "extension; works with --follow",
+                '{"v": 1, "ts", "role": "operator"|"assistant", "text", "agent"?}, a stable '
+                "versioned format for the VS Code extension; works with --follow",
                 group=_G_OUTPUT, action="store_true",
             ),
             _opt("--render-markdown", "Render Markdown", group=_G_OUTPUT, action="store_true"),

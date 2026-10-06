@@ -5,9 +5,11 @@ Ctrl+C interrupt is plain `user` text since 2.1.289; a permission denial is a
 `tool_result` whose only marker is its text). Those are recognised by exact
 strings, so a new harness release can change a string and silently turn a STOP
 into an "operator message". `VERIFIED_HARNESS_VERSIONS` lists the versions for
-which a REAL interrupt / denial / error record set is pinned as a fixture
-(`tests/fixtures/real_transcript_2_1_289.jsonl`); a transcript recording any
-other `version` gets ONE header warning.
+which the classification was checked against real records. For 2.1.289 the
+committed real records are `tests/fixtures/real_interview_2_1_289.jsonl` (an
+AskUserQuestion pair); a real interrupt / denial / error record set is NOT yet
+committed as a fixture (open item: capture one, see step 3 below). A transcript
+recording any other `version` gets ONE header warning.
 
 Re-verify step for every new Claude Code version (also in the
 `nyxloom-successor` skill and session_extract/README.md):

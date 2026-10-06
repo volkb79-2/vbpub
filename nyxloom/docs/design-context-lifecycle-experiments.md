@@ -3007,3 +3007,21 @@ timeline, ledger, stop state, `--order`). Per the operator's decision there is N
 feature: the extract is agnostic and summarizes what the transcript already contains. Skill:
 `.claude/skills/nyxloom-successor/SKILL.md`. Limits and the real-lane size measurement are in
 `nyxloom-trove/reports/nyxloom-SUCCESSOR-2026-10-REPORT.md`. Claude-Code adapter only (NL-31).
+
+**E-020 corrections and follow-up measurements (2026-10-06, Claude Code 2.1.289/2.1.290).**
+- Resume counts, restated precisely: TaskStop on a RUNNING agent was exercised twice
+  (P3b and P4, 2/2 resumed with context intact); the two completed-agent resumes (P1, P2) are
+  a different case (TaskStop reports "not running (completed)", SendMessage resumes). The earlier
+  "4/4" pools both cases; only 2 of them are real stops. P5 (user stop) is the only refusal.
+- Bash `description` with the standing rule line: 45/45 on a real implementer
+  (`acf92723eb6a53199`), against 0/141 without the rule in earlier real lanes.
+- Edit/Write intent has no schema field. Free-text `Intent:` line pairing, three probes:
+  no rule 0/3; "Intent line before every Edit" 1/3 (the agent batched three edits under one
+  line); strict "one Edit/Write per message + Intent line" 5/5. Pairing in the extract is
+  best-effort (blocks of one assistant message share `message.id`).
+- A PreToolUse hook cannot enforce it: the in-flight message is not yet in the transcript
+  (6/6), and in a second run the model wrote its Intent lines only in thinking (0/11 visible,
+  thinking is not persisted) while claiming otherwise. Only a schema field is reliable: filed
+  as NL-36 (MCP edit/write tool with a required `intent`).
+- Consequence for docs: the git-ignored vbpub root `CLAUDE.md` was corrected by the controller by
+  hand to the measured E-020 facts (it is not tracked, so no commit carries that fix).

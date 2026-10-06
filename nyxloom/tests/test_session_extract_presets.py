@@ -207,8 +207,10 @@ def test_watch_jsonl_lines(tmp_path, capsys):
     assert code == 0, err
     rows = [json.loads(line) for line in out.splitlines()]
     assert [r["role"] for r in rows] == ["operator", "assistant", "assistant", "operator"]
-    assert rows[0] == {"ts": T0, "role": "operator", "text": "please push the branch", "agent": "abc123"}
-    assert all(set(r) == {"ts", "role", "text", "agent"} for r in rows)
+    assert rows[0] == {"v": 1, "ts": T0, "role": "operator", "text": "please push the branch", "agent": "abc123"}
+    # The stable, versioned contract of the future editor extension: pin the keys.
+    assert all(set(r) == {"v", "ts", "role", "text", "agent"} and r["v"] == 1 for r in rows)
+    assert all(list(r) == ["v", "ts", "role", "text", "agent"] for r in rows)
     assert ESC not in out
 
 

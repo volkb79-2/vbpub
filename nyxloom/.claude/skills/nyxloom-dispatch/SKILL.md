@@ -131,6 +131,11 @@ notice, or would it carry forward unexamined?* Concretely:
   command does and why; a successor reads these." Measured (E-020, 2026-10-06): without this
   line, realistic rule-heavy dispatch prompts got 0/141 Bash descriptions; with it, 6/6. The
   descriptions are what `nyxloom extract --tool-calls intent` shows a successor.
+- **Standing Edit/Write intent line**: "At most ONE Edit or Write call per message, preceded in
+  that same message by exactly one line of VISIBLE text `Intent: <what this edit changes and
+  why>`." Edit/Write have no `description` parameter; the extract pairs the `Intent:` line with
+  the call by shared message id (best-effort; implementers still slip, so a reviewer should spot-
+  check; an MCP edit tool with a required `intent` field is NL-36).
 - Closing line: "claim only what you ran — a fresh adversarial reviewer verifies".
 
 ## Code-reviewer prompt must contain
