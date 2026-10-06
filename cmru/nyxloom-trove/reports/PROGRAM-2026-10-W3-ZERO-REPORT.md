@@ -63,4 +63,8 @@ Not changed and worth knowing: a single-project `cmru release <p>` does not chec
 
 ## Gate
 
-Recorded after the commit (see the commit that adds this line, if present): coverage and canary lanes on `tester-unified:cmru6-integ`.
+Image `tester-unified:cmru6-integ` (`CMRU_TESTER_UNIFIED_IMAGE`), serial under `gate.lock`, PSI checked, verdicts read in a separate step.
+
+- First canary at `2b842b3ca`: FAIL. The isolated canary fixture carries `cmru.orchestration.toml` but not every project nor `libraries/cli-extended`, so 4 new estate-wide tests errored. Fixed in `aad6e70ac` (skip when the estate is incomplete; the hint assertion also added to a test that runs there).
+- At `aad6e70ac` (clean tree): `canary` lane verdict PASS, exit 0; `coverage` lane verdict PASS, exit 0, 100.00%, 4002 passed, 6 skipped.
+- Note: in the canary tree the estate-wide tests (real-graph guard, doc order, source-mode bootstrap tests) SKIP; the full-suite and `coverage` lane run them.
