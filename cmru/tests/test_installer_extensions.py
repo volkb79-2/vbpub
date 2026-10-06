@@ -213,6 +213,36 @@ class TestRefusals:
             with pytest.raises(ExtensionError, match=name):
                 _render(_frag(body + "_EXTENSIONS.append(_r)\n"))
 
+    def test_c_scope_analysis_handles_lambdas_decorators_classes_and_varargs(self):
+        """Constructs a real fragment may use must neither false-positive nor hide a use."""
+        ok_src = (
+            "def deco(fn):\n    return fn\n"
+            "class Box:\n    value = 1\n    def get(self, *args, **kwargs):\n"
+            "        return info\n"
+            "@deco\n"
+            "def _r(subparsers, *rest, **opts):\n"
+            "    try:\n        pass\n    except OSError as err:\n        print(err, rest, opts)\n"
+            "    f = lambda info: info\n"
+            "    return {}\n"
+            "_EXTENSIONS.append(_r)\n"
+        )
+        compile(_render(_frag(ok_src)), "<get.py>", "exec")
+        # a lambda local does not shadow a template name used OUTSIDE the lambda
+        bad = ("def _r(subparsers):\n    f = lambda _gh_json: 1\n    return _gh_json\n"
+               "_EXTENSIONS.append(_r)\n")
+        with pytest.raises(ExtensionError, match="_gh_json"):
+            _render(_frag(bad))
+        # a decorator is a use of a template name
+        with pytest.raises(ExtensionError, match="_semver_key"):
+            _render(_frag("@_semver_key\ndef _r(subparsers):\n    return {}\n"
+                          "_EXTENSIONS.append(_r)\n"))
+
+    def test_extensions_without_a_project_directory_are_refused(self):
+        from cmru.getpy import _read_extensions
+        with pytest.raises(ExtensionError, match="project directory"):
+            _read_extensions("demo", ["x.py"], None)
+        assert _read_extensions("demo", [], None) == []
+
     def test_d_non_stdlib_import_is_refused(self):
         with pytest.raises(ExtensionError, match=r"x\.py: line 1: import of 'requests' is not standard library"):
             _render(_frag("import requests\n" + GOOD_TAIL))
