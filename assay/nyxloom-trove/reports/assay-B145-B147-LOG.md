@@ -70,3 +70,17 @@ test did not bind its expected socket source; that assertion is now exact.
 This corrected tree has not yet had a registered gate. Commit it, then rerun
 `tester-unified`; merge only the final gate-green commit. Release remains
 grouped with the planned v14 / 8.0.0 wave; B146 remains deferred.
+
+## Controller continuation: analysis lane assertion (2026-10-06)
+
+The next registered run used `ASSAY_GATE_ALLOW_SHARED_HOST=1` because a
+separate `lt-upg` gate was active; that gate was not stopped or modified. At
+`b04e2517b43e453d319a0f79d62717a0a5b379f8`, Assay's B145 probes, packaging,
+attestation, and `tester-unified` self-hosted suite passed. Its separate
+`analysis` lane failed one test (514 passed):
+`analysis/tests/test_analysis_package_boundary.py` equated the lane's 60m budget
+with the outer 6h controller timeout. `gate/tests/test_self_lane.py` already
+asserts the intended separate 60m lane and 6h outer limits. The stale equality
+is corrected to assert the 60m inner budget is below the outer timeout; both
+related focused tests pass. A fresh registered gate on the corrected commit is
+still required before merge.

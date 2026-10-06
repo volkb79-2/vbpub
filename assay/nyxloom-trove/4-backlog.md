@@ -11976,6 +11976,15 @@ reviewed exact Docker mount-source assertions. The corrected tree still needs a
 fresh registered gate before merge. B146 remains deferred and release stays
 grouped with the planned v14 / 8.0.0 wave.
 
+**Second gate update (2026-10-06):** At
+`b04e2517b43e453d319a0f79d62717a0a5b379f8`, the B145 probes and
+`tester-unified` self-hosted suite passed, then the Assay `analysis` lane failed
+one stale budget assertion (514 passed). It compared the lane's 60m budget to
+the outer 6h controller timeout; a separate Assay test confirms those limits
+are intentionally distinct. The assertion now checks the lane budget against
+the configured outer timeout. Both focused tests pass; a fresh registered gate
+is required before merge.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
 **Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.

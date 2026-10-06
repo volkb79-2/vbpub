@@ -238,7 +238,8 @@ def test_the_analysis_lane_is_a_whole_target_r0_r1_lane_over_every_analysis_sour
     gate = tomllib.loads(
         (PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml").read_text(encoding="utf-8")
     )["gates"]["tester-unified"]
-    assert lane.budget_seconds == float(gate["timeout_seconds"])
+    assert lane.budget_seconds == 60 * 60
+    assert lane.budget_seconds < float(gate["timeout_seconds"])
 
 
 def test_analysis_imports_only_the_allowed_judge_modules():
