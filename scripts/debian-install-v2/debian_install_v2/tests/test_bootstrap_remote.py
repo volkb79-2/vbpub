@@ -741,3 +741,66 @@ def test_a_directory_with_the_new_wheels_own_name_is_refused(mod, tmp_path):
     (install_dir / WHEEL_NAME).mkdir(parents=True)
     with pytest.raises(SystemExit, match="that are directories"):
         mod.write_wheel(WHEEL_NAME, b"new", install_dir, debug=False)
+
+
+# --- LT-PREP review round 1: webhook credential in remote-install-config.json ---
+
+def _run_main_with_webhook(mod, monkeypatch, tmp_path, *, debug, observed):
+    install_dir = tmp_path / "install"
+    monkeypatch.setenv("INSTALL_DIR", str(install_dir))
+    monkeypatch.setenv("MATTERMOST_WEBHOOK_URL", "https://mm.example.test/sub/hooks/SECRETID123")
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    if debug:
+        monkeypatch.setenv("DEBUG_MODE", "yes")
+    else:
+        monkeypatch.delenv("DEBUG_MODE", raising=False)
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+
+    def fake_fetch(repo_url, branch, target, *, debug):
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "resolve_wheel", lambda *, debug: ("https://example.test/w.whl", "0" * 64))
+    monkeypatch.setattr(mod, "download_wheel", lambda url, sha256, *, debug: ("w.whl", b"d"))
+    monkeypatch.setattr(mod, "write_wheel", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "fetch_subtree", fake_fetch)
+
+    def fake_run(argv, *, check):
+        path = Path(argv[argv.index("--config") + 1])
+        observed["mode"] = path.stat().st_mode & 0o777
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    return install_dir
+
+
+def test_remote_config_with_webhook_is_created_0600_even_under_umask_0(mod, monkeypatch, tmp_path):
+    import os
+    observed = {}
+    install_dir = _run_main_with_webhook(mod, monkeypatch, tmp_path, debug=False, observed=observed)
+    old = os.umask(0)
+    try:
+        assert mod.main() == 0
+    finally:
+        os.umask(old)
+    assert observed["mode"] == 0o600
+
+
+def test_remote_config_preexisting_loose_file_is_tightened(mod, monkeypatch, tmp_path):
+    observed = {}
+    install_dir = _run_main_with_webhook(mod, monkeypatch, tmp_path, debug=False, observed=observed)
+    install_dir.mkdir()
+    loose = install_dir / "remote-install-config.json"
+    loose.write_text("old")
+    loose.chmod(0o644)
+    assert mod.main() == 0
+    assert observed["mode"] == 0o600
+
+
+def test_bootstrap_debug_never_prints_the_webhook_url(mod, monkeypatch, tmp_path, capsys):
+    observed = {}
+    _run_main_with_webhook(mod, monkeypatch, tmp_path, debug=True, observed=observed)
+    assert mod.main() == 0
+    err = capsys.readouterr()
+    assert "SECRETID123" not in err.err + err.out
+    assert "<redacted>" in err.err

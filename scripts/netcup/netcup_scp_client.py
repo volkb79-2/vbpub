@@ -364,12 +364,28 @@ _SENSITIVE_DICT_KEYS = {
     "MATTERMOST_WEBHOOK_URL",
 }
 
-# A Mattermost incoming-webhook URL anywhere inside a free-text string.
-_MATTERMOST_HOOK_URL_RE = re.compile(r"https?://[^\s/'\"`]+/hooks/[A-Za-z0-9_-]+")
+# A Mattermost incoming-webhook URL anywhere inside a free-text string. Mask
+# everything after the host (subpath deployments). Keep this pattern identical
+# to debian_install_v2/notify.py::_HOOK_URL_RE.
+_MATTERMOST_HOOK_URL_RE = re.compile(r"https?://[^\s'\"`]*?/hooks/[^\s'\"`]+")
+_KNOWN_WEBHOOK_URLS: set = set()
+_WEBHOOK_MASK = "***REDACTED_MATTERMOST_WEBHOOK_URL***"
+
+
+def _register_webhook_url(value: Any) -> None:
+    if isinstance(value, str) and value:
+        _KNOWN_WEBHOOK_URLS.add(value)
 
 
 def _mask_webhook_urls(text: str) -> str:
-    return _MATTERMOST_HOOK_URL_RE.sub("***REDACTED_MATTERMOST_WEBHOOK_URL***", text)
+    known = set(_KNOWN_WEBHOOK_URLS)
+    configured = os.environ.get("MATTERMOST_WEBHOOK_URL")
+    if configured:
+        known.add(configured)
+    # Longest first so a URL that prefixes another is not half-masked.
+    for value in sorted(known, key=len, reverse=True):
+        text = text.replace(value, _WEBHOOK_MASK)
+    return _MATTERMOST_HOOK_URL_RE.sub(_WEBHOOK_MASK, text)
 
 
 def _redact_for_log(value: Any) -> Any:
@@ -377,6 +393,8 @@ def _redact_for_log(value: Any) -> Any:
         redacted: Dict[str, Any] = {}
         for k, v in value.items():
             if k in _SENSITIVE_DICT_KEYS:
+                if k in ("mattermost_webhook_url", "MATTERMOST_WEBHOOK_URL"):
+                    _register_webhook_url(v)
                 redacted[k] = "***REDACTED***"
             elif k == "customScript" and isinstance(v, str):
                 redacted[k] = f"***REDACTED customScript (len={len(v)})***"

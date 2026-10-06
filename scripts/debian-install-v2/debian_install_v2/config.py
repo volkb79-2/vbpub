@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
-from .notify import NotifyConfigError, effective_backend, validate_webhook_url
+from .notify import NotifyConfigError, effective_backend, validate_host_label, validate_webhook_url
 
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
@@ -230,8 +230,10 @@ def validate_config(config: Config) -> None:
             validate_webhook_url(config.mattermost_webhook_url)
         except NotifyConfigError as exc:
             raise ConfigError(str(exc)) from None
-    if any(char in config.notify_host_label for char in "\r\n\x00`"):
-        raise ConfigError("notify_host_label must be one line without backticks or NUL")
+    try:
+        validate_host_label(config.notify_host_label)
+    except NotifyConfigError as exc:
+        raise ConfigError(str(exc)) from None
     try:
         resolve_notify_backend(config)
     except NotifyConfigError as exc:

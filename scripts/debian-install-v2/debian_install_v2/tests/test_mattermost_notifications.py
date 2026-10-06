@@ -251,7 +251,7 @@ def test_every_milestone_is_posted_with_the_common_prefix(tmp_path, monkeypatch)
         "stage2 | resumed after reboot",
         events[3],
     ]
-    assert events[3].startswith("stage2 | install complete (duration ")
+    assert events[3].startswith("stage2 | install complete \\(duration ")
     assert events[5] == "stage1 | install FAILED" and events[7] == "stage2 | install FAILED"
     assert [p[0] for p in (posts[0], posts[1])] == ["⏳", "⚠"]
     assert posts[3].startswith("✅") and posts[5].startswith("❌")
@@ -263,7 +263,7 @@ def test_verbose_step_marks(tmp_path, monkeypatch):
     posts = _live(installer, monkeypatch)
     installer._mark_step("docker_install", "success", "docker 27")
     installer._mark_step("swap", "failed", "no space")
-    assert posts[0].startswith("✅") and "docker_install: success - docker 27" in posts[0]
+    assert posts[0].startswith("✅") and "docker\\_install: success - docker 27" in posts[0]
     assert posts[1].startswith("❌")
 
 
@@ -415,3 +415,223 @@ def test_notify_script_failure_never_fails_the_caller_nor_leaks_url(tmp_path, se
     assert "send failed" in result.stderr
     assert "loopbacksecret" not in result.stdout + result.stderr
     assert len(server.bodies) == 2
+
+
+# --- LT-PREP review round 1 --------------------------------------------------
+
+def _fmt(**kw):
+    base = dict(host_label="netcup-1", server_name="v1001", run_id="0123456789", stage="stage1",
+                event="ok", status="ok")
+    base.update(kw)
+    return notify.format_mattermost_message(**base)
+
+
+@pytest.mark.parametrize("payload", ["@channel", "@all", "@here", "@bob"])
+def test_mentions_are_defused_in_every_field(payload):
+    text = _fmt(server_name=payload, event=f"x {payload}")
+    assert not re.search(r"@(?!​)", text)
+    assert "@​" in text
+
+
+def test_links_headings_tables_and_fences_in_event_are_inert():
+    text = _fmt(server_name="[x](http://evil)", event="a\n# heading\n| a | b |\n```\nboom ```")
+    assert len(text.splitlines()) == 1  # newlines collapsed: no heading, no table, no fence
+    assert "[x](" not in text and "\n#" not in text and "```" not in text.replace("`v1001`", "")
+    assert "\\[x\\]\\(http://evil\\)" in text
+    assert "\\|" in text and "\\#" in text
+
+
+def test_control_characters_collapse_and_fields_are_capped():
+    text = _fmt(server_name="a\r\n\t\x00b" + "z" * 200, event="e" * 5000)
+    assert "\r" not in text and "\x00" not in text and "\t" not in text
+    assert len(text.splitlines()) == 1
+    assert len(text) < 600
+
+
+def test_long_event_and_long_excerpt_keep_fences_balanced_and_total_bounded():
+    text = _fmt(event="E" * 5000, excerpt="L" * 9000, status="fail")
+    assert text.count("```") == 2 and text.rstrip().endswith("```")
+    assert len(text) <= notify.MESSAGE_LIMIT
+
+
+@pytest.mark.parametrize("bad", ["@channel", "a\nb", "x`y", "[l](u)", "#h", "a|b", "x" * 65, "a*b"])
+def test_notify_host_label_rejected_at_validation(bad):
+    with pytest.raises(ConfigError, match="notify_host_label"):
+        validate_config(Config(notify_host_label=bad))
+
+
+@pytest.mark.parametrize("good", ["", "netcup-1", "r1002 v1.0:a/b_c"])
+def test_notify_host_label_accepts_plain_labels(good):
+    validate_config(Config(notify_host_label=good))
+
+
+SUBPATH = "https://mm.example.test/chat/sub/hooks/SUBSECRET99"
+
+
+@pytest.mark.parametrize("wrapped", [
+    SUBPATH, SUBPATH + ".", SUBPATH + "?x=1", SUBPATH + "#frag", f"'{SUBPATH}'", f'"{SUBPATH}"',
+    f"see {SUBPATH}, ok",
+])
+def test_redact_text_masks_subpath_and_wrapped_urls(wrapped):
+    assert "SUBSECRET99" not in notify.redact_text(wrapped)
+    assert "sub/hooks" not in notify.redact_text(wrapped)
+
+
+def test_redact_text_masks_the_exact_known_secret_even_when_not_a_url():
+    # Not matched by the URL regex: only the exact-secret replace can catch it.
+    assert "tok-ABC-123" not in notify.redact_text("leaked tok-ABC-123 here", ("tok-ABC-123",))
+
+
+def test_server_name_cannot_carry_the_webhook_into_a_message():
+    assert "SUBSECRET99" not in _fmt(server_name=SUBPATH, event=f"{SUBPATH}?q")
+
+
+def test_post_timeout_is_literally_ten_seconds():
+    seen = []
+
+    def opener(request, timeout):
+        seen.append(timeout)
+        raise OSError("down")
+
+    notify.post_webhook(HOOK, "x", opener=opener, sleep=lambda s: None)
+    assert seen and set(seen) == {10}
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404])
+def test_4xx_is_not_retried(code):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(1)
+        raise urllib.error.HTTPError(HOOK, code, "no", {}, None)
+
+    assert notify.post_webhook(HOOK, "x", opener=opener, sleep=lambda s: None) is False
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("code", [429, 500, 503])
+def test_429_and_5xx_are_retried(code):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(1)
+        raise urllib.error.HTTPError(HOOK, code, "no", {}, None)
+
+    notify.post_webhook(HOOK, "x", opener=opener, sleep=lambda s: None)
+    assert len(calls) == 2
+
+
+def test_circuit_breaker_trips_after_three_failed_messages(caplog):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(1)
+        raise OSError("down")
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert notify.post_webhook(HOOK, "x", opener=opener, sleep=lambda s: None) is False
+        used = len(calls)
+        assert notify.post_webhook(HOOK, "x", opener=opener, sleep=lambda s: None) is False
+        assert len(calls) == used  # no further network traffic
+        before = caplog.text.count("disabled for this run")
+        notify.post_webhook(HOOK, "x", opener=opener, sleep=lambda s: None)
+    assert before == 1 and caplog.text.count("disabled for this run") == 1
+    assert "after 3 failures" in caplog.text
+
+
+def test_a_success_resets_the_failure_count():
+    ok = type("R", (), {"status": 200, "close": lambda self: None})()
+
+    def bad(request, timeout):
+        raise OSError("down")
+
+    for _ in range(2):
+        notify.post_webhook(HOOK, "x", opener=bad, sleep=lambda s: None)
+    assert notify.post_webhook(HOOK, "x", opener=lambda r, timeout: ok) is True
+    for _ in range(2):
+        notify.post_webhook(HOOK, "x", opener=bad, sleep=lambda s: None)
+    assert notify.post_webhook(HOOK, "x", opener=lambda r, timeout: ok) is True  # breaker still closed
+
+
+def test_notify_stage_is_stage2_even_when_resume_fails_early(tmp_path):
+    installer = _installer(tmp_path)
+
+    def boom():
+        raise RuntimeError("state unreadable")
+
+    installer.state.load = boom
+    with pytest.raises(RuntimeError):
+        installer.resume()  # fails before any later assignment
+    assert installer._notify_stage == "stage2"
+
+
+def _run_notify_script(tmp_path, server, message, host="h"):
+    script = tmp_path / "vbpub-notify"
+    script.write_text(NOTIFY_SCRIPT.replace("$(hostname)", host))
+    script.chmod(0o755)
+    cred = tmp_path / "cred"
+    cred.mkdir(exist_ok=True)
+    (cred / "mattermost_webhook_url").write_text(server.url + "\n")
+    env = {**os.environ, "CREDENTIALS_DIRECTORY": str(cred)}
+    result = subprocess.run([str(script), message], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return json.loads(server.bodies[0][2])["text"]
+
+
+def test_notify_script_defuses_mentions_links_headings_and_caps_length(tmp_path, server):
+    text = _run_notify_script(
+        tmp_path, server, "@channel @all @here [x](http://e)\n# h\n| a |\n```\n" + "z" * 5000, host="@here"
+    )
+    assert not re.search(r"@(?!​)", text.replace("ℹ️", ""))
+    assert len(text.splitlines()) == 1 and "[x](" not in text and "```" not in text
+    assert len(text) < 800
+
+
+def test_notify_script_does_not_retry_a_4xx(tmp_path, server):
+    server.status = 404
+    _run_notify_script_no_check(tmp_path, server)
+    assert len(server.bodies) == 1
+
+
+def _run_notify_script_no_check(tmp_path, server):
+    script = tmp_path / "vbpub-notify"
+    script.write_text(NOTIFY_SCRIPT)
+    script.chmod(0o755)
+    cred = tmp_path / "cred"
+    cred.mkdir(exist_ok=True)
+    (cred / "mattermost_webhook_url").write_text(server.url + "\n")
+    env = {**os.environ, "CREDENTIALS_DIRECTORY": str(cred)}
+    subprocess.run([str(script), "m"], env=env, capture_output=True, text=True, timeout=30)
+
+
+def test_only_the_selected_backends_credential_files_are_installed(tmp_path):
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"), notify_backend="telegram",
+        telegram_bot_token="123456789:" + "A" * 35, telegram_chat_id="42",
+        mattermost_webhook_url=HOOK, never_reboot=True, auto_reboot_after_stage1=False,
+    )
+    actions = HostActions(dry_run=True)
+    Installer(config, actions).install()
+    assert not any("mattermost" in path for path in actions.dry_run_writes)
+
+
+@pytest.mark.parametrize("mode", ["root-storage", "systemd"])
+def test_every_webhook_credential_file_is_requested_with_mode_0600(tmp_path, monkeypatch, mode):
+    modes = {}
+    original = HostActions.write_file
+
+    def spy(self, path, content, mode_=0o644):
+        if HOOK in content:
+            modes[path] = mode_
+        return original(self, path, content, mode_)
+
+    monkeypatch.setattr(HostActions, "write_file", spy)
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        mattermost_webhook_url=HOOK, never_reboot=True, auto_reboot_after_stage1=False,
+        credential_mode=mode,
+    )
+    Installer(config, HostActions(dry_run=True)).install()
+    assert modes and all(m == 0o600 for m in modes.values()), modes
+    assert any(p.startswith("/etc/vbpub/credentials/") for p in modes)

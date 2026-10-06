@@ -287,9 +287,23 @@ if [ -s "$HOOK_FILE" ]; then
   # Status channel: a failed POST must never fail the caller (exit 0).
   VBPUB_HOOK_FILE="$HOOK_FILE" VBPUB_HOST="$(hostname)" python3 - "$MESSAGE" <<'PYEOF' \
     || echo "vbpub-notify: send failed" >&2
-import json, os, sys, time, urllib.request
+import json, os, re, sys, time, urllib.request
 url = open(os.environ["VBPUB_HOOK_FILE"], encoding="utf-8").read().strip()
-text = "ℹ️ **%s** | %s" % (os.environ["VBPUB_HOST"], sys.argv[1])
+CTRL = re.compile("[\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029]+")
+
+
+def clean(value, cap):
+    # Same rules as debian_install_v2.notify.sanitize_field: one line, capped,
+    # markdown metacharacters escaped, mentions defused with a zero-width space.
+    value = CTRL.sub(" ", value).strip()
+    if len(value) > cap:
+        value = value[: cap - 1] + "…"
+    for ch in "\\\\*_[]()#|`~<>":
+        value = value.replace(ch, "\\\\" + ch)
+    return value.replace("@", "@\\u200b")
+
+
+text = "ℹ️ **%s** | %s" % (clean(os.environ["VBPUB_HOST"], 64), clean(sys.argv[1], 600))
 data = json.dumps({"text": text[:3500]}).encode("utf-8")
 for attempt in range(2):
     try:
@@ -298,6 +312,9 @@ for attempt in range(2):
         sys.exit(0)
     except Exception as exc:
         print("vbpub-notify: mattermost post failed (%s)" % type(exc).__name__, file=sys.stderr)
+        code = getattr(exc, "code", None)
+        if isinstance(code, int) and code < 500 and code != 429:
+            break  # a 4xx will not get better by retrying
         time.sleep(1.5)
 sys.exit(1)
 PYEOF

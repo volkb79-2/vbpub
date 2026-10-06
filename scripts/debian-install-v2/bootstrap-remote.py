@@ -449,8 +449,17 @@ def main() -> int:
 
     config = build_config()
     config_path = install_dir / "remote-install-config.json"
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    os.chmod(config_path, 0o600)
+    # The file holds the webhook URL / Telegram token: create it 0600 from the
+    # first byte (never write_text-then-chmod, which exposes it at the umask).
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)  # a pre-existing file keeps its old mode otherwise
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json.dumps(config, indent=2) + "\n")
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if debug:
         redacted = {
             key: ("<redacted>" if "token" in key or "webhook" in key else value)

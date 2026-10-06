@@ -182,7 +182,7 @@ spelling remains an alias for `--config FILE`.
 ### Notifications
 
 The installer supports one selected notification backend: `telegram`,
-`mattermost`, or `none`. When unset it is inferred from whichever credential is present (both present is a config error); Mattermost is the default for new setups. For the
+`mattermost`, or `none`. There is no backend unless a credential or `notify_backend` is configured (then notifications are off); when `notify_backend` is unset it is inferred from the one credential present (both present is a config error). The Debian wizard offers Mattermost first. `notify_host_label` is validated (`[A-Za-z0-9 ._:/-]`, max 64) and rejected otherwise. For the
 public Mattermost deployment described by
 [`nyxloom/mattermost/CONSUMER.md`](../../nyxloom/mattermost/CONSUMER.md), use
 the producer's incoming-webhook secret in the local `.env`. The externally

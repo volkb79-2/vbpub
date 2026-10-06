@@ -168,10 +168,10 @@ through the same journal).
 → stage2, so a re-run resumes rather than repeats. Progress +
 completion notifications through one backend, `notify_backend` =
 `mattermost` | `telegram` | `none` (unset: inferred from whichever credential is
-present; both present and unset is a config error). Mattermost posts a
+present; both present and unset is a config error). There is no backend unless a credential or `notify_backend` is configured; the wizard offers Mattermost first. Mattermost posts a
 `{"text": markdown}` to an incoming webhook (`mattermost_webhook_url`, a
 secret; `notify_host_label` is the optional leading label; stdlib `urllib`
-only, 2 attempts / 10 s timeout, a failed POST only warns). Milestone messages
+only, 2 attempts / 10 s timeout, 4xx other than 429 is not retried, after 3 failed messages posting stops for the rest of the process; a failed POST only warns). Every interpolated field is sanitized (control characters collapsed, length-capped, markdown escaped, `@` defused) and `notify_host_label` is rejected at validation if unsafe. Milestone messages
 look like `✅ **netcup-1** (`vmi123`) | run `ab12cd34` | stage1 | done`; a
 failure carries a short redacted log tail as a fenced block. Telegram
 (`telegram_bot_token`/`telegram_chat_id`, `telegram_verbose_progress`) keeps

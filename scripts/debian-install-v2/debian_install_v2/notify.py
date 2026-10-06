@@ -31,13 +31,54 @@ ERROR_EXCERPT_LIMIT = 800
 
 REDACTED = "***REDACTED***"
 # A Mattermost incoming-webhook URL: any scheme/host, path /hooks/<id>.
-_HOOK_URL_RE = re.compile(r"https?://[^\s/'\"`]+/hooks/[A-Za-z0-9_-]+")
+# Everything after the host is the credential (a subpath deployment puts
+# /hooks/<id> below a prefix), so mask the whole run of URL characters.
+# Keep this pattern identical in netcup_scp_client.py and install-host.py.
+_HOOK_URL_RE = re.compile(r"https?://[^\s'\"`]*?/hooks/[^\s'\"`]+")
+_CONTROL_RE = re.compile("[\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029]+")
+_MD_METACHARS = "\\*_[]()#|`~<>"
+LABEL_MAX = 64
+SERVER_MAX = 64
+RUN_ID_MAX = 16
+STAGE_MAX = 32
+EVENT_MAX = 300
+_LABEL_OK_RE = re.compile(r"^[A-Za-z0-9 ._:/-]{1,64}$")
+#: Consecutive failed messages (per process) after which posting stops.
+BREAKER_LIMIT = 3
+_breaker = {"failures": 0, "open": False}
+
+
+def reset_breaker() -> None:
+    _breaker["failures"] = 0
+    _breaker["open"] = False
 _TELEGRAM_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}\b")
 _STATUS_MARK = {"ok": "✅", "fail": "❌", "run": "⏳", "warn": "⚠️"}
 
 
 class NotifyConfigError(ValueError):
     pass
+
+
+def validate_host_label(label: str) -> None:
+    """Operator config: rejected (never silently sanitized) when unsafe."""
+    if label and not _LABEL_OK_RE.match(label):
+        raise NotifyConfigError(
+            "notify_host_label must be 1-64 characters from [A-Za-z0-9 ._:/-]"
+        )
+
+
+def sanitize_field(value: object, cap: int) -> str:
+    """Make one interpolated message field inert in Mattermost markdown.
+
+    Control characters (CR/LF/tab...) collapse to one space, the field is
+    capped at ``cap``, markdown metacharacters are backslash-escaped, and a
+    zero-width space after every ``@`` defuses @channel/@all/@here/@user.
+    """
+    text = _CONTROL_RE.sub(" ", str(value)).strip()
+    text = _truncate(text, cap)
+    for char in _MD_METACHARS:
+        text = text.replace(char, "\\" + char)
+    return text.replace("@", "@\u200b")
 
 
 def webhook_host(url: str) -> str:
@@ -116,13 +157,22 @@ def format_mattermost_message(
     ``status`` is one of ok / fail / run / warn.
     """
     mark = _STATUS_MARK.get(status, _STATUS_MARK["run"])
-    who = f"**{host_label}** (`{server_name}`)" if host_label else f"**{server_name}**"
-    head = f"{mark} {who} | run `{(run_id or '--------')[:8]}` | {stage} | {event}"
+    server = sanitize_field(server_name, SERVER_MAX) or "unknown-host"
+    label = sanitize_field(host_label, LABEL_MAX)
+    who = f"**{label}** (`{server}`)" if label else f"**{server}**"
+    run = sanitize_field((run_id or "--------")[:8], RUN_ID_MAX)
+    head = (
+        f"{mark} {who} | run `{run}` | {sanitize_field(stage, STAGE_MAX)} | "
+        f"{sanitize_field(event, EVENT_MAX)}"
+    )
     text = redact_text(head, secrets)
     if excerpt:
+        # Each part is bounded BEFORE assembly so the closing fence is always
+        # present; head <= ~600 and excerpt <= 800 keep the total far below
+        # MESSAGE_LIMIT.
         body = redact_text(excerpt, secrets).replace("```", "'''")
         text += "\n```\n" + _truncate(body.strip(), ERROR_EXCERPT_LIMIT) + "\n```"
-    return _truncate(text, MESSAGE_LIMIT)
+    return text
 
 
 def post_webhook(
@@ -136,10 +186,14 @@ def post_webhook(
     sleep: Callable[[float], None] = time.sleep,
 ) -> bool:
     """POST ``{"text": text}``; bounded retries; NEVER raises, never logs the URL."""
+    if _breaker["open"]:
+        return False
     opener = opener or urllib.request.urlopen
     data = json.dumps({"text": text}).encode("utf-8")
     host = webhook_host(url)
+    ok = False
     for attempt in range(1, attempts + 1):
+        retryable = True
         try:
             request = urllib.request.Request(
                 url, data=data, headers={"Content-Type": "application/json"}, method="POST"
@@ -152,16 +206,32 @@ def post_webhook(
                 if close:
                     close()
             if 200 <= int(status) < 300:
-                return True
+                ok = True
+                break
             reason = f"HTTP {status}"
+            retryable = int(status) >= 500 or int(status) == 429
         except urllib.error.HTTPError as exc:
             reason = f"HTTP {exc.code}"
+            retryable = exc.code >= 500 or exc.code == 429
         except Exception as exc:  # status channel: nothing here may fail an install
             reason = type(exc).__name__
+        if _breaker["open"]:
+            break
         _LOG.warning(
             "Mattermost notification to %s failed (attempt %d/%d): %s",
             host, attempt, attempts, reason,
         )
+        if not retryable:
+            break
         if attempt < attempts:
             sleep(backoff)
+    if ok:
+        _breaker["failures"] = 0
+        return True
+    _breaker["failures"] += 1
+    if _breaker["failures"] >= BREAKER_LIMIT:
+        _breaker["open"] = True
+        _LOG.warning(
+            "mattermost notifications disabled for this run after %d failures", BREAKER_LIMIT
+        )
     return False

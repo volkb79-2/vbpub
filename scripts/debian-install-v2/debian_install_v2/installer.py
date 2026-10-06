@@ -223,6 +223,8 @@ class Installer:
             raise
 
     def resume(self) -> None:
+        # Before anything below can fail: a failure message must say stage2.
+        self._notify_stage = "stage2"
         saved = self.state.load()
         persisted = saved.get("config", {})
         if not isinstance(persisted, dict):
@@ -281,7 +283,6 @@ class Installer:
             if thread_id.isdigit():
                 self.state.save(telegram_thread_id=thread_id)
         self.state.save(phase="stage2", status="running")
-        self._notify_stage = "stage2"
         self._notify("<b>Resumed stage2</b> after reboot.", event="resumed after reboot", status="run")
         try:
             self._stage2()

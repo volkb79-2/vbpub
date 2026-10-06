@@ -28,6 +28,33 @@ def test_redact_secrets_masks_mattermost_webhook_url(install_host_mod):
     assert "REDACTED_MATTERMOST_WEBHOOK_URL" in out
 
 
+SUB = "https://mm.example.test/chat/sub/hooks/SUBSECRET99"
+
+
+@pytest.mark.parametrize("wrapped", [
+    SUB, SUB + ".", SUB + "?x=1", SUB + "#frag", f"'{SUB}'", f'"{SUB}"', f"see {SUB}, ok",
+])
+def test_redact_secrets_masks_subpath_and_wrapped_webhook_urls(install_host_mod, wrapped):
+    out = install_host_mod._redact_secrets(wrapped)
+    assert "SUBSECRET99" not in out and "sub/hooks" not in out
+
+
+def test_log_redaction_masks_subpath_url_and_the_exact_configured_value(install_host_mod, monkeypatch):
+    import netcup_scp_client as client
+    monkeypatch.setenv("MATTERMOST_WEBHOOK_URL", "https://odd.example.test/not-a-hook-path/TOKEN777")
+    out = client._redact_for_log({"a": f"x {SUB} y", "b": "z https://odd.example.test/not-a-hook-path/TOKEN777"})
+    assert "SUBSECRET99" not in json.dumps(out) and "TOKEN777" not in json.dumps(out)
+    assert "TOKEN777" not in install_host_mod._redact_secrets("curl https://odd.example.test/not-a-hook-path/TOKEN777")
+
+
+def test_dict_with_webhook_key_registers_the_value_for_later_masking(install_host_mod):
+    import netcup_scp_client as client
+    client._KNOWN_WEBHOOK_URLS.clear()
+    client._redact_for_log({"mattermost_webhook_url": "https://x.test/odd/ZZTOP55"})
+    assert "ZZTOP55" not in install_host_mod._redact_secrets("err at https://x.test/odd/ZZTOP55 failed")
+    client._KNOWN_WEBHOOK_URLS.clear()
+
+
 def test_log_redaction_masks_webhook_key_and_embedded_url(install_host_mod):
     import netcup_scp_client as client
     red = client._redact_for_log(
