@@ -134,7 +134,18 @@ def test_a_malformed_pyproject_is_reported_not_swallowed(tmp_path):
     assert not report.ok and "cannot read" in report.errors[0]
 
 
-@pytest.mark.skipif(not ORCHESTRATION.exists(), reason="estate orchestration absent (isolated canary tree)")
+def _estate_complete() -> bool:
+    """The orchestration AND every project config it names are present (the isolated
+    canary tree carries the orchestration file but only some of the projects)."""
+    import tomllib
+
+    if not ORCHESTRATION.exists():
+        return False
+    projects = tomllib.loads(ORCHESTRATION.read_text(encoding="utf-8")).get("orchestration", {}).get("project", {})
+    return bool(projects) and all((REPO_ROOT / entry["config"]).is_file() for entry in projects.values())
+
+
+@pytest.mark.skipif(not _estate_complete(), reason="estate projects absent (isolated canary tree)")
 class TestRealEstate:
     @staticmethod
     def _forge():
@@ -210,7 +221,7 @@ def _check_doc(text: str) -> None:
 
 
 _DOC_SKIP = pytest.mark.skipif(
-    not (ORCHESTRATION.exists() and DOC.exists()), reason="estate orchestration/doc absent (isolated canary tree)",
+    not (_estate_complete() and DOC.exists()), reason="estate projects/doc absent (isolated canary tree)",
 )
 
 

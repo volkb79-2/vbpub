@@ -288,6 +288,7 @@ def test_bootstrap_stops_when_the_fetcher_cannot_deliver_a_wheel(tmp_path):
 
     assert result.returncode == 2
     assert "could not fetch the released cli-extended wheel" in result.stderr
+    assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in result.stderr  # the zero-release path is named
     assert not Path(tree["record"]).exists()
 
 
@@ -310,6 +311,7 @@ def _with_source_library(tree) -> None:
     shutil.copytree(CX_LIB / "src", library / "src", ignore=shutil.ignore_patterns("__pycache__"))
 
 
+@_needs_build_tools
 def test_release_mode_with_no_release_fails_with_the_zero_release_hint_and_never_builds_from_source(tmp_path):
     tree = _bootstrap_tree(tmp_path)
     _with_source_library(tree)  # the source IS available: a silent fallback would use it
