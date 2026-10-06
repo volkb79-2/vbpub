@@ -3259,7 +3259,10 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
     assert f"source rev {run_gate.__revision__}" in changes
-    assert f"RG-81, rev {run_gate.__revision__}" in changes
+    # The current-revision entry is RG-84 (rev 55); the RG-81 entry keeps its
+    # own historical rev 54, so pinning it to __revision__ broke at rev 55.
+    assert f"RG-84, filed as RG-83, rev {run_gate.__revision__}" in changes
+    assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes
     assert "--fresh` only for an ephemeral-container lane" in changes
