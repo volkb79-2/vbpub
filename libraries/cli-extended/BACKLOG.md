@@ -330,10 +330,254 @@ This list is the index:
 | CLI-EXT-17 | Constraints conditioned on a positional's value (e.g. `When("action", equals="set", then=RequiresChoice(...))`) plus declarable optional "action" positionals, so scp-api's ten `configure` callbacks and its handler-side `mac`/`action` swap can go (status: planned) | W9a Netcup adoption | scp-api hand-rolled conditional checks and `configure` callbacks |
 | CLI-EXT-18 | Shared review decision for the library-reviewed common controls (`--json`, `--yes`, `--debug-raw`, `--dry-run`) across routes: one rationale/effects block plus one parametrized linked test covering N route cases (status: planned) | W9a Netcup adoption | scp-api yields 151 cases, mostly these controls; W9b: every `--config`/`--config-json` verb adds five identical cases (62 rows for 8 verbs) — share one case across identical option declarations too |
 | CLI-EXT-19 | `invoke_script`/`invoke_module` take `python_args` (e.g. `-S`, `-I`) or an `isolated=True` switch that also drops the inherited `PYTHONPATH` for an explicit interpreter (status: planned) | W9b debian-install-v2 adoption | Wrapper scripts and `env={"PYTHONPATH": None}` to prove "library not installed" |
+| (CLI-EXT-19 status) | **Fixed `7cfe227f3`** (CX-BACKLOG 2026-10-06): `python_args=` and `isolated=True` (adds `-I`, drops inherited `PYTHONPATH`; refuses `pythonpath`/`library_path`) on `invoke_script`/`invoke_module` | | |
 | CLI-EXT-20 | `Requires`/`Conflicts` on an option that has a default ("differs from its default"), so a defaulted option need not drop its argparse default (status: planned) | W9b debian-install-v2 adoption | `--repo-url` lost its default to be constrainable (F-005) |
+| (CLI-EXT-20 status) | **Open, decision ask** (CX-BACKLOG 2026-10-06): not implemented, see the design note below | | |
 | CLI-EXT-21 | Per-verb `--dry-run` help sentence on `VerbSpec(dry_run=...)` (status: planned) | W9b debian-install-v2 adoption | One generic sentence for every verb (F-007) |
+| (CLI-EXT-21 status) | **Fixed `7cfe227f3`**: `VerbSpec(dry_run_help="...")`; default sentence unchanged | | |
 | CLI-EXT-22 | Audit heuristic precision: AC-01 `version-source` ignores test files that build a pinned `CliIdentity(...)`; AC-25 `no-path-hacks` ignores comments (status: planned) | W9b debian-install-v2 adoption | Two false positives fixed by rewording tests, not code |
+| (CLI-EXT-22 status) | **Fixed `7cfe227f3`**: AC-25 ignores comments (tokenizer-based for `.py`); AC-01 ignores test files | | |
+| (CLI-EXT-17, 18 status) | **Open, size L, decision ask**: design notes below; not implemented | | |
 
 **Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
 debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,
 pwmcp, cgprofile).
+
+## Triage — CX-BACKLOG, 2026-10-06 (branch `cx-backlog-2026-10`)
+
+Code commits: `f6ad8ce0c` (23, 26, 27, 28, 29) and `7cfe227f3` (19, 21, 22, 24).
+Per-fix evidence and plants: `docs/CX-BACKLOG-2026-10-REPORT.md`.
+
+| ID | Status | Size | Note |
+|---|---|---|---|
+| 01, 03, 04, 05 | done (closed or implemented, see entries) | – | |
+| 02 | done (implemented in W2) | – | |
+| 06 – 16 | done (released in 0.2.0, see CHANGES.md) | – | |
+| 17 | open, decision ask | L | design note below |
+| 18 | open, decision ask | L | design note below |
+| 19 | done `7cfe227f3` | S | |
+| 20 | open, decision ask | M (policy) | design note below; reverses a documented, tested refusal |
+| 21 | done `7cfe227f3` | S | |
+| 22 | done `7cfe227f3` | S | |
+| 23 | done `f6ad8ce0c` | M | opt-ins, defaults unchanged |
+| 24 | done `7cfe227f3` | S | |
+| 25 | open, decision ask | L | design note below |
+| 26 | done `f6ad8ce0c` | S | |
+| 27 | done `f6ad8ce0c` | S | |
+| 28 | done `f6ad8ce0c` | S | |
+| 29 | done `f6ad8ce0c` | S | |
+
+### Design notes for the open items (decision asks)
+
+**17 and 25 share one mechanism; decide them together.** Today a constraint
+(`constraints.py`) relates option flags only: `resolve_constraints` binds each
+flag through `parser._option_string_actions` and reads presence from the
+parsed value. Both items need a constraint whose subject is a *positional*
+(17: its value, `When("action", equals="set", then=RequiresChoice(...))`; 25:
+its cardinality, `When("target", count=1, then=Requires/Forbids(...))`, with
+`SelectorList.ALL` and an omitted target as distinct cases after conversion).
+That is not a local change:
+1. `constraints.py`: a new constraint kind, positional-destination binding and
+   a post-conversion evaluator (for 17 also optional "action" positionals
+   with `nargs="?"` and choices).
+2. `surface.py`: the exported route record, the constraint-to-candidate
+   mapping (`_CONSTRAINT_CANDIDATE_KINDS`) and member ids, which today are option ids
+   only; a manifest schema bump (currently 7) and a one-time `surface sync`
+   for every adopter that declares one.
+3. `review.py`: the "case must exercise its constraint" check, which looks for
+   the trigger *option* in argv, must learn positional trigger values and counts.
+4. Help epilog and Markdown rule text for the new kinds.
+Ruling needed: (a) accept the schema bump (schema 8, contract note); (b) the
+spelling (`When(subject, equals=… | count=…, then=…)`); (c) whether `count`
+covers only `SelectorList` positionals. Proposed: implement both in one
+package after cmru 6.0 has adopted the current surface, with oracles
+from the 17 and 25 entries (wrong implementation treating `ALL` as one name
+must fail).
+
+**18 (shared review decision across routes).** Review rows are per route and
+per option; the four reviewed common controls (`--json`, `--yes`,
+`--debug-raw`, `--dry-run`) and identical `--config` declarations repeat one
+decision N times (scp-api 151 rows, cmru 346 cases for 32 routes). Collapsing them
+changes the review catalog format (a shared case listing its routes, one
+parametrized linked test), the signature rule (a shared case must be re-signed when any
+member route changes its declaration) and the findings file addressing, i.e. a
+catalog schema bump and a migration for every adopter's catalog. Ruling
+needed on whether the saved review volume justifies a catalog schema bump
+now, or after the remaining adopters (ciu, assay, run-gate, pwmcp,
+cgprofile) are in, so migration is done once.
+
+**20 (constraints on a defaulted option).** The refusal of non-None / non-False
+defaults is deliberate and documented (DESIGN-GUIDE "Presence is the parsed
+value differs from the default"; tested in `test_w2_constraints.py`): with
+`--retries 3`, typing `--retries 3` is indistinguishable from omitting it, so
+a `Requires("--retries", …)` would silently never fire. The code change is
+small (compare against the default, converted through the action's `type`
+for a string default) but it makes that blind spot the contract. Options:
+(1) keep refusing and let consumers drop the argparse default (what
+debian-install-v2 did, F-005); (2) allow it with the documented blind spot;
+(3) allow it only as an explicit opt-in on the constraint
+(`present="differs-from-default"`), keeping the loud default. Proposed: (3).
+No code was changed for this item.
+
+## CLI-EXT-23 — error output: identity banner after every error, full help on parser errors
+
+**Status:** Fixed in `f6ad8ce0c` (CX-BACKLOG 2026-10-06). Opt-ins, defaults unchanged.
+
+**Resolution:** `CliRegistry(identity_banner="once"|"never", error_help="full"|"usage")` (also `RegisteredCli` fields,
+`run_cli` and `CliOutput` kwargs). The defaults (`once`, `full`) keep every current consumer's output byte for byte;
+`never` drops the headline before an error, `usage` prints the usage line and `Run '<prog> --help' for full help.` at every
+error-with-help site (parser errors, unknown help topic, missing verb, `CliFailure(show_help=True)`). The entry argued for the
+"least noisy default that contract tests allow", but changing the default would re-break every adopter's stderr assertions,
+so the noisy default is kept and consumers opt in. Exit codes unchanged. The `on-usage-error` banner variant was not built.
+
+**Problem:** two library behaviours make every error noisy, and a consumer cannot opt out:
+1. `CliOutput.error()` (`src/cli_extended/output.py`, around line 262) prints the tool's identity headline after the
+   first error of a run, so the error is no longer the last line on stderr.
+2. A parser-level usage error, such as a bad positional value (`scp-api.py power bogus`) or a non-integer id, dumps the
+   whole help block instead of the usage line plus a one-line hint like `scp-api.py help <verb>`.
+
+Netcup LT-NC1 (2026-10-06) worked around this at verb level only, for verb-raised usage errors. Parser-level errors and
+the banner still behave as above, because the fix belongs here.
+
+**Acceptance:**
+- An identity-banner policy (`never` / `once-per-run` / `on-usage-error`) settable per `CliIdentity` or `CliOutput`,
+  defaulting to the least noisy choice that existing contract tests allow.
+- Parser errors print `usage: …` plus `error: …` plus a single `help <verb>` hint; full help only with `--help`.
+- Exit codes unchanged (2 for usage).
+- A contract test per behaviour, and migration notes for consumers that assert on the old output.
+
+**Provenance:** netcup live test Phase 0 (2026-10-06), finding F4; LT-NC1 REPORT and review B9.
+
+## CLI-EXT-24 — a version probe for `CliIdentity.resolve`
+
+**Status:** Fixed in `7cfe227f3` (CX-BACKLOG 2026-10-06).
+**Type:** Feature
+**Area:** Identity
+
+**Resolution:** `CliIdentity.resolve(version_probe=callable)`. `None` is unresolved; a malformed value or a
+raising probe is a `VersionLookupError`; the probe must agree with installed metadata and a version file
+(disagreement names every source). The CONSUMERS.md note on delegate/parent shared `unexpected_exceptions` was added.
+The UNVERIFIED route-metadata question (delegate wrapper with `mutating=True` and no `dry_run`) was not investigated
+and stays open for the first cmru sync.
+
+`CliIdentity.resolve` accepted only installed distribution metadata and an
+absolute VERSION file. A tool whose version is SCM-derived (cmru: no VERSION
+file) that also runs from a source tree (gate lanes use `PYTHONPATH=src`; an
+editable venv carries stale metadata, observed as 720 versus 1111 commits)
+could not get a checkout-accurate version without building `CliIdentity(...)`
+directly, which fails audit AC-01.
+
+**Related (N2, delegate/parent coupling):** a parent and its delegates must
+share `unexpected_exceptions` (a hard `ValueError` at `build()`), and
+`any_dry_run` is registry-wide. That is not a defect, but a tool with many
+registries (cmru: twelve at survey time) must flip the policy for all of them
+at once; cmru uses one shared factory (`cmru.cli_support.cmru_registry`).
+
+**Provenance:** cmru KI-51 survey (gaps N1 and N2), 2026-10-06, program package W2-PKG0.
+
+## CLI-EXT-25 — cardinality constraints on a selector
+
+**Status:** Open, size L, decision ask (CX-BACKLOG 2026-10-06). See the shared 17/25 design note in the triage section.
+**Type:** Feature
+**Area:** Constraints
+
+Rules such as "`--output` only with exactly one target", "`--build-output`
+requires one project", "`--delete-build-output` and
+`--delete-unmanaged-release-tag` require exactly one target" and
+"`--discard-build-worktree` forbids a target" (about seven cmru sites)
+cannot be declared. CLI-EXT-17 conditions on a positional's value, not on its
+count or on the `SelectorList.ALL` sentinel. They therefore stay handler-side
+and invisible to the exported surface and the review.
+
+Wanted: a constraint over a selector positional, for example
+`When("target", count=1, then=Requires("--output"))` / `Forbids`, evaluated
+after the selector converter so `ALL` and an omitted target are distinct
+cases.
+
+Oracles:
+- One name satisfies `count=1`; two names, `ALL` and an omitted target each
+  refuse with the declared message.
+- The constraint appears in the exported surface and in the review rows.
+- A controlled wrong implementation that treats `ALL` as one name must fail
+  the `ALL` oracle.
+
+**Provenance:** cmru KI-51 survey (gap N3), 2026-10-06, program package W2-PKG0.
+
+## CLI-EXT-26 — `register_skills_verbs` drops the consumer's global options
+
+**Status:** Fixed in `f6ad8ce0c` (CX-BACKLOG 2026-10-06).
+**Type:** Defect
+**Area:** Skills, surface export
+
+**Resolution:** the child registry now receives `registry.global_options` (plus `identity_banner` and `error_help`).
+The review-volume note below is unchanged and is CLI-EXT-18.
+
+`register_skills_verbs(registry, package=...)` built its child `CliRegistry`
+without `global_options=registry.global_options`
+(`cli_extended/skills.py`). A consumer that declares a global option on its
+registry (cmru: `--log-prefix-time-short`) therefore got `cmru skills
+install|uninstall|check|list` WITHOUT it, and `cli-extended surface check`
+failed with `incomplete parser syntax: cmru skills: delegated parser does not
+register inherited global option(s): --log-prefix-time-short`, so such a
+consumer could not pass AC-17 after adopting the shared `skills` verbs
+(AC-19). Observed adopting cmru 2026-10-06 (W2-PKG5).
+
+**Related (review volume):** the same adoption produced 346 review cases for
+32 routes, 60 of them identical `--debug-raw` and consumer-global cases
+repeated per route; CLI-EXT-18 would remove that repetition.
+
+**Provenance:** cmru W2-PKG5 surface adoption, 2026-10-06.
+
+## CLI-EXT-27 — `cli_extended.testing` prepends its own install directory to `PYTHONPATH`
+
+**Status:** Fixed in `f6ad8ce0c` (CX-BACKLOG 2026-10-06). Behaviour change, see CHANGES.md.
+**Type:** Defect
+**Area:** Testing helpers
+
+**Resolution:** no implicit `PYTHONPATH` edit; the child gets `pythonpath` followed by the caller's inherited
+value. Explicit opt-in `library_path=True` prepends the imported library directory.
+
+The subprocess helpers put cli-extended's own install directory at the front
+of the child's `PYTHONPATH` unless the caller passed `python=`. A consumer
+test that ran its CLI in a subprocess therefore imported the library from the
+test environment's site-packages ahead of the consumer's own pinned or
+wheel-installed copy, and hid a missing or mis-floored `cli-extended`
+dependency. Observed adopting cmru (W2-PKG5, 2026-10-06).
+
+**Provenance:** cmru W2-PKG5 review round 1 (library backlog ask), 2026-10-06.
+
+## CLI-EXT-28 — a test cannot assert the absence of a path hack (audit AC-25)
+
+**Status:** Fixed in `f6ad8ce0c` (CX-BACKLOG 2026-10-06).
+**Type:** Feature
+**Area:** Audit, testing
+
+**Resolution:** the marker `# cli-extended: allow-path-assertion` exempts its own line, or the line after a
+marker-only line. Only marked lines are exempt; a real `sys.path.insert(...)` in the same file still fails AC-25.
+The `assert_no_path_hack` helper alternative was not built.
+
+The AC-25 `no-path-hacks` heuristic scans test and source text for
+`sys.path`/`PYTHONPATH` manipulations that name the library. A test that
+asserts the cli-extended source path is ABSENT had to spell the needle, which
+the heuristic reported as a hack; cmru worked around it with
+`tests/_cx_paths.py`.
+
+**Provenance:** cmru W2-PKG5 review round 1 (library backlog ask), 2026-10-06.
+
+## CLI-EXT-29 — `expected_exceptions` cannot carry an exit code or hint
+
+**Status:** Fixed in `f6ad8ce0c` (CX-BACKLOG 2026-10-06).
+**Type:** Feature
+**Area:** Runner, error rendering
+
+**Resolution:** a matched expected exception exits with its integer `exit_code` attribute (non-bool; default 1) and
+prints its non-empty string `hint` after `[ERROR] <msg>`, with no "unexpected" label. Exceptions without those
+attributes, and plain tuples, behave as before. The `{type: exit_code}` mapping form was not built.
+
+`CliRegistry(expected_exceptions=(...))` rendered a matching exception as
+`[ERROR] <str(exc)>` and always exited 1 (`parser.py`); a consumer with an
+exit-code taxonomy (cmru: 2 usage, 3 prerequisite missing, 4 refused by
+policy) had to subclass `CliFailure`. Observed in cmru W2-PKG5 review fix
+round 1 (B1).
+
+**Provenance:** cmru W2-PKG5 review fix round 1, 2026-10-06.

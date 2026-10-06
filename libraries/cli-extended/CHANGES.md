@@ -7,6 +7,47 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### Unreleased — library backlog fixes (CX-BACKLOG, 2026-10-06)
+
+Library contract version is unchanged (1). Behaviour changes a consumer can see:
+
+- **`cli_extended.testing` no longer edits `PYTHONPATH` implicitly (CLI-EXT-27).**
+  `invoke_script`/`invoke_module` used to prepend the imported library's
+  directory (a whole `site-packages` when installed), which shadowed a
+  consumer's own pinned copy and hid a missing dependency. The child now gets
+  `pythonpath` followed by the caller's inherited `PYTHONPATH`, nothing else.
+  A test that relied on the implicit entry must either run under a
+  `PYTHONPATH`/venv that already resolves `cli_extended`, or pass the new
+  `library_path=True`. Check the netcup tests (`test_cli_contract.py`,
+  `test_monitor_task.py`) and any `PYTHONPATH=…/src` gate lane.
+- **`register_skills_verbs` forwards the parent's `global_options`
+  (CLI-EXT-26)** (plus `identity_banner` and `error_help`) to its child
+  registry. A consumer with a global option now gets it on every `skills`
+  route, and `surface check` no longer reports `delegated parser does not
+  register inherited global option(s)`. Re-run `surface sync` if the skills
+  routes' review rows change.
+- **`expected_exceptions` honours `exit_code` and `hint` (CLI-EXT-29).** A
+  matched exception exits with its integer `exit_code` attribute (default 1)
+  and prints its non-empty string `hint` after `[ERROR] <msg>`. Plain tuples
+  and exceptions without those attributes behave as before.
+- **New opt-ins, defaults unchanged (CLI-EXT-23).**
+  `CliRegistry(identity_banner="never")` suppresses the identity headline
+  before an error; `CliRegistry(error_help="usage")` prints the usage line and
+  `Run '<prog> --help' for full help.` instead of the full help block on
+  parser errors, a missing verb, an unknown help topic and
+  `CliFailure(show_help=True)`. Exit codes are unchanged.
+- **`CliIdentity.resolve(version_probe=…)` (CLI-EXT-24).** A zero-argument
+  callable returning a version or `None`; it must agree with installed
+  metadata and a version file (`VersionLookupError` on disagreement). The
+  "no source" `ValueError` text now also names `version_probe`.
+- **`invoke_*(python_args=…, isolated=True)` (CLI-EXT-19);
+  `VerbSpec(dry_run_help=…)` (CLI-EXT-21).**
+- **Audit (CLI-EXT-28, CLI-EXT-22).** AC-25 `no-path-hacks` accepts the
+  `# cli-extended: allow-path-assertion` marker on (or immediately above) a
+  line that asserts the library path is absent, and ignores comments; AC-01
+  `version-source` ignores test files (`tests/`, `test_*.py`, `*_test.py`,
+  `conftest.py`) that build a pinned `CliIdentity(...)`.
+
 ### 0.2.0 — first released wheel (unified adoption)
 
 cli-extended is now a released wheel (`cli_extended-<version>-py3-none-any.whl`)
