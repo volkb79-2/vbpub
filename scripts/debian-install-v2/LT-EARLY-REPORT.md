@@ -119,3 +119,15 @@ session, see `scratchpad/LT-UPG-FIX-CONTINUATION.md`; do not read this section a
 
 Process note: three Edit calls were issued in one message once (against the one-edit-per-message rule); the
 content of each edit is in the commit.
+
+## Merge-condition tests
+
+Tests only (`debian_install_v2/tests/test_lt_upg_merge_conditions.py`), no product change; `installer.py` diff is
+empty against `a225c7163`. Each plant was applied to `installer.py`, the new file run, then reverted.
+- **C1** real `_hold_apt_timers()` writes state step `apt_timers_held`=`success`; a new `Installer` on the same
+  state dir (stage2 as a new process) enables both apt timers via `_restore_apt_timers_after_failure()`.
+  Plant: the `mark_step("apt_timers_held", ...)` call replaced by `pass` -> test FAILS (KeyError).
+- **N1** both cleanup paths (prune with retain=true, remove with retain=false) write content ending in `\n` with
+  mode 0o600. Plants (each path separately: no trailing newline; 0o644) -> the matching parametrized case FAILS.
+- **N2** one over-long line (only `_TAIL_LINE_MAX` applies) and a header plus four 150-char lines over `_TAIL_MAX`
+  (only `_TAIL_MAX` applies). Plants: remove each cap separately -> only its own test FAILS.
