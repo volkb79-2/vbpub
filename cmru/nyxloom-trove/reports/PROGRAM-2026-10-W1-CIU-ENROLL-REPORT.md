@@ -106,3 +106,26 @@ coverage-lane run (99.89%).
 4. **Help text.** Loss accepted in `get.py`; the pre-move example (plus the `--version` pin) added to `ciu/docs/SPEC.md` S14.7b.
 5. Trailing blank line removed from `cmru/tests/test_installer.py`.
 6. `tls-edge/README.md:417` now `cmru release tls-edge --set-version 0.2.0`.
+
+## Review fix 2 (release-gate environment blocker)
+- **How ciu `src` reached the path before:** not via the runner. `ciu/run-ciu-tests.py` set no env; the test modules do
+  `sys.path.insert(0, ".../src")` themselves (e.g. `test_ciu_documentation_contract.py`), and nothing put cmru on the path, so the
+  image's older installed cmru was imported by the drift/render tests.
+- **`ciu/run-ciu-tests.py`:** new `child_env()`; the pytest child's `PYTHONPATH` is ciu `src`, `../cmru/src`,
+  `../libraries/cli-extended/src`, `../libraries/worktree/src` (resolved from `ROOT = script dir`, not cwd), ambient PYTHONPATH
+  kept after them; same set as `assay.toml`. Pinned by `test_release_gate_child_env_uses_repo_sources_and_matches_the_assay_lane`
+  (also compares with `assay.toml`'s env, run from a foreign cwd).
+- **Mount (read from `tester_gate.py:778`):** `cmru tester-gate` bind-mounts the WHOLE worktree root at `/worktree` and sets
+  the workdir to `/worktree/<--cwd>`, so `../cmru` and `../libraries` exist in the container.
+- **R2 mutation snapshot:** `isolation.snapshot_selection = "repository-minus-unsafe-symlinks"` materialises the whole commit minus
+  the three declared topos symlinks (`assay/config.py:228-234`, `isolation.py:1809`), so the siblings are present; no test exclusion
+  from the mutation selection is needed. (Not run: the R2 lane itself.)
+- **Probe (found a second environmental dependency):** first probe run failed `test_get_py_cli_render_carries_enroll`: the
+  orchestration config interpolates `${CGROUP_PARENT_DEV_GATES}`, unset in my bare container. The test now pins it with
+  `monkeypatch` (the render does not use the slice). Second probe, same method: one throwaway
+  `docker run --rm --name cmru-w1-probe-<random> tester-unified:local`, worktree bind-mounted `readonly`, `--cgroup-parent
+  dev-gates.slice --memory 2g --memory-swap 2g --cpus 1 --pids-limit 512`, PSI checked, gate lock held, command
+  `python run-ciu-tests.py --no-cov --cov-fail-under=0 -p no:cacheprovider -n0 -k "byte_identical or carries_enroll or child_env"`:
+  **12 passed, 4200 deselected, rc 0** (includes `test_render_is_byte_identical_to_the_committed_file`,
+  `test_get_py_cli_render_carries_enroll`, and the env-pin test); container confirmed gone (`--rm`, exact name).
+  Not exercised there: the container tests (skip without docker) and the coverage floor.
