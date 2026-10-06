@@ -227,7 +227,7 @@ def test_project_env_still_accepts_ordinary_cmru_names():
 def test_pyproject_declares_the_interactive_extra_from_the_released_cli_extended():
     declared = tomllib.loads((PROJECT_DIR / "pyproject.toml").read_text(encoding="utf-8"))
     assert declared["project"]["optional-dependencies"]["interactive"] == [
-        "cli-extended[interactive]>=0.2.0",
+        "cli-extended[interactive]>=0.3.0",
     ]
     assert cli_support.INTERACTIVE_EXTRA == "cmru[interactive]"
 
