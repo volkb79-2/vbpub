@@ -634,8 +634,22 @@ def test_source_module_invocation_works_from_the_cmru_project_directory():
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stderr
-    assert "wheel-build" in result.stdout
+    # D2: the version is installed metadata only. A gate container that puts
+    # src/ on PYTHONPATH without installing the wheel has no distribution, and
+    # the entry then exits 3 with one line (no traceback); an installed
+    # distribution gets the real help.
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("cmru")
+    except PackageNotFoundError:
+        assert result.returncode == 3, result.stderr
+        assert result.stderr.strip() == (
+            "cmru is not installed as a distribution; install the wheel (see README)"
+        )
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "wheel-build" in result.stdout
 
 
 def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
