@@ -160,7 +160,18 @@ wording), then the final commit(s) of this round. All edits via Edit/Write. One 
 bash heredoc appended the `_GRAMMAR_ONLY` staleness tests to `tests/test_cli_spec_inventory.py` (content as intended,
 verified by running it; it should have been an Edit). No image built, no `.env`/secret read, no real HOME touched.
 
-LANES-PENDING
+## Verdicts (round 1)
+
+| Check | Result |
+| --- | --- |
+| Full suite (`pt.py`, serial, flock, nice/ionice, PSI full avg60 ~1) at `4335f5751` (code identical to `7e12b7780` except the 2 lines changed below) | 3978 passed, 6 skipped |
+| `coverage` lane at `4335f5751` | FAIL 99.99% (`cli.py` 4991 and 5394 uncovered). Cause: `ReleaseLockHeld` became a `CliFailure`, so the old `except ReleaseLockHeld` after `except CliFailure` in `_abandon` was dead; the multi-family preflight refusal branch had no test |
+| `coverage` lane at `7e12b7780` (clean tree; fixes: tests for both, dead branch removed) | PASS, 100.00%, 3980 passed, 6 skipped; verdict read in a separate step |
+| `canary` lane at `7e12b7780` | PASS, exit 0; read in a separate step |
+| `cli-extended surface check` | still FAILS on exactly the one CLI-EXT-26 message (`cmru skills` lacks `--log-prefix-time-short`) |
+| `cli-extended audit --cli cmru` | 13 pass, 0 warn, 2 fail (AC-17, AC-18), 0 manual: the CLI-EXT-26 gap only |
+
+The lanes ran at `7e12b7780`; the commit after it changes only this REPORT.
 
 ## B1 design
 
