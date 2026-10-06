@@ -592,8 +592,10 @@ app = registry.build()
 ## Consumer test helpers
 
 `invoke_script`, `invoke_module` and `make_invoker` run a real executable with
-a hermetic environment (required `home`, `XDG_*`, `NO_COLOR`, the tested
-library first on `PYTHONPATH`), and `cli_extended.pytest_plugin` (one
+a hermetic environment (required `home`, `XDG_*`, `NO_COLOR`; `PYTHONPATH` is
+only `pythonpath=` plus the inherited value, never an implicit library
+directory; `library_path=True` opts in, `isolated=True` and `python_args=`
+probe "library not installed"), and `cli_extended.pytest_plugin` (one
 `pytest_plugins` line) registers the `cli_case` marker and checks reviewed
 cases at collection; `--cli-case-partial` relaxes it for focused runs. See the
 [consumer guide](docs/CONSUMERS.md#test-helpers-invoke_script) and the

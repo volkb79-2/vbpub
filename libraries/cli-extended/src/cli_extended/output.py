@@ -14,6 +14,13 @@ from typing import Any, TextIO
 
 from .identity import CliIdentity
 
+#: CLI-EXT-23. ``"once"`` (default, unchanged) prints the identity headline
+#: after the first error of a run; ``"never"`` leaves the error as the last line.
+IDENTITY_BANNER_POLICIES = ("once", "never")
+#: ``"full"`` (default, unchanged) prints the whole help after a parser error;
+#: ``"usage"`` prints the usage line and a "see --help" line instead.
+ERROR_HELP_POLICIES = ("full", "usage")
+
 
 class LogLevel(str, Enum):
     """Public diagnostic levels, in the spelling exposed by the CLI."""
@@ -167,7 +174,20 @@ class CliOutput:
         stdin: TextIO | None = None,
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
+        identity_banner: str = "once",
+        error_help: str = "full",
     ) -> None:
+        if identity_banner not in IDENTITY_BANNER_POLICIES:
+            raise ValueError(
+                f"identity_banner must be one of {IDENTITY_BANNER_POLICIES}, "
+                f"got {identity_banner!r}"
+            )
+        if error_help not in ERROR_HELP_POLICIES:
+            raise ValueError(
+                f"error_help must be one of {ERROR_HELP_POLICIES}, got {error_help!r}"
+            )
+        self.identity_banner = identity_banner
+        self.error_help = error_help
         self.identity = identity
         self.level = LogLevel.parse(level) if isinstance(level, str) else level
         self.color = color
@@ -263,7 +283,7 @@ class CliOutput:
         self.emit(LogLevel.ERROR, message)
         if hint is not None:
             self.hint(hint)
-        if not self._identity_written:
+        if self.identity_banner == "once" and not self._identity_written:
             self.stderr.write("\n")
             headline = self.format_help(self.identity.headline, stream=self.stderr)
             print(headline, file=self.stderr, flush=True)
