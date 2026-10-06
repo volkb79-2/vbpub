@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:13",
+  "$id": "urn:assay:schema:verdict:14",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 13
+      "const": 14
     },
     "assay_version": {
       "type": "string",
@@ -85,6 +85,23 @@
     },
     "env_effective": {
       "$ref": "#/$defs/env"
+    },
+    "env_passthrough": {
+      "description": "B140/schema v14: the effective, ordered and deduplicated allowlist of ambient names for a resolved lane, including names absent from the runtime environment.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "env_effective_passthrough_sha256": {
+      "description": "B142/schema v14: unkeyed SHA-256 fingerprints for the effective passthrough values; keys exactly match present passthrough names in env_effective.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
     },
     "env_effective_incomplete": {
       "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
@@ -194,8 +211,10 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "declared_evidence": [
       "declared_rigor",
@@ -205,8 +224,10 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_declared": [
       "declared_rigor",
@@ -216,8 +237,10 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_appended": [
       "declared_rigor",
@@ -227,8 +250,10 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_effective": [
       "declared_rigor",
@@ -238,8 +263,10 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "argv_modified": [
       "declared_rigor",
@@ -249,8 +276,10 @@
       "argv_effective",
       "env_declared",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "env_declared": [
       "declared_rigor",
@@ -260,8 +289,10 @@
       "argv_effective",
       "argv_modified",
       "env_effective",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "env_effective": [
       "declared_rigor",
@@ -271,8 +302,10 @@
       "argv_effective",
       "argv_modified",
       "env_declared",
+      "env_passthrough",
       "scope",
-      "enforcement"
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "scope": [
       "declared_rigor",
@@ -283,7 +316,9 @@
       "argv_modified",
       "env_declared",
       "env_effective",
-      "enforcement"
+      "env_passthrough",
+      "enforcement",
+      "env_effective_passthrough_sha256"
     ],
     "enforcement": [
       "declared_rigor",
@@ -294,7 +329,9 @@
       "argv_modified",
       "env_declared",
       "env_effective",
-      "scope"
+      "env_passthrough",
+      "scope",
+      "env_effective_passthrough_sha256"
     ],
     "env_effective_incomplete": [
       "declared_rigor",
@@ -305,6 +342,34 @@
       "argv_modified",
       "env_declared",
       "env_effective",
+      "env_passthrough",
+      "scope",
+      "enforcement",
+      "env_effective_passthrough_sha256"
+    ],
+    "env_passthrough": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement",
+      "env_effective_passthrough_sha256"
+    ],
+    "env_effective_passthrough_sha256": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "env_passthrough",
       "scope",
       "enforcement"
     ]
@@ -1323,6 +1388,42 @@
         }
       ]
     },
+    "resource_counter_delta": {
+      "type": "object",
+      "required": ["before", "after", "delta"],
+      "properties": {
+        "before": {"type": "integer", "minimum": 0},
+        "after": {"type": "integer", "minimum": 0},
+        "delta": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "resource_limit_evidence": {
+      "description": "B145: cgroup v2 process-limit and memory event counter evidence for native R2 candidates. A started full candidate command has samples bracketing its execution. A candidate whose full command did not start after an early stop is budget_exceeded and shares one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive delta during a full command is classified as crashed; a positive delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each delta in a candidate outcome to equal after minus before and any positive delta to be classified as crashed.",
+      "type": "object",
+      "required": ["cgroup_version", "pids_events", "memory_events"],
+      "properties": {
+        "cgroup_version": {"type": "integer", "const": 2},
+        "pids_events": {
+          "type": "object",
+          "required": ["max"],
+          "properties": {"max": {"$ref": "#/$defs/resource_counter_delta"}},
+          "additionalProperties": false
+        },
+        "memory_events": {
+          "type": "object",
+          "required": ["max", "oom", "oom_kill", "oom_group_kill"],
+          "properties": {
+            "max": {"$ref": "#/$defs/resource_counter_delta"},
+            "oom": {"$ref": "#/$defs/resource_counter_delta"},
+            "oom_kill": {"$ref": "#/$defs/resource_counter_delta"},
+            "oom_group_kill": {"$ref": "#/$defs/resource_counter_delta"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
       "type": "object",
@@ -1377,8 +1478,16 @@
         "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "mutated_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "execution": {"$ref": "#/$defs/mutation_execution"}
+        "execution": {"$ref": "#/$defs/mutation_execution"},
+        "resource_limit_evidence": {"$ref": "#/$defs/resource_limit_evidence"}
       },
+      "allOf": [
+        {
+          "if": {"required": ["candidate_id"]},
+          "then": {"required": ["resource_limit_evidence"]},
+          "else": {"not": {"required": ["resource_limit_evidence"]}}
+        }
+      ],
       "additionalProperties": false
     },
     "mutation": {

@@ -27,6 +27,7 @@ from assay.adapters.go_stmtpos import (
     HELPER_DIR,
     OUTPUT_SCHEMA,
     _read_document,
+    _tail,
     derive_statement_blocks,
 )
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -199,6 +200,18 @@ def test_output_that_is_not_json_is_refused():
         _read_document(b"not json at all", ARGS, "/usr/local/go/bin/go")
 
     assert "JSON" in str(caught.value)
+
+
+def test_helper_error_tail_redacts_before_its_character_limit():
+    secret = "SCHEMA_GATE_DSN=postgresql://u:secret@h/db"
+    limit = 48
+    raw = "x" * 5 + secret + "z" * (limit + 5 - len(secret))
+
+    tail = _tail(raw.encode("utf-8"), limit, sensitive_values=(secret,))
+
+    assert secret not in tail
+    assert "secret" not in tail
+    assert len(tail) == limit
 
 
 def test_a_source_file_absent_from_the_working_tree_refuses_before_go_runs(

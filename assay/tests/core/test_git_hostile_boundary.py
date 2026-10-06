@@ -106,6 +106,24 @@ def test_ambient_git_config_count_cannot_inject_configuration(
     assert git_module.dirty_paths(git_repo.path) == ("café.txt",)
 
 
+@pytest.mark.parametrize(
+    "key", ["maintenance.auto", "maintenance.autoDetach", "gc.autoDetach"]
+)
+def test_assay_git_maintenance_settings_override_repository_config(
+    git_repo: GitRepo, key: str
+):
+    """Real Git sees the safety settings despite conflicting local values.
+
+    The tester image's system config is outside Assay's replacement Git
+    environment. A repository-local `true` value is a conflicting input for
+    this probe: removing Assay's command-level setting makes this assertion
+    return `true` and fail.
+    """
+    git_repo.git("config", key, "true")
+
+    assert git_module.run(git_repo.path, "config", "--bool", "--get", key) == "false\n"
+
+
 def test_a_repository_local_core_worktree_cannot_redirect_identity(two_repos):
     """The attack ``-C`` alone does not stop, and the reason A-173 requires
     an explicit ``--git-dir``/``--work-tree`` pair: a repository-LOCAL

@@ -151,6 +151,7 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
         argv_effective=("pytest", "-q"),
         env_declared={},
         env_effective={},
+        env_passthrough=(),
         scope="S1",
         enforcement="gate",
         judgment=Judgment(

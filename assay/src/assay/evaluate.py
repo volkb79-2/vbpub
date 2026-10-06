@@ -411,15 +411,31 @@ class CoverageEvaluation:
 def _is_considered(
     path: str,
     *,
+    repo_top: Path,
     abs_path: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str],
     adapter: LanguageAdapter,
 ) -> bool:
     """Every gate a changed file must clear before it counts toward
     ``considered`` at all — source-root boundary, excluded directories,
     the adapter's own source globs, and test-path exclusion, in that order.
     """
-    if not any(abs_path.is_relative_to(root) for root in source_root_paths):
+    # Directory roots retain resolved containment. A file root is an exact
+    # diff-path declaration: resolving a changed sibling symlink first would
+    # otherwise make it compare equal to the declared file's target.
+    in_directory = any(
+        not root.is_file() and abs_path.is_relative_to(root)
+        for root in source_root_paths
+    )
+    lexical_path = (repo_top / path).absolute()
+    in_file = path in source_root_files or (
+        not source_root_files
+        and any(
+            root.is_file() and lexical_path == root for root in source_root_paths
+        )
+    )
+    if not (in_directory or in_file):
         return False
     if any(part in adapter.excluded_dir_names for part in Path(path).parts[:-1]):
         return False
@@ -446,6 +462,7 @@ def evaluate_coverage(
     repo_top: Path,
     project_root: Path,
     source_root_paths: Sequence[Path],
+    source_root_files: Sequence[str] = (),
     fail_under: float,
     allow_excluded: bool,
     read_source_text: Callable[[str], str],
@@ -465,7 +482,8 @@ def evaluate_coverage(
     function ever compares a profile key against *added.by_file* — see that
     function's own docstring for the adapter-STRIP-vs-core-PREPEND split
     (DESIGN-GUIDE §11). *source_root_paths* are RESOLVED, ABSOLUTE,
-    existing directories (:attr:`assay.config.JudgeConfig.source_root_paths`'s
+    existing directories or regular files
+    (:attr:`assay.config.JudgeConfig.source_root_paths`'s
     own contract); boundary membership is decided by
     :meth:`pathlib.Path.is_relative_to` on the resolved absolute path, never
     by string prefix — the same discipline
@@ -526,8 +544,10 @@ def evaluate_coverage(
         abs_path = (repo_top / path).resolve()
         if not _is_considered(
             path,
+            repo_top=repo_top,
             abs_path=abs_path,
             source_root_paths=source_root_paths,
+            source_root_files=source_root_files,
             adapter=adapter,
         ):
             continue

@@ -80,7 +80,7 @@ class _OracleAdapter:
     def statement_spans(self, text: str):
         return None
 
-    def statement_blocks(self, repo_top, rel_paths, *, remaining=None):
+    def statement_blocks(self, repo_top, rel_paths, *, remaining=None, sensitive_values=()):
         self.calls.append((repo_top, tuple(rel_paths)))
         if self.report_is_none:
             return None

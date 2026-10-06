@@ -5,7 +5,7 @@ Two defects this module exists to keep closed, both found by feeding real
 producer output back through ``assay verify`` rather than by reading the diff:
 
 1. **A producer terminal its own verifier rejected.** ``run_lane`` renders a
-   payload-free R2 claim from a caught ``AssayError`` for six distinct
+   payload-free R2 claim from a caught ``AssayError`` for seven distinct
    reasons while R0 PASSed. ``_check_r2_rederivation`` compared every one of
    them against that passing baseline (``judge_mutation``'s ``mutation is
    None`` branch propagates the baseline verbatim), so ``assay run`` emitted
@@ -36,12 +36,18 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import TESTS_ROOT, GitRepo
+from conftest import (
+    TESTS_ROOT,
+    GitRepo,
+    write_coverage_json,
+    zero_resource_limit_evidence_dict,
+)
 
 from assay import verify
 from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main
 from assay.errors import REASON_CODES, Outcome, ReasonCode
+from assay.resource_limits import ResourceLimitObservationError
 
 #: (P33/V5-3) FIVE buckets since v5. `equivalent` joins the raw operator
 #: sweep for the same reason `killed` did in P21: a bucket the sweep does not
@@ -77,6 +83,7 @@ def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
             "source_sha256": source_sha256,
             "mutated_file_sha256": mutated_file_sha256,
             "execution": {"mode": "full"},
+            "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         }
     )
     return item
@@ -108,7 +115,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -124,6 +131,8 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         "argv_modified": False,
         "env_declared": {},
         "env_effective": {},
+        "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -238,6 +247,7 @@ INDEPENDENT_TERMINALS: dict[str, str] = {
     "BASE_IS_HEAD": "R2's own measurability guard",
     "GIT_FAILED": "the diff R2 resolves targets from",
     "UNREADABLE_ARTIFACT": "the bounded source read during target resolution",
+    "EXEC_FAILED": "B145 cgroup counter refusal or resource-limit event",
 }
 
 
@@ -302,8 +312,14 @@ def test_baseline_propagation_still_decides_reasons_outside_that_set():
     # command failed, R2 claims a different propagated pair.
     forged = copy.deepcopy(good)
     forged["claims"][1]["status"] = "ERROR"
-    forged["claims"][1]["reason_code"] = "EXEC_FAILED"
+    forged["claims"][1]["reason_code"] = "COMMAND_FAILED"
     assert any("disagrees" in item for item in verify.verify_document(forged))
+
+    # B145's counter refusal can be emitted only after a passing baseline;
+    # when R0 itself has the same failure, the producer propagates that pair.
+    propagated = _payload_free_r2("ERROR", "EXEC_FAILED", r0_status="ERROR")
+    propagated["claims"][0]["reason_code"] = "EXEC_FAILED"
+    assert verify.verify_document(propagated) == []
 
 
 # ---------------------------------------------------------------------------
@@ -312,12 +328,12 @@ def test_baseline_propagation_still_decides_reasons_outside_that_set():
 # ---------------------------------------------------------------------------
 #
 # The repair above re-derives only the OUTCOME from the closed vocabulary, so
-# every one of the six reasons was accepted beside every baseline. Three of
+# every one of the seven reasons was accepted beside every baseline. Four of
 # them are producible ONLY after the command PASSED — `runner.py` puts target
 # resolution and mutation discovery inside `if r2_declared and result.outcome
 # is Outcome.PASS`, and the not-PASS arm propagates the baseline's own pair
 # verbatim instead (A-116). The other three have a real producer path beside a
-# FAILING baseline, so tightening all six would reject truthful artifacts;
+# FAILING baseline, so tightening all seven would reject truthful artifacts;
 # both directions are witnessed below.
 
 #: The verbatim-propagation message this repair adds, matched on the half that
@@ -325,7 +341,12 @@ def test_baseline_propagation_still_decides_reasons_outside_that_set():
 #: judgment" wording.
 _POST_BASELINE_MESSAGE = "names a refusal reachable only after a PASSING baseline"
 
-_POST_BASELINE_ONLY = ("MUTATION_DISCOVERY_FAILED", "BASE_IS_HEAD", "UNREADABLE_ARTIFACT")
+_POST_BASELINE_ONLY = (
+    "MUTATION_DISCOVERY_FAILED",
+    "BASE_IS_HEAD",
+    "UNREADABLE_ARTIFACT",
+    "EXEC_FAILED",
+)
 _BASELINE_INDEPENDENT = ("GIT_FAILED", "DIRTY_TREE", "HEAD_CHANGED")
 
 
@@ -466,6 +487,108 @@ def test_assay_run_emits_a_discovery_failure_artifact_its_own_verify_accepts(
     )
 
 
+def test_assay_run_emits_a_b145_counter_refusal_its_own_verify_accepts(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """B145's required counters can be unavailable after R0 passes. The
+    resulting payload-free R2 ERROR must round-trip through the independent
+    verifier rather than be mistaken for a propagated R0 failure."""
+    repo = git_repo
+    repo.write("src/m.py", "def f(x):\n    return x > 0\n")
+    repo.write(".gitignore", "verdict.json\n")
+    repo.write(
+        "assay.toml",
+        'schema_version = 2\n'
+        "[lanes.package]\n"
+        'scope = "S1"\nrigor = ["R0", "R2"]\nenforcement = "gate"\n'
+        'argv = ["/bin/true"]\nenv = {}\nenv_passthrough = ["PATH"]\n'
+        'budget = "1m"\nallow_argv_append = false\n'
+        "[lanes.package.isolation]\nsnapshot_selection = \"repository\"\n"
+        "[lanes.package.judge]\n"
+        'language = "python"\nsource_roots = ["src"]\nbase = "HEAD^"\n'
+        "[lanes.package.judge.mutation]\n"
+        'jobs = 1\nmax_mutants = 5\noperators = ["python:compare-swap"]\n',
+    )
+    repo.commit_all("lane")
+    repo.write("src/m.py", "def f(x):\n    return x >= 0\n")
+    repo.commit_all("measurable source change")
+
+    def counters_unavailable():
+        raise ResourceLimitObservationError("required cgroup counters unavailable")
+
+    monkeypatch.setattr(
+        "assay.mutation.read_current_cgroup_counters", counters_unavailable
+    )
+    target = repo.path / "verdict.json"
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(repo.path / "assay.toml"),
+         "--verdict-json", str(target)],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.ERROR.exit_code
+    document = json.loads(target.read_text(encoding="utf-8"))
+    r0, r2 = document["claims"]
+    assert (r0["status"], r0.get("reason_code")) == ("PASS", None)
+    assert (r2["status"], r2.get("reason_code")) == ("ERROR", "EXEC_FAILED")
+    assert "mutation" not in r2, "counter preflight ran before candidate execution"
+    assert verify.verify_document(document) == [], (
+        "assay run emitted an artifact its own assay verify rejects"
+    )
+
+
+def test_ignored_untracked_exact_file_root_is_refused_before_a_false_zero_of_zero(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """A file root that exists only in the caller's ignored worktree is not
+    part of the judged snapshot. Refuse before R0 so its absence cannot erase
+    all changed source from R1 and produce a plausible 0/0 PASS."""
+    repo = git_repo
+    repo.write("src/other.py", "def f():\n    return 1\n")
+    repo.write(".gitignore", "src/owned.py\nverdict.json\n")
+    write_coverage_json(
+        repo.path / "coverage.json",
+        {"src/other.py": {"executed_lines": [1, 2], "missing_lines": []}},
+    )
+    repo.write(
+        "assay.toml",
+        'schema_version = 2\n'
+        "[lanes.package]\n"
+        'scope = "S1"\nrigor = ["R0", "R1"]\nenforcement = "gate"\n'
+        'argv = ["/bin/echo", "SHOULD_NOT_RUN"]\n'
+        'env = {}\nenv_passthrough = ["PATH"]\n'
+        'budget = "1m"\nallow_argv_append = false\n'
+        "[lanes.package.isolation]\nsnapshot_selection = \"repository\"\n"
+        "[lanes.package.judge]\n"
+        'language = "python"\nsource_roots = ["src/owned.py"]\n'
+        'fail_under = 100.0\nallow_excluded = false\nbase = "HEAD^"\n'
+        'coverage = { format = "coverage-py-json", artifact = "coverage.json" }\n',
+    )
+    repo.commit_all("lane and coverage baseline")
+    repo.write("src/other.py", "def f():\n    return 2\n")
+    repo.commit_all("change a sibling source file")
+    repo.write("src/owned.py", "def owned():\n    return True\n")
+
+    target = repo.path / "verdict.json"
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(repo.path / "assay.toml"),
+         "--verdict-json", str(target)],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.ERROR.exit_code
+    document = json.loads(target.read_text(encoding="utf-8"))
+    pairs = {
+        (claim["status"], claim.get("reason_code")) for claim in document["claims"]
+    }
+    assert pairs == {("ERROR", "BAD_LANE_CONFIG")}, pairs
+    assert verify.verify_document(document) == []
+
+
 # ---------------------------------------------------------------------------
 # P33 — the five cross-object invariants, at the RAW layer, ONE CLAUSE EACH
 # ---------------------------------------------------------------------------
@@ -509,10 +632,11 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
             "source_sha256": source_sha256,
             "mutated_file_sha256": mutated_file_sha256,
             "execution": {"mode": "full"},
+            "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         }
     )
     document = {
-        "schema_version": 13,
+        "schema_version": 14,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -528,6 +652,8 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "argv_modified": False,
         "env_declared": {},
         "env_effective": {},
+        "env_passthrough": [],
+        "env_effective_passthrough_sha256": {},
         "scope": "S1",
         "enforcement": "gate",
         "snapshot_policy": {"selection": "repository"},
@@ -901,6 +1027,27 @@ def test_verify_document_accepts_a_real_env_effective_incomplete_value():
     document = _sql_r2_document()
     document["env_effective_incomplete"] = True
     assert verify.verify_document(document) == []
+
+
+def test_raw_lane_group_requires_redacted_passthrough_values_and_matching_digests():
+    document = _sql_r2_document()
+    document["env_passthrough"] = ["SCHEMA_GATE_DSN"]
+    document["env_effective"] = {"SCHEMA_GATE_DSN": "<passthrough>"}
+    document["env_effective_passthrough_sha256"] = {
+        "SCHEMA_GATE_DSN": "a" * 64
+    }
+    assert _raw(verify._check_lane_resolved_group, document) == []
+    assert verify.verify_document(document) == []
+
+    leaked = copy.deepcopy(document)
+    leaked["env_effective"]["SCHEMA_GATE_DSN"] = "postgresql://u:p@db/schema"
+    failures = _raw(verify._check_lane_resolved_group, leaked)
+    assert failures and any("must be '<passthrough>'" in item for item in failures)
+
+    malformed = copy.deepcopy(document)
+    malformed["env_effective_passthrough_sha256"]["SCHEMA_GATE_DSN"] = "A" * 64
+    failures = _raw(verify._check_lane_resolved_group, malformed)
+    assert failures and any("64 lowercase hexadecimal" in item for item in failures)
 
 
 def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():

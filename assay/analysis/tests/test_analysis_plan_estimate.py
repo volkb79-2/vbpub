@@ -26,7 +26,7 @@ EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 def _plan(**overrides):
     document = {
-        "status": "ok", "commit": C, "tree": T, "candidate_count": 4,
+        "status": "ok", "lane": "l", "commit": C, "tree": T, "candidate_count": 4,
         "candidates": [{"id": str(i)} for i in range(4)],
         "estimated_serial_seconds": 240.0, "estimated_wall_seconds": 240.0,
         "jobs": 3, "budget_per_candidate": None,
@@ -36,7 +36,8 @@ def _plan(**overrides):
 
 
 def _run(commit=C, **extra):
-    return {"event": "run", "commit": commit, **extra}
+    lane = extra.pop("lane", "l")
+    return {"event": "run", "lane": lane, "commit": commit, **extra}
 
 
 def _finished(phase="baseline", outcome="PASS", seconds=40.0, **extra):
@@ -77,7 +78,7 @@ def _refused(tmp_path, plan, progress, message, *extra):
 
 def test_op1_a_plan_baseline_gives_exactly_the_documented_projection(tmp_path):
     progress = [_run(lane="l"), {"event": "plan", "baseline_s": 100.0}]
-    expected = {"schema_version": 1, "commit": C, "tree": T, "candidates": 4,
+    expected = {"schema_version": 1, "lane": "l", "commit": C, "tree": T, "candidates": 4,
                 "baseline_s": 100.0, "per_candidate_s": 100.0, "workers": 1,
                 "projected_worker_hours": 0.111, "projected_wall_hours": 0.111}
     assert _ok(tmp_path, _plan(), progress) == expected
@@ -109,9 +110,24 @@ def test_the_last_passing_command_finished_of_the_segment_is_used(tmp_path):
     assert _ok(tmp_path, _plan(), progress)["baseline_s"] == 20.0
 
 
-def test_a_run_without_a_baseline_never_hides_an_earlier_measurement(tmp_path):
-    progress = [_run(lane=None), {"event": "plan", "baseline_s": 8}, _run(lane="only")]
-    assert _ok(tmp_path, _plan(), progress)["baseline_s"] == 8.0
+def test_a_run_without_a_lane_is_refused_even_with_a_completed_baseline(tmp_path):
+    progress = [{"event": "run", "lane": None, "commit": C}, {"event": "plan", "baseline_s": 8}]
+    _refused(
+        tmp_path,
+        _plan(),
+        progress,
+        "progress line 1: run header lane is missing or not a non-empty string",
+    )
+
+
+def test_a_run_with_an_empty_lane_is_refused(tmp_path):
+    progress = [{"event": "run", "lane": "", "commit": C}, {"event": "plan", "baseline_s": 8}]
+    _refused(
+        tmp_path,
+        _plan(),
+        progress,
+        "progress line 1: run header lane is missing or not a non-empty string",
+    )
 
 
 def test_op3_a_later_baseline_at_another_commit_is_a_mismatch_not_a_filter(tmp_path):
@@ -122,7 +138,7 @@ def test_op3_a_later_baseline_at_another_commit_is_a_mismatch_not_a_filter(tmp_p
 
 
 def test_op3_a_run_with_no_commit_is_a_mismatch(tmp_path):
-    progress = [{"event": "run"}, {"event": "plan", "baseline_s": 1}]
+    progress = [{"event": "run", "lane": "l"}, {"event": "plan", "baseline_s": 1}]
     _refused(tmp_path, _plan(), progress,
              f"commit mismatch: progress run at line 1 is at None, plan is at '{C}'")
 
@@ -132,7 +148,10 @@ def test_op3_a_run_with_no_commit_is_a_mismatch(tmp_path):
     [
         ("{", "plan: malformed JSON"),
         ("[]", "plan: top level is not an object"),
-        ({"status": "unsupported"}, "plan: status is 'unsupported', not 'ok'"),
+        ({"status": "unsupported"}, "plan: candidate enumeration is unsupported"),
+        ({"status": "error"}, "plan: status is 'error', not 'ok'"),
+        ({**_plan(), "lane": None}, "plan: lane is missing or not a non-empty string"),
+        ({**_plan(), "lane": ""}, "plan: lane is missing or not a non-empty string"),
         ({**_plan(), "commit": None}, "plan: commit is missing or not a full object id "
                                         "(a plan from before assay 7.2.0?)"),
         ({**_plan(), "commit": "A" * 40}, "plan: commit is missing or not a full object id "
@@ -157,6 +176,60 @@ def test_a_sha256_object_id_is_accepted(tmp_path):
     assert result["commit"] == long and result["tree"] == long
 
 
+def test_same_commit_progress_from_a_different_lane_is_refused(tmp_path):
+    _refused(
+        tmp_path,
+        _plan(lane="package-a"),
+        [_run(lane="package-b"), {"event": "plan", "baseline_s": 100}],
+        "lane mismatch: progress run at line 1 is for 'package-b', plan is for 'package-a'",
+    )
+
+
+def test_a_plan_without_a_lane_is_refused(tmp_path):
+    plan = _plan()
+    del plan["lane"]
+    _refused(
+        tmp_path,
+        plan,
+        [_run(), {"event": "plan", "baseline_s": 100}],
+        "plan: lane is missing or not a non-empty string",
+    )
+
+
+def test_ingested_r2_plan_returns_its_named_limitation(tmp_path):
+    reason = (
+        "lane 'web-ui' ingests R2 evidence in format 'stryker-json'; assay plan "
+        "cannot enumerate candidates from a foreign mutation report"
+    )
+    _refused(
+        tmp_path,
+        {"status": "unsupported", "lane": "web-ui", "reason": reason},
+        [_run(lane="web-ui"), {"event": "plan", "baseline_s": 100}],
+        f"plan: {reason}",
+    )
+
+
+def test_unsupported_plan_reason_cannot_inject_extra_stderr_lines(tmp_path):
+    _refused(
+        tmp_path,
+        {"status": "unsupported", "reason": "first line\r\nsecond line"},
+        [_run(), {"event": "plan", "baseline_s": 100}],
+        "plan: first line second line",
+    )
+
+
+@pytest.mark.parametrize("reason", ["", " \t\r\n"])
+def test_unsupported_plan_without_a_useful_reason_uses_the_closed_refusal(
+    tmp_path, reason
+):
+    _refused(
+        tmp_path,
+        {"status": "unsupported", "reason": reason},
+        [_run(), {"event": "plan", "baseline_s": 100}],
+        "plan: candidate enumeration is unsupported",
+    )
+
+
 def test_a_zero_candidate_plan_projects_zero_hours(tmp_path):
     result = _ok(tmp_path, _plan(candidate_count=0, candidates=[]),
                  [_run(), {"event": "plan", "baseline_s": 3}])
@@ -170,9 +243,9 @@ def test_a_zero_candidate_plan_projects_zero_hours(tmp_path):
         ('{"event": 1}\n', "progress line 1: event is not a string"),
         ('{"x": 1}\n', "progress line 1: event is not a string"),
         ('{"event": "plan"}\n', "progress line 1: event precedes the first run header"),
-        ('{"event": "run"}\nnope\n{"event": "plan"}\n', "progress line 2: malformed JSON"),
-        ('{"event": "run"}\n\n', "progress line 2: malformed JSON"),
-        ('{"event": "run", "commit": "%s"}\n[]' % C, "progress line 2: not an object"),
+        ('{"event": "run", "lane": "l"}\nnope\n{"event": "plan"}\n', "progress line 2: malformed JSON"),
+        ('{"event": "run", "lane": "l"}\n\n', "progress line 2: malformed JSON"),
+        ('{"event": "run", "lane": "l", "commit": "%s"}\n[]' % C, "progress line 2: not an object"),
         ("", "progress: no completed baseline"),
         (_lines([_run(), {"event": "candidates"}]), "progress: no completed baseline"),
         (_lines([_run(), _finished("baseline", "FAIL")]), "progress: no completed baseline"),
@@ -188,7 +261,7 @@ def test_op4_every_progress_refusal_exits_two_with_one_stderr_line(tmp_path, pro
 
 @pytest.mark.parametrize("raw", ["0", "-1", '"5"', "true", "false", "[]", "1e999", "1" + "0" * 400])
 def test_op4_a_plan_baseline_that_is_not_a_finite_positive_number_is_refused(tmp_path, raw):
-    text = '{"event": "run", "commit": "%s"}\n' % C
+    text = '{"event": "run", "lane": "l", "commit": "%s"}\n' % C
     text += '{"event": "plan", "baseline_s": %s}\n' % raw
     _refused(tmp_path, _plan(), text,
              "progress run at line 1: plan.baseline_s is not a finite positive number")

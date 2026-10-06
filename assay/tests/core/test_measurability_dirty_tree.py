@@ -87,6 +87,13 @@ def test_dirty_sibling_directory_outside_the_root_does_not_raise(rooted_repo):
     check_dirty_tree(rooted_repo.path, [_root(rooted_repo)])  # must not raise
 
 
+def test_dirty_symlink_outside_an_exact_file_root_does_not_raise(rooted_repo):
+    exact_file_root = rooted_repo.path / "src" / "foo" / "committed.py"
+    (rooted_repo.path / "src" / "foo_alias.py").symlink_to("foo/committed.py")
+
+    check_dirty_tree(rooted_repo.path, [exact_file_root.resolve()])
+
+
 def test_dirty_under_any_declared_root_raises(rooted_repo):
     extra_root = rooted_repo.path / "extra"
     extra_root.mkdir()

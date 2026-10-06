@@ -141,9 +141,12 @@ items:
   - {id: B139, title: "assay-cli SKILL.md 'What this build evaluates' omits JavaScript R2 by Stryker-report ingestion (B046)", type: bugfix, component: docs, context_estimate: small}
   - {id: B140, title: "no project-level default for a lane's env_passthrough: every new lane must repeat the project's common names, and a missing one fails the lane's first run COMMAND_FAILED", type: feature, component: config, context_estimate: small}
   - {id: B141, title: "changed-lines lanes cannot scope to files: judge.source_roots must be directories, so a later-HEAD run judges other packages' changed lines with the wrong tests", type: feature, component: config, context_estimate: small}
+  - {id: B142, title: "passthrough secrets and command-output echoes land in verdict JSON", type: bugfix, component: security, context_estimate: medium}
   - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
   - {id: B144, title: "per-candidate covering-test selection for qualifying Python R2: a coverage-context map runs each mutant's covering tests first (kill fast) while every survivor still runs the full declared suite -- decision-gated against B110 D3", type: feature, component: mutation, context_estimate: large}
-  - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane container at its pid limit turns every candidate into a false kill; detect via cgroup pids.events/memory.events and classify unresolved", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane at its process limit cannot produce a valid R2 kill", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B146, title: "R0 failure summary reports generic NO_MEASUREMENT instead of naming R0 FAIL and the first failing test", type: bugfix, component: cli, context_estimate: small}
+  - {id: B147, title: "Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance", type: bugfix, component: execution, context_estimate: small}
 ---
 
 # assay — backlog
@@ -192,7 +195,9 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
-- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; the contaminated run-gate-project R2 state, progress, post-03:11Z outcomes, and final verdict were discarded)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — IMPLEMENTED on `assay-b136-b141`; critical, unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
+- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — OPEN, deferred to the next wave (non-release blocker; filed 2026-10-06)
+- B147 — hermetic Git boundary permits detached automatic maintenance — IMPLEMENTED on `assay-b136-b141`; unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-06; folded into the B145 wave)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -9638,9 +9643,9 @@ in B021 (silently re-execute, not `MutationStateError`) — it is a routine
 the existing identity fields: a digest of the **content of the judged
 commit's tree** (`isolation._manifest_sha256` — every leaf's path, file mode
 and Git object id, plus the declared unsafe-symlink omissions) together with
-the **resolved `argv`, the lane's declared `env` by value, the NAMES (never
-the values) of whatever else the resolved environment carried, `cwd`, the
-project prefix, the declared `link_paths` and assay's own version**
+the **resolved `argv`, the lane's declared `env` by value, the names plus
+value fingerprints of present `env_passthrough` values, infrastructure names,
+`cwd`, the project prefix, the declared `link_paths` and assay's own version**
 (`mutation.judge_sha256`). `_load_validated_state_record`
 checks it LAST, after every identity-vs-filename check, so a routine test
 edit can never launder a hand-edited state file into a silent rerun; a
@@ -9662,9 +9667,8 @@ per-TREE, not per-commit — identical trees at different commits still resume
 each other (also pinned by a test, because a commit id would have been the
 cheap identity and would have silently broken that) — and the uses
 `--state-dir` exists for (several worktrees of one commit, budget-capped
-retries, `--shard` fan-out) judge the same tree with the same command and
-keep resuming, including when a per-instance passthrough value differs
-between the runs.
+retries, `--shard` fan-out) still apply when the tree, command and passthrough
+values match. A changed passthrough value now causes a safe cache miss (A-482).
 
 **Round-1 independent adversarial review found four confirmed defects in the
 first cut; all four are fixed, and its two suspected findings were adopted
@@ -9737,13 +9741,12 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
    fold. This does not widen an existing guarantee — CONSUMERS.md already
    states a lane declaring `link_paths` is only as reproducible as the
    linked directory — but it is a real blind spot for such lanes.
-4. **The VALUES of passthrough/`infrastructure` names are not folded in**,
-   per round-1 finding 1 above. A lane whose judgment genuinely depends on a
-   passed-through value (a DSN pointing at a different database with
-   different fixture data) can still replay a verdict produced against the
-   other one. The declared-vs-ambient split is the best available line — a
-   lane that needs such a value in the identity should declare it in `env`
-   — but the residual is real and should be named rather than assumed away.
+4. **The VALUES of passthrough/`infrastructure` names were not folded in**,
+   per round-1 finding 1 above. B142/A-482 resolves the passthrough half:
+   the judge digest now includes a per-name fingerprint, so a DSN pointing at
+   different fixture data cannot reuse the other campaign's candidate
+   outcomes. B013 infrastructure values remain name-only under that older
+   ruling and are still a residual.
 5. **A shard summary carries no judge identity.** `_SHARD_REQUIRED_KEYS`
    refuses unknown keys, so a fan-out merge still proves only lane + commit
    + exact coverage: shards produced under different judging environments
@@ -11790,17 +11793,17 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Proposed contract:** add "Migration notes (v12 -> v13)" listing: what `assay verify` now refuses, what archived verdicts need regenerating, what reuse does on a v12 prior, any lane-file changes, and the order of consumer steps. Note: B125 (latest schema only) may intend to prune historical notes; decide whether the most recent cut is exempt.
 
-**Oracle:** a docs test or checklist that every `schema_version` bump in CHANGES has a matching CONSUMERS migration heading.
+**Oracle:** a docs regression check derives the latest two schema cuts from the shipped schema version and requires a matching CONSUMERS migration heading for each; its must-fail control removes the v12-to-v13 heading.
 
 ## B139 — the assay-cli skill omits JavaScript R2 by Stryker ingestion
 
 **Status: OPEN (filed 2026-09-30 from dstdns).**
 
-**Observed:** the canonical `assay/.claude/skills/assay-cli/SKILL.md` section "What this build evaluates" (l.97-102) lists "R0, Python R1, Python R2, Python R3, JavaScript R1, Go R1, SQL R2". CONSUMERS.md (l.1267-1273, B046 section l.1887) documents JavaScript R2 by ingestion of the lane's own StrykerJS report. An agent following the skill concludes JS R2 is a capability gap and may route around it, which the same paragraph tells it not to do.
+**Observed:** the canonical `assay/.claude/skills/assay-cli/SKILL.md` section "What this build evaluates" (l.97-102) lists "R0, Python R1, Python R2, Python R3, JavaScript R1, Go R1, SQL R2". CONSUMERS.md (B046 section) documents JavaScript R2 by ingestion of the lane's own StrykerJS report, while the README's JavaScript section and DESIGN-GUIDE's adapter table still say R1 only. An agent following any of those copies can conclude JS R2 is a capability gap or miss that it is ingestion-only.
 
-**Proposed fix:** add "JavaScript R2 (ingested Stryker report, B046)" and point at CONSUMERS. Do not edit dstdns's vendored copy; it syncs from the canonical skill.
+**Proposed fix:** synchronize the canonical skill, README and DESIGN-GUIDE with the closed registry and the B046 ingestion boundary. Do not edit dstdns's vendored copy; it syncs from the canonical skill.
 
-**Oracle:** a test that derives the skill's capability list from `assay lanes --json` capability output or from the registry and compares it, so the list cannot drift again (controlled wrong: remove an entry and see it fail).
+**Oracle:** a test derives the skill's capability list from the CLI registry, compares it including the JavaScript R2 ingestion qualifier, checks the README and DESIGN-GUIDE's current JavaScript/Go capability statements, and has a controlled missing-entry failure.
 
 ## B140 — no project-level default for `env_passthrough`
 
@@ -11820,17 +11823,17 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Observed:** `src/assay/config.py` (l.~3655) rejects any `judge.source_roots` entry that is not an existing directory (`if not resolved.is_dir(): raise LaneConfigError(... does not exist under the project root)`); `measurability.py` (l.~52-84) selects changed files by `is_relative_to(root)` for the roots. A changed-lines R2 lane (`base_source = "request"`) whose package owns one or two files in a shared directory therefore must declare the whole directory. Run at a later HEAD than its package's merge, the changed-line set (base..HEAD) also contains OTHER packages' edits to sibling files in that directory; those lines are mutated and judged against THIS lane's test suite, which does not cover them, yielding false survivors.
 
-**Expected:** a lane can name exactly the files it owns, or the changed-line set is limited to the lane's declared targets.
+**Expected:** a lane can name exactly the files it owns, or the changed-line set is limited to the lane's declared targets. An exact-file root must be a regular tracked file at the judged commit; a local ignored/untracked file must not disappear from the snapshot and turn judging into 0/0 PASS.
 
 **Why it matters (dstdns):** dstdns works around it by running such lanes only at their own package's merge commit (D-577), which serializes R2 behind merges and forbids coalescing changed-lines lanes at a later HEAD.
 
-**Proposed fix direction:** (a) allow `judge.source_roots` entries that name a regular file (same containment and existence checks; `is_relative_to` becomes equality for a file root), or (b) for `judge.mode = "changed_lines"` accept `judge.targets` as a filter on the changed-line set (intersection with source_roots), refusing a target outside the roots. Either must keep the typo guard (A-016/A-035: a root matching nothing must not yield 0/0 PASS).
+**Proposed fix direction:** allow `judge.source_roots` entries that name a regular file (same containment and existence checks; `is_relative_to` becomes equality for a file root), and verify each exact-file root is a regular tracked file at the judged commit before executing the lane. A missing commit entry must refuse as `ERROR`/`BAD_LANE_CONFIG`; local ignored/untracked files do not satisfy the root. Keep the typo guard (A-016/A-035: a root matching nothing must not yield 0/0 PASS).
 
-**Oracles:** a file-level root excludes a changed sibling file in the same directory from judgment; a directory root behaves unchanged; a root naming a missing file refuses by name; a controlled wrong implementation that treats a file root as its parent directory must fail the sibling-exclusion oracle.
+**Oracles:** a file-level root excludes a changed sibling file in the same directory and a changed sibling symlink pointing to the declared file from both R1 and R2; a directory root behaves unchanged; a root naming a missing file or a local ignored/untracked file absent from the judged commit refuses before the lane command; a committed symlink is not accepted as a regular-file root; a controlled wrong implementation that treats a file root as its parent directory or resolves a changed sibling before exact-path comparison must fail the exclusion oracle.
 
 **Found in:** dstdns 2026-09-30, R2 campaign package P214 (changed-lines lanes), decision D-577.
 
-## B142 — verdict JSON writes `env_passthrough` values verbatim: secrets (database passwords, DSNs with credentials) land in plain text in every verdict file
+## B142 — passthrough secrets and command-output echoes land in verdict JSON
 
 **Status: OPEN (filed 2026-10-04 from dstdns, P241 gate diagnosis; source-grounded; assay 7.2.0).**
 
@@ -11838,13 +11841,15 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Why assay owns it:** the verdict schema and its writer are assay's. A consumer cannot keep a credential out of `env_effective` without also keeping it out of the lane's environment, which breaks the lane.
 
-**Proposed contract:** the verdict records `env_effective` NAMES with their provenance (declared / infrastructure / passthrough), never passthrough VALUES. Either (a) every passthrough value becomes a fixed marker (`"<passthrough>"`) plus a SHA-256 prefix for identity comparison, or (b) values are kept only for a lane-declared `env_record_values = [...]` allowlist (default empty). Declared `env` values (committed in `assay.toml`, so not secret by construction) and infrastructure facts stay as they are. `assay verify` compares markers/digests, not values. The verdict schema version bumps; CHANGES carries the consumer note.
+**Chosen contract (A-481, amended by A-482):** producer execution keeps the raw environment, while serialization replaces every present `env_passthrough` value in `env_effective` with `"<passthrough>"` and adds `env_effective_passthrough_sha256`, a full unkeyed SHA-256 map keyed by exactly the present passthrough names. Exact occurrences of present passthrough values are masked with same-byte-width asterisks **before output-tail truncation** in verdict stdout/stderr, crashed-candidate mutation-state tails, failed environment-probe diagnostics, and the Go statement-position helper's stderr refusal. Allowed but absent names remain in `env_passthrough` and have neither an effective marker nor a digest. Declared `env` values and infrastructure facts stay as they are. Native mutation `judge_sha256` includes a SHA-256 fingerprint for each present passthrough value (identity label `/3`), so a candidate outcome from one DSN cannot be resumed into a verdict for another. This trades reuse across changed worktree paths or interactive `TERM` values for judge-state agreement; equal values across worktrees still resume. Infrastructure values remain name-only under B088. The new verdict field ships in the existing, not-yet-released v14 shape; consumers compare its digest values across verdicts. `assay verify` validates marker, keys and digest format but cannot compare a saved digest with an ambient value it cannot see. SHA-256 is useful for equality/change comparison, not secrecy or authentication, and may expose guessable low-entropy values.
 
 **Oracles:**
-- a lane passing through `X_PASSWORD=s3cr3t` produces a verdict whose bytes do not contain `s3cr3t`, on PASS, FAIL, BUDGET_EXCEEDED and refusal outcomes alike;
-- the name `X_PASSWORD` and its provenance are still present;
-- a declared `env` value is still recorded verbatim;
-- `assay verify` on such a verdict still passes, and fails when the passthrough value changed (digest mismatch);
+- on PASS, FAIL, BUDGET_EXCEEDED, NO_MEASUREMENT and resolved refusal outcomes, `env_effective` contains no raw passthrough value and exact command-tail echoes of either `X_PASSWORD=s3cr3t` or `SCHEMA_GATE_DSN=postgresql://u:p@h/db` are masked;
+- command stdout/stderr tails, including a secret crossing the retained-tail cutoff, crashed-candidate mutation-state tails, failing environment-probe diagnostics, and Go statement-position helper stderr refusals that echo either exact value are masked while retaining the existing bounds;
+- two native resume plans that differ only in a present passthrough value have different `judge_sha256`; equal values across plans keep the same identity;
+- each present passthrough name has the fixed marker and a matching digest entry; declared `env` values remain verbatim;
+- `assay verify` accepts a well-formed redacted verdict and rejects a leaked passthrough value, a mismatched digest-key set or malformed digest;
+- changing a passthrough value before a second run changes its digest, detectable by comparing the two verdicts;
 - controlled wrong implementation: redacting only names matching `*PASSWORD*` must fail a test that passes through `SCHEMA_GATE_DSN=postgresql://u:p@h/db`.
 
 **Found in:** dstdns 2026-10-04, P241 composite `assay` lane diagnosis (`.assay/verdict-mock.json`); decision record D-670.
@@ -11938,21 +11943,90 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 **Found in:** vbpub cli-extended unified-adoption wave (`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`), R2 campaign on `cli-extended-unified@86993acd1`, 2026-10-05.
 
-## B145 — fork exhaustion is classified as `killed`: when the lane's container hits `pids.max`, every candidate "dies" in its first tests and R2 reports false kills
+## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
 
-**Status: OPEN, severity critical (filed 2026-10-05; observed on a live campaign, investigated read-only with `host-escape`).** A false kill is the worst R2 error: it certifies tests that catch nothing. This violates the estate's contention-agnostic rule — a pressure-affected run is infrastructure/inconclusive, never a product verdict.
+**Status: IMPLEMENTED on `assay-b136-b141`; registered `tester-unified` PASS at `8ffa26b9`; ready to merge, unreleased and grouped with the planned v14 / 8.0.0 wave.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
 
-**Observed.** Lane `assay-r2` of `run-gate-project` ran in a `cmru tester-gate` container without an init (cmru KI-52). git's detached auto-maintenance leaked one zombie per commit until the container's `pids.current` reached 19,115 of `pids.max` 19,117 at 03:11:18Z; from then on, no process could be forked reliably (`docker exec … sh -c true` → `procReady not received`). Per the operator's 2026-10-05 contamination notice, the campaign's state and progress were discarded; all post-03:11Z candidate outcomes and its final verdict are invalid and are not used as evidence here.
+**Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
 
-**Expected.** A candidate whose execution hit a resource limit outside the mutant's control is never `killed`: it is unresolved (retried, or reported as an infrastructure outcome) and the lane cannot pass on it.
+**Expected:** a process-limit refusal, memory.max boundary event, OOM event/kill, or candidate-worker startup failure is infrastructure evidence, never a kill or survivor. The affected R2 lane cannot pass. If the cgroup namespace hides an ancestor, a matching cgroup2 mount is writable, candidate credentials can write an ancestor `cgroup.procs`, an overmount shadows a sampled path, or an enforcing limit/event counter is unavailable, Assay refuses native R2 before starting candidates.
 
-**What assay can observe cheaply and deterministically (proposed signals, for the carve):**
-1. **`pids.events` `max`** of the cgroup the candidate runs in (cgroup v2): read before and after each candidate; any increment means a fork was refused at the limit during the candidate → unresolved. This is exact, needs no parsing of test output, and also covers threads (`can't start new thread`).
-2. **`memory.events` `oom_kill`/`oom_group_kill`** (same pattern; relates to B107's liveness evidence) — an OOM-killed test process must not count as a kill either.
-3. **Lane-level pre-flight per candidate:** `pids.max - pids.current` below a floor (e.g. fewer than the baseline's peak process count) → do not start the candidate; refuse the lane infrastructure-red with the numbers.
-4. **Failure-signature heuristic (secondary only):** the failing test's error is `BlockingIOError`/`OSError(EAGAIN)`/"Resource temporarily unavailable" → unresolved. Secondary because the error text may not be retained (it was not here).
-5. **Statistical tripwire (reporting only):** a sudden shift in tests-to-kill at the same tree is flagged in the campaign summary (B108) as a suspected infrastructure change; it never resolves a candidate's outcome by itself.
+**Limit:** B145 observes cgroup v2 counters. Per-process `RLIMIT_NPROC` and `RLIMIT_AS` failures have no cgroup event in this contract and are not distinguished from test failures.
 
-**Oracles.** In a test container with a low `--pids-limit`, a suite that forks per test produces `unresolved`/infrastructure outcomes, not kills, and the lane does not pass; a controlled wrong implementation that ignores `pids.events` reports kills and fails the oracle; a real kill with an unchanged `pids.events` stays `killed`; the verdict records the counter deltas as evidence and `assay verify` checks them.
+**Chosen contract:** sample cgroup v2 `pids.events.max` at the candidate whenever available, even if its own `pids.max` is unlimited, and at every visible ancestor with an active pids controller; every finite `pids.max` requires its event counter. This covers `pids_localevents`, where a rejected fork can increment the nearest active unlimited ancestor while a higher ancestor enforces the finite limit. Sample `memory.events.max`, `oom`, `oom_kill`, and `oom_group_kill` at the candidate and every visible ancestor with an active memory controller; every finite `memory.max` requires its event file. If the candidate memory controller is inactive, visible active ancestor event files are sampled too. Every visible cgroup2 mount exposing the hierarchy must be read-only, and candidate credentials must not be able to write `cgroup.procs` on the candidate cgroup or any ancestor; the read-only mount alone does not block `CLONE_INTO_CGROUP` into an existing child. An overmount that shadows a sampled cgroup path also refuses native R2. For each started full candidate command, these samples bracket its execution. A candidate whose full command does not start when the lane budget stops scheduling remains `budget_exceeded` and shares one zero-duration sample taken after already-submitted work finishes. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. Any positive delta during a full command classifies that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`; a positive delta during witness-prefix replay stops the lane with payload-free `ERROR/EXEC_FAILED` before retry. `assay verify` re-derives each candidate outcome delta and rejects a positive one on another bucket. A record with a positive delta is never reused. Judge identity advances to `/7` so earlier `/4`, `/5`, and `/6` B145 state is rejected and re-executed. Native R2 refuses if the cgroup namespace or mount hides ancestors, a matching cgroup2 mount is writable, or an enforcing limit/event counter is unavailable. A `RuntimeError` while submitting a candidate worker is translated to payload-free `ERROR/EXEC_FAILED`. Shared-ancestor events can conservatively invalidate a candidate when sibling work hits the same finite limit during its sampling window.
 
-**Related:** cmru KI-52 (the no-init launcher and the git auto-maintenance mechanism, with the image-level `maintenance.autoDetach=false` hardening), run-gate RG-84, B107 (resource-stall liveness evidence), B108 (campaign summaries), dstdns D-670 TEST-RUNNER-INIT (same zombie mechanism, different launcher).
+**Oracles:** a low-`--pids-limit` tester-unified container drives a failing mutant through native R2 and proves its final status is `ERROR/EXEC_FAILED` with no `killed` candidate; its test process is capped at 120 seconds and `docker wait` at 150 seconds; a live one-second `docker wait` timeout probe exercises force removal of a detached container; `pids.events.max` on an unlimited candidate is sampled for `pids_localevents`; inactive child controllers with active visible ancestors are accepted and sampled at the nearest active unlimited ancestor as well as finite parents; a finite parent counter remains required; a writable cgroup2 mount, writable `cgroup.procs` on a read-only mount, a worker whose `/proc/thread-self/status` has a cgroup-bypass capability absent from `/proc/self/status`, a sibling cgroup overmount at the candidate path, a private cgroup namespace at `/child`, a namespace root exposing resource limit files, and a cgroup mount below `/` all refuse before candidates; the hierarchy root is never treated as an ordinary enforcing ancestor; changing a visible limit during a candidate refuses the window; a real command failure with unchanged counters remains `killed`; memory event `max` and `oom` deltas receive the same infrastructure classification, including a global OOM kill with unlimited candidate `memory.max`; a controlled wrong implementation that ignores counter changes fails; a worker submission that raises `RuntimeError` produces `ERROR/EXEC_FAILED`; `assay verify` rejects malformed deltas, arithmetic mismatch, or resource-limited outcomes listed under `killed`.
+
+**Related:** CMRU KI-52, run-gate RG-83/RG-84, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.
+
+**Controller update (2026-10-06):** The completed branch includes B145 and B147.
+The branch-wide Sol xhigh review found container ownership, Git pinning, and
+ambiguous SQL runner evidence gaps; the fixes and regression cases are included.
+A follow-up review found three test assertion defects, which were corrected.
+The registered `tester-unified` gate on the final committed tree remains the
+pre-merge acceptance step. B146 remains deferred. Release stays grouped with
+the planned v14/8.0.0 wave.
+
+**Gate update (2026-10-06):** The first registered run at
+`4c4aa3019f3a9f9d01002bb7e8e6672a16a23b83` failed with 11 failed, 7,536
+passed, and 11 skipped after 775.14s. B145 probes and package / attestation
+steps passed; the failures exposed stale test expectations and fixture wiring,
+not a waived gate result. The focused regressions now pass, including the
+reviewed exact Docker mount-source assertions. The corrected tree still needs a
+fresh registered gate before merge. B146 remains deferred and release stays
+grouped with the planned v14 / 8.0.0 wave.
+
+**Second gate update (2026-10-06):** At
+`b04e2517b43e453d319a0f79d62717a0a5b379f8`, the B145 probes and
+`tester-unified` self-hosted suite passed, then the Assay `analysis` lane failed
+one stale budget assertion (514 passed). It compared the lane's 60m budget to
+the outer 6h controller timeout; a separate Assay test confirms those limits
+are intentionally distinct. The assertion now checks the lane budget against
+the configured outer timeout. Both focused tests pass; a fresh registered gate
+is required before merge.
+
+**Third gate update (2026-10-06):** At
+`5afce9fdaf6f4a6382e7904580e26deb7852bb69`, B145 probes, packaging,
+attestation, the self-hosted suite, and the corrected analysis budget check
+passed. The SQL matrix and controls ran, but frozen witness comparison failed.
+The likely mismatch is absolute ancestor event-counter baselines changed by the
+earlier low-pids probe; candidate deltas remain the outcome evidence. Witness
+normalization now validates monotonic counts and exact deltas, then canonicalizes
+only absolute before / after values. Its SQL qualification module passes all
+169 tests. A fresh registered gate must confirm this fix before merge.
+
+**Fourth gate update (2026-10-06):** The registered run at
+`7295953b28790ba22fd5504a4f1f1e93a197d4e1` passed the B145, packaging,
+self-hosted, analysis, and lint phases, then exited 3 at SQL host-busy preflight
+because a `run-gate-vbpub-canary` started during the run. SQL qualification did
+not start and the witness was not compared. The other gate was not stopped and
+has since ended. Retry with the documented shared-host opt-in; a gate-green
+result is still required before merge.
+
+**Final gate update (2026-10-06):** Registered `tester-unified` PASS at
+`8ffa26b9eb7f48a6128d19edb0479cb1c4f6b616` (`GATE_EXIT=0`). B145 probes,
+packaging, attestation, the self-hosted suite, analysis lane, independent
+self-hosting, and lint passed. SQL completed all controls and 24 matrix rows;
+the frozen witness qualified and the registered receipt was written. This is
+ready to merge. B146 remains deferred; release remains grouped with the planned
+v14 / 8.0.0 wave.
+
+## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
+
+**Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
+
+**Expected:** the concise run summary reports R0 as `FAIL` and names the first failing test when the baseline command has a test failure. Genuine preflight/no-measurement outcomes remain `NO_MEASUREMENT` with their existing reason; they are not rewritten as test failures.
+
+**Oracles:** a deterministic R0 fixture with multiple failing tests reports `FAIL` and the first failure in execution order; a command that cannot produce an R0 measurement retains its existing `NO_MEASUREMENT` result and reason.
+
+## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
+
+**Status: IMPLEMENTED on `assay-b136-b141`; covered by the registered `tester-unified` PASS at `8ffa26b9`; unreleased and grouped with the planned v14 / 8.0.0 wave (2026-10-06).** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+
+**Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
+
+**Chosen contract:** every Git child Assay constructs, including repository bootstrap, ordinary commands, P22 object commands, and P22 private-repository initialization, receives command-level `maintenance.auto=false`, `maintenance.autoDetach=false`, and `gc.autoDetach=false`. Git uses `gc.autoDetach` as a fallback when `maintenance.autoDetach` is unset, so both detach settings are pinned. These settings do not rely on the tester image or consumer Git configuration.
+
+**Oracles:** the ordinary bootstrap and substantive argv both carry the three settings; P22 object and init argv carry them too; with a repository-local value of `true`, real Git invoked through Assay reports `false` for each key. Removing a fixed setting makes its real-Git assertion fail.
+
+**Related:** B145, CMRU KI-52, and run-gate RG-83/RG-84.

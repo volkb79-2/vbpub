@@ -1,14 +1,15 @@
-"""Keep W8's v12-only R3/R4 controls covered after the v13 hard cut.
+"""Keep W8's v12-only R3/R4 controls covered after the v14 hard cut.
 
 The historical W8 assets stay byte-frozen and are rejected by ``assay verify``
-under v13. These controls lift only two documents whose R3/R4 shapes contain no
-native mutation outcomes, so changing their schema identity to 13 does not
+under v14. These controls lift only two documents whose R3/R4 shapes contain no
+native mutation outcomes, so adding the v14 lane-resolution field does not
 invent the B106 candidate provenance that a v12 mutation artifact lacks.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 
 from conftest import PROJECT_ROOT
@@ -28,18 +29,29 @@ MULTI_TARGET = "multi-target-r3-v12-template.json"
 SINGLE_TARGET = "ca1-r3-no-base-v12-template.json"
 
 
-def _load_v13_control(name: str) -> dict:
+def _load_v14_control(name: str) -> dict:
     source = (W8_EXPECTED / name).read_text(encoding="utf-8")
     source = source.replace("@STARTED@", "2026-08-11T00:00:00+00:00")
     source = source.replace("@ENDED@", "2026-08-11T00:00:01+00:00")
     document = json.loads(source)
     assert document["schema_version"] == 12
-    document["schema_version"] = 13
+    document["schema_version"] = 14
+    fixed = set(document.get("env_declared", {}))
+    document["env_passthrough"] = [
+        name for name in document.get("env_effective", {}) if name not in fixed
+    ]
+    document["env_effective_passthrough_sha256"] = {}
+    for name in document["env_passthrough"]:
+        value = document["env_effective"][name]
+        document["env_effective_passthrough_sha256"][name] = hashlib.sha256(
+            value.encode("utf-8", errors="surrogateescape")
+        ).hexdigest()
+        document["env_effective"][name] = "<passthrough>"
     return document
 
 
-def test_w8_multi_target_r3_control_still_verifies_under_v13():
-    document = _load_v13_control(MULTI_TARGET)
+def test_w8_multi_target_r3_control_still_verifies_under_v14():
+    document = _load_v14_control(MULTI_TARGET)
 
     assert verify_document(document) == []
     assert document["judgment"]["r3"]["targets"] == [
@@ -49,8 +61,8 @@ def test_w8_multi_target_r3_control_still_verifies_under_v13():
     assert document["judgment"]["r3"]["aggregation"] == "any"
 
 
-def test_v13_multi_target_r3_refuses_reordered_targets():
-    clean = _load_v13_control(MULTI_TARGET)
+def test_v14_multi_target_r3_refuses_reordered_targets():
+    clean = _load_v14_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -58,8 +70,8 @@ def test_v13_multi_target_r3_refuses_reordered_targets():
     assert verify_document(broken)
 
 
-def test_v13_multi_target_r3_refuses_a_short_attempt_list():
-    clean = _load_v13_control(MULTI_TARGET)
+def test_v14_multi_target_r3_refuses_a_short_attempt_list():
+    clean = _load_v14_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -67,8 +79,8 @@ def test_v13_multi_target_r3_refuses_a_short_attempt_list():
     assert verify_document(broken)
 
 
-def test_v13_multi_target_r3_refuses_short_circuit_under_all():
-    clean = _load_v13_control(MULTI_TARGET)
+def test_v14_multi_target_r3_refuses_short_circuit_under_all():
+    clean = _load_v14_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -76,8 +88,8 @@ def test_v13_multi_target_r3_refuses_short_circuit_under_all():
     assert verify_document(broken)
 
 
-def test_v13_not_attempted_r3_entry_may_not_carry_a_run():
-    clean = _load_v13_control(MULTI_TARGET)
+def test_v14_not_attempted_r3_entry_may_not_carry_a_run():
+    clean = _load_v14_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -85,8 +97,8 @@ def test_v13_not_attempted_r3_entry_may_not_carry_a_run():
     assert verify_document(broken)
 
 
-def test_v13_single_target_r3_control_has_no_aggregation():
-    document = _load_v13_control(SINGLE_TARGET)
+def test_v14_single_target_r3_control_has_no_aggregation():
+    document = _load_v14_control(SINGLE_TARGET)
 
     assert verify_document(document) == []
     assert document["judgment"]["r3"]["targets"] == ["pkg/greet.py"]
@@ -97,8 +109,8 @@ def test_v13_single_target_r3_control_has_no_aggregation():
     assert verify_document(broken)
 
 
-def test_w8_r4_red_first_control_still_verifies_under_v13():
-    document = _load_v13_control(RED_FIRST)
+def test_w8_r4_red_first_control_still_verifies_under_v14():
+    document = _load_v14_control(RED_FIRST)
 
     assert verify_document(document) == []
     assert document["declared_rigor"] == ["R0", "R4"]
@@ -106,8 +118,8 @@ def test_w8_r4_red_first_control_still_verifies_under_v13():
     assert document["claims"][1]["red_first"]["after_outcome"] == "PASS"
 
 
-def test_v13_r4_refuses_a_test_that_passed_before_the_fix():
-    clean = _load_v13_control(RED_FIRST)
+def test_v14_r4_refuses_a_test_that_passed_before_the_fix():
+    clean = _load_v14_control(RED_FIRST)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -115,8 +127,8 @@ def test_v13_r4_refuses_a_test_that_passed_before_the_fix():
     assert verify_document(broken)
 
 
-def test_v13_r4_refuses_when_the_after_run_did_not_pass():
-    clean = _load_v13_control(RED_FIRST)
+def test_v14_r4_refuses_when_the_after_run_did_not_pass():
+    clean = _load_v14_control(RED_FIRST)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -124,8 +136,8 @@ def test_v13_r4_refuses_when_the_after_run_did_not_pass():
     assert verify_document(broken)
 
 
-def test_v13_r4_accepts_the_valid_fail_when_the_test_passed_before_the_fix():
-    clean = _load_v13_control(RED_FIRST)
+def test_v14_r4_accepts_the_valid_fail_when_the_test_passed_before_the_fix():
+    clean = _load_v14_control(RED_FIRST)
     assert verify_document(clean) == []
 
     judged_fail = copy.deepcopy(clean)
@@ -143,8 +155,8 @@ def test_v13_r4_accepts_the_valid_fail_when_the_test_passed_before_the_fix():
     assert verify_document(contradictory)
 
 
-def test_v13_red_first_unproven_belongs_to_the_r4_claim():
-    clean = _load_v13_control(RED_FIRST)
+def test_v14_red_first_unproven_belongs_to_the_r4_claim():
+    clean = _load_v14_control(RED_FIRST)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)

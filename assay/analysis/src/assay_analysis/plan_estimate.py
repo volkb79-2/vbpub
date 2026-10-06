@@ -38,8 +38,21 @@ def _plan(text: str) -> dict[str, Any]:
         raise ValueError("plan: malformed JSON") from exc
     if not isinstance(plan, dict):
         raise ValueError("plan: top level is not an object")
-    if plan.get("status") != "ok":
-        raise ValueError(f"plan: status is {plan.get('status')!r}, not 'ok'")
+    status = plan.get("status")
+    if status == "unsupported":
+        reason = plan.get("reason")
+        if isinstance(reason, str) and reason:
+            # The reason comes from JSON and is printed as one CLI refusal;
+            # embedded line separators must not forge additional diagnostics.
+            one_line_reason = " ".join(reason.splitlines()).strip()
+            if one_line_reason:
+                raise ValueError(f"plan: {one_line_reason}")
+        raise ValueError("plan: candidate enumeration is unsupported")
+    if status != "ok":
+        raise ValueError(f"plan: status is {status!r}, not 'ok'")
+    lane = plan.get("lane")
+    if not isinstance(lane, str) or not lane:
+        raise ValueError("plan: lane is missing or not a non-empty string")
     for key in ("commit", "tree"):
         value = plan.get(key)
         if not isinstance(value, str) or not _OBJECT_ID.fullmatch(value):
@@ -74,12 +87,18 @@ def _segments(text: str) -> list[tuple[int, dict[str, Any], list[dict[str, Any]]
         if not isinstance(event, str):
             raise ValueError(f"progress line {number}: event is not a string")
         if event == "run":
+            lane = record.get("lane")
+            if not isinstance(lane, str) or not lane:
+                raise ValueError(
+                    f"progress line {number}: run header lane is missing or not a "
+                    "non-empty string"
+                )
             segments.append((number, record, []))
         elif not segments:
             raise ValueError(f"progress line {number}: event precedes the first run header")
         else:
             segments[-1][2].append(record)
-    lanes = sorted({str(run["lane"]) for _, run, _ in segments if run.get("lane") is not None})
+    lanes = sorted({run["lane"] for _, run, _ in segments})
     if len(lanes) > 1:
         raise ValueError(f"progress: runs of more than one lane ({lanes}); "
                          "pass a single-lane progress file")
@@ -137,6 +156,11 @@ def plan_estimate(plan_path: Path, progress_path: Path, *, workers: int = 1) -> 
         raise ValueError("progress: no completed baseline")
     line, run, records = selected[-1]
     seconds = _measure(line, records)
+    if run["lane"] != plan["lane"]:
+        raise ValueError(
+            f"lane mismatch: progress run at line {line} is for {run['lane']!r}, "
+            f"plan is for {plan['lane']!r}"
+        )
     if run.get("commit") != plan["commit"]:
         raise ValueError(f"commit mismatch: progress run at line {line} is at "
                          f"{run.get('commit')!r}, plan is at {plan['commit']!r}")
@@ -146,6 +170,7 @@ def plan_estimate(plan_path: Path, progress_path: Path, *, workers: int = 1) -> 
                          "plan.baseline_s is not a finite positive number")
     return {
         "schema_version": SCHEMA_VERSION,
+        "lane": plan["lane"],
         "commit": plan["commit"],
         "tree": plan["tree"],
         "candidates": plan["candidate_count"],

@@ -13,7 +13,14 @@ from types import SimpleNamespace
 import pytest
 
 from assay import mutation
-from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
+from conftest import (
+    GitRepo,
+    make_deadline,
+    make_lane,
+    make_plan,
+    prepared_snapshot,
+    zero_resource_limit_evidence_dict,
+)
 from assay.adapters.python import PythonAdapter
 from assay import runner
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -53,6 +60,7 @@ def _record(job=None):
         "end_byte": job.site.end_byte,
         "description": job.site.description,
         "mutated_file_sha256": hashlib.sha256(mutated).hexdigest(),
+        "resource_limit_evidence": zero_resource_limit_evidence_dict(),
     }
 
 
@@ -361,6 +369,7 @@ def test_report_paths_refuse_absolute_and_parent_relative_keys(tmp_path, key):
             run_cwd=tmp_path / "repo" / "app",
             repo_top=tmp_path / "repo",
             source_root_paths=(tmp_path / "repo" / "app" / "src",),
+            source_root_files=(),
         )
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
@@ -382,6 +391,32 @@ def test_report_path_outside_repository_is_refused_even_under_a_source_root(
             run_cwd=run_cwd,
             repo_top=repo_top,
             source_root_paths=(outside_sources,),
+            source_root_files=(),
+        )
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_report_path_through_symlink_file_root_requires_declared_lexical_key(
+    tmp_path,
+):
+    repo_top = tmp_path / "repo"
+    run_cwd = repo_top / "app"
+    run_cwd.mkdir(parents=True)
+    target = run_cwd / "target.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    declared = run_cwd / "declared.py"
+    declared.symlink_to(target.name)
+
+    with pytest.raises(
+        AssayError, match="not under any declared judge.source_roots"
+    ) as caught:
+        mutation._resolve_report_paths(
+            SimpleNamespace(sources={"target.py": object()}),
+            run_cwd=run_cwd,
+            repo_top=repo_top,
+            source_root_paths=(declared.resolve(),),
+            source_root_files=("app/declared.py",),
         )
 
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT

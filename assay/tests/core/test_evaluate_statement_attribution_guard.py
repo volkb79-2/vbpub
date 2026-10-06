@@ -61,7 +61,7 @@ class _BlockAdapter:
     def statement_spans(self, text: str):
         return None
 
-    def statement_blocks(self, repo_top, rel_paths, *, remaining=None):
+    def statement_blocks(self, repo_top, rel_paths, *, remaining=None, sensitive_values=()):
         raise AssertionError(
             "evaluate must never invoke the oracle itself -- the correction "
             "is the runner's step, and evaluate only checks that it happened"

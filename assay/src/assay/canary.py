@@ -82,7 +82,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 from . import git
 from .adapters.base import LanguageAdapter
@@ -103,6 +103,7 @@ from .runner import (
     evaluate_r1,
     execute_command,
     _execute_snapshot_unit,
+    _plan_passthrough_values,
     _relocate_source_roots,
 )
 from .verdict import (
@@ -272,7 +273,12 @@ def _run_pipeline(
     if _r1_unreached(r0_claim, lane):
         return r0_claim.status, r0_claim.reason_code
     r1_claim = evaluate_r1(
-        lane, repo=repo, project_root=project_root, base=base_commit, adapter=adapter
+        lane,
+        repo=repo,
+        project_root=project_root,
+        base=base_commit,
+        adapter=adapter,
+        sensitive_values=_plan_passthrough_values(result.plan),
     )
     return r1_claim.status, r1_claim.reason_code
 
@@ -398,6 +404,7 @@ def _judge_unit(
     base: str | None,
     adapter: LanguageAdapter,
     deadline: LaneDeadline,
+    sensitive_values: Sequence[str] = (),
 ) -> tuple[Outcome, ReasonCode | None]:
     """The R0-then-R1 judgement one already-EXECUTED snapshot unit renders --
     the identical two-step :func:`_run_pipeline` performs for
@@ -440,6 +447,7 @@ def _judge_unit(
         resolved_base=base,
         profile=unit.profile,
         remaining=deadline.remaining,
+        sensitive_values=sensitive_values,
     )
     return r1_claim.status, r1_claim.reason_code
 
@@ -581,6 +589,7 @@ def run_isolated_canary(
             base=resolved_base,
             adapter=adapter,
             deadline=deadline,
+            sensitive_values=_plan_passthrough_values(plan),
         )
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
@@ -660,6 +669,7 @@ def run_isolated_canary(
             base=prepared.spec.commit,
             adapter=adapter,
             deadline=deadline,
+            sensitive_values=_plan_passthrough_values(plan),
         )
 
     return _single_target_result(

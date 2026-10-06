@@ -865,6 +865,7 @@ class PythonAdapter:
         rel_paths: Sequence[str],
         *,
         remaining: Remaining | None = None,
+        sensitive_values: Sequence[str] = (),
     ) -> StatementBlockReport | None:
         """``None`` -- A-101's convention, paired with
         :attr:`requires_statement_attribution` being ``False``. No argument

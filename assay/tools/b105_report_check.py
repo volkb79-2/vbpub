@@ -18,12 +18,25 @@ B105_SOURCE_ROOT = "src/assay"
 #: refused; the packages under ``analysis/src/`` are pinned by the analysis tests.
 OUT_OF_SCOPE_BY_DECISION = {"analysis/src/assay_analysis": "A-478"}
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+_GIT_MAINTENANCE_CONFIG = (
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "maintenance.autoDetach=false",
+    "-c",
+    "gc.autoDetach=false",
+)
+
+
+def _git_argv(*args: str) -> list[str]:
+    """Pin report-checker Git queries against detached maintenance."""
+    return ["git", *_GIT_MAINTENANCE_CONFIG, *args]
 
 
 def _ls_tree(repo_root: Path, commit: str, *args: str, paths: tuple[str, ...]) -> list[str]:
     """Names git tracks in *commit* under *paths* (never the working tree)."""
     result = subprocess.run(
-        ["git", "-C", str(repo_root), "ls-tree", *args, commit, "--", *paths],
+        _git_argv("-C", str(repo_root), "ls-tree", *args, commit, "--", *paths),
         check=False,
         capture_output=True,
         text=True,
@@ -216,7 +229,7 @@ def verify_report_document(
         )
 
     tree_result = subprocess.run(
-        ["git", "rev-parse", f"{expected_commit}^{{tree}}"],
+        _git_argv("rev-parse", f"{expected_commit}^{{tree}}"),
         cwd=repo_root,
         check=False,
         capture_output=True,
