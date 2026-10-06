@@ -5923,6 +5923,13 @@ def _build_cli():
     ))
     for spec in delegated:
         registry.register(spec)
+    # The packaged agent skill (AC-19) and the environment doctor (AC-20); the
+    # library adds the automatic ``skills`` doctor check once both are present.
+    from cli_extended import register_doctor, register_skills_verbs
+    from cmru.doctor import doctor_checks
+
+    register_skills_verbs(registry, package="cmru")
+    register_doctor(registry, doctor_checks())
     return registry.build()
 
 

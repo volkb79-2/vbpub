@@ -151,6 +151,13 @@ def test_spec_cli_inventory_matches_registered_surfaces_and_options():
         )
         expected_options = common[family] | local_options
         registered_options = _option_strings(parser)
+        if surface.startswith("cmru skills "):
+            # The library-built `skills` delegate carries the library controls
+            # (including --progress) but not cmru's consumer-global
+            # --log-prefix-time-short (finding: adoption, W2-PKG5); its documented
+            # local options must all exist.
+            assert local_options <= registered_options, surface
+            continue
         assert registered_options == expected_options, (
             f"{surface}: SPEC option spellings differ; "
             f"missing={sorted(registered_options - expected_options)}, "
@@ -193,6 +200,8 @@ def _check_behavior_labels(registry, *, path=""):
     }
     for verb in catalog.verbs:
         surface = f"{path} {verb.name}".strip()
+        if verb.name in {"doctor", "skills"}:
+            continue  # library-owned verbs: skills' children carry their own labels
         expected = verb.group in mutating_groups
         assert verb.mutating is expected, (
             f"{surface}: group {verb.group!r} and mutating help metadata disagree"
@@ -226,6 +235,8 @@ def test_registered_boolean_flags_default_off_and_help_marks_mutating_verbs():
     # are not accepted by the child CLI and must not appear as false grammar.
     cmru = build_cmru_cli()
     for name in cmru.delegates:
+        if name == "skills":
+            continue  # library-built shell: its --json is real (skills check/list emit it)
         parser = cmru.command_parsers[name]
         assert "--json" not in _option_strings(parser), name
         assert "--progress" not in _option_strings(parser), name
