@@ -349,16 +349,20 @@ class Installer:
                     event=f"install complete (duration {duration}){key_event}", status="ok",
                 )
         except BaseException as exc:
+            self.state.save(status="failed", phase="stage2", last_error=str(exc))
+            try:
+                delivered = self._notify(
+                    f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
+                    event="install FAILED", status="fail", excerpt=str(exc),
+                )
+            except Exception:
+                delivered = False
             # failure_notified_at lets the OnFailure notifier (failure_notify.py)
-            # skip its own post: this path is about to announce the failure.
-            self.state.save(
-                status="failed", phase="stage2", last_error=str(exc),
-                failure_notified_at=datetime.now(timezone.utc).isoformat(),
-            )
-            self._notify(
-                f"<b>Install FAILED</b> during stage2: {_code(str(exc))}",
-                event="install FAILED", status="fail", excerpt=str(exc),
-            )
+            # skip its own post, so it is recorded ONLY once this post actually
+            # succeeded: a failed or raising post leaves it unset and the
+            # notifier posts (the stage must fail loudly).
+            if delivered:
+                self.state.save(failure_notified_at=datetime.now(timezone.utc).isoformat())
             raise
 
     def status(self) -> dict[str, object]:
@@ -2245,23 +2249,23 @@ MaxFileSec=1month
             secrets=(self.config.mattermost_webhook_url, self.config.telegram_bot_token),
         )
 
-    def _notify(self, message: str, *, event: str = "", status: str = "run", excerpt: str = "") -> None:
+    def _notify(self, message: str, *, event: str = "", status: str = "run", excerpt: str = "") -> bool:
         """Send one milestone via the selected backend. Never raises.
 
         ``message`` is the Telegram (HTML) text; ``event``/``status``/``excerpt``
         feed the Mattermost format (a missing ``event`` falls back to the
-        tag-stripped Telegram text).
+        tag-stripped Telegram text). Returns True only when the message was
+        actually delivered (False: no backend, dry run, or a failed post).
         """
         backend = self._notify_backend()
         if backend == "none" or self.actions.dry_run:
-            return
+            return False
         if backend == "mattermost":
             text = event or re.sub(r"<[^>]+>", "", message).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-            post_webhook(
+            return post_webhook(
                 self.config.mattermost_webhook_url,
                 self._mattermost_text(text, status, excerpt),
             )
-            return
         token = self.config.telegram_bot_token
         chat_id = self.config.telegram_chat_id
         thread_id = None
@@ -2283,7 +2287,8 @@ MaxFileSec=1month
                 urllib.request.urlopen(request, timeout=15).close()
             except OSError as exc:
                 _LOG.warning("Telegram notification failed: %s", exc)
-                break  # don't send later chunks out of order after a failure
+                return False  # don't send later chunks out of order after a failure
+        return True
 
     #: Confirmed live 2026-09-08 against a real Netcup host: a synchronous
     #: reboot from inside the still-running customScript process strands

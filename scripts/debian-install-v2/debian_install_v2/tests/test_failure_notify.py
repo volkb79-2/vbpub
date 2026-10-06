@@ -233,8 +233,12 @@ def test_stale_installer_notice_does_not_suppress_a_new_crash(tmp_path, hook_ser
     assert len(Hook.bodies) == 1
 
 
-def test_installer_failure_path_records_the_notice_timestamp(tmp_path):
-    # The producer side of the duplicate guard: Installer.resume's failure path.
+def failing_installer_run(tmp_path, monkeypatch, post):
+    """Installer.resume with a stage2 that raises; ``post`` stands in for post_webhook.
+
+    Returns (state dict after the failure, state_dir). The first call is the
+    'Resumed stage2' milestone, so only the FAILURE post is steered by ``post``.
+    """
     from debian_install_v2.actions import HostActions
     from debian_install_v2.config import Config
     from debian_install_v2.installer import Installer
@@ -242,21 +246,93 @@ def test_installer_failure_path_records_the_notice_timestamp(tmp_path):
 
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        mattermost_webhook_url="https://mm.example.test/hooks/prodhookid",
         never_reboot=True, auto_reboot_after_stage1=False, credential_mode="systemd",
     )
     StateStore(config.state_dir).save_new(StateStore.new(config))
     installer = Installer(config, HostActions(dry_run=True))
-    installer.state.dry_run = False
+    monkeypatch.setattr(installer.actions, "dry_run", False)
+    monkeypatch.setattr(installer.state, "dry_run", False)
+    monkeypatch.setattr("debian_install_v2.installer.post_webhook", post)
 
     def boom():
         raise RuntimeError("stage2 exploded")
 
     installer._stage2 = boom
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="stage2 exploded"):
         installer.resume()
-    state = json.loads((Path(config.state_dir) / "state.json").read_text())
+    state_dir = Path(config.state_dir)
+    return json.loads((state_dir / "state.json").read_text()), state_dir
+
+
+def notifier_after(state_dir, tmp_path, hook_server, monkeypatch):
+    monkeypatch.setattr(failure_notify, "read_journal", lambda unit, secrets: ["systemd: failed"])
+    creds = tmp_path / "creds"
+    creds.mkdir(exist_ok=True)
+    (creds / "mattermost_webhook_url").write_text(hook_server + "\n")
+    env = {
+        "VBPUB_STATE_DIR": str(state_dir), "CREDENTIALS_DIRECTORY": str(creds),
+        "VBPUB_STAGE2_OUTPUT": str(write_output(tmp_path)),
+    }
+    Hook.bodies.clear()
+    assert failure_notify.main([STAGE2], env) == 0
+    return list(Hook.bodies)
+
+
+def post_ok(url, text, **kw):
+    return True
+
+
+def post_false(url, text, **kw):
+    # Only the failure post fails; the "Resumed stage2" milestone before it succeeds.
+    return "FAILED" not in text
+
+
+def post_raises(url, text, **kw):
+    if "FAILED" in text:
+        raise OSError("network down")
+    return True
+
+
+def test_installer_post_succeeded_records_the_timestamp_and_the_notifier_skips(
+    tmp_path, monkeypatch, hook_server
+):
+    state, state_dir = failing_installer_run(tmp_path, monkeypatch, post_ok)
     assert state["status"] == "failed" and state["last_error"] == "stage2 exploded"
     assert failure_notify.recently_notified(state)
+    assert notifier_after(state_dir, tmp_path, hook_server, monkeypatch) == []
+
+
+@pytest.mark.parametrize("post", [post_false, post_raises], ids=["post-returns-false", "post-raises"])
+def test_installer_post_failed_leaves_the_timestamp_unset_and_the_notifier_posts(
+    tmp_path, monkeypatch, hook_server, post
+):
+    state, state_dir = failing_installer_run(tmp_path, monkeypatch, post)
+    assert state["status"] == "failed" and state["last_error"] == "stage2 exploded"
+    assert "failure_notified_at" not in state
+    bodies = notifier_after(state_dir, tmp_path, hook_server, monkeypatch)
+    assert len(bodies) == 1
+    assert CAUSE in json.loads(bodies[0])["text"]
+
+
+def test_notify_reports_delivery_truthfully(tmp_path, monkeypatch):
+    from debian_install_v2.actions import HostActions
+    from debian_install_v2.config import Config
+    from debian_install_v2.installer import Installer
+
+    # No backend: nothing was delivered, so nothing may be recorded as announced.
+    bare = Installer(Config(state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l")),
+                     HostActions(dry_run=False), inspect_host=False)
+    assert bare._notify("x", event="x") is False
+    configured = Installer(
+        Config(state_dir=str(tmp_path / "s2"), log_dir=str(tmp_path / "l2"),
+               mattermost_webhook_url="https://mm.example.test/hooks/h"),
+        HostActions(dry_run=False), inspect_host=False,
+    )
+    monkeypatch.setattr("debian_install_v2.installer.post_webhook", lambda url, text, **kw: False)
+    assert configured._notify("x", event="x") is False
+    monkeypatch.setattr("debian_install_v2.installer.post_webhook", lambda url, text, **kw: True)
+    assert configured._notify("x", event="x") is True
 
 
 def test_telegram_backend_uses_credentials_and_thread(tmp_path, monkeypatch):
