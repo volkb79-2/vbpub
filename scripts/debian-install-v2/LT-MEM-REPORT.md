@@ -206,6 +206,15 @@ Baseline 836 passed, 11 skipped.
 The model-health-gate raise plant was applied to the qos branch only; the model branch was
 not separately planted. The `--boot` allowlist entry was not planted separately.
 
+## Gates (round 1), clean tree at `24961b222` (code identical to `255872f52`)
+
+- debian-install-v2 `r0-r1`: verdict PASS, exit 0, 836 passed, 11 skipped, 96% coverage.
+  Log `/tmp/run-gate/lanes/r0-r1/562c2c971511cc019a3c10664c05bfcc.log`.
+- netcup `suite`: verdict PASS, exit 0, 683 passed.
+  Log `/tmp/run-gate/lanes/suite/bf20eda622eeb4245803faa0ba9f5b75.log`.
+- Run foreground under `flock gate.lock`, nice/ionice, PSI cpu some avg10 about 5; verdicts read in a separate step.
+  An earlier netcup attempt on the then-dirty tree was refused (NOT_RUN, dirty-tree) and rerun clean.
+
 ## Not run (round 1)
 
 No live host, no real kernel write to `io.cost.*`, no real boot of the units, no r2/r3 or
