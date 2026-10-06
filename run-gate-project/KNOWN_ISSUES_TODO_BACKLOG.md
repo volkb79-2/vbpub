@@ -102,6 +102,7 @@ SPEC §9.
 | RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
 | RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | OPEN (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36, not deleted) |
 | RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
+| RG-85 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5769,3 +5770,21 @@ return a closed recovery refusal before inventory or admission.
 **Oracles.** The live PID 1 refusal and low-`--pids-limit` checks passed in a detached `tester-unified` container; the latter's command returned zero while `pids.events:max` increased, and run-gate returned ERROR with raw `exit_code: 0` retained. Tests cover a changed `memory.events:oom_kill` counter, unchanged counters, unreadable files, moved cgroups, and raw-status preservation. The registered `selftest` lane with 100% changed-line coverage remains pending.
 
 **Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).
+
+## RG-85 — every ephemeral gate container sees the whole main checkout (all ignored files, all worktrees) and the git remote credential
+
+**Status:** IN PROGRESS (filed 2026-10-06, package RG-NARROW; implementation and tests landed on branch `run-gate-narrow-mount`, awaiting independent review; no revision bump yet, the release owner bumps it).
+
+**Observed.** `resolve_repo_and_worktree` returns the common-dir owner as `repo`, and `dual_mount_flags(repo, ...)` bind-mounted that whole checkout read-write at both its physical and namespace paths for every ephemeral lane and probe. Every gate container of every project therefore saw the main checkout, every other worktree and every git-ignored file in them (including `cmru.secret.toml`), and could read `.git/config`, whose `remote.origin.url` embeds a credential. Only cmru's own gate wrapper hid one named file.
+
+**Operator decisions (2026-10-06).** run-gate operates only on the worktree it is started for, and has NO knowledge of any project's secret files: isolation comes from mounting less, not from masking named files.
+
+**Fix (`container_mount_flags`, one mount set for lanes and probes).**
+- Linked worktree: the judged worktree plus the git common dir, each dual-mounted (physical + namespace path), read-write (ciu v8 SPEC S16.4.9; assay's snapshot runs `git worktree add`), plus `<repo>/.run-gate` for assay lanes that declare no `state_root`. The rest of the main checkout and every other worktree are not mounted. The judged worktree keeps all its own files, git-ignored overlays and rendered files included.
+- `<common>/config` (and `config.worktree` files) are overlaid read-only with a per-run sanitized copy kept in a private temp dir: userinfo stripped from every URL value, `credential.*`, `*.extraheader`, `include*`, `core.askpass`/`sshCommand`, password/token-like keys and credential-bearing `url.*.insteadOf` rewrites dropped. Generic git hygiene; no project knowledge.
+- Plain (main) checkout: ephemeral lanes and probes are REFUSED unless `--allow-main-checkout` or `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`; the opt-in WARNs that every ignored file is visible and still sanitizes the config.
+- `mode = "exec"` lanes are not affected: those containers belong to ciu or the project's stack.
+
+**Consequence.** cmru's gate-side masking of its secret file (`cmru/tools/run_release_gate.py`) becomes removable once this ships; cmru tracks that. Callers that ran ephemeral lanes from a main checkout (nyxloom-merge-p post-merge gates, Buildkite agents) must use a worktree or opt in; listed in the RG-NARROW report.
+
+**Oracles.** Mount-set unit tests for both checkout kinds, sanitizer tests for every credential form, refusal and opt-in tests, an exec-lane-on-main test, and a real-container smoke test asserting that a planted ignored secret, the main checkout's files and a sibling worktree are absent, the worktree's own ignored file is present, no credential is visible, and `git log`/`status`/`diff`/`rev-parse` work. Planted regressions (whole repo mounted, sanitizer skipped, main checkout allowed without opt-in) are each killed.

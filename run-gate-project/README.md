@@ -383,6 +383,15 @@ the tool's reason to exist and MUST be implemented + tested:
   `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
   `git config --global safe.directory '*'`
   inside the gate container.
+- **Mounts (RG-85):** an ephemeral container sees ONLY the judged worktree
+  (all its own files, git-ignored ones included) plus the git common dir
+  (read-write, ciu v8 SPEC S16.4.9), `<repo>/.run-gate` for assay state, and
+  explicit `RUN_GATE_EXTRA_MOUNTS`; never the main checkout or other
+  worktrees. `<common>/config` is overlaid with a per-run credential-free
+  copy. A plain (main) checkout is refused unless `--allow-main-checkout` /
+  `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (WARNs). `mode = "exec"` lanes are
+  unaffected. Isolation comes from mounting less; run-gate knows no
+  project's secret file names.
 - **Assay source or artifact:** internal lanes omit `assay_command` and
   `pins`; run-gate installs `assay/` from the selected worktree in the lane
   environment and the resulting verdict records the runtime version and

@@ -9,6 +9,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- This unreleased block describes source rev 55. At release, fold these entries into the generated dated section by hand; the release generator does not clear this block. -->
 
+- **Narrow container mounts and credential-free git config (RG-85).** An
+  ephemeral container lane or probe now mounts only the judged worktree
+  (all of its own files, git-ignored ones included) and the git common dir
+  (read-write, ciu v8 SPEC S16.4.9), each at its physical and namespace
+  path, instead of the whole main checkout: other worktrees and the main
+  checkout's ignored files are no longer visible. `<common>/config` is
+  overlaid read-only with a per-run copy minus credentials (URL userinfo,
+  `credential.*`, `*.extraheader`, password/token keys, credential-bearing
+  `url.*.insteadOf`). Ephemeral lanes on a plain (main) checkout are
+  REFUSED unless `--allow-main-checkout` / `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`,
+  which WARNs. `mode = "exec"` lanes are unchanged. Breaking for callers that
+  ran ephemeral lanes from a main checkout: use a worktree or opt in.
+
 - **Init and cgroup resource-event guard (RG-84, filed as RG-83, rev 55).** run-gate refuses
   to start as PID 1 without an init reaper. Each real lane compares the
   current cgroup's `pids.events:max` and `memory.events:oom_kill` counters;

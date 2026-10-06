@@ -1891,9 +1891,19 @@ class TestArgvConstruction:
         assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-gates.slice"
         # REAL derivation (subprocess can't see module monkeypatches): /tmp is
         # bind-mounted here, so physical_path must resolve it via mountinfo.
-        phys = str(run_gate.physical_path(repo))
-        mounts = sorted(run_call[i + 1] for i, p in enumerate(run_call) if p == "-v")
-        assert mounts == [f"{phys}:{phys}", f"{phys}:{repo}"]  # dual mount
+        # RG-NARROW: the judged worktree and the git common dir, each dual
+        # (physical + namespace path), and a sanitized config overlay; the
+        # main checkout itself is NOT mounted.
+        pw = str(run_gate.physical_path(wt))
+        pc = str(run_gate.physical_path(repo / ".git"))
+        mounts = [run_call[i + 1] for i, p in enumerate(run_call) if p == "-v"]
+        assert f"{pw}:{pw}" in mounts and f"{pw}:{wt}" in mounts
+        assert f"{pc}:{pc}" in mounts and f"{pc}:{repo / '.git'}" in mounts
+        overlays = [m for m in mounts if m.endswith("/config:ro")]
+        assert len(overlays) == 2, mounts
+        assert any(m.endswith(f":{repo / '.git'}/config:ro") for m in overlays)
+        assert len(mounts) == 6, mounts
+        assert not any(m.split(":")[1] == str(repo) for m in mounts), mounts
         assert "--rm" not in run_call
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
         inner = run_call[-1]
@@ -1918,8 +1928,8 @@ class TestArgvConstruction:
         monkeypatch.setattr(run_gate, "physical_path", lambda path: tmp_path / "host")
         monkeypatch.setattr(
             run_gate,
-            "dual_mount_flags",
-            lambda namespace, physical: ["-v", f"{physical}:{physical}"],
+            "container_mount_flags",
+            lambda *_a, **_k: ["-v", f"{tmp_path / 'host'}:{tmp_path / 'host'}"],
         )
         argv = run_gate.build_env_probe_argv(
             "docker",
@@ -2565,6 +2575,10 @@ def test_no_stdlib_violations():
                # lane's stdout on a background thread so the main poll loop
                # can ask, non-blockingly, how long it has been silent.
                "threading",
+               # atexit + tempfile: RG-NARROW's per-run credential-free copy
+               # of the git config is written to a private temp dir and
+               # removed when the process exits.
+               "atexit", "tempfile",
                # math: RG-55 ResourceAccumulator's nearest-rank percentile
                # (contract Sec 7's own ceil(p/100*N) formula, math.ceil).
                "math",
@@ -3606,7 +3620,8 @@ class TestDualMountGuard:
                            f"{repo}=/workspaces/vbpub")
         assert run_gate.main(["suite"]) == 0
         last_run = docker_runs(log)[-1]
-        mounts = sorted(last_run[i + 1] for i, p in enumerate(last_run) if p == "-v")
+        mounts = sorted(last_run[i + 1] for i, p in enumerate(last_run)
+                        if p == "-v" and not last_run[i + 1].endswith(":ro"))
         assert mounts == sorted([f"{repo}:{repo}",
                                  f"{repo}:/workspaces/vbpub"])
 
@@ -4736,14 +4751,17 @@ class TestDryRun:
         assert live.returncode == 0, live.stderr
         live_line = _docker_argv_line(live.stdout)
         import re as _re
-        live_norm = _re.sub(r"--name \S+", "--name N", live_line)
+        def norm(line):  # name embeds pid/epoch; overlay dir is random per run
+            line = _re.sub(r"--name \S+", "--name N", line)
+            return _re.sub(r"run-gate-gitcfg-\w+", "run-gate-gitcfg-X", line)
+        live_norm = norm(live_line)
 
         log.write_text("")
         dry = run_tool(proj, "suite", "--dry-run")
         assert dry.returncode == 0, dry.stderr
         assert docker_runs(log) == [], "dry-run must not start a container"
         dry_line = _docker_argv_line(dry.stdout)
-        assert _re.sub(r"--name \S+", "--name N", dry_line) == live_norm
+        assert norm(dry_line) == live_norm
         assert "DRY RUN" in dry.stdout
 
     def test_assay_lane_dry_run_discloses_no_verdict(self, tmp_path,
@@ -12788,8 +12806,8 @@ class TestResumeAndProgressAlways:
             self, monkeypatch, tmp_path):
         monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "/host/state=/durable")
         monkeypatch.setattr(
-            run_gate, "dual_mount_flags",
-            lambda _repo, _physical: ["-v", "/host/repo:/repo"])
+            run_gate, "container_mount_flags",
+            lambda *_a, **_k: ["-v", "/host/repo:/repo"])
         argv = run_gate.build_env_probe_argv(
             "docker", {"mode": "ephemeral", "image": "runner:local",
                        "user": "1000:1000"},
@@ -16054,7 +16072,8 @@ class TestInflightRecordStore:
         monkeypatch.setattr(run_gate, "clear_previous_assay_verdict",
                             lambda *_args: None)
         monkeypatch.setattr(run_gate, "physical_path", lambda _repo: Path("/phys"))
-        monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "assure_assay_state_root",
                             lambda *_args, **_kwargs: None)
@@ -16096,7 +16115,8 @@ class TestInflightRecordStore:
                             lambda *_args, **_kwargs: next(resolutions))
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda _repo, **_kwargs: Path("/phys"))
-        monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "assure_assay_state_root",
                             lambda *_args, **_kwargs: None)
@@ -23586,7 +23606,8 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "resolve_inflight",
                             lambda *_args: None)
         monkeypatch.setattr(run_gate, "physical_path", lambda _repo: Path("/phys"))
-        monkeypatch.setattr(run_gate, "dual_mount_flags", lambda *_args: [])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "build_command_inner",
                             lambda *_args: "true")
@@ -24501,3 +24522,357 @@ def test_main_version_keeps_no_config_contract_when_pid1(monkeypatch, capsys):
 def test_pid1_detection_uses_current_process_id(monkeypatch):
     monkeypatch.setattr(run_gate.os, "getpid", lambda: 1)
     assert run_gate.is_pid1_without_init()
+
+
+# ---------------------------------------------------------------------------
+# RG-NARROW: a container lane sees ONLY the judged worktree + the git metadata
+# it needs, and never git credentials.
+# ---------------------------------------------------------------------------
+
+_FAKE_CREDENTIAL_CONFIG = """\
+[core]
+\trepositoryformatversion = 0
+\taskpass = /usr/bin/askpass-FAKE
+\tsshCommand = ssh -i /keys/FAKEKEY
+[remote "origin"]
+\turl = https://fakeuser:FAKEPASS1@github.com/o/r.git
+\tpushurl = https://FAKETOKEN2@github.com/o/r.git
+\tfetch = +refs/heads/*:refs/remotes/origin/*
+[remote "mirror"]
+\turl = ssh://git@github.com/o/r.git
+[remote "weird"]
+\turl = https://u:p@ss-FAKEAT3@host.example/r.git
+[http]
+\textraHeader = AUTHORIZATION: basic FAKEBASIC4
+\tcookieFile = /home/x/.cookies-FAKE
+[http "https://github.com/"]
+\textraheader = Authorization: bearer FAKEBEARER5
+[credential]
+\thelper = store --file=/home/x/.git-credentials-FAKE
+[credential "https://github.com"]
+\tusername = FAKEUSER6
+[url "https://FAKETOKEN7@github.com/"]
+\tinsteadOf = gh:
+[url "https://clean.example/"]
+\tinsteadOf = clean:
+[url "git@github.com:"]
+\tinsteadOf = https://github.com/
+[url "https://x:FAKEPASS8@github.com/"]
+\tpushInsteadOf = https://github.com/
+[include]
+\tpath = /home/x/secret-include-FAKE
+[includeIf "gitdir:/x/"]
+\tpath = /home/x/other-FAKE
+[tool "t"]
+\tapiKey = FAKEAPIKEY9
+\tPassword = FAKEPW10
+\tflag
+[branch "feature/x.y"]
+\tremote = origin
+\tmerge = refs/heads/main
+"""
+
+_FAKE_CREDENTIAL_NEEDLES = ("FAKEPASS1", "FAKETOKEN2", "FAKEAT3", "FAKEBASIC4",
+                            "FAKEBEARER5", "FAKEUSER6", "FAKETOKEN7",
+                            "FAKEPASS8", "FAKEAPIKEY9", "FAKEPW10",
+                            "askpass-FAKE", "FAKEKEY", ".cookies-FAKE",
+                            "git-credentials-FAKE", "include-FAKE", "other-FAKE",
+                            "fakeuser", "u:p@")
+
+
+class TestRgNarrowSanitizer:
+    def _sanitize(self, tmp_path, text=_FAKE_CREDENTIAL_CONFIG):
+        src = tmp_path / "config"
+        src.write_text(text)
+        return run_gate.sanitized_git_config_text(src)
+
+    def test_no_credential_form_survives(self, tmp_path):
+        out = self._sanitize(tmp_path)
+        for needle in _FAKE_CREDENTIAL_NEEDLES:
+            assert needle not in out, needle
+
+    def test_non_credential_config_is_preserved(self, tmp_path):
+        out = self._sanitize(tmp_path)
+        rendered = tmp_path / "out"
+        rendered.write_text(out)
+        entries = dict(run_gate.read_git_config_entries(rendered))
+        assert entries["remote.origin.url"] == "https://github.com/o/r.git"
+        assert entries["remote.origin.pushurl"] == "https://github.com/o/r.git"
+        assert entries["remote.origin.fetch"] == "+refs/heads/*:refs/remotes/origin/*"
+        assert entries["remote.mirror.url"] == "ssh://git@github.com/o/r.git"
+        assert entries["remote.weird.url"] == "https://host.example/r.git"
+        assert entries["url.https://clean.example/.insteadof"] == "clean:"
+        assert entries["url.git@github.com:.insteadof"] == "https://github.com/"
+        assert entries["branch.feature/x.y.merge"] == "refs/heads/main"
+        assert entries["core.repositoryformatversion"] == "0"
+        assert entries["tool.t.flag"] is None  # valueless key stays valueless
+        assert not any(key.startswith(("credential.", "include", "http."))
+                       for key in entries)
+        assert not any("insteadof" in key and "FAKE" in key for key in entries)
+
+    def test_values_needing_escapes_round_trip(self, tmp_path):
+        src = tmp_path / "config"
+        subprocess.run(["git", "config", "--file", str(src), "a.b", 'x "q" \\ y'],
+                       check=True)
+        subprocess.run(["git", "config", "--file", str(src),
+                        'sub.has "quote".k', "v"], check=True)
+        assert run_gate.read_git_config_entries(src) == [
+            ("a.b", 'x "q" \\ y'), ('sub.has "quote".k', "v")]
+        out = tmp_path / "out"
+        out.write_text(run_gate.sanitized_git_config_text(src))
+        assert run_gate.read_git_config_entries(out) == [
+            ("a.b", 'x "q" \\ y'), ('sub.has "quote".k', "v")]
+
+    def test_unreadable_config_is_an_infrastructure_error(self, tmp_path):
+        broken = tmp_path / "config"
+        broken.write_text("[unterminated\n")
+        with pytest.raises(run_gate.GateInfraError, match="cannot read git config"):
+            run_gate.sanitized_git_config_text(broken)
+
+
+def _narrow_repo(tmp_path):
+    """Throwaway main checkout with a credentialed origin, an ignored fake
+    secret at its root, and two linked worktrees under `.worktrees/`."""
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text(
+        ".run-gate/\n.assay/\n.worktrees/\ncmru.secret.toml\n.local-overlay\n")
+    commit_all(repo, "ignores")
+    git(repo, "remote", "add", "origin",
+        "https://fakeuser:FAKEPASSWORD123@example.invalid/x.git")
+    git(repo, "config", "http.extraheader", "AUTHORIZATION: basic FAKEBASIC456")
+    (repo / "cmru.secret.toml").write_text("FAKE-SECRET-DO-NOT-USE\n")
+    (repo / ".worktrees").mkdir()
+    return repo
+
+
+def _phys_stub(monkeypatch):
+    monkeypatch.setattr(run_gate, "physical_path",
+                        lambda p, **k: Path("/phys") / str(p).lstrip("/"))
+
+
+class TestRgNarrowMounts:
+    def test_linked_worktree_mounts_only_worktree_and_git_dir(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        make_worktree(repo, repo / ".worktrees", "other")
+        _phys_stub(monkeypatch)
+        flags = run_gate.container_mount_flags(repo, wt, {"mode": "ephemeral"})
+        values = flags[1::2]
+        assert flags[0::2] == ["-v"] * len(values)
+        ph = lambda p: f"/phys{p}"  # noqa: E731
+        assert values[:4] == [f"{ph(wt)}:{ph(wt)}", f"{ph(wt)}:{wt}",
+                              f"{ph(repo / '.git')}:{ph(repo / '.git')}",
+                              f"{ph(repo / '.git')}:{repo / '.git'}"]
+        # exactly the dual worktree + dual git dir (read-write: ciu v8 SPEC
+        # S16.4.9) + the two read-only credential-free config overlays
+        assert len(values) == 6
+        assert all(v.endswith(":ro") for v in values[4:])
+        assert not any(v.endswith(":rw") or ":ro" in v for v in values[:4])
+        destinations = [v.split(":")[1] for v in values]
+        # neither the main checkout, nor its ignored secret, nor the sibling
+        # worktree is mounted at, above or below any destination
+        for hidden in (repo / "README.md", repo / "cmru.secret.toml",
+                       repo / ".worktrees" / "other"):
+            assert not any(Path(d) == hidden or Path(d) in hidden.parents
+                           for d in destinations), (hidden, destinations)
+        assert not any(Path(d) == repo for d in destinations)
+
+    def test_overlay_is_a_credential_free_copy_outside_every_mount(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        _phys_stub(monkeypatch)
+        flags = run_gate.container_mount_flags(repo, wt, {})
+        overlay = [v for v in flags[1::2] if v.endswith("/config:ro")]
+        assert len(overlay) == 2
+        source = Path(overlay[0].split(":")[0].removeprefix("/phys"))
+        assert source.is_file() and source.stat().st_mode & 0o777 == 0o644
+        assert source.parent.stat().st_mode & 0o777 == 0o700  # private dir
+        # outside every mounted path
+        mounted = [wt, repo / ".git"]
+        assert not any(m in source.parents for m in mounted)
+        text = source.read_text()
+        assert "FAKEPASSWORD123" not in text and "fakeuser" not in text
+        assert "FAKEBASIC456" not in text and "extraheader" not in text.lower()
+        assert "https://example.invalid/x.git" in text
+        # the host's own config is untouched
+        assert "FAKEPASSWORD123" in (repo / ".git" / "config").read_text()
+
+    def test_state_mount_only_for_assay_and_not_with_declared_root(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        (repo / ".run-gate").mkdir()
+        _phys_stub(monkeypatch)
+        state = f"/phys{repo / '.run-gate'}:{repo / '.run-gate'}"
+        assert state not in run_gate.container_mount_flags(repo, wt, {})
+        assert state in run_gate.container_mount_flags(
+            repo, wt, {}, with_state=True)
+        assert state not in run_gate.container_mount_flags(
+            repo, wt, {"state_root": "/durable"}, with_state=True)
+        # create_state makes the dir the lane needs when it is missing
+        (repo / ".run-gate").rmdir()
+        run_gate.container_mount_flags(repo, wt, {}, with_state=True,
+                                       create_state=True)
+        assert (repo / ".run-gate").is_dir()
+
+    def test_plain_checkout_is_refused_without_opt_in(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        _phys_stub(monkeypatch)
+        monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.container_mount_flags(repo, repo, {})
+        message = str(exc.value)
+        assert "refused" in message and "git-ignored" in message
+        assert "--allow-main-checkout" in message
+        assert run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR in message
+        for value in ("0", "", "no"):
+            monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, value)
+            with pytest.raises(run_gate.GateError):
+                run_gate.container_mount_flags(repo, repo, {})
+
+    def test_plain_checkout_opt_in_warns_and_still_sanitizes(
+            self, tmp_path, monkeypatch, capsys):
+        repo = _narrow_repo(tmp_path)
+        _phys_stub(monkeypatch)
+        monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, "1")
+        monkeypatch.setattr(run_gate, "_MAIN_CHECKOUT_WARNED", set())
+        flags = run_gate.container_mount_flags(repo, repo, {})
+        err = capsys.readouterr().err
+        assert "WARN" in err and "git-ignored" in err and str(repo) in err
+        values = flags[1::2]
+        assert f"/phys{repo}:{repo}" in values  # the whole checkout, as before
+        overlay = [v for v in values if v.endswith("/config:ro")]
+        assert len(overlay) == 2
+        source = Path(overlay[0].split(":")[0].removeprefix("/phys"))
+        assert "FAKEPASSWORD123" not in source.read_text()
+
+    def test_flag_sets_the_opt_in_for_the_whole_process(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
+        refused = run_tool(proj, "suite")
+        assert refused.returncode == 2
+        assert "refused" in refused.stderr
+        allowed = run_tool(proj, "suite", "--allow-main-checkout")
+        assert allowed.returncode == 0, allowed.stderr
+        assert "WARN" in allowed.stderr
+
+    def test_exec_lane_on_the_main_checkout_is_not_refused(
+            self, tmp_path, monkeypatch):
+        """Exec containers are owned by ciu / the project's stack, not by
+        run-gate: no mounts of ours, so nothing to narrow or refuse."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu config")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        shim.write_text(shim.read_text().replace(
+            'case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;'))
+        monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert len(docker_execs(log)) == 1
+        assert docker_runs(log) == []  # no run-gate-created container
+        assert "refused" not in proc.stderr
+
+    def test_exec_probe_never_computes_mounts(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
+
+        def forbidden(*_a, **_k):
+            raise AssertionError("exec mode must not compute run-gate mounts")
+        monkeypatch.setattr(run_gate, "container_mount_flags", forbidden)
+        argv = run_gate.build_env_probe_argv(
+            "docker", {"mode": "exec"}, "runner", repo, repo, "src",
+            "dev-gates.slice", "true", resolved_container_name="c1")
+        assert argv[:2] == ["docker", "exec"] and "c1" in argv
+
+    def test_gitfile_pointing_at_an_unreachable_dir_is_refused(
+            self, tmp_path):
+        repo = _narrow_repo(tmp_path)
+        wt = tmp_path / "w"
+        wt.mkdir()
+        (wt / ".git").write_text("gitdir: /nonexistent/.git/worktrees/zz\n")
+        with pytest.raises(run_gate.GateInfraError, match="not reachable"):
+            run_gate.git_mount_plan(wt, repo)
+        (wt / ".git").write_text("nonsense\n")
+        with pytest.raises(run_gate.GateInfraError, match="valid gitfile"):
+            run_gate.git_mount_plan(wt, repo)
+        (wt / ".git").unlink()
+        with pytest.raises(run_gate.GateInfraError, match="not a git checkout"):
+            run_gate.git_mount_plan(wt, repo)
+
+
+def _docker_image_present(image: str) -> bool:
+    try:
+        return subprocess.run(["docker", "image", "inspect", image],
+                              capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+class TestRgNarrowRealContainer:
+    """A REAL container (no fake docker): the lane proves from the inside that
+    the main checkout, its ignored secret and a sibling worktree are absent,
+    that credentials never arrive, and that git works."""
+
+    def test_container_sees_only_its_worktree_and_no_credentials(
+            self, tmp_path, monkeypatch):
+        image = os.environ.get("RUN_GATE_NARROW_SMOKE_IMAGE",
+                               "tester-unified:local")
+        if not (shutil.which("docker") and _docker_image_present(image)):
+            pytest.skip(f"real container smoke needs docker + {image}")
+        if not os.environ.get(CGROUP_VAR):
+            pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
+        monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
+        repo = _narrow_repo(tmp_path)
+        script = (
+            "set -ex; cd {worktree}/proj; "  # -x: a failing step names itself
+            f"test -f .local-overlay; "  # the worktree keeps ALL its own files
+            f"test ! -e {repo}/cmru.secret.toml; "
+            f"test ! -e {repo}/README.md; "
+            f"test ! -e {repo}/.worktrees/other; "
+            f"test ! -e {repo}/.worktrees/other/other.secret; "
+            "test \"$(git log -1 --format=%s)\" = 'lane config proj'; "
+            "git rev-parse HEAD >/dev/null; git status --porcelain >/dev/null; "
+            "git diff --stat >/dev/null; git rev-parse --git-common-dir; "
+            # assay's repository snapshot runs `git worktree add` (writes the
+            # common dir), then reads the snapshot
+            "git worktree add -q --detach /tmp/narrow-snap HEAD; "
+            "test \"$(git -C /tmp/narrow-snap log -1 --format=%s)\" = "
+            "'lane config proj'; git worktree remove --force /tmp/narrow-snap; "
+            "cfg=$(git rev-parse --git-common-dir)/config; "
+            "! grep -e FAKEPASSWORD123 -e fakeuser -e FAKEBASIC456 \"$cfg\"; "
+            "! git config --list | grep -e FAKEPASSWORD123 -e FAKEBASIC456; "
+            "test \"$(git config --get remote.origin.url)\" = "
+            "https://example.invalid/x.git; "
+            "echo NARROW-OK")
+        config = textwrap.dedent(f"""\
+            schema_version = 1
+            [environments.smoke]
+            mode = "ephemeral"
+            image = "{image}"
+            [lanes.suite]
+            kind = "command"
+            environment = "smoke"
+            argv = ["bash", "-c", {json.dumps(script)}]
+            clean_tree = false
+        """)
+        proj = make_project(repo, config)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        other = make_worktree(repo, repo / ".worktrees", "other")
+        (other / "other.secret").write_text("FAKE-OTHER-SECRET\n")
+        (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "NARROW-OK" in proc.stdout, proc.stdout
+        # the refusal path with the same real repo: main checkout, no opt-in
+        refused = run_tool(proj, "suite")
+        assert refused.returncode == 2 and "refused" in refused.stderr
