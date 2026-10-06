@@ -1116,8 +1116,15 @@ class TestRenderedInstaller:
         installed cmru wheel does not ship (`[tool.setuptools.package-data]`
         packages only `templates/*.toml`), so it runs against a cmru source
         checkout when one is reachable and skips when it is not."""
-        pytest.importorskip("cmru")
-        from cmru import getpy
+        try:
+            from cmru import getpy
+        except ImportError as exc:  # a missing cmru must be RED, never a silent skip
+            pytest.fail(
+                "cmru is not importable, so the committed ciu/get.py cannot be "
+                "checked against a fresh render; put ../cmru/src (and "
+                "../libraries/cli-extended/src, ../libraries/worktree/src) on "
+                f"PYTHONPATH: {exc}"
+            )
 
         template = getattr(getpy, "_TEMPLATE_PATH", None)
         if template is None or not template.exists():
@@ -1127,9 +1134,9 @@ class TestRenderedInstaller:
         if not template.exists():
             template = CIU_ROOT.parent / "cmru" / "templates" / "get.py.tmpl"
         if not template.exists():
-            pytest.skip("cmru's get.py.tmpl is not reachable from this checkout")
+            pytest.fail("cmru's get.py.tmpl is not reachable from this checkout")
         if "# @@EXTENSIONS@@" not in template.read_text(encoding="utf-8"):
-            pytest.skip(
+            pytest.fail(
                 "the reachable cmru get.py.tmpl predates the installer extensions "
                 "mechanism (W1-CIU-ENROLL), so it cannot have rendered the "
                 "committed get.py"
@@ -1137,8 +1144,9 @@ class TestRenderedInstaller:
 
         from cmru.config import InstallerConfig, load_forge_config
 
-        if "extensions" not in InstallerConfig.__dataclass_fields__:
-            pytest.skip("the importable cmru predates `[project.installer] extensions`")
+        assert "extensions" in InstallerConfig.__dataclass_fields__, (
+            "the importable cmru predates `[project.installer] extensions`"
+        )
 
         project_text = (CIU_ROOT / "cmru.toml").read_text(encoding="utf-8")
         central = tomllib.loads(

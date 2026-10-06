@@ -237,6 +237,61 @@ class TestRefusals:
             _render(_frag("@_semver_key\ndef _r(subparsers):\n    return {}\n"
                           "_EXTENSIONS.append(_r)\n"))
 
+    @pytest.mark.parametrize("block", [
+        "if True:\n    info = 1\n",
+        "try:\n    pass\nexcept OSError:\n    fatal = 1\n",
+        "for warn in ():\n    pass\n",
+        "with open('/dev/null') as ok:\n    pass\n",
+        "match 1:\n    case hr:\n        pass\n",
+        "match [1]:\n    case [*_c]:\n        pass\n",
+        "match {}:\n    case {**info}:\n        pass\n",
+        "del info\n",
+        "if True:\n    import os as fatal\n",
+    ])
+    def test_b_module_scope_rebinding_in_blocks_is_refused(self, block):
+        with pytest.raises(ExtensionError, match="rebinds a template top-level name"):
+            _render(_frag(block + GOOD_TAIL))
+
+    def test_b_star_import_is_refused(self):
+        with pytest.raises(ExtensionError, match="star import"):
+            _render(_frag("from os.path import *\n" + GOOD_TAIL))
+
+    @pytest.mark.parametrize("stmt, kind", [
+        ("global _active_staging", "global"),
+        ("global info", "global"),
+    ])
+    def test_b_global_naming_a_template_name_is_refused(self, stmt, kind):
+        src = f"def _r(subparsers):\n    {stmt}\n    return {{}}\n_EXTENSIONS.append(_r)\n"
+        with pytest.raises(ExtensionError, match=f"`{kind} .*` names a template"):
+            _render(_frag(src))
+
+    def test_b_nonlocal_naming_a_template_name_is_refused(self):
+        src = ("def _r(subparsers):\n    def inner():\n        nonlocal _active_staging\n"
+               "    return {}\n_EXTENSIONS.append(_r)\n")
+        with pytest.raises(ExtensionError, match="`nonlocal _active_staging` names a template"):
+            _render(_frag(src))
+
+    def test_b_global_of_a_fragment_own_name_is_fine(self):
+        src = ("_state = 0\ndef _r(subparsers):\n    global _state\n    _state = 1\n    return {}\n"
+               "_EXTENSIONS.append(_r)\n")
+        compile(_render(_frag(src)), "<get.py>", "exec")
+
+    @pytest.mark.parametrize("src", [
+        "def _r(subparsers: _NoRedirectAuth):\n    return {}\n",
+        "def _r(subparsers, *a: _NoRedirectAuth):\n    return {}\n",
+        "def _r(subparsers, **k: _NoRedirectAuth):\n    return {}\n",
+        "def _r(subparsers) -> _NoRedirectAuth:\n    return {}\n",
+        "def _r(subparsers, *, kw: _NoRedirectAuth = None):\n    return {}\n",
+    ])
+    def test_c_annotations_are_checked(self, src):
+        with pytest.raises(ExtensionError, match="_NoRedirectAuth"):
+            _render(_frag(src + "_EXTENSIONS.append(_r)\n"))
+
+    def test_c_annotations_naming_api_or_builtin_names_are_fine(self):
+        src = ("def _r(subparsers: object) -> dict:\n    return {}\n"
+               "_EXTENSIONS.append(_r)\n")
+        compile(_render(_frag(src)), "<get.py>", "exec")
+
     def test_extensions_without_a_project_directory_are_refused(self):
         from cmru.getpy import _read_extensions
         with pytest.raises(ExtensionError, match="project directory"):

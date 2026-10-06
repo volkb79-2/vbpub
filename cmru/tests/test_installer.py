@@ -1303,5 +1303,3 @@ class TestNormalizeTag:
         # str.lstrip('v') would strip BOTH leading v's → 'demo-v1.0.0'; a single
         # prefix-strip preserves the inner 'v' → 'demo-vv1.0.0'.
         assert self._ns()["normalize_tag"]("vv1.0.0") == "demo-vv1.0.0"
-
-

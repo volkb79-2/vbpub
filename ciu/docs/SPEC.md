@@ -2813,7 +2813,11 @@ no callback, no listener; the private key never leaves the control host.
   `ciu/get.py` and as a release asset; re-render after editing the fragment with
   `cmru get-py ciu --config cmru.orchestration.toml --output ciu/get.py`, and the
   byte-identity test in `test_ciu_host_enroll.py` guards drift; hardening of the
-  fragment is CIU-122/CIU-123): before any network I/O it checks root, an SSH server (`sshd` on
+  fragment is CIU-122/CIU-123; the example that used to sit in `get.py`'s own
+  `--help` epilog and docstring now lives only here:
+  `sudo python3 get.py enroll --authorized-key 'ssh-ed25519 AAAA... ciu@control'
+  --controller control.example.net --name web-01`, pre-move form; pin the release
+  with `--version ciu-v<version>`, which the printed one-liner carries): before any network I/O it checks root, an SSH server (`sshd` on
   `PATH` or `/usr/sbin/sshd`; absent → `EXIT_PREREQ` naming `openssh-server`)
   and that the key line parses; then installs ciu exactly as `get.py install
   --scope system` (transaction, manifest verification, `current` switch;

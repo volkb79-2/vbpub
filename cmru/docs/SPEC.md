@@ -1503,6 +1503,12 @@ single rendered file:
   fragment scope shadows is in `EXTENSION_API`; (d) imports are stdlib only
   (`sys.stdlib_module_names`; relative imports refused); (e) at least one top-level
   `_EXTENSIONS.append(<name>)`.
+  Check (b) also covers every module-scope binding (inside top-level `if`/`try`/`for`/`with`/
+  `match`, `del` targets, match captures), refuses star imports, and refuses `global`/`nonlocal`
+  statements naming a template name; check (c) also walks argument and return annotations.
+  **These checks are a contract/lint guard over repo-owned fragments, not a security boundary:**
+  `globals()`, `getattr`, `exec` and similar dynamic access remain possible, and fragments are
+  trusted code reviewed with the repository.
 - Runtime: `_EXTENSIONS` is a list of `register(subparsers) -> {command: handler}`. After the
   core subparsers are added, `main()` calls each registered function in order and merges the
   returned dicts. A command that duplicates a core command or another extension's (including an

@@ -41,29 +41,53 @@ class ExtensionError(ValueError):
     """An installer extension fragment is missing, unsafe, or violates the contract."""
 
 
-def _bound_names(node: ast.AST) -> Set[str]:
-    """Names bound directly in ``node``'s own scope (not in nested function scopes)."""
-    bound: Set[str] = set()
+def _bindings(node: ast.AST) -> Dict[str, int]:
+    """Names bound in ``node``'s own scope (not in nested function scopes) -> first line.
+
+    Includes bindings nested in ``if``/``try``/``for``/``while``/``with``/``match``
+    blocks, ``del`` targets, ``except ... as`` names, ``match`` captures and imports.
+    """
+    bound: Dict[str, int] = {}
+
+    def add(name: str, child: ast.AST) -> None:
+        bound.setdefault(name, getattr(child, "lineno", 0))
 
     def visit(child: ast.AST) -> None:
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bound.add(child.name)
+            add(child.name, child)
             return
         if isinstance(child, ast.Lambda):
             return
         if isinstance(child, ast.Name) and isinstance(child.ctx, (ast.Store, ast.Del)):
-            bound.add(child.id)
+            add(child.id, child)
         elif isinstance(child, ast.ExceptHandler) and child.name:
-            bound.add(child.name)
+            add(child.name, child)
+        elif isinstance(child, (ast.MatchAs, ast.MatchStar)) and child.name:
+            add(child.name, child)
+        elif isinstance(child, ast.MatchMapping) and child.rest:
+            add(child.rest, child)
         elif isinstance(child, (ast.Import, ast.ImportFrom)):
             for alias in child.names:
-                bound.add((alias.asname or alias.name).split(".")[0])
+                add((alias.asname or alias.name).split(".")[0], child)
         for sub in ast.iter_child_nodes(child):
             visit(sub)
 
     for stmt in ast.iter_child_nodes(node):
         visit(stmt)
     return bound
+
+
+def _bound_names(node: ast.AST) -> Set[str]:
+    return set(_bindings(node))
+
+
+def _arg_annotations(args: ast.arguments) -> List[ast.expr]:
+    every = args.posonlyargs + args.args + args.kwonlyargs
+    if args.vararg:
+        every.append(args.vararg)
+    if args.kwarg:
+        every.append(args.kwarg)
+    return [a.annotation for a in every if a.annotation is not None]
 
 
 def _args_names(args: ast.arguments) -> Set[str]:
@@ -126,6 +150,11 @@ def _undeclared_api_loads(
                 local |= _bound_names(node)
                 for deco in node.decorator_list:
                     walk(deco, scopes)
+                annotations = _arg_annotations(node.args)
+                if node.returns is not None:
+                    annotations.append(node.returns)
+                for annotation in annotations:
+                    walk(annotation, scopes)
             inner = scopes + [local]
             body = [node.body] if isinstance(node, ast.Lambda) else node.body
             for stmt in body:
@@ -181,6 +210,11 @@ def _check_extension(
                     f"extension {relpath}: line {node.lineno}: relative import is not "
                     "allowed (stdlib only)"
                 )
+            if any(alias.name == "*" for alias in node.names):
+                raise ExtensionError(
+                    f"extension {relpath}: line {node.lineno}: star import is not allowed "
+                    "(it could rebind any template name)"
+                )
             modules = [node.module or ""]
         for module in modules:
             if module.split(".")[0] not in stdlib:
@@ -207,6 +241,25 @@ def _check_extension(
                 f"extension {relpath}: line {line}: top-level name {name!r} collides "
                 f"with extension {claimed[name]}"
             )
+    # Rebinding anywhere in module scope (inside top-level if/try/for/with/match
+    # blocks, del targets, match captures) is a collision too, and so is a
+    # `global`/`nonlocal` declaration naming a template name (it would let a
+    # function rebind the template's own global).
+    for name, line in _bindings(tree).items():
+        if name in template_names:
+            raise ExtensionError(
+                f"extension {relpath}: line {line}: module-scope binding {name!r} "
+                "rebinds a template top-level name"
+            )
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                if name in template_names:
+                    raise ExtensionError(
+                        f"extension {relpath}: line {node.lineno}: "
+                        f"`{type(node).__name__.lower()} {name}` names a template "
+                        "top-level name"
+                    )
     for name in own:
         claimed[name] = relpath
 

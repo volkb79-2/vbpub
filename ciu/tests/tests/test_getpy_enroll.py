@@ -191,11 +191,17 @@ class TestEnrollCLIShape:
 
         Needs a cmru that knows ``extensions``; skipped against an older one.
         """
-        pytest.importorskip("cmru")
-        from cmru.config import InstallerConfig
-        if "extensions" not in InstallerConfig.__dataclass_fields__:
-            pytest.skip("the importable cmru predates `[project.installer] extensions`")
-        from cmru.getpy import getpy_main
+        try:
+            from cmru.config import InstallerConfig
+            from cmru.getpy import getpy_main
+        except ImportError as exc:  # a missing cmru must be RED, never a silent skip
+            pytest.fail(
+                "cmru is not importable; put ../cmru/src (and ../libraries/cli-extended/src, "
+                f"../libraries/worktree/src) on PYTHONPATH: {exc}"
+            )
+        assert "extensions" in InstallerConfig.__dataclass_fields__, (
+            "the importable cmru predates `[project.installer] extensions`"
+        )
         out_file = tmp_path / "rendered-get.py"
         rc = getpy_main([
             "ciu", "--config", str(CIU_ROOT.parent / "cmru.orchestration.toml"),

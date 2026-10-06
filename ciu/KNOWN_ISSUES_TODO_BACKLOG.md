@@ -579,6 +579,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
 | CIU-129 | `assay.toml` runs pytest with `--maxfail=1` plus coverage, so a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test | Medium | OPEN |
 | CIU-130 | `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path | Medium | OPEN — v8.2 (cmru program 2026-10, O9) |
+| CIU-131 | The real-system `get.py enroll` oracles (O2/O3, ciu `enroll` lane) are in no automated release gate since the move from cmru | High | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -4922,3 +4923,17 @@ Severity: Medium. Type: feature. Target: **v8.2** (with the enrollment rewrite, 
 **Oracles.** A host upgraded to X reports X from its launcher; `--version` omitted is refused with no SSH contact; a wrong-version or PATH-shadowing `ciu` fails the proof and the inventory row is byte-identical; a failed install leaves the prior release current; upgrading to the already-installed version is a no-op.
 
 **Related.** CIU-93 (enrollment), CIU-99 (asset resolution), CIU-122/CIU-123 (the enrollment hardening this builds on), cmru `GETPY-REDESIGN` R1/R3/R8 (`cmru/nyxloom-trove`/program 2026-10 installer review), cmru O9.
+
+## CIU-131 — the real-system `get.py enroll` oracles (O2/O3) are in no automated release gate since the move from cmru
+
+Severity: High (the root-level `authorized_keys` writer lost its automated real-system evidence). Type: gate gap. Filed 2026-10-06 by the cmru program 2026-10 (package W1-CIU-ENROLL review, controller ruling).
+
+**Observed.** Until the move, cmru's `gate` ran an `enroll` lane (`TestEnrollAgainstRealSystem`: real user creation, `authorized_keys` writes, modes/ownership, a host-key fingerprint cross-check and a real-sshd login) on every cmru release. The code and tests moved to ciu (`ciu/installer/enroll.py`, `ciu/tests/tests/test_getpy_enroll.py`) and cmru's lane was removed. ciu's `[lanes.enroll]` (`ciu/run-gate.toml`, `CIU_ENROLL_REQUIRED=1`, bare-host) exists but nothing runs it: ciu's release gate is the `ciu` assay lane in tester-unified, which has no docker socket, so the 8 container tests skip there.
+
+**Fix direction.** Wire the lane into ciu's release flow (for example a `cmru tester-gate --enable-docker` step in ciu's `[steps.run-tests]`, or an explicit pre-release step that runs `./run-gate.py enroll`), or document it as a mandatory manual pre-release run until that exists, recorded in the release evidence. Whichever is chosen must keep `CIU_ENROLL_REQUIRED=1` so a missing prerequisite fails rather than skips.
+
+**Cost to note.** The lane builds the image `ciu-enroll-fixture:local` (`apt-get install openssh-server ...` from `debian:bookworm-slim`) and starts non-privileged containers on the gates slice (`--cgroup-parent=$CGROUP_PARENT_DEV_GATES`, 3 CPUs, 2 GiB), which needs the Docker host and a loaded gates slice; it must not run next to production without that placement.
+
+**Oracles.** A ciu release cannot complete without the `enroll` lane verdict PASS (or a recorded manual run), and a controlled break of `_enroll_install_key` (e.g. appending a duplicate line) fails the lane.
+
+**Related.** CIU-122/CIU-123 (the fix work these oracles protect), cmru KI-25 (the original lane).

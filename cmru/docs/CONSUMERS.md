@@ -241,6 +241,11 @@ renders. A fragment must:
   `register(subparsers) -> {command: handler}` adds its parser(s) and `handler(args, token)`
   runs the command. A command name that duplicates a core or another extension's command exits 2.
 
+These render-time checks (which also refuse star imports, `global`/`nonlocal` of a template
+name, and module-scope rebinding of template names, and which read annotations) are a
+contract/lint guard over repo-owned fragments, **not a security boundary**: `globals()`,
+`getattr` and `exec` remain possible, so fragments must be reviewed like any other code.
+
 `EXTENSION_API` is a **stability contract**: changing or removing a name in it requires
 updating every in-repo fragment in the same change (today: ciu's `ciu/installer/enroll.py`).
 Re-render and commit the project's `get.py` after editing a fragment; ciu's

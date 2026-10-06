@@ -82,4 +82,27 @@ coverage-lane run (99.89%).
   extensions` (project-owned get.py fragments; `EXTENSION_API` stability contract); **Removed** `get.py enroll` and its
   `enroll` gate lane from cmru (now ciu's; KI-49/KI-50 moved to CIU-122/123); **Changed** tls-edge's committed `get.py`
   re-rendered (loses enroll).
-- Open question for the controller: ciu's own release/assay flow does not run the new ciu `enroll` lane automatically.
+- Open question for the controller: ciu's own release/assay flow does not run the new ciu `enroll` lane automatically (now CIU-131).
+
+## Review fixes (controller rulings, ACCEPT-conditional)
+1. **Checker gaps (`getpy.py`).** (b) now checks every module-scope binding (`_bindings`: bindings inside top-level
+   if/try/for/with/match, `del` targets, `except as`, match captures incl. `*rest`/`**rest`, imports); star imports are
+   refused; `global`/`nonlocal` naming a template name is refused (a fragment's own global is fine); (c) walks argument
+   (incl. `*args`/`**kwargs`/kw-only) and return annotations. SPEC S6.14 and CONSUMERS state these are a contract/lint
+   guard over repo-owned fragments, not a security boundary. Tests: `test_b_module_scope_rebinding_in_blocks_is_refused`
+   (9 cases), `test_b_star_import_is_refused`, `test_b_global_*`/`nonlocal_*`, `test_c_annotations_are_checked` (5 cases) + positive
+   cases. Plant/revert (all reverted with Edit): bindings loop disabled (9+ failures), global/nonlocal loop disabled,
+   star-import check disabled, annotation walk disabled, MatchAs/MatchStar and MatchMapping branches disabled (3 failures);
+   every plant failed its tests.
+2. **ciu gate / drift guard.** The only ciu lane that runs `test_getpy_enroll.py` and `test_ciu_host_enroll.py` is the assay lane
+   `ciu` (`ciu/assay.toml`; R0-R3 including R2 mutation, budget 8h): **not run** (heavy mutation lane). Its `env.PYTHONPATH` is now
+   `src:../cmru/src:../libraries/cli-extended/src:../libraries/worktree/src` (coverage is still `--cov=ciu`, `source_roots=["src"]`,
+   so cmru is not measured). The drift test and the render test now `pytest.fail` (clear message) instead of `importorskip`/skip,
+   including the template-unreachable / predates-extensions cases; verified red with `PYTHONPATH=src` only.
+   `ciu/run-gate.toml [lanes.enroll]` is separate (container oracles, not the R2 lane).
+3. **CIU-131 filed** (ciu backlog): O2/O3 real-system oracles are in no automated release gate; fix direction (tester-gate
+   `--enable-docker` step or mandatory manual pre-release run), fixture cost (`ciu-enroll-fixture:local`, apt-get, non-privileged
+   containers on the gates slice).
+4. **Help text.** Loss accepted in `get.py`; the pre-move example (plus the `--version` pin) added to `ciu/docs/SPEC.md` S14.7b.
+5. Trailing blank line removed from `cmru/tests/test_installer.py`.
+6. `tls-edge/README.md:417` now `cmru release tls-edge --set-version 0.2.0`.
