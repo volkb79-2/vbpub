@@ -126,7 +126,7 @@ Working tree verified clean of plant edits after each revert.
   foreground), host PSI cpu some avg10 was 5-8 throughout.
 - Not run: r2 (mutation), r3, fake-integration, r1-vm-real-commit.
 
-## NOT run
+## NOT run (round 0)
 
 No live host; no real kernel 6.12 or 7.x boot; no real write to `io.cost.model`/`io.cost.qos`;
 no real `systemd-tmpfiles`, `systemctl` or `modprobe` execution (all faked/dry-run);
@@ -134,3 +134,79 @@ no real `systemd-tmpfiles`, `systemctl` or `modprobe` execution (all faked/dry-r
 `top` accepted the ported toprc and the `catlog` function works; mc, htop and iftop were
 not run. Stale statement left alone: README "Not yet in v2" still says v2 has no
 benchmark layer (out of scope, predates LT-IOB).
+
+# Review round 1 fixes
+
+Fixes for the REJECT verdict (B1-B3 plus non-blocking items), commit `255872f52`.
+Everything below was run in the worktree; no live host was touched.
+
+## Blockers
+
+- **B1 (tmpfiles `--boot`).** `_apply_tmpfiles` now runs
+  `systemd-tmpfiles --create --boot <path>`; the allowlist in `actions.py` is
+  `{"--create","--boot"}`. Tests: `test_thp_and_ksm_are_tmpfiles_entries_with_gstammtisch_values`
+  asserts the full argv and that every tmpfiles call carries `--boot`;
+  `test_tmpfiles_allowlist_permits_create_and_boot`;
+  `test_real_systemd_tmpfiles_applies_w_bang_only_with_boot` runs the REAL local
+  `systemd-tmpfiles` against a `w!` fixture file in a tmp dir: `--create` alone leaves the
+  target unchanged (rc 0), `--create --boot` writes `madvise`.
+- **B2 (iocost is advisory).** `systemctl enable --now vbpub-iocost.service` goes through
+  `_try_run`; a failure marks the `iocost` step `warned` and its first line is appended to
+  `_iocost_note` (shown in the completion notification). The health gate
+  (`_health_gate_iocost`) warns and marks the step the same way for a model or qos
+  mismatch and a missing qos file; it no longer raises `InstallerError`. Tests:
+  `test_iocost_enable_failure_warns_and_does_not_abort`,
+  `test_health_gate_iocost_reads_model_and_qos_back` (rewritten to expect warnings),
+  `test_health_gate_iocost_mismatch_is_not_an_install_failure_even_without_qos_file`.
+- **B3 (strict qos parse).** `assert_strict_qos_line` in `test_lt_mem.py`: single-space
+  tokens, every token exactly `key=value`, keys from {enable, ctrl, rpct, rlat, wpct, wlat,
+  min, max}, no duplicates, enable in {0,1}, ctrl in {auto,user}, percentages with two
+  decimals, rlat/wlat integers, min/max two decimals within [1, 10000]. Applied to the line
+  the real boot script writes (`test_rendered_qos_line_is_strictly_valid`); the parser's own
+  rejection cases are in `test_strict_qos_parser_rejects_malformed_lines`.
+- **Controller ruling on the qos choice: option (a).** The boot script writes
+  `<MAJ:MIN> enable=1 ctrl=user` ONLY (`IOCOST_QOS_TOKENS` in `templates.py`). The
+  rpct/wpct/min/max tokens are gone, so there is no latency-based vrate throttling and the
+  cost model alone gives proportional `io.weight` control. The benchmark model params are
+  unchanged. README updated. Operator-set rlat/wlat latency targets are a future option
+  (mdt iocost plan D4). This supersedes the "Open operator choice" section and the
+  "qos rpct/wpct 95..." wording in item 4 and the value table above (old: model + rpct/wpct 95,
+  min 1, max 100; new: model + `enable=1 ctrl=user` only).
+
+## Non-blocking items
+
+- (i) `iocost_enabled=false` now calls `_remove_iocost_units()` before marking the step
+  skipped: `test_iocost_disabled_on_a_rerun_removes_the_installed_unit` (unit present: disable
+  call plus 3 removals; unit absent: nothing).
+- (ii) User rc files are written only when missing (`self.actions.exists`); an existing file is
+  kept and listed in the `user_config` step detail. I chose "missing only" rather than a marker
+  or hash: htop and mc rewrite their files and drop comments/markers, so a marker would
+  not be reliable, and v2 has no earlier shipped version to hash. A managed-content update
+  therefore needs the operator to delete the file. Tests: `test_existing_rc_files_are_never_overwritten`,
+  `test_all_rc_files_existing_means_no_rc_writes`; the older ergonomics tests now fake `exists`
+  so they do not depend on the machine's real `/root`.
+- (iii) `test_swap_health_never_uses_errexit` rejects `set -e`/`-eu`/`-o errexit` in any
+  spelling and runs the script on an empty proc/sys tree.
+- (iv) The duplicated README shrinker paragraph is removed.
+
+## Plants (each applied with Edit, whole `debian_install_v2/tests` suite run, reverted with `git checkout -- .`)
+
+Baseline 836 passed, 11 skipped.
+
+| Plant | Result | Killed by |
+|---|---|---|
+| `--boot` dropped from the `_apply_tmpfiles` argv | KILLED (1 failed) | `test_thp_and_ksm_are_tmpfiles_entries_with_gstammtisch_values` |
+| iocost enable call back to `_run` (failure re-raised) | KILLED (1 failed) | `test_iocost_enable_failure_warns_and_does_not_abort` |
+| health gate raises `InstallerError` on qos not enabled | KILLED (1 failed) | `test_health_gate_iocost_reads_model_and_qos_back` |
+| qos token join error (`enable=1,ctrl=user`) | KILLED (2 failed) | `test_rendered_qos_line_is_strictly_valid`, `test_boot_script_writes_model_line_then_qos_for_the_resolved_disk` |
+| existing rc files overwritten (exists check disabled) | KILLED (2 failed) | `test_existing_rc_files_are_never_overwritten`, `test_all_rc_files_existing_means_no_rc_writes` |
+| `set -e` added to `swap-health` (`set -euo pipefail`) | KILLED (1 failed) | `test_swap_health_never_uses_errexit` |
+| disabled iocost no longer removes units | KILLED (1 failed) | `test_iocost_disabled_on_a_rerun_removes_the_installed_unit` |
+
+The model-health-gate raise plant was applied to the qos branch only; the model branch was
+not separately planted. The `--boot` allowlist entry was not planted separately.
+
+## Not run (round 1)
+
+No live host, no real kernel write to `io.cost.*`, no real boot of the units, no r2/r3 or
+VM lanes. The real `systemd-tmpfiles` was run only against a tmp-dir fixture target.
