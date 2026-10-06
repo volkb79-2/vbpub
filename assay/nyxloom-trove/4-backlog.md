@@ -11985,6 +11985,16 @@ are intentionally distinct. The assertion now checks the lane budget against
 the configured outer timeout. Both focused tests pass; a fresh registered gate
 is required before merge.
 
+**Third gate update (2026-10-06):** At
+`5afce9fdaf6f4a6382e7904580e26deb7852bb69`, B145 probes, packaging,
+attestation, the self-hosted suite, and the corrected analysis budget check
+passed. The SQL matrix and controls ran, but frozen witness comparison failed.
+The likely mismatch is absolute ancestor event-counter baselines changed by the
+earlier low-pids probe; candidate deltas remain the outcome evidence. Witness
+normalization now validates monotonic counts and exact deltas, then canonicalizes
+only absolute before / after values. Its SQL qualification module passes all
+169 tests. A fresh registered gate must confirm this fix before merge.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
 **Status: OPEN; defer to the next Assay wave. This is useful diagnostics work, not a blocker for the B145/B147 release.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.

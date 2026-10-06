@@ -84,3 +84,21 @@ asserts the intended separate 60m lane and 6h outer limits. The stale equality
 is corrected to assert the 60m inner budget is below the outer timeout; both
 related focused tests pass. A fresh registered gate on the corrected commit is
 still required before merge.
+
+## Controller continuation: SQL witness counter baselines (2026-10-06)
+
+The next registered run at `5afce9fdaf6f4a6382e7904580e26deb7852bb69` passed
+the B145 probes, packaging, attestation, self-hosted suite, and the corrected
+analysis budget check. SQL qualification completed its matrix rows and controls,
+then failed the frozen witness equality check. The likely mismatch is in
+absolute cgroup ancestor event counters: the earlier B145 probe can change
+those baselines without changing a candidate's own resource-event delta.
+
+The witness normalizer now validates each event count and delta (integer,
+nonnegative, monotonic, and `delta == after - before`) before canonicalizing
+only `before` / `after`; it preserves `delta` exactly. The new regression proves
+that nonzero unchanged baselines compare equal, while positive or malformed
+deltas do not. Sol xhigh reviewed the normalizer and its counter contract; the
+follow-up found only an error-message mismatch in a test, which was corrected.
+All 169 SQL qualification tests pass. A registered gate on this corrected tree
+is still required to confirm the diagnosis and clear the merge blocker.

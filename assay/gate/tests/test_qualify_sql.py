@@ -483,6 +483,40 @@ def test_compare_with_witness_accepts_the_committed_witness_round_tripped() -> N
     )  # must not raise
 
 
+def test_compare_with_witness_ignores_absolute_resource_counters_but_keeps_the_delta() -> None:
+    actual = _witness_as_actual()
+    counters = actual["claims"][1]["mutation"]["killed"][0]["resource_limit_evidence"]["pids_events"]["max"]
+    counters.update(before=37, after=37)
+    memory = actual["claims"][1]["mutation"]["killed"][0]["resource_limit_evidence"]["memory_events"]["max"]
+    memory.update(before=19, after=19)
+    q.compare_with_witness(
+        actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
+    )
+
+    counters.update(after=38, delta=1)
+    with pytest.raises(q.QualificationError, match="differs from the frozen witness"):
+        q.compare_with_witness(
+            actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40
+        )
+
+
+def test_normalize_verdict_refuses_noninteger_resource_counter_baselines() -> None:
+    actual = _witness_as_actual()
+    counters = actual["claims"][1]["mutation"]["killed"][0]["resource_limit_evidence"]["pids_events"]["max"]
+    counters["before"] = "not-a-counter"
+    with pytest.raises(q.QualificationError, match="resource-limit counters and delta"):
+        q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
+@pytest.mark.parametrize(("before", "after", "delta"), [(37, 38, 0), (38, 37, 0), (37, 38, -1)])
+def test_normalize_verdict_refuses_invalid_resource_counter_deltas(before: int, after: int, delta: int) -> None:
+    actual = _witness_as_actual()
+    counters = actual["claims"][1]["mutation"]["killed"][0]["resource_limit_evidence"]["pids_events"]["max"]
+    counters.update(before=before, after=after, delta=delta)
+    with pytest.raises(q.QualificationError, match="resource-limit"):
+        q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
+
+
 def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
     actual = _witness_as_actual()
     actual["claims"][1]["mutation"]["killed"] = []

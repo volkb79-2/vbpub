@@ -860,6 +860,28 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     # The auto budget is derived from this run's measured baseline wall time:
     # real, but not a stable witness value.
     normalized.get("judgment", {}).get("r2", {}).pop("budget_per_candidate_derived_s", None)
+    # Absolute event counters include earlier activity in visible ancestor
+    # cgroups (including sibling gate phases). The per-candidate delta is the
+    # evidence that affects a verdict; keep it exact and canonicalize only the
+    # ambient before/after baselines for the frozen witness.
+    mutation_claims = [claim.get("mutation", {}) for claim in normalized.get("claims", [])]
+    for mutation in mutation_claims:
+        for bucket in ("killed", "survived", "equivalent", "crashed", "hung", "budget_exceeded"):
+            for candidate in mutation.get(bucket, []):
+                evidence = candidate.get("resource_limit_evidence")
+                if evidence is None:
+                    continue
+                for event_group in ("pids_events", "memory_events"):
+                    for counters in evidence.get(event_group, {}).values():
+                        before, after, delta = (
+                            counters.get(field) for field in ("before", "after", "delta")
+                        )
+                        if any(type(count) is not int or count < 0 for count in (before, after, delta)):
+                            raise QualificationError("resource-limit counters and delta must be nonnegative integers")
+                        if after < before or delta != after - before:
+                            raise QualificationError("resource-limit counter delta does not match its before/after values")
+                        counters["before"] = 0
+                        counters["after"] = 0
     return normalized
 
 
