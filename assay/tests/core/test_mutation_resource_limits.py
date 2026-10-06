@@ -760,7 +760,10 @@ def test_low_pids_limit_event_cannot_become_a_kill(tmp_path: Path):
             "raise SystemExit(status)",
         )
     )
-    lane = make_lane(argv=(sys.executable, "-c", code))
+    lane = make_lane(
+        argv=(sys.executable, "-c", code),
+        env={"PYTHONDONTWRITEBYTECODE": "1"},
+    )
     baseline = execute_command(
         lane, cwd=repo.path, process_runner=default_process_runner
     )
