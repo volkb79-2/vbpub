@@ -58,14 +58,13 @@ evidence_paths = ["coverage.json"]
 
 # SSOT pointer (D-110/D-111): the release gate IS the project's own run-gate
 # lane (`./run-gate.py selftest` -> run-gate.toml), not a duplicated pytest
-# line and not `cmru tester-gate` — dogfooding means run-gate gates itself
-# through its own machinery, and the lane owns all test logic (pytest +
-# diff-coverage floor) in exactly one place. The lane uses `bare-host`
-# internally so tests can exercise run-gate's host subprocess path. Its
-# pytest fixtures stay under the bind-mounted checkout, allowing the outer
-# registered gate to run inside tester-unified while mountinfo assertions
-# still observe a real host mapping. Steps execute with project_root as cwd,
-# so the sibling script resolves directly.
+# line. The lane owns all test logic (pytest + diff-coverage floor) in exactly
+# one place. CMRU executes step commands directly, so `cmru tester-gate` wraps
+# the registered lane to place it in tester-unified. Inside that container the
+# lane uses `bare-host` so tests can exercise run-gate's host subprocess path.
+# Pytest fixtures stay under the bind-mounted checkout, allowing mountinfo
+# assertions to observe a real host mapping. Steps execute with project_root
+# as cwd, so the sibling script resolves directly.
 # First standalone bootstrap before cmru is installed anywhere fresh:
 # python3 run-gate.py selftest works with zero installs (stdlib-only).
 #
@@ -84,7 +83,7 @@ evidence_paths = ["coverage.json"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "run-gate: selftest gate (diff-coverage floor)", argv = ["./run-gate.py", "selftest"], cwd = "." },
+  { label = "run-gate: selftest in tester-unified", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "./run-gate.py", "selftest"], cwd = "." },
 ]
 
 [steps.build]
