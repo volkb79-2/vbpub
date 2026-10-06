@@ -21,6 +21,26 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.15.3] - 2026-10-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=4b3d65cc1854e4d55d0714c45e7a7912a226c78b -->
+
+### Fixed
+- fix(ciu): validate Compose shapes before image scoping (eeeb95bf7)
+- fix(ciu): preserve malformed Compose check findings (8b4d66775)
+- fix(ciu): isolate worktree images and container names (f1a9d0e42)
+
+### Changed
+- merge CIU-117/104 worktree isolation (c0547e7a8)
+- backlog(ciu): CIU-132 stopped-stack identity migration (clean preview, named-volume carry-over, hostdir re-own) from the nyxloom Mattermost restore (11f8facca)
+
+### Testing
+- test(ciu): close resolver mutation gaps (b178ddc53)
+- test(ciu): close image isolation mutation gaps (3cf034a13)
+- test(ciu): cover deploy image safety paths (ee0b438e5)
+- test(ciu): cover worktree isolation boundaries (b6bef9e89)
+- test(ciu): include image policy in worktree key set (814245925)
+
 ## [7.15.2] - 2026-10-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=bee6771d2cbd472c91b7a4c456af443706805412 -->
