@@ -39,8 +39,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(assay): prevent cgroup process-limit or OOM events from becoming native
   R2 kills or survivors; sample candidate and visible-ancestor event counters,
-  reject affected resume records, and advance the judge identity to `/6`,
-  cold-starting the earlier `/4` and `/5` B145 evidence (B145)
+  bind them to the executing worker's cgroup, capabilities, and selected mount,
+  reject affected resume records, and advance the judge identity to `/7`,
+  cold-starting the earlier `/4`, `/5`, and `/6` B145 evidence (B145)
+- fix(assay): disable automatic Git maintenance and detached maintenance for
+  every Assay Git child, independent of image, system, or consumer config
+  (B147)
 
 ### Changed
 - refactor(assay): repeated judge rules now live once: `assay.records` (the

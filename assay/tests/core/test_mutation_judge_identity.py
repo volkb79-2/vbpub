@@ -1129,7 +1129,7 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
 
 
 def test_b145_advances_the_judge_identity_label():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/6"
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/7"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
@@ -1375,6 +1375,46 @@ def test_an_unchanged_suite_resumes_exactly_as_before(git_repo: GitRepo, tmp_pat
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
     assert _resumed(second) == 1
     assert _candidates(second) == [], "an unchanged suite must re-execute nothing"
+
+
+def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A worker-capability guard repair cold-starts earlier B145 results.
+
+    Generate a realistic persisted `killed` record using the former `/6`
+    identity, then resume the unchanged lane under `/7`. This models builds
+    whose Assay version string is unchanged; the judge label alone must reject
+    a zero-delta kill that may have come from an unguarded worker.
+    """
+    _seed(git_repo, _STRICT_JUDGE)
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/6")
+    zero_counters = mutation.ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(
+        mutation, "_read_candidate_resource_counters", lambda: zero_counters
+    )
+
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert [event["outcome_bucket"] for event in _candidates(first)] == ["killed"]
+    old_record = _records(state_dir)[0]
+    assert old_record["resource_limit_evidence"] == zero_resource_limit_evidence_dict()
+
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/7")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+
+    assert _resumed(second) == 0
+    resume_events = [event for event in second if event.get("event") == "resume"]
+    assert len(resume_events) == 1
+    assert resume_events[0]["rejected_total"] == 1
+    assert [event["outcome_bucket"] for event in _candidates(second)] == ["killed"]
+    assert _records(state_dir)[0]["judge_sha256"] != old_record["judge_sha256"]
 
 
 def test_filtered_identity_resumes_across_an_excluded_report_commit(

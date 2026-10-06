@@ -670,9 +670,10 @@ does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. Resume state with a positive counter delta is rejected for reuse, and
-the judge identity advances to `/6`, so pre-current-B145 candidate records are
-cold starts. The mutation-state schema number does not change: this is a
-change in what the judge identity covers, not the record's outer shape. The
+the worker capability guard advances the judge identity to `/7`, so `/4`,
+`/5`, and `/6` B145 records are cold starts. The mutation-state schema number
+does not change: this is a change in what the judge identity covers, not the
+record's outer shape. The
 v14 verdict shape adds the evidence only to native outcomes; ingested mutation
 reports do not claim local execution counters.
 
