@@ -568,6 +568,14 @@ def _extract_config_from_args(args, *, since_marker=None, json_output: bool | No
         show_tool_call_intent=get("show_tool_call_intent", False),
         tool_calls=get("tool_calls") or "none",
         tool_errors=get("tool_errors") or "show",
+        strip_cd_prefix=bool(get("strip_cd_prefix", False)),
+        edit_calls=get("edit_calls") or "show",
+        read_calls=get("read_calls") or "show",
+        effect_calls=get("effect_calls") or "mode",
+        timestamps=get("timestamps") or "all",
+        timestamp_gap_minutes=(
+            get("timestamp_gap_minutes") if get("timestamp_gap_minutes") is not None else 5
+        ),
         show_timestamps=get("show_timestamps") or "pre",
         timestamp_format=get("timestamp_format") or "[%H:%M:%S]",
         extract_metadata=get("extract_metadata") or "both",
@@ -621,6 +629,25 @@ def _validate_render_and_follow_flags(args) -> str | None:
         return ("--task/--task-file append a banner AFTER the finished brief, which --follow "
                 "never reaches -- they are contradictory")
     return None
+
+
+def _resolve_effect_patterns(args) -> tuple[tuple[str, ...], bool] | None:
+    """(effect patterns, built-in scp-upload rule on) from `--effect-pattern` /
+    `--no-default-effect-patterns`; None (after printing the error) on an
+    invalid regex."""
+    import re as re_mod
+
+    from .session_extract.shellcmd import DEFAULT_EFFECT_PATTERNS
+
+    user = tuple(getattr(args, "effect_pattern", None) or ())
+    for pattern in user:
+        try:
+            re_mod.compile(pattern)
+        except re_mod.error as e:
+            print(f"error: --effect-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
+            return None
+    defaults = not getattr(args, "no_default_effect_patterns", False)
+    return ((DEFAULT_EFFECT_PATTERNS if defaults else ()) + user), defaults
 
 
 def _follow_anchor(path: Path, fmt: str, session_id: str | None):
@@ -896,6 +923,16 @@ def cmd_extract(args) -> int:
                 and not getattr(args, "show_tool_calls", False)):
             args.tool_calls = "intent-or-call"
         args.ledger = True
+        # The rest of the successor defaults (design section 9): every
+        # compression is an option; the brief just turns them on. An explicit
+        # value always wins.
+        for attr, value in (("tool_errors", "show"), ("edit_calls", "collapse"),
+                            ("read_calls", "collapse"), ("effect_calls", "always"),
+                            ("timestamps", "gaps"), ("path_aliases", "auto")):
+            if getattr(args, attr, None) is None:
+                setattr(args, attr, value)
+        if not getattr(args, "no_strip_cd_prefix", False):
+            args.strip_cd_prefix = True
     if getattr(args, "show_tool_calls", False) or getattr(args, "show_tool_call_intent", False):
         print("nyxloom extract: --show-tool-calls/--show-tool-call-intent are deprecated aliases "
               "(label / label+intent rendering); use --tool-calls "
@@ -921,6 +958,22 @@ def cmd_extract(args) -> int:
                 return 1
 
     config = _extract_config_from_args(args, since_marker=since_marker)
+    resolved = _resolve_effect_patterns(args)
+    if resolved is None:
+        return 1
+    effect_patterns, scp_uploads = resolved
+    try:
+        from dataclasses import replace as dc_replace
+
+        from .session_extract.compress import resolve_aliases
+
+        config = dc_replace(
+            config, effect_patterns=effect_patterns, effect_scp_uploads=scp_uploads,
+            path_aliases=resolve_aliases(getattr(args, "path_aliases", None), path),
+        )
+    except (ValueError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     follow_fmt = None
     anchor = None
     if args.follow:
@@ -951,10 +1004,18 @@ def cmd_extract(args) -> int:
         print(f"error: --tool-calls is not supported for {result.format!r} yet; supported "
               f"format: claude-code", file=sys.stderr)
         return 1
-    if getattr(args, "tool_errors", None) is not None and result.format != "claude-code":
-        print(f"error: --tool-errors is not supported for {result.format!r} yet; supported "
-              f"format: claude-code", file=sys.stderr)
-        return 1
+    if result.format != "claude-code":
+        for attr, flag in (("tool_errors", "--tool-errors"), ("path_aliases", "--path-aliases"),
+                           ("edit_calls", "--edit-calls"), ("read_calls", "--read-calls"),
+                           ("effect_calls", "--effect-calls")):
+            if getattr(args, attr, None) is not None:
+                print(f"error: {flag} is not supported for {result.format!r} yet; supported "
+                      f"format: claude-code", file=sys.stderr)
+                return 1
+        if getattr(args, "strip_cd_prefix", False):
+            print(f"error: --strip-cd-prefix is not supported for {result.format!r} yet; "
+                  f"supported format: claude-code", file=sys.stderr)
+            return 1
 
     trailer_blocks: list[str] = []
     session_ledger = None
@@ -965,18 +1026,6 @@ def cmd_extract(args) -> int:
             return 1
         from .session_extract import ledger as ledger_mod
 
-        import re as re_mod
-
-        effect_patterns = tuple(getattr(args, "effect_pattern", None) or ())
-        for pattern in effect_patterns:
-            try:
-                re_mod.compile(pattern)
-            except re_mod.error as e:
-                print(f"error: --effect-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
-                return 1
-        if not getattr(args, "no_default_effect_patterns", False):
-            effect_patterns = ledger_mod.DEFAULT_EFFECT_PATTERNS + effect_patterns
-
         # An interrupt STOP marker is a LIFECYCLE_MARKER but not a boundary.
         boundary_markers = {
             ev.marker for ev in result.events
@@ -985,6 +1034,7 @@ def cmd_extract(args) -> int:
         }
         ledgers = ledger_mod.build_ledger(
             path, result.format, boundary_markers, effect_patterns=effect_patterns,
+            scp_uploads=scp_uploads, aliases=config.path_aliases,
         )
         session_ledger = ledger_mod.session_ledger(ledgers)
         if not successor:
@@ -1042,6 +1092,7 @@ def cmd_extract(args) -> int:
         rendered = successor_mod.assemble(
             path, brief[1], rendered, session_ledger, stop_state, order,
             brief_max_chars=max_chars if max_chars is not None else successor_mod.DEFAULT_BRIEF_MAX_CHARS,
+            brief_line=brief[2],
         )
     task_text = None
     if args.task is not None:

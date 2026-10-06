@@ -100,7 +100,7 @@ from typing import Any
 
 from ..config import ExtractConfig
 from ..events import EventKind, NormalizedEvent
-from .. import toolresult
+from .. import shellcmd, toolresult
 
 name = "claude-code"
 
@@ -594,6 +594,12 @@ class StreamState:
     # Registered unconditionally as tool_use blocks arrive; an unknown id
     # (a follow stream whose call predates its anchor) degrades to "tool".
     tool_calls: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # An `Intent: ...` text line seen as the latest assistant block of message
+    # `pending_intent_msg`, waiting to be paired with an Edit/Write call of the
+    # SAME message (Claude Code writes one record per content block, all
+    # sharing message.id). Cleared by any other block or user record.
+    pending_intent: str = ""
+    pending_intent_msg: str | None = None
 
 
 def _remember_askuserquestion(rec: dict[str, Any], state: StreamState) -> None:
@@ -691,26 +697,81 @@ def update_interview_pending(rec: dict[str, Any], pending: dict[str, str]) -> st
     return None
 
 
-def _tool_call_label(name: str, tool_input: Any, mode: str) -> str | None:
+def _tool_call_label(
+    name: str, tool_input: Any, mode: str, intent: str = "", call: str | None = None,
+) -> str | None:
     """One tool_use block -> its rendered event text under `mode` (see
     ExtractConfig.tool_call_mode), or None when the mode renders nothing
-    for it. Never includes the tool result."""
+    for it. Never includes the tool result. `intent` is the call's resolved
+    intent (its own field, or a paired `Intent:` line); `call` the cleaned
+    one-line call."""
     if mode == "none":
         return None
     head = f"[tool call: {name}]"
-    intent = toolresult.tool_intent(tool_input)
     if mode == "label":
         return head
     if mode == "label-intent":
         return head + (f" {intent}" if intent else "")
     if mode == "intent":
         return f"{head} {intent}" if intent else None
-    call = toolresult.summarize_call(name, tool_input)
+    if call is None:
+        call = toolresult.summarize_call(name, tool_input)
     if mode == "intent-or-call":
         text = intent or call
     else:  # "call"
         text = call
     return f"{head} {text}" if text else head
+
+
+def _tool_call_event(
+    name: str, tool_input: Any, config: ExtractConfig, seq: int, uuid: str, ts: str,
+    paired: str = "",
+) -> NormalizedEvent | None:
+    """The TOOL_CALL event for one tool_use block (None = nothing rendered).
+    Applies `--strip-cd-prefix`/`--path-aliases` before truncation, pairs an
+    `Intent:` line for Edit/Write, and tags the event (`tool`, `tool_kind`,
+    `tool_file`, `tool_intent` in meta) for the collapse stage (compress.py).
+    `--edit-calls omit` drops edits; `--effect-calls always` prints an
+    outside-effect Bash command even when the mode would show only intent;
+    collapsing edits/reads keeps their events even without an intent."""
+    mode = config.tool_call_mode
+    if mode == "none":
+        return None
+    aliases = config.path_aliases
+    intent = toolresult.tool_intent(tool_input, aliases)
+    if not intent and paired:
+        intent = toolresult.apply_aliases(paired, aliases)[:240]
+    call = toolresult.summarize_call(
+        name, tool_input, strip_cd_prefix=config.strip_cd_prefix, aliases=aliases,
+    )
+    kind = toolresult.tool_kind(name, tool_input, config.effect_patterns, config.effect_scp_uploads)
+    if kind == "edit" and config.edit_calls == "omit":
+        return None
+    label = _tool_call_label(name, tool_input, mode, intent, call)
+    if kind == "effect" and config.effect_calls == "always" and mode in ("intent", "intent-or-call"):
+        hits = shellcmd.effect_segments(
+            str(tool_input.get("command", "")), config.effect_patterns, config.effect_scp_uploads,
+        )
+        if config.strip_cd_prefix:
+            hits = [toolresult.strip_cd(h) for h in hits]
+        effect = toolresult.one_line("$ " + toolresult.apply_aliases(" ; ".join(hits), aliases), 200)
+        label = f"[tool call: {name}] {effect}" + (f" -- {intent}" if intent else "")
+    elif label is None and (
+        (kind == "edit" and config.edit_calls == "collapse")
+        or (kind == "read" and config.read_calls == "collapse")
+    ):
+        label = f"[tool call: {name}] {call}"
+    if label is None:
+        return None
+    event = NormalizedEvent(seq, uuid, ts, EventKind.TOOL_CALL, label)
+    event.meta["tool"] = name
+    event.meta["tool_kind"] = kind
+    event.meta["tool_intent"] = intent
+    if kind == "edit" and isinstance(tool_input, dict):
+        event.meta["tool_file"] = toolresult.apply_aliases(
+            str(tool_input.get("file_path") or tool_input.get("notebook_path") or ""), aliases,
+        )
+    return event
 
 
 def _stop_event(
@@ -750,9 +811,12 @@ def _tool_result_events(
             ))
             continue
         if config.tool_errors == "show" and toolresult.is_failed(block, rec):
+            err = toolresult.one_line(toolresult.apply_aliases(text, config.path_aliases), 240)
+            # The failed call itself (cleaned) comes first, in EVERY
+            # --tool-calls mode: an error line must say which call failed.
             event = NormalizedEvent(
                 seq, uuid, ts, EventKind.TOOL_CALL,
-                f"[tool error: {tname}] {toolresult.one_line(text, 240)}",
+                f"[tool error: {tname}] {call} => {err}" if call else f"[tool error: {tname}] {err}",
             )
             event.meta["tool_error"] = "true"
             out.append(event)
@@ -831,6 +895,7 @@ def parse_record(
             ))
             return events
 
+        msg_id = (rec.get("message") or {}).get("id")
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -838,7 +903,15 @@ def parse_record(
             if btype == "text":
                 text = block.get("text", "")
                 if text:
-                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
+                    intent_line, rest = toolresult.paired_intent(text)
+                    state.pending_intent = intent_line
+                    state.pending_intent_msg = msg_id
+                    if intent_line and config.tool_call_mode in ("intent", "intent-or-call"):
+                        # The Intent line is shown on its Edit/Write call
+                        # instead; keep only any prose before it.
+                        text = rest
+                    if text:
+                        events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
             elif btype == "tool_use":
                 name = str(block.get("name") or "unknown")
                 tool_input = block.get("input")
@@ -852,10 +925,18 @@ def parse_record(
                                     seq, uuid, ts, EventKind.QA_PAIR, prompt,
                                 ))
                 if block.get("id"):
-                    state.tool_calls[block["id"]] = (name, toolresult.summarize_call(name, tool_input))
-                label = _tool_call_label(name, tool_input, config.tool_call_mode)
-                if label is not None:
-                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.TOOL_CALL, label))
+                    state.tool_calls[block["id"]] = (name, toolresult.summarize_call(
+                        name, tool_input, strip_cd_prefix=config.strip_cd_prefix,
+                        aliases=config.path_aliases,
+                    ))
+                paired = ""
+                if (name in toolresult.EDIT_TOOLS and state.pending_intent
+                        and state.pending_intent_msg == msg_id):
+                    paired = state.pending_intent
+                state.pending_intent = ""
+                call_event = _tool_call_event(name, tool_input, config, seq, uuid, ts, paired)
+                if call_event is not None:
+                    events.append(call_event)
             elif btype == "thinking" and config.include_thinking:
                 text = block.get("thinking", "")
                 if text:
@@ -863,6 +944,7 @@ def parse_record(
         return events
 
     if rtype == "user":
+        state.pending_intent = ""
         if rec.get("isCompactSummary"):
             event = NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]")
             event.meta["boundary_type"] = "compaction_summary"

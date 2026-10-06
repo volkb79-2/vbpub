@@ -176,7 +176,7 @@ def separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
     return f"{pad}{marker}{pad}"
 
 
-def _format_timestamp(raw: str, timestamp_format: str) -> str | None:
+def _parse_timestamp(raw: str) -> datetime | None:
     if not raw:
         return None
     try:
@@ -185,7 +185,30 @@ def _format_timestamp(raw: str, timestamp_format: str) -> str | None:
         return None
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).strftime(timestamp_format)
+    return value.astimezone(timezone.utc)
+
+
+def _format_timestamp(raw: str, timestamp_format: str) -> str | None:
+    value = _parse_timestamp(raw)
+    return None if value is None else value.strftime(timestamp_format)
+
+
+def _stamp_mode(
+    ev: NormalizedEvent, prev_raw: str | None, timestamps: str, show_timestamps: str,
+    gap_minutes: int,
+) -> str:
+    """The per-event show_timestamps value under `--timestamps`: `all` =
+    the configured placement for every event, `none` = never, `gaps` = only
+    for the first event, a boundary (operator turn, Q&A, lifecycle/STOP
+    marker) and an event at least `gap_minutes` after the previous one."""
+    if timestamps == "none":
+        return "none"
+    if timestamps == "all" or prev_raw is None or ev.kind in _LEDGER_BOUNDARY_KINDS:
+        return show_timestamps
+    before, now = _parse_timestamp(prev_raw), _parse_timestamp(ev.timestamp)
+    if before is not None and now is not None and (now - before).total_seconds() >= gap_minutes * 60:
+        return show_timestamps
+    return "none"
 
 
 def render_event_block(
@@ -241,6 +264,8 @@ def render_text(
     metadata_position: str = "both",
     source_metadata: dict[str, str] | None = None,
     trailer_blocks: list[str] | None = None,
+    timestamps: str = "all",
+    timestamp_gap_minutes: int = 5,
 ) -> str:
     """`trailer_blocks`: extra blocks (the whole-session ledger, the stop
     state) appended after the last event and BEFORE the closing cursor
@@ -268,12 +293,15 @@ def render_text(
                 note = note[:-1] + f"; raw log continues before marker {events[0].marker}]"
             _add(note)
     last_epoch: str | None = None
+    prev_ts: str | None = None
     for ev in events:
         epoch = ev.meta.get("epoch")
         if epoch is not None and epoch != last_epoch and int(ev.meta.get("epoch_count", "1")) > 1:
             _add(f"[epoch {epoch}/{ev.meta.get('epoch_count', '1')}]")
             last_epoch = epoch
-        _add(render_event_block(ev, block_render, show_timestamps, timestamp_format))
+        stamp = _stamp_mode(ev, prev_ts, timestamps, show_timestamps, timestamp_gap_minutes)
+        prev_ts = ev.timestamp
+        _add(render_event_block(ev, block_render, stamp, timestamp_format))
         if (ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS
                 and ev.meta.get("boundary_type") != "interrupt"):
             entry = ledger.get(ev.marker)

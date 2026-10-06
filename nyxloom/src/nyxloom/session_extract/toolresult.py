@@ -18,12 +18,14 @@ import json
 import re
 from typing import Any
 
+from . import shellcmd
+
 # The harness's own wording when a tool call is cut off. The transcript
 # renders BOTH a user stop and a controller TaskStop this way (E-020: the
 # agent believes the user declined in either case); only the sibling
 # `.meta.json` `stoppedByUser` field tells them apart.
 DENIAL_PREFIX = "The user doesn't want to proceed with this tool use"
-INTERRUPT_PREFIX = "[Request interrupted by user"
+_INTERRUPT_RE = re.compile(r"\[Request interrupted by user(?: for tool use)?\]")
 
 _EXIT_RE = re.compile(r"^(?:Error:\s*)?Exit code\s+(\d+)")
 
@@ -57,8 +59,11 @@ def is_denial(text: str, rec: dict[str, Any] | None = None) -> bool:
 
 def is_interrupt_text(text: str) -> bool:
     """The harness's synthetic user-text record that follows a rejected call
-    (`[Request interrupted by user for tool use]`)."""
-    return text.strip().startswith(INTERRUPT_PREFIX)
+    (`[Request interrupted by user]` / `[Request interrupted by user for tool
+    use]`). An EXACT match of the whole text: a real operator message that
+    merely starts with (or quotes) that wording and goes on is operator
+    intent and must stay OPERATOR."""
+    return _INTERRUPT_RE.fullmatch(text.strip()) is not None
 
 
 def is_failed(block: dict[str, Any], rec: dict[str, Any] | None = None) -> bool:
@@ -71,7 +76,7 @@ def is_failed(block: dict[str, Any], rec: dict[str, Any] | None = None) -> bool:
     m = _EXIT_RE.match(text)
     if m and int(m.group(1)) != 0:
         return True
-    if "<tool_use_error>" in text:
+    if text.lstrip().startswith("<tool_use_error>"):
         return True
     tur = rec.get("toolUseResult") if rec is not None else None
     if isinstance(tur, dict) and tur.get("interrupted") is True:
@@ -88,32 +93,97 @@ def one_line(text: str, limit: int) -> str:
     return flat
 
 
-def tool_intent(tool_input: Any) -> str:
+Aliases = tuple[tuple[str, str], ...]
+
+EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+READ_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch"})
+
+_CD_RE = re.compile(r"""^\s*cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*""")
+_CD_PASSES = 4
+_INTENT_LINE_RE = re.compile(r"^\s*Intent:\s*(\S.*?)\s*$")
+
+
+def strip_cd(command: str) -> str:
+    """Drop a leading `cd X &&` / `cd X;` (repeated, bounded)."""
+    for _ in range(_CD_PASSES):
+        new = _CD_RE.sub("", command, count=1)
+        if new == command:
+            break
+        command = new
+    return command
+
+
+def apply_aliases(text: str, aliases: Aliases) -> str:
+    """Replace each known root path in `text` by its `$NAME` alias, longest
+    path first, only at a path boundary."""
+    for name, path in sorted(aliases, key=lambda a: len(a[1]), reverse=True):
+        if not path:
+            continue
+        rx = re.compile(r"(?<![\w.\-])" + re.escape(path.rstrip("/")) + r"(?![\w.\-])")
+        text = rx.sub("$" + name, text)
+    return text
+
+
+def paired_intent(text: str) -> tuple[str, str]:
+    """If the LAST non-empty line of an assistant text block is
+    `Intent: <what and why>`, return (that intent, the text before it); else
+    ("", text). The Edit/Write intent convention (nyxloom-dispatch skill)."""
+    lines = text.rstrip().split("\n")
+    m = _INTENT_LINE_RE.match(lines[-1])
+    if m is None:
+        return "", text
+    return " ".join(m.group(1).split()), "\n".join(lines[:-1]).strip()
+
+
+def tool_intent(tool_input: Any, aliases: Aliases = ()) -> str:
     """The call's OWN description/intent field (Bash `description`, or an
-    `intent` key), normalised to one line, <= 240 chars; "" when absent."""
+    `intent` key), normalised to one line, aliased, <= 240 chars; "" when
+    absent."""
     if not isinstance(tool_input, dict):
         return ""
     raw = tool_input.get("description") or tool_input.get("intent")
     if isinstance(raw, str):
-        return " ".join(raw.split())[:240]
+        return apply_aliases(" ".join(raw.split()), aliases)[:240]
     return ""
 
 
-def summarize_call(name: str, tool_input: Any, limit: int = 160) -> str:
+def summarize_call(
+    name: str, tool_input: Any, limit: int = 160,
+    strip_cd_prefix: bool = False, aliases: Aliases = (),
+) -> str:
     """The call itself as one truncated line, never the result. Bash ->
     `$ <command>`; file tools -> the path; Grep/Glob -> the pattern; anything
-    else -> the first string field, or compact JSON."""
+    else -> the first string field, or compact JSON. The cleanups
+    (`strip_cd_prefix`, `aliases`) run BEFORE the truncation."""
     if not isinstance(tool_input, dict):
         return one_line(tool_input if isinstance(tool_input, str) else "", limit)
     if name == "Bash" or isinstance(tool_input.get("command"), str):
-        return one_line("$ " + str(tool_input.get("command", "")), limit)
+        command = str(tool_input.get("command", ""))
+        if strip_cd_prefix:
+            command = strip_cd(command)
+        return one_line("$ " + apply_aliases(command, aliases), limit)
     if name in _FILE_TOOLS or "file_path" in tool_input:
-        return one_line(str(tool_input.get("file_path", "")), limit)
+        return one_line(apply_aliases(str(tool_input.get("file_path", "")), aliases), limit)
     for key in ("pattern", "query", "url", "prompt", "description"):
         value = tool_input.get(key)
         if isinstance(value, str) and value:
-            return one_line(f"{key}={value}", limit)
+            return one_line(apply_aliases(f"{key}={value}", aliases), limit)
     try:
-        return one_line(json.dumps(tool_input, sort_keys=True), limit)
+        return one_line(apply_aliases(json.dumps(tool_input, sort_keys=True), aliases), limit)
     except (TypeError, ValueError):
         return ""
+
+
+def tool_kind(
+    name: str, tool_input: Any, effect_patterns: tuple[str, ...], scp_uploads: bool = True,
+) -> str:
+    """"edit" | "effect" | "read" | "other" -- the class `--edit-calls`,
+    `--read-calls` and `--effect-calls` act on."""
+    if name in EDIT_TOOLS:
+        return "edit"
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if name == "Bash" and isinstance(command, str):
+        if shellcmd.effect_segments(command, effect_patterns, scp_uploads):
+            return "effect"
+        return "read" if shellcmd.is_read_only(command) else "other"
+    return "read" if name in READ_TOOLS else "other"

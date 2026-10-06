@@ -37,12 +37,13 @@ operator boundary, so a single-brief agent (one OPERATOR turn, hundreds of
 tool calls) showed little or nothing useful. `session_ledger()` merges every
 boundary's ledger into one whole-session `Ledger`, and the new
 `external_effects` bucket lists Bash commands that change the world outside
-the worktree (git push/merge/tag/rebase, ssh, mutating curl, netcup
-snapshot/install verbs, docker rm/stop/run, systemctl, apt). It is the
+the worktree (MUTATING forms only: git push/merge/tag/rebase/reset --hard,
+mutating systemctl/apt/dpkg/docker/curl verbs, netcup create/delete/
+attach-iso/power/install-host/boot-order set, and ssh/scp only when the
+remote command is such a form or scp uploads). It is the
 "already done -- verify by state, never repeat" list a successor needs. The
-patterns are heuristic regexes over each shell SEGMENT (heredoc bodies
-dropped; `;`, `&&`, `||`, `|` and newlines split; leading `VAR=x`, sudo,
-nice/ionice/timeout/time wrappers stripped) and are configurable
+detection is heuristic, quote-aware and lives in shellcmd.py (including its
+documented residuals); the patterns are configurable
 (`--effect-pattern`, `--no-default-effect-patterns`). A command whose result
 failed or was rejected by the harness is annotated, because a rejected push
 did NOT happen.
@@ -59,63 +60,17 @@ from pathlib import Path
 
 from . import toolresult
 
-# Default external-effect patterns, matched (re.search, case-insensitive)
-# against each normalised shell segment. See the module docstring.
-DEFAULT_EFFECT_PATTERNS: tuple[str, ...] = (
-    r"^git(?:\s+-C\s+\S+)?\s+(?:push|merge|rebase)\b",
-    r"^git(?:\s+-C\s+\S+)?\s+tag\b(?!.*\s(?:-l|--list)\b)",
-    r"^(?:ssh|scp)(?:\s|$)",
-    r"^curl\b.*\s(?:-X|--request)\s*=?\s*(?:POST|PUT|PATCH|DELETE)\b",
-    r"^curl\b.*\s(?:-d|--data\S*|-F|--form\S*|-T|--upload-file)\b",
-    r"\bnc\.py\b.*\bsnapshots?\b.*\b(?:create|delete|revert|rollback)\b",
-    r"\bnc\.py\b.*\binstall-host\b",
-    r"\bnc\.py\b.*\bscp-api\b.*\b(?:create|delete|install|reinstall|start|stop|shutdown|poweron|poweroff|reset|rescue)\b",
-    r"^docker\s+(?:rm|stop|run)\b",
-    r"^systemctl\b",
-    r"^(?:apt|apt-get)\b",
-)
-
-_HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", re.DOTALL)
-_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
-_LEADING_KEYWORD_RE = re.compile(r"^(?:do|then|else|elif|if|while|!|\(|\{)\s+")
-_LEADING_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
-_WRAPPER_RES = (
-    re.compile(r"^sudo(?:\s+-\S+)*\s+"),
-    re.compile(r"^nice(?:\s+-n\s*\d+|\s+-\d+)?\s+"),
-    re.compile(r"^ionice(?:\s+-c\s*\d+)?(?:\s+-n\s*\d+)?\s+"),
-    re.compile(r"^timeout(?:\s+-\S+)*\s+\d+[smhd]?\s+"),
-    re.compile(r"^time\s+"),
-)
+# The effect patterns, segmentation (quote-aware), wrapper stripping and
+# ssh/scp/`bash -c` recursion live in shellcmd.py (shared with the adapter's
+# --effect-calls / --read-calls classification).
+from .shellcmd import DEFAULT_EFFECT_PATTERNS, effect_segments  # noqa: E402,F401
 
 
-def _segments(command: str) -> list[str]:
-    command = _HEREDOC_RE.sub("", command)
-    out = []
-    for seg in _SEGMENT_SPLIT_RE.split(command):
-        seg = seg.strip()
-        changed = True
-        while changed and seg:
-            changed = False
-            for rx in (_LEADING_KEYWORD_RE, _LEADING_ASSIGN_RE, *_WRAPPER_RES):
-                new = rx.sub("", seg, count=1)
-                if new != seg:
-                    seg, changed = new.strip(), True
-        if seg:
-            out.append(seg)
-    return out
-
-
-def effect_segments(command: str, patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS) -> list[str]:
-    """The shell segments of `command` that match an external-effect
-    pattern (empty = not an external effect)."""
-    compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
-    return [seg for seg in _segments(command) if any(rx.search(seg) for rx in compiled)]
-
-
-def external_effect(command: str, patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS) -> bool:
-    """Whether any shell segment of `command` matches an external-effect
-    pattern."""
-    return bool(effect_segments(command, patterns))
+def external_effect(
+    command: str, patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS, scp_uploads: bool = True,
+) -> bool:
+    """Whether any shell segment of `command` is an external effect."""
+    return bool(effect_segments(command, patterns, scp_uploads))
 
 _FILE_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 _READ_TOOLS = {"Read"}
@@ -239,6 +194,8 @@ def _hms(ts: str) -> str:
 def build_ledger_claude_code(
     path: Path, boundary_markers: set[str], repo_root: Path | None = None,
     effect_patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
+    scp_uploads: bool = True,
+    aliases: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Ledger]:
     """One `Ledger` per marker in `boundary_markers` (pass the `.marker` of
     every OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER event that survived
@@ -300,7 +257,8 @@ def build_ledger_claude_code(
                         if fp:
                             bucket = ledgers[current].files_read if name in _READ_TOOLS \
                                 else ledgers[current].files_edited
-                            bucket.append(_relativize(fp, root))
+                            aliased = toolresult.apply_aliases(fp, aliases)
+                            bucket.append(aliased if aliased != fp else _relativize(fp, root))
                     elif name == "Bash":
                         command = tinput.get("command", "")
                         if not isinstance(command, str):
@@ -312,12 +270,12 @@ def build_ledger_claude_code(
                         m = _BRANCH_CHECKOUT_RE.search(command)
                         if m:
                             ledgers[current].branches.append(m.group(1))
-                        hits = effect_segments(command, effect_patterns)
+                        hits = effect_segments(command, effect_patterns, scp_uploads)
                         if hits:
                             effects = ledgers[current].external_effects
                             effects.append(
                                 f"{_hms(rec.get('timestamp', ''))} "
-                                f"{toolresult.one_line(' ; '.join(hits), 200)}"
+                                f"{toolresult.one_line(toolresult.apply_aliases(' ; '.join(hits), aliases), 200)}"
                             )
                             if block.get("id"):
                                 pending_effects[block["id"]] = (ledgers[current], len(effects) - 1)
@@ -364,10 +322,14 @@ def build_ledger_claude_code(
 def build_ledger(
     path: Path, fmt: str, boundary_markers: set[str], repo_root: Path | None = None,
     effect_patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
+    scp_uploads: bool = True,
+    aliases: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Ledger]:
     """Dispatches on `fmt` -- see module docstring for what's implemented."""
     if fmt == "claude-code":
-        return build_ledger_claude_code(Path(path), boundary_markers, repo_root, effect_patterns)
+        return build_ledger_claude_code(
+            Path(path), boundary_markers, repo_root, effect_patterns, scp_uploads, aliases,
+        )
     raise NotImplementedError(
         f"the E-012 ledger does not support {fmt!r} yet -- see ledger.py's module docstring"
     )

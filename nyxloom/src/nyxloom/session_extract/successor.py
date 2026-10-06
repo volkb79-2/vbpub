@@ -28,11 +28,13 @@ from .stopstate import StopState, read_meta
 DEFAULT_BRIEF_MAX_CHARS = 6000
 
 
-def first_user_record(path: Path) -> tuple[str, str] | None:
-    """(uuid, text) of the first `user` record with real text content -- the
-    dispatch prompt of an Agent-tool subagent -- or None."""
+def first_user_record(path: Path) -> tuple[str, str, int] | None:
+    """(uuid, text, 1-based file line number) of the first `user` record with
+    real text content -- the dispatch prompt of an Agent-tool subagent -- or
+    None. The line is the real physical line: attachment records can precede
+    the brief (about 5% of real transcripts start it at line 3 or 5)."""
     with Path(path).open("r", errors="ignore") as f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
@@ -53,8 +55,28 @@ def first_user_record(path: Path) -> tuple[str, str] | None:
             else:
                 continue
             if text.strip():
-                return rec.get("uuid") or "", text
+                return rec.get("uuid") or "", text, lineno
     return None
+
+
+def transcript_context(path: Path) -> dict[str, str]:
+    """`cwd` (first record that carries one) and `gitBranch` (the LAST record
+    that carries one: the branch the agent ended on) from the raw records;
+    keys absent when no record has them."""
+    out: dict[str, str] = {}
+    with Path(path).open("r", errors="ignore") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if "cwd" not in out and isinstance(rec.get("cwd"), str) and rec["cwd"]:
+                out["cwd"] = rec["cwd"]
+            if isinstance(rec.get("gitBranch"), str) and rec["gitBranch"]:
+                out["gitBranch"] = rec["gitBranch"]
+    return out
 
 
 def read_order(spec: str) -> str:
@@ -69,14 +91,14 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
-def brief_section(path: Path, text: str, max_chars: int) -> str:
+def brief_section(path: Path, text: str, max_chars: int, lineno: int = 1) -> str:
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if len(text) > max_chars:
         return (
             "## Original brief (not inlined: longer than "
             f"{max_chars} chars)\n"
             f"The predecessor's complete original instructions are the FIRST user record "
-            f"(line 1) of `{Path(path).absolute()}`; {len(text)} chars, sha256 `{digest}`. "
+            f"(line {lineno}) of `{Path(path).absolute()}`; {len(text)} chars, sha256 `{digest}`. "
             "Read them there in full before acting -- they still bind you except where "
             "'Your order' amends them.\n"
         )
@@ -98,6 +120,7 @@ def assemble(
     order: str | None,
     brief_max_chars: int = DEFAULT_BRIEF_MAX_CHARS,
     omitted_brief_note: bool = True,
+    brief_line: int = 1,
 ) -> str:
     path = Path(path)
     meta = read_meta(path) or {}
@@ -105,7 +128,12 @@ def assemble(
     facts = []
     for key in ("description", "agentType", "model", "stoppedByUser"):
         if key in meta:
-            facts.append(f"{key}: {meta[key]}")
+            value = meta[key]
+            facts.append(f"{key}: {str(value).lower() if isinstance(value, bool) else value}")
+    context = transcript_context(path)
+    for key in ("cwd", "gitBranch"):
+        if key in context:
+            facts.append(f"{key}: {context[key]}")
     facts.append(f"transcript: {path.absolute()}")
     header.append("\n".join(f"- {f}" for f in facts))
     note = (
@@ -114,7 +142,7 @@ def assemble(
     )
     parts = [
         "\n".join(header) + "\n",
-        brief_section(path, brief_text, brief_max_chars),
+        brief_section(path, brief_text, brief_max_chars, brief_line),
         "## Extract of the predecessor's work\n"
         "Mechanical, no LLM. Tool RESULTS are not shown except failures; each `[gap: N records "
         "omitted]` marks omitted records. Claims below are the predecessor's own, not verified."

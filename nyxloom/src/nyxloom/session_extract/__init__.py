@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import classifier, mangle, render, select
+from . import classifier, compress, mangle, render, select
 from .adapters import DetectionError, detect, get_adapter
 from .config import ExtractConfig
 from .events import NormalizedEvent
@@ -60,6 +60,8 @@ class ExtractResult:
             block_render=self._block_render,
             show_timestamps=self._show_timestamps,
             timestamp_format=self._timestamp_format,
+            timestamps=self._timestamps,
+            timestamp_gap_minutes=self._timestamp_gap_minutes,
             metadata_position=self._metadata_position,
             source_metadata=self._source_metadata,
             trailer_blocks=self._trailer_blocks,
@@ -74,6 +76,8 @@ class ExtractResult:
     _gap_marker_mode: str = "full"
     _show_timestamps: str = "pre"
     _timestamp_format: str = "[%H:%M:%S]"
+    _timestamps: str = "all"
+    _timestamp_gap_minutes: int = 5
     _metadata_position: str = "both"
     _source_metadata: dict[str, str] | None = None
     # E-012 (ledger.py) -- opt-in, built and attached by cli.py's cmd_extract
@@ -185,6 +189,8 @@ def extract(
     if config.redact_patterns:
         kept, redacted_paragraphs = mangle.redact_paragraphs(kept, list(config.redact_patterns))
 
+    kept = compress.collapse_tool_calls(kept, config.edit_calls, config.read_calls)
+
     result = ExtractResult(
         events=kept, format=adapter.name, session_id=session_id, last_marker=last_marker,
         stale_wakeups_stripped=stale_wakeups_stripped, redacted_paragraphs=redacted_paragraphs,
@@ -198,6 +204,8 @@ def extract(
     result._gap_marker_mode = config.gap_marker_mode
     result._show_timestamps = config.show_timestamps
     result._timestamp_format = config.timestamp_format
+    result._timestamps = config.timestamps
+    result._timestamp_gap_minutes = config.timestamp_gap_minutes
     result._metadata_position = config.extract_metadata
     return result
 

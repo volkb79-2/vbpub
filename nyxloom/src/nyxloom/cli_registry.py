@@ -293,6 +293,36 @@ def _extract_guard(args: Any) -> None:
             show_help=True,
         )
     successor = getattr(args, "successor_brief", False)
+    calls_on = (
+        getattr(args, "tool_calls", None) not in (None, "none")
+        or getattr(args, "show_tool_calls", False) or successor
+    )
+    if not calls_on:
+        for attr, flag in (("edit_calls", "--edit-calls"), ("read_calls", "--read-calls"),
+                           ("effect_calls", "--effect-calls")):
+            if getattr(args, attr, None) is not None:
+                raise CliFailure(f"{flag} needs --tool-calls (or --successor-brief)",
+                                 exit_code=2, show_help=True)
+    if getattr(args, "no_strip_cd_prefix", False) and not successor:
+        raise CliFailure("--no-strip-cd-prefix only applies with --successor-brief",
+                         exit_code=2, show_help=True)
+    if getattr(args, "no_strip_cd_prefix", False) and getattr(args, "strip_cd_prefix", False):
+        raise CliFailure("--strip-cd-prefix and --no-strip-cd-prefix are contradictory",
+                         exit_code=2, show_help=True)
+    if getattr(args, "timestamp_gap_minutes", None) is not None:
+        if getattr(args, "timestamps", None) != "gaps" and not successor:
+            raise CliFailure("--timestamp-gap-minutes only applies with --timestamps gaps",
+                             exit_code=2, show_help=True)
+        if args.timestamp_gap_minutes < 0:
+            raise CliFailure("--timestamp-gap-minutes must be non-negative",
+                             exit_code=2, show_help=True)
+    if getattr(args, "follow", False):
+        for attr, bad, flag in (("edit_calls", "collapse", "--edit-calls collapse"),
+                                ("read_calls", "collapse", "--read-calls collapse"),
+                                ("timestamps", "gaps", "--timestamps gaps")):
+            if getattr(args, attr, None) == bad:
+                raise CliFailure(f"{flag} needs a fixed span and cannot be combined with --follow",
+                                 exit_code=2, show_help=True)
     if not successor:
         for attr, flag in (("order", "--order"), ("brief_max_chars", "--brief-max-chars")):
             if getattr(args, attr, None) is not None:
@@ -348,6 +378,7 @@ def _extract_guard(args: Any) -> None:
             "--render-markdown" if getattr(args, "render_markdown", False) else None,
             "--highlight" if getattr(args, "highlight", False) else None,
             "--show-timestamps" if getattr(args, "show_timestamps", None) is not None else None,
+            "--timestamps" if getattr(args, "timestamps", None) is not None else None,
             "--timestamp-format" if getattr(args, "timestamp_format", None) is not None else None,
             "--extract-metadata" if getattr(args, "extract_metadata", None) is not None else None,
             "--color/--no-color" if getattr(args, "color", None) is not None else None,
@@ -570,6 +601,55 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
                 "Render FAILED tool results truncated, independent of --tool-calls "
                 "(Claude Code): show (default) or hide",
                 group="CONTENT", choices=("show", "hide"), default=None,
+            ),
+            _opt(
+                "--strip-cd-prefix",
+                "Drop a leading `cd X &&` / `cd X;` from rendered calls, before truncation "
+                "(Claude Code)",
+                group="CONTENT", action="store_true",
+            ),
+            _opt(
+                "--no-strip-cd-prefix",
+                "With --successor-brief: keep the leading `cd X &&` (turns its default off)",
+                group="CONTENT", action="store_true",
+            ),
+            _opt(
+                "--path-aliases",
+                "Shorten known roots in rendered calls/errors/paths, before truncation: "
+                "comma list of `auto` (worktree -> $WT, scratchpad session dir -> $SCRATCH, "
+                "repo -> $REPO, detected from the transcript), `none`, `NAME=/path` "
+                "(later entries override) (Claude Code)",
+                group="CONTENT", metavar="SPEC", default=None,
+            ),
+            _opt(
+                "--edit-calls",
+                "Edit/Write calls (needs --tool-calls): show (default), collapse (one line per "
+                "consecutive same-file run, `edited F xN: intents`), omit (Claude Code)",
+                group="CONTENT", choices=("show", "collapse", "omit"), default=None,
+            ),
+            _opt(
+                "--read-calls",
+                "Read-only tools/Bash (needs --tool-calls): show (default) or collapse into "
+                "`oriented: N reads` (Claude Code)",
+                group="CONTENT", choices=("show", "collapse"), default=None,
+            ),
+            _opt(
+                "--effect-calls",
+                "Outside-effect Bash commands (needs --tool-calls): mode (default, rendered "
+                "like any call) or always (print the call even in intent mode) (Claude Code)",
+                group="CONTENT", choices=("always", "mode"), default=None,
+            ),
+            _opt(
+                "--timestamps",
+                "Timestamp policy: all (default, per --show-timestamps), gaps (only first "
+                "event, boundaries and after a gap), none",
+                group="OUTPUT", choices=("all", "gaps", "none"), default=None,
+            ),
+            _opt(
+                "--timestamp-gap-minutes",
+                "With --timestamps gaps: the gap, in minutes, that earns a timestamp "
+                "(default 5)",
+                group="OUTPUT", type=int, default=None,
             ),
             _opt(
                 "--show-tool-calls",

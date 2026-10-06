@@ -171,8 +171,11 @@ def test_tool_errors_default_show_renders_failed_results_without_tool_calls(caps
     assert code == 0
     assert "[tool call:" not in out  # --tool-calls is none ...
     # ... yet both failures are rendered, truncated, naming the tool
-    assert "[tool error: Bash] Exit code 255 Permission denied (publickey)." in out
-    assert "[tool error: Bash] Exit code 124 15:43:53 15:44:16 15:44:39" in out
+    # the failed call comes first (cleaned, one line), then the truncated error
+    assert ("[tool error: Bash] $ cd ~/.ssh; for k in key1 key2; do echo == $k; ssh -F /dev/null "
+            "-i $k -o BatchMode=yes root@203.0.113.7 'uname -r'; done => Exit code 255 "
+            "Permission denied (publickey).") in out
+    assert "=> Exit code 124 15:43:53 15:44:16 15:44:39" in out
     # successful results are never shown
     assert "brief text" not in out and "env.sh\n" not in out.replace("cat > env.sh", "")
 
@@ -208,7 +211,7 @@ def test_error_events_appear_in_json_output(capsys):
     code, out, _ = _run(capsys, LANE, "--profile", "all", "--json")
     assert code == 0
     texts = [e["text"] for e in json.loads(out)["events"] if e["kind"] == "tool_call"]
-    assert any(t.startswith("[tool error: Bash] Exit code 255") for t in texts)
+    assert any(t.startswith("[tool error: Bash] $ cd ~/.ssh") and "=> Exit code 255" in t for t in texts)
 
 
 # --- stop markers: never an OPERATOR turn ----------------------------------
@@ -247,11 +250,11 @@ def test_ledger_renders_whole_session_for_a_single_brief_agent(capsys):
     assert code == 0
     assert "[session ledger -- whole session]" in out
     assert "files read (1): " in out and "LT-LANE-BRIEF.md" in out
-    assert "external effects (2) -- already done; verify by state, never repeat:" in out
+    assert "external effects (1) -- already done; verify by state, never repeat:" in out
     assert "python3 nc.py scp-api snapshots 799611 create --name lt-pre-r1002" in out
-    # the failed ssh loop is flagged; the heredoc body `ssh -V` is NOT an effect
-    assert "ssh -F /dev/null -i $k -o BatchMode=yes root@203.0.113.7 'uname -r' [FAILED]" in out
-    assert "ssh -V" not in out.split("[session ledger")[1]
+    # D2: the read-only `ssh ... uname -r` probe is NOT an effect; neither is the heredoc body `ssh -V`
+    ledger_part = out.split("[session ledger")[1]
+    assert "ssh -F" not in ledger_part and "ssh -V" not in ledger_part
     # the whole-session block precedes the closing cursor comment
     assert out.rstrip().splitlines()[-1].startswith("<!-- nyxloom-extract:")
     assert out.index("[session ledger") < out.rindex("<!-- nyxloom-extract:")
@@ -292,13 +295,22 @@ def test_rejected_effect_is_annotated_not_executed(tmp_path, capsys):
 
 @pytest.mark.parametrize("command", [
     "git push origin main", "git -C /repo push --force", "git merge --no-ff feature", "git rebase main",
-    "git tag v1.2.3", "ssh root@host uname", "scp a b:/c", "curl -X POST https://x/y",
+    "git tag v1.2.3", "scp a b:/c", "curl -X POST https://x/y",
     "curl --request DELETE https://x/y", "curl -s -d '{}' https://x/y",
     "python3 nc.py scp-api snapshots 1 create --name n", "python3 nc.py scp-api snapshots 1 delete id",
-    "NC_LANE=r1002 python3 nc.py install-host --yes", "python3 nc.py scp-api server-details 1 reinstall",
+    "NC_LANE=r1002 python3 nc.py install-host --yes", "python3 nc.py scp-api server-details 1 power off",
+    "python3 nc.py attach-iso 1 x.iso", "python3 nc.py boot-order set 1 cd",
     "docker rm -f c1", "docker stop c1", "docker run --rm img", "systemctl restart nginx",
-    "apt-get install -y x", "apt update", "sudo apt install y", "cd /x && git push", "nice -n 19 git push",
-    "for k in a b; do ssh $k true; done",
+    "apt-get install -y x", "sudo apt install y", "cd /x && git push", "nice -n 19 git push",
+    # D2 wrapper / form coverage: m2 (VAR=x prefix), env, abs path, command, --no-pager, subshell, bash -c
+    "GIT_X=1 git push", "env X=1 git push", "/usr/bin/git push", "command git push",
+    "git --no-pager push", "(git push)", "bash -c 'git push'", "git reset --hard HEAD~1",
+    "docker container rm c1", "docker volume rm v1", "docker network rm n1", "docker kill c1",
+    "ls | xargs -r docker stop", "systemctl --user stop x", "dpkg -i x.deb", "dpkg --purge x",
+    "apt-get dist-upgrade", "curl -X PUT https://x/y",
+    # ssh/scp: only a MUTATING remote command (recursed into the quoted remote command)
+    "ssh root@host 'systemctl restart x'", "ssh -p 22 h \"cd /x; git push\"", "ssh h docker rm c1",
+    "scp -P 22 a b:/c",
 ])
 def test_default_effect_patterns_match(command):
     assert ledger.external_effect(command), command
@@ -310,6 +322,17 @@ def test_default_effect_patterns_match(command):
     "python3 nc.py scp-api snapshots 1", "python3 nc.py scp-api tasks --server-id 1",
     "docker ps", "docker logs c1", "echo git push", "grep -n 'git push' f.md",
     "cat > env.sh <<'EOF'\nssh -V\nsystemctl stop x\nEOF\nls", "ls -la", "",
+    # D2: read-only forms
+    "ssh root@host uname -r", "ssh h 'systemctl status x'", "scp h:/tmp/f .", "systemctl status x",
+    "systemctl is-active x", "apt list --installed", "apt update", "apt-cache policy x",
+    "dpkg -l", "git merge-base --is-ancestor a b", "git merge-base a b", "docker container ls",
+    "docker image ls", "git remote -v",
+    # quote-awareness: separators and verbs INSIDE quoted arguments are not commands
+    "grep \"x; git push\" f", "echo 'a && docker rm c'", "git commit -m \"fix ssh && curl -X POST\"",
+    "grep -n 'nc.py x snapshots 1 create' docs", "cat nc.py snapshots create",
+    "ssh h \"grep 'a; git push' f\"", "bash -c 'git status'",
+    # a stray custom flag is not a verb
+    "python3 nc.py scp-api snapshots 1 --name lt-create-x",
 ])
 def test_default_effect_patterns_do_not_match(command):
     assert not ledger.external_effect(command), command
@@ -430,9 +453,11 @@ def test_successor_brief_section_order_and_content(tmp_path, capsys):
     assert f"sha256 `{hashlib.sha256(brief.encode()).hexdigest()}`" in out
     assert out.count("NEVER touch nano1") == 1  # the extract does NOT repeat the brief
     # successor defaults: intent-or-call + errors + ledger incl. external effects
-    assert "[tool call: Bash] $ cd /work/repo/scratch; export NC_LANE=r1002; python3 nc.py scp-api" in out
-    assert "[tool error: Bash] Exit code 124" in out
-    assert "external effects (2) -- already done; verify by state, never repeat:" in out
+    # --effect-calls always: the outside-effect call is printed even though the mode is intent-or-call
+    assert "[tool call: Bash] $ python3 nc.py scp-api snapshots 799611 create --name lt-pre-r1002" in out
+    assert "=> Exit code 124" in out
+    assert "external effects (1) -- already done; verify by state, never repeat:" in out
+    assert "- cwd: /work/repo" in out and "- gitBranch: main" in out
     assert "cause: ended normally" in out
     assert out.rstrip().endswith("Verify the snapshot by state; run LT-02 only.")
     # the transcript is a subagent file with no meta: header says so by omission, but names the file
@@ -442,7 +467,7 @@ def test_successor_brief_section_order_and_content(tmp_path, capsys):
 def test_successor_brief_for_a_user_stopped_agent_includes_meta_and_stop_state(capsys):
     code, out, _ = _run(capsys, P5, "--successor-brief", "--order", "Do not retry the sleep.")
     assert code == 0
-    assert "- stoppedByUser: True" in out and "- description: resume-exp P5 user-stop" in out
+    assert "- stoppedByUser: true" in out and "- description: resume-exp P5 user-stop" in out
     assert "cause: stopped by the USER" in out
     assert "in-flight call: Bash: $ python3 -c" in out
     assert "[STOP:" in out
@@ -632,7 +657,7 @@ def test_first_user_record_list_content_and_skips(tmp_path):
                                                   {"type": "text", "text": "part two"}])),
     ]
     fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    assert first_user_record(fp) == ("b1", "part one part two")
+    assert first_user_record(fp) == ("b1", "part one part two", 6)  # the real physical line
     empty = tmp_path / "agent-none.jsonl"
     empty.write_text("", encoding="utf-8")
     assert first_user_record(empty) is None

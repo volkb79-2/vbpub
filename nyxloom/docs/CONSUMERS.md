@@ -210,6 +210,17 @@ nyxloom-harness extract /path/to/session.jsonl --profile all \
   --tool-calls intent-or-call --tool-errors show > full-with-tool-calls.md
 ```
 
+A failed call always prints its one-line cleaned call before the truncated
+error, in every `--tool-calls` mode. Compression is opt-in per option, applied
+before truncation: `--strip-cd-prefix`, `--path-aliases auto|none|NAME=/path`,
+`--edit-calls show|collapse|omit`, `--read-calls show|collapse`,
+`--effect-calls always|mode` (`always` prints an outside-effect Bash command
+even in `intent` mode) and `--timestamps all|gaps|none`
+(`--timestamp-gap-minutes`, default 5). `--successor-brief` turns on
+`--tool-calls intent-or-call --tool-errors show --ledger --strip-cd-prefix
+--path-aliases auto --edit-calls collapse --read-calls collapse --effect-calls
+always --timestamps gaps`; an explicit flag wins.
+
 To prime a FRESH agent from a stopped Claude Code subagent's transcript, one
 command emits the original brief, the extract, a whole-session ledger with
 external effects, the stop state and the successor's order as one markdown
