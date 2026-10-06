@@ -337,3 +337,71 @@ This list is the index:
 **Provenance:** controller survey 2026-10-04 of cmru, nyxloom, Netcup,
 debian-install-v2 and the five non-adopting CLIs (ciu, assay, run-gate,
 pwmcp, cgprofile).
+
+## CLI-EXT-24 — a version probe for `CliIdentity.resolve`
+
+**Status:** Open (planned)
+**Type:** Feature
+**Area:** Identity
+
+`CliIdentity.resolve` accepts only installed distribution metadata and an
+absolute VERSION file. A tool whose version is SCM-derived (cmru: no VERSION
+file) that also runs from a source tree (gate lanes use `PYTHONPATH=src`; an
+editable venv carries stale metadata, observed as 720 versus 1111 commits)
+cannot get a checkout-accurate version without building `CliIdentity(...)`
+directly, which fails audit AC-01. cmru adopted `distribution="cmru"` only
+(installed metadata, program decision D2) and dropped its git-describe source,
+so a source-checkout run reports the installed wheel's version until reinstall.
+
+Wanted: a documented source such as `version_probe: Callable[[], str | None]`
+(agreement-checked with the other sources like the others), or an explicit
+source-tree policy.
+
+Oracles:
+- A probe returning `None` is "unresolved"; a probe that disagrees with
+  installed metadata raises `VersionLookupError` naming both values.
+- With no installed distribution, a resolving probe yields the identity.
+- A controlled wrong implementation that prefers the probe silently over
+  disagreeing metadata must fail the disagreement oracle.
+
+**Related (N2, delegate/parent coupling):** a parent and its delegates must
+share `unexpected_exceptions` (a hard `ValueError` at `build()`), and
+`any_dry_run` is registry-wide. That is not a defect, but a tool with many
+registries (cmru: twelve at survey time) must flip the policy for all of them
+at once; cmru uses one shared factory (`cmru.cli_support.cmru_registry`) as the
+workaround. `docs/CONSUMERS.md` has no note on this; add one. UNVERIFIED:
+whether a delegate wrapper with `mutating=True` and no `dry_run` produces
+misleading route metadata next to the child's `dry_run` in the exported
+surface; check on first sync.
+
+**Provenance:** cmru KI-51 survey (gaps N1 and N2), 2026-10-06, program
+package W2-PKG0.
+
+## CLI-EXT-25 — cardinality constraints on a selector
+
+**Status:** Open (planned)
+**Type:** Feature
+**Area:** Constraints
+
+Rules such as "`--output` only with exactly one target", "`--build-output`
+requires one project", "`--delete-build-output` and
+`--delete-unmanaged-release-tag` require exactly one target" and
+"`--discard-build-worktree` forbids a target" (about seven cmru sites)
+cannot be declared. CLI-EXT-17 conditions on a positional's value, not on its
+count or on the `SelectorList.ALL` sentinel. They therefore stay handler-side
+and invisible to the exported surface and the review.
+
+Wanted: a constraint over a selector positional, for example
+`When("target", count=1, then=Requires("--output"))` / `Forbids`, evaluated
+after the selector converter so `ALL` and an omitted target are distinct
+cases.
+
+Oracles:
+- One name satisfies `count=1`; two names, `ALL` and an omitted target each
+  refuse with the declared message.
+- The constraint appears in the exported surface and in the review rows.
+- A controlled wrong implementation that treats `ALL` as one name must fail
+  the `ALL` oracle.
+
+**Provenance:** cmru KI-51 survey (gap N3), 2026-10-06, program package
+W2-PKG0.

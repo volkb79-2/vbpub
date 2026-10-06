@@ -9,6 +9,15 @@ import argparse
 import sys
 from collections.abc import Iterable, Mapping
 
+# The ONE exception policy for every CMRU registry (root and delegates). The
+# library refuses a delegate whose policy differs from its parent's, so this
+# is flipped to "report" in a single commit once every parser uses
+# ``cmru_registry`` (program W2 plan).
+UNEXPECTED_EXCEPTIONS_POLICY = "raise"
+CMRU_DISTRIBUTION = "cmru"
+CMRU_COMMAND = "cmru"
+CMRU_LONG_NAME = "Configurable Multi Release Utility"
+CMRU_LOGGER = "cmru"
 
 
 def cmru_headline() -> str:
@@ -75,15 +84,74 @@ def cmru_presentation_options():
     )
 
 
+def cmru_registry(prog: str, description: str, **kwargs):
+    """Build the ``CliRegistry`` every CMRU parser (root and delegates) shares.
+
+    One place decides the identity (installed ``cmru`` metadata only, never a
+    literal fallback), the ``unexpected_exceptions`` policy
+    (:data:`UNEXPECTED_EXCEPTIONS_POLICY`; a delegate whose policy differs from
+    its parent's is refused by the library), the logger, and the consumer
+    global ``--log-prefix-time-short``. Remaining ``CliRegistry`` keywords
+    (``getting_started``, ``single_command``, ``no_args_action``, ...) pass
+    through; ``global_options`` extends the shared set rather than replacing it.
+    """
+    from cli_extended import CliIdentity, CliRegistry
+
+    for owned in ("identity", "unexpected_exceptions"):
+        if owned in kwargs:
+            raise TypeError(f"cmru_registry owns {owned!r}; do not pass it")
+    identity = CliIdentity.resolve(
+        name="CMRU",
+        long_name=CMRU_LONG_NAME,
+        command=CMRU_COMMAND,
+        distribution=CMRU_DISTRIBUTION,
+    )
+    extra_options = tuple(kwargs.pop("global_options", ()))
+    kwargs.setdefault("logging_logger", CMRU_LOGGER)
+    return CliRegistry(
+        identity,
+        prog=prog,
+        description=description,
+        global_options=(*cmru_presentation_options(), *extra_options),
+        unexpected_exceptions=UNEXPECTED_EXCEPTIONS_POLICY,
+        **kwargs,
+    )
+
+
+TARGET_METAVAR = "[all|PROJECT[,PROJECT...]]"
+TARGET_DESCRIPTION = (
+    "project target; omitted: the current project, "
+    "or every orchestrated project at the estate root"
+)
+
+
+def target_argument(
+    description: str = TARGET_DESCRIPTION,
+    *,
+    name: str = "target",
+):
+    """The optional ``all|PROJECT[,PROJECT...]`` positional, as a library selector.
+
+    Parsing yields ``None`` (omitted), ``SelectorList.ALL`` or a tuple of names
+    in the order given. Resolve it against the loaded registry with
+    :func:`select_target_names`. Unlike the legacy string parser, a structural
+    error is an argparse usage error (exit 2, wording from the library).
+    """
+    from cli_extended import ArgumentSpec, SelectorList
+
+    return ArgumentSpec(
+        name,
+        description,
+        metavar=TARGET_METAVAR,
+        parser_kwargs={"nargs": "?", "default": None, "type": SelectorList()},
+    )
+
+
 class TargetSelectionError(ValueError):
     """A malformed or ambiguous public project selector."""
 
 
-def parse_target_names(raw: str | None) -> list[str] | None:
-    """Parse one optional ``all``/name/comma-separated target argument."""
-    if raw is None:
-        return None
-    parts = [part.strip() for part in raw.split(",")]
+def _check_target_parts(parts: list[str]) -> list[str]:
     if any(not part for part in parts):
         raise TargetSelectionError("project target contains an empty name")
     if len(set(parts)) != len(parts):
@@ -95,19 +163,43 @@ def parse_target_names(raw: str | None) -> list[str] | None:
     return parts
 
 
+def parse_target_names(raw: str | None) -> list[str] | None:
+    """Parse one optional ``all``/name/comma-separated target argument."""
+    if raw is None:
+        return None
+    return _check_target_parts([part.strip() for part in raw.split(",")])
+
+
+def _normalise_target(raw) -> list[str] | None:
+    """Accept the legacy raw string or a library ``SelectorList`` result."""
+    from cli_extended import SelectorList
+
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return parse_target_names(raw)
+    if raw is SelectorList.ALL:
+        return ["all"]
+    # A tuple/list of names (already structurally checked by the library, but
+    # programmatic callers get the same refusals as the string path).
+    return _check_target_parts([str(part).strip() for part in raw])
+
+
 def select_target_names(
-    raw: str | None,
+    raw: "str | Iterable[str] | object | None",
     projects: Mapping[str, object],
     project_order: Iterable[str],
     *,
     context_project: str | None = None,
 ) -> list[str]:
-    """Resolve a parsed target against the loaded registry in declared order.
+    """Resolve a target against the loaded registry in declared order.
 
+    ``raw`` is either the legacy comma string or the result of a
+    :func:`target_argument` (``None``, ``SelectorList.ALL`` or a name tuple).
     An omitted target selects the current project, or every orchestrated project
     (``project_order``) at the estate root.
     """
-    parsed = parse_target_names(raw)
+    parsed = _normalise_target(raw)
     ordered = [name for name in project_order if name in projects]
     if parsed is None:
         parsed = [context_project] if context_project is not None else ordered
