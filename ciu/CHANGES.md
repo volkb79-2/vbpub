@@ -41,6 +41,31 @@ restatement of the technical detail below it.
 - test(ciu): cover worktree isolation boundaries (b6bef9e89)
 - test(ciu): include image policy in worktree key set (814245925)
 
+### Added (detail)
+- **CIU-117 — isolate linked-worktree image tags.** Project-built image
+  references in a linked Git worktree include that checkout's CIU instance
+  identity; the primary checkout and pulled vendor images keep their declared
+  references. CIU checks the primary image map before building and refuses a
+  tag collision or an image map it cannot verify.
+- **CIU-104 — protect explicit container names.** Before deployment, CIU
+  resolves each explicit `container_name` with the active Compose inputs and
+  proceeds only when Docker labels prove that the exact name belongs to this
+  checkout, project, and service. A different or unknown owner refuses before
+  Compose runs.
+
+### Adoption / Migration Notes
+
+If linked worktrees build project images, review scripts and tooling that
+expect the primary checkout's literal image tag; linked builds now use
+instance-scoped tags. Keep one shared tag only when that is intentional: set
+`[ciu.worktree].shared_image_tags = true` in the primary checkout's config, or
+use `ciu bake --allow-shared-tag` for one Bake invocation. If a Compose
+template declares `container_name`, make the value unique per checkout; when
+the template derives it from `deploy.environment_tag`, set that field to
+`"$INSTANCE_ID"`. CIU now refuses names owned by another checkout or whose
+owner cannot be proved. Image-sharing options do not bypass this
+container-name ownership check.
+
 ## [7.15.2] - 2026-10-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=bee6771d2cbd472c91b7a4c456af443706805412 -->
