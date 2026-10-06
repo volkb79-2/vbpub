@@ -148,12 +148,14 @@ env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECOD
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # The current-main diff had 43 eligible candidates (cap 45); the SUCCESSOR
 # package (2026-10) adds toolresult/stopstate/successor and brought the plan to
-# 61 (`assay plan session-extract`: 54 claude_code.py, 6 ledger.py, 1 config.py;
-# the lane's judge.base is an old pin, so most are from earlier waves), so the cap is raised to 66 (see [lanes.session-extract.judge.mutation]).
-# The source-backed plan estimates a 43m wall bound with two
-# mutation jobs and the declared 120s per-candidate failsafe; allow 2h for
-# baseline, scheduling, and verdict overhead.
-budget = "2h"
+# 144 (`assay plan`, measured with a temporary cap of 3000: 54 claude_code.py,
+# 34 stopstate.py, 32 toolresult.py, 10 successor.py, 8 ledger.py, 5 render.py,
+# 1 config.py; a plan over the cap reports cap+1, so earlier 46/53/61/67 readings
+# were only "more than the cap"), so the cap is raised to 150 (see
+# [lanes.session-extract.judge.mutation]). The plan estimates 8640 s wall with two
+# mutation jobs at the 120s per-candidate failsafe (a worst-case bound); allow 3h
+# for baseline, scheduling, and verdict overhead.
+budget = "3h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -182,7 +184,7 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 2
-max_mutants = 66
+max_mutants = 150
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
