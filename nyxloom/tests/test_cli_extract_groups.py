@@ -27,7 +27,7 @@ EXPECTED = {
         "--profile", "--answer-length", "--max-checkpoints", "--max-words",
         "--include-thinking", "--show-api-errors", "--show-compaction-content",
         "--tool-calls", "--tool-errors", "--show-tool-calls", "--show-tool-call-intent",
-        "--strip-stale-wakeups", "--redact-pattern",
+        "--strip-stale-wakeups", "--redact-pattern", "--prose-only", "--no-prose",
     },
     RENDER: {
         "--strip-cd-prefix", "--no-strip-cd-prefix", "--path-aliases", "--edit-calls",
@@ -37,10 +37,11 @@ EXPECTED = {
     },
     DERIVED: {
         "--ledger", "--effect-pattern", "--no-default-effect-patterns", "--stop-state",
+        "--no-ledger", "--no-stop-state",
         "--preset", "--successor-brief", "--order", "--brief-max-chars", "--task",
         "--task-file",
     },
-    OUTPUT: {"--json", "--render-markdown", "--highlight"},
+    OUTPUT: {"--json", "--jsonl", "--render-markdown", "--highlight"},
 }
 
 
@@ -122,11 +123,18 @@ def test_help_shows_the_preset_expansion():
     flat = " ".join(help_text.split())
     # Argparse wraps and may hyphenate long words; compare on the de-wrapped text.
     flat = flat.replace("- ", "-")
-    for attr, value in cli.SUCCESSOR_PRESET_VALUES:
-        flag = "--" + attr.replace("_", "-")
-        assert f"{flag} {value}" in flat, f"{flag} {value} missing from --help preset text"
-    for flag in cli.SUCCESSOR_PRESET_FLAGS:
-        assert flag in flat
+    from nyxloom.session_extract.presets import PRESETS
+
+    assert set(PRESETS) == {"watch", "successor", "review", "ledger"}
+    for preset in PRESETS.values():
+        # --help defines every preset with its exact option set, and shows one
+        # example line for it.
+        assert preset.expansion in flat, f"{preset.name} expansion missing from --help"
+        assert flat.count(f"--preset {preset.name} ") + flat.count(f"--preset {preset.name}") >= 2
+        examples = [line for line in help_text.splitlines()
+                    if line.strip().startswith("nyxloom-harness extract SESSION_LOG --preset "
+                                               f"{preset.name}")]
+        assert len(examples) == 1, f"{preset.name}: expected one example line"
 
 
 def test_help_runs_as_a_real_process_with_all_groups():

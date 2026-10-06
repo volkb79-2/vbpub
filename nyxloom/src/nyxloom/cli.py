@@ -722,7 +722,7 @@ def _follow_anchor(path: Path, fmt: str, session_id: str | None):
 
 
 def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anchor,
-                 block_render, lossless_mode: bool, source_metadata=None) -> int:
+                 block_render, lossless_mode: bool, source_metadata=None, watch=None) -> int:
     """Phase 2: hand off to session_extract/follow.py and tail until Ctrl-C."""
     from .session_extract import follow as follow_mod
     from .session_extract.adapters import claude_code as claude_code_adapter
@@ -773,29 +773,13 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
         follow_config=follow_config, out=sys.stdout, lossless_mode=lossless_mode,
         block_render=block_render,
         insert_blank_lines=config.insert_blank_lines,
-        source_metadata=source_metadata,
+        source_metadata=source_metadata, watch=watch,
     )
     return follower.run_forever()
 
 
-# The `successor` preset: option attribute -> value, in the order shown to the
-# operator. `--successor-brief` implies it; an explicit flag always overrides.
-SUCCESSOR_PRESET_VALUES = (
-    ("profile", "all"),
-    ("tool_calls", "intent-or-call"),
-    ("tool_errors", "show"),
-    ("edit_calls", "collapse"),
-    ("read_calls", "collapse"),
-    ("effect_calls", "always"),
-    ("timestamps", "gaps"),
-    ("path_aliases", "auto"),
-)
-# Boolean members of the preset (no value): ledger and the cd-prefix strip.
-SUCCESSOR_PRESET_FLAGS = ("--strip-cd-prefix", "--ledger")
-SUCCESSOR_PRESET_TEXT = " ".join(
-    [f"--{attr.replace('_', '-')} {value}" for attr, value in SUCCESSOR_PRESET_VALUES]
-    + list(SUCCESSOR_PRESET_FLAGS)
-)
+# The four `--preset` bundles (watch, successor, review, ledger) live in
+# session_extract/presets.py; `--successor-brief` implies `successor`.
 
 
 def cmd_extract(args) -> int:
@@ -804,7 +788,8 @@ def cmd_extract(args) -> int:
     [--max-compactions N] [--max-time-minutes N] [--epochs N|A:B|all]
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
     [--tool-calls none|intent|intent-or-call|call] [--tool-errors show|hide]
-    [--stop-state] [--preset successor]
+    [--stop-state | --no-stop-state] [--no-ledger] [--prose-only | --no-prose] [--jsonl]
+    [--preset watch|successor|review|ledger]
     [--successor-brief [--order TEXT|@FILE] [--brief-max-chars N]]
     [--strip-cd-prefix | --no-strip-cd-prefix] [--path-aliases SPEC]
     [--edit-calls show|collapse|omit] [--read-calls show|collapse]
@@ -888,9 +873,14 @@ def cmd_extract(args) -> int:
     plus the transcript tail), the last assistant text and the in-flight call.
     Every option belongs to one help group: Source & range, Content
     selection, Rendering & compression, Derived sections, Output.
-    --preset successor is a named bundle of the compression/selection
-    options (see SUCCESSOR_PRESET_TEXT; shown in --help); explicit flags
-    override it. --successor-brief emits ONE markdown document for priming a
+    --preset NAME is one of four named bundles of options (watch, successor,
+    review, ledger; session_extract/presets.py, every expansion shown in
+    --help); explicit options override it (--no-ledger, --no-stop-state,
+    --no-strip-cd-prefix and --prose-only/--no-prose cancel boolean
+    members). --prose-only keeps only operator messages and assistant prose
+    (timestamped, coloured per --color/--no-color; --jsonl emits
+    {ts, role, text, agent?} lines; works with --follow). --no-prose drops
+    all events and keeps only the derived sections. --successor-brief emits ONE markdown document for priming a
     fresh agent (original brief verbatim or path+sha256, the extract with the
     successor preset applied, whole-session ledger, stop state, then --order
     TEXT|@FILE) and implies --preset successor.
@@ -941,21 +931,21 @@ def cmd_extract(args) -> int:
         return 1
     path, session_id = resolved
 
+    from .session_extract import presets as presets_mod
+
     successor = bool(getattr(args, "successor_brief", False))
-    preset = getattr(args, "preset", None) == "successor"
-    if successor or preset:
-        # The `successor` preset (operator decision 2026-10-06; --successor-brief
-        # implies it): every compression is an option and the preset just turns
-        # them on. An explicit value always wins. The expansion is
-        # SUCCESSOR_PRESET (shown in --help and the docs).
-        for attr, value in SUCCESSOR_PRESET_VALUES:
-            if attr == "tool_calls" and getattr(args, "show_tool_calls", False):
-                continue  # the deprecated alias spelling counts as explicit
-            if getattr(args, attr, None) is None:
-                setattr(args, attr, value)
-        args.ledger = True
-        if not getattr(args, "no_strip_cd_prefix", False):
-            args.strip_cd_prefix = True
+    preset = presets_mod.preset_name(args)
+    # A preset (watch/successor/review/ledger; --successor-brief implies
+    # successor) only turns options on; an explicit option always wins
+    # (presets.resolve). The expansions are shown in --help and the docs.
+    for attr, value in presets_mod.resolve(args).items():
+        setattr(args, attr, value)
+    if getattr(args, "no_ledger", False):
+        args.ledger = False
+    if getattr(args, "no_stop_state", False):
+        args.stop_state = False
+    prose_only = bool(getattr(args, "prose_only", False))
+    no_prose = bool(getattr(args, "no_prose", False))
     if getattr(args, "show_tool_calls", False) or getattr(args, "show_tool_call_intent", False):
         print("nyxloom extract: --show-tool-calls/--show-tool-call-intent are deprecated aliases "
               "(label / label+intent rendering); use --tool-calls "
@@ -1017,9 +1007,10 @@ def cmd_extract(args) -> int:
               file=sys.stderr)
         return 1
 
-    for flag, wanted in (("--stop-state", getattr(args, "stop_state", False)),
-                         ("--preset successor", preset),
-                         ("--successor-brief", successor)):
+    for flag, wanted in ((f"--preset {preset}", preset is not None
+                          and presets_mod.PRESETS[preset].claude_only and not successor),
+                         ("--successor-brief", successor),
+                         ("--stop-state", getattr(args, "stop_state", False))):
         if wanted and result.format != "claude-code":
             print(f"error: {flag} does not support {result.format!r} yet -- Claude Code "
                   f"transcripts only (see session_extract/stopstate.py)", file=sys.stderr)
@@ -1101,13 +1092,31 @@ def cmd_extract(args) -> int:
         print(f"nyxloom extract: redacted {result.redacted_paragraphs} paragraph(s) matching "
               f"--redact-pattern", file=sys.stderr)
 
-    rendered = result.render()
+    watch = None
+    if prose_only:
+        from .session_extract import watch as watch_mod
+
+        jsonl = bool(getattr(args, "jsonl", False))
+        explicit_render = bool(getattr(args, "render_markdown", False) or getattr(args, "highlight", False))
+        watch = watch_mod.WatchFormatter(
+            jsonl=jsonl, color=_color_enabled(args) and not jsonl, agent=watch_mod.agent_id(path),
+            timestamps=config.timestamps, show_timestamps=config.show_timestamps,
+            timestamp_format=config.timestamp_format, gap_minutes=config.timestamp_gap_minutes,
+            block_render=block_render if explicit_render else None,
+        )
+        rendered = watch.format_all(result.events)
+    else:
+        if no_prose:
+            # --no-prose: only the derived sections (ledger, stop state); the
+            # ledger and stop state were already built from the full parse.
+            result.events = []
+        rendered = result.render()
     harness_warning = None
     if result.format == "claude-code":
         from .session_extract.harness import version_warning
 
         harness_warning = version_warning(path)
-        if harness_warning and (args.json or args.follow):
+        if harness_warning and (args.json or args.follow or prose_only):
             print(f"nyxloom extract: {harness_warning}", file=sys.stderr)
         elif harness_warning and not successor:
             rendered = harness_warning + "\n" + rendered
@@ -1143,11 +1152,11 @@ def cmd_extract(args) -> int:
     # end="" only when following: the brief already ends in a newline, and
     # print's own would put three blank lines between it and the first live
     # block. Left exactly as it was for every non-follow run.
-    print(rendered, end="" if args.follow else "\n")
+    print(rendered, end="" if args.follow or prose_only else "\n")
     if args.follow:
         return _run_follow(
             args, path, follow_fmt, config, result.session_id, anchor, block_render,
-            lossless_mode=False, source_metadata=result._source_metadata,
+            lossless_mode=False, source_metadata=result._source_metadata, watch=watch,
         )
     return 0
 

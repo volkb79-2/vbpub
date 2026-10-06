@@ -87,9 +87,12 @@ def test_no_strip_cd_prefix_and_preset(tmp_path, capsys):
     recs = [_user("u1", T0, "go"),
             _assistant("a1", "2026-01-01T10:01:00Z", [_use("t1", "Bash", command="cd /w/repo && make")])]
     fp = _write(tmp_path, recs)
-    _, out, _ = _run(capsys, fp, "--preset", "successor", "--read-calls", "show")
+    # The preset's stop state prints the in-flight call verbatim; turn it off
+    # (an explicit override) to look at the rendered call line alone.
+    _, out, _ = _run(capsys, fp, "--preset", "successor", "--read-calls", "show", "--no-stop-state")
     assert "$ make" in out and "cd /w/repo" not in out
-    _, out, _ = _run(capsys, fp, "--preset", "successor", "--read-calls", "show", "--no-strip-cd-prefix")
+    _, out, _ = _run(capsys, fp, "--preset", "successor", "--read-calls", "show", "--no-stop-state",
+                     "--no-strip-cd-prefix")
     assert "$ cd $REPO && make" in out
 
 
@@ -110,12 +113,12 @@ def test_preset_refuses_unknown_name_and_non_claude_format(tmp_path, capsys):
 
 
 def test_preset_values_are_the_documented_expansion():
-    from nyxloom import cli
+    from nyxloom.session_extract.presets import PRESETS
 
-    assert cli.SUCCESSOR_PRESET_TEXT == (
+    assert PRESETS["successor"].expansion == (
         "--profile all --tool-calls intent-or-call --tool-errors show --edit-calls collapse "
         "--read-calls collapse --effect-calls always --timestamps gaps --path-aliases auto "
-        "--strip-cd-prefix --ledger"
+        "--strip-cd-prefix --ledger --stop-state"
     )
 
 

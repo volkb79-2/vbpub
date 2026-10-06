@@ -23,6 +23,7 @@ from cli_extended import (
 )
 
 from . import __version__, backlog_entries, cli, findings
+from .session_extract import presets as presets_mod
 
 
 def _identity(command: str) -> CliIdentity:
@@ -303,26 +304,86 @@ def _extract_guard(args: Any) -> None:
             show_help=True,
         )
     brief = getattr(args, "successor_brief", False)
-    successor = brief or getattr(args, "preset", None) == "successor"
+    from .session_extract import presets as presets_mod
+
+    if brief and getattr(args, "preset", None) not in (None, "successor"):
+        raise CliFailure("--successor-brief implies --preset successor and cannot be combined "
+                         f"with --preset {args.preset}", exit_code=2, show_help=True)
+    pname = presets_mod.preset_name(args)
+    eff = lambda attr, default=None: presets_mod.effective(args, attr, default)  # noqa: E731
+    # `successor` here means "one finished document with the whole-session
+    # ledger"; the fixed-span presets (successor, review, ledger) all are.
+    successor = brief or pname == "successor"
+    fixed_preset = pname is not None and presets_mod.PRESETS[pname].fixed_span
+    for on, off, flag in (("ledger", "no_ledger", "--ledger/--no-ledger"),
+                          ("stop_state", "no_stop_state", "--stop-state/--no-stop-state"),
+                          ("strip_cd_prefix", "no_strip_cd_prefix",
+                           "--strip-cd-prefix/--no-strip-cd-prefix"),
+                          ("prose_only", "no_prose", "--prose-only/--no-prose")):
+        if getattr(args, on, False) and getattr(args, off, False):
+            raise CliFailure(f"{flag} are contradictory", exit_code=2, show_help=True)
+    prose_only = bool(eff("prose_only", False))
+    no_prose = bool(eff("no_prose", False))
     calls_on = (
-        getattr(args, "tool_calls", None) not in (None, "none")
-        or getattr(args, "show_tool_calls", False) or successor
+        eff("tool_calls") not in (None, "none")
+        or getattr(args, "show_tool_calls", False)
     )
     if not calls_on:
         for attr, flag in (("edit_calls", "--edit-calls"), ("read_calls", "--read-calls"),
                            ("effect_calls", "--effect-calls")):
             if getattr(args, attr, None) is not None:
-                raise CliFailure(f"{flag} needs --tool-calls (or --preset successor)",
+                raise CliFailure(f"{flag} needs --tool-calls (or a preset that sets it)",
                                  exit_code=2, show_help=True)
     if getattr(args, "no_strip_cd_prefix", False) and not successor:
         raise CliFailure("--no-strip-cd-prefix only applies with --preset successor "
                          "(or --successor-brief, which implies it)",
                          exit_code=2, show_help=True)
+    if getattr(args, "jsonl", False) and not prose_only:
+        raise CliFailure("--jsonl needs --prose-only (or --preset watch)", exit_code=2, show_help=True)
+    if getattr(args, "jsonl", False) and getattr(args, "json", False):
+        raise CliFailure("--jsonl and --json are different outputs; pick one",
+                         exit_code=2, show_help=True)
+    if getattr(args, "json", False) and pname is not None:
+        raise CliFailure(
+            f"--preset {pname} emits {'JSON lines via --jsonl' if prose_only else 'one text document'}"
+            f" and cannot be combined with --json", exit_code=2, show_help=True)
+    if prose_only:
+        for conflict, flag in (
+            (no_prose, "--no-prose"),
+            (brief, "--successor-brief"),
+            (eff("ledger", False), "--ledger"),
+            (eff("stop_state", False), "--stop-state"),
+            (eff("tool_calls") not in (None, "none") or getattr(args, "show_tool_calls", False),
+             "--tool-calls/--show-tool-calls"),
+            (any(getattr(args, a, None) is not None
+                 for a in ("edit_calls", "read_calls", "effect_calls", "path_aliases")),
+             "--edit-calls/--read-calls/--effect-calls/--path-aliases"),
+            (getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None,
+             "--task/--task-file"),
+        ):
+            if conflict:
+                raise CliFailure(f"--prose-only (--preset watch) keeps only operator and assistant "
+                                 f"prose and cannot be combined with {flag}",
+                                 exit_code=2, show_help=True)
+    if no_prose:
+        for conflict, flag in (
+            (getattr(args, "follow", False), "--follow"),
+            (brief, "--successor-brief"),
+            (getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None,
+             "--task/--task-file"),
+        ):
+            if conflict:
+                raise CliFailure(f"--no-prose (--preset ledger) emits only the derived sections "
+                                 f"and cannot be combined with {flag}",
+                                 exit_code=2, show_help=True)
+        if not (eff("ledger", False) or eff("stop_state", False)):
+            raise CliFailure("--no-prose with neither --ledger nor --stop-state would print nothing",
+                             exit_code=2, show_help=True)
     if getattr(args, "no_strip_cd_prefix", False) and getattr(args, "strip_cd_prefix", False):
         raise CliFailure("--strip-cd-prefix and --no-strip-cd-prefix are contradictory",
                          exit_code=2, show_help=True)
     if getattr(args, "timestamp_gap_minutes", None) is not None:
-        if getattr(args, "timestamps", None) != "gaps" and not successor:
+        if eff("timestamps") != "gaps":
             raise CliFailure("--timestamp-gap-minutes only applies with --timestamps gaps",
                              exit_code=2, show_help=True)
         if args.timestamp_gap_minutes < 0:
@@ -352,14 +413,14 @@ def _extract_guard(args: Any) -> None:
                     exit_code=2,
                     show_help=True,
                 )
-    if successor:
+    if successor or fixed_preset:
         for conflict, flag in (
             (getattr(args, "follow", False), "--follow"),
             (getattr(args, "json", False), "--json"),
         ):
             if conflict:
                 raise CliFailure(
-                    f"--successor-brief/--preset successor emit one fixed-span markdown "
+                    f"--successor-brief/--preset {pname or 'successor'} emit one fixed-span "
                     f"document (collapse and ledger need the whole span) and cannot be "
                     f"combined with {flag}",
                     exit_code=2,
@@ -368,7 +429,7 @@ def _extract_guard(args: Any) -> None:
     if getattr(args, "brief_max_chars", None) is not None and args.brief_max_chars < 0:
         raise CliFailure("--brief-max-chars must be non-negative", exit_code=2, show_help=True)
     if (getattr(args, "effect_pattern", None) or getattr(args, "no_default_effect_patterns", False)) \
-            and not (getattr(args, "ledger", False) or successor):
+            and not (eff("ledger", False) or successor):
         raise CliFailure(
             "--effect-pattern/--no-default-effect-patterns only apply with --ledger "
             "or --successor-brief",
@@ -561,7 +622,9 @@ def harness_cli():
     )
     registry.register(_leaf("nyxloom-harness", "extract", """Create a structured, resumable session extract. The default operator-review profile selects the newest epoch and applies its checkpoint and word limits; --profile all includes ordinary prose across the available epochs. Explicit selection controls override profile defaults.
 
-With --follow, Nyxloom prints a one-shot prefix and then reads only appended payload plus bounded prefix/tail fingerprints for rewrite detection. Unchanged polls read no content; there is no whole-file rescan. Follow-only controls require --follow, fixed-span and task-banner controls cannot be combined with it, and JSON output is unsupported while following.""", cli.cmd_extract,
+With --follow, Nyxloom prints a one-shot prefix and then reads only appended payload plus bounded prefix/tail fingerprints for rewrite detection. Unchanged polls read no content; there is no whole-file rescan. Follow-only controls require --follow, fixed-span and task-banner controls cannot be combined with it, and JSON output is unsupported while following.
+
+""" + presets_mod.help_paragraph(), cli.cmd_extract,
         arguments=(extraction_path,),
         options=(
             # (a) Source & range: where the transcript comes from and which span of it.
@@ -636,6 +699,19 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt(
                 "--show-tool-call-intent",
                 "Deprecated alias: add intent to the --show-tool-calls labels (use --tool-calls)",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt(
+                "--prose-only",
+                "Keep ONLY operator messages and assistant prose, one timestamped block each "
+                "(no tool calls/results, Q&A, compaction or interrupt markers, gap notes or "
+                "cursor comments); coloured per --color/--no-color; works with --follow",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt(
+                "--no-prose",
+                "Drop every event and keep only the derived sections (--ledger, --stop-state) "
+                "(Claude Code)",
                 group=_G_CONTENT, action="store_true",
             ),
             _opt("--strip-stale-wakeups", "Remove stale wakeup events", group=_G_CONTENT, action="store_true"),
@@ -739,10 +815,16 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
                 group=_G_DERIVED, action="store_true",
             ),
             _opt(
-                "--preset",
-                "Named bundle of defaults (explicit flags override). `successor` = "
-                + cli.SUCCESSOR_PRESET_TEXT + " (Claude Code)",
-                group=_G_DERIVED, choices=("successor",), default=None,
+                "--no-ledger", "Turn off the ledger a preset enables",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--no-stop-state", "Turn off the Stop state section a preset enables",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--preset", presets_mod.option_help(),
+                group=_G_DERIVED, choices=tuple(presets_mod.PRESETS), default=None,
             ),
             _opt(
                 "--successor-brief",
@@ -765,9 +847,17 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt("--task-file", "Read task context from a file", group=_G_DERIVED, default=None),
             # (e) Output: the form of the whole document.
             _opt("--json", "Emit structured JSON output", group=_G_OUTPUT, action="store_true"),
+            _opt(
+                "--jsonl",
+                "With --prose-only (--preset watch): one JSON object per line, "
+                '{"ts", "role": "operator"|"assistant", "text", "agent"?}, for an editor '
+                "extension; works with --follow",
+                group=_G_OUTPUT, action="store_true",
+            ),
             _opt("--render-markdown", "Render Markdown", group=_G_OUTPUT, action="store_true"),
             _opt("--highlight", "Highlight terminal output", group=_G_OUTPUT, action="store_true"),
-        ), fields={"cmd": "extract"}, validate=_extract_guard))
+        ), fields={"cmd": "extract"}, validate=_extract_guard,
+        examples=presets_mod.example_lines()))
 
     registry.register(_leaf(
         "nyxloom-harness",

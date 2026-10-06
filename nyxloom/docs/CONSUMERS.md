@@ -221,6 +221,19 @@ even in `intent` mode) and `--timestamps all|gaps|none`
 --path-aliases auto --edit-calls collapse --read-calls collapse --effect-calls
 always --timestamps gaps`; an explicit flag wins.
 
+`--preset` names four documented bundles of those options (exact expansions in
+`extract --help` and `docs/CLI-REFERENCE.md`; an explicit option always wins):
+`watch` follows a live session for an operator (operator messages and assistant
+prose only, timestamped, coloured on a terminal; `--jsonl` emits
+`{ts, role, text, agent?}` lines for an editor extension), `successor` primes a
+fresh agent, `review` audits what an agent did at full fidelity, and `ledger`
+prints only external effects, touched files and stop state:
+
+```bash
+nyxloom-harness extract SESSION_LOG --preset watch --follow
+nyxloom-harness extract SESSION_LOG --preset watch --follow --jsonl
+```
+
 To prime a FRESH agent from a stopped Claude Code subagent's transcript, one
 command emits the original brief, the extract, a whole-session ledger with
 external effects, the stop state and the successor's order as one markdown
