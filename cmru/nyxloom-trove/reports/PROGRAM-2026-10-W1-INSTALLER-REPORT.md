@@ -274,3 +274,64 @@ the first sorted asset there.
   were run separately.
 - No shell, sed or script wrote any repository file; all changes were made with Edit/Write.
 - The real `build-artifact.sh` was not executed (see ruling A).
+
+## Review fix round 2
+
+Code at `abb6840cd` + `a96905ff7` (re-render of `tls-edge/get.py`). Review: `REVIEW-FIXVERIFY1.md`.
+
+### Conditions
+
+1. **Hollow symlink refusal (N3).** The brief's seam (`ns["_expected_owner"] = lambda: os.getuid()`)
+   does nothing here: `installer_fakes.as_root` already points `_expected_owner` at the real uid and
+   overwrites whatever the test set. The actual masking is the writable-bit clause: a symlink's
+   `lstat` mode is `0777`, so with the symlink block removed the install is still refused ("group- or
+   world-writable"). Fix: assert WHICH clause refused, via the stderr message ("not a real
+   directory"). `test_shared_symlink_refused_and_target_untouched` now asserts it, and
+   `test_each_install_directory_as_a_symlink_is_refused_by_the_symlink_clause[root|releases|shared|bin]`
+   covers all four directories. Plant: the symlink block of `_check_dir` set to `if False and ...`;
+   5 tests fail (all four params and the shared test); each failure message shows the writable-bit
+   refusal that used to mask it. Restored.
+2. **Docs.** CONSUMERS now states the start-of-transaction `.incomplete` prune is skipped for pre-W1
+   (legacy) installs (SPEC step 2 already did). SPEC and CONSUMERS also record the items below.
+
+### Nits
+
+| # | Change | Tests (`test_installer_w1_round2.py` unless noted) |
+|---|---|---|
+| 3 (N16) | `_manifest_files` also refuses `..`, NUL and backslash (the old grammar accepted all three: `..` alone was not caught by `startswith("../")`). Applied to `get.py.tmpl` and the rendered copies `ciu/get.py` and `tls-edge/get.py` | `TestManifestFilesKeyGrammar`: `../x`, `..`, `a/../../x`, `/abs`, `a//b`, `./a`, `a/./b`, `a/`, `.`, NUL, `a\b`, `..\x`, empty refused (exit 1) by calling `_manifest_files` directly; good keys accepted |
+| 4 | `installer_problems`: `install_dir_system` must be normalised (no `//`, `.`, trailing `/`, no leading `//`) and have at least two components; the old denylist stays | `TestInstallDirShape` (`/opt`, `/srv`, `/tmp`, `/root`, `/home`, `/x`, `//opt/demo`, `/opt//demo`, `/opt/./demo`, `/opt/demo/`, ... refused; `/opt/demo`, `/usr/local/demo` fine). `test_boundary_contracts.py` used `/x`, now `/opt/x` |
+| 5 | `cmd_bundle_manifest`: a `ValueError` from the tree is `[ERROR] bundle-manifest: ...` on one line, exit 1; `--tag` checked first with `manifest.bundle_tag_problem` (the installer grammar `[A-Za-z0-9][A-Za-z0-9._+-]*`, no `..`), exit 2, nothing written | `TestBundleManifestErrors` (symlink, missing root, 8 bad tags, a valid tag still works) |
+| 6 (M49) | dedicated single-top-level-directory test: the second directory's member is listed and hashed and does not repeat after the top is stripped | `test_installer_w1_round1.py::test_m49b_...` |
+
+`install_dir_user` was not changed (it is a relative leaf, already validated).
+
+### Plant / revert table (each plant by Edit, restored by Edit, `grep "if False and" cmru/src` empty after)
+
+| Plant | Killed by |
+|---|---|
+| N3: symlink block in `_check_dir` disabled | 5 tests (shared + 4 params) |
+| N16: whole key grammar disabled | 13 of the bad-key params |
+| M49: `len(tops) != 1` check disabled | `test_m49b_...` only (the old `test_m49_...` still passes: the duplicate check catches it) |
+| install_dir: two-component rule reverted to the old `not parts` | `/opt`, `/srv`, `/tmp`, `/root`, `/x` |
+| install_dir: normalisation check disabled | `//opt/demo`, `/opt//demo`, `/opt/./demo`, `/opt/demo/` |
+| bundle-manifest: tag check disabled + `except ValueError` changed to `KeyError` (one run) | the 8 bad-tag params, and the symlink and missing-root tests |
+
+### Results
+
+- Full cmru suite via `pt.py`, no `--maxfail`: 3219 passed, 2 skipped (at `a96905ff7`). The first full run
+  at `abb6840cd` failed one test, `test_installer_extensions.py::TestRealProjects::
+  test_tls_edge_has_no_enrollment_and_keeps_its_own_settings`: the committed `tls-edge/get.py` is a
+  render of the template, so it needed the same edit (done in `a96905ff7`).
+- ciu enroll files: 172 passed, 8 skipped (`get.py.tmpl` did change, so they were run).
+- `coverage` lane verdict PASS (3219 passed, 2 skipped); `canary` lane verdict PASS (both at `a96905ff7`, clean tree).
+
+### Deviations
+
+- I ran `cat >> tests/test_installer_w1_round1.py <<'EOF'` with an empty body, once, by mistake. It
+  wrote nothing (`git diff --stat` unchanged); the new tests went into a new file with Write. No
+  other shell or script wrote repository files.
+- `ciu/get.py` and `tls-edge/get.py` were updated by the same Edit as the template, not by running
+  `cmru get-py` (it needs the `[github]` environment). `test_installer_extensions` (tls-edge) compares
+  the committed file with a fresh render and passes; there is no such test for `ciu/get.py`, so its
+  equality with a render is not proven by a run.
+- The brief's `_expected_owner` seam is a no-op (see condition 1); a message assertion replaces it.
