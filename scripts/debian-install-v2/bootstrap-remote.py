@@ -464,7 +464,7 @@ def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> P
 
 def main() -> int:
     restrict_provider_files()  # LT-F-r1002-03: first action, before anything can fail
-    debug =bool(_env_bool("DEBUG_MODE"))
+    debug = bool(_env_bool("DEBUG_MODE"))
     repo_url = os.environ.get("REPO_URL", REPO_URL_DEFAULT).rstrip("/")
     branch = os.environ.get("REPO_BRANCH", REPO_BRANCH_DEFAULT)
     install_dir = Path(os.environ.get("INSTALL_DIR", INSTALL_DIR_DEFAULT))

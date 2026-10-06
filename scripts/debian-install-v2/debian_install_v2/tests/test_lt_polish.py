@@ -266,6 +266,14 @@ def test_fetch_source_warns_loudly_when_the_checkout_is_on_another_branch():
     assert "WARNING" in warnings[0] and "lt-polish" in warnings[0] and "--repo-branch lt-polish" in warnings[0]
 
 
+def test_fetch_source_warns_when_same_branch_but_local_head_differs_from_remote():
+    git = _git({"ls-remote": "abc123def456\trefs/heads/main", "rev-parse-abbrev": "main", "rev-parse": "999999999999aaaa"})
+    info, warnings = describe_fetch_source("https://github.com/volkb79-2/vbpub", "main", git=git)
+    assert len(warnings) == 1
+    assert "WARNING" in warnings[0] and "999999999999" in warnings[0] and "abc123def456" in warnings[0]
+    assert "unpushed or stale" in warnings[0]
+
+
 def test_fetch_source_degrades_without_git_or_network():
     info, warnings = describe_fetch_source("https://github.com/volkb79-2/vbpub", "main", git=lambda argv, cwd=None: "")
     assert "unresolved" in info[0] and warnings == []
