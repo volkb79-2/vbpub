@@ -24,15 +24,28 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
 - **Estate-internal packages never come from an index.**
   `tester-unified/gen-requirements.py` derives the third-party closure from the
   copied `pyproject.toml` files and REFUSES any estate-internal name
-  (`cli-extended`, `worktree`, `cmru`, `assay`, `ciu`, ...) or direct-URL
+  (`worktree`, `cmru`, `assay`, `ciu`, ...) or direct-URL
   requirement, because the closure goes to a PyPI-default `pip` and an
   unclaimed or look-alike name would be installed into an image that is handed
-  the host Docker socket. `cli-extended` and `cmru` are built offline from the
-  COPYed `libraries/*` and `cmru/` sources (`pip wheel --no-index --no-deps
-  --no-build-isolation`, in a throwaway venv holding only their pinned build
+  the host Docker socket. The one exception is `cli-extended` (cmru declares
+  `cli-extended>=0.2.0`): the generator SKIPS that line, so no cli-extended
+  requirement ever reaches pip, and the image installs the RELEASED wheel
+  instead: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
+  (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, currently the
+  released 0.2.0 wheel; to bump, copy `url`/`sha256` from
+  `cli-extended-latest/latest.json` into those defaults and rebuild).
+  `--build-arg CLI_EXTENDED_RESOLVE=latest` is the explicit opt-in that reads the
+  pointer instead (add `--no-cache`). Redirects must stay https on a GitHub
+  host. Either way it requires and verifies the sha256, and the wheel is installed
+  `--no-index --no-deps` BEFORE cmru. cmru is built offline from the COPYed
+  `cmru/` and `libraries/worktree/` sources (`pip wheel --no-index --no-deps
+  --no-build-isolation`, in a throwaway venv holding only its pinned build
   backends) with a `+tester.unified` local version, and the build asserts that
-  `cli_extended` and `worktree` import from `/opt/tester-venv`. The repo-root
-  `.dockerignore` whitelists exactly the files this needs.
+  `cli_extended` and `worktree` import from `/opt/tester-venv`, that cmru is the
+  local build and that cli-extended is the release. Gate lanes put only
+  `src:../libraries/worktree/src` on `PYTHONPATH`; cli_extended always comes from
+  the installed release. The repo-root `.dockerignore` whitelists exactly the
+  files this needs.
 
 Run a gate through the canonical launcher:
 

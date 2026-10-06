@@ -11,8 +11,10 @@ ROOT_CMRU_ARTIFACTS = (
     "cmru.orchestration.toml",
     "cmru.project.sample.toml",
 )
+# cli-extended is deliberately absent: it is a real wheel dependency installed in
+# the gate environment, so a fixture must never carry (and tests never import) a
+# vendored copy of its source.
 SHARED_LIBRARIES = (
-    Path("libraries/cli-extended"),
     Path("libraries/worktree"),
 )
 EXTERNAL_DOC_ARTIFACTS = (

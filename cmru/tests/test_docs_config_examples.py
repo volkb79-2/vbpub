@@ -90,10 +90,10 @@ def test_estate_project_steps_use_the_bound_cmru_handler_not_the_module_form():
     assert '"cmru", "handler", "wheel-build"' in template
 
 
-def test_cmru_own_env_pythonpath_keeps_the_library_roots():
+def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_source():
     document = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     roots = document["env"]["PYTHONPATH"].split(":")
-    assert roots == ["src", "../libraries/cli-extended/src", "../libraries/worktree/src"]
+    assert roots == ["src", "../libraries/worktree/src"]
 
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():

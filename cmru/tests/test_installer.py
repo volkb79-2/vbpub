@@ -1299,3 +1299,78 @@ class TestNormalizeTag:
         # str.lstrip('v') would strip BOTH leading v's → 'demo-v1.0.0'; a single
         # prefix-strip preserves the inner 'v' → 'demo-vv1.0.0'.
         assert self._ns()["normalize_tag"]("vv1.0.0") == "demo-vv1.0.0"
+
+
+# ─── KI-51 / W2-PKG4: a cmru-shaped install carries cli-extended as a real dependency ──
+
+class TestCliExtendedInstallOrder:
+    """A project whose tool wheel requires ``cli-extended>=0.2.0`` installs it FIRST,
+    hash-locked, offline (``--no-index``, never an index), and refuses an unhashed one."""
+
+    TAG = "demo-v1.0.0"
+
+    @staticmethod
+    def _project(tmp_path, order, **kw):
+        from tests.installer_fakes import render_ns
+        specs = {"cli-extended": ("vendor/cli_extended-*.whl", "cli-extended"),
+                 "demotool": ("vendor/demotool-*.whl", "demotool")}
+        return render_ns(tmp_path, wheel_specs=[specs[name] for name in order],
+                         launchers=["demotool"], **kw)
+
+    @staticmethod
+    def _bundle(tmp_path, **extra):
+        from tests.installer_fakes import make_bundle, make_wheel, use_bundles  # noqa: F401
+        wheels = tmp_path / "w"
+        make_bundle(tmp_path / "b", TestCliExtendedInstallOrder.TAG, wheels=[
+            ("cli-extended", make_wheel(wheels, "cli-extended", "0.2.0")),
+            ("demotool", make_wheel(wheels, "demotool", "1.0.0",
+                                    requires=("cli-extended>=0.2.0",), console="demotool")),
+        ], **extra)
+
+    def test_declared_after_the_tool_it_is_still_installed_first_and_hash_locked(self, tmp_path):
+        from tests.installer_fakes import install, root_of, use_bundles
+        ns = self._project(tmp_path, ("demotool", "cli-extended"))  # wrong declared order
+        self._bundle(tmp_path)
+        use_bundles(ns, tmp_path / "b")
+        install(ns, version=self.TAG)
+        lock = (root_of(ns) / "current").resolve().joinpath("requirements.lock").read_text().splitlines()
+        assert [line.split("==")[0] for line in lock] == ["cli-extended", "demotool"]
+        assert all("--hash=sha256:" in line for line in lock)
+        venv_python = (root_of(ns) / "current").resolve() / "venv" / "bin" / "python"
+        probe = subprocess.run(
+            [str(venv_python), "-c", "import cli_extended, demotool"],
+            capture_output=True, text=True, env={"PATH": os.environ["PATH"]},
+        )
+        assert probe.returncode == 0, probe.stderr
+
+    def test_installer_pip_never_reaches_an_index(self, tmp_path):
+        from tests.installer_fakes import install, use_bundles
+        ns = self._project(tmp_path, ("cli-extended", "demotool"))
+        self._bundle(tmp_path)
+        use_bundles(ns, tmp_path / "b")
+        seen = []
+        real = ns["_run_checked"]
+        ns["_run_checked"] = lambda cmd, what: (seen.append(cmd), real(cmd, what))[1]
+        install(ns, version=self.TAG)
+        pip = next(c for c in seen if c[1:3] == ["-m", "pip"] and "install" in c)
+        assert "--no-index" in pip and "--find-links" in pip and "--require-hashes" in pip
+
+    @pytest.mark.parametrize("entry", [{}, {"sha256": ""}, {"sha256": None}])
+    def test_a_declared_cli_extended_wheel_without_a_sha256_fails_hard(self, tmp_path, entry):
+        from tests.installer_fakes import install, root_of, snapshot, use_bundles
+        ns = self._project(tmp_path, ("cli-extended", "demotool"))
+        self._bundle(tmp_path, manifest_extra={"cli-extended": entry})
+        use_bundles(ns, tmp_path / "b")
+        with pytest.raises(SystemExit, match="^1$"):
+            install(ns, version=self.TAG)
+        assert snapshot(root_of(ns)) == {}  # nothing installed
+
+    def test_a_cli_extended_wheel_with_the_wrong_sha256_fails_hard(self, tmp_path):
+        from tests.installer_fakes import install, root_of, snapshot, use_bundles
+        ns = self._project(tmp_path, ("cli-extended", "demotool"))
+        self._bundle(tmp_path, manifest_extra={
+            "cli-extended": {"wheel": "cli_extended-0.2.0-py3-none-any.whl", "sha256": "0" * 64}})
+        use_bundles(ns, tmp_path / "b")
+        with pytest.raises(SystemExit, match="^1$"):
+            install(ns, version=self.TAG)
+        assert snapshot(root_of(ns)) == {}

@@ -48,7 +48,7 @@ def _load_components():
     for source in (
         PROJECT_ROOT / "src",
         REPOSITORY_ROOT / "assay" / "src",
-        REPOSITORY_ROOT / "libraries" / "cli-extended" / "src",
+        # cli_extended is the INSTALLED released wheel (CX-D1), never a source root.
         REPOSITORY_ROOT / "libraries" / "worktree" / "src",
     ):
         sys.path.insert(0, str(source))

@@ -432,7 +432,6 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
     for relative in (
         "cmru/src/cmru/cli.py",
         "libraries/worktree/src",
-        "libraries/cli-extended/src",
     ):
         path = candidate / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -462,12 +461,48 @@ def test_run_child_self_release_imports_candidate_cmru_source(monkeypatch, tmp_p
     assert observed["cwd"] == candidate
     assert observed["argv"][0] == "/opt/cmru/bin/cmru"
     assert observed["env"]["CMRU_TRANSACTION_PROJECTS"] == "cmru"
-    assert observed["env"]["PYTHONPATH"].split(os.pathsep)[:3] == [
+    assert observed["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
         str(candidate / "cmru" / "src"),
         str(candidate / "libraries" / "worktree" / "src"),
-        str(candidate / "libraries" / "cli-extended" / "src"),
     ]
     assert observed["env"]["PYTHONPATH"].endswith("/inherited/python/path")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="W2-PKG4/PKG-1 seam: turns green once PKG-1 drops the candidate "
+    "libraries/cli-extended/src root from transaction.run_child (decision D10); "
+    "strict: it FAILS (XPASS) the moment D10 lands, forcing this marker's removal",
+)
+def test_run_child_never_puts_a_candidate_cli_extended_source_root_on_pythonpath(
+    monkeypatch, tmp_path,
+):
+    """CX-D1: cli_extended is a wheel dependency. Even when the candidate tree
+    carries ``libraries/cli-extended/src``, the self-release child imports the
+    installed release, not that source."""
+    candidate = tmp_path / "candidate"
+    for relative in ("cmru/src/cmru/cli.py", "libraries/worktree/src",
+                     "libraries/cli-extended/src"):
+        path = candidate / relative
+        if path.suffix:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# candidate source\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+    observed = {}
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setenv("CMRU_BIN", "/opt/cmru/bin/cmru")
+    monkeypatch.setattr(
+        transaction.subprocess, "run",
+        lambda argv, *, cwd, env: (observed.update(env=env), SimpleNamespace(returncode=0))[1],
+    )
+    workspace = SimpleNamespace(
+        path=candidate, branch="b", base="a" * 40, workspace_id="id", repo_root=tmp_path,
+    )
+    assert transaction.run_child(workspace, ["cmru"], project_names=["cmru"]) == 0
+    roots = observed["env"]["PYTHONPATH"].split(os.pathsep)
+    assert str(candidate / "libraries" / "cli-extended" / "src") not in roots
+    assert str(candidate / "libraries" / "worktree" / "src") in roots
 
 
 @pytest.mark.parametrize("project_names", [None, [], ["other"], ["cmru"]])

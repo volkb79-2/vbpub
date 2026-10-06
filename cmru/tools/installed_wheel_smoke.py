@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import venv
+import zipfile
 from pathlib import Path
 
 
@@ -65,24 +66,70 @@ def _run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> No
         )
 
 
+#: The dependency cmru's wheel must declare (floor per the estate version policy).
+CLI_EXTENDED_REQUIREMENT = "cli-extended>=0.2.0"
+
+
+def check_wheel_contents(wheel: Path) -> None:
+    """The distribution oracle: the cmru wheel declares cli-extended as a
+    dependency and carries NO copy of it (CX-D1), but does carry its own agent
+    skill as package data. Raises ``RuntimeError`` on any violation."""
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        metadata_names = [n for n in names if n.endswith(".dist-info/METADATA")]
+        if len(metadata_names) != 1:
+            raise RuntimeError(f"{wheel.name}: expected one METADATA file, found {metadata_names}")
+        metadata = archive.read(metadata_names[0]).decode("utf-8")
+    vendored = [n for n in names if n.split("/", 1)[0] == "cli_extended"]
+    if vendored:
+        raise RuntimeError(f"{wheel.name} vendors cli_extended files: {vendored[:3]}")
+    requires = [line.split(":", 1)[1].strip() for line in metadata.splitlines()
+                if line.startswith("Requires-Dist:")]
+    if CLI_EXTENDED_REQUIREMENT not in requires:
+        raise RuntimeError(f"{wheel.name} lacks Requires-Dist: {CLI_EXTENDED_REQUIREMENT} ({requires})")
+    if "cmru/skills/cmru-cli/SKILL.md" not in names:
+        raise RuntimeError(f"{wheel.name} does not ship the cmru-cli skill as package data")
+
+
+def _build_wheel(source: Path, wheelhouse: Path, *, cwd: Path) -> None:
+    command = [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse)]
+    if os.environ.get("CMRU_SMOKE_NO_BUILD_ISOLATION"):
+        # Offline hosts: build with the interpreter's own setuptools/setuptools_scm.
+        command.append("--no-build-isolation")
+    _run([*command, str(source)], cwd=cwd)
+
+
 def main() -> int:
     project_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="cmru-installed-wheel-") as raw_tmp:
         tmp_path = Path(raw_tmp)
         wheelhouse = tmp_path / "wheelhouse"
         wheelhouse.mkdir()
-        _run(
-            [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), str(project_root)],
-            cwd=tmp_path,
-        )
+        # cli-extended is a real wheel dependency: build this checkout's wheel into
+        # the wheelhouse, the stand-in for the released asset the installers fetch.
+        _build_wheel(project_root.parent / "libraries" / "cli-extended", wheelhouse, cwd=tmp_path)
+        _build_wheel(project_root, wheelhouse, cwd=tmp_path)
         wheels = list(wheelhouse.glob("cmru-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError(f"expected exactly one CMRU wheel, found {wheels}")
+        check_wheel_contents(wheels[0])
 
         env_dir = tmp_path / "venv"
         venv.EnvBuilder(with_pip=True).create(env_dir)
         python = env_dir / "bin" / "python"
-        _run([str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])], cwd=tmp_path)
+        # Offline install that RESOLVES the declared dependency from the wheelhouse:
+        # never an index (the bare cli-extended name is unclaimed on PyPI, CX-D2).
+        _run(
+            [str(python), "-m", "pip", "install", "--no-index", "--find-links", str(wheelhouse), str(wheels[0])],
+            cwd=tmp_path,
+        )
+        _run(
+            [str(python), "-c",
+             "import cli_extended, cmru, sys;"
+             "site = [p for p in sys.path if p.endswith('site-packages')][0];"
+             "assert cli_extended.__file__.startswith(site), cli_extended.__file__"],
+            cwd=tmp_path,
+        )
 
         config = tmp_path / "cmru.toml"
         config.write_text(_CONFIG, encoding="utf-8")
