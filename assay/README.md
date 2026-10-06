@@ -225,6 +225,12 @@ assay exists to close that gap mechanically, not by policy:
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
   and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+- **Assay's own Git children cannot launch detached automatic maintenance (B147).**
+  Assay pins automatic maintenance and both detach settings off, independent
+  of system or image configuration. See the
+  [design rationale](docs/DESIGN-GUIDE.md#git-auto-maintenance-stays-disabled-at-the-boundary-b147)
+  and
+  [consumer guidance](docs/CONSUMERS.md#automatic-git-maintenance-in-assays-own-git-commands-b147).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no

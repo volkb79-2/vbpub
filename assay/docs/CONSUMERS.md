@@ -213,6 +213,20 @@ invoked through the same project gate script; the bounded-long-judgment
 shape is the multi-target canary, which ships — see
 [Declare more than one canary probe](#declare-more-than-one-canary-probe-targets-and-aggregation-b007).
 
+## Automatic Git maintenance in Assay's own Git commands (B147)
+
+No lane or tester-image configuration change is needed. Run the lane as usual:
+
+```bash
+assay run unit
+```
+
+Assay replaces the environment of its own Git child processes, so image-level
+Git settings do not reach them. It pins `maintenance.auto=false`,
+`maintenance.autoDetach=false`, and `gc.autoDetach=false` directly on those
+commands. This does not change the consumer repository's `.git/config` or the
+Git configuration used by a separate process launched by the lane command.
+
 ## Obtain and verify an immutable release
 
 Download one named release's wheel and `release-manifest.json`, then verify them before

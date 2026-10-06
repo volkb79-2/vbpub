@@ -1278,6 +1278,22 @@ probe runs only after bootstrap fails; the linked-worktree diagnostic keeps
 precedence, healthy resolution never consults it, and other Git failures pass
 through unchanged. See the [consumer remedy](CONSUMERS.md#b081-ownership-remedy).
 
+### Git auto-maintenance stays disabled at the boundary (B147)
+
+Assay replaces the environment of its Git children and disables system and
+global Git configuration. An image-level `gc.autoDetach=false` therefore does
+not reach those children. Assay pins `maintenance.auto=false`,
+`maintenance.autoDetach=false`, and `gc.autoDetach=false` with command-level
+configuration on bootstrap, substantive, and P22 Git invocations. The first
+disables automatic maintenance. Git documents `gc.autoDetach` as a fallback
+when `maintenance.autoDetach` is unset ([Git configuration reference](https://git-scm.com/docs/git-config)),
+so Assay pins both detach settings to `false` and does not rely on
+repository-local config precedence. This keeps
+automatic Git work from outliving a bounded command, consuming the gate's
+process budget, or changing a repository while a judge is reading it. Real-Git
+boundary tests set each repository-local value to `true` and check that Assay
+still observes `false`.
+
 ### Filtered native-R2 judge identity (B092)
 
 Some repositories deliberately keep generated reports and trove evidence in

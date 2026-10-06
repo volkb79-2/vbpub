@@ -731,6 +731,31 @@ def test_p22_init_private_surfaces_git_init_failure_and_captures_stderr(monkeypa
     assert process.stdout.closed and process.stderr.closed
 
 
+def test_p22_init_private_pins_auto_maintenance_config(monkeypatch):
+    process = _FakeP22Process(505)
+    captured: list[tuple[str, ...]] = []
+
+    def spawn(argv, **_kwargs):
+        captured.append(tuple(argv))
+        return process
+
+    monkeypatch.setattr(git, "_p22_spawn", spawn)
+    monkeypatch.setattr(git, "_p22_pump", lambda *_args, **_kwargs: None)
+    git._p22_init_private(
+        Path("/git"),
+        path=Path("/seed.git"),
+        template=Path("/empty-template"),
+        bare=True,
+        deadline=SimpleNamespace(remaining=lambda _what: 5.0),
+    )
+
+    assert len(captured) == 1
+    pairs = tuple(zip(captured[0], captured[0][1:]))
+    assert ("-c", "maintenance.auto=false") in pairs
+    assert ("-c", "maintenance.autoDetach=false") in pairs
+    assert ("-c", "gc.autoDetach=false") in pairs
+
+
 def test_p22_init_private_kills_and_reaps_when_the_pump_fails(monkeypatch):
     process = _FakeP22Process(510)
     killed = []

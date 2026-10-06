@@ -174,6 +174,14 @@ _FIXED_CONFIG: tuple[str, ...] = (
     # useful result ("unable to create threaded lstat"). Pin the option at
     # the Git boundary; ambient GIT_CONFIG_* is intentionally discarded above.
     "-c", "core.preloadIndex=false",
+    # The replacement environment intentionally discards system and global
+    # configuration, including settings baked into a tester image. Keep Git's
+    # automatic maintenance disabled at this boundary: detached maintenance
+    # children can outlive their parent and exhaust the gate's PID limit
+    # (B145/B147).
+    "-c", "maintenance.auto=false",
+    "-c", "maintenance.autoDetach=false",
+    "-c", "gc.autoDetach=false",
     "-c", "commit.gpgSign=false",
     "-c", "core.excludesFile=",
 )

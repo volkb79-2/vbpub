@@ -145,6 +145,7 @@ items:
   - {id: B143, title: "Adopt cli-extended (unified adoption, order 6 of 8): real wheel dependency, zipapp bundles cli_extended, A-005 reworded", type: feature, component: cli, context_estimate: large}
   - {id: B144, title: "per-candidate covering-test selection for qualifying Python R2: a coverage-context map runs each mutant's covering tests first (kill fast) while every survivor still runs the full declared suite -- decision-gated against B110 D3", type: feature, component: mutation, context_estimate: large}
   - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane at its process limit cannot produce a valid R2 kill", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B147, title: "Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance", type: bugfix, component: execution, context_estimate: small}
 ---
 
 # assay — backlog
@@ -194,6 +195,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
 - B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — OPEN, critical (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
+- B147 — hermetic Git boundary permits detached automatic maintenance — OPEN (filed 2026-10-06; fold into the B145 wave)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11954,3 +11956,15 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 **Oracles:** a low-`--pids-limit` tester-unified container drives a failing mutant through native R2 and proves its final status is `ERROR/EXEC_FAILED` with no `killed` candidate; its test process is capped at 120 seconds and `docker wait` at 150 seconds; a live one-second `docker wait` timeout probe exercises force removal of a detached container; `pids.events.max` on an unlimited candidate is sampled for `pids_localevents`; inactive child controllers with active visible ancestors are accepted and sampled at the nearest active unlimited ancestor as well as finite parents; a finite parent counter remains required; a writable cgroup2 mount, writable `cgroup.procs` on a read-only mount, a sibling cgroup overmount at the candidate path, a private cgroup namespace at `/child`, a namespace root exposing resource limit files, and a cgroup mount below `/` all refuse before candidates; the hierarchy root is never treated as an ordinary enforcing ancestor; changing a visible limit during a candidate refuses the window; a real command failure with unchanged counters remains `killed`; memory event `max` and `oom` deltas receive the same infrastructure classification, including a global OOM kill with unlimited candidate `memory.max`; a controlled wrong implementation that ignores counter changes fails; a worker submission that raises `RuntimeError` produces `ERROR/EXEC_FAILED`; `assay verify` rejects malformed deltas, arithmetic mismatch, or resource-limited outcomes listed under `killed`.
 
 **Related:** CMRU KI-52, run-gate RG-83/RG-84, Assay B107/B108, and dstdns D-670 TEST-RUNNER-INIT.
+
+## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
+
+**Status: IMPLEMENTED on branch `assay-b136-b141`; focused tests PASS (130 passed), registered gate pending (2026-10-06).** Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+
+**Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
+
+**Chosen contract:** every Git child Assay constructs, including repository bootstrap, ordinary commands, P22 object commands, and P22 private-repository initialization, receives command-level `maintenance.auto=false`, `maintenance.autoDetach=false`, and `gc.autoDetach=false`. Git uses `gc.autoDetach` as a fallback when `maintenance.autoDetach` is unset, so both detach settings are pinned. These settings do not rely on the tester image or consumer Git configuration.
+
+**Oracles:** the ordinary bootstrap and substantive argv both carry the three settings; P22 object and init argv carry them too; with a repository-local value of `true`, real Git invoked through Assay reports `false` for each key. Removing a fixed setting makes its real-Git assertion fail.
+
+**Related:** B145, CMRU KI-52, and run-gate RG-83/RG-84.
