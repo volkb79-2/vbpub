@@ -6,9 +6,11 @@ kind = "none"
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
 CMRU_RELEASE_NOTES = "## cmru wheel\n\nBuild, publish, and release orchestration for portable CMRU projects.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
-# Keep the library roots: a bare "src" would replace the transaction child's
-# PYTHONPATH and run candidate cmru code against the installed cli_extended (BG-04).
-PYTHONPATH = "src:../libraries/cli-extended/src:../libraries/worktree/src"
+# Keep the `worktree` library root: a bare "src" would replace the transaction
+# child's PYTHONPATH and drop the candidate's packaged `worktree` (BG-04).
+# cli_extended is NOT listed: it is a real wheel dependency, imported from the
+# installed release (CX-D1), never from a source root.
+PYTHONPATH = "src:../libraries/worktree/src"
 
 [project]
 id = "cmru"

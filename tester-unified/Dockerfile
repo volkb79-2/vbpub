@@ -37,15 +37,18 @@ RUN git config --system maintenance.autoDetach false \
 # pyprojects. Gate runs execute against the BOUND worktree via PYTHONPATH, so
 # these baked copies only seed the dependency closure, not the code under test.
 COPY tester-unified/gen-requirements.py /usr/local/lib/tester-unified/gen-requirements.py
+COPY tester-unified/fetch-cli-extended.py /usr/local/lib/tester-unified/fetch-cli-extended.py
 COPY ciu/         /src/ciu/
 COPY cmru/        /src/cmru/
 COPY assay/       /src/assay/
 COPY topos/       /src/topos/
 COPY nyxloom/ /src/nyxloom/
-# Estate-internal libraries, at the path cmru's pyproject expects relative to
-# /src/cmru (`../libraries/worktree/src`, `../libraries/cli-extended/src`).
-# They are installed ONLY from these copied sources, never from an index.
-COPY libraries/ /src/libraries/
+# The one estate-internal library cmru still packages itself, at the path cmru's
+# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
+# built ONLY from this copied source, never from an index. cli-extended is NOT
+# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
+# from its RELEASE below.
+COPY libraries/worktree/ /src/libraries/worktree/
 # scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
 # scipy/ruptures) that no other project here pulls in. It is NOT a fork
 # candidate the way srdm was: its suite uses fake cgroup trees, injected
@@ -61,37 +64,49 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 # project's `pyproject.toml` instead: the bind-mounted worktree, not these
 # copied sources, provides the code under test.
 #
-# INDEX POLICY (BG-05): the closure goes to a PyPI-default pip, so the generator
-# REFUSES any estate-internal name (cli-extended, worktree, cmru, assay, ciu,
-# ...): `cli-extended` is unclaimed on PyPI and `worktree` is an unrelated PyPI
-# project, i.e. a dependency-confusion path into an image that is handed the
-# host Docker socket. Estate-internal packages (cli-extended, cmru) are instead
-# built OFFLINE from the COPYed sources above, in a throwaway venv holding only
-# their pinned build backends (`--no-index --no-deps --no-build-isolation`),
-# and installed from those local wheels. The cli-extended wheel carries a local
-# version segment (+tester.unified) that no PyPI release can have.
+# INDEX POLICY (BG-05, D8): the closure goes to a PyPI-default pip, so the
+# generator REFUSES any estate-internal name (worktree, cmru, assay, ciu, ...):
+# `worktree` is an unrelated PyPI project and `cli-extended` is unclaimed on
+# PyPI, i.e. a dependency-confusion path into an image that is handed the host
+# Docker socket. cmru declares `cli-extended>=0.2.0`; the generator SKIPS that
+# one line (no cli-extended requirement ever reaches pip), and the image installs
+# the RELEASED cli-extended wheel instead: fetch-cli-extended.py resolves
+# `cli-extended-latest/latest.json` (or a pinned release asset through the two
+# build args), REQUIRES its sha256 and verifies it, and the wheel goes in with
+# `--no-index --no-deps` BEFORE cmru. cmru itself is built OFFLINE from the
+# COPYed source, in a throwaway venv holding only its pinned build backends
+# (`--no-index --no-deps --no-build-isolation`), and installed from that local
+# wheel, whose local version segment (+tester.unified) no PyPI release can have.
+ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
+ARG CLI_EXTENDED_WHEEL_URL=
+ARG CLI_EXTENDED_WHEEL_SHA256=
 RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
-      --build-requires cmru/pyproject.toml libraries/cli-extended/pyproject.toml \
-      > /tmp/internal-build-requirements.txt
+      --build-requires cmru/pyproject.toml \
+      > /tmp/internal-build-requirements.txt \
+ && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
+      --dest /tmp/cli-extended-release --min-version 0.2.0 \
+      --pointer-url "${CLI_EXTENDED_POINTER_URL}" \
+      --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}"
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
+ && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
  && /usr/local/bin/python3.14 -m venv /tmp/internal-build-venv \
  && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt \
- && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=0.0.0+tester.unified \
-    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified \
+ && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified \
     /tmp/internal-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
-      -w /tmp/internal-wheels /src/libraries/cli-extended /src/cmru \
+      -w /tmp/internal-wheels /src/cmru \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
- && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt \
+ && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
  && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 
-# Build-time assertion (BG-05): the estate-internal imports resolve from THIS
-# image's locally built wheels, never from an index. A PyPI release can never
-# carry the +tester.unified local version segment.
+# Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
+# locally built cmru wheel (a PyPI release can never carry the +tester.unified
+# local version segment), and cli_extended is the RELEASED wheel, not a local
+# build and not an index install; cmru's metadata must require it.
 RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 from pathlib import Path
@@ -103,12 +118,16 @@ site = "/opt/tester-venv/"
 for module in (cli_extended, worktree):
     location = str(Path(module.__file__).resolve())
     assert location.startswith(site), f"{module.__name__} imports from {location}, not {site}"
-for dist in ("cli-extended", "cmru"):
-    version = metadata.version(dist)
-    assert version.endswith("+tester.unified"), (
-        f"{dist} {version} was not built from the COPYed source in this image"
-    )
-print("estate-internal packages are local builds:", metadata.version("cli-extended"))
+version = metadata.version("cmru")
+assert version.endswith("+tester.unified"), (
+    f"cmru {version} was not built from the COPYed source in this image"
+)
+released = metadata.version("cli-extended")
+assert "+" not in released, f"cli-extended {released} is a local build, not the release"
+assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()), (
+    "cmru's wheel does not declare cli-extended as a dependency"
+)
+print("cmru is a local build; cli-extended is the released wheel:", released)
 PY
 
 # The container runs as uid 1003 (to match the host-owned bind mounts), which

@@ -11,7 +11,13 @@ description = "CMRU — Configurable Multi Release Utility for CIU-family monore
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
-dependencies = []
+# cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored.
+# Floor 0.2.0: the first release carrying the public API cmru's CLI is built on
+# (CliRegistry/CliIdentity/SelectorList/runtime, CLI-EXT contract_version 1).
+# It is published to GitHub Releases only; the bare name is unclaimed on PyPI, so
+# every install of cmru MUST be `--no-index --find-links <wheelhouse>` (or
+# `--no-deps` after installing cli-extended first); see README "Install" (CX-D2).
+dependencies = ["cli-extended>=0.2.0"]
 
 [project.optional-dependencies]
 # tester-unified SoT: cmru's test closure, including coverage and property
@@ -23,11 +29,12 @@ versions-templates = ["Jinja2>=3.1,<4"]
 cmru = "cmru.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src", "../libraries/worktree/src", "../libraries/cli-extended/src"]
+where = ["src", "../libraries/worktree/src"]
 
+# `worktree` is still carried inside the cmru wheel (out of the cli-extended
+# adoption's scope). cli_extended is NOT mapped here: it comes from its own wheel.
 [tool.setuptools.package-dir]
 worktree = "../libraries/worktree/src/worktree"
-cli_extended = "../libraries/cli-extended/src/cli_extended"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -43,4 +50,6 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 # `cmru init` scaffolding ships inside the wheel so a plain pip install can
 # generate contracts without the repository present.
 [tool.setuptools.package-data]
-cmru = ["templates/*.toml", "templates/*.tmpl"]
+# Agent skills ship as package data too (`cmru skills install`; AC-19), so the
+# skill always matches the installed wheel instead of a `.claude/skills` checkout.
+cmru = ["templates/*.toml", "templates/*.tmpl", "skills/*/*", "skills/*/**/*"]

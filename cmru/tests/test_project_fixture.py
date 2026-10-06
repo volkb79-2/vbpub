@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from project_fixture import copy_project_fixture  # noqa: E402
 
 
-def test_disposable_project_fixture_copies_shared_libraries_and_estate_configs(tmp_path):
+def test_disposable_project_fixture_copies_worktree_library_never_cli_extended_and_estate_configs(tmp_path):
     repo_root = tmp_path / "repo"
     project_root = repo_root / "cmru"
     workspace = tmp_path / "scratch"
@@ -31,7 +31,7 @@ def test_disposable_project_fixture_copies_shared_libraries_and_estate_configs(t
     (project_root / "src/cmru").mkdir(parents=True)
     (project_root / "src/cmru/__init__.py").write_text("", encoding="utf-8")
     for library, package in (
-        ("cli-extended", "cli_extended"),
+        ("cli-extended", "cli_extended"),  # present in the repo, must NOT be copied
         ("worktree", "worktree"),
     ):
         package_file = repo_root / "libraries" / library / "src" / package / "__init__.py"
@@ -45,7 +45,9 @@ def test_disposable_project_fixture_copies_shared_libraries_and_estate_configs(t
     )
 
     assert (copied_project / "src/cmru/__init__.py").is_file()
-    assert (workspace / "libraries/cli-extended/src/cli_extended/__init__.py").is_file()
+    # CX-D1: cli-extended is a wheel dependency of the gate environment; a fixture
+    # (and so every mutated candidate) never carries a vendored copy of its source.
+    assert not (workspace / "libraries/cli-extended").exists()
     assert (workspace / "libraries/worktree/src/worktree/__init__.py").is_file()
     assert (workspace / "topos/cmru.toml").is_file()
     assert (workspace / "nyxloom/cmru.toml").is_file()

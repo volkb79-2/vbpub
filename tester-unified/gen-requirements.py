@@ -11,7 +11,10 @@ has claimed (``cli-extended``) or an unrelated project that has (``worktree``)
 would be installed into an image that ``tester-unified/run`` gives the host
 Docker socket (dependency confusion, BG-05).  So the generator REFUSES (exit 1)
 any requirement naming one; the Dockerfile installs those only from COPYed
-``libraries/*`` and project sources with ``--no-index --no-deps``.
+project sources with ``--no-index --no-deps``.  The one exception is
+``cli-extended`` (D8): cmru declares it as a real dependency, so its line is
+SKIPPED (never printed, never refused) and the Dockerfile installs the RELEASED
+wheel by sha256 (``fetch-cli-extended.py``) before cmru.
 """
 from __future__ import annotations
 
@@ -30,6 +33,13 @@ ESTATE_INTERNAL = frozenset({
     "cli-extended", "worktree", "cmru", "assay", "ciu", "nyxloom", "topos",
     "cgroup-profiler", "run-gate", "pwmcp", "srdm",
 })
+
+#: Estate-internal names that are SKIPPED rather than refused: since cmru
+#: declares ``cli-extended>=0.2.0`` (KI-51 / CX-D1) its requirement line reaches
+#: this generator, but the Dockerfile installs the RELEASED wheel itself, by
+#: sha256 (tester-unified/fetch-cli-extended.py), before cmru. No ``cli-extended``
+#: line may ever reach pip.
+INSTALLED_BY_DOCKERFILE = frozenset({"cli-extended"})
 
 #: (pyproject path relative to --root, extras whose requirements the gate needs)
 PROJECTS = (
@@ -98,6 +108,17 @@ def refuse_internal(
     return requirement
 
 
+def admit(
+    requirement: str, source: str, internal: frozenset[str] = ESTATE_INTERNAL,
+) -> str | None:
+    """The requirement to hand to pip, or ``None`` for a line the Dockerfile
+    installs itself (D8: ``cli-extended`` is a released wheel, sha256-pinned,
+    never an index query). Any other estate-internal name is still refused."""
+    if requirement_name(requirement) in INSTALLED_BY_DOCKERFILE:
+        return None
+    return refuse_internal(requirement, source, internal)
+
+
 def own_extra_requirements(project: dict, extras) -> Iterator[str]:
     """Expand only this project's composite extras.
 
@@ -130,15 +151,21 @@ def requirements(root: Path) -> Iterator[str]:
         project = document["project"]
         source = f"{relative} [project]"
         for requirement in project.get("dependencies", ()):
-            yield refuse_internal(requirement, source, internal)
+            admitted = admit(requirement, source, internal)
+            if admitted is not None:
+                yield admitted
         for requirement in own_extra_requirements(project, extras):
-            yield refuse_internal(requirement, f"{relative} extras {list(extras)}", internal)
+            admitted = admit(requirement, f"{relative} extras {list(extras)}", internal)
+            if admitted is not None:
+                yield admitted
         # Source-backed lanes install the selected tree with --no-build-isolation,
         # so its pinned build backend must be in the image.  (Build backends are
         # third-party; the refusal applies to them as well.)
         if normalized(project["name"]) in BUILD_REQUIRES_FOR:
             for requirement in document.get("build-system", {}).get("requires", ()):
-                yield refuse_internal(requirement, f"{relative} [build-system]", internal)
+                admitted = admit(requirement, f"{relative} [build-system]", internal)
+                if admitted is not None:
+                    yield admitted
     yield "build"
 
 
@@ -151,7 +178,9 @@ def build_requirements(root: Path, pyprojects: list[str]) -> Iterator[str]:
         with (root / relative).open("rb") as handle:
             document = tomllib.load(handle)
         for requirement in document.get("build-system", {}).get("requires", ()):
-            yield refuse_internal(requirement, f"{relative} [build-system]", internal)
+            admitted = admit(requirement, f"{relative} [build-system]", internal)
+            if admitted is not None:
+                yield admitted
 
 
 def main(argv: list[str] | None = None) -> int:

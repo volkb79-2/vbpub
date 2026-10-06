@@ -59,14 +59,72 @@ if ! docker image inspect "${builder_image}" >/dev/null 2>&1; then
         "${repo_root}"
 fi
 
+# cmru depends on the RELEASED cli-extended wheel (KI-51 / CX-D1: never vendored,
+# never from an index). `python -m cmru.handlers` imports it, so the bootstrap
+# interpreter must have it BEFORE the first cmru wheel exists. It is verified by
+# sha256 and unpacked (a wheel is a zip; no pip needed) into a private staging
+# directory that goes on PYTHONPATH, so nothing is installed into
+# ${python_bin} itself. Source: an operator-supplied wheel plus its digest
+# (CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL + CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256, the
+# offline path), else the sha256-verifying fetcher over the release pointer
+# `cli-extended-latest/latest.json` (CX-D2).
+cli_extended_floor="$("${python_bin}" -s - "${project_dir}/pyproject.toml" <<'PYEOF'
+import re
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as handle:
+    dependencies = tomllib.load(handle)["project"]["dependencies"]
+for requirement in dependencies:
+    match = re.fullmatch(r"cli[-_.]extended\s*>=\s*([0-9][0-9.]*)", requirement.strip(), re.I)
+    if match:
+        print(match.group(1))
+        break
+else:
+    raise SystemExit("cmru pyproject.toml declares no cli-extended>=<floor> dependency")
+PYEOF
+)" || {
+    echo "[ERROR] could not read the cli-extended floor from ${project_dir}/pyproject.toml" >&2
+    exit 2
+}
+cli_extended_stage="$(mktemp -d "${TMPDIR:-/tmp}/cmru-bootstrap-cli-extended.XXXXXX")"
+trap 'rm -rf "${cli_extended_stage}"' EXIT
+cli_extended_wheel="${CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL:-}"
+if [[ -n "${cli_extended_wheel}" ]]; then
+    cli_extended_sha="${CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256:-}"
+    if [[ ! "${cli_extended_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "[ERROR] CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL needs CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256 (64 lowercase hex digits)" >&2
+        exit 2
+    fi
+    actual_sha="$("${python_bin}" -s -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "${cli_extended_wheel}")" || {
+        echo "[ERROR] cannot read ${cli_extended_wheel}" >&2
+        exit 2
+    }
+    if [[ "${actual_sha}" != "${cli_extended_sha}" ]]; then
+        echo "[ERROR] sha256 mismatch for ${cli_extended_wheel}: expected ${cli_extended_sha}, got ${actual_sha}" >&2
+        exit 2
+    fi
+else
+    cli_extended_wheel="$("${python_bin}" -s "${repo_root}/tester-unified/fetch-cli-extended.py" \
+        --dest "${cli_extended_stage}/download" --min-version "${cli_extended_floor}")" || {
+        echo "[ERROR] could not fetch the released cli-extended wheel; supply CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL and CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256" >&2
+        exit 2
+    }
+fi
+"${python_bin}" -s -m zipfile -e "${cli_extended_wheel}" "${cli_extended_stage}/site" || {
+    echo "[ERROR] could not unpack ${cli_extended_wheel}" >&2
+    exit 2
+}
+
 echo "[INFO] Building the standalone CMRU wheel from ${project_dir}" >&2
 (
     cd "${project_dir}"
-    # BG-10: cmru imports cli_extended and worktree, which live in sibling
-    # library roots; a fresh host has neither installed. Run with -s so a stale
-    # user-site copy can never shadow the checkout, and pin the epoch to the
-    # HEAD commit so the bootstrap wheel is reproducible.
-    export PYTHONPATH="${project_dir}/src:${repo_root}/libraries/cli-extended/src:${repo_root}/libraries/worktree/src${PYTHONPATH:+:${PYTHONPATH}}"
+    # BG-10: cmru imports cli_extended (the verified released wheel unpacked
+    # above) and worktree (a sibling library root); a fresh host has neither
+    # installed. Run with -s so a stale user-site copy can never shadow the
+    # checkout, and pin the epoch to the HEAD commit so the bootstrap wheel is
+    # reproducible.
+    export PYTHONPATH="${project_dir}/src:${cli_extended_stage}/site:${repo_root}/libraries/worktree/src${PYTHONPATH:+:${PYTHONPATH}}"
     SOURCE_DATE_EPOCH="$(git -C "${repo_root}" log -1 --format=%ct)" || {
         echo "[ERROR] could not read the HEAD commit time for SOURCE_DATE_EPOCH" >&2
         exit 2
@@ -84,14 +142,19 @@ if (( ${#wheels[@]} != 1 )); then
     exit 1
 fi
 
+cp -f "${cli_extended_wheel}" "${project_dir}/dist/"
+cli_extended_installed="${project_dir}/dist/$(basename "${cli_extended_wheel}")"
+
 echo "" >&2
 echo "[INFO] Built: ${wheels[0]}" >&2
+echo "[INFO] Verified cli-extended wheel kept beside it: ${cli_extended_installed}" >&2
 echo "" >&2
-echo "[INFO] Install it into an isolated environment with:" >&2
+echo "[INFO] cmru requires cli-extended (a release asset, never on PyPI): install both" >&2
+echo "       wheels offline, cli-extended first. Install into an isolated environment with:" >&2
 echo "       cd ${repo_root}" >&2
 echo "       python3 -m venv .venv-cmru" >&2
-echo "       .venv-cmru/bin/python -m pip install --no-deps ${wheels[0]}" >&2
+echo "       .venv-cmru/bin/python -m pip install --no-index --no-deps ${cli_extended_installed} ${wheels[0]}" >&2
 echo "       export PATH=\"${repo_root}/.venv-cmru/bin:\$PATH\"" >&2
 echo "" >&2
-echo "[INFO] Install wheel directly into \`.venv/bin/cmru\`:" >&2
-echo "       python -m pip install --no-deps ${wheels[0]}" >&2
+echo "[INFO] Install the wheels directly into \`.venv/bin/cmru\`:" >&2
+echo "       python -m pip install --no-index --no-deps ${cli_extended_installed} ${wheels[0]}" >&2

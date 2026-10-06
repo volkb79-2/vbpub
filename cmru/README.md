@@ -7,9 +7,27 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 
 ## Install
 
+cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.2.0`, the shared CLI
+contract layer). It is published to GitHub Releases only, never PyPI: the bare name is
+unclaimed there, so a plain `pip install cmru` or `pip install -e .` would query the
+index for it. Install it first, from the release, verified by the sha256 in
+`cli-extended-latest/latest.json`, then install cmru offline:
+
 ```bash
-pip install -e .             # provides the `cmru` console script
+# 1. the released cli-extended wheel (url + sha256 come from the pointer; never an index)
+python3 -m pip install --no-index --no-deps ./cli_extended-<version>-py3-none-any.whl
+# 2. cmru from a built wheel or the checkout: no index, no dependency resolution
+python3 -m pip install --no-index --no-deps ./cmru-<version>-py3-none-any.whl
+python3 -m pip install --no-index --no-deps -e .      # developer checkout; provides `cmru`
+# or in one command, resolving the dependency from a local wheelhouse only:
+python3 -m pip install --no-index --find-links ./wheelhouse ./cmru-<version>-py3-none-any.whl
 ```
+
+A `get.py` bundle that declares `[[project.installer.wheels]]` for cli-extended installs
+it first, hash-locked, with `--no-index --find-links` (`cmru get-py`; the order is enforced
+by the generated installer, not by the declaration order). The `tester-unified` image
+installs the released wheel by sha256 before cmru, and gate lanes use that installed
+wheel, never a `libraries/cli-extended/src` source root.
 
 CMRU's local tag inspection requires Git 2.43 or newer. Check `git --version`
 before running release or cleanup workflows. A multi-repository release reads
@@ -47,7 +65,12 @@ several repositories below it. A nested orchestration file starts a new root.
 To build CMRU itself before any CMRU wheel is installed, use the supported
 fresh-checkout bootstrap script. It imports handlers from `src`; the wheel bytes
 are built in the dedicated `wheel-builder` image, so the host does not need the
-`build` package:
+`build` package. The handlers also need `cli_extended`, so the script first obtains
+the released cli-extended wheel, verifies its sha256 and unpacks it into a private
+temporary directory on `PYTHONPATH` (nothing is installed into `$CMRU_BOOTSTRAP_PYTHON`):
+either `CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL` plus `CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256`
+(offline), or the release pointer through `tester-unified/fetch-cli-extended.py`.
+A digest mismatch stops the bootstrap before anything is built:
 
 ```bash
 cd /workspaces/vbpub/cmru
@@ -55,12 +78,16 @@ cd /workspaces/vbpub/cmru
 ```
 
 The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile).
-The script prints the manual virtual-environment install commands after it produces
-the wheel; once installed, all subsequent builds use the `cmru` console script.
+The script prints the manual virtual-environment install commands (cli-extended wheel
+first, then cmru, both `--no-index --no-deps`) after it produces the wheel; once
+installed, all subsequent builds use the `cmru` console script.
 
 The wheel installs the operator command `cmru`. It also carries the bootstrap-only `python -m cmru.handlers`
-CLI (project steps use `cmru handler <verb>`), the `cmru.bundle` and `cmru.runner` Python libraries, and the
-`cli-extended` and `worktree` libraries they use. Use installed console scripts
+alias (it runs the same `cmru handler` builder; project steps and the templates always use
+`cmru handler <verb>`, and `python -m cmru.handlers` exists only for the fresh-checkout bootstrap above),
+the `cmru.bundle` and `cmru.runner` Python libraries, the `worktree` library they use, and its
+agent skill as package data (`cmru/skills/cmru-cli`). The `cli-extended` library is NOT inside
+the wheel: it is the declared dependency above. Use installed console scripts
 for operator commands; the retired module CLI aliases for bundle, runner, and
 the operator scripts refuse and direct callers to the supported interface. See the
 [design rationale](docs/DESIGN-GUIDE.md#one-declared-cli-grammar) and the
