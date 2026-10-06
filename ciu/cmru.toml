@@ -46,6 +46,10 @@ required_commands = ["python3"]
 preserve = []
 manifest_name = "manifest.json"
 signature_name = "manifest.json.minisig"
+# Host enrollment (`get.py enroll`, CIU S14.7) is ciu-owned code inlined into the
+# rendered get.py by cmru's extensions mechanism (cmru W1-CIU-ENROLL, O4).
+# Hardening: CIU-122 / CIU-123.
+extensions = ["installer/enroll.py"]
 
 [[project.installer.wheels]]
 path = "vendor/ciu-*.whl"

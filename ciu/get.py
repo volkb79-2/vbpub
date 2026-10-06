@@ -28,24 +28,16 @@ Status:
 Rollback:
     sudo python3 get.py rollback
 
-Enrol a bare host (install + deploy user + control-generated authorized key,
-then print the host-key fingerprints the controller pins):
-    sudo python3 get.py enroll --authorized-key 'ssh-ed25519 AAAA... ciu@control' \
-        --controller control.example.net --name web-01
-
 Requires: python3 (stdlib only); system tools: python3
 """
 from __future__ import annotations
 
 import argparse
 import fcntl
-import glob as _glob
-import grp
 import hashlib
 import json
 import os
 import platform
-import pwd
 import re
 import shutil
 import signal
@@ -57,7 +49,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # ─── Project constants (injected by cmru get-py) ─────────────────────────────
 REPO_OWNER       = "volkb79-2"
@@ -116,6 +108,36 @@ def hr()            -> None: print("─" * 79)
 def fatal(msg: str, code: int = EXIT_FAIL) -> None:
     err(msg)
     raise SystemExit(code)
+
+
+# ─── Project extensions (cmru `[project.installer] extensions`) ──────────────
+# A fragment inlined by cmru at the extensions marker (below) registers itself with a
+# top-level `_EXTENSIONS.append(register)`; `main()` calls each registered
+# function with the subparsers action and expects {command: handler} back.
+# Handlers are called as handler(args, token).
+_EXTENSIONS: List[Callable[[argparse._SubParsersAction],
+                           Dict[str, Callable[[argparse.Namespace, Optional[str]], None]]]] = []
+
+# STABILITY CONTRACT. These are the ONLY template top-level names an extension
+# fragment may reference (cmru checks this at render time; anything else is a
+# render error). Renaming, changing the signature of, or removing a name here
+# requires updating every in-repo fragment in the same change. Names are only
+# ever added deliberately, with the fragment that needs them.
+EXTENSION_API = (
+    "EXIT_CONFIG",
+    "EXIT_FAIL",
+    "EXIT_PREREQ",
+    "_EXTENSIONS",
+    "_c",
+    "_current_version",
+    "_root_dir",
+    "do_install",
+    "fatal",
+    "hr",
+    "info",
+    "ok",
+    "warn",
+)
 
 
 # ─── Token / auth helpers (S5) ───────────────────────────────────────────────
@@ -821,6 +843,247 @@ def _load_manifest(release_dir: Path) -> dict:
     return {}
 
 
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+def do_install(args: argparse.Namespace, token: Optional[str]) -> None:
+    global _active_staging
+    scope = getattr(args, "scope", "system")
+    root = _root_dir(scope)
+    releases_dir = root / "releases"
+    venv_dir = root / "venv"
+    shared_dir = root / "shared"
+
+    hr()
+    print(f"  {_c('BLD', 'ciu')}  install  scope={scope}  root={root}")
+    hr()
+
+    if scope == "system" and os.geteuid() != 0:
+        fatal("system-scope install requires root (sudo).", EXIT_PREREQ)
+
+    current_ver = _current_version(root)
+    if current_ver:
+        warn(f"Existing install found ({current_ver}). Running update instead.")
+        do_update(args, token)
+        return
+
+    if args.version:
+        tag = normalize_tag(args.version)
+        info(f"Pinned version: {_c('BLD', tag)}")
+    else:
+        info("Resolving latest release ...")
+        tag = resolve_latest_tag(token)
+        info(f"Latest: {_c('BLD', tag)}")
+
+    variant = _select_variant(args, root)
+    if variant:
+        info(f"Variant: {_c('BLD', variant)}")
+
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    _persist_variant(root, variant)
+
+    with _Lock(root):
+        staging = releases_dir / f"{tag}.staging"
+        _active_staging = staging
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = download_and_verify(
+                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
+            )
+            _extract_bundle(bundle, staging)
+
+        manifest = _load_manifest(staging)
+        _install_wheels(staging, venv_dir, manifest)
+        _restore_preserve_from_shared(root, staging)
+
+        if ENTRYPOINT:
+            _invoke_adapter("bootstrap", staging, root, venv_dir, token)
+
+        release_dir = _finalize_staging(staging, releases_dir, tag)
+        _active_staging = None
+        _atomic_swap_current(root, release_dir)
+        _prune_old_releases(releases_dir)
+
+    hr()
+    ok(f"ciu {tag} installed at {root}")
+    print()
+
+
+def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
+    global _active_staging
+    scope = getattr(args, "scope", "system")
+    root = _root_dir(scope)
+    releases_dir = root / "releases"
+    venv_dir = root / "venv"
+
+    if scope == "system" and os.geteuid() != 0:
+        fatal("system-scope update requires root (sudo).", EXIT_PREREQ)
+
+    current_ver = _current_version(root)
+    if not current_ver:
+        fatal(
+            f"No install found at {root}. Run 'python3 get.py install' first.",
+            EXIT_FAIL,
+        )
+
+    if args.version:
+        tag = normalize_tag(args.version)
+        info(f"Pinned version: {_c('BLD', tag)}")
+    else:
+        info("Resolving latest release ...")
+        tag = resolve_latest_tag(token)
+        info(f"Latest: {_c('BLD', tag)}")
+
+    variant = _select_variant(args, root)
+    if variant:
+        info(f"Variant: {_c('BLD', variant)}")
+
+    # Nothing to do only when BOTH the version AND the selected variant already match
+    # what is installed — otherwise `update --variant OTHER` at the current version must
+    # re-install the other variant (S6.12), not be silently short-circuited.
+    if tag == current_ver and variant == _installed_variant(root):
+        ok(f"Already at {tag}. Nothing to do.")
+        return
+
+    info(f"Updating {current_ver} -> {tag} ...")
+    _copy_preserve_to_shared(root)
+
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    _persist_variant(root, variant)
+
+    with _Lock(root):
+        staging = releases_dir / f"{tag}.staging"
+        _active_staging = staging
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = download_and_verify(
+                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
+            )
+            _extract_bundle(bundle, staging)
+
+        manifest = _load_manifest(staging)
+        _install_wheels(staging, venv_dir, manifest)
+        _restore_preserve_from_shared(root, staging)
+
+        if ENTRYPOINT:
+            _invoke_adapter("apply", staging, root, venv_dir, token)
+
+        release_dir = _finalize_staging(staging, releases_dir, tag)
+        _active_staging = None
+        _atomic_swap_current(root, release_dir)
+        _prune_old_releases(releases_dir)
+
+    ok(f"Updated to {tag}.")
+    print()
+
+
+def do_rollback(args: argparse.Namespace, token: Optional[str]) -> None:
+    scope = getattr(args, "scope", "system")
+    root = _root_dir(scope)
+    releases_dir = root / "releases"
+    venv_dir = root / "venv"
+
+    if scope == "system" and os.geteuid() != 0:
+        fatal("system-scope rollback requires root (sudo).", EXIT_PREREQ)
+
+    current_ver = _current_version(root)
+
+    if getattr(args, "version", None):
+        target_tag = normalize_tag(args.version)
+    else:
+        if not releases_dir.exists():
+            fatal("No releases directory found.", EXIT_FAIL)
+        entries = sorted(
+            [d for d in releases_dir.iterdir()
+             if d.is_dir() and not d.name.endswith(".staging")],
+            key=lambda d: d.stat().st_mtime,
+        )
+        prev = next((e for e in reversed(entries) if e.name != current_ver), None)
+        if prev is None:
+            fatal("No previous release to roll back to.", EXIT_FAIL)
+        target_tag = prev.name
+
+    target_dir = releases_dir / target_tag
+    if not target_dir.exists():
+        fatal(f"Release {target_tag} not found at {target_dir}.", EXIT_FAIL)
+
+    info(f"Rolling back to {target_tag} ...")
+
+    if ENTRYPOINT:
+        _invoke_adapter("rollback", target_dir, root, venv_dir, token)
+
+    _atomic_swap_current(root, target_dir)
+    ok(f"Rolled back to {target_tag}.")
+
+
+def do_status(args: argparse.Namespace) -> None:
+    scope = getattr(args, "scope", "system")
+    root = _root_dir(scope)
+    releases_dir = root / "releases"
+
+    current_ver = _current_version(root)
+    if not current_ver:
+        print(f"ciu: not installed at {root}")
+        return
+
+    print(f"ciu status  scope={scope}  root={root}")
+    print(f"  current:  {current_ver}")
+
+    if releases_dir.exists():
+        entries = sorted(
+            [d for d in releases_dir.iterdir()
+             if d.is_dir() and not d.name.endswith(".staging")],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        previous = [e.name for e in entries if e.name != current_ver]
+        if previous:
+            print(f"  previous: {', '.join(previous[:3])}")
+
+    if ENTRYPOINT:
+        venv_python = root / "venv" / "bin" / "python"
+        current_dir = root / "current"
+        cmd = [
+            str(venv_python), str(current_dir / ENTRYPOINT), "health",
+            "--release-root", str(current_dir),
+            "--config", str(root / "shared" / "host.toml"),
+            "--manifest", str(current_dir / MANIFEST_NAME),
+        ]
+        result = subprocess.run(cmd)
+        if result.returncode == 0:
+            ok("health check passed.")
+        else:
+            warn(f"health check exited {result.returncode}.")
+
+
+# --- extension: installer/enroll.py sha256=7259537f95c516887f8f21263ccac47e1c449f7621b96e01d1ca94e6f50c342f ---
+# ciu-owned host-enrollment fragment (CIU S14.7 / KI-24).
+#
+# This file is RENDER INPUT, not an importable module: cmru's `[project.installer]
+# extensions` mechanism inlines it verbatim into `ciu/get.py` at the
+# `# @@EXTENSIONS@@` marker (cmru W1-CIU-ENROLL, decision O4). It is not shipped
+# in the ciu wheel (see ciu/pyproject.toml: only `src/` is a package root).
+#
+# It may use only the template names listed in the rendered file's
+# `EXTENSION_API` tuple plus the standard library; cmru checks that at render
+# time. `ciu` is a cmru template placeholder, replaced after
+# inlining.
+#
+# Hardening of this code (KI-49 / KI-50) is tracked as CIU-122 / CIU-123 in
+# ciu/KNOWN_ISSUES_TODO_BACKLOG.md; the code below is the pre-move behaviour,
+# moved unchanged.
+import argparse
+import glob as _glob
+import grp
+import os
+import pwd
+import re
+import shutil
+import subprocess
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+
 # ─── Host enrollment helpers (CIU S14.7 / cmru KI-24) ────────────────────────
 #
 # `enroll` turns a bare, untrusted host into one a controller CAN start trusting:
@@ -1171,219 +1434,6 @@ def _host_addresses() -> List[str]:
     return result.stdout.split()
 
 
-# ─── Commands ────────────────────────────────────────────────────────────────
-
-def do_install(args: argparse.Namespace, token: Optional[str]) -> None:
-    global _active_staging
-    scope = getattr(args, "scope", "system")
-    root = _root_dir(scope)
-    releases_dir = root / "releases"
-    venv_dir = root / "venv"
-    shared_dir = root / "shared"
-
-    hr()
-    print(f"  {_c('BLD', 'ciu')}  install  scope={scope}  root={root}")
-    hr()
-
-    if scope == "system" and os.geteuid() != 0:
-        fatal("system-scope install requires root (sudo).", EXIT_PREREQ)
-
-    current_ver = _current_version(root)
-    if current_ver:
-        warn(f"Existing install found ({current_ver}). Running update instead.")
-        do_update(args, token)
-        return
-
-    if args.version:
-        tag = normalize_tag(args.version)
-        info(f"Pinned version: {_c('BLD', tag)}")
-    else:
-        info("Resolving latest release ...")
-        tag = resolve_latest_tag(token)
-        info(f"Latest: {_c('BLD', tag)}")
-
-    variant = _select_variant(args, root)
-    if variant:
-        info(f"Variant: {_c('BLD', variant)}")
-
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    releases_dir.mkdir(parents=True, exist_ok=True)
-    _persist_variant(root, variant)
-
-    with _Lock(root):
-        staging = releases_dir / f"{tag}.staging"
-        _active_staging = staging
-
-        with tempfile.TemporaryDirectory() as tmp:
-            bundle = download_and_verify(
-                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
-            )
-            _extract_bundle(bundle, staging)
-
-        manifest = _load_manifest(staging)
-        _install_wheels(staging, venv_dir, manifest)
-        _restore_preserve_from_shared(root, staging)
-
-        if ENTRYPOINT:
-            _invoke_adapter("bootstrap", staging, root, venv_dir, token)
-
-        release_dir = _finalize_staging(staging, releases_dir, tag)
-        _active_staging = None
-        _atomic_swap_current(root, release_dir)
-        _prune_old_releases(releases_dir)
-
-    hr()
-    ok(f"ciu {tag} installed at {root}")
-    print()
-
-
-def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
-    global _active_staging
-    scope = getattr(args, "scope", "system")
-    root = _root_dir(scope)
-    releases_dir = root / "releases"
-    venv_dir = root / "venv"
-
-    if scope == "system" and os.geteuid() != 0:
-        fatal("system-scope update requires root (sudo).", EXIT_PREREQ)
-
-    current_ver = _current_version(root)
-    if not current_ver:
-        fatal(
-            f"No install found at {root}. Run 'python3 get.py install' first.",
-            EXIT_FAIL,
-        )
-
-    if args.version:
-        tag = normalize_tag(args.version)
-        info(f"Pinned version: {_c('BLD', tag)}")
-    else:
-        info("Resolving latest release ...")
-        tag = resolve_latest_tag(token)
-        info(f"Latest: {_c('BLD', tag)}")
-
-    variant = _select_variant(args, root)
-    if variant:
-        info(f"Variant: {_c('BLD', variant)}")
-
-    # Nothing to do only when BOTH the version AND the selected variant already match
-    # what is installed — otherwise `update --variant OTHER` at the current version must
-    # re-install the other variant (S6.12), not be silently short-circuited.
-    if tag == current_ver and variant == _installed_variant(root):
-        ok(f"Already at {tag}. Nothing to do.")
-        return
-
-    info(f"Updating {current_ver} -> {tag} ...")
-    _copy_preserve_to_shared(root)
-
-    releases_dir.mkdir(parents=True, exist_ok=True)
-    _persist_variant(root, variant)
-
-    with _Lock(root):
-        staging = releases_dir / f"{tag}.staging"
-        _active_staging = staging
-
-        with tempfile.TemporaryDirectory() as tmp:
-            bundle = download_and_verify(
-                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
-            )
-            _extract_bundle(bundle, staging)
-
-        manifest = _load_manifest(staging)
-        _install_wheels(staging, venv_dir, manifest)
-        _restore_preserve_from_shared(root, staging)
-
-        if ENTRYPOINT:
-            _invoke_adapter("apply", staging, root, venv_dir, token)
-
-        release_dir = _finalize_staging(staging, releases_dir, tag)
-        _active_staging = None
-        _atomic_swap_current(root, release_dir)
-        _prune_old_releases(releases_dir)
-
-    ok(f"Updated to {tag}.")
-    print()
-
-
-def do_rollback(args: argparse.Namespace, token: Optional[str]) -> None:
-    scope = getattr(args, "scope", "system")
-    root = _root_dir(scope)
-    releases_dir = root / "releases"
-    venv_dir = root / "venv"
-
-    if scope == "system" and os.geteuid() != 0:
-        fatal("system-scope rollback requires root (sudo).", EXIT_PREREQ)
-
-    current_ver = _current_version(root)
-
-    if getattr(args, "version", None):
-        target_tag = normalize_tag(args.version)
-    else:
-        if not releases_dir.exists():
-            fatal("No releases directory found.", EXIT_FAIL)
-        entries = sorted(
-            [d for d in releases_dir.iterdir()
-             if d.is_dir() and not d.name.endswith(".staging")],
-            key=lambda d: d.stat().st_mtime,
-        )
-        prev = next((e for e in reversed(entries) if e.name != current_ver), None)
-        if prev is None:
-            fatal("No previous release to roll back to.", EXIT_FAIL)
-        target_tag = prev.name
-
-    target_dir = releases_dir / target_tag
-    if not target_dir.exists():
-        fatal(f"Release {target_tag} not found at {target_dir}.", EXIT_FAIL)
-
-    info(f"Rolling back to {target_tag} ...")
-
-    if ENTRYPOINT:
-        _invoke_adapter("rollback", target_dir, root, venv_dir, token)
-
-    _atomic_swap_current(root, target_dir)
-    ok(f"Rolled back to {target_tag}.")
-
-
-def do_status(args: argparse.Namespace) -> None:
-    scope = getattr(args, "scope", "system")
-    root = _root_dir(scope)
-    releases_dir = root / "releases"
-
-    current_ver = _current_version(root)
-    if not current_ver:
-        print(f"ciu: not installed at {root}")
-        return
-
-    print(f"ciu status  scope={scope}  root={root}")
-    print(f"  current:  {current_ver}")
-
-    if releases_dir.exists():
-        entries = sorted(
-            [d for d in releases_dir.iterdir()
-             if d.is_dir() and not d.name.endswith(".staging")],
-            key=lambda d: d.stat().st_mtime,
-            reverse=True,
-        )
-        previous = [e.name for e in entries if e.name != current_ver]
-        if previous:
-            print(f"  previous: {', '.join(previous[:3])}")
-
-    if ENTRYPOINT:
-        venv_python = root / "venv" / "bin" / "python"
-        current_dir = root / "current"
-        cmd = [
-            str(venv_python), str(current_dir / ENTRYPOINT), "health",
-            "--release-root", str(current_dir),
-            "--config", str(root / "shared" / "host.toml"),
-            "--manifest", str(current_dir / MANIFEST_NAME),
-        ]
-        result = subprocess.run(cmd)
-        if result.returncode == 0:
-            ok("health check passed.")
-        else:
-            warn(f"health check exited {result.returncode}.")
-
-
 def do_enroll(args: argparse.Namespace, token: Optional[str]) -> None:
     """Enrol this host for a controller (CIU S14.7 / cmru KI-24).
 
@@ -1473,6 +1523,36 @@ def do_enroll(args: argparse.Namespace, token: Optional[str]) -> None:
     ok(f"Host enrolled for {controller}.")
 
 
+def _register_enroll(subparsers):
+    """Add the `enroll` subcommand. The flag set is normative: ciu's
+    `host enroll` prints the exact one-liner an admin runs on a bare host."""
+    p_enroll = subparsers.add_parser(
+        "enroll",
+        help="Enrol this host: install + deploy user + authorized key + host-key fingerprints",
+    )
+    p_enroll.add_argument("--authorized-key", metavar="KEY", required=True,
+                          help="Control-generated public key line: '<type> <base64> [comment]'")
+    p_enroll.add_argument("--controller", metavar="FQDN", required=True,
+                          help="FQDN of the controller this host is being enrolled for")
+    p_enroll.add_argument("--user", metavar="USER", default="ciu",
+                          help="Deploy user to create or confirm (default: ciu)")
+    p_enroll.add_argument("--name", metavar="NAME",
+                          help="Host name for the printed completion command (default: a placeholder)")
+    p_enroll.add_argument("--from", dest="from_pattern", metavar="PATTERN",
+                          help='Restrict the key with from="PATTERN" (source-address restriction)')
+    p_enroll.add_argument("--docker", action="store_true",
+                          help="Add the deploy user to the docker group (refused when absent)")
+    p_enroll.add_argument("--no-install", action="store_true",
+                          help="Skip the install step (user + key + fingerprints only)")
+    p_enroll.add_argument("--scope", choices=["system", "user"], default="system",
+                          help="Install scope for the install step (default: system)")
+    return {"enroll": do_enroll}
+
+
+_EXTENSIONS.append(_register_enroll)
+# --- end extension: installer/enroll.py ---
+
+
 # ─── Pre-flight checks (S3.1) ────────────────────────────────────────────────
 
 def check_prerequisites() -> None:
@@ -1506,8 +1586,6 @@ def main() -> None:
             "  sudo python3 get.py update\n"
             "  python3 get.py status\n"
             "  sudo python3 get.py rollback\n"
-            "  sudo python3 get.py enroll --authorized-key 'ssh-ed25519 AAAA... ciu@control'"
-            " --controller control.example.net\n"
         ),
     )
 
@@ -1549,28 +1627,26 @@ def main() -> None:
     p_rollback.add_argument("--version", metavar="TAG", help="Roll back to specific version")
     p_rollback.add_argument("--scope", choices=["system", "user"], default="system")
 
-    # Host enrollment (CIU S14.7 / cmru KI-24). The flag set here is normative:
-    # ciu's `host enroll` prints the exact one-liner an admin runs on a bare host.
-    p_enroll = subparsers.add_parser(
-        "enroll",
-        help="Enrol this host: install + deploy user + authorized key + host-key fingerprints",
-    )
-    p_enroll.add_argument("--authorized-key", metavar="KEY", required=True,
-                          help="Control-generated public key line: '<type> <base64> [comment]'")
-    p_enroll.add_argument("--controller", metavar="FQDN", required=True,
-                          help="FQDN of the controller this host is being enrolled for")
-    p_enroll.add_argument("--user", metavar="USER", default="ciu",
-                          help="Deploy user to create or confirm (default: ciu)")
-    p_enroll.add_argument("--name", metavar="NAME",
-                          help="Host name for the printed completion command (default: a placeholder)")
-    p_enroll.add_argument("--from", dest="from_pattern", metavar="PATTERN",
-                          help='Restrict the key with from="PATTERN" (source-address restriction)')
-    p_enroll.add_argument("--docker", action="store_true",
-                          help="Add the deploy user to the docker group (refused when absent)")
-    p_enroll.add_argument("--no-install", action="store_true",
-                          help="Skip the install step (user + key + fingerprints only)")
-    p_enroll.add_argument("--scope", choices=["system", "user"], default="system",
-                          help="Install scope for the install step (default: system)")
+    # Project extensions (cmru `[project.installer] extensions`): each registered
+    # function adds its own subparsers and returns {command: handler}. A command
+    # name that duplicates a core command or another extension's is a render-time
+    # contract violation, refused before any argument is parsed.
+    extension_handlers: Dict[str, Callable[[argparse.Namespace, Optional[str]], None]] = {}
+    for register in _EXTENSIONS:
+        known = set(subparsers.choices)
+        try:
+            handlers = register(subparsers)
+        except (argparse.ArgumentError, ValueError) as exc:  # argparse >= 3.11: ValueError
+            fatal(f"extension {getattr(register, '__name__', register)!r} "
+                  f"registers a duplicate command: {exc}", EXIT_CONFIG)
+        for command, handler in handlers.items():
+            if command in known or command in extension_handlers:
+                fatal(f"extension command {command!r} duplicates an existing command "
+                      "(core or another extension).", EXIT_CONFIG)
+            if command not in subparsers.choices:
+                fatal(f"extension command {command!r} returned a handler but "
+                      "registered no subparser of that name.", EXIT_CONFIG)
+            extension_handlers[command] = handler
 
     args = parser.parse_args()
     token = _resolve_token(args)
@@ -1583,8 +1659,8 @@ def main() -> None:
         do_status(args)
     elif args.command == "rollback":
         do_rollback(args, token)
-    elif args.command == "enroll":
-        do_enroll(args, token)
+    elif args.command in extension_handlers:
+        extension_handlers[args.command](args, token)
     else:
         parser.print_help()
         raise SystemExit(EXIT_CONFIG)

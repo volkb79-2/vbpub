@@ -195,7 +195,8 @@ starts the gate, and places every helper and workload container in the declared 
 This makes the boundary honest: dry-run proves command construction, while a real launch
 proves host acceptance.
 
-The real-enrollment fixture uses CMRU's Docker-host systemd probe to check that the configured
+Container fixtures that need the gates slice (ciu's real-enrollment lane, which moved out of
+cmru with `get.py enroll`) use CMRU's Docker-host systemd probe to check that the configured
 gates slice is loaded and fragment-backed before the fixture starts. A local `systemctl` query
 can inspect the caller's namespace while Docker targets a different host. A nonempty name alone
 can refer to a typo or an unconfigured transient slice, which Docker may accept without the
@@ -545,10 +546,8 @@ mutant and provide no valid R2 or canary evidence.
 The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
 changed-source campaign, and R3 runs an import-break canary. The gate also
-retains total-coverage, cause-sensitive canary, and real-enrollment lanes.
-The registered enrollment lane marks its fixture checks as required: absent Docker or gate-slice
-prerequisites and a failed fixture-image build must fail the lane. Local standalone test runs may
-skip the container oracle when Docker is unavailable.
+retains total-coverage and cause-sensitive canary lanes. (The real-enrollment lane moved to
+ciu's `run-gate.toml` with `get.py enroll`.)
 The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
 snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay

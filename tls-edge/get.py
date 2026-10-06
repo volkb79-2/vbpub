@@ -16,6 +16,9 @@ Install (user scope):
 Pin a specific version:
     sudo python3 get.py install --config HOST.toml --version tls-edge-v0.2.0
 
+Select a variant (multi-variant releases — one asset per interpreter):
+    sudo python3 get.py install --config HOST.toml --variant py311
+
 Update:
     sudo python3 get.py update
 
@@ -31,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import glob as _glob
 import hashlib
 import json
 import os
@@ -47,7 +49,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # ─── Project constants (injected by cmru get-py) ─────────────────────────────
 REPO_OWNER       = "volkb79-2"
@@ -60,6 +62,10 @@ ENTRYPOINT       = ""           # "" means no adapter
 REQUIRED_COMMANDS: List[str] = ["python3", "docker"]
 PRESERVE_PATHS: List[str]    = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
 WHEEL_SPECS: List[Tuple[str, str]] = []  # [(glob, distribution), ...]
+# Per-interpreter variants (S-REL.6). [] ⇒ one unambiguous single-asset release.
+# When non-empty the release carries one asset per variant, named <tag>-<name><suffix>,
+# and the operator MUST select one at install time with --variant NAME (no silent default).
+VARIANTS: List[dict] = []  # e.g. [{"name": "py39", "label": "Python 3.9"}, ...]
 
 # Scope directories (injected)
 INSTALL_DIR_SYSTEM = "/opt/tls-edge"
@@ -102,6 +108,36 @@ def hr()            -> None: print("─" * 79)
 def fatal(msg: str, code: int = EXIT_FAIL) -> None:
     err(msg)
     raise SystemExit(code)
+
+
+# ─── Project extensions (cmru `[project.installer] extensions`) ──────────────
+# A fragment inlined by cmru at the extensions marker (below) registers itself with a
+# top-level `_EXTENSIONS.append(register)`; `main()` calls each registered
+# function with the subparsers action and expects {command: handler} back.
+# Handlers are called as handler(args, token).
+_EXTENSIONS: List[Callable[[argparse._SubParsersAction],
+                           Dict[str, Callable[[argparse.Namespace, Optional[str]], None]]]] = []
+
+# STABILITY CONTRACT. These are the ONLY template top-level names an extension
+# fragment may reference (cmru checks this at render time; anything else is a
+# render error). Renaming, changing the signature of, or removing a name here
+# requires updating every in-repo fragment in the same change. Names are only
+# ever added deliberately, with the fragment that needs them.
+EXTENSION_API = (
+    "EXIT_CONFIG",
+    "EXIT_FAIL",
+    "EXIT_PREREQ",
+    "_EXTENSIONS",
+    "_c",
+    "_current_version",
+    "_root_dir",
+    "do_install",
+    "fatal",
+    "hr",
+    "info",
+    "ok",
+    "warn",
+)
 
 
 # ─── Token / auth helpers (S5) ───────────────────────────────────────────────
@@ -278,7 +314,11 @@ def resolve_latest_tag(token: Optional[str] = None) -> str:
 def normalize_tag(version_arg: str) -> str:
     if version_arg.startswith(TAG_PREFIX):
         return version_arg
-    return f"{TAG_PREFIX}{version_arg.lstrip('v')}"
+    # Drop a single leading "v" prefix only — NOT str.lstrip('v'), which strips a
+    # whole leading run of 'v' chars (so "v1.0.0" is fine but a hypothetical multi-'v'
+    # or 'v'-initial token would be corrupted). Prefix-strip, not charset-strip.
+    bare = version_arg[1:] if version_arg.startswith("v") else version_arg
+    return f"{TAG_PREFIX}{bare}"
 
 
 def _find_asset_by_name(assets: list, name: str) -> Optional[dict]:
@@ -286,6 +326,82 @@ def _find_asset_by_name(assets: list, name: str) -> Optional[dict]:
         if a.get("name") == name:
             return a
     return None
+
+
+# ─── Variant selection (S-REL.6 / S6.12) ──────────────────────────────────────
+
+def _variant_names() -> List[str]:
+    return [v["name"] for v in VARIANTS]
+
+
+def _format_variants() -> str:
+    lines = []
+    for v in VARIANTS:
+        label = v.get("label")
+        lines.append(f"  - {v['name']}" + (f"  ({label})" if label else ""))
+    return "\n".join(lines)
+
+
+def _variant_marker_path(root: Path) -> Path:
+    """Where the selected variant is remembered so `update` keeps the host's choice."""
+    return root / "shared" / ".variant"
+
+
+def _persist_variant(root: Path, variant: Optional[str]) -> None:
+    if not variant:
+        return
+    marker = _variant_marker_path(root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(variant + "\n", encoding="utf-8")
+
+
+def _installed_variant(root: Path) -> Optional[str]:
+    """The variant recorded by the last install/update (None if single-asset / unset)."""
+    marker = _variant_marker_path(root)
+    if marker.exists():
+        return marker.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def _select_variant(args: argparse.Namespace, root: Path) -> Optional[str]:
+    """Resolve which per-interpreter variant to install/update (S6.12).
+
+    Returns None for a single-asset release (VARIANTS empty). Otherwise, in priority order:
+    an explicit --variant (validated); a variant
+    remembered from a prior install (so `update` stays on the same interpreter); an
+    interactive prompt on a TTY; else a fatal error listing the choices. No silent default.
+    """
+    if not VARIANTS:
+        return None
+    names = _variant_names()
+    chosen = getattr(args, "variant", None)
+    if chosen:
+        if chosen not in names:
+            fatal(f"Unknown --variant {chosen!r}. Available:\n{_format_variants()}", EXIT_CONFIG)
+        return chosen
+    marker = _variant_marker_path(root)
+    if marker.exists():
+        prev = marker.read_text(encoding="utf-8").strip()
+        if prev in names:
+            info(f"Using previously selected variant: {_c('BLD', prev)}")
+            return prev
+    if sys.stdin.isatty():
+        info("This release ships multiple variants — choose one:")
+        for i, v in enumerate(VARIANTS, 1):
+            label = v.get("label")
+            print(f"  {i}) {v['name']}" + (f"  ({label})" if label else ""))
+        raw = input("Variant [name or number]: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(VARIANTS):
+            return VARIANTS[int(raw) - 1]["name"]
+        if raw in names:
+            return raw
+        fatal(f"Invalid selection {raw!r}. Available:\n{_format_variants()}", EXIT_CONFIG)
+    fatal(
+        "This release ships multiple per-interpreter variants; none was selected.\n"
+        f"Re-run with --variant NAME. Available variants:\n{_format_variants()}",
+        EXIT_CONFIG,
+    )
+    return None  # unreachable (fatal raises)
 
 
 # ─── Download (public or private) (S5) ────────────────────────────────────────
@@ -399,9 +515,13 @@ def download_and_verify(
     workdir: Path,
     token: Optional[str],
     pubkey_arg: Optional[str],
+    variant: Optional[str] = None,
 ) -> Path:
-    """Download the bundle + sidecar; verify SHA256 + minisign; return bundle path."""
-    asset_name   = f"{tag}{ASSET_SUFFIX}"
+    """Download the bundle + sidecar; verify SHA256 + minisign; return bundle path.
+
+    ``variant`` (S-REL.6) selects the per-interpreter asset ``<tag>-<variant>{suffix}``;
+    ``None`` uses the single-asset name ``<tag>{suffix}``."""
+    asset_name   = f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
     sidecar_name = f"{asset_name}.sha256"
     asset   = workdir / asset_name
     sidecar = workdir / sidecar_name
@@ -493,23 +613,27 @@ def _extract_bundle(bundle: Path, staging: Path) -> None:
 
 # ─── Wheel verification + venv install (S4, S6.3) ────────────────────────────
 
-def _verify_wheel_sha256(wheel_path: Path, manifest: dict) -> None:
-    """Check wheel sha256 against manifest (S4 step 3) before pip install."""
-    wheels_manifest = manifest.get("wheels") or {}
-    entry = wheels_manifest.get(wheel_path.name) or {}
-    expected = entry.get("sha256")
+def _verify_wheel_sha256(wheel_path: Path, manifest: dict, distribution: str) -> None:
+    """Check wheel sha256 against manifest (S4 step 3) before pip install.
+
+    Reads sha256 from the per-distribution entry in the manifest
+    (manifest[distribution]['sha256']), matching SPEC B's Seam-3 schema.
+    Distribution is the canonical package name (e.g. 'cmru', 'ciu').
+    """
+    dist_entry = manifest.get(distribution) or {}
+    expected = dist_entry.get("sha256")
     if not expected:
-        warn(f"No sha256 for {wheel_path.name} in manifest; skipping wheel hash check.")
+        warn(f"No sha256 for distribution {distribution!r} in manifest; skipping wheel hash check.")
         return
     actual = _sha256(wheel_path)
     if actual != expected:
         fatal(
-            f"Wheel SHA256 mismatch for {wheel_path.name}:\n"
+            f"Wheel SHA256 mismatch for {wheel_path.name} (distribution: {distribution!r}):\n"
             f"  expected: {expected}\n"
             f"  got:      {actual}",
             EXIT_FAIL,
         )
-    ok(f"Wheel {wheel_path.name} sha256 verified.")
+    ok(f"Wheel {wheel_path.name} ({distribution}) sha256 verified.")
 
 
 def _install_wheels(staging: Path, venv_dir: Path, manifest: dict) -> None:
@@ -527,7 +651,7 @@ def _install_wheels(staging: Path, venv_dir: Path, manifest: dict) -> None:
                 EXIT_FAIL,
             )
         wheel_path = matches[-1]
-        _verify_wheel_sha256(wheel_path, manifest)
+        _verify_wheel_sha256(wheel_path, manifest, distribution)
         info(f"Installing {wheel_path.name} into venv ...")
         subprocess.run([str(pip), "install", "--no-index", str(wheel_path)], check=True)
         ok(f"Installed {distribution} from {wheel_path.name}.")
@@ -750,8 +874,13 @@ def do_install(args: argparse.Namespace, token: Optional[str]) -> None:
         tag = resolve_latest_tag(token)
         info(f"Latest: {_c('BLD', tag)}")
 
+    variant = _select_variant(args, root)
+    if variant:
+        info(f"Variant: {_c('BLD', variant)}")
+
     shared_dir.mkdir(parents=True, exist_ok=True)
     releases_dir.mkdir(parents=True, exist_ok=True)
+    _persist_variant(root, variant)
 
     with _Lock(root):
         staging = releases_dir / f"{tag}.staging"
@@ -759,7 +888,7 @@ def do_install(args: argparse.Namespace, token: Optional[str]) -> None:
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = download_and_verify(
-                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None)
+                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
             )
             _extract_bundle(bundle, staging)
 
@@ -805,7 +934,14 @@ def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
         tag = resolve_latest_tag(token)
         info(f"Latest: {_c('BLD', tag)}")
 
-    if tag == current_ver:
+    variant = _select_variant(args, root)
+    if variant:
+        info(f"Variant: {_c('BLD', variant)}")
+
+    # Nothing to do only when BOTH the version AND the selected variant already match
+    # what is installed — otherwise `update --variant OTHER` at the current version must
+    # re-install the other variant (S6.12), not be silently short-circuited.
+    if tag == current_ver and variant == _installed_variant(root):
         ok(f"Already at {tag}. Nothing to do.")
         return
 
@@ -813,6 +949,7 @@ def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
     _copy_preserve_to_shared(root)
 
     releases_dir.mkdir(parents=True, exist_ok=True)
+    _persist_variant(root, variant)
 
     with _Lock(root):
         staging = releases_dir / f"{tag}.staging"
@@ -820,7 +957,7 @@ def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = download_and_verify(
-                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None)
+                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
             )
             _extract_bundle(bundle, staging)
 
@@ -977,10 +1114,14 @@ def main() -> None:
     p_install.add_argument("--version", metavar="TAG", help="Pin a specific release")
     p_install.add_argument("--scope", choices=["system", "user"], default="system",
                            help="Install scope (default: system)")
+    p_install.add_argument("--variant", metavar="NAME",
+                           help="Select a per-interpreter variant (multi-variant releases)")
 
     p_update = subparsers.add_parser("update", help="Update to latest (or --version)")
     p_update.add_argument("--version", metavar="TAG")
     p_update.add_argument("--scope", choices=["system", "user"], default="system")
+    p_update.add_argument("--variant", metavar="NAME",
+                          help="Override the remembered variant (multi-variant releases)")
 
     p_status = subparsers.add_parser("status", help="Show current/previous versions + health")
     p_status.add_argument("--scope", choices=["system", "user"], default="system")
@@ -988,6 +1129,27 @@ def main() -> None:
     p_rollback = subparsers.add_parser("rollback", help="Re-point current to a previous release")
     p_rollback.add_argument("--version", metavar="TAG", help="Roll back to specific version")
     p_rollback.add_argument("--scope", choices=["system", "user"], default="system")
+
+    # Project extensions (cmru `[project.installer] extensions`): each registered
+    # function adds its own subparsers and returns {command: handler}. A command
+    # name that duplicates a core command or another extension's is a render-time
+    # contract violation, refused before any argument is parsed.
+    extension_handlers: Dict[str, Callable[[argparse.Namespace, Optional[str]], None]] = {}
+    for register in _EXTENSIONS:
+        known = set(subparsers.choices)
+        try:
+            handlers = register(subparsers)
+        except (argparse.ArgumentError, ValueError) as exc:  # argparse >= 3.11: ValueError
+            fatal(f"extension {getattr(register, '__name__', register)!r} "
+                  f"registers a duplicate command: {exc}", EXIT_CONFIG)
+        for command, handler in handlers.items():
+            if command in known or command in extension_handlers:
+                fatal(f"extension command {command!r} duplicates an existing command "
+                      "(core or another extension).", EXIT_CONFIG)
+            if command not in subparsers.choices:
+                fatal(f"extension command {command!r} returned a handler but "
+                      "registered no subparser of that name.", EXIT_CONFIG)
+            extension_handlers[command] = handler
 
     args = parser.parse_args()
     token = _resolve_token(args)
@@ -1000,6 +1162,8 @@ def main() -> None:
         do_status(args)
     elif args.command == "rollback":
         do_rollback(args, token)
+    elif args.command in extension_handlers:
+        extension_handlers[args.command](args, token)
     else:
         parser.print_help()
         raise SystemExit(EXIT_CONFIG)

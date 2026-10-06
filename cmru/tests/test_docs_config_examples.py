@@ -120,8 +120,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "python3 {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
-    for name in ("installed-wheel", "assay", "coverage", "mutation", "canary", "enroll"):
+    for name in ("installed-wheel", "assay", "coverage", "mutation", "canary"):
         assert f'"{name}"' in release_gate
+    assert '"enroll"' not in release_gate  # moved to ciu/run-gate.toml (O4)
+    assert "enroll" not in gate["lanes"]
     assert "_mask_secret_overlays(" in release_gate
     assert "RUN_GATE_EXTRA_MOUNTS" in release_gate
     mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])

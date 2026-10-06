@@ -216,6 +216,38 @@ cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./g
 `cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
 
+### Installer extensions (project-owned `get.py` commands)
+
+The rendered `get.py` is the generic transactional installer
+(`install`/`update`/`status`/`rollback`) and nothing else. A project that needs its own
+command declares it as a fragment and lists it in its `cmru.toml`:
+
+```text
+[project.installer]
+extensions = ["installer/mycmd.py"]   # project-relative, .py, no "..", must exist at render time
+```
+
+`cmru get-py` inlines each fragment verbatim at the template's `# @@EXTENSIONS@@` marker, in
+declared order, between `# --- extension: <path> sha256=<digest> ---` and
+`# --- end extension: <path> ---` lines. The result is still ONE file, byte-identical across
+renders. A fragment must:
+
+- parse, and import only the standard library (it brings its own `import` lines);
+- define top-level names that collide with neither the template nor another fragment;
+- use only the template names listed in the rendered file's `EXTENSION_API` tuple
+  (`EXIT_CONFIG`, `EXIT_FAIL`, `EXIT_PREREQ`, `_EXTENSIONS`, `_c`, `_current_version`,
+  `_root_dir`, `do_install`, `fatal`, `hr`, `info`, `ok`, `warn`);
+- register with a top-level `_EXTENSIONS.append(register)`, where
+  `register(subparsers) -> {command: handler}` adds its parser(s) and `handler(args, token)`
+  runs the command. A command name that duplicates a core or another extension's command exits 2.
+
+`EXTENSION_API` is a **stability contract**: changing or removing a name in it requires
+updating every in-repo fragment in the same change (today: ciu's `ciu/installer/enroll.py`).
+Re-render and commit the project's `get.py` after editing a fragment; ciu's
+`TestRenderedInstaller` byte-identity test guards the committed file against drift.
+Host enrollment (`get.py enroll`, a root-run `authorized_keys` writer) is ciu's fragment, so a
+project that renders `get.py` without `extensions` gets no enrollment code.
+
 ## Using the wheel and component interfaces
 
 Install the approved CMRU wheel into the Python environment that will execute
@@ -603,15 +635,11 @@ invocation resumes and writes `.assay/progress-cmru.jsonl`; its verdict is
 The disposable controls include the Topos and nyxloom CMRU manifests consumed
 by CMRU's estate-adoption test, so the full suite remains runnable in each
 baseline and mutant copy.
-`gate` also runs CMRU's total-coverage, cause-sensitive canary, and
-real-enrollment evidence lanes. It starts with the KI-26 installed-wheel
-acceptance lane, which builds the wheel, installs it into a fresh isolated venv,
-and invokes `cmru get-py` outside the source checkout.
-The registered real-enrollment lane requires Docker, the configured host-probe image, a loaded
-fragment-backed gates cgroup slice on the Docker host, and a successful fixture-image build; missing
-prerequisites or a failed build are lane failures, not skips. CMRU's privileged systemd probe
-checks the daemon host. Standalone local test runs may skip that container oracle when prerequisites
-are unavailable.
+`gate` also runs CMRU's total-coverage and cause-sensitive canary lanes. It
+starts with the KI-26 installed-wheel acceptance lane, which builds the wheel,
+installs it into a fresh isolated venv, and invokes `cmru get-py` outside the
+source checkout. (The former real-enrollment lane moved to ciu with `get.py
+enroll`; see "Installer extensions" below.)
 
 The host `gate` lane keeps CMRU publisher credentials out of tester-unified:
 it points visible root/project `cmru.secret.toml` overlays at private host
