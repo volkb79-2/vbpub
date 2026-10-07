@@ -1236,6 +1236,7 @@
       "equivalence_artifact": ".assay/schema-dump.sql",
       "jobs": 1,
       "kill_attribution": "declared",
+      "cold_witness_kills": false,
       "kill_signal_artifact": ".assay/kill-signal.txt",
       "liveness": {
         "active": false,
@@ -1267,7 +1268,7 @@
   "lane": "sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 14,
+  "schema_version": 15,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

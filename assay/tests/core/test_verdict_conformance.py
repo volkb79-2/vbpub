@@ -24,8 +24,8 @@ terminals — reproduced against the installed console script, not inferred.
 rather than being deleted so that re-narrowing the audit is a visible,
 argued edit rather than a silent one.
 
-**P21 takes the vocabulary to 26 pairs**, and the audit moves with the
-capability rather than after it (A-141). Four of the seven new reasons were
+**P21 takes the vocabulary to 26 pairs; B114 adds the 27th**, and the audit
+moves with the capability rather than after it (A-141). Four of the seven new reasons were
 producer-reachable and fixtured here immediately; the three that no code in
 that build could render into an artifact were listed in
 ``EXCLUDED_ENTIRELY`` with the argument for each — P34/W3 makes one of the
@@ -133,6 +133,9 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "HEAD_CHANGED",
         "BASE_IS_HEAD",
         "EMPTY_COVERAGE",
+        # B114: resource counters were unavailable, so no mutation result is
+        # measured and the unknown cause must not become a classified kill.
+        "CGROUP_OBSERVATION_UNAVAILABLE",
         "MISSING_ATTESTATION",
         "STALE_ATTESTATION",
         # P21/A-163; P34/W3 lands the producer (A-253) --
@@ -1382,7 +1385,7 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: Carries forward the retired W9 gate phase's
 #: `test_shipped_schema_is_byte_identical_to_the_locked_v15_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    15: "b666ee222c188effa3c342b96b76d3e2fcb73446fadd04da838d8073bd7cbca0",
+    15: "89d018d68705904f9e609ee528e3f48dc4f4452c0c56c2f525946f187c698621",
 }
 
 

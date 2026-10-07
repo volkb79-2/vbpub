@@ -104,6 +104,7 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
+                cold_witness_kills=False,
             ),
         ),
     )
@@ -140,6 +141,7 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
+                cold_witness_kills=False,
             ),
         ),
     )

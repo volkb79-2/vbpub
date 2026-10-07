@@ -16,14 +16,16 @@ wall-clock wait: both are exercised here only through the INJECTED
 from __future__ import annotations
 
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from assay.errors import Outcome, ReasonCode
+from assay.mutation_witness import WITNESS_FD_ENV, ReceiptCapture
 from conftest import fixed_clock, make_lane
 
 from assay import runner
-from assay.errors import Outcome, ReasonCode
 
 MOMENT_A = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 8, 7, 12, 0, 1, tzinfo=timezone.utc)
@@ -256,6 +258,31 @@ def test_default_process_runner_tolerates_undecodable_child_output(tmp_path: Pat
     )
     assert result.returncode == 0
     assert "�" in result.stdout
+
+
+def test_default_process_runner_passes_a_private_receipt_descriptor(tmp_path: Path):
+    capture = ReceiptCapture()
+    payload = b'{"ok":true}'
+    frame = len(payload).to_bytes(4, "big") + payload
+    script = (
+        "import os; os.write(int(os.environ["
+        + repr(WITNESS_FD_ENV)
+        + "]), "
+        + repr(frame)
+        + ")"
+    )
+    try:
+        result = runner.default_process_runner(
+            (sys.executable, "-c", script),
+            env={WITNESS_FD_ENV: str(capture.write_fd)},
+            cwd=tmp_path,
+            timeout=5.0,
+        )
+    finally:
+        receipt = capture.finish()
+
+    assert result.returncode == 0
+    assert receipt == {"ok": True}
 
 
 def test_the_declared_budget_seconds_is_what_is_passed_as_the_timeout(tmp_path: Path):

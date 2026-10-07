@@ -92,7 +92,7 @@ from typing import (
 from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
-
+from .mutation_witness import WITNESS_FD_ENV
 
 # B117/P6: termination is process-wide for one Assay invocation. Keep the
 # event here so the process-group registry can honor it without importing
@@ -1693,6 +1693,10 @@ class LivenessRunner:
         stderr_fh = open(stderr_path, "wb")
         spawned_at = time.time()
         try:
+            receipt_fd = stamped_env.get(WITNESS_FD_ENV)
+            descriptor_options = (
+                {} if receipt_fd is None else {"pass_fds": (int(receipt_fd),)}
+            )
             proc = self._popen(
                 list(argv),
                 env=stamped_env,
@@ -1700,6 +1704,7 @@ class LivenessRunner:
                 stdout=stdout_fh,
                 stderr=stderr_fh,
                 start_new_session=True,
+                **descriptor_options,
             )
             register_live_group(proc.pid)
         finally:

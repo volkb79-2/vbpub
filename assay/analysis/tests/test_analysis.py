@@ -20,6 +20,7 @@ from jsonschema import Draft202012Validator, ValidationError
 
 from analysis.tests.analysis_support import JUDGE_VERDICT_FIXTURES, PROJECT_ROOT
 from assay.cli import main
+from assay.verdict import VERDICT_SCHEMA_VERSION
 from assay_analysis import cli as analysis_cli
 from assay_analysis import evidence as analysis
 
@@ -826,7 +827,13 @@ def test_verdict_inspection_reuses_real_verifier_and_refuses_false_certification
     elif problem == "duplicate":
         text = text.replace('"exit_code": 0', '"exit_code": 0, "exit_code": 0')
     elif problem == "schema":
-        text = text.replace('"schema_version": 14', '"schema_version": 11')
+        current_schema = f'"schema_version": {VERDICT_SCHEMA_VERSION}'
+        assert current_schema in text
+        text = text.replace(
+            current_schema,
+            f'"schema_version": {VERDICT_SCHEMA_VERSION - 1}',
+            1,
+        )
     elif problem == "rollup":
         text = text.replace('"outcome": "PASS"', '"outcome": "FAIL"')
     else:

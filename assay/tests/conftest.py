@@ -59,6 +59,39 @@ TESTS_ROOT = PROJECT_ROOT / "tests"
 
 
 @pytest.fixture(autouse=True)
+def isolate_mutation_tests_from_the_host_cgroup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give behavior tests stable zero-delta resource counters.
+
+    Native R2 must reject an unobservable cgroup hierarchy, so ordinary
+    unit/integration tests cannot inherit the cockpit's private namespace as
+    an accidental product input. The B145 low-pids acceptance probe opts out
+    by running in its dedicated capped tester-unified container.
+    """
+    if os.environ.get("ASSAY_B145_LOW_PIDS_PROBE") == "1":
+        return
+    from assay import mutation
+    from assay import resource_limits
+    from assay.resource_limits import (
+        ResourceLimitCounters,
+        ResourceObservationCapability,
+    )
+
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
+    monkeypatch.setattr(
+        resource_limits,
+        "inspect_current_cgroup_observation",
+        lambda: ResourceObservationCapability(available=True),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_color(monkeypatch):
     """Help and CLI output must not depend on the caller's terminal colour settings (Python 3.14 argparse colours --help under FORCE_COLOR)."""
     monkeypatch.delenv("FORCE_COLOR", raising=False)
@@ -883,6 +916,7 @@ MUTATION_VERDICT_FIXTURES: dict[str, Path] = {
     name: VERDICT_FIXTURE_DIR / f"{name}.json"
     for name in (
         "r2_pass",
+        "r2_pass_equivalence_ledger",
         "r2_fail_mutants_survived",
         "r2_inconclusive_no_mutants",
         "r2_budget_exceeded_lane_timeout",

@@ -5,15 +5,30 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from assay.adapters.python import PythonAdapter
+from assay.candidate_identity import candidate_id_from_fields
+from assay.config import MutationConfig
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.mutation_witness import (
+    MAX_INTERNAL_RECEIPT_BYTES,
+    read_internal_receipt,
+    replay_witness_from_receipt,
+    supports_sequential_pytest,
+)
+from assay.resource_limits import ResourceLimitCounters
+from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
+from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
+from assay.verify import verify_document
 from conftest import (
-    GitRepo,
     TESTS_ROOT,
+    GitRepo,
     make_lane,
     make_r2_judge,
     native_mutation,
@@ -22,21 +37,7 @@ from conftest import (
 )
 
 from assay import candidate_identity, mutation, runner, verdict
-from assay.adapters.python import PythonAdapter
-from assay.candidate_identity import candidate_id_from_fields
-from assay.config import MutationConfig
-from assay.errors import AssayError, Outcome, ReasonCode
-from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
-from assay.mutation_witness import (
-    MAX_INTERNAL_RECEIPT_BYTES,
-    read_internal_receipt,
-    replay_witness_from_receipt,
-    supports_sequential_pytest,
-)
-from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay import verify as raw_verify
-from assay.verify import verify_document
-from assay.resource_limits import ResourceLimitCounters
 
 FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
@@ -504,6 +505,9 @@ def test_internal_witness_receipts_are_bounded_strict_and_not_boolean_statuses(
 
     receipt_path.write_bytes(b" " * (MAX_INTERNAL_RECEIPT_BYTES + 1))
     assert read_internal_receipt(receipt_path) is None
+    fifo_path = tmp_path / "receipt-fifo"
+    os.mkfifo(fifo_path)
+    assert read_internal_receipt(fifo_path) is None
 
     receipt = {
         "unsupported": False,
@@ -730,6 +734,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     original = runner.run_lane(
@@ -854,6 +859,7 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     original = runner.run_lane(
         lane,
@@ -937,6 +943,7 @@ def test_witness_capture_works_with_the_existing_liveness_plugin(git_repo: GitRe
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     verdict = runner.run_lane(
@@ -973,6 +980,7 @@ def test_custom_sessionfinish_hook_forces_full_suite_fallback(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     original = runner.run_lane(
         lane,
@@ -1079,6 +1087,7 @@ def test_resume_preserves_witness_prefix_execution_provenance(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     state_dir = tmp_path / "state"
     original = runner.run_lane(

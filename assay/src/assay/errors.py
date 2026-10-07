@@ -155,6 +155,11 @@ class ReasonCode(StrEnum):
     #: lands the producer, `runner.run_lane`'s own preflight (A-284), before
     #: any snapshot, command or Git work.
     MISSING_EXTERNAL_TOOL = "MISSING_EXTERNAL_TOOL"
+    #: B148: native R2 candidates were selected, but the lane process cannot
+    #: observe the complete cgroup v2 ancestor hierarchy B145 requires. This
+    #: is a pre-baseline environment refusal; candidate-time failures remain
+    #: `ERROR/EXEC_FAILED` so a later loss of observability cannot be hidden.
+    CGROUP_OBSERVATION_UNAVAILABLE = "CGROUP_OBSERVATION_UNAVAILABLE"
     #: (B004/A-276, rendered at schema v10 by A-430) assay could not
     #: establish WHICH artifact the lane's tests ran against: the adjudicated
     #: image-provenance document is absent, unreadable, carries an
@@ -255,6 +260,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.STALE_ATTESTATION,
                 ReasonCode.MISSING_EXTERNAL_TOOL,
                 ReasonCode.PROVENANCE_UNVERIFIED,
+                ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
             }
         ),
         Outcome.BUDGET_EXCEEDED: frozenset(

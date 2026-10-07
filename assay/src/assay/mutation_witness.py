@@ -3,29 +3,31 @@
 from __future__ import annotations
 
 import configparser
-import hashlib
 import json
 import os
-import platform
 import re
+import select
 import shlex
-import sys
-import sysconfig
+import threading
 import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from . import safeio
+from .errors import AssayError
+from .r2_command import UnrecognizedCoverageOption, transform_argv
 from .records import record
-from .r2_command import R2_APPENDED, UnrecognizedCoverageOption, transform_argv
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .runner import CommandPlan
 
 MAX_NODE_ID_UTF8_BYTES = 4096
 MAX_INTERNAL_RECEIPT_BYTES = 16 * 1024
+MAX_INTERNAL_MANIFEST_BYTES = 64 * 1024 * 1024
 WITNESS_PLUGIN_MODULE = "assay_mutation_witness_plugin"
 WITNESS_FILE_ENV = "ASSAY_MUTATION_WITNESS_FILE"
+WITNESS_FD_ENV = "ASSAY_MUTATION_WITNESS_FD"
 WITNESS_TARGET_ENV = "ASSAY_MUTATION_WITNESS_TARGET"
 WITNESS_PLUGIN_PATH_ENV = "ASSAY_MUTATION_WITNESS_PLUGIN_PATH"
 WITNESS_LIVENESS_PLUGIN_PATH_ENV = "ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH"
@@ -67,6 +69,152 @@ class ReceiptFacts:
     config_sha256: str | None
     started_count: int
     collection_error: bool
+
+
+class ReceiptCapture:
+    """Capture one bounded, framed receipt from a child process.
+
+    The child gets only the pipe's write descriptor. The parent drains it in a
+    thread while the command runs, so a child cannot block on a full pipe. The
+    retained bytes are capped, and final decoding accepts exactly one complete
+    frame with no trailing data. This keeps post-session pytest hooks from
+    replacing a receipt after ``pytest_sessionfinish`` has emitted it.
+    """
+
+    _HEADER_BYTES = 4
+    _READ_CHUNK_BYTES = 64 * 1024
+    _POLL_INTERVAL_SECONDS = 0.05
+    _JOIN_TIMEOUT_SECONDS = 2.0
+
+    def __init__(self) -> None:
+        read_fd, write_fd = os.pipe()
+        drain_fd: int | None = None
+        try:
+            drain_fd = os.dup(read_fd)
+            os.set_blocking(read_fd, False)
+            os.set_blocking(drain_fd, False)
+        except BaseException:
+            for descriptor in (drain_fd, read_fd, write_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+            raise
+        self._read_fd = read_fd
+        self.write_fd = write_fd
+        # The reader thread owns a distinct descriptor. If it does not stop
+        # before finish()'s join timeout, the parent may close and reuse its
+        # descriptor without letting that stale thread read another capture.
+        self._drain_fd = drain_fd
+        self._stop = threading.Event()
+        self._data = bytearray()
+        self._overflow = False
+        self._read_failed = False
+        self._finished = False
+        self._thread = threading.Thread(
+            target=self._drain,
+            name="assay-witness-receipt",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        try:
+            poller = select.poll()
+            poller.register(self._drain_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+            maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
+            while not self._stop.is_set():
+                try:
+                    ready = poller.poll(int(self._POLL_INTERVAL_SECONDS * 1000))
+                except OSError:
+                    self._read_failed = True
+                    return
+                if self._stop.is_set():
+                    return
+                for _fd, _events in ready:
+                    while not self._stop.is_set():
+                        try:
+                            chunk = os.read(self._drain_fd, self._READ_CHUNK_BYTES)
+                        except BlockingIOError:
+                            break
+                        except InterruptedError:
+                            continue
+                        except OSError:
+                            self._read_failed = True
+                            return
+                        if not chunk:
+                            return
+                        if len(self._data) + len(chunk) <= maximum:
+                            self._data.extend(chunk)
+                        else:
+                            self._overflow = True
+        except OSError:
+            self._read_failed = True
+        finally:
+            try:
+                os.close(self._drain_fd)
+            except OSError:
+                pass
+
+    def _drain_final_bytes(self) -> None:
+        """Drain after the reader has stopped, requiring all writers closed."""
+        maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
+        while True:
+            try:
+                chunk = os.read(self._read_fd, self._READ_CHUNK_BYTES)
+            except BlockingIOError:
+                # A descendant still owns the write end and could change this
+                # receipt after finish() returns, so fail closed.
+                self._read_failed = True
+                return
+            except InterruptedError:
+                continue
+            except OSError:
+                self._read_failed = True
+                return
+            if not chunk:
+                return
+            if len(self._data) + len(chunk) <= maximum:
+                self._data.extend(chunk)
+            else:
+                self._overflow = True
+                return
+
+    def finish(self) -> dict[str, Any] | None:
+        """Stop draining and decode the one complete receipt, if trustworthy."""
+        if self._finished:
+            return None
+        self._finished = True
+        try:
+            os.close(self.write_fd)
+        except OSError:
+            pass
+        self._stop.set()
+        self._thread.join(self._JOIN_TIMEOUT_SECONDS)
+        if self._thread.is_alive():
+            self._read_failed = True
+        try:
+            if not self._thread.is_alive() and not self._overflow and not self._read_failed:
+                self._drain_final_bytes()
+            if self._overflow or self._read_failed or self._thread.is_alive():
+                return None
+            raw = bytes(self._data)
+            if len(raw) < self._HEADER_BYTES:
+                return None
+            payload_length = int.from_bytes(raw[: self._HEADER_BYTES], "big")
+            if (
+                payload_length <= 0
+                or payload_length > MAX_INTERNAL_RECEIPT_BYTES
+                or len(raw) != self._HEADER_BYTES + payload_length
+            ):
+                return None
+            return _decode_internal_receipt(raw[self._HEADER_BYTES :])
+        finally:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
 
 
 def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:
@@ -438,15 +586,26 @@ def inject_witness_plugin(
 def make_attempt_plan(
     plan: "CommandPlan",
     *,
-    receipt_path: Path,
+    receipt_path: Path | None = None,
+    receipt_fd: int | None = None,
     target_node_id: str | None,
     cold: bool = False,
     manifest_path: Path | None = None,
 ) -> "CommandPlan":
     if cold and target_node_id is not None:
         raise ValueError("a cold witness attempt cannot target one node")
+    if (receipt_path is None) == (receipt_fd is None):
+        raise ValueError("exactly one receipt path or descriptor is required")
     env = dict(plan.env_effective)
-    env[WITNESS_FILE_ENV] = str(receipt_path)
+    env.pop(WITNESS_FILE_ENV, None)
+    env.pop(WITNESS_FD_ENV, None)
+    if receipt_fd is not None:
+        if type(receipt_fd) is not int or receipt_fd < 0:
+            raise ValueError("receipt descriptor must be a non-negative integer")
+        env[WITNESS_FD_ENV] = str(receipt_fd)
+    else:
+        assert receipt_path is not None
+        env[WITNESS_FILE_ENV] = str(receipt_path)
     if target_node_id is not None:
         env[WITNESS_TARGET_ENV] = target_node_id
     else:
@@ -565,12 +724,19 @@ def cold_shape_refusal(
 
 
 def read_internal_receipt(path: Path) -> dict[str, Any] | None:
-    """Read the plugin's bounded private receipt; malformed means no witness."""
+    """Read a bounded regular-file receipt; unsafe or malformed means none."""
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_INTERNAL_RECEIPT_BYTES + 1)
-    except OSError:
+        raw = safeio.read_bounded_file(
+            path.parent, path.name, limit=MAX_INTERNAL_RECEIPT_BYTES
+        )
+    except (AssayError, OSError, ValueError):
         return None
+    if not raw:
+        return None
+    return _decode_internal_receipt(raw)
+
+
+def _decode_internal_receipt(raw: bytes) -> dict[str, Any] | None:
     if not raw or len(raw) > MAX_INTERNAL_RECEIPT_BYTES:
         return None
     try:
@@ -639,7 +805,14 @@ def replay_witness_from_receipt(
     *,
     process_exit_status: int | None,
     target_node_id: str,
+    expected_facts: ReceiptFacts | None = None,
 ) -> dict[str, Any] | None:
+    # A replay can still reach the target node after pytest reports a failed
+    # collection for another module (for example with
+    # ``--continue-on-collection-errors``). That receipt cannot certify the
+    # suite prefix used by cold-policy reuse.
+    if receipt is None or not _is_false(receipt, "collection_error"):
+        return None
     witness = witness_from_receipt(receipt, process_exit_status=process_exit_status)
     if witness is None or witness["node_id"] != target_node_id:
         return None
@@ -652,6 +825,8 @@ def replay_witness_from_receipt(
     if receipt.get("stopped_at_target") is not True:
         return None
     if not _is_false(receipt, "earlier_failure"):
+        return None
+    if expected_facts is not None and not _facts_match(receipt, expected_facts):
         return None
     return witness
 
@@ -746,6 +921,20 @@ _LIVENESS_PLUGIN_HOOKS = (
     "pytest_sessionfinish",
     "pytest_unconfigure",
 )
+_WITNESS_FD = None
+try:
+    _raw_witness_fd = os.environ.get("ASSAY_MUTATION_WITNESS_FD")
+    if _raw_witness_fd is not None:
+        _WITNESS_FD = int(_raw_witness_fd)
+        if _WITNESS_FD < 0:
+            _WITNESS_FD = None
+        else:
+            # The descriptor is explicitly inherited into this pytest process.
+            # Keep it closed across any later exec unless a child deliberately
+            # opts in with pass_fds.
+            os.set_inheritable(_WITNESS_FD, False)
+except (OSError, ValueError):
+    _WITNESS_FD = None
 _HOOK_REGISTRY_HOOKS = tuple(dict.fromkeys((*_HOOKS, *_LIVENESS_PLUGIN_HOOKS)))
 _SESSION = None
 _ITEMS = ()
@@ -1600,9 +1789,6 @@ def _write_manifest(session):
 
 
 def _write(session_exit_status):
-    path = os.environ.get("ASSAY_MUTATION_WITNESS_FILE")
-    if not path:
-        return
     payload = {
         "unsupported": not _STANDARD_LOOP,
         "unsupported_pytest_cov_only": bool(_UNSUPPORTED_PYTEST_COV_ONLY),
@@ -1634,6 +1820,32 @@ def _write(session_exit_status):
     }
     try:
         encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if _WITNESS_FD is not None:
+            if not 0 < len(encoded) <= 16384:
+                return
+            frame = len(encoded).to_bytes(4, "big") + encoded
+            view = memoryview(frame)
+            while view:
+                try:
+                    written = os.write(_WITNESS_FD, view)
+                except InterruptedError:
+                    continue
+                if written <= 0:
+                    break
+                view = view[written:]
+            return
+    except Exception:
+        return
+    finally:
+        if _WITNESS_FD is not None:
+            try:
+                os.close(_WITNESS_FD)
+            except OSError:
+                pass
+    path = os.environ.get("ASSAY_MUTATION_WITNESS_FILE")
+    if not path:
+        return
+    try:
         if len(encoded) <= 16384:
             Path(path).write_bytes(encoded)
     except Exception:

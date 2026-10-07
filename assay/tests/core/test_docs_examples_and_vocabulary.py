@@ -604,6 +604,17 @@ def test_every_reason_code_is_documented():
     assert not missing, f"undocumented reason_code(s): {missing}"
 
 
+def test_resource_observation_applicability_values_are_documented():
+    """B148's machine-readable applicability values are public vocabulary."""
+    text = _docs_text()
+    for value in (
+        "none",
+        "conditional_native_r2_candidates",
+        "selected_candidates",
+    ):
+        assert f'"{value}"' in text, f"undocumented resource applicability: {value}"
+
+
 def test_every_evidence_source_is_documented():
     """(B004/A-430) A pre-existing gap the carve itself named: check (2)
     covered four vocabularies (later five, with reason codes) but never

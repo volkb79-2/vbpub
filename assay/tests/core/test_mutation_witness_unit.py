@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,15 +17,18 @@ from _pytest.config import get_config
 
 from assay import liveness, mutation_witness
 from assay.mutation_witness import (
+    _PLUGIN_SOURCE,
     COLD_PYTEST_FLAG_OPTIONS,
     COLD_PYTEST_VALUE_OPTIONS,
     HOOK_FINGERPRINT_HOOKS,
-    _PLUGIN_SOURCE,
+    MAX_INTERNAL_RECEIPT_BYTES,
     WITNESS_COLD_ENV,
+    WITNESS_FD_ENV,
     WITNESS_LIVENESS_PLUGIN_PATH_ENV,
     WITNESS_MANIFEST_FILE_ENV,
     WITNESS_PLUGIN_PATH_ENV,
     WITNESS_TARGET_ENV,
+    ReceiptCapture,
     cold_shape_refusal,
     cold_witness_from_receipt,
     declared_failure_proof_ok,
@@ -124,22 +128,27 @@ def _run_child_pytest(
         liveness_plugin_path=liveness_plugin_path,
     )
     assert injected.active
+    capture = ReceiptCapture()
     attempt = make_attempt_plan(
         injected.plan,
-        receipt_path=receipt_path,
+        receipt_fd=capture.write_fd,
         target_node_id=None,
         cold=cold,
         manifest_path=receipt_path.parent / "manifest.txt" if cold else None,
     )
-    result = subprocess.run(
-        attempt.argv_effective,
-        cwd=project,
-        env=attempt.env_effective,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result, read_internal_receipt(receipt_path)
+    try:
+        result = subprocess.run(
+            attempt.argv_effective,
+            cwd=project,
+            env=attempt.env_effective,
+            check=False,
+            capture_output=True,
+            text=True,
+            pass_fds=(capture.write_fd,),
+        )
+    finally:
+        receipt = capture.finish()
+    return result, receipt
 
 
 def test_sequential_pytest_refuses_empty_override_and_untrusted_plugin_inputs():
@@ -374,6 +383,125 @@ def test_attempt_plan_adds_or_clears_target_node_id(tmp_path):
         plan, receipt_path=tmp_path / "receipt.json", target_node_id=None
     )
     assert WITNESS_TARGET_ENV not in untargeted.env_effective
+
+
+def test_attempt_plan_passes_a_pipe_descriptor_without_a_receipt_path():
+    plan = _plan(("pytest", "tests"), env={"ASSAY_MUTATION_WITNESS_FILE": "stale"})
+    capture = ReceiptCapture()
+    try:
+        attempt = make_attempt_plan(
+            plan,
+            receipt_fd=capture.write_fd,
+            target_node_id=None,
+        )
+        assert attempt.env_effective[WITNESS_FD_ENV] == str(capture.write_fd)
+        assert "ASSAY_MUTATION_WITNESS_FILE" not in attempt.env_effective
+    finally:
+        capture.finish()
+
+
+def test_receipt_capture_rejects_a_second_or_trailing_frame():
+    capture = ReceiptCapture()
+    frame = (2).to_bytes(4, "big") + b"{}"
+    try:
+        os.write(capture.write_fd, frame)
+        os.write(capture.write_fd, frame)
+    finally:
+        assert capture.finish() is None
+
+
+def test_receipt_capture_discards_oversized_frames():
+    capture = ReceiptCapture()
+    payload = b"x" * (MAX_INTERNAL_RECEIPT_BYTES + 1)
+    frame = len(payload).to_bytes(4, "big") + payload
+    try:
+        view = memoryview(frame)
+        while view:
+            view = view[os.write(capture.write_fd, view) :]
+    finally:
+        assert capture.finish() is None
+
+
+def test_receipt_capture_closes_pipe_if_reader_descriptor_dup_fails(monkeypatch):
+    original_pipe = os.pipe
+    read_fd, write_fd = original_pipe()
+    monkeypatch.setattr(os, "pipe", lambda: (read_fd, write_fd))
+
+    def fail_dup(_fd: int) -> int:
+        raise OSError("injected descriptor exhaustion")
+
+    monkeypatch.setattr(os, "dup", fail_dup)
+    try:
+        with pytest.raises(OSError, match="injected descriptor exhaustion"):
+            ReceiptCapture()
+        for descriptor in (read_fd, write_fd):
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+    finally:
+        for descriptor in (read_fd, write_fd):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):
+    read_entered = threading.Event()
+    release_read = threading.Event()
+    later_read_entered = threading.Event()
+    release_later_read = threading.Event()
+    capture = ReceiptCapture()
+    stale_reader_fd = capture._drain_fd
+    later_reader_fd: int | None = None
+    original_read = os.read
+
+    def delayed_read(fd: int, size: int) -> bytes:
+        if fd == stale_reader_fd and not read_entered.is_set():
+            read_entered.set()
+            assert release_read.wait(2.0)
+        if fd == later_reader_fd:
+            later_read_entered.set()
+            assert release_later_read.wait(2.0)
+        return original_read(fd, size)
+
+    monkeypatch.setattr(os, "read", delayed_read)
+    normal_join_timeout = ReceiptCapture._JOIN_TIMEOUT_SECONDS
+    monkeypatch.setattr(ReceiptCapture, "_JOIN_TIMEOUT_SECONDS", 0.01)
+    later_capture: ReceiptCapture | None = None
+    try:
+        os.write(capture.write_fd, b"stale")
+        assert read_entered.wait(1.0)
+        assert capture.finish() is None
+        assert capture._thread.is_alive()
+
+        later_capture = ReceiptCapture()
+        assert later_capture._read_fd == capture._read_fd
+        assert later_capture._read_fd != stale_reader_fd
+        later_reader_fd = later_capture._drain_fd
+        expected = {"ok": True}
+        payload = json.dumps(expected).encode()
+        os.write(
+            later_capture.write_fd,
+            len(payload).to_bytes(4, "big") + payload,
+        )
+        assert later_read_entered.wait(1.0)
+
+        release_read.set()
+        capture._thread.join(1.0)
+        assert not capture._thread.is_alive()
+        release_later_read.set()
+        monkeypatch.setattr(
+            ReceiptCapture, "_JOIN_TIMEOUT_SECONDS", normal_join_timeout
+        )
+        assert later_capture.finish() == expected
+    finally:
+        release_read.set()
+        release_later_read.set()
+        if not capture._finished:
+            capture.finish()
+        capture._thread.join(1.0)
+        if later_capture is not None and not later_capture._finished:
+            later_capture.finish()
 
 
 def test_attempt_plan_sets_cold_and_manifest_only_for_that_attempt(tmp_path):
@@ -945,6 +1073,44 @@ def test_precollection_pytest_builtin_hook_substitution_cannot_prove_cold_result
     )
 
 
+def test_post_session_unconfigure_cannot_replace_the_receipt(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (project / "conftest.py").write_text(
+        "import json, os\n"
+        "def pytest_unconfigure(config):\n"
+        "    fd = int(os.environ['ASSAY_MUTATION_WITNESS_FD'])\n"
+        "    forged = json.dumps({'witness_node_id': 'tests/test_setup.py::test_target', "
+        "'witness_when': 'call', 'witness_outcome': 'failed', "
+        "'session_exit_status': 1}).encode()\n"
+        "    try:\n"
+        "        os.write(fd, len(forged).to_bytes(4, 'big') + forged)\n"
+        "    except OSError:\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    (tests / "test_setup.py").write_text(
+        "import pytest\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def setup_failure():\n"
+        "    raise RuntimeError('setup failed before the test call')\n"
+        "def test_target():\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
+
+    result, receipt = _run_child_pytest(
+        project, tmp_path / "plugins", tmp_path / "receipt.json"
+    )
+
+    assert result.returncode == 1
+    assert receipt is not None
+    assert receipt["witness_node_id"] is None
+    assert receipt["witness_when"] is None
+    assert receipt["witness_outcome"] is None
+
+
 @pytest.mark.parametrize(
     ("forged_mode", "fail_call"), [("fail", False), ("suppress", True)]
 )
@@ -1405,6 +1571,14 @@ def test_receipt_reader_returns_only_json_objects_and_handles_missing_files(tmp_
     assert read_internal_receipt(path) == {"ok": True}
 
 
+def test_receipt_reader_refuses_a_symlink(tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text('{"ok":true}', encoding="utf-8")
+    link = tmp_path / "receipt.json"
+    link.symlink_to(target.name)
+    assert read_internal_receipt(link) is None
+
+
 def test_valid_failure_receipt_projects_and_replays_only_for_its_exact_target():
     node = "tests/test_example.py::test_case"
     receipt = _receipt(
@@ -1492,6 +1666,7 @@ def test_failure_receipt_projection_rejects_ambiguous_or_foreign_facts(
         {"target_node_id": None},
         {"stopped_at_target": False},
         {"earlier_failure": True},
+        {"collection_error": True},
     ],
 )
 def test_replay_receipt_requires_one_exact_target_and_no_earlier_failure(overrides):

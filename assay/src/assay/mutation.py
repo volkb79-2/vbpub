@@ -109,13 +109,28 @@ import re
 import tempfile
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, Executor, Future, ThreadPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Executor,
+    Future,
+    ThreadPoolExecutor,
+    wait,
+)
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterable,
+    Iterator,
+    Literal,
+    Mapping,
+    Sequence,
+)
 
 from . import git, liveness, safeio
 from .candidate_identity import candidate_id_from_fields
@@ -124,37 +139,22 @@ from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
-from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
-from .mutation_witness import make_attempt_plan as _make_witness_attempt_plan
-from .mutation_witness import read_internal_receipt as _read_witness_receipt
 from .mutation_witness import (
+    ReceiptCapture,
     ReceiptFacts,
     cold_witness_from_receipt,
     declared_failure_proof_ok,
-    inject_witness_plugin,
-    make_attempt_plan,
     receipt_facts,
-    replay_witness_from_receipt as _replay_witness_from_receipt,
-    survivor_proof_ok,
     supports_sequential_pytest,
+    survivor_proof_ok,
+)
+from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
+from .mutation_witness import make_attempt_plan as _make_witness_attempt_plan
+from .mutation_witness import (
+    replay_witness_from_receipt as _replay_witness_from_receipt,
 )
 from .mutation_witness import witness_from_receipt as _witness_from_receipt
 from .records import record
-from .verdict import (
-    DISCARD_REASONS,
-    MUTATION_BUCKETS,
-    MAX_CANDIDATE_CEILING,
-    MAX_SHARD_COUNT,
-    Claim,
-    Mutation,
-    MutationExecution,
-    MutantEvidence,
-    MutationWitnessReceipt,
-    MutantOutcome,
-    MutationProducerTool,
-    SourcePosition,
-    iso_utc,
-)
 from .redaction import redact_passthrough_text as _redact_passthrough_text
 from .resource_limits import (
     CounterDelta,
@@ -162,6 +162,21 @@ from .resource_limits import (
     ResourceLimitEvidence,
     ResourceLimitObservationError,
     read_current_cgroup_counters,
+)
+from .verdict import (
+    DISCARD_REASONS,
+    MAX_CANDIDATE_CEILING,
+    MAX_SHARD_COUNT,
+    MUTATION_BUCKETS,
+    Claim,
+    MutantEvidence,
+    MutantOutcome,
+    Mutation,
+    MutationExecution,
+    MutationProducerTool,
+    MutationWitnessReceipt,
+    SourcePosition,
+    iso_utc,
 )
 from .vocabulary import MUTATION_OPERATORS
 
@@ -2453,10 +2468,8 @@ def _snapshot_left_dirt(
 
     *remaining* (P26/A-212) bounds this check's own Git children by the one
     lane deadline; :func:`run_mutation` passes ``deadline.remaining``, so a
-    hung ``status``/``rev-parse`` can never outlive the lane budget. Because
-    this check runs after a mutant is already decided, that call site absorbs
-    exactly ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` (see its own comment) so an
-    already-decisive result is never discarded for a partial sample; a
+    hung ``status``/``rev-parse`` can never outlive the lane budget. The
+    candidate remains unclassified unless this integrity check completes; a
     legacy/library caller may still omit *remaining*.
     """
     if git.dirty_paths(snapshot.root, remaining=remaining):
@@ -3420,30 +3433,11 @@ def _execute_mutation_jobs(
         replacement_bytes = job.site.apply(original_bytes)
         materialize_timeout = deadline.remaining()
         started_monotonic = time.monotonic()
-        receipt_path = (
-            Path(witness_temp.name) / f"{index}-{attempt_name}.json"
-            if witness_capture_active and witness_temp is not None
-            else None
-        )
         attempt_plan = plan
         active_injection = witness_injection
         if cold_witness and variant == "declared":
             active_injection = declared_injection
-        if (
-            witness_capture_active
-            and active_injection is not None
-            and receipt_path is not None
-        ):
-            attempt_plan = _make_witness_attempt_plan(
-                active_injection.plan,
-                receipt_path=receipt_path,
-                target_node_id=target_node_id,
-                cold=cold,
-            )
-            try:
-                receipt_path.unlink()
-            except FileNotFoundError:
-                pass
+        receipt: Mapping[str, Any] | None = None
         with prepared.materialize_replacement(
             path=PurePosixPath(job.path),
             expected=original_bytes,
@@ -3508,7 +3502,16 @@ def _execute_mutation_jobs(
                     )
                 execution_error: BaseException | None = None
                 result: CommandResult | None = None
+                receipt_capture = None
                 try:
+                    if witness_capture_active and active_injection is not None:
+                        receipt_capture = ReceiptCapture()
+                        attempt_plan = _make_witness_attempt_plan(
+                            active_injection.plan,
+                            receipt_fd=receipt_capture.write_fd,
+                            target_node_id=target_node_id,
+                            cold=cold,
+                        )
                     result = execute_plan(
                         attempt_plan,
                         cwd=snapshot.project_root,
@@ -3518,6 +3521,9 @@ def _execute_mutation_jobs(
                     )
                 except BaseException as exc:
                     execution_error = exc
+                finally:
+                    if receipt_capture is not None:
+                        receipt = receipt_capture.finish()
                 # This is deliberately the first observation after execute_plan
                 # on both normal and exceptional exits: an OOM kill can never
                 # be hidden by a later resource-counter read or classification.
@@ -3602,36 +3608,15 @@ def _execute_mutation_jobs(
                     candidate_events
                 )
             integrity_started_monotonic = time.monotonic()
-            try:
-                # P26/A-212: the ONE lane deadline IS forwarded here, so this
-                # check's own Git children are bounded by the same budget as
-                # every other lane-owned call. `remaining=None` would leave
-                # them genuinely unbounded -- `git._run_bounded` then waits in
-                # `selector.select(None)`/`proc.wait()` with no timeout -- so a
-                # single hung `status`/`rev-parse` could outlive the entire
-                # lane budget from inside a worker.
-                dirt = _snapshot_left_dirt(
-                    job, snapshot, remaining=deadline.remaining
-                )
-            except AssayError as exc:
-                # ...but this check runs AFTER the mutant's own process already
-                # produced a decisive result, so an expiry observed HERE must
-                # not retroactively reclassify a COMPLETED identity: this
-                # function's own bucket rule is "completed identities remain
-                # evidence, never discarded for a partial sample". Absorbing
-                # exactly that pair keeps the bucket semantics unchanged while
-                # still refusing to start an unbounded child. Every other
-                # AssayError -- a real Git failure, and A-195's own returned
-                # DIRTY_TREE/HEAD_CHANGED below -- still stops the whole claim.
-                # A NOT-YET-STARTED mutant is unaffected: it is budget-stopped
-                # earlier, at `materialize_timeout`/`execute_plan`'s samples.
-                if not (
-                    exc.outcome is Outcome.BUDGET_EXCEEDED
-                    and exc.reason_code is ReasonCode.LANE_TIMEOUT
-                ):
-                    raise
-                dirt = None
-            integrity_finished_monotonic = time.monotonic()
+            # P26/A-212: the ONE lane deadline IS forwarded here, so this
+            # check's own Git children are bounded by the same budget as
+            # every other lane-owned call. `remaining=None` would leave them
+            # genuinely unbounded -- `git._run_bounded` then waits in
+            # `selector.select(None)`/`proc.wait()` with no timeout -- so a
+            # single hung `status`/`rev-parse` could outlive the entire lane.
+            # If the deadline or termination request fires before this
+            # integrity proof completes, propagate it: a completed command is
+            # not a classified candidate until its snapshot is proven intact.
             equivalence_bytes: bytes | None = None
             kill_signal_text: str | None = None
             decode_error: AssayError | None = None
@@ -3643,6 +3628,15 @@ def _execute_mutation_jobs(
             # so it was never a leak that grows; it is still a descriptor this
             # function opened and owes.
             try:
+                dirt = _snapshot_left_dirt(
+                    job, snapshot, remaining=deadline.remaining
+                )
+                # The integrity helper's last Git child can return just as
+                # the lane expires or termination arrives. Recheck at the
+                # classification boundary before reading artifacts or
+                # allowing this candidate to acquire a bucket.
+                deadline.remaining()
+                integrity_finished_monotonic = time.monotonic()
                 if dirt is None:
                     if equivalence_reservation is not None:
                         equivalence_bytes = equivalence_reservation.consume()
@@ -3681,11 +3675,6 @@ def _execute_mutation_jobs(
             startup_seconds=startup_seconds,
             resource_limit_evidence=resource_limit_evidence,
         )
-        receipt = (
-            _read_witness_receipt(receipt_path)
-            if receipt_path is not None
-            else None
-        )
         attempt_receipts[(index, attempt_name)] = receipt
         if target_node_id is not None:
             # A prefix replay is only an optimization when its result can be
@@ -3708,6 +3697,7 @@ def _execute_mutation_jobs(
                 receipt,
                 process_exit_status=result.returncode,
                 target_node_id=target_node_id,
+                expected_facts=r2_facts if cold_witness else None,
             )
             if (
                 witness is None

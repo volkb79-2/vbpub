@@ -24,6 +24,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   candidate events ordered.
 
 ### Fixed
+- Leave a candidate unclassified and out of resume state when lane or campaign
+  termination interrupts its post-command snapshot integrity check (B117).
+- Refuse native R2 before R0 when B145's full cgroup hierarchy is unavailable
+  for a selected candidate set within the mutation cap; expose the same
+  capability and selection applicability in `assay plan` (B148).
 - Require cold-policy full kills to carry declared-command coverage evidence
   and a verified failed-call witness. Accept a declared retry's witness anywhere
   in its verified started prefix, and bind B105 full-kill witnesses to the R2
@@ -40,6 +45,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   plan, and read reports, plans, tester receipts, deadlines and manifests as
   bounded no-follow regular files (64 MiB, 16 MiB and 4 KiB for report, plan
   and receipt).
+- Capture private cold-witness receipts over a bounded framed pipe, rejecting
+  extra or trailing bytes so post-session hooks cannot rewrite a witness;
+  safely read the ordered manifest and recheck the campaign deadline at the
+  candidate integrity boundary.
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->

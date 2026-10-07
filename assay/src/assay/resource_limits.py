@@ -19,6 +19,7 @@ import errno
 import os
 import re
 import stat
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -39,6 +40,22 @@ LimitSignatureEntry = tuple[
 
 class ResourceLimitObservationError(RuntimeError):
     """Required cgroup resource-limit counters or ancestors are not visible."""
+
+
+@record
+class ResourceObservationCapability:
+    """Whether this process can currently observe the B145 counter hierarchy."""
+
+    available: bool
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.available) is not bool:
+            raise ValueError("resource observation capability available must be a bool")
+        if self.available and self.reason is not None:
+            raise ValueError("available resource observation cannot carry a refusal reason")
+        if not self.available and (not isinstance(self.reason, str) or not self.reason):
+            raise ValueError("unavailable resource observation requires a reason")
 
 
 @record
@@ -747,3 +764,39 @@ def read_current_cgroup_counters(
         memory_oom_group_kill=memory_oom_group_kill,
         limit_signature=tuple(limit_signature),
     )
+
+
+def inspect_current_cgroup_observation() -> ResourceObservationCapability:
+    """Probe the full B145 observation contract without classifying a candidate.
+
+    Planning and pre-R0 refusals use this read-only report. Candidate attempts
+    still take their own before/after samples, because a successful probe cannot
+    certify that visibility remains stable for the later execution. Read it on
+    a fresh thread: R2 samples `/proc/thread-self/cgroup` from executor workers,
+    and threaded cgroup v2 placements can differ from the CLI's main thread.
+    """
+    error: BaseException | None = None
+
+    def probe() -> None:
+        nonlocal error
+        try:
+            read_current_cgroup_counters()
+        except BaseException as exc:
+            error = exc
+
+    try:
+        worker = threading.Thread(
+            target=probe, name="assay-cgroup-observation-preflight", daemon=True
+        )
+        worker.start()
+    except (OSError, RuntimeError) as exc:
+        return ResourceObservationCapability(
+            available=False,
+            reason=f"cannot start cgroup observation probe thread: {exc}",
+        )
+    worker.join()
+    if isinstance(error, ResourceLimitObservationError):
+        return ResourceObservationCapability(available=False, reason=str(error))
+    if error is not None:
+        raise error
+    return ResourceObservationCapability(available=True)

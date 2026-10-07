@@ -229,6 +229,12 @@ assay exists to close that gap mechanically, not by policy:
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
   and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  When native candidates are selected, Assay checks the same complete
+  hierarchy before R0 starts. A hidden ancestor yields
+  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; `assay plan` and
+  `assay lanes --json` report the current visibility. See the
+  [preflight design](docs/DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148)
+  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-visibility-preflight-b148).
 - **Assay's own Git children cannot launch detached automatic maintenance (B147).**
   Assay pins automatic maintenance and both detach settings off, independent
   of system or image configuration. See the
