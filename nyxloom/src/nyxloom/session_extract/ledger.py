@@ -30,6 +30,23 @@ tool_result records this package otherwise drops entirely:
 Claude Code only, for now -- whether Codex/opencode expose tool_use/
 tool_result the same way is the same open question E-012 raised for prose,
 not yet checked for tool calls either.
+
+WHOLE-SESSION LEDGER + EXTERNAL EFFECTS (nyxloom-SUCCESSOR, 2026-10-06,
+operator decision): the per-boundary lines above only print after a KEPT
+operator boundary, so a single-brief agent (one OPERATOR turn, hundreds of
+tool calls) showed little or nothing useful. `session_ledger()` merges every
+boundary's ledger into one whole-session `Ledger`, and the new
+`external_effects` bucket lists Bash commands that change the world outside
+the worktree (MUTATING forms only: git push/merge/tag/rebase/reset --hard,
+mutating systemctl/apt/dpkg/docker/curl verbs, netcup create/delete/
+attach-iso/power/install-host/boot-order set, and ssh/scp only when the
+remote command is such a form or scp uploads). It is the
+"already done -- verify by state, never repeat" list a successor needs. The
+detection is heuristic, quote-aware and lives in shellcmd.py (including its
+documented residuals); the patterns are configurable
+(`--effect-pattern`, `--no-default-effect-patterns`). A command whose result
+failed or was rejected by the harness is annotated, because a rejected push
+did NOT happen.
 """
 
 from __future__ import annotations
@@ -37,11 +54,46 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import toolresult
+
+# The effect patterns, segmentation (quote-aware), wrapper stripping and
+# ssh/scp/`bash -c` recursion live in shellcmd.py (shared with the adapter's
+# --effect-calls / --read-calls classification).
+from .shellcmd import DEFAULT_EFFECT_PATTERNS, effect_segments  # noqa: E402,F401
+
+
+def external_effect(
+    command: str, patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS, scp_uploads: bool = True,
+) -> bool:
+    """Whether any shell segment of `command` is an external effect."""
+    return bool(effect_segments(command, patterns, scp_uploads))
+
 _FILE_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 _READ_TOOLS = {"Read"}
+
+# Agent-control calls change the world outside the transcript (they start,
+# steer or kill another agent), so a successor must see them as "already done"
+# effects. Rule added with the real-transcript corpus (SUCCESSOR-2).
+AGENT_CONTROL_TOOLS = frozenset({"Agent", "SendMessage", "TaskStop"})
+
+
+def agent_control_line(name: str, tinput: dict, aliases: tuple[tuple[str, str], ...] = ()) -> str:
+    """One ledger line for an Agent / SendMessage / TaskStop call."""
+    def clip(value: object, limit: int = 100) -> str:
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        return toolresult.one_line(toolresult.apply_aliases(text, aliases), limit)
+
+    if name == "Agent":
+        kind = tinput.get("subagent_type") or "general-purpose"
+        return f"agent launch [{kind}]: {clip(tinput.get('description') or tinput.get('prompt') or '')}"
+    if name == "SendMessage":
+        about = tinput.get("summary") or tinput.get("message") or tinput.get("content") or ""
+        return f"agent message to {clip(tinput.get('to') or '?', 60)}: {clip(about)}"
+    return f"agent stop: {clip(tinput.get('task_id') or tinput.get('agent_id') or '?', 60)}"
 
 # git's own commit-summary first line: "[branch-name abc1234] message" (or
 # "[branch-name (root-commit) abc1234] message" for a repo's first commit).
@@ -62,9 +114,42 @@ class Ledger:
     commits: list[str] = field(default_factory=list)
     branches: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
+    # "[HH:MM:SS] <command>" lines, chronological, NOT de-duplicated (a
+    # repeated push is information). Rendered only by render_session().
+    external_effects: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
+        """Empty for the PER-BOUNDARY line (external effects are a
+        whole-session notion and never part of it)."""
         return not (self.files_read or self.files_edited or self.commits or self.branches or self.tests)
+
+    def session_is_empty(self) -> bool:
+        return self.is_empty() and not self.external_effects
+
+    def render_session(self) -> str:
+        """The whole-session ledger as a short multi-line block."""
+        lines = ["[session ledger -- whole session]"]
+        if self.files_read:
+            lines.append(f"files read ({len(self.files_read)}): {', '.join(self.files_read)}")
+        if self.files_edited:
+            lines.append(f"files edited ({len(self.files_edited)}): {', '.join(self.files_edited)}")
+        if self.commits:
+            lines.append(f"commits created: {', '.join(self.commits)}")
+        if self.branches:
+            lines.append(f"branches involved: {', '.join(self.branches)}")
+        if self.tests:
+            lines.append(f"tests: {'; '.join(self.tests)}")
+        if self.external_effects:
+            lines.append(
+                f"external effects ({len(self.external_effects)}) -- already done; verify by "
+                "state, never repeat:"
+            )
+            lines.extend(f"  {e}" for e in self.external_effects)
+        if self.session_is_empty():
+            lines.append("(no files, commits, branches, tests or external effects recorded)")
+        elif not self.external_effects:
+            lines.append("external effects: none detected")
+        return "\n".join(lines)
 
     def render(self) -> str:
         parts = []
@@ -103,8 +188,34 @@ def _relativize(fp: str, repo_root: Path) -> str:
     return os.path.relpath(fp, repo_root)
 
 
+def session_ledger(ledgers: dict[str, Ledger]) -> Ledger:
+    """Merge every boundary's ledger into one whole-session ledger, in
+    boundary (= chronological) order. Files/commits/branches are
+    de-duplicated; tests and external effects keep every occurrence."""
+    merged = Ledger()
+    for entry in ledgers.values():
+        merged.files_read.extend(entry.files_read)
+        merged.files_edited.extend(entry.files_edited)
+        merged.commits.extend(entry.commits)
+        merged.branches.extend(entry.branches)
+        merged.tests.extend(entry.tests)
+        merged.external_effects.extend(entry.external_effects)
+    merged.files_read = _dedup_preserve_order(merged.files_read)
+    merged.files_edited = _dedup_preserve_order(merged.files_edited)
+    merged.commits = _dedup_preserve_order(merged.commits)
+    merged.branches = _dedup_preserve_order(merged.branches)
+    return merged
+
+
+def _hms(ts: str) -> str:
+    return f"[{ts[11:19]}]" if len(ts) >= 19 else "[--:--:--]"
+
+
 def build_ledger_claude_code(
-    path: Path, boundary_markers: set[str], repo_root: Path | None = None
+    path: Path, boundary_markers: set[str], repo_root: Path | None = None,
+    effect_patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
+    scp_uploads: bool = True,
+    aliases: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Ledger]:
     """One `Ledger` per marker in `boundary_markers` (pass the `.marker` of
     every OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER event that survived
@@ -131,6 +242,10 @@ def build_ledger_claude_code(
     # tool_use_id -> the boundary marker owning it, for a Bash call whose
     # OWN command looked like a commit (the hash only appears in the RESULT).
     pending_commits: dict[str, str] = {}
+    # tool_use_id -> (the ledger holding the effect line, its index), so the
+    # result can annotate a failed/rejected command.
+    pending_effects: dict[str, tuple[Ledger, int]] = {}
+    effect_patterns = tuple(effect_patterns)
 
     with path.open("r", errors="ignore") as f:
         for line in f:
@@ -162,9 +277,20 @@ def build_ledger_claude_code(
                         if fp:
                             bucket = ledgers[current].files_read if name in _READ_TOOLS \
                                 else ledgers[current].files_edited
-                            bucket.append(_relativize(fp, root))
+                            aliased = toolresult.apply_aliases(fp, aliases)
+                            bucket.append(aliased if aliased != fp else _relativize(fp, root))
+                    elif name in AGENT_CONTROL_TOOLS:
+                        effects = ledgers[current].external_effects
+                        effects.append(
+                            f"{_hms(rec.get('timestamp', ''))} "
+                            f"{agent_control_line(name, tinput, aliases)}"
+                        )
+                        if block.get("id"):
+                            pending_effects[block["id"]] = (ledgers[current], len(effects) - 1)
                     elif name == "Bash":
                         command = tinput.get("command", "")
+                        if not isinstance(command, str):
+                            command = ""
                         if re.search(r"git\s+commit\b", command):
                             tool_id = block.get("id")
                             if tool_id:
@@ -172,6 +298,15 @@ def build_ledger_claude_code(
                         m = _BRANCH_CHECKOUT_RE.search(command)
                         if m:
                             ledgers[current].branches.append(m.group(1))
+                        hits = effect_segments(command, effect_patterns, scp_uploads)
+                        if hits:
+                            effects = ledgers[current].external_effects
+                            effects.append(
+                                f"{_hms(rec.get('timestamp', ''))} "
+                                f"{toolresult.one_line(toolresult.apply_aliases(' ; '.join(hits), aliases), 200)}"
+                            )
+                            if block.get("id"):
+                                pending_effects[block["id"]] = (ledgers[current], len(effects) - 1)
                 continue
 
             if rtype == "user":
@@ -186,6 +321,13 @@ def build_ledger_claude_code(
                         result_text = json.dumps(result_text)
 
                     tool_use_id = block.get("tool_use_id")
+                    pending = pending_effects.pop(tool_use_id, None) if tool_use_id else None
+                    if pending is not None:
+                        eff_ledger, eff_idx = pending
+                        if toolresult.is_denial(result_text, rec):
+                            eff_ledger.external_effects[eff_idx] += " [REJECTED by harness: not executed]"
+                        elif toolresult.is_failed(block, rec):
+                            eff_ledger.external_effects[eff_idx] += " [FAILED]"
                     owner = pending_commits.pop(tool_use_id, None) if tool_use_id else None
                     if owner is not None:
                         m = _COMMIT_RE.search(result_text)
@@ -206,11 +348,16 @@ def build_ledger_claude_code(
 
 
 def build_ledger(
-    path: Path, fmt: str, boundary_markers: set[str], repo_root: Path | None = None
+    path: Path, fmt: str, boundary_markers: set[str], repo_root: Path | None = None,
+    effect_patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
+    scp_uploads: bool = True,
+    aliases: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Ledger]:
     """Dispatches on `fmt` -- see module docstring for what's implemented."""
     if fmt == "claude-code":
-        return build_ledger_claude_code(Path(path), boundary_markers, repo_root)
+        return build_ledger_claude_code(
+            Path(path), boundary_markers, repo_root, effect_patterns, scp_uploads, aliases,
+        )
     raise NotImplementedError(
         f"the E-012 ledger does not support {fmt!r} yet -- see ledger.py's module docstring"
     )
