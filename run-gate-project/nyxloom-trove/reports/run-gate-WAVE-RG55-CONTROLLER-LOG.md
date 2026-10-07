@@ -7487,3 +7487,53 @@ directories. Those tests now create the repository directory they claim to
 probe; the separate missing-parent error test remains. This is a test-only
 follow-up, not a change to the RG-85 behavior. Selftest and R1 are still not
 accepted; rerun on the corrected committed tip.
+
+### RW-480 — 2026-10-07 12:04:00 UTC — Sol round-8 conditional acceptance and Run-Gate repair
+
+The caller launched a fresh `gpt-6-sol` xhigh Codex session
+`01a11622-d0dc-7f83-bc0e-027acb7c5e08` against candidate
+`4eb4d4c786a9514b4ae22191795fa5a6009f202e`, based on current `main` and
+`origin/main` `840a9791c544326a0a63aa3ec4dcefb55e3b2aeb`. The first runner
+attempt failed before repository work because its inner bwrap could not mount
+`/proc`; it made no changes. The same Sol session resumed under the outer
+danger-full-access runner and completed the review. Route evidence is the
+caller's invocation and saved session metadata, not reviewer self-attestation.
+
+Round 8 recorded two initial Run-Gate blockers. B1: RG-85's user-facing
+CONSUMERS/DESIGN guidance still said consumers must pre-create the default
+`.run-gate` root. B2: `doctor` could report a fresh default root as FAIL or a
+symlink as OK, while the live lane created/rejected those paths differently;
+dry-run also omitted the future state-root mount from its planned argv. The
+reviewer corrected Run-Gate code, tests, README, SPEC, DESIGN-GUIDE, CONSUMERS,
+and the stale CMRU comment in `10d57876f313eb26302efe990eb006b369c33f3b`.
+Its targeted cockpit test selection passed 14 tests; this is not registered
+gate evidence. The reviewer then committed the report as
+`eb909889f31e879b14d01e6dcd2dfbd23e497983`; the final checkout was clean.
+The complete record is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round8.md`.
+
+Disposition: **ACCEPT-CONDITIONAL for provisional integration after fresh
+short gates on the final report-bearing tree**. The review found no remaining
+code blocker in the combined P1/RG-85/RG-88 diff. It does not approve release
+or shipment. The final report-bearing HEAD `eb909889` invalidates all earlier
+exact-tree gates; rerun Run-Gate selftest/R1/R3 and cgprofile r0-r1/r3 and
+read each result separately. Run-Gate rev 56 is the candidate; installed
+Run-Gate is rev 55. Installed Assay is 8.0.0; the registered Run-Gate R1
+used source-backed Assay `8.0.1.dev59+g4eb4d4c78`. CMRU 6.1.0 parses the
+candidate release metadata and reports Run-Gate 23.10.1 and cgprofile's
+metadata-derived 0.1.0; preserve the settled explicit first cgprofile release
+1.0.0. CIU 7.16.0's config check passed but rendered zero stack configs; it
+is not live deployment evidence. Main and origin/main were equal at the
+candidate base, so no rebase was needed for the announced tool versions.
+
+R2 has no exact-tree mutation result. Assay B145 refuses before candidate
+execution when the test container's private cgroup namespace hides ancestor
+event counters; do not use `--cgroupns=host` and do not call the refusal a
+mutation result. RG-89 remains open for a supported read-only observer.
+Existing `cgprofile-host-daemon` was not touched. Candidate daemon live
+host-PID/private-cgroup DAMON start/stop, socket and docker-exec probes,
+placement/restore acceptance, measured DAMON overhead, footprint refresh,
+and both full gates remain release/closeout work. The reviewer could not
+prove a loaded parent or safe isolated daemon probe from this cockpit and
+launched none. These are not product-code review blockers for the authorized
+provisional merge, but remain explicit release blockers.
