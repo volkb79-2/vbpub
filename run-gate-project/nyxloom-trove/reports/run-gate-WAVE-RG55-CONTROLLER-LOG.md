@@ -7352,3 +7352,13 @@ image with private PID/cgroup namespaces and `network=none`, and
 `/run/cgprofile/ctl.sock` remained present. After review and merge, rebuild
 from main and deploy through `ciu up` from that checkout before live DAMON
 acceptance.
+
+### RW-472 — 2026-10-07 08:40:31 UTC — canary gate passes; old daemon DAMON remains unavailable
+
+The registered cgroup-profiler `r3` gate passed on `ddfd693a`: all seven
+canaries were rejected, zero survived. Its profile recorded DAMON as
+`unavailable` with `OSError: [Errno 22] Invalid argument`. This run used the
+still-active pre-change daemon, whose `HostConfig.PidMode` is private; it is
+not a probe of the approved host-PID/private-cgroup candidate. Preserve the
+result as baseline context and repeat a live DAMON start/stop after the
+candidate is deployed from main.
