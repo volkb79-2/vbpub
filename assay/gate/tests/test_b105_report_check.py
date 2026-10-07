@@ -341,6 +341,7 @@ def _run_checker(
     plan: object = _AUTO_PLAN,
     manifest: object = _AUTO_MANIFEST,
     deadline_raw: bytes | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the checker in full mode.
 
@@ -423,6 +424,7 @@ def _run_checker(
         check=False,
         capture_output=True,
         text=True,
+        timeout=timeout,
     )
 
 
@@ -1039,6 +1041,82 @@ def test_deadline_plan_digest_binds_the_ordered_plan_and_report_inventory(tmp_pa
     )
     assert result.returncode == 2
     assert "R2 candidate_ids differ from the plan" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("deadline_fault", "expected_message"),
+    [
+        ("D1", "B105 report carries no campaign binding"),
+        ("D2", "campaign deadline_sha256 does not match the deadline file"),
+        ("D3", "deadline file does not bind this commit/tree/lane/version"),
+        ("D4", "report was not produced inside its campaign window"),
+    ],
+)
+def test_deadline_checks_precede_malformed_plan_refusal(
+    tmp_path, deadline_fault, expected_message
+):
+    document, _ = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    deadline_raw = None
+    if deadline_fault == "D1":
+        document.pop("campaign")
+    elif deadline_fault == "D2":
+        document["campaign"]["deadline_sha256"] = "0" * 64
+    elif deadline_fault == "D3":
+        deadline = json.loads(_deadline_bytes(document, commit, tree))
+        deadline["commit"] = "0" * 40
+        deadline_raw = json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
+        document["campaign"]["deadline_sha256"] = hashlib.sha256(deadline_raw).hexdigest()
+    else:
+        created = datetime.fromisoformat(
+            document["campaign"]["created_at_utc"].replace("Z", "+00:00")
+        )
+        document["started"] = (created - timedelta(seconds=1)).isoformat()
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan="{ malformed plan",
+        deadline_raw=deadline_raw,
+    )
+    assert result.returncode == 2
+    assert expected_message in result.stderr
+    assert "cannot read plan" not in result.stderr
+    assert "plan is not an object" not in result.stderr
+
+
+def test_deadline_refusal_does_not_open_the_plan_file(tmp_path):
+    document, _ = _r2_case()
+    document.pop("campaign")
+    plan_path = tmp_path / "blocked-plan.fifo"
+    os.mkfifo(plan_path)
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan_path,
+        timeout=3,
+    )
+    assert result.returncode == 2
+    assert "B105 report carries no campaign binding" in result.stderr
+    assert "plan" not in result.stderr
+
+
+def test_malformed_plan_is_refused_after_a_valid_deadline(tmp_path):
+    document, _ = _r2_case()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan="{ malformed plan",
+    )
+    assert result.returncode == 2
+    assert "cannot read plan" in result.stderr
 
 
 def test_other_r2_deadline_digest_is_recomputed_after_existing_report_checks(

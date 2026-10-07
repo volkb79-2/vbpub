@@ -10808,6 +10808,13 @@ qualification evidence.
       estate's `--resume --progress` contract. B106 selective reuse may reduce
       later reruns only when current evidence proves each reused result; an
       uncertain candidate runs fully.
+- [ ] The selected commit's own timestamp drives `SOURCE_DATE_EPOCH` for the
+      B105 wheel. An existing deadline's wheel digest is checked before run
+      closure installation, planning, preflight or R2; a newly initialized
+      deadline is checked again before either lane starts. In report checking,
+      plan-independent D1-D4 refusals precede plan parsing, followed by the
+      selected ordered-plan digest check. Paired malformed-plan/deadline tests
+      pin that refusal order.
 - [ ] B110's structural runtime work is complete, reviewed, and shown to meet
       this ceiling before B105's final qualification starts. A longer forecast
       requires a changed test/execution plan, not a longer timeout.
@@ -11479,6 +11486,14 @@ test call failed: a kill requires a trusted receipt proving call-phase failure
 and matching the relevant baseline, with a valid started prefix, consistent
 process/session exits, and no setup, collection, teardown, auxiliary, signal,
 termination, or cgroup resource cause. Uncertain attempts never count as kills.
+
+The 2026-10-07 Sol xhigh review added three acceptance corrections: pin actual
+pytest built-in hook callables before initial conftests and bind late built-in
+HookImpls only from their pre-pinned source functions; make same-commit B105
+wheel bytes deterministic and refuse a persisted wheel mismatch before lane
+work; and run D1-D4 before parsing the R2 plan, then compare the selected
+ordered-plan digest. Same-module/path hook substitution must be unsupported
+even when the resulting hook fingerprint matches the baseline.
 
 **Acceptance:**
 - [ ] All four briefs' oracles pass.

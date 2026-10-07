@@ -718,6 +718,7 @@ import os
 import platform
 import sys
 import sysconfig
+import pytest
 from pathlib import Path
 from _pytest.reports import TestReport as _TestReport
 
@@ -756,6 +757,10 @@ _RUNTIME_FINGERPRINT_SHA256 = None
 _CONFIG_SHA256 = None
 _ARCHIVE_EXCEPTION_USED = False
 _HOOK_IMPL_REGISTRY = {}
+_PINNED_BUILTIN_HOOKS = {}
+_PINNED_BUILTIN_SOURCE_CODES = {}
+_PINNED_LATE_BUILTIN_PLUGIN_TYPES = {}
+_BUILTIN_HOOKS_PINNED = False
 _EXPECTED_TEST_REPORT_CONSTRUCTOR = vars(_TestReport).get("from_item_and_call")
 
 
@@ -765,6 +770,140 @@ def _bounded(value):
         return bool(value) and len(encoded) <= 4096 and b"\n" not in encoded and b"\r" not in encoded
     except Exception:
         return False
+
+
+def _pin_builtin_hook_callables(config):
+    global _PINNED_BUILTIN_HOOKS, _PINNED_BUILTIN_SOURCE_CODES
+    global _PINNED_LATE_BUILTIN_PLUGIN_TYPES, _BUILTIN_HOOKS_PINNED
+    _PINNED_BUILTIN_HOOKS = {}
+    _PINNED_BUILTIN_SOURCE_CODES = {hook_name: {} for hook_name in _HOOKS}
+    _PINNED_LATE_BUILTIN_PLUGIN_TYPES = {}
+    _BUILTIN_HOOKS_PINNED = False
+    pinned = {}
+    try:
+        # Pytest creates several builtin plugin instances after the early hook
+        # below. Pin the function and class objects already imported from the
+        # pytest package now, then bind their registered HookImpl objects when
+        # pytest registers those known builtin plugins.
+        for module_name, module in tuple(sys.modules.items()):
+            if not isinstance(module_name, str) or not module_name.startswith("_pytest."):
+                continue
+            if module is None:
+                continue
+            for attribute_name, value in tuple(vars(module).items()):
+                if isinstance(value, type):
+                    if getattr(value, "__module__", "").startswith("_pytest."):
+                        for class_attribute_name, descriptor in tuple(vars(value).items()):
+                            function = getattr(descriptor, "__func__", descriptor)
+                            code = getattr(function, "__code__", None)
+                            hook_names = {
+                                name for name in (
+                                    class_attribute_name,
+                                    getattr(function, "__name__", None),
+                                )
+                                if name in _PINNED_BUILTIN_SOURCE_CODES
+                            }
+                            if code is not None:
+                                for hook_name in hook_names:
+                                    _PINNED_BUILTIN_SOURCE_CODES[hook_name][function] = code
+                else:
+                    function = getattr(value, "__func__", value)
+                    code = getattr(function, "__code__", None)
+                    hook_names = {
+                        name for name in (
+                            attribute_name,
+                            getattr(function, "__name__", None),
+                        )
+                        if name in _PINNED_BUILTIN_SOURCE_CODES
+                    }
+                    if code is not None:
+                        for hook_name in hook_names:
+                            _PINNED_BUILTIN_SOURCE_CODES[hook_name][function] = code
+
+        late_builtin_classes = {
+            "capturemanager": ("_pytest.capture", "CaptureManager"),
+            "session": ("_pytest.main", "Session"),
+            "lfplugin": ("_pytest.cacheprovider", "LFPlugin"),
+            "nfplugin": ("_pytest.cacheprovider", "NFPlugin"),
+            "terminalreporter": ("_pytest.terminal", "TerminalReporter"),
+            "logging-plugin": ("_pytest.logging", "LoggingPlugin"),
+            "funcmanage": ("_pytest.fixtures", "FixtureManager"),
+        }
+        for plugin_name, (module_name, class_name) in late_builtin_classes.items():
+            module = sys.modules.get(module_name)
+            plugin_type = getattr(module, class_name, None) if module is not None else None
+            if isinstance(plugin_type, type):
+                _PINNED_LATE_BUILTIN_PLUGIN_TYPES[plugin_name] = plugin_type
+
+        for hook_name in _HOOKS:
+            hook_impls = getattr(config.hook, hook_name).get_hookimpls()
+            implementations = []
+            for impl in hook_impls:
+                function = getattr(impl, "function", None)
+                module_name = getattr(function, "__module__", None)
+                if not (
+                    isinstance(module_name, str)
+                    and module_name.startswith("_pytest.")
+                ):
+                    continue
+                callable_object = getattr(function, "__func__", function)
+                code = getattr(callable_object, "__code__", None)
+                if code is None:
+                    return False
+                _PINNED_BUILTIN_SOURCE_CODES[hook_name][callable_object] = code
+                implementations.append((impl, function, code))
+            pinned[hook_name] = tuple(implementations)
+    except Exception:
+        return False
+    if set(pinned) != set(_HOOKS):
+        return False
+    _PINNED_BUILTIN_HOOKS = pinned
+    _BUILTIN_HOOKS_PINNED = True
+    return True
+
+
+def _pin_registered_builtin_plugin(plugin, plugin_name, manager):
+    if not _BUILTIN_HOOKS_PINNED:
+        return
+    expected_type = _PINNED_LATE_BUILTIN_PLUGIN_TYPES.get(plugin_name)
+    if expected_type is None or type(plugin) is not expected_type:
+        return
+    try:
+        for hook_name in _HOOKS:
+            for impl in getattr(manager.hook, hook_name).get_hookimpls():
+                if getattr(impl, "plugin_name", None) != plugin_name:
+                    continue
+                function = getattr(impl, "function", None)
+                callable_object = getattr(function, "__func__", function)
+                expected_code = _PINNED_BUILTIN_SOURCE_CODES.get(hook_name, {}).get(
+                    callable_object
+                )
+                code = getattr(callable_object, "__code__", None)
+                if expected_code is None or code is not expected_code:
+                    continue
+                implementations = list(_PINNED_BUILTIN_HOOKS.get(hook_name, ()))
+                implementations.append((impl, function, code))
+                _PINNED_BUILTIN_HOOKS[hook_name] = tuple(implementations)
+    except Exception:
+        # A later hook check will fail closed if any builtin implementation
+        # needed for replay could not be pinned during registration.
+        return
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_load_initial_conftests(early_config):
+    # This runs before pytest's initial-conftest loader. Keep the actual
+    # registered builtin callables so a candidate conftest cannot substitute
+    # a same-module/same-path function before the collection-time checks.
+    _pin_builtin_hook_callables(early_config)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_plugin_registered(plugin, plugin_name, manager):
+    # Pytest creates some builtin plugin instances during startup. Accept only
+    # their pre-pinned class and function objects, and bind the exact HookImpl
+    # before candidate conftests can replace its callable.
+    _pin_registered_builtin_plugin(plugin, plugin_name, manager)
 
 
 _REVIEWED_EXTERNAL_HOOKS = {
@@ -875,6 +1014,23 @@ def _reviewed_external_hook(impl, hook_name, distribution_name):
         return False
 
 
+def _is_pinned_builtin_hook(hook_name, impl):
+    if not _BUILTIN_HOOKS_PINNED:
+        return False
+    for pinned_impl, pinned_function, pinned_code in _PINNED_BUILTIN_HOOKS.get(
+        hook_name, ()
+    ):
+        if impl is not pinned_impl:
+            continue
+        function = getattr(impl, "function", None)
+        callable_object = getattr(function, "__func__", function)
+        return (
+            function is pinned_function
+            and getattr(callable_object, "__code__", None) is pinned_code
+        )
+    return False
+
+
 def _trusted_hook_impl(config, hook_name, impl):
     global _ARCHIVE_EXCEPTION_USED
     module_name = getattr(impl.function, "__module__", None)
@@ -912,6 +1068,8 @@ def _trusted_hook_impl(config, hook_name, impl):
             _ARCHIVE_EXCEPTION_USED = True
             return True
     if isinstance(module_name, str) and module_name.startswith("_pytest."):
+        if not _is_pinned_builtin_hook(hook_name, impl):
+            return False
         try:
             import _pytest
             pytest_root = Path(_pytest.__file__).resolve().parent

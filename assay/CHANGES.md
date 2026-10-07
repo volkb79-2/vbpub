@@ -23,6 +23,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Bound mutation worker submissions to the configured job count while keeping
   candidate events ordered.
 
+### Fixed
+- Pin pytest built-in hook callable identities before candidate conftests load;
+  a same-module/path substitution can no longer certify a cold kill or survivor
+  with an unchanged hook fingerprint.
+- Make B105's same-commit wheel reproducible from the commit timestamp, refuse
+  an existing campaign's wheel-digest mismatch before run-closure installation
+  or lane work, and check plan-independent deadline refusals before parsing an
+  R2 plan.
+
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=e464cebcfc17c1929354f3ebc6bf9e3e355576a8 -->

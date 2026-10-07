@@ -67,8 +67,9 @@ enforcement = "gate"
 argv = [
   {json.dumps(sys.executable)}, "-m", "pytest", "tests", "-q",
   "--cov=src/pkg", "--cov-branch", "--cov-report=json:coverage.json",
+  "-p", "pytest_cov.plugin",
 ]
-env = {{ PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }}
+env = {{ PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1" }}
 env_passthrough = ["PATH", "HOME", "TMPDIR", "ASSAY_TEST_ATTEMPT_LOG"]
 budget = "10m"
 allow_argv_append = false

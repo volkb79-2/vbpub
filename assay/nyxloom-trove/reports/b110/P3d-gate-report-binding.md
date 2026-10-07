@@ -125,6 +125,7 @@ Echoes and artifacts:
 **New CLI arguments:**
 - `--r2-manifest PATH`, optional in argparse, **required** when `--expected-rigor` contains `R2`. When missing, refuse with `"--r2-manifest is required for an R2 report"`. When R2 is not in the rigor, refuse with `"--r2-manifest given for a report without R2"`.
 - `--deadline PATH`, **required** (argparse `required=True`). The gate always has a deadline after P6.
+- `--deadline-wheel-check-only --deadline PATH --expected-wheel-sha256 SHA256` is the internal early retry guard. It reads only the bounded, no-follow deadline file and refuses a missing, malformed, or unequal wheel digest before B105 installs its run closure or starts either lane.
 - Argument refusals happen before the report is read.
 
 **`verify_report_document(..., r2_manifest: Path | None = None, deadline: Path)`** gains two keyword-only parameters. `deadline` is required.
@@ -133,9 +134,19 @@ Echoes and artifacts:
 
 **Refusal order.**
 1. The existing checks: exit, commit, lane, rigor, tree, PASS, claims, version and provenance.
-2. The deadline checks D1–D4.
-3. P0's `check_campaign_scope`, when R2 is expected.
-4. Then, when R2 is expected, `_check_v15_r2`: C1–C13 in table order.
+2. The plan-independent deadline checks D1–D4, including the wheel, lane, commit/tree, and campaign-window bindings.
+3. When R2 is expected, parse and validate the plan shape, then compare its ordered digest with the selected lane's persisted `plan_sha256` value. This check runs only after D1–D4, so a malformed plan cannot hide an independently broken campaign deadline.
+4. P0's `check_campaign_scope`, when R2 is expected.
+5. Then, when R2 is expected, `_check_v15_r2`: C1–C13 in table order.
+
+The B105 wheel step derives `SOURCE_DATE_EPOCH` from the captured commit before
+`pip wheel`, then hashes the validated wheel immediately. If the matching
+campaign deadline already exists, the early guard compares its stored digest
+before run-environment installation, planning, preflight, or R2. After
+`campaign init` (or reuse of an existing deadline), the driver checks the
+persisted digest again before entering either lane. This makes same-commit
+retries produce the same wheel identity and prevents a late checker rejection
+after expensive lane work.
 
 **When both `--plan-json` and `--r2-manifest` are wrong,** P0's scope refusal is reported first.
 
@@ -147,6 +158,13 @@ Echoes and artifacts:
 | D2 | `sha256(Path(deadline).read_bytes()) == campaign["deadline_sha256"]` | `campaign deadline_sha256 does not match the deadline file` |
 | D3 | parse the deadline file with a duplicate-key-refusing `object_pairs_hook`. Then `schema == "assay-campaign-deadline/1"`, `campaign == campaign["name"]`, `created_at_utc`/`expires_at_utc` equal the block's values, `commit == expected_commit`, `git_tree == expected_tree`, `expected_lane in lanes`, and `assay_version == expected_version` | `deadline file does not bind this commit/tree/lane/version` |
 | D4 | `created_at_utc <= document["started"]` and `document["ended"] <= expires_at_utc`. Both are compared as timezone-aware datetimes; the verdict uses `+00:00`, the deadline uses `Z` | `report was not produced inside its campaign window` |
+
+The ordering oracle pairs a malformed `--plan-json` with each D1–D4 defect:
+the deadline refusal must win without a traceback or plan refusal. With a valid
+deadline, the malformed plan is refused; with a well-formed but reordered plan,
+the selected ordered-plan digest refusal wins before report-inventory checking.
+A FIFO plan path paired with a D1 failure also proves the checker does not open
+or parse the plan before the plan-independent deadline checks finish.
 
 **R2 checks (`_check_v15_r2`).** Each has its own refusal message, which tests assert as a substring. **Kind** marks whether a check is source proof:
 - **SB** = source-bound. It compares against `git show <commit>:…`, a checker constant, or the retained sidecar bytes.

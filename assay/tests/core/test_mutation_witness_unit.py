@@ -96,6 +96,9 @@ def _run_child_pytest(
     env = os.environ.copy()
     env.pop("PYTEST_PLUGINS", None)
     env.pop("PYTEST_ADDOPTS", None)
+    # These subprocesses pin their own hook shapes; ambient entry-point plugins
+    # from the cockpit would make the expected builtin-only baseline vary.
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env.pop("INSTALL_FORGER", None)
     env.pop("FAIL_CALL", None)
     if env_overrides:
@@ -421,7 +424,11 @@ def test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill(tmp
     )
     plugin_dir = tmp_path / "plugins"
     baseline_result, baseline = _run_child_pytest(
-        project, plugin_dir, tmp_path / "baseline.json", cold=True
+        project,
+        plugin_dir,
+        tmp_path / "baseline.json",
+        env_overrides={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        cold=True,
     )
     assert baseline_result.returncode == 0, baseline_result.stderr
     assert baseline is not None and baseline["unsupported"] is False
@@ -617,9 +624,23 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
             tryfirst=False,
             trylast=False,
         )
-        assert namespace["_reviewed_external_hook"](impl, hook_name, distribution)
+        version, source_sha256 = namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution]
+        installed = namespace["metadata"].distribution(distribution)
+        module = namespace["sys"].modules.get(function.__module__)
+        module_file = getattr(module, "__file__", None)
+        installed_source_sha256 = (
+            namespace["hashlib"].sha256(Path(module_file).read_bytes()).hexdigest()
+            if isinstance(module_file, str)
+            else None
+        )
+        reviewed_here = (
+            installed.version == version and installed_source_sha256 == source_sha256
+        )
+        assert namespace["_reviewed_external_hook"](
+            impl, hook_name, distribution
+        ) is reviewed_here
 
-        if distribution == "pytest-cov":
+        if distribution == "pytest-cov" and reviewed_here:
             bound_impl = SimpleNamespace(
                 function=MethodType(function, object()),
                 plugin_name=plugin_name,
@@ -659,7 +680,6 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
             fake_impl, hook_name, distribution
         )
 
-        version, source_sha256 = namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution]
         namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
             version,
             "0" * 64,
@@ -751,6 +771,92 @@ def test_temporary_report_constructor_patch_cannot_forge_a_cold_result(
             expected=expected,
             command="declared",
         )
+
+
+@pytest.mark.parametrize(
+    ("forged_mode", "fail_call", "exit_status"),
+    [("fail", False, 1), ("suppress", True, 0)],
+)
+def test_precollection_pytest_builtin_hook_substitution_cannot_prove_cold_result(
+    tmp_path, forged_mode, fail_call, exit_status
+):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_builtin_hook.py").write_text(
+        "import os\n\n"
+        "def test_behavior():\n"
+        "    if os.environ.get('FAIL_CALL'):\n"
+        "        assert False, 'real test failure'\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    baseline_result, baseline = _run_child_pytest(
+        project, plugin_dir, tmp_path / "baseline.json", cold=True
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported"] is False
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    (tests / "conftest.py").write_text(
+        "import os\n\n"
+        "def pytest_configure(config):\n"
+        "    if not os.environ.get('INSTALL_FORGER'):\n"
+        "        return\n"
+        "    hook = config.hook.pytest_runtest_call\n"
+        "    impl = next(item for item in hook.get_hookimpls() if item.plugin_name == 'runner')\n"
+        "    original = impl.function\n"
+        "    original.__globals__['_assay_test_original_hook'] = original\n"
+        "    source = '''def _assay_test_forged_hook(item):\n"
+        "    import os\n"
+        "    mode = os.environ.get('FORGER_MODE')\n"
+        "    if mode == 'fail':\n"
+        "        raise AssertionError('forged call failure')\n"
+        "    if mode == 'suppress':\n"
+        "        return None\n"
+        "    return _assay_test_original_hook(item)\n"
+        "'''\n"
+        "    namespace = original.__globals__\n"
+        "    exec(compile(source, original.__code__.co_filename, 'exec'), namespace)\n"
+        "    forged = namespace['_assay_test_forged_hook']\n"
+        "    forged.__module__ = original.__module__\n"
+        "    forged.__qualname__ = original.__qualname__\n"
+        "    forged.__name__ = original.__name__\n"
+        "    impl.function = forged\n",
+        encoding="utf-8",
+    )
+
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "forged.json",
+        env_overrides={
+            "INSTALL_FORGER": "1",
+            "FORGER_MODE": forged_mode,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            **({"FAIL_CALL": "1"} if fail_call else {}),
+        },
+        cold=True,
+    )
+
+    assert result.returncode == exit_status
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    # The counterfeit intentionally preserves all fields in the ordinary hook
+    # fingerprint. The pre-conftest callable pin must reject it independently.
+    assert receipt["hook_fingerprint_sha256"] == baseline["hook_fingerprint_sha256"]
+    assert cold_witness_from_receipt(
+        receipt, process_exit_status=result.returncode, expected=expected
+    ) is None
+    assert not survivor_proof_ok(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=expected,
+        command="declared",
+    )
 
 
 @pytest.mark.parametrize(("strict", "exit_status"), [(False, 0), (True, 1)])
@@ -865,7 +971,7 @@ def test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exceptio
         project,
         plugin_dir,
         receipt_path,
-        pytest_args=("--cov=tests",),
+        pytest_args=("-p", "pytest_cov.plugin", "--cov=tests"),
     )
     assert result.returncode == 0, result.stderr
     assert receipt is not None
@@ -881,7 +987,7 @@ def test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exceptio
         project,
         plugin_dir,
         tmp_path / "declared-failure.json",
-        pytest_args=("--cov=tests",),
+        pytest_args=("-p", "pytest_cov.plugin", "--cov=tests"),
         env_overrides={"FAIL_CALL": "1"},
     )
     assert failure_result.returncode == 1

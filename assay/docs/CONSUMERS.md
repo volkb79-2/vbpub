@@ -134,6 +134,10 @@ ownership, plugin identity, function and wrapper flags match. The declared
 fallback may also use the exact reviewed pytest-cov 7.1.0 hooks. These versions
 and module digests are the current reviewed implementations; another version
 or changed source cannot establish a cold kill or survivor.
+Pytest's built-in HookImpl callables are captured before initial conftests
+load; built-ins created later are accepted only when their class and source
+callable match that early snapshot. A callable replacement is unsupported even
+if it preserves the prior hook fingerprint.
 
 There is one compatibility exception for
 `tests/conftest.py::pytest_sessionfinish`: Assay accepts that hook only when
@@ -181,6 +185,12 @@ path. The independent verifier checks the receipt fields, and B105's report
 checker additionally binds the transform, committed lane/config and manifest
 to the exact source revision. See the
 [cold-witness design](DESIGN-GUIDE.md#cold-witness-r2-b114).
+For B105, the wheel uses the captured commit timestamp as
+`SOURCE_DATE_EPOCH`. Before retry work begins, its driver compares the
+persisted wheel digest and refuses a mismatch before installing the run
+closure, planning, preflight or R2. After campaign initialization or reuse, it
+checks the persisted digest again. The report checker validates D1-D4 before
+parsing the R2 plan, then checks the selected ordered-plan digest.
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing

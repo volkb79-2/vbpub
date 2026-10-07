@@ -717,6 +717,13 @@ pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
 and must match that baseline. The ordinary full-suite behavior remains the
 default when the option is absent.
 
+Pytest's built-in HookImpl callables are captured before its initial conftests
+load. Built-ins created later during startup are accepted only when their
+plugin class and source callable match objects captured at that early point.
+Assay checks the live HookImpl against that exact registration before
+collection, so replacing a callable while keeping its module, path, qualname
+and fingerprint text unchanged makes the attempt unsupported.
+
 The root `tests/conftest.py::pytest_sessionfinish` hook has one compatibility
 exception because Assay's B105 archive hook is inert when
 `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
@@ -736,6 +743,12 @@ and ordered R2 plan. Resume and retry spend the same absolute budget, so a
 restarted process cannot silently receive a fresh campaign allowance. The
 ordinary release lane stays R0-only;
 B105's full qualification is still gated on the later bounded-pilot decision.
+For B105, the selected commit timestamp normalizes wheel archive mtimes through
+`SOURCE_DATE_EPOCH`. A retry checks an existing deadline's wheel digest before
+installing the run closure or starting lane work, then checks the persisted
+deadline again after campaign initialization. In report checking, D1-D4 run
+before R2 plan parsing; only after those bindings pass does the checker parse
+the plan and compare its ordered digest.
 
 #### Liveness process-group cleanup
 

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -219,6 +220,7 @@ _R2_TRANSFORM = "assay-r2-pytest-nocov/1"
 _R2_APPENDED = ["-p", "no:pytest_cov"]
 _MANIFEST_MAX_BYTES = 16 * 1024 * 1024
 _MANIFEST_MAX_NODE_ID_BYTES = 4096
+_DEADLINE_MAX_BYTES = 64 * 1024
 
 
 def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -228,6 +230,59 @@ def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]
             raise ValueError(f"duplicate JSON key {key!r}")
         result[key] = value
     return result
+
+
+def verify_deadline_wheel_sha256(deadline_path: Path, *, expected_sha256: str) -> None:
+    """Refuse a B105 retry whose persisted campaign names another wheel.
+
+    This small pre-run check is also used before the run environment is
+    installed, so it stays stdlib-only and reads the bounded regular file
+    without following a symlink.
+    """
+    if not isinstance(expected_sha256, str) or _CANDIDATE_ID.fullmatch(expected_sha256) is None:
+        raise ValueError("expected wheel SHA-256 must be 64 lowercase hexadecimal characters")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(deadline_path, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot read campaign deadline {deadline_path}: {exc}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"campaign deadline {deadline_path} is not a regular file")
+        if info.st_size > _DEADLINE_MAX_BYTES:
+            raise ValueError(f"campaign deadline {deadline_path} exceeds {_DEADLINE_MAX_BYTES} bytes")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(8192, _DEADLINE_MAX_BYTES + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _DEADLINE_MAX_BYTES:
+                raise ValueError(f"campaign deadline {deadline_path} exceeds {_DEADLINE_MAX_BYTES} bytes")
+            chunks.append(chunk)
+        deadline_bytes = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    try:
+        deadline = json.loads(
+            deadline_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_pairs
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"campaign deadline {deadline_path} is not valid unique-key JSON: {exc}") from exc
+    if not isinstance(deadline, dict) or "wheel_sha256" not in deadline:
+        raise ValueError(f"campaign deadline {deadline_path} has no wheel_sha256")
+    actual_sha256 = deadline["wheel_sha256"]
+    if not isinstance(actual_sha256, str) or _CANDIDATE_ID.fullmatch(actual_sha256) is None:
+        raise ValueError(f"campaign deadline {deadline_path} has an invalid wheel_sha256")
+    if actual_sha256 != expected_sha256:
+        raise ValueError("deadline wheel_sha256 does not match the deterministic source wheel")
 
 
 def _read_committed_file(repo_root: Path, commit: str, relative_path: str) -> bytes:
@@ -385,7 +440,6 @@ def _check_deadline_binding(
     expected_lane: str,
     expected_version: str,
     expected_wheel_sha256: str,
-    expected_plan_sha256: str | None,
 ) -> tuple[tuple[str, ...], dict[str, str | None]]:
     campaign = document.get("campaign")
     if not isinstance(campaign, dict) or set(campaign) != _CAMPAIGN_BINDING_KEYS:
@@ -431,14 +485,6 @@ def _check_deadline_binding(
         raise ValueError("deadline file does not bind this commit/tree/lane/version")
     if deadline.get("wheel_sha256") != expected_wheel_sha256:
         raise ValueError("deadline wheel_sha256 does not match the expected wheel")
-    if deadline["plan_sha256"].get(expected_lane) != expected_plan_sha256:
-        if expected_plan_sha256 is None:
-            raise ValueError(
-                f"deadline plan_sha256 for lane {expected_lane!r} must be null"
-            )
-        raise ValueError(
-            f"deadline plan_sha256 for lane {expected_lane!r} does not match the ordered plan"
-        )
     r2_lanes: list[str] = []
     for lane_name in lanes:
         lane_config, _ = _committed_lane(repo_root, expected_commit, lane_name)
@@ -450,8 +496,13 @@ def _check_deadline_binding(
             raise ValueError(f"committed lane {lane_name!r} has no valid rigor list")
         lane_plan_sha256 = deadline["plan_sha256"][lane_name]
         if "R2" not in lane_rigor and lane_plan_sha256 is not None:
+            reason = (
+                f"deadline plan_sha256 for lane {lane_name!r} must be null"
+                if lane_name == expected_lane
+                else f"deadline plan_sha256 for non-R2 lane {lane_name!r} must be null"
+            )
             raise ValueError(
-                f"deadline plan_sha256 for non-R2 lane {lane_name!r} must be null"
+                reason
             )
         if "R2" in lane_rigor:
             r2_lanes.append(lane_name)
@@ -715,7 +766,7 @@ def verify_report_document(
     expected_version: str,
     expected_wheel_sha256: str,
     producer_exit: int,
-    plan: dict | None = None,
+    plan: dict | Path | ValueError | None = None,
     r2_manifest: Path | None = None,
     deadline: Path,
 ) -> None:
@@ -806,16 +857,6 @@ def verify_report_document(
                 f"judge_provenance.{field} {provenance.get(field)!r} "
                 f"!= {expected!r}"
             )
-    expected_plan_sha256 = None
-    if "R2" in expected_rigor:
-        if plan is None:
-            raise ValueError("R2 is expected but no plan was given (--plan-json)")
-        deadline_plan = _plan_structure(
-            plan, expected_commit=expected_commit, expected_tree=expected_tree
-        )
-        expected_plan_sha256 = _ordered_plan_sha256(
-            [row["id"] for row in deadline_plan["candidates"]]
-        )
     deadline_r2_lanes, deadline_plan_sha256 = _check_deadline_binding(
         document,
         repo_root=repo_root,
@@ -825,9 +866,28 @@ def verify_report_document(
         expected_lane=expected_lane,
         expected_version=expected_version,
         expected_wheel_sha256=expected_wheel_sha256,
-        expected_plan_sha256=expected_plan_sha256,
     )
 
+    if "R2" in expected_rigor:
+        if plan is None:
+            raise ValueError("R2 is expected but no plan was given (--plan-json)")
+        if isinstance(plan, Path):
+            plan_path = plan
+            try:
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"cannot read plan {plan_path}: {exc}") from exc
+        deadline_plan = _plan_structure(
+            plan, expected_commit=expected_commit, expected_tree=expected_tree
+        )
+        expected_plan_sha256 = _ordered_plan_sha256(
+            [row["id"] for row in deadline_plan["candidates"]]
+        )
+        if deadline_plan_sha256.get(expected_lane) != expected_plan_sha256:
+            raise ValueError(
+                f"deadline plan_sha256 for lane {expected_lane!r} "
+                "does not match the ordered plan"
+            )
     if "R2" in expected_rigor:
         assert plan is not None
         check_campaign_scope(
@@ -918,7 +978,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-json", type=Path)
     parser.add_argument("--r2-manifest", type=Path)
     parser.add_argument("--deadline", type=Path)
+    parser.add_argument("--deadline-wheel-check-only", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.deadline_wheel_check_only:
+        if args.receipt_only:
+            parser.error("--deadline-wheel-check-only cannot be combined with --receipt-only")
+        extra = [
+            f"--{name.replace('_', '-')}"
+            for name in (
+                *_FULL_FLAGS,
+                "tester_unified_receipt",
+                "plan_json",
+                "r2_manifest",
+            )
+            if name not in ("expected_wheel_sha256", "deadline")
+            and getattr(args, name) is not None
+        ]
+        if extra:
+            parser.error(
+                "--deadline-wheel-check-only takes only --deadline and "
+                f"--expected-wheel-sha256: {', '.join(extra)}"
+            )
+        missing = [
+            flag
+            for flag, value in (
+                ("--deadline", args.deadline),
+                ("--expected-wheel-sha256", args.expected_wheel_sha256),
+            )
+            if value is None
+        ]
+        if missing:
+            parser.error(f"--deadline-wheel-check-only requires {', '.join(missing)}")
+        try:
+            verify_deadline_wheel_sha256(
+                args.deadline,
+                expected_sha256=args.expected_wheel_sha256,
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+            print(f"B105_DEADLINE_WHEEL_REJECTED={exc}", file=sys.stderr)
+            return 2
+        print(f"B105_DEADLINE_WHEEL_SHA256={args.expected_wheel_sha256}")
+        return 0
 
     if args.receipt_only:
         extra = [f"--{name.replace('_', '-')}" for name in (*_FULL_FLAGS, "plan_json", "r2_manifest") if name not in ("expected_commit", "expected_tree") and getattr(args, name) is not None]
@@ -968,12 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
         rigor = tuple(args.expected_rigor.split(","))
         if not rigor or any(not item for item in rigor):
             raise ValueError("expected rigor must be a non-empty comma-separated list")
-        plan: Any = None
-        if args.plan_json is not None:
-            try:
-                plan = json.loads(args.plan_json.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                plan = ValueError(f"cannot read plan {args.plan_json}: {exc}")
+        plan = args.plan_json
         verify_report_document(
             document,
             repo_root=args.repo_root,
