@@ -26,8 +26,11 @@ wrapper flags. The declared pytest-cov fallback accepts only pytest-cov 7.1.0
 with its reviewed module source digest and exact hook identities. The runtime
 fingerprint also binds installed versions. The declared receipt sets
 `unsupported_pytest_cov_only=true` only when these exact reviewed pytest-cov
-hooks are the sole unsupported hooks. Its candidate hook/runtime fingerprint
-must still match the coverage baseline. This closes C22's previously
+hooks are the sole unsupported hooks. A declared candidate's hook/runtime
+fingerprint must match the coverage baseline; a cold candidate's must match the
+no-coverage R2 baseline. The baseline variants intentionally have different
+hook fingerprints because pytest-cov is present only in the declared command.
+This closes C22's previously
 undervetted-baseline residual; unknown hooks and report wrappers cannot prove
 a kill or survivor. The receipt has 27 keys (the existing 10 plus 17 new
 fields); `replay_supported` and `unsupported_pytest_cov_only` are internal and
@@ -236,7 +239,8 @@ def survivor_proof_ok(receipt, *, process_exit_status: int, expected: ReceiptFac
     #   AND, command == "declared": unsupported is false OR the receipt's
     #       unsupported_pytest_cov_only is true. That fact is true only when
     #       exact reviewed pytest-cov hooks are the sole unsupported hooks.
-    # The hook/runtime fingerprint still must equal the coverage baseline.
+    # Hook/runtime facts match the command's own baseline: `r2` uses the
+    # no-coverage R2 baseline; `declared` uses the coverage baseline.
 
 def cold_witness_from_receipt(receipt, *, process_exit_status: int,
         expected: ReceiptFacts) -> tuple[dict[str, Any], int, int] | None
@@ -350,7 +354,8 @@ When it is used, set `_ARCHIVE_EXCEPTION_USED = True`. `test_custom_sessionfinis
 relevant hook is built-in, one of the version-and-source-pinned Hypothesis 6.156.6
 hooks, the pinned B105 archive exception, or one of the version-and-source-pinned
 pytest-cov 7.1.0 hooks; at least one exact pytest-cov hook must be present.
-Candidate hook/runtime fingerprints still have to match the coverage baseline.
+The declared candidate's hook/runtime fingerprints still have to match the
+coverage baseline; a cold candidate matches the no-coverage R2 baseline.
 An extra hook, changed package source, or any other `pytest_runtest_makereport`
 wrapper makes the fact false. A pluggy hook-call monitor detects registry changes
 after collection and before or after each relevant hook call, including a hook

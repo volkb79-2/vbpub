@@ -564,7 +564,7 @@ def test_archive_sessionfinish_status_change_cannot_prove_a_survivor(tmp_path, m
 
 
 def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
-    from types import SimpleNamespace
+    from types import FunctionType, MethodType, SimpleNamespace
 
     import _hypothesis_pytestplugin
     from pytest_cov.plugin import CovPlugin
@@ -586,6 +586,27 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
             "_cov",
             {"wrapper": True},
         ),
+        (
+            "pytest-cov",
+            "pytest_runtest_call",
+            CovPlugin.pytest_runtest_call,
+            "_cov",
+            {"hookwrapper": True},
+        ),
+        (
+            "hypothesis",
+            "pytest_runtest_makereport",
+            _hypothesis_pytestplugin.pytest_runtest_makereport,
+            "hypothesispytest",
+            {"hookwrapper": True},
+        ),
+        (
+            "hypothesis",
+            "pytest_collection_modifyitems",
+            _hypothesis_pytestplugin.pytest_collection_modifyitems,
+            "hypothesispytest",
+            {},
+        ),
     )
     for distribution, hook_name, function, plugin_name, flags in cases:
         impl = SimpleNamespace(
@@ -598,6 +619,46 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
         )
         assert namespace["_reviewed_external_hook"](impl, hook_name, distribution)
 
+        if distribution == "pytest-cov":
+            bound_impl = SimpleNamespace(
+                function=MethodType(function, object()),
+                plugin_name=plugin_name,
+                hookwrapper=flags.get("hookwrapper", False),
+                wrapper=flags.get("wrapper", False),
+                tryfirst=False,
+                trylast=False,
+            )
+            assert namespace["_reviewed_external_hook"](
+                bound_impl, hook_name, distribution
+            )
+
+        def substituted(*_args, **_kwargs):
+            return None
+
+        fake = FunctionType(
+            substituted.__code__.replace(
+                co_filename=function.__code__.co_filename
+            ),
+            function.__globals__,
+            function.__name__,
+        )
+        fake.__module__ = function.__module__
+        fake.__qualname__ = function.__qualname__
+        fake_impl = SimpleNamespace(
+            function=fake,
+            plugin_name=plugin_name,
+            hookwrapper=flags.get("hookwrapper", False),
+            wrapper=flags.get("wrapper", False),
+            tryfirst=False,
+            trylast=False,
+        )
+        assert fake.__module__ == function.__module__
+        assert fake.__qualname__ == function.__qualname__
+        assert fake.__code__.co_filename == function.__code__.co_filename
+        assert not namespace["_reviewed_external_hook"](
+            fake_impl, hook_name, distribution
+        )
+
         version, source_sha256 = namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution]
         namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
             version,
@@ -605,10 +666,127 @@ def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
         )
         assert not namespace["_reviewed_external_hook"](impl, hook_name, distribution)
         namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
+            version,
+            source_sha256,
+        )
+        namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
             version + ".unreviewed",
             source_sha256,
         )
         assert not namespace["_reviewed_external_hook"](impl, hook_name, distribution)
+        namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
+            version,
+            source_sha256,
+        )
+
+
+@pytest.mark.parametrize(
+    ("fail_call", "forged_outcome", "cold", "exit_status"),
+    [
+        (False, "failed", True, 1),
+        (True, "passed", False, 0),
+    ],
+)
+def test_temporary_report_constructor_patch_cannot_forge_a_cold_result(
+    tmp_path, fail_call, forged_outcome, cold, exit_status
+):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_constructor.py").write_text(
+        "import os\n"
+        "import pytest\n"
+        "from _pytest.reports import TestReport\n\n"
+        "def test_behavior(monkeypatch):\n"
+        "    if not os.environ.get('INSTALL_FORGER'):\n"
+        "        assert True\n"
+        "        return\n"
+        "    original = TestReport.from_item_and_call\n"
+        "    def forged(cls, item, call):\n"
+        "        report = original(item, call)\n"
+        "        if report.when == 'call':\n"
+        f"            report.outcome = {forged_outcome!r}\n"
+        "            if report.outcome == 'failed':\n"
+        "                report.longrepr = 'forged call failure'\n"
+        "        return report\n"
+        "    monkeypatch.setattr(TestReport, 'from_item_and_call', classmethod(forged))\n"
+        "    if os.environ.get('FAIL_CALL'):\n"
+        "        assert False\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    baseline_result, baseline = _run_child_pytest(
+        project, plugin_dir, tmp_path / "baseline.json"
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported"] is False
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "forged.json",
+        env_overrides={
+            "INSTALL_FORGER": "1",
+            **({"FAIL_CALL": "1"} if fail_call else {}),
+        },
+        cold=cold,
+    )
+
+    assert result.returncode == exit_status
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    assert receipt["hook_fingerprint_sha256"] == baseline["hook_fingerprint_sha256"]
+    if cold:
+        assert cold_witness_from_receipt(
+            receipt, process_exit_status=result.returncode, expected=expected
+        ) is None
+    else:
+        assert not survivor_proof_ok(
+            receipt,
+            process_exit_status=result.returncode,
+            expected=expected,
+            command="declared",
+        )
+
+
+@pytest.mark.parametrize(("strict", "exit_status"), [(False, 0), (True, 1)])
+def test_builtin_xfail_rewrites_remain_supported_for_cold_proof(
+    tmp_path, strict, exit_status
+):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_xfail.py").write_text(
+        "import pytest\n\n"
+        f"@pytest.mark.xfail(reason='expected', strict={strict!r})\n"
+        "def test_expected_failure():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    result, receipt = _run_child_pytest(
+        project, tmp_path / "plugins", tmp_path / "receipt.json", cold=True
+    )
+
+    assert result.returncode == exit_status, result.stderr
+    assert receipt is not None
+    assert receipt["unsupported"] is False
+    facts = receipt_facts(receipt)
+    assert facts is not None
+    if strict:
+        assert cold_witness_from_receipt(
+            receipt, process_exit_status=result.returncode, expected=facts
+        ) is not None
+    else:
+        assert survivor_proof_ok(
+            receipt,
+            process_exit_status=result.returncode,
+            expected=facts,
+            command="r2",
+        )
 
 
 def test_declared_failure_proof_only_allows_reviewed_pytest_cov_unsupported_hooks():

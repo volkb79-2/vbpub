@@ -1125,9 +1125,18 @@ you're changing assay itself:
   unrun and could independently fail, hang, or crash. A proven passing cold
   attempt completes the full transformed no-coverage command. An uncertain cold
   attempt gets one full declared-command attempt. Only a proven result from
-  that attempt supplies the candidate outcome. Hook trust is pinned to
-  Hypothesis 6.156.6 and, for the declared fallback, pytest-cov 7.1.0 by
-  version and source digest. A compatibility exception accepts the root
+  that attempt supplies the candidate outcome. The coverage and no-coverage
+  baselines must collect the same ordered node IDs. That collection equality
+  crosses command variants; hook and runtime proofs are command-local. A cold
+  candidate matches the no-coverage R2 baseline, and a declared fallback
+  matches the coverage baseline. The two baseline hook fingerprints
+  intentionally differ because pytest-cov is loaded only by the declared
+  command. Each baseline must finish its complete suite with both the pytest
+  session and process exit status equal to zero; a hook cannot mask a baseline
+  failure. Hook trust is pinned to
+  Hypothesis 6.156.6 and, for the declared
+  fallback, pytest-cov 7.1.0 by version, source digest, exact callable identity,
+  and hook flags. A compatibility exception accepts the root
   `tests/conftest.py::pytest_sessionfinish` hook only when
   `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
   `ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent; that

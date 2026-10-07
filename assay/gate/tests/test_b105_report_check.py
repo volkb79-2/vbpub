@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import functools
 import importlib.util
 import json
 import os
-import subprocess
 import shutil
+import subprocess
 import sys
 import tomllib
 from copy import deepcopy
@@ -211,12 +212,51 @@ def _ordered_plan_sha256(candidate_ids: list[str]) -> str:
     return digest.hexdigest()
 
 
+@functools.lru_cache(maxsize=8)
+def _committed_self_qualification_plan_sha256(
+    repo_root_text: str, commit: str, tree: str
+) -> str:
+    repo_root = Path(repo_root_text)
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "assay.cli",
+            "plan",
+            "self-qualification",
+            "--file",
+            str(repo_root / "assay" / "assay.toml"),
+            "--allow-dirty",
+        ],
+        cwd=repo_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    plan = json.loads(result.stdout)
+    assert plan["commit"] == commit
+    actual_tree = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", f"{commit}^{{tree}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert plan["tree"] == actual_tree
+    assert plan["status"] == "ok"
+    return _ordered_plan_sha256([row["id"] for row in plan["candidates"]])
+
+
 def _deadline_bytes(
     document: dict,
     commit: str,
     tree: str,
     *,
     plan_ids: list[str] | None = None,
+    repo_root: Path = REPO_ROOT,
     wheel_sha256: str = WHEEL_SHA256,
 ) -> bytes:
     binding = document.get("campaign") or {}
@@ -228,7 +268,12 @@ def _deadline_bytes(
         )
         r2_mutation = r2_claim.get("mutation") if isinstance(r2_claim, dict) else None
         report_ids = r2_mutation.get("candidate_ids") if isinstance(r2_mutation, dict) else None
-        plan_digest = _ordered_plan_sha256(report_ids) if isinstance(report_ids, list) else None
+        if isinstance(report_ids, list):
+            plan_digest = _ordered_plan_sha256(report_ids)
+        else:
+            plan_digest = _committed_self_qualification_plan_sha256(
+                str(repo_root.resolve()), commit, tree
+            )
     else:
         plan_digest = _ordered_plan_sha256(plan_ids)
     deadline = {
@@ -309,7 +354,8 @@ def _run_checker(
     report_path = tmp_path / "verdict.json"
     report_path.write_text(json.dumps(document), encoding="utf-8")
     commit = _git_value("-C", str(repo_root), "rev-parse", "HEAD")
-    tree = expected_tree or _git_value("-C", str(repo_root), "rev-parse", "HEAD^{tree}")
+    tree = _git_value("-C", str(repo_root), "rev-parse", "HEAD^{tree}")
+    checked_tree = expected_tree or tree
     if receipt is _AUTO_RECEIPT:
         receipt = _receipt(commit, tree) if lane == "self-qualification" else None
     receipt_flags: list[str] = []
@@ -341,7 +387,9 @@ def _run_checker(
         raise TypeError("manifest must be bytes, Path or None")
     deadline_path = tmp_path / "campaign-deadline.json"
     deadline_path.write_bytes(
-        deadline_raw if deadline_raw is not None else _deadline_bytes(document, commit, tree)
+        deadline_raw
+        if deadline_raw is not None
+        else _deadline_bytes(document, commit, tree, repo_root=repo_root)
     )
     return subprocess.run(
         [
@@ -354,7 +402,7 @@ def _run_checker(
             "--expected-commit",
             commit,
             "--expected-tree",
-            tree,
+            checked_tree,
             "--deadline",
             str(deadline_path),
             *receipt_flags,
@@ -530,10 +578,55 @@ def _hermetic_repo(
     repo = tmp_path / "hermetic"
     files = {
         "assay/assay.toml": (
+            "schema_version = 2\n\n"
             "[lanes.self-qualification]\n"
-            "rigor = [\"R0\", \"R1\", \"R2\", \"R3\"]\n\n"
+            "scope = \"S1\"\n"
+            "rigor = [\"R0\", \"R1\", \"R2\"]\n"
+            "enforcement = \"gate\"\n"
+            "argv = [\"python\", \"-m\", \"pytest\", \"tests\", \"-q\"]\n"
+            "env = {}\n"
+            "env_passthrough = [\"PATH\"]\n"
+            "budget = \"2m\"\n"
+            "allow_argv_append = false\n\n"
+            "[lanes.self-qualification.isolation]\n"
+            "snapshot_selection = \"repository\"\n\n"
+            "[lanes.self-qualification.judge]\n"
+            "language = \"python\"\n"
+            "source_roots = [\"src/assay\"]\n"
+            "mode = \"whole_target\"\n"
+            "targets = [\"src/assay/mod.py\"]\n"
+            "fail_under = 0.0\n"
+            "allow_excluded = true\n"
+            "require_branch = false\n\n"
+            "[lanes.self-qualification.judge.coverage]\n"
+            "format = \"coverage-py-json\"\n"
+            "artifact = \".assay/self-qualification.json\"\n\n"
+            "[lanes.self-qualification.judge.mutation]\n"
+            "jobs = 1\n"
+            "max_mutants = 20\n"
+            "operators = [\"python:compare-swap\"]\n\n"
             "[lanes.self-qualification-preflight]\n"
+            "scope = \"S1\"\n"
             "rigor = [\"R0\", \"R1\"]\n"
+            "enforcement = \"gate\"\n"
+            "argv = [\"python\", \"-m\", \"pytest\", \"tests\", \"-q\"]\n"
+            "env = {}\n"
+            "env_passthrough = [\"PATH\"]\n"
+            "budget = \"2m\"\n"
+            "allow_argv_append = false\n\n"
+            "[lanes.self-qualification-preflight.isolation]\n"
+            "snapshot_selection = \"repository\"\n\n"
+            "[lanes.self-qualification-preflight.judge]\n"
+            "language = \"python\"\n"
+            "source_roots = [\"src/assay\"]\n"
+            "mode = \"whole_target\"\n"
+            "targets = [\"src/assay/mod.py\"]\n"
+            "fail_under = 0.0\n"
+            "allow_excluded = true\n"
+            "require_branch = false\n\n"
+            "[lanes.self-qualification-preflight.judge.coverage]\n"
+            "format = \"coverage-py-json\"\n"
+            "artifact = \".assay/preflight.json\"\n"
         ),
         "assay/src/assay/__init__.py": "",
         "assay/src/assay/mod.py": "",
@@ -545,6 +638,9 @@ def _hermetic_repo(
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text(text, encoding="utf-8")
     (repo / "assay" / "tools").mkdir(parents=True, exist_ok=True)
+    (repo / "assay" / "src" / "assay" / "mod.py").write_text(
+        "", encoding="utf-8"
+    )
     shutil.copy(CHECKER, repo / "assay" / "tools" / CHECKER.name)
     for args in (
         ("init", "-q"),
@@ -569,9 +665,10 @@ def _run_hermetic(tmp_path: Path, repo: Path) -> subprocess.CompletedProcess[str
         capture_output=True,
         text=True,
     ).stdout.strip()
-    document["campaign"]["deadline_sha256"] = hashlib.sha256(
-        _deadline_bytes(document, document["commit"], tree)
-    ).hexdigest()
+    deadline_raw = _deadline_bytes(
+        document, document["commit"], tree, repo_root=repo
+    )
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(deadline_raw).hexdigest()
     document["judgment"]["r1"]["targets"] = ["src/assay/__init__.py", "src/assay/mod.py"]
     return _run_checker(
         tmp_path,
@@ -580,6 +677,7 @@ def _run_hermetic(tmp_path: Path, repo: Path) -> subprocess.CompletedProcess[str
         rigor=PREFLIGHT_RIGOR,
         checker=repo / "assay" / "tools" / CHECKER.name,
         repo_root=repo,
+        deadline_raw=deadline_raw,
     )
 
 
@@ -941,6 +1039,102 @@ def test_deadline_plan_digest_binds_the_ordered_plan_and_report_inventory(tmp_pa
     )
     assert result.returncode == 2
     assert "R2 candidate_ids differ from the plan" in result.stderr
+
+
+def test_other_r2_deadline_digest_is_recomputed_after_existing_report_checks(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "b105_report_check_multi_r2_test", CHECKER
+    )
+    assert spec is not None and spec.loader is not None
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    other_lane = "zzz-other-r2"
+    planned_current_ids = [row["id"] for row in plan["candidates"]]
+    deadline = json.loads(
+        _deadline_bytes(document, commit, tree, plan_ids=planned_current_ids)
+    )
+    deadline["lanes"].append(other_lane)
+    deadline["lanes"].sort()
+    deadline["plan_sha256"][other_lane] = "b" * 64
+    deadline_raw = json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(
+        deadline_raw
+    ).hexdigest()
+    deadline_path = tmp_path / "multi-r2-deadline.json"
+    deadline_path.write_bytes(deadline_raw)
+    manifest_path = tmp_path / "multi-r2-manifest.txt"
+    manifest_path.write_bytes(_manifest_bytes())
+
+    original_committed_lane = checker._committed_lane
+
+    def committed_lane(repo_root, expected_commit, lane):
+        if lane == other_lane:
+            return {"rigor": ["R0", "R1", "R2"]}, "assay/"
+        return original_committed_lane(repo_root, expected_commit, lane)
+
+    monkeypatch.setattr(checker, "_committed_lane", committed_lane)
+    observed = {"digest": "c" * 64}
+    recomputations = []
+
+    def recompute(_repo_root, *, expected_commit, expected_tree, lane):
+        recomputations.append(lane)
+        assert (expected_commit, expected_tree) == (commit, tree)
+        assert lane == other_lane
+        return observed["digest"]
+
+    monkeypatch.setattr(checker, "_committed_r2_plan_sha256", recompute)
+
+    arguments = {
+        "repo_root": REPO_ROOT,
+        "expected_commit": commit,
+        "expected_tree": tree,
+        "expected_lane": SELF_QUALIFICATION,
+        "expected_rigor": SELF_QUALIFICATION_RIGOR,
+        "expected_version": VERSION,
+        "expected_wheel_sha256": WHEEL_SHA256,
+        "producer_exit": 0,
+        "plan": plan,
+        "r2_manifest": manifest_path,
+        "deadline": deadline_path,
+    }
+    with pytest.raises(
+        ValueError,
+        match="deadline plan_sha256 for other R2 lane 'zzz-other-r2'",
+    ):
+        checker.verify_report_document(document, **arguments)
+    assert recomputations == [other_lane]
+
+    observed["digest"] = "b" * 64
+    recomputations.clear()
+    assert checker.verify_report_document(document, **arguments) is None
+    assert recomputations == [other_lane]
+
+    # The foreign-plan refusal comes only after the existing report-plan
+    # refusal, preserving the B105 checker’s established error ordering.
+    bad_plan = deepcopy(plan)
+    bad_plan["candidates"].reverse()
+    bad_ids = [row["id"] for row in bad_plan["candidates"]]
+    bad_deadline = json.loads(
+        _deadline_bytes(document, commit, tree, plan_ids=bad_ids)
+    )
+    bad_deadline["lanes"].append(other_lane)
+    bad_deadline["lanes"].sort()
+    bad_deadline["plan_sha256"][other_lane] = "d" * 64
+    bad_raw = json.dumps(bad_deadline, sort_keys=True, indent=2).encode("utf-8")
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(bad_raw).hexdigest()
+    deadline_path.write_bytes(bad_raw)
+    observed["digest"] = "c" * 64
+    recomputations.clear()
+    with pytest.raises(ValueError, match="R2 candidate_ids differ from the plan"):
+        checker.verify_report_document(
+            document, **{**arguments, "plan": bad_plan}
+        )
+    assert recomputations == []
 
 
 def test_deadline_recomputed_for_foreign_plan_candidate_still_refuses_report(tmp_path):

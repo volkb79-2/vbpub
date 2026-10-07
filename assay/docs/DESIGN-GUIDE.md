@@ -691,10 +691,15 @@ they are reported as unrun and may independently fail, hang, or crash.
 The shortcut is safe only when the run proves it is still judging the declared
 suite. Assay derives the no-coverage mutation command from the lane argv by
 removing only recognized coverage options and appending
-`-p no:pytest_cov`. It keeps test selection and order. A passing coverage
-baseline and a passing uninstrumented baseline must collect the same ordered
-node IDs, including duplicates and count, and their reviewed hook fingerprints
-must match. The lifecycle check accepts pytest's built-in hooks and the exact
+`-p no:pytest_cov`. It keeps test selection and order. The coverage and
+no-coverage baselines must collect the same ordered node IDs. That collection
+equality crosses command variants; hook and runtime proofs are command-local. A
+cold candidate matches the no-coverage R2 baseline, and a declared fallback
+matches the coverage baseline. The two baseline hook fingerprints intentionally
+differ because pytest-cov is loaded only by the declared command. Each baseline
+must finish its complete suite with both the pytest session and process exit
+status equal to zero; a hook cannot mask a baseline failure. The lifecycle
+check accepts pytest's built-in hooks and the exact
 reviewed Hypothesis 6.156.6 hooks only when their source digest, distribution
 ownership, plugin identity, function and wrapper flags match. The declared
 fallback also recognizes only pytest-cov 7.1.0 with its reviewed module source

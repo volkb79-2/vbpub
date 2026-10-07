@@ -711,6 +711,7 @@ _INTERNAL_RECEIPT_KEYS = frozenset(
 
 _PLUGIN_SOURCE = r'''"""Temporary standard-library/pytest plugin written by assay."""
 import hashlib
+import importlib
 import importlib.metadata as metadata
 import json
 import os
@@ -718,6 +719,7 @@ import platform
 import sys
 import sysconfig
 from pathlib import Path
+from _pytest.reports import TestReport as _TestReport
 
 _HOOKS = (
     "pytest_runtestloop", "pytest_runtest_protocol", "pytest_runtest_logstart",
@@ -754,6 +756,7 @@ _RUNTIME_FINGERPRINT_SHA256 = None
 _CONFIG_SHA256 = None
 _ARCHIVE_EXCEPTION_USED = False
 _HOOK_IMPL_REGISTRY = {}
+_EXPECTED_TEST_REPORT_CONSTRUCTOR = vars(_TestReport).get("from_item_and_call")
 
 
 def _bounded(value):
@@ -785,6 +788,22 @@ _REVIEWED_EXTERNAL_HOOKS = {
     ),
 }
 
+
+def _resolve_reviewed_external_callable(module_name, qualname):
+    try:
+        value = importlib.import_module(module_name)
+        for part in qualname.split("."):
+            value = getattr(value, part)
+        return getattr(value, "__func__", value)
+    except Exception:
+        return None
+
+
+_REVIEWED_EXTERNAL_CALLABLES = {
+    key: _resolve_reviewed_external_callable(expected[1], expected[2])
+    for key, expected in _REVIEWED_EXTERNAL_HOOKS.items()
+}
+
 _REVIEWED_EXTERNAL_DISTRIBUTIONS = {
     "hypothesis": (
         "6.156.6",
@@ -802,11 +821,15 @@ def _reviewed_external_hook(impl, hook_name, distribution_name):
     if expected is None:
         return False
     plugin_name, module_name, qualname, expected_flags = expected
-    function = impl.function
+    registered_function = impl.function
+    function = getattr(registered_function, "__func__", registered_function)
     if (
         getattr(impl, "plugin_name", None) != plugin_name
         or getattr(function, "__module__", None) != module_name
         or getattr(function, "__qualname__", None) != qualname
+        or function is not _REVIEWED_EXTERNAL_CALLABLES.get(
+            (distribution_name, hook_name)
+        )
     ):
         return False
     flags = tuple(sorted(
@@ -817,8 +840,12 @@ def _reviewed_external_hook(impl, hook_name, distribution_name):
         return False
     module = sys.modules.get(module_name)
     module_file = getattr(module, "__file__", None)
+    if not isinstance(module_file, str) or getattr(function, "__globals__", None) is not getattr(
+        module, "__dict__", None
+    ):
+        return False
     code_file = getattr(getattr(function, "__code__", None), "co_filename", None)
-    if not isinstance(module_file, str) or not isinstance(code_file, str):
+    if not isinstance(code_file, str):
         return False
     try:
         resolved_module_file = Path(module_file).resolve()
@@ -963,6 +990,36 @@ def _mark_hook_registry_changed():
     _UNSUPPORTED_PYTEST_COV_ONLY = False
 
 
+def _test_report_constructor_is_trusted():
+    try:
+        from _pytest.reports import TestReport
+
+        return (
+            _EXPECTED_TEST_REPORT_CONSTRUCTOR is not None
+            and vars(TestReport).get("from_item_and_call")
+            is _EXPECTED_TEST_REPORT_CONSTRUCTOR
+        )
+    except Exception:
+        return False
+
+
+def _is_builtin_strict_xpass(report, item):
+    if (
+        report.outcome != "failed"
+        or not isinstance(getattr(report, "longrepr", None), str)
+        or not report.longrepr.startswith("[XPASS(strict)]")
+    ):
+        return False
+    marker = item.get_closest_marker("xfail")
+    strict = marker.kwargs.get("strict") if marker is not None else None
+    if strict is None:
+        try:
+            strict = item.config.getini("xfail_strict")
+        except Exception:
+            return False
+    return strict is True
+
+
 def _check_hook_registry(hook_name):
     if hook_name not in _HOOKS or _SESSION is None:
         return
@@ -979,10 +1036,42 @@ def _check_hook_registry(hook_name):
 
 def _before_hook_call(hook_name, methods, kwargs):
     _check_hook_registry(hook_name)
+    if hook_name == "pytest_runtest_makereport" and not _test_report_constructor_is_trusted():
+        _mark_hook_registry_changed()
 
 
 def _after_hook_call(outcome, hook_name, methods, kwargs):
     _check_hook_registry(hook_name)
+    if hook_name != "pytest_runtest_makereport":
+        return
+    if not _test_report_constructor_is_trusted():
+        _mark_hook_registry_changed()
+    if getattr(outcome, "excinfo", None) is not None:
+        _mark_hook_registry_changed()
+        return
+    try:
+        report = outcome.get_result()
+        call = kwargs.get("call")
+        item = kwargs.get("item")
+        if call is None or item is None or report.when != call.when or report.nodeid != item.nodeid:
+            _mark_hook_registry_changed()
+            return
+        if report.when == "call":
+            if report.outcome == "passed" and call.excinfo is not None:
+                _mark_hook_registry_changed()
+            elif (
+                report.outcome == "failed"
+                and call.excinfo is None
+                and not getattr(report, "wasxfail", None)
+                and not _is_builtin_strict_xpass(report, item)
+            ):
+                _mark_hook_registry_changed()
+            elif report.outcome not in ("passed", "failed", "skipped"):
+                _mark_hook_registry_changed()
+    except BaseException:
+        # The monitor must not replace pytest's own hook outcome. Any report
+        # it cannot inspect is unsupported for cold/replay proof.
+        _mark_hook_registry_changed()
 
 
 def _hook_fingerprint(config):
@@ -1196,7 +1285,11 @@ def pytest_collection_finish(session):
         )
         required_hooks = [_only_builtin_hook_impls(config, name) for name in _HOOKS]
         _STANDARD_LOOP = bool(
-            standard_loop and standard_protocol and all(required_hooks) and not xdist_active
+            standard_loop
+            and standard_protocol
+            and all(required_hooks)
+            and _test_report_constructor_is_trusted()
+            and not xdist_active
         )
     except Exception:
         _STANDARD_LOOP = False

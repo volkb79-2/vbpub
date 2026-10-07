@@ -117,6 +117,7 @@ from .mutation_witness import (
     make_attempt_plan,
     read_internal_receipt,
     receipt_facts,
+    survivor_proof_ok,
     cold_shape_refusal,
     supports_sequential_pytest,
 )
@@ -4052,9 +4053,15 @@ def _run_prepared_lane(
         result = unit.result
         if cold_witness:
             assert coverage_receipt_path is not None
-            coverage_facts = receipt_facts(
-                read_internal_receipt(coverage_receipt_path)
-            )
+            coverage_receipt = read_internal_receipt(coverage_receipt_path)
+            coverage_facts = receipt_facts(coverage_receipt)
+            if coverage_facts is None or not survivor_proof_ok(
+                coverage_receipt,
+                process_exit_status=result.returncode,
+                expected=coverage_facts,
+                command="declared",
+            ):
+                coverage_facts = None
         r0_claim = build_r0_claim(result)
         # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
         # measurement A1's own `budget_per_candidate_derived_s` already
@@ -4829,6 +4836,12 @@ def _run_prepared_lane(
                             r2_facts is None
                             or r2_facts.duplicates != 0
                             or r2_facts.runtime_fingerprint_sha256 is None
+                            or not survivor_proof_ok(
+                                r2_receipt,
+                                process_exit_status=r2_result.returncode,
+                                expected=r2_facts,
+                                command="r2",
+                            )
                             or not isinstance(r2_receipt, Mapping)
                             or r2_receipt.get("unsupported") is not False
                             or r2_facts.collection_count != coverage_facts.collection_count

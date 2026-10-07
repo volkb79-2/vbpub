@@ -11201,7 +11201,11 @@ because a shard or pipeline can be described.
   to the submitted candidate inventory. Record a versioned transform plus the
   declared, transformed, and effective argv; the resolved snapshot cwd and
   pytest configuration identity; coverage-baseline and mutation-only-baseline
-  collection manifests; and a hook fingerprint for each baseline. Record one
+  collection manifests; and a hook fingerprint for each baseline. The two
+  variants must collect the same ordered node IDs, but hook and runtime proofs
+  are command-local: cold attempts match the no-coverage R2 baseline and a
+  declared fallback matches the coverage baseline. Their hook fingerprints
+  differ because pytest-cov is loaded only by the declared command. Record one
   candidate execution-evidence item for every candidate ID, with the command
   variant, runtime collection result/digest, and hook fingerprint. A
   `witness-cold` kill additionally records the ordered started-test prefix and
@@ -11219,9 +11223,10 @@ because a shard or pipeline can be described.
   ineligible unless separately proven safe. Do not change plugin hooks
   implicitly and call matching node IDs proof of runtime equivalence. The
   intentional pytest-cov removal must be represented in the versioned command
-  transform and hook allowlist; the no-cov baseline must pass, and candidate
-  hooks must match its reviewed fingerprint. Any candidate mismatch falls
-  back to the original declared command or remains incomplete.
+  transform and hook allowlist; the no-cov baseline must pass, and cold
+  candidate hooks must match its reviewed fingerprint. A declared fallback
+  must match the coverage baseline. Any candidate mismatch falls back to the
+  original declared command or remains incomplete.
 - Treat coverage-derived source/test slices as research, not as proof of a
   candidate outcome. A full-suite baseline does not prove an omitted-test
   subset has the same fixtures, globals, or ordering; a subset control still

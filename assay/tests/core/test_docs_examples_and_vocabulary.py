@@ -162,6 +162,53 @@ def test_consumers_migration_check_detects_a_missing_recent_cut():
         )
 
 
+_B114_VARIANT_PARITY_TEXT = (
+    "The coverage and no-coverage baselines must collect the same ordered node IDs.",
+    "That collection equality crosses command variants; hook and runtime proofs are command-local.",
+    "A cold candidate matches the no-coverage R2 baseline, and a declared fallback matches the coverage baseline.",
+    "The two baseline hook fingerprints intentionally differ because pytest-cov is loaded only by the declared command.",
+    "Each baseline must finish its complete suite with both the pytest session and process exit status equal to zero; a hook cannot mask a baseline failure.",
+)
+
+
+def _assert_b114_variant_parity_documents(documents: dict[str, str]) -> None:
+    stale_claims = (
+        "their reviewed hook fingerprints must match.",
+        "the candidate's runtime hook and collection fingerprints must match the proof.",
+        "candidate hook/runtime fingerprints still have to match the coverage baseline.",
+        "both baseline hook fingerprints must match.",
+    )
+    for name, text in documents.items():
+        normalized = re.sub(r"\s+", " ", text).casefold()
+        for statement in _B114_VARIANT_PARITY_TEXT:
+            assert statement.casefold() in normalized, (
+                f"{name} is missing B114 baseline parity rule: {statement}"
+            )
+        for stale_claim in stale_claims:
+            assert stale_claim.casefold() not in normalized, (
+                f"{name} retains a false cross-variant hook claim: {stale_claim}"
+            )
+
+
+def test_b114_adopter_documents_describe_command_local_hook_proofs():
+    documents = {
+        "README.md": README.read_text(encoding="utf-8"),
+        "CONSUMERS.md": CONSUMERS.read_text(encoding="utf-8"),
+        "DESIGN-GUIDE.md": DESIGN_GUIDE.read_text(encoding="utf-8"),
+    }
+    _assert_b114_variant_parity_documents(documents)
+
+
+def test_b114_document_parity_check_rejects_the_old_cross_variant_claim():
+    documents = {"README.md": " ".join(_B114_VARIANT_PARITY_TEXT)}
+    documents["README.md"] = documents["README.md"].replace(
+        _B114_VARIANT_PARITY_TEXT[1],
+        "Both baseline hook fingerprints must match.",
+    )
+    with pytest.raises(AssertionError, match="missing B114 baseline parity rule"):
+        _assert_b114_variant_parity_documents(documents)
+
+
 def test_assay_cli_skill_capabilities_match_the_current_registry():
     skill = ASSAY_CLI_SKILL.read_text(encoding="utf-8")
     items = _cli_skill_capability_items(skill)

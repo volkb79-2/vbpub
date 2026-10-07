@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -278,6 +279,102 @@ def _parse_utc(value: Any) -> datetime:
     return parsed
 
 
+def _committed_r2_plan_sha256(
+    repo_root: Path,
+    *,
+    expected_commit: str,
+    expected_tree: str,
+    lane: str,
+) -> str:
+    """Recompute another R2 lane's full ordered plan from the bound commit."""
+    prefix = _project_prefix(repo_root)
+    config_path = PROJECT_DIR / "assay.toml"
+    try:
+        committed_config = _read_committed_file(
+            repo_root, expected_commit, f"{prefix}assay.toml"
+        )
+        working_config = config_path.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            f"cannot recompute committed R2 plan for lane {lane!r}: {exc}"
+        ) from exc
+    if working_config != committed_config:
+        raise ValueError(
+            f"cannot recompute committed R2 plan for lane {lane!r}: "
+            "working assay.toml differs from the judged commit"
+        )
+
+    head = subprocess.run(
+        _git_argv("-C", str(repo_root), "rev-parse", "HEAD"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if head.returncode != 0 or head.stdout.strip() != expected_commit:
+        raise ValueError(
+            f"cannot recompute committed R2 plan for lane {lane!r}: "
+            "checkout HEAD differs from the judged commit"
+        )
+    plan_environment = os.environ.copy()
+    plan_environment.pop("PYTHONPATH", None)
+    # `assay plan --allow-dirty` still derives candidates from the committed
+    # snapshot. It records unrelated worktree changes and refuses a changed
+    # loaded lane file; the byte comparison above also binds that file to the
+    # judged commit. This keeps the digest independent of untracked files that
+    # are outside the lane's committed source roots.
+    planned = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "assay.cli",
+            "plan",
+            lane,
+            "--file",
+            str(config_path),
+            "--allow-dirty",
+        ],
+        cwd=repo_root,
+        env=plan_environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if planned.returncode != 0:
+        detail = planned.stderr.strip() or planned.stdout.strip()
+        raise ValueError(
+            f"cannot recompute committed R2 plan for lane {lane!r}: {detail}"
+        )
+    try:
+        plan = json.loads(
+            planned.stdout,
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+        plan = _plan_structure(
+            plan,
+            expected_commit=expected_commit,
+            expected_tree=expected_tree,
+        )
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise ValueError(
+            f"cannot recompute committed R2 plan for lane {lane!r}: {exc}"
+        ) from exc
+    candidate_ids = [row["id"] for row in plan["candidates"]]
+    max_mutants = plan.get("max_mutants")
+    if (
+        plan.get("status") != "ok"
+        or plan.get("shard") is not None
+        or plan["candidate_count"] != len(candidate_ids)
+        or len(set(candidate_ids)) != len(candidate_ids)
+        or type(max_mutants) is not int
+        or max_mutants < len(candidate_ids)
+    ):
+        raise ValueError(
+            f"cannot recompute committed R2 plan for lane {lane!r}: "
+            "plan is not complete, unsharded, and within max_mutants"
+        )
+    return _ordered_plan_sha256(candidate_ids)
+
+
 def _check_deadline_binding(
     document: dict[str, Any],
     *,
@@ -289,7 +386,7 @@ def _check_deadline_binding(
     expected_version: str,
     expected_wheel_sha256: str,
     expected_plan_sha256: str | None,
-) -> None:
+) -> tuple[tuple[str, ...], dict[str, str | None]]:
     campaign = document.get("campaign")
     if not isinstance(campaign, dict) or set(campaign) != _CAMPAIGN_BINDING_KEYS:
         raise ValueError("B105 report carries no campaign binding")
@@ -342,6 +439,7 @@ def _check_deadline_binding(
         raise ValueError(
             f"deadline plan_sha256 for lane {expected_lane!r} does not match the ordered plan"
         )
+    r2_lanes: list[str] = []
     for lane_name in lanes:
         lane_config, _ = _committed_lane(repo_root, expected_commit, lane_name)
         lane_rigor = lane_config.get("rigor")
@@ -355,6 +453,8 @@ def _check_deadline_binding(
             raise ValueError(
                 f"deadline plan_sha256 for non-R2 lane {lane_name!r} must be null"
             )
+        if "R2" in lane_rigor:
+            r2_lanes.append(lane_name)
 
     try:
         created = _parse_utc(campaign["created_at_utc"])
@@ -366,6 +466,33 @@ def _check_deadline_binding(
         inside_window = False
     if not inside_window:
         raise ValueError("report was not produced inside its campaign window")
+    return tuple(r2_lanes), dict(deadline["plan_sha256"])
+
+
+def _check_other_r2_deadline_plan_sha256(
+    *,
+    repo_root: Path,
+    expected_commit: str,
+    expected_tree: str,
+    expected_lane: str,
+    r2_lanes: tuple[str, ...],
+    deadline_plan_sha256: dict[str, str | None],
+) -> None:
+    """Bind every non-report R2 lane after the report's prior refusals run."""
+    for lane_name in r2_lanes:
+        if lane_name == expected_lane:
+            continue
+        observed = _committed_r2_plan_sha256(
+            repo_root,
+            expected_commit=expected_commit,
+            expected_tree=expected_tree,
+            lane=lane_name,
+        )
+        if deadline_plan_sha256[lane_name] != observed:
+            raise ValueError(
+                f"deadline plan_sha256 for other R2 lane {lane_name!r} "
+                "does not match its committed ordered plan"
+            )
 
 
 def _independent_r2_transform(argv: list[str]) -> list[str]:
@@ -689,7 +816,7 @@ def verify_report_document(
         expected_plan_sha256 = _ordered_plan_sha256(
             [row["id"] for row in deadline_plan["candidates"]]
         )
-    _check_deadline_binding(
+    deadline_r2_lanes, deadline_plan_sha256 = _check_deadline_binding(
         document,
         repo_root=repo_root,
         deadline_path=deadline,
@@ -715,6 +842,14 @@ def verify_report_document(
             expected_lane=expected_lane,
             r2_manifest=r2_manifest,
         )
+    _check_other_r2_deadline_plan_sha256(
+        repo_root=repo_root,
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+        expected_lane=expected_lane,
+        r2_lanes=deadline_r2_lanes,
+        deadline_plan_sha256=deadline_plan_sha256,
+    )
 
 
 #: The lane whose receipt the full B105 qualification requires (S1, B123).

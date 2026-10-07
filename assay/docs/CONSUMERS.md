@@ -120,9 +120,15 @@ Cold-witness mode is an explicit opt-in for the supported native Python pytest
 command shape. `assay plan` checks whether a lane can use it. Assay derives the
 mutation command by removing only its recognized coverage options and adding
 `-p no:pytest_cov`; it preserves the declared test selection and order. The
-coverage baseline and no-coverage R2 baseline must collect the same ordered
-node IDs, and the candidate's runtime hook and collection fingerprints must
-match the proof. Cold proof accepts pytest's built-in hooks and the reviewed
+coverage and no-coverage baselines must collect the same ordered node IDs. That
+collection equality crosses command variants; hook and runtime proofs are
+command-local. A cold candidate matches the no-coverage R2 baseline, and a
+declared fallback matches the coverage baseline. The two baseline hook
+fingerprints intentionally differ because pytest-cov is loaded only by the
+declared command. Each baseline must finish its complete suite with both the
+pytest session and process exit status equal to zero; a hook cannot mask a
+baseline failure. Cold proof accepts
+pytest's built-in hooks and the reviewed
 Hypothesis 6.156.6 hooks only when their module source digest, distribution
 ownership, plugin identity, function and wrapper flags match. The declared
 fallback may also use the exact reviewed pytest-cov 7.1.0 hooks. These versions
