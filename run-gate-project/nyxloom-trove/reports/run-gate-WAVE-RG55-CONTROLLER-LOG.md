@@ -7576,3 +7576,20 @@ asserting the docs contract. This is a test-only correction; product behavior
 and documentation are unchanged. The corrected exact tree still needs a
 fresh selftest and the remaining short gates; this failure is not accepted as
 gate evidence. No merge or release was made.
+
+### RW-483 — 2026-10-07 12:37:16 UTC — Add behavioral oracles for B2 changed lines
+
+The corrected Run-Gate selftest on
+`37bcfe3d66913c046da0d89af78776edd99141e8` ran in
+`run-gate-vbpub-selftest-288669-1791376204` and exited 1 after pytest passed
+(1,713 passed, 2 skipped). The changed-line judge reported 47/66 executable
+lines and 26/36 branches, below the mandatory 100% floor. The uncovered paths
+are in Sol round-8's B2 state-root handling: doctor handling of unknown root
+status, parent/root inspection failures, the configured-host refusal remedy,
+dry-run refusal/unknown/ready/configured cases, and mount planning when root
+status cannot be determined.
+
+Resolution: add tests for those actual behavioral states; do not weaken the
+floor or add coverage exclusions. No product code is changing in this repair.
+The exact-tree selftest must be rerun after these oracles are committed before
+any other gate or merge. No merge or release was made.

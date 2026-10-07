@@ -3310,6 +3310,24 @@ def test_configured_host_state_root_is_not_replaced_or_created(
     assert not configured_root.exists()
 
 
+def test_configured_host_state_root_refusal_names_configured_path(
+        tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, SIMPLE_LANE)
+    configured_root = tmp_path / "operator-state"
+    monkeypatch.setattr(run_gate, "probe_assay_state_root",
+                        lambda *_args, **_kwargs: (False, None))
+    with pytest.raises(run_gate.GateNotRunError) as exc:
+        run_gate.assure_assay_state_root(
+            None, {"kind": "assay", "assay_lane": "r1"},
+            {"mode": "host", "state_root": str(configured_root)},
+            "host", "configured host", repo, project, repo, "")
+    assert "ensure configured state root" in str(exc.value)
+    assert str(configured_root) in str(exc.value)
+    assert not (repo / ".run-gate").exists()
+    assert not configured_root.exists()
+
+
 def test_default_assay_state_root_refuses_symlink(tmp_path):
     repo = make_repo(tmp_path)
     project = make_project(repo, SIMPLE_LANE)
@@ -3330,7 +3348,7 @@ def test_default_assay_state_root_creation_error_is_named(tmp_path):
 
 
 def test_default_assay_state_root_preflight_distinguishes_missing_and_symlink(
-        tmp_path):
+        tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     root = repo / ".run-gate"
@@ -3340,11 +3358,35 @@ def test_default_assay_state_root_preflight_distinguishes_missing_and_symlink(
     root.symlink_to(outside, target_is_directory=True)
     status, reason = run_gate.default_assay_state_root_status(root)
     assert status == "invalid" and "not a real directory" in reason
+    root.unlink()
     blocked_parent = tmp_path / "not-a-directory"
     blocked_parent.write_text("file")
     status, reason = run_gate.default_assay_state_root_status(
         blocked_parent / ".run-gate")
     assert status == "invalid" and "parent" in reason
+
+    absent_under_unknown_parent = tmp_path / "unknown-parent" / ".run-gate"
+    monkeypatch.setattr(run_gate, "host_state_directory_status",
+                        lambda _path: ("unknown", "parent access denied"))
+    assert run_gate.default_assay_state_root_status(
+        absent_under_unknown_parent) == ("unknown", "parent access denied")
+    monkeypatch.setattr(run_gate, "host_state_directory_status",
+                        lambda _path: ("unavailable", None))
+    status, reason = run_gate.default_assay_state_root_status(
+        absent_under_unknown_parent)
+    assert status == "invalid" and "not a writable directory" in reason
+
+    original_lstat = Path.lstat
+
+    def inaccessible_root(path):
+        if path == absent_under_unknown_parent:
+            raise PermissionError("root access denied")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", inaccessible_root)
+    status, reason = run_gate.default_assay_state_root_status(
+        absent_under_unknown_parent)
+    assert status == "unknown" and "root access denied" in reason
 
 
 def test_source_backed_assay_inner_installs_selected_worktree_source():
@@ -7442,6 +7484,30 @@ class TestAssayToolchainFitness:
         else:
             assert "[SKIP] Assay state root for env tester-unified" in out
             assert not state_root.exists()
+
+    @pytest.mark.parametrize("reason", ["filesystem inspection denied", None])
+    def test_doctor_unknown_default_state_root_is_skip_without_probe(
+            self, tmp_path, monkeypatch, capsys, reason):
+        repo, _project = self._project(
+            tmp_path, monkeypatch, self.THREE_LANE_CFG)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["sh"], argv0="bash")))
+        monkeypatch.setattr(
+            run_gate, "default_assay_state_root_status",
+            lambda _root: ("unknown", reason))
+
+        code, out = self._doctor(capsys)
+
+        assert code == 0, out
+        assert "[SKIP] Assay state root for env tester-unified" in out
+        expected = (reason or
+                    f"cannot inspect default Assay state root "
+                    f"{repo / '.run-gate'}")
+        assert expected in out
+        probes = [call for call in docker_runs(log) if "--rm" in call]
+        assert sum("RUN_GATE_STATE_ROOT_READY" in call[-1]
+                   for call in probes) == 0
 
     def test_batched_tool_probe_still_names_only_each_lane_own_missing_tool(
             self, tmp_path, monkeypatch, capsys):
@@ -12977,23 +13043,52 @@ class TestResumeAndProgressAlways:
         assert run_gate.ASSAY_STATE_READY in output
         assert len(calls) == 1 and calls[0][1] == "ps"
 
+    @pytest.mark.parametrize(
+        ("root_state", "expected_action", "expected_error"), [
+            ("creatable", "would create and check", None),
+            ("ready", "would check", None),
+            ("invalid", None, "not a real directory"),
+            ("unknown", None, "fixture status unavailable"),
+            ("configured", "would check", None),
+        ])
     def test_bare_host_state_dry_run_discloses_without_probing(
-            self, monkeypatch, tmp_path, capsys):
+            self, monkeypatch, tmp_path, capsys,
+            root_state, expected_action, expected_error):
         def unexpected_probe(*_args, **_kwargs):
             raise AssertionError("dry-run must not probe host state")
 
         monkeypatch.setattr(run_gate, "probe_assay_state_root", unexpected_probe)
         repo = tmp_path / "repo"
         repo.mkdir()
-        run_gate.assure_assay_state_root(
-            None, {"kind": "assay", "assay_lane": "unit"}, {},
-            "bare-host", "fixture", repo,
-            repo / "project", repo, "",
-            dry_run=True)
+        default_root = repo / ".run-gate"
+        env = {}
+        if root_state == "ready":
+            default_root.mkdir()
+        elif root_state == "invalid":
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            default_root.symlink_to(outside, target_is_directory=True)
+        elif root_state == "unknown":
+            monkeypatch.setattr(
+                run_gate, "default_assay_state_root_status",
+                lambda _root: ("unknown", "fixture status unavailable"))
+        elif root_state == "configured":
+            env = {"mode": "host", "state_root": str(tmp_path / "operator-state")}
+
+        args = (
+            None, {"kind": "assay", "assay_lane": "unit"}, env,
+            "bare-host", "fixture", repo, repo / "project", repo, "")
+        if expected_error:
+            with pytest.raises(run_gate.GateError, match=expected_error):
+                run_gate.assure_assay_state_root(*args, dry_run=True)
+            return
+
+        run_gate.assure_assay_state_root(*args, dry_run=True)
         output = capsys.readouterr().out
-        assert "assay state root preflight: would create and check" in output
-        assert str(repo / ".run-gate") in output
-        assert not (repo / ".run-gate").exists()
+        assert f"assay state root preflight: {expected_action}" in output
+        assert str(run_gate.assay_state_root(repo, env)) in output
+        if root_state == "creatable":
+            assert not default_root.exists()
 
     def test_ephemeral_state_probe_uses_the_lane_user_and_extra_mounts(
             self, monkeypatch, tmp_path):
@@ -25193,6 +25288,19 @@ class TestRgNarrowMounts:
         run_gate.container_mount_flags(plain, plain, {}, with_state=True,
                                        create_state=True)
         assert (plain / ".run-gate").is_dir()
+
+    def test_state_mount_refuses_indeterminate_default_root(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        _phys_stub(monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "default_assay_state_root_status",
+            lambda _path: ("unknown", "filesystem status unavailable"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="filesystem status unavailable"):
+            run_gate.container_mount_flags(
+                repo, wt, {}, with_state=True)
 
     def test_plain_checkout_is_refused_without_opt_in(
             self, tmp_path, monkeypatch):
