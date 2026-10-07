@@ -1,0 +1,27 @@
+# =============================================================================
+# mattermost gate lane — parsed ONLY by run-gate.py (one parser, D-110).
+# The stack's Python is stdlib-only (hooks/post_compose_provision.py and
+# tools/mm_reachability.py) and loads in the tests via importlib against
+# fixture data (a fake mmctl, a fake docker/HTTP world), so the suite needs
+# only pytest + coverage. environment = "tester-unified" carries both in its
+# own venv at $TESTER_VENV (plain "host" has no pytest; same finding as
+# scripts/telegram and scripts/gstammtisch-guide).
+#
+# These two test files used to run in nyxloom's lane, which measured only
+# `--cov=src/nyxloom` and so never counted the hook or the reachability tool
+# (see the old docstring of tests/test_mattermost_provision_hook.py). Moving
+# them here is what makes the lane below the first thing that measures that
+# code at all.
+# See run-gate-project/CONSUMERS.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/mattermost && \"$TESTER_VENV/bin/python\" -m pytest tests -q -p no:cacheprovider --cov=hooks --cov=tools --cov-branch --cov-report=term-missing",
+]
+clean_tree = false
+budget = "5m"
