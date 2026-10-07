@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import io
+import select
+import signal
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 import pytest
@@ -32,6 +33,7 @@ from assay.mutation import (
     run_mutation,
 )
 from assay import mutation as mutation_module
+from assay import runner as runner_module
 from assay.runner import CommandResult, default_process_runner, execute_command
 
 
@@ -1421,14 +1423,14 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     """The auto-derived timeout reaches the real process wait boundary.
 
     Keep the derived value short in this boundary test; the independent
-    formula test above pins the shipped derivation. The sleeping child would
-    leave a marker after its normal completion, so its absence after that
-    point proves timeout cleanup killed the process group.
+    formula test above pins the shipped derivation. A controlled wait boundary
+    synchronizes on the real child's output, then injects timeout after
+    checking the derived bound. The default runner must kill and reap that
+    child. The 60-second waits are hang failsafes only.
     """
     repo = _repo(tmp_path)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    marker = tmp_path / "late-child-marker"
     progress_path = tmp_path / ".assay" / "real-child.progress.jsonl"
     derived_timeout = 0.15
     monkeypatch.setattr(
@@ -1438,14 +1440,36 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     )
     script = (
         "from pathlib import Path\n"
-        "import time\n"
+        "import signal\n"
         "source = Path('pkg/flags.py').read_text(encoding='utf-8')\n"
         "if 'a = False' in source:\n"
-        "    time.sleep(1.0)\n"
-        f"    Path({str(marker)!r}).write_text('finished', encoding='utf-8')\n"
+        "    signal.alarm(60)\n"
+        "    print('BLOCKED', flush=True)\n"
+        "    signal.pause()\n"
+        "else:\n"
+        "    print('FAST', flush=True)\n"
     )
     lane = make_lane(argv=(sys.executable, "-c", script))
     candidate_timeouts: list[float | None] = []
+    wait_timeouts: list[float | None] = []
+    timed_out_children: list[subprocess.Popen[str]] = []
+    real_wait_child = runner_module._wait_child
+
+    def controlled_wait_child(proc, timeout):
+        wait_timeouts.append(timeout)
+        assert timeout == derived_timeout
+        assert proc.stdout is not None
+        readable, _, _ = select.select([proc.stdout], [], [], 60.0)
+        if not readable:
+            raise AssertionError("candidate child did not reach its wait state")
+        state = proc.stdout.readline().rstrip("\r\n")
+        if state == "BLOCKED":
+            timed_out_children.append(proc)
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        assert state == "FAST"
+        return real_wait_child(proc, timeout=60.0)
+
+    monkeypatch.setattr(runner_module, "_wait_child", controlled_wait_child)
 
     def run_real_candidate(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
@@ -1477,10 +1501,9 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == derived_timeout
     assert candidate_timeouts == [derived_timeout, derived_timeout]
-    marker_deadline = time.monotonic() + 1.5
-    while not marker.exists() and time.monotonic() < marker_deadline:
-        time.sleep(0.01)
-    assert not marker.exists(), "timed-out candidate child outlived process-group cleanup"
+    assert wait_timeouts == [derived_timeout, derived_timeout]
+    assert len(timed_out_children) == 1
+    assert timed_out_children[0].returncode == -signal.SIGKILL
 
 
 def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):

@@ -269,3 +269,9 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   the child's 1.0s delay, polling until the marker appears or the bound expires
   instead of checking at the edge of the delay. The auto-budget tests passed
   (**3 passed, 50 deselected in 2.51s**); `git diff --check` passed.
+- After reading the canonical `AUTHORING.md` §3b oracle rules, replaced that
+  elapsed-time marker check with a synchronized process-wait boundary. The real
+  child signals readiness; the controlled boundary asserts the exact derived
+  timeout before injecting expiration, and the default runner must reap it via
+  SIGKILL. Its 60s waits are hang failsafes only. Auto-budget tests passed
+  (**3 passed, 50 deselected in 0.87s**); `git diff --check` passed.
