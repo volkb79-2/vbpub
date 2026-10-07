@@ -46,6 +46,14 @@ _LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"
 
 
 @pytest.fixture(autouse=True)
+def allow_main_checkout_for_legacy_tests(monkeypatch):
+    """RG-NARROW: container lanes on a plain checkout are refused by default.
+    The pre-existing suite builds its fixtures as plain tmp checkouts, so it
+    opts in; the tests that pin the refusal itself `delenv` this variable."""
+    monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+
+
+@pytest.fixture(autouse=True)
 def isolate_shared_lock_dir(tmp_path_factory, monkeypatch):
     lock_dir = tmp_path_factory.mktemp("run-gate-locks")
     monkeypatch.setenv(_LOCK_DIR_ENV_VAR, str(lock_dir))

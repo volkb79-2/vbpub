@@ -2250,6 +2250,75 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     ("this run measured X; the trend has been Y"), not this run's own
     number folded into itself.
 
+- `R-45` **Narrow container mounts (RG-86, package RG-NARROW).** `R-15`'s
+  "the repo dual-mounted" is superseded: every container run-gate itself
+  creates (ephemeral lanes and ephemeral probes, one shared mount set)
+  mounts ONLY what the judged tree needs. Isolation comes from mounting
+  less, never from masking named files; run-gate has no knowledge of any
+  project's secret files.
+  - **`R-45a` Linked worktree.** Mounted, each at its physical AND
+    namespace path (`R-23` applies, with sub-paths of the aliased root taking
+    the same namespace prefix): the judged worktree (all of its own files,
+    git-ignored ones included) and the git common directory READ-WRITE
+    (assay's repository snapshot runs `git worktree add`; the per-worktree
+    admin dir lies inside it). For assay lanes whose environment declares
+    no `state_root`, `<repo>/.run-gate` is also mounted (created when
+    absent), because the durable resume state lives in the main checkout.
+    `RUN_GATE_EXTRA_MOUNTS` (`R-14b`) is unchanged. NOT mounted: the main
+    checkout, every other worktree, every ignored file outside the judged
+    worktree.
+  - **`R-45b` Credential-free git config.** `<common>/config` and any
+    `config.worktree` (common and per-worktree admin) are overlaid
+    READ-ONLY with a per-run copy re-rendered from `git config --file X
+    --list -z`, kept in a private 0700 directory outside every mount
+    (system temp; `<repo>/.run-gate` only when system temp has no host
+    path), removed at process exit. Every file named `config` or
+    `config.worktree` at ANY depth under `<common>/modules` (submodule
+    repositories are named by path: `modules/libs/a/config`, nested
+    `modules/libs/a/modules/b/config`; the `objects`/`refs`/`logs`/`hooks`/
+    `info` dirs of a git dir are not descended) and every existing sibling
+    `<common>/worktrees/*/config.worktree` (at most 256 files in all, see
+    `R-45e`) gets the same sanitized overlay. Removed: URL userinfo in keys and
+    values (http/https/ftp/ftps and any `<x>+http(s)` scheme such as
+    `git+https`: any userinfo; other schemes only `user:pass@`),
+    `credential.*`, `*.extraheader`, `*.cookiefile`, `core.askpass`,
+    `core.sshCommand`, `include.*`/`includeIf.*`, the whole `sendemail.*`
+    and `imap.*` sections, any key whose last segment ENDS with
+    pass/passwd/password/token/secret/apikey/api-key/api_key
+    (case-insensitive: `smtppass`, `oauth-token`), and
+    `url.*.(push)insteadOf` whose base or value embeds credentials. A
+    missing common config or an unreadable one is an infrastructure error,
+    never an unsanitized mount.
+  - **`R-45c` Plain (main) checkout.** An ephemeral lane or probe on a
+    plain checkout is REFUSED (exit 2) naming `--allow-main-checkout` and
+    `RUN_GATE_ALLOW_MAIN_CHECKOUT`. With either set (`1`/`true`/`yes`; the
+    flag sets the env var for the whole process) the whole checkout is
+    mounted as before, a WARN says every git-ignored file is visible (once
+    per tree), and the `R-45b` overlay still applies.
+  - **`R-45d` Out of scope.** `mode = "exec"` lanes and probes (containers
+    owned by ciu or the project's stack) compute no run-gate mounts and are
+    never refused.
+  - **`R-45e` Sibling admin dirs are read-only and VISIBLE (prune/gc
+    hazard).** The common directory is read-write, so an in-container `git
+    worktree prune` would delete, ON THE HOST, the admin dirs of every
+    worktree whose path is not mounted, and a `git gc --prune=now` that
+    cannot see a sibling's `HEAD` and `index` deletes the objects only those
+    reference (round 3 hid the siblings behind an empty directory and lost
+    data that way; `git branch -D` of a sibling's checked-out branch also
+    succeeded). `<common>/worktrees` is therefore mounted READ-ONLY with its
+    REAL contents, at both mount paths, and the judged worktree's OWN admin
+    dir `<common>/worktrees/<own>` is mounted READ-WRITE on top of it (a
+    nested bind mount): two mounts however many siblings exist. For a plain
+    checkout the whole `worktrees/` dir is read-only; with no `worktrees/`
+    dir there is no such mount. Effects: `prune` fails (EROFS); `gc` sees
+    every sibling's `HEAD`/`index`; `branch -D` of a sibling's branch is
+    refused as on the host; the judged worktree's own status/log/commit
+    work. Consequence: `git worktree add` from inside the container cannot
+    create a NEW admin dir (EROFS); assay's snapshot uses `clone
+    --no-local` and is unaffected. A sibling `config.worktree` that exists
+    gets the `R-45b` sanitized read-only overlay; module plus sibling
+    config files are capped at 256 (infrastructure error beyond).
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of run-gate documents (`run-gate.toml` and

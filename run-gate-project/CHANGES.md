@@ -49,6 +49,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - fix: preserve nested gate stack governance (eb9a0a594)
 
 ### Changed
+- feat(run-gate): narrow container mounts and credential-free git config (RG-86, package RG-NARROW); behavior change: ephemeral lanes on a plain checkout are refused without `--allow-main-checkout`; detail under Detailed Changes
 - Merge main into run-gate-2310-adopt (f955b0fce)
 - controller(rg55): record current Assay and gate admission state (b2c7522b6)
 - Merge branch 'main' into rg55-p1-review-repairs-20261005 (99cffbe09)
@@ -290,6 +291,28 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - test(run-gate): make history duration fixtures deterministic (686251677)
 
 ### Detailed Changes
+
+- **Narrow container mounts and credential-free git config (RG-86).** An
+  ephemeral container lane or probe now mounts only the judged worktree
+  (all of its own files, git-ignored ones included) and the git common dir
+  (read-write, ciu v8 SPEC S16.4.9), each at its physical and namespace
+  path, instead of the whole main checkout: other worktrees and the main
+  checkout's ignored files are no longer visible. `<common>/config` is
+  overlaid read-only with a per-run copy minus credentials (URL userinfo,
+  `credential.*`, `*.extraheader`, whole `sendemail.*`/`imap.*` sections, keys
+  ending in pass/password/token/secret/apikey, `git+https://` userinfo,
+  credential-bearing `url.*.insteadOf`; every `config`/`config.worktree` at
+  any depth under `modules/`, nested submodules included). Because the
+  common dir is read-write, `<common>/worktrees` is mounted read-only with
+  its real contents and the judged worktree's own admin dir read-write on
+  top: `git worktree prune` inside a container fails (EROFS) instead of
+  deleting other worktrees' admin dirs on the host, `git gc` still sees every
+  sibling's HEAD and index (it keeps their objects), and `git branch -D` of a
+  sibling's branch is refused. `git worktree add` inside the container cannot
+  create a new admin dir; assay's snapshot (`clone --no-local`) is unaffected. Ephemeral lanes on a plain (main) checkout are
+  REFUSED unless `--allow-main-checkout` / `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`,
+  which WARNs. `mode = "exec"` lanes are unchanged. Breaking for callers that
+  ran ephemeral lanes from a main checkout: use a worktree or opt in.
 
 - **Init and cgroup resource-event guard (RG-84, filed as RG-83, rev 55).** run-gate refuses
   to start as PID 1 without an init reaper. Each real lane compares the
