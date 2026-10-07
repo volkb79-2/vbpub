@@ -383,9 +383,11 @@ extraction therefore remain usable when no daemon is running.
 The service manager invokes `nyxloomd` directly inside the existing container.
 That executable enters the same `Daemon(config.load_registry()).run()`
 lifecycle as the former `nyxloom daemon` path without routing startup through
-human help/version parsing. The wheel bundles cli-extended as an importable
-package, so its installed command registries do not depend on a repository
-checkout or a separate cli-extended runtime distribution.
+human help/version parsing. The wheel does NOT bundle cli-extended: it declares
+`cli-extended>=0.3.0` as a real dependency (unified-adoption CX-D1, NYX-CLIX),
+so the installed command registries need the cli-extended wheel installed
+alongside it (GitHub Releases only, never PyPI; install it first with
+`--no-index`, CX-D2) but not a repository checkout.
 
 Command ownership and the old-to-new path table are maintained in the
 [canonical CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).

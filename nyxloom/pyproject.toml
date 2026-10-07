@@ -4,6 +4,21 @@ dynamic = ["version"]
 description = "Files-first, daemon-supervised control plane for role-separated AI-assisted development"
 requires-python = ">=3.11"
 dependencies = [
+  # cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never
+  # vendored: this wheel used to carry cli_extended/* itself through
+  # package-dir + packages.find (NYX-CLIX removed that), which put two owners
+  # on the same `cli_extended/*` files in one environment (nyxloom 0.10.0 and
+  # a separately installed cli-extended 0.3.0 both wrote them). Floor 0.3.0:
+  # the latest release, and the one nyxloom's suite is verified against.
+  # nyxloom imports only package-root names (ArgumentSpec, CliFailure,
+  # CliIdentity, CliRegistry, OptionSpec, PromptCancelled, VerbGroup,
+  # VerbSpec); all eight also exist in 0.2.0 (checked against the
+  # cli-extended-v0.2.0 tag), but 0.2.0 was never tested here, so the floor
+  # is not lowered to it. Same floor as cmru. Published to GitHub Releases only;
+  # the bare name is unclaimed on PyPI, so install the cli-extended wheel
+  # first / alongside with `--no-index` or `--find-links` (CX-D2); see
+  # README "Install".
+  "cli-extended>=0.3.0",
   "PyYAML>=6",
   "jsonschema>=4",
   "structlog>=24,<27",  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
@@ -43,13 +58,15 @@ nyxloomd = "nyxloom.daemon_entrypoint:main"
 requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
 build-backend = "setuptools.build_meta"
 
+# cli_extended is NOT mapped or searched here: it comes from its own wheel
+# (dependency above, CX-D1). A `cli_extended*` include or a package-dir entry
+# for it re-vendors the library and is a release-blocking regression.
 [tool.setuptools.package-dir]
 "" = "src"
-cli_extended = "../libraries/cli-extended/src/cli_extended"
 
 [tool.setuptools.packages.find]
-where = ["src", "../libraries/cli-extended/src"]
-include = ["nyxloom*", "cli_extended*"]
+where = ["src"]
+include = ["nyxloom*"]
 
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump),
 # matching the estate's other wheel projects (ciu, cmru). Release = annotated tag

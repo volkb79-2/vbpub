@@ -37,14 +37,27 @@ WORKDIR /build
 # the ARG below, so setuptools-scm never shells out to git.
 COPY nyxloom/pyproject.toml ./nyxloom/pyproject.toml
 COPY nyxloom/src ./nyxloom/src
-COPY libraries/cli-extended/src/cli_extended ./libraries/cli-extended/src/cli_extended
+# cli-extended is a REAL wheel dependency of nyxloom (CX-D1, NYX-CLIX): its own
+# wheel is built here from the monorepo source (the stand-in for the released
+# asset, which is on GitHub Releases only, never PyPI) and installed FIRST in
+# the final stage. It is NOT vendored into the nyxloom wheel.
+COPY libraries/cli-extended/pyproject.toml libraries/cli-extended/README.md ./libraries/cli-extended/
+COPY libraries/cli-extended/src ./libraries/cli-extended/src
+# The library resolves its version from its own git tag, which a no-.git context
+# lacks. The pretend version must satisfy nyxloom's declared floor
+# (cli-extended>=0.3.0); bump this ARG together with that floor.
+ARG CLI_EXTENDED_VERSION=0.3.0
+WORKDIR /build/libraries/cli-extended
+RUN pip install --no-cache-dir build==1.2.2 \
+ && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=${CLI_EXTENDED_VERSION} \
+    python -m build --wheel --outdir /wheels \
+ && ls -1 /wheels
 WORKDIR /build/nyxloom
 # Pretend-version short-circuits setuptools-scm's git lookup (which would fail with
 # no .git in the context). Targeted `_FOR_NYXLOOM` form so it can only affect this
 # dist, never a transitively-built one.
 ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NYXLOOM=${NYXLOOM_VERSION}
-RUN pip install --no-cache-dir build==1.2.2 \
- && python -m build --wheel --outdir /wheels \
+RUN python -m build --wheel --outdir /wheels \
  && ls -1 /wheels
 
 # ─── stage 2: self-contained runtime image (mdt base + installed wheel) ───────
@@ -52,7 +65,8 @@ FROM ${NYXLOOM_BASE}
 USER root
 COPY --from=wheelbuild /wheels/*.whl /tmp/wheels/
 RUN python3 -m venv --copies /opt/nyxloom-venv \
- && /opt/nyxloom-venv/bin/pip install --no-cache-dir /tmp/wheels/*.whl \
- && /opt/nyxloom-venv/bin/python -c "import yaml, jsonschema, structlog, nyxloom; print('nyxloom', nyxloom.__version__, 'self-contained OK')" \
+ && /opt/nyxloom-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/wheels/cli_extended-*.whl \
+ && /opt/nyxloom-venv/bin/pip install --no-cache-dir /tmp/wheels/nyxloom-*.whl \
+ && /opt/nyxloom-venv/bin/python -c "import yaml, jsonschema, structlog, cli_extended, nyxloom; print('nyxloom', nyxloom.__version__, 'self-contained OK')" \
  && rm -rf /tmp/wheels
 USER 1003

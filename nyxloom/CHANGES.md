@@ -2,6 +2,14 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
+## [Unreleased]
+
+<!-- Empty on purpose (cmru KI-30 refuses a tagged release while this body is non-empty).
+     Release-notes pointer for the next nyxloom release (NYX-CLIX): the wheel no longer
+     vendors cli_extended; it declares `cli-extended>=0.3.0` as a real dependency
+     (unified-adoption CX-D1). Install the released cli-extended wheel first (GitHub
+     Releases only, never PyPI; CX-D2). Details: nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md. -->
+
 <!-- cmru: release history -->
 
 ## [0.10.0] - 2026-10-07
