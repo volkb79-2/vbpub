@@ -294,9 +294,15 @@ snapshot runs `git worktree add`; ciu v8 SPEC S16.4.9), `<repo>/.run-gate`
 for assay lanes without a declared `state_root`, and whatever the operator
 adds through `RUN_GATE_EXTRA_MOUNTS`. `<common>/config` inside the container
 is a per-run copy with credentials removed (URL userinfo, `credential.*`,
-`*.extraheader`, password/token keys, credential-bearing `url.*.insteadOf`),
+`*.extraheader`, the `sendemail.*`/`imap.*` sections, keys ending in
+pass/password/token/secret/apikey, `git+https://` style userinfo,
+credential-bearing `url.*.insteadOf`; submodule `modules/*/config` too),
 so a remote URL that embeds a token on the host reads without it in the
 container; `git status`, `log`, `diff` and `rev-parse` work as usual.
+Because the common dir is read-write, every OTHER worktree's admin dir
+(`<common>/worktrees/<name>`) is hidden under an empty read-only mount: a
+`git worktree prune` inside the container cannot delete those admin dirs on
+the host (it fails on the mountpoint), and their files are invisible.
 
 **Main checkout.** An ephemeral lane or probe whose judged tree is a plain
 checkout (not a linked worktree) is REFUSED: the whole checkout, including

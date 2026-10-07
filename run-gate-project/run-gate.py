@@ -8869,11 +8869,14 @@ _URL_USERINFO_RE = re.compile(
     r"(?P<scheme>[A-Za-z][A-Za-z0-9+\-]*://)(?P<userinfo>[^/\s]*)@")
 _WEB_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps"})
 _DROP_GIT_CONFIG_KEY_RE = re.compile(
-    r"^(credential\.|include\.|includeif\.)"
+    # whole mail/IMAP sections carry credentials under many names
+    r"^(credential\.|include\.|includeif\.|sendemail\.|imap\.)"
     r"|\.extraheader$"
     r"|\.cookiefile$"
     r"|^core\.(askpass|sshcommand)$"
-    r"|(^|\.)(password|passwd|token|secret|apikey)$",
+    # a credential word as the SUFFIX of the last key segment (smtppass,
+    # oauth-token, access_token, ...); a key is never dotted after its name
+    r"|(pass|passwd|password|token|secret|apikey|api-key|api_key)$",
     re.IGNORECASE)
 _URL_REWRITE_KEY_RE = re.compile(r"^url\..*\.(push)?insteadof$", re.IGNORECASE)
 
@@ -8885,7 +8888,8 @@ def strip_url_userinfo(text: str) -> str:
     for other schemes only `user:password@` is, so `ssh://git@host` survives.
     """
     def repl(match: re.Match) -> str:
-        scheme = match.group("scheme")[:-3].lower()
+        # `git+https://`, `svn+http://`: any `<x>+http(s)` is a web scheme
+        scheme = match.group("scheme")[:-3].lower().rsplit("+", 1)[-1]
         if scheme in _WEB_URL_SCHEMES or ":" in match.group("userinfo"):
             return match.group("scheme")
         return match.group(0)
@@ -9014,23 +9018,54 @@ def _dual(path: Path, repo: Path) -> list[str]:
     return dual_mount_flags(path, physical_path(path), repo)
 
 
+_MAX_GIT_OVERLAYS = 256  # bound on sibling admin dirs / submodule configs
+
+
 def git_config_overlay_flags(plan: dict, repo: Path) -> list[str]:
-    """Overlay each git config file with a per-run sanitized copy."""
-    targets = [plan["common"] / "config", plan["common"] / "config.worktree"]
-    if plan["admin"] is not None:
-        targets.append(plan["admin"] / "config.worktree")
+    """What the container sees of the (read-write) git common dir besides the
+    judged worktree's own state:
+
+    - every git config file (`<common>/config`, `config.worktree`, the judged
+      admin dir's `config.worktree`, each `<common>/modules/*/config`) is
+      overlaid read-only with a per-run sanitized copy;
+    - every SIBLING `<common>/worktrees/<name>` admin dir (all but the judged
+      worktree's own) is hidden under an EMPTY read-only mount. That hides
+      their files (`config.worktree`, `gitdir`, ...) AND makes an in-container
+      `git worktree prune` fail on the mountpoint (EBUSY) instead of deleting
+      the other worktrees' admin dirs on the host (RG-86 round 3, D1)."""
+    common, admin = plan["common"], plan["admin"]
+    targets = [common / "config", common / "config.worktree"]
+    if admin is not None:
+        targets.append(admin / "config.worktree")
     if not targets[0].is_file():
         fail_infra(f"git config {targets[0]} is missing; cannot build the "
                    f"credential-free overlay")
+    modules = sorted((common / "modules").glob("*/config"))
+    own = admin.name if admin is not None else None
+    siblings = sorted(path for path in (common / "worktrees").glob("*")
+                      if path.is_dir() and path.name != own)
+    if len(modules) + len(siblings) > _MAX_GIT_OVERLAYS:
+        fail_infra(f"{common} holds {len(modules)} submodule configs and "
+                   f"{len(siblings)} sibling worktree admin dirs; more than "
+                   f"{_MAX_GIT_OVERLAYS} cannot be hidden/sanitized safely")
     private, _phys = _make_private_dir(repo)
     flags: list[str] = []
-    for index, target in enumerate(t for t in targets if t.is_file()):
+    for index, target in enumerate(
+            [t for t in targets if t.is_file()] + modules):
         copy_path = private / f"{index}.config"
         copy_path.write_text(sanitized_git_config_text(target), encoding="utf-8")
         copy_path.chmod(0o644)
         source = physical_path(copy_path)
         for destination in _dual(target, repo)[1::2]:
             flags += ["-v", f"{source}:{destination.split(':', 1)[1]}:ro"]
+    if siblings:
+        empty = private / "empty"
+        empty.mkdir()
+        empty.chmod(0o755)  # the container user may differ from the owner
+        source = physical_path(empty)
+        for sibling in siblings:
+            for destination in _dual(sibling, repo)[1::2]:
+                flags += ["-v", f"{source}:{destination.split(':', 1)[1]}:ro"]
     return flags
 
 

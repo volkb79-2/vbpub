@@ -2272,13 +2272,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     READ-ONLY with a per-run copy re-rendered from `git config --file X
     --list -z`, kept in a private 0700 directory outside every mount
     (system temp; `<repo>/.run-gate` only when system temp has no host
-    path), removed at process exit. Removed: URL userinfo in keys and values
-    (http/https/ftp/ftps any userinfo; other schemes only `user:pass@`),
+    path), removed at process exit. Every `<common>/modules/*/config`
+    (submodule repositories; at most 256 with the hidden dirs of `R-45e`)
+    gets the same sanitized overlay. Removed: URL userinfo in keys and
+    values (http/https/ftp/ftps and any `<x>+http(s)` scheme such as
+    `git+https`: any userinfo; other schemes only `user:pass@`),
     `credential.*`, `*.extraheader`, `*.cookiefile`, `core.askpass`,
-    `core.sshCommand`, `include.*`/`includeIf.*`, keys named
-    password/passwd/token/secret/apikey, and `url.*.(push)insteadOf` whose
-    base or value embeds credentials. A missing common config or an
-    unreadable one is an infrastructure error, never an unsanitized mount.
+    `core.sshCommand`, `include.*`/`includeIf.*`, the whole `sendemail.*`
+    and `imap.*` sections, any key whose last segment ENDS with
+    pass/passwd/password/token/secret/apikey/api-key/api_key
+    (case-insensitive: `smtppass`, `oauth-token`), and
+    `url.*.(push)insteadOf` whose base or value embeds credentials. A
+    missing common config or an unreadable one is an infrastructure error,
+    never an unsanitized mount.
   - **`R-45c` Plain (main) checkout.** An ephemeral lane or probe on a
     plain checkout is REFUSED (exit 2) naming `--allow-main-checkout` and
     `RUN_GATE_ALLOW_MAIN_CHECKOUT`. With either set (`1`/`true`/`yes`; the
@@ -2288,6 +2294,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-45d` Out of scope.** `mode = "exec"` lanes and probes (containers
     owned by ciu or the project's stack) compute no run-gate mounts and are
     never refused.
+  - **`R-45e` Sibling admin dirs are hidden (prune hazard).** The common
+    directory is read-write, so an in-container `git worktree prune` would
+    delete, ON THE HOST, the admin dirs of every worktree whose path is not
+    mounted. Every sibling `<common>/worktrees/<name>` (all but the judged
+    worktree's own) is therefore covered, at both mount paths, by ONE empty
+    read-only directory (0755, in the private dir of `R-45b`). Prune then
+    fails on the mountpoint (EBUSY) and cannot delete; the siblings' files
+    (`gitdir`, `config.worktree`, ...) are invisible. More than 256 hidden
+    dirs plus submodule configs is an infrastructure error, never a partial
+    hide.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

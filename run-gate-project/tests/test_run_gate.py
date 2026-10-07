@@ -24593,6 +24593,24 @@ _FAKE_CREDENTIAL_CONFIG = """\
 \tapiKey = FAKEAPIKEY9
 \tPassword = FAKEPW10
 \tflag
+[sendemail]
+\tsmtppass = FAKESMTP11
+\tsmtpuser = FAKESMTPUSER12
+[imap]
+\tpass = FAKEIMAP13
+\thost = imaps://FAKEIMAPHOST14
+[github]
+\toauth-token = FAKEOAUTH15
+[gh]
+\tmyApi-Key = FAKEDASHKEY17
+[remote "o"]
+\turl = git+https://FAKEPLUS18@h.example/x
+\tpushurl = svn+http://u:FAKEPLUS19@h.example/x
+[user]
+\tname = Fake Name
+[core]
+\tbare = false
+\tpassthrough = keepme
 [branch "feature/x.y"]
 \tremote = origin
 \tmerge = refs/heads/main
@@ -24603,7 +24621,10 @@ _FAKE_CREDENTIAL_NEEDLES = ("FAKEPASS1", "FAKETOKEN2", "FAKEAT3", "FAKEBASIC4",
                             "FAKEPASS8", "FAKEAPIKEY9", "FAKEPW10",
                             "askpass-FAKE", "FAKEKEY", ".cookies-FAKE",
                             "git-credentials-FAKE", "include-FAKE", "other-FAKE",
-                            "fakeuser", "u:p@")
+                            "fakeuser", "u:p@", "FAKESMTP11", "FAKESMTPUSER12",
+                            "FAKEIMAP13", "FAKEIMAPHOST14", "FAKEOAUTH15",
+                            "FAKEACCESS16", "FAKEDASHKEY17", "FAKEPLUS18",
+                            "FAKEPLUS19")
 
 
 class TestRgNarrowSanitizer:
@@ -24616,6 +24637,15 @@ class TestRgNarrowSanitizer:
         out = self._sanitize(tmp_path)
         for needle in _FAKE_CREDENTIAL_NEEDLES:
             assert needle not in out, needle
+
+    def test_underscore_credential_suffixes_are_dropped(self):
+        """git itself rejects `_` in variable names, so these cannot come out
+        of `git config --list`; the entry-level rule still covers them."""
+        entries = [("gh.access_token", "FAKEACCESS16"),
+                   ("gh.my_api_key", "FAKEUSKEY20"),
+                   ("gh.name", "kept")]
+        assert run_gate.sanitize_git_config_entries(entries) == [
+            ("gh.name", "kept")]
 
     def test_non_credential_config_is_preserved(self, tmp_path):
         out = self._sanitize(tmp_path)
@@ -24632,6 +24662,14 @@ class TestRgNarrowSanitizer:
         assert entries["branch.feature/x.y.merge"] == "refs/heads/main"
         assert entries["core.repositoryformatversion"] == "0"
         assert entries["tool.t.flag"] is None  # valueless key stays valueless
+        assert entries["remote.o.url"] == "git+https://h.example/x"
+        assert entries["remote.o.pushurl"] == "svn+http://h.example/x"
+        # near misses: ordinary keys are not over-dropped
+        assert entries["user.name"] == "Fake Name"
+        assert entries["core.bare"] == "false"
+        assert entries["core.passthrough"] == "keepme"
+        assert not any(key.startswith(("sendemail.", "imap.", "github.", "gh."))
+                       for key in entries)
         assert not any(key.startswith(("credential.", "include", "http."))
                        for key in entries)
         assert not any("insteadof" in key and "FAKE" in key for key in entries)
@@ -24691,8 +24729,9 @@ class TestRgNarrowMounts:
                               f"{ph(repo / '.git')}:{ph(repo / '.git')}",
                               f"{ph(repo / '.git')}:{repo / '.git'}"]
         # exactly the dual worktree + dual git dir (read-write: ciu v8 SPEC
-        # S16.4.9) + the two read-only credential-free config overlays
-        assert len(values) == 6
+        # S16.4.9) + the two read-only credential-free config overlays + the
+        # two read-only empty mounts hiding the sibling worktree's admin dir
+        assert len(values) == 8
         assert all(v.endswith(":ro") for v in values[4:])
         assert not any(v.endswith(":rw") or ":ro" in v for v in values[:4])
         destinations = [v.split(":")[1] for v in values]
@@ -24724,6 +24763,115 @@ class TestRgNarrowMounts:
         assert "https://example.invalid/x.git" in text
         # the host's own config is untouched
         assert "FAKEPASSWORD123" in (repo / ".git" / "config").read_text()
+
+    @pytest.mark.parametrize("fallback", [False, True],
+                             ids=["system-temp", "repo-run-gate-fallback"])
+    def test_private_dir_tree_holds_no_credential_in_any_file(
+            self, tmp_path, monkeypatch, fallback):
+        """Round-3 B2: walk the WHOLE private dir; a raw config copy planted
+        anywhere in it (any name, any depth) must be caught."""
+        repo = _narrow_repo(tmp_path)
+        with (repo / ".git" / "config").open("a") as handle:
+            handle.write(_FAKE_CREDENTIAL_CONFIG)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        make_worktree(repo, repo / ".worktrees", "other")
+        system_tmp = tmp_path / "systmp"
+        system_tmp.mkdir()
+        monkeypatch.setattr(run_gate.tempfile, "gettempdir",
+                            lambda: str(system_tmp))
+
+        def physical(path, *_a, **_k):
+            if fallback and system_tmp in Path(path).parents:
+                raise run_gate.GateError("not host-visible")
+            return Path("/phys") / str(path).lstrip("/")
+        monkeypatch.setattr(run_gate, "physical_path", physical)
+        flags = run_gate.container_mount_flags(repo, wt, {})
+        overlay = [v for v in flags[1::2] if v.endswith("/config:ro")]
+        private = Path(overlay[0].split(":")[0].removeprefix("/phys")).parent
+        expected_root = repo / ".run-gate" if fallback else system_tmp
+        assert private.parent == expected_root
+        files = [p for p in private.rglob("*") if p.is_file()]
+        assert files, "the private dir should hold the sanitized copies"
+        needles = (*_FAKE_CREDENTIAL_NEEDLES, "FAKEPASSWORD123", "FAKEBASIC456")
+        for path in files:
+            body = path.read_bytes().decode("utf-8", "replace")
+            for needle in needles:
+                assert needle not in body, (path, needle)
+
+    def test_sibling_admin_dirs_are_hidden_under_an_empty_ro_mount(
+            self, tmp_path, monkeypatch):
+        """Round-3 D1: `git worktree prune` in the container must hit a
+        read-only mountpoint, never the host's sibling admin dirs."""
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        make_worktree(repo, repo / ".worktrees", "other")
+        make_worktree(repo, repo / ".worktrees", "third")
+        _phys_stub(monkeypatch)
+        plan = run_gate.git_mount_plan(wt, repo)
+        own = plan["admin"].name
+        names = sorted(p.name for p in (repo / ".git" / "worktrees").iterdir())
+        assert own in names and len(names) == 3
+        flags = run_gate.container_mount_flags(repo, wt, {})
+        admin_root = f"{repo / '.git' / 'worktrees'}/"
+        hidden = {}
+        for value in flags[1::2]:
+            source, destination, *rest = value.split(":")
+            destination = destination.removeprefix("/phys")  # dual mount
+            if destination.startswith(admin_root):
+                hidden.setdefault(destination.removeprefix(admin_root),
+                                  []).append((source, rest))
+        assert sorted(hidden) == sorted(n for n in names if n != own)
+        sources = set()
+        for entries in hidden.values():
+            assert [rest for _s, rest in entries] == [["ro"], ["ro"]]
+            sources |= {s for s, _r in entries}
+        assert len(sources) == 1  # ONE shared empty dir
+        empty = Path(next(iter(sources)).removeprefix("/phys"))
+        assert empty.is_dir() and list(empty.iterdir()) == []
+        assert empty.stat().st_mode & 0o777 == 0o755
+        # the judged worktree's own admin dir is NOT hidden
+        assert not any(v.split(":")[1].removeprefix("/phys").startswith(
+            f"{admin_root}{own}") for v in flags[1::2])
+
+    def test_plain_checkout_hides_every_registered_worktree_admin_dir(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        make_worktree(repo, repo / ".worktrees", "other")
+        _phys_stub(monkeypatch)
+        monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, "1")
+        flags = run_gate.container_mount_flags(repo, repo, {})
+        hidden = [v for v in flags[1::2]
+                  if v.split(":")[1].removeprefix("/phys").startswith(
+                      f"{repo}/.git/worktrees/")]
+        assert len(hidden) == 2 and all(v.endswith(":ro") for v in hidden)
+
+    def test_submodule_configs_are_overlaid_with_sanitized_copies(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        module = repo / ".git" / "modules" / "sub"
+        module.mkdir(parents=True)
+        (module / "config").write_text(
+            '[remote "origin"]\n\turl = https://modu:FAKEMODPASS@m.example/s.git\n')
+        _phys_stub(monkeypatch)
+        flags = run_gate.container_mount_flags(repo, wt, {})
+        overlay = [v for v in flags[1::2]
+                   if v.split(":")[1] == f"{module / 'config'}"
+                   or v.split(":")[1] == f"/phys{module / 'config'}"]
+        assert len(overlay) == 2 and all(v.endswith(":ro") for v in overlay)
+        copy = Path(overlay[0].split(":")[0].removeprefix("/phys"))
+        text = copy.read_text()
+        assert "FAKEMODPASS" not in text and "https://m.example/s.git" in text
+
+    def test_too_many_hidden_git_dirs_are_an_infrastructure_error(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        make_worktree(repo, repo / ".worktrees", "other")
+        _phys_stub(monkeypatch)
+        monkeypatch.setattr(run_gate, "_MAX_GIT_OVERLAYS", 0)
+        with pytest.raises(run_gate.GateInfraError, match="cannot be hidden"):
+            run_gate.container_mount_flags(repo, wt, {})
 
     def test_state_mount_only_for_assay_and_not_with_declared_root(
             self, tmp_path, monkeypatch):
@@ -24942,6 +25090,15 @@ class TestRgNarrowRealContainer:
             "git worktree add -q --detach /tmp/narrow-snap HEAD; "
             "test \"$(git -C /tmp/narrow-snap log -1 --format=%s)\" = "
             "'lane config proj'; git worktree remove --force /tmp/narrow-snap; "
+            # D1: the sibling's worktree path is NOT mounted, so an unguarded
+            # `git worktree prune` would delete its admin dir on the HOST. The
+            # sibling admin dir is an empty read-only mount: prune fails on it.
+            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
+            "test -z \"$(ls -A $common/worktrees/other)\"; "
+            "! touch $common/worktrees/other/x 2>/dev/null; "
+            "git worktree prune -v || true; "
+            "test -d $common/worktrees/other; "
+            "git status --porcelain >/dev/null; git log -1 >/dev/null; "
             "cfg=$(git rev-parse --git-common-dir)/config; "
             "! grep -e FAKEPASSWORD123 -e fakeuser -e FAKEBASIC456 \"$cfg\"; "
             "! git config --list | grep -e FAKEPASSWORD123 -e FAKEBASIC456; "
@@ -24967,6 +25124,13 @@ class TestRgNarrowRealContainer:
         proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "NARROW-OK" in proc.stdout, proc.stdout
+        # D1: the in-container prune left every host admin dir intact
+        for name in ("w1", "other"):
+            assert (repo / ".git" / "worktrees" / name / "gitdir").is_file(), name
+        listing = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            check=True, capture_output=True, text=True).stdout
+        assert listing.count("worktree ") == 3
         # the refusal path with the same real repo: main checkout, no opt-in
         refused = run_tool(proj, "suite")
         assert refused.returncode == 2 and "refused" in refused.stderr

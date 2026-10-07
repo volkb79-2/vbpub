@@ -298,8 +298,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   path, instead of the whole main checkout: other worktrees and the main
   checkout's ignored files are no longer visible. `<common>/config` is
   overlaid read-only with a per-run copy minus credentials (URL userinfo,
-  `credential.*`, `*.extraheader`, password/token keys, credential-bearing
-  `url.*.insteadOf`). Ephemeral lanes on a plain (main) checkout are
+  `credential.*`, `*.extraheader`, whole `sendemail.*`/`imap.*` sections, keys
+  ending in pass/password/token/secret/apikey, `git+https://` userinfo,
+  credential-bearing `url.*.insteadOf`; submodule `modules/*/config` too).
+  Because the common dir is read-write, every sibling worktree's admin dir
+  (`<common>/worktrees/<name>`) is hidden under an empty read-only mount, so
+  `git worktree prune` inside a container cannot delete other worktrees'
+  admin dirs on the host. Ephemeral lanes on a plain (main) checkout are
   REFUSED unless `--allow-main-checkout` / `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`,
   which WARNs. `mode = "exec"` lanes are unchanged. Breaking for callers that
   ran ephemeral lanes from a main checkout: use a worktree or opt in.
