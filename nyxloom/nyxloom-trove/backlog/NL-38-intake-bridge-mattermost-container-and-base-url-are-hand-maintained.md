@@ -92,7 +92,7 @@ Method: `git grep -n 1dd3d1` over the tracked tree on 2026-10-07, excluding `CHA
   - Test fixtures that use `nyxloom-prod-*` as sample data are left alone.
 - `nyxloom/mattermost/README.md` is far larger than "examples": 41 lines carry the id (`grep -c`; e.g. `:28`, `:215`, `:251-264`, `:418-542`, `:685`, `:769-770`, `:814-862`, `:881-917`, `:939-965`), including runnable commands and a Python snippet with a literal `BASE` (`:965`).
 
-Excluded as history/records, left dated: `ciu/KNOWN_ISSUES_TODO_BACKLOG.md:4974-4988` (CIU-132), `ciu/handoff/ciu-physical-root-{LOG,REPORT}.md`. The opposite direction also exists: `3oqua1` is a literal in `nyxloom/nyxloom-trove/nyxloom.toml:245,248,251,254` only (plus CHANGES and backlog prose); those four are what (d) removes. Per-file rule: runbooks and READMEs get `<instance_id>` placeholders or a `ciu resolve` one-liner; dated `docs/plan-*.md` stay as written.
+Excluded as history/records, left dated: `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` heading "CIU-132", `ciu/handoff/ciu-physical-root-{LOG,REPORT}.md`. The opposite direction also exists: `3oqua1` is a literal in `nyxloom/nyxloom-trove/nyxloom.toml:245,248,251,254` only (plus CHANGES and backlog prose); those four are what (d) removes. Per-file rule: runbooks and READMEs get `<instance_id>` placeholders or a `ciu resolve` one-liner; dated `docs/plan-*.md` stay as written.
 
 ## Related
 
