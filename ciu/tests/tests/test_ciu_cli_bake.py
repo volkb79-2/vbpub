@@ -27,8 +27,22 @@ import ciu.engine as _engine  # noqa: E402
 from ciu import cli  # noqa: E402
 from ciu import deploy  # noqa: E402
 from ciu import dev  # noqa: E402
+from ciu import worktree  # noqa: E402
 
 _REVISION_ARGS = ["--set", "*.labels.org.opencontainers.image.revision=abc12345"]
+
+
+@pytest.fixture(autouse=True)
+def _keep_legacy_bake_fixtures_on_the_primary_contract(monkeypatch):
+    # CIU-117 linked-worktree behavior has its own integration tests. These
+    # pre-existing argv tests pin the primary checkout's unchanged contract.
+    monkeypatch.setattr(
+        dev, "resolve_repo_root",
+        lambda *_args, **_kwargs: Path(__file__).resolve().parents[2],
+    )
+    monkeypatch.setattr(
+        worktree, "resolve_worktree_image_tag_suffix", lambda *_a, **_kw: None
+    )
 
 
 @pytest.fixture(autouse=True)

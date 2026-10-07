@@ -241,7 +241,7 @@ def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_pat
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["alpha", "--config", str(config)], config, tmp_path,
+        ["alpha", "--config", str(config)], config, tmp_path, forward_from=None,
     ) == ["alpha", "--config", "nested/cmru.toml"]
 
 
@@ -250,7 +250,7 @@ def test_child_args_removes_parent_only_resume_option(tmp_path):
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["--resume", "/tmp/retained", "alpha"], config, tmp_path,
+        ["--resume", "/tmp/retained", "alpha"], config, tmp_path, forward_from=None,
     ) == ["alpha", "--config", "cmru.toml"]
 
 
@@ -374,7 +374,7 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
 
         exc = cli.main(["release", "--config", str(config), "alpha"])
 
-        assert exc == 2
+        assert exc == 4  # exit_codes.REFUSED: uncommitted paths, nothing changed
         # It never got as far as fetching origin or creating the isolated worktree.
         assert calls == []
 
@@ -568,7 +568,7 @@ cwd = "alpha"
 
     argv = [
             "release", "--config", str(config), "alpha",
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
         ]
     if use_internal_snapshot:
         snapshot_fd, snapshot_writer = os.pipe()
@@ -584,7 +584,7 @@ cwd = "alpha"
     assert not any(isinstance(call, tuple) for call in calls)
     assert calls.index("tag-inspection-preflight") < calls.index("workspace")
     assert [
-        "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "alpha", "--discard", "logs", "--discard", "artifacts",
         "--config", "cmru.toml",
     ] in calls
     assert "backup-removed" in calls
@@ -1051,7 +1051,7 @@ def test_selected_config_link_can_have_alias_filename(tmp_path):
     assert _real_project_config_paths_in_candidate(
         source_root, candidate_root, selected_link, configs, ["demo"],
     ) == expected
-    assert cli._child_release_args([], selected_link, source_root) == [
+    assert cli._child_release_args([], selected_link, source_root, forward_from=None) == [
         "--config", "current.toml",
     ]
 
@@ -1425,8 +1425,10 @@ def test_release_refuses_handoff_after_origin_main_moves(tmp_path, monkeypatch, 
         lambda *_args, **_kwargs: pytest.fail("workspace created after origin/main moved"),
     )
 
-    assert cli.main(["release", "alpha", "--config", str(config)]) == 1
-    assert "origin/main changed after the multi-family release preflight" in capsys.readouterr().err
+    assert cli.main(["release", "alpha", "--config", str(config)]) == 4  # refused, nothing changed
+    err = capsys.readouterr().err
+    assert "origin/main changed after the multi-family release preflight" in err
+    assert "unexpected" not in err
 
 
 @pytest.mark.parametrize("fd_value", ["not-an-int", "0", "999999999"])
@@ -1623,14 +1625,14 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"],
         image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_parent="dev-gates.slice",
+        pids_limit="4096", cgroup_parent="dev-gates.slice",
     )
 
     assert argv == [
-        "docker", "run", "--cgroup-parent=dev-gates.slice", "--rm",
+        "docker", "run", "--cgroup-parent=dev-gates.slice", "--rm", "--init",
         "--mount", "type=bind,src=/host/repo,dst=/worktree",
         "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g",
-        "--cpus", "1.5",
+        "--cpus", "1.5", "--pids-limit", "4096",
         "tester-unified:test",
         "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
     ]
@@ -1640,7 +1642,7 @@ def test_tester_gate_rejects_paths_outside_the_worktree(tmp_path):
     with pytest.raises(ValueError, match="relative path"):
         tester_gate.build_docker_command(
             tmp_path, "../ciu", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-            cgroup_parent="dev-gates.slice",
+            pids_limit="4096", cgroup_parent="dev-gates.slice",
         )
 
 
@@ -1648,7 +1650,7 @@ def test_tester_gate_command_builder_rejects_unbounded_cpu_limit(tmp_path):
     with pytest.raises(ValueError, match="minimum 0.00001 CPUs"):
         tester_gate.build_docker_command(
             tmp_path, ".", ["true"], image="tester-unified:test", memory="3g",
-            memory_swap="16g", cpus="0", cgroup_parent="dev-gates.slice",
+            memory_swap="16g", cpus="0", pids_limit="4096", cgroup_parent="dev-gates.slice",
         )
 
 
@@ -1674,7 +1676,7 @@ def test_tester_gate_no_sidecar_by_default_adds_no_docker_wiring(monkeypatch, tm
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_parent="dev-gates.slice",
+        pids_limit="4096", cgroup_parent="dev-gates.slice",
     )
 
     assert "--network" not in argv
@@ -1687,13 +1689,16 @@ def test_tester_gate_sidecar_name_attaches_network_and_docker_host(monkeypatch, 
     argv = tester_gate.build_docker_command(
         tmp_path, "modern-debian-tools-python-debug", ["true"], sidecar_name="cmru-tester-dind-abc123",
         image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_parent="dev-gates.slice",
+        pids_limit="4096", cgroup_parent="dev-gates.slice",
     )
 
     assert "--network" in argv
     assert "container:cmru-tester-dind-abc123" in argv
     assert "-e" in argv
     assert "DOCKER_HOST=tcp://localhost:2375" in argv
+
+
+_DIND_LIMITS = {"memory": "2g", "cpus": "1.5", "pids_limit": "2048"}
 
 
 def test_dind_sidecar_starts_polls_readiness_yields_name_then_tears_down(monkeypatch):
@@ -1709,24 +1714,31 @@ def test_dind_sidecar_starts_polls_readiness_yields_name_then_tears_down(monkeyp
             probe_count["n"] += 1
             ready = probe_count["n"] >= ready_after
             return SimpleNamespace(returncode=0 if ready else 1, stdout="29.6.2\n" if ready else "")
-        if argv[:2] == ["docker", "stop"]:
+        if argv[:2] in (["docker", "stop"], ["docker", "rm"]):
             return SimpleNamespace(returncode=0, stdout="")
         raise AssertionError(f"unexpected call: {argv}")
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
     monkeypatch.setattr(tester_gate.time, "sleep", lambda _s: None)
 
-    with tester_gate.dind_sidecar("docker:dind-test", cgroup_parent="dev-gates.slice") as name:
+    with tester_gate.dind_sidecar("docker@sha256:" + "b" * 64, cgroup_parent="dev-gates.slice", **_DIND_LIMITS) as name:
         assert name.startswith("cmru-tester-dind-")
         used_name = name
 
     start_call = next(c for c in calls if c[:2] == ["docker", "run"])
     assert "--cgroup-parent=dev-gates.slice" in start_call
     assert "--privileged" in start_call
+    assert "--init" in start_call
+    assert "--pull=never" in start_call
+    assert start_call[start_call.index("--memory") + 1] == "2g"
+    assert start_call[start_call.index("--cpus") + 1] == "1.5"
+    assert start_call[start_call.index("--pids-limit") + 1] == "2048"
     assert used_name in start_call
     assert probe_count["n"] >= ready_after  # readiness was actually polled, not assumed
     stop_call = next(c for c in calls if c[:2] == ["docker", "stop"])
     assert used_name in stop_call
+    rm_call = next(c for c in calls if c[:3] == ["docker", "rm", "-f"])
+    assert rm_call[-1] == used_name
 
 
 def test_dind_sidecar_tears_down_even_when_the_body_raises(monkeypatch):
@@ -1740,12 +1752,14 @@ def test_dind_sidecar_tears_down_even_when_the_body_raises(monkeypatch):
         if argv[:2] == ["docker", "stop"]:
             stopped.append(argv)
             return SimpleNamespace(returncode=0, stdout="")
+        if argv[:2] == ["docker", "rm"]:
+            return SimpleNamespace(returncode=0, stdout="")
         raise AssertionError(f"unexpected call: {argv}")
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="boom"):
-        with tester_gate.dind_sidecar("docker:dind-test", cgroup_parent="dev-gates.slice") as _name:
+        with tester_gate.dind_sidecar("docker@sha256:" + "b" * 64, cgroup_parent="dev-gates.slice", **_DIND_LIMITS) as _name:
             raise RuntimeError("boom")
 
     assert len(stopped) == 1
@@ -1765,15 +1779,31 @@ def test_dind_sidecar_raises_if_never_ready_within_timeout(monkeypatch):
             return SimpleNamespace(returncode=0, stdout="containerid\n")
         if argv[:2] == ["docker", "exec"]:
             return SimpleNamespace(returncode=1, stdout="")  # never ready
-        if argv[:2] == ["docker", "stop"]:
+        if argv[:2] in (["docker", "stop"], ["docker", "rm"]):
             return SimpleNamespace(returncode=0, stdout="")
         raise AssertionError(f"unexpected call: {argv}")
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="did not become ready"):
-        with tester_gate.dind_sidecar("docker:dind-test", ready_timeout=2.0, cgroup_parent="dev-gates.slice"):
+        with tester_gate.dind_sidecar("docker@sha256:" + "b" * 64, ready_timeout=2.0, cgroup_parent="dev-gates.slice", **_DIND_LIMITS):
             pass  # pragma: no cover — never reached
+
+
+_PROBE_DIGEST = "debian@sha256:" + "a" * 64
+_CLEAN_EVENTS = "pids.events max 0\nmemory.events low 0\nmemory.events oom_kill 0\n"
+
+
+def _clean_gate_run(captured, root):
+    """Fake ``subprocess.run`` for a mocked ``build_docker_command``: every
+    launch "succeeds" and leaves the clean cgroup-events file the in-container
+    wrapper would have written at the path ``main`` asked for."""
+    def run(*_args, **_kwargs):
+        events = root / captured["events_file"]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        events.write_text(_CLEAN_EVENTS, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="")
+    return run
 
 
 def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch, tmp_path):
@@ -1784,27 +1814,36 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
     )
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
     monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", _PROBE_DIGEST)
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_PIDS_LIMIT", "4096")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-gates.slice")
-    monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "docker:dind-test")
+    monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "docker@sha256:" + "b" * 64)
+    monkeypatch.setenv("CMRU_TESTER_DIND_MEMORY", "2g")
+    monkeypatch.setenv("CMRU_TESTER_DIND_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_DIND_PIDS_LIMIT", "2048")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_FORWARD_VAR", "dev-background.slice")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_FORWARD_GATES_VAR", "dev-gates.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
-    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(tester_gate.subprocess, "run", _clean_gate_run(captured, tmp_path))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda _cwd, _relative: (tmp_path, _relative))
+    sidecar_kwargs = {}
 
     @contextmanager
-    def fake_sidecar(_image, *, cgroup_parent):
+    def fake_sidecar(image, *, cgroup_parent, memory, cpus, pids_limit):
         assert cgroup_parent == "dev-gates.slice"
+        sidecar_kwargs.update(image=image, memory=memory, cpus=cpus, pids_limit=pids_limit)
         yield "cmru-tester-dind-fixedname"
 
     monkeypatch.setattr(tester_gate, "dind_sidecar", fake_sidecar)
 
     assert tester_gate.main(["--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "true"]) == 0
 
+    assert sidecar_kwargs == {
+        "image": "docker@sha256:" + "b" * 64, "memory": "2g", "cpus": "1.5", "pids_limit": "2048",
+    }
     assert captured["sidecar_name"] == "cmru-tester-dind-fixedname"
     # Placement comes from the declared gates tier, while the forwarded vars
     # are separate declarations for code running inside the gate.
@@ -1828,16 +1867,17 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
     )
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
     monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", _PROBE_DIGEST)
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_PIDS_LIMIT", "4096")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-gates.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
-    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(tester_gate.subprocess, "run", _clean_gate_run(captured, tmp_path))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda _cwd, _relative: (tmp_path, _relative))
 
-    def fail_if_called(_image):
+    def fail_if_called(*_args, **_kwargs):
         raise AssertionError("dind_sidecar() must not run when --enable-docker is absent")
 
     monkeypatch.setattr(tester_gate, "dind_sidecar", fail_if_called)
@@ -1857,7 +1897,8 @@ def _full_tester_env(monkeypatch):
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setenv("CMRU_TESTER_PIDS_LIMIT", "4096")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", _PROBE_DIGEST)
 
 
 def test_tester_gate_main_refuses_when_no_cgroup_parent_declared(monkeypatch, tmp_path, capsys):
@@ -1951,7 +1992,7 @@ def test_tester_gate_forwards_cgroup_parent_dev_background_into_the_container(mo
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g",
-        image="tester-unified:test", cpus="1.5",
+        image="tester-unified:test", cpus="1.5", pids_limit="4096",
         cgroup_parent_dev_background="dev-background.slice",
         cgroup_parent="dev-gates.slice",
     )
@@ -1965,7 +2006,7 @@ def test_tester_gate_omits_cgroup_parent_dev_background_when_absent(monkeypatch,
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_parent="dev-gates.slice",
+        pids_limit="4096", cgroup_parent="dev-gates.slice",
     )
 
     assert not any("CGROUP_PARENT_DEV_BACKGROUND" in part for part in argv)
@@ -2009,7 +2050,7 @@ def test_build_docker_command_mounts_the_shared_git_dir_for_a_linked_worktree(mo
 
     argv = tester_gate.build_docker_command(
         worktree, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_parent="dev-gates.slice",
+        pids_limit="4096", cgroup_parent="dev-gates.slice",
     )
 
     common_dir = str((main_repo / ".git").resolve())
@@ -2022,7 +2063,7 @@ def test_build_docker_command_adds_no_extra_mount_for_an_ordinary_checkout(monke
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
-        cgroup_parent="dev-gates.slice",
+        pids_limit="4096", cgroup_parent="dev-gates.slice",
     )
 
     assert argv.count("--mount") == 1
@@ -2620,8 +2661,33 @@ def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
         result = transaction._sync_local_main_result(h.repo_root)
         assert result.ok is False
         assert "dirty" in result.reason
-        assert "ignored files and directories" in result.reason
+        assert "tracked or untracked changes" in result.reason  # REL-13: ignored files are not blanket-blocking
         assert "conflict" not in result.reason
+
+
+def test_rel13_sync_local_main_ignores_ordinary_ignored_files(monkeypatch):
+    """Ignored build output that origin/main does not touch must not block the sync."""
+    with _OriginAndClone() as h:
+        (h.repo_root / ".gitignore").write_text("*.log\ncache/\n")
+        _git("add", ".gitignore", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "chore: ignore logs", cwd=h.repo_root)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=h.repo_root)
+        (h.repo_root / "cmru.release.log").write_text("keep me\n")
+        (h.repo_root / "cache").mkdir()
+        (h.repo_root / "cache" / "blob").write_text("keep me too\n")
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "later.txt").write_text("a later main commit\n")
+        _git("add", "later.txt", cwd=other)
+        _git("commit", "-q", "-m", "later", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is True, result.reason
+        assert (h.repo_root / "later.txt").read_text() == "a later main commit\n"
+        assert (h.repo_root / "cmru.release.log").read_text() == "keep me\n"
+        assert (h.repo_root / "cache" / "blob").read_text() == "keep me too\n"
 
 
 def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeypatch):
@@ -2653,7 +2719,7 @@ def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeyp
         result = transaction._sync_local_main_result(h.repo_root)
 
         assert result.ok is False
-        assert "ignored files and directories" in result.reason
+        assert "ignored" in result.reason and "overwrite" in result.reason
         assert not any(argv[1:2] == ["rebase"] for argv in calls)
         assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
         assert _git("rev-parse", "main", cwd=h.repo_root) == local_tip_before
@@ -3405,6 +3471,28 @@ def test_resolve_versions_from_git_skips_projects_not_exactly_tagged_on_head():
         finally:
             os.environ.pop(env_alpha, None)
             os.environ.pop(env_beta, None)
+
+
+def test_resolve_versions_from_git_clears_stale_pretend_version_and_normalises_dots():
+    """BG-09: an inherited pretend-version for a project whose HEAD is NOT on its
+    tag must be dropped (KI-53 forwards it into the wheel builder), and a dotted
+    dist name maps to the underscore-normalised variable setuptools-scm reads."""
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/stale-pretend")
+        _git("tag", "-a", "dotted-v2.0.0", "-m", "dotted 2.0.0", cwd=workspace_path)
+        dotted = SimpleNamespace(prefix="dotted-v", scm_dist="my.dotted-dist")
+        untagged = SimpleNamespace(prefix="untagged-v", scm_dist="untagged")
+        env_dotted = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MY_DOTTED_DIST"
+        env_untagged = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_UNTAGGED"
+        os.environ[env_untagged] = "9.9.9"
+        os.environ.pop(env_dotted, None)
+        try:
+            cli.resolve_versions_from_git(workspace_path, {"d": dotted, "u": untagged})
+            assert os.environ.get(env_dotted) == "2.0.0"
+            assert env_untagged not in os.environ
+        finally:
+            os.environ.pop(env_dotted, None)
+            os.environ.pop(env_untagged, None)
 
 
 def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_fresh_tag():

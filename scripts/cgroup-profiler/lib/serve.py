@@ -906,7 +906,7 @@ class SessionServer:
                             context="sampler startup failed",
                         )
                 finally:
-                    self._remove_session_dir(sess.session_id)
+                    self._rollback_failed_start(sess.session_id, sess.placement)
                 raise
 
             self._sessions[sess.session_id] = sess
@@ -918,6 +918,44 @@ class SessionServer:
     def _create_session_locked(
         self, *, container_id: str, cgroup: str, scope: str, token: Optional[str],
         interval: float, damon_req: str, meta: Dict[str, Any],
+        policy: Optional["liveness_mod.Policy"] = None,
+        place_request: Optional["placement_mod.PlacementRequest"] = None,
+    ) -> _Session:
+        start_state: Dict[str, Any] = {}
+        try:
+            return self._assemble_session_locked(
+                container_id=container_id, cgroup=cgroup, scope=scope,
+                token=token, interval=interval, damon_req=damon_req,
+                meta=meta, policy=policy, place_request=place_request,
+                start_state=start_state,
+            )
+        except BaseException:
+            if start_state.get("created") and not start_state.get("rejected"):
+                self._rollback_failed_start(
+                    start_state["session_id"], start_state.get("placement"),
+                )
+            raise
+
+    def _rollback_failed_start(
+        self, session_id: str,
+        placement_obj: Optional["placement_mod.LanePlacement"],
+    ) -> None:
+        """Undo placement before discarding its only recovery journal."""
+        if placement_obj is not None:
+            try:
+                placement_obj.release()
+            except Exception as exc:  # noqa: BLE001 - keep the journal on failed cleanup
+                self._log(f"start: placement rollback failed for {session_id}: {exc}")
+            if placement_obj.scope_unit is not None and not placement_obj.released:
+                self._log(
+                    f"start: preserving placement recovery journal for {session_id}"
+                )
+                return
+        self._remove_session_dir(session_id)
+
+    def _assemble_session_locked(
+        self, *, container_id: str, cgroup: str, scope: str, token: Optional[str],
+        interval: float, damon_req: str, meta: Dict[str, Any], start_state: Dict[str, Any],
         policy: Optional["liveness_mod.Policy"] = None,
         place_request: Optional["placement_mod.PlacementRequest"] = None,
     ) -> _Session:
@@ -966,6 +1004,7 @@ class SessionServer:
         pids_at_start = len(initial_pids)
 
         rundir = store.RunDir(self.sessions_dir, run_id=session_id, create=True)
+        start_state.update(session_id=session_id, created=True)
         with open(rundir.stream_path("events"), "a", encoding="utf-8"):
             pass  # touch: the file exists from the first tick even if the
             # session ends before any real row lands (CP-5, `_on_session_sample`
@@ -981,6 +1020,7 @@ class SessionServer:
             placement_obj = self._make_placement(
                 token=token, origin_cgroup=cgroup, request=place_request, rundir=rundir,
             )
+            start_state["placement"] = placement_obj
             placement_obj.apply(
                 list(subtree_resolver.current_pids) if subtree_resolver is not None else []
             )
@@ -1030,6 +1070,10 @@ class SessionServer:
                         f"; cleanup was incomplete ({cleanup_error}); "
                         f"leaf {placement_obj.leaf_cgroup!r} remains"
                     )
+                # The refusal manifest is the durable public record for this
+                # intentional bad-policy response; it is not a failed start
+                # artifact to discard during transaction rollback.
+                start_state["rejected"] = True
                 raise RequestError("bad-policy", detail)
 
         # After successful placement, sample the profiler-owned leaf: its
@@ -1166,14 +1210,13 @@ class SessionServer:
         except BaseException:
             # The session is not yet published. Release any owned kdamond
             # even when storage or summary assembly fails after acquisition.
-            try:
-                if damon_session_obj is not None:
-                    self._close_damon_session(
-                        damon_session_obj, session_id=session_id,
-                        context="session start failed",
-                    )
-            finally:
-                self._remove_session_dir(session_id)
+            # The outer transaction rolls placement back and retains its
+            # recovery journal if that rollback cannot be verified.
+            if damon_session_obj is not None:
+                self._close_damon_session(
+                    damon_session_obj, session_id=session_id,
+                    context="session start failed",
+                )
             raise
 
     def _make_placement(
@@ -2175,6 +2218,19 @@ class SessionServer:
                 continue
             if manifest.get("status") == "live":
                 continue
+            # A failed PID restoration can leave a finished summary beside a
+            # live delegated scope. Its journal is the only restart recovery
+            # authority, so count/age retention applies only after that
+            # journal positively records complete cleanup.
+            placement_path = os.path.join(self.sessions_dir, name, "placement-state.json")
+            if os.path.lexists(placement_path):
+                try:
+                    with open(placement_path, "r", encoding="utf-8") as fh:
+                        placement_state = json.load(fh)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(placement_state, dict) or placement_state.get("state") != "complete":
+                    continue
             finished.append((name, manifest))
         finished.sort(key=lambda pair: pair[0])
 

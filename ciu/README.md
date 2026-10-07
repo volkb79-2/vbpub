@@ -10,6 +10,7 @@ console entrypoint, **`ciu`**, a flat verb dispatcher:
 - **Guided repo scaffolding** (`ciu init`, S19): generates a validated global defaults template, gitignore entries, and optional stack skeletons — templates ship inside the wheel, existing files are never overwritten. `--hooks NAME1,NAME2` (S19.1) additionally copies shipped, revision-stamped hook templates into every scaffolded stack.
 - read-only service data: `ciu resolve [--profile P ...] [--stack S] [--service X] [--live] --json` reports identities from rendered config, including an explicitly selected optional profile, and `ciu exec [--profile P ...] <stack>[:<service>] -- ARGV...` runs exact argv in one already-running service. Interactive terminal use gets a TTY automatically. `ciu profiles` also lists without persisting rendered config.
 - dry-run hooks: `ciu up --dry-run` skips `post_compose` hooks unless the hook module has the literal `DRY_RUN_SAFE = True` declaration; skipped modules are not imported. See [the hook guide](docs/CONSUMERS.md#14-preflight-a-config-change-without-deploying-ciu-check-s134a--s95) and [the design rationale](docs/DESIGN-GUIDE.md#why-reporting-and-dry-run-paths-do-not-run-live-hooks).
+- worktree resource isolation: project-built image tags include the linked checkout's instance id; pulled images and the primary tag stay unchanged. A build refuses if its final tag is named by the primary's rendered image map, and a linked checkout without a resolvable CIU identity refuses an unscoped Bake unless `--allow-shared-tag` is supplied. Before `up`, an explicit container name already owned by another or unknown checkout is refused. Configure the v7 shared-tag escape hatch only for consumers that need it. See [why these guards are separate](docs/DESIGN-GUIDE.md#why-worktree-images-and-explicit-container-names-have-separate-guards-ciu-117-and-ciu-104) and [the worktree adoption example](docs/CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
 - managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` — `create` allocates one Git workspace and prepares every committed CIU root inside it; `create --up` also starts profiles declared in `[ciu.worktree].up` in one deploy invocation, preserving the checkout if startup fails. [The profiles run together so cross-profile preflights see the full selection](docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy). Markerless Git families remain valid record-only worktrees with no fabricated CIU runtime. `worktree up --all` starts the full default deploy set. Root-specific profile work remains an ordinary stack command from that root. `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>` accepts the shared `--deploy` and `--healthcheck` actions (`--healthcheck` gates that stack after it starts); `ciu down --dir <stack>` stops only that stack's running Compose project ([why](docs/DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors)); also `ciu render` and `ciu dev <stack>`
@@ -292,14 +293,14 @@ and consumer behavior. `artifacts = ["wheel"]` records the released output—it 
 hidden behavior (see [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md)).
 
 ```bash
-cmru release --project ciu     # gate → tag → explicit build → explicit publish
-cmru build   --project ciu     # retained worktree: gate + wheel build, no publish
-cmru resolve --project ciu     # resolve the current latest (version / url / sha256)
+cmru release ciu     # gate → tag → explicit build → explicit publish
+cmru build   ciu     # retained worktree: gate + wheel build, no publish
+cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
 The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). An old,
 unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
-`cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
+`cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
 then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.
 
 `run-ciu-tests.py` enforces **100% total line and branch coverage** in the
@@ -361,19 +362,19 @@ curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-
 sha256sum -c ciu-<version>-py3-none-any.whl.sha256
 ```
 
-Use `cmru resolve --project ciu` (or `cmru.handlers wheel-validate --prefix ciu`) to
+Use `cmru resolve ciu` (or `cmru.handlers wheel-validate --prefix ciu`) to
 resolve the current latest version and print the download + checksum URLs
 programmatically:
 
 ```bash
-cmru resolve --project ciu
+cmru resolve ciu
 ```
 
 ### Cutting a new release (SemVer)
 
 ```bash
 # From a clean, pushed main checkout:
-./cmru.release.sh --project ciu
+cmru release ciu
 ```
 
 CMRU derives the SemVer increment from CIU's project-scoped conventional

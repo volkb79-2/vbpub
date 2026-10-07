@@ -91,11 +91,11 @@ def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_o
     config = tmp_path / "cmru.toml"; config.write_text("x")
     args = cli._child_release_args(
         ["--config", "/caller/cmru.toml", "--resume", "/tmp/w", "demo"],
-        config, tmp_path,
+        config, tmp_path, forward_from=None,
     )
     assert args == ["demo", "--config", "cmru.toml"]
     outside = tmp_path.parent / "outside.toml"
-    assert cli._child_release_args([], outside, tmp_path) == ["--config", str(outside.resolve())]
+    assert cli._child_release_args([], outside, tmp_path, forward_from=None) == ["--config", str(outside.resolve())]
 
 
 def test_worktree_change_detection_and_generated_commit_are_scoped(tmp_path):

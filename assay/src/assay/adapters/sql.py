@@ -712,6 +712,7 @@ class SqlAdapter:
         rel_paths: Sequence[str],
         *,
         remaining: Remaining | None = None,
+        sensitive_values: Sequence[str] = (),
     ) -> StatementBlockReport | None:
         raise NotImplementedError(_UNREACHABLE.format(name="statement_blocks"))
 

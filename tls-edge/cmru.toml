@@ -47,7 +47,7 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "tls-edge: publish tarball", argv = ["python3", "-m", "cmru.handlers", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES"], cwd = "." },
+  { label = "tls-edge: publish tarball", argv = ["cmru", "handler", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES"], cwd = "." },
 ]
 
 [versions.targets."oci.socket-proxy"]

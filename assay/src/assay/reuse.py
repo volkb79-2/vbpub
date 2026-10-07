@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 from .errors import AssayError, Outcome, ReasonCode
 
 MAX_REUSE_ARTIFACT_BYTES = 16 * 1024 * 1024
-V12_COLD_START = 12
+LEGACY_COLD_START_VERSIONS = frozenset({12, 13})
 
 
 @record
@@ -27,7 +27,7 @@ class ReuseSource:
 
 
 def load_reuse_source(path: str | Path) -> ReuseSource:
-    """Read one bounded artifact; v12 is recognized without inspecting its claims."""
+    """Read one bounded artifact; v12/v13 are recognized without their claims."""
     source_path = Path(path).expanduser()
     try:
         with source_path.open("rb") as stream:
@@ -54,7 +54,7 @@ def load_reuse_source(path: str | Path) -> ReuseSource:
     if type(version) is not int:
         raise _unreadable(source_path, "schema_version must be an integer")
     digest = hashlib.sha256(raw).hexdigest()
-    if version == V12_COLD_START:
+    if version in LEGACY_COLD_START_VERSIONS:
         # Deliberately stop at the version marker. Nothing under claims or
         # mutation is validated, trusted, or used to select a candidate.
         return ReuseSource(
@@ -74,14 +74,15 @@ def load_reuse_source(path: str | Path) -> ReuseSource:
     if version != VERDICT_SCHEMA_VERSION:
         raise _unreadable(
             source_path,
-            f"schema_version {version} is unsupported; expected 12 cold start "
+            f"schema_version {version} is unsupported; expected 12 or 13 cold start "
             f"or current version {VERDICT_SCHEMA_VERSION}",
         )
     failures = verify_document(document)
     if failures:
         raise _unreadable(
             source_path,
-            "current v13 verifier rejected the artifact: " + "; ".join(failures),
+            f"current v{VERDICT_SCHEMA_VERSION} verifier rejected the artifact: "
+            + "; ".join(failures),
         )
 
     r2_claim = next(
@@ -136,7 +137,10 @@ def classify_candidate(
     """Return the plan label and, only for eligible kills, their witness node."""
     if not source.complete_unsharded_native:
         if source.cold_start:
-            return "unproven-source", "v12 cold start has no reusable witnesses"
+            return (
+                "unproven-source",
+                f"v{source.schema_version} cold start has no reusable witnesses",
+            )
         return "unproven-source", "source is not a complete unsharded native campaign"
     previous = source.outcomes.get(candidate_id)
     if previous is None:

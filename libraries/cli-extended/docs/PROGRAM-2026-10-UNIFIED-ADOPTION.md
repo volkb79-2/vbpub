@@ -43,7 +43,7 @@ implementer briefs cite. Backlog entries `CLI-EXT-05`…`CLI-EXT-15` in
   - The full wave gate (`r0-r1` → `r2` mutation at 100% killed → `r3` canary) runs on the integrated branch before the merge to `main`.
   - Only one gate container runs at a time, because the host is shared with a production game server.
 - **Docs are part of each package** (AGENTS.md "User-facing docs" rule). Every package updates `README.md` (what), `docs/DESIGN-GUIDE.md` (why), `docs/CONSUMERS.md` (how, with pasteable examples) and the normative `SPEC.md` in the same change. `tests/test_docs.py` keeps examples parseable by the shipped loader.
-- **Shipped** means merged to `main` and pushed, released with `cmru release --project cli-extended`, and installed into `/home/vscode/.venv` with the installed version verified.
+- **Shipped** means merged to `main` and pushed, released with `cmru release cli-extended`, and installed into `/home/vscode/.venv` with the installed version verified.
 
 ## Library wave
 
@@ -269,7 +269,7 @@ W1 and W3a can run in parallel because their files are disjoint (`identity.py`/`
   - package data for `skills/**` and `review_rubric.md`;
   - `CHANGES.md` created, including a "Contract" section (contract v1 defined).
 - **cmru onboarding:** a `libraries/cli-extended/cmru.toml` modeled on run-gate-project's pure-wheel contract. It is registered in the root `cmru.orchestration.toml` (`project_order`, `default_projects`, `[orchestration.project.cli-extended]`) and publishes `cli-extended-latest/latest.json`.
-- **Release:** `cmru release --project cli-extended --set-version 0.2.0`.
+- **Release:** `cmru release cli-extended --set-version 0.2.0`.
 - **Deploy:**
   - Install into `/home/vscode/.venv` and verify `cli-extended version`.
   - Then verify which `cli_extended` the venv imports. Today it resolves through cmru's editable finder to the main checkout source (`libraries/cli-extended/src`). Record the result and the precedence, and keep the conflict tracked until cmru adoption (②) removes vendoring.

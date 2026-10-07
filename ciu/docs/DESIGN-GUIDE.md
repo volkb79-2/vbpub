@@ -740,6 +740,36 @@ dstdns class of incident the doctrine records. `requires_worktree_mount =
 false` is the explicit opt-out for a deliberate non-source utility container;
 it never weakens project/service/network uniqueness.
 
+## Why worktree images and explicit container names have separate guards (CIU-117 and CIU-104)
+
+CIU can isolate an image reference because it sees both the rendered
+`build:` declaration and the Git worktree identity. It appends that instance
+id only to project-built references, including other services in the same
+Compose model that consume the reference. Pulled images stay unchanged, and
+the primary keeps its declared tag. `ciu bake` uses Buildx's resolved plan so
+target aliases and multiple tags are preserved. Before a linked build proceeds,
+CIU resolves the primary checkout's image map and refuses a final tag that the
+primary names; a failed primary render is not treated as an empty map. This
+closes the remaining collision case where the primary deliberately uses the
+linked checkout's derived tag. This is a v7 compatibility feature for existing
+templates; `shared_image_tags` and
+`--allow-shared-tag` intentionally retain the old shared-tag behavior when
+requested. If a linked Git checkout has no CIU root and generated identity,
+the default is refusal: without that fact CIU cannot derive an isolated tag.
+The explicit Bake flag remains the one-invocation escape hatch for operators
+who deliberately choose shared tags.
+
+Container names need a different check. A fixed explicit name can bypass the
+instance-specific Compose project and point two checkouts at one live
+container. Before `up`, CIU compares exact names and accepts an existing
+container only when its Compose project, service, and checkout labels prove
+that it belongs to this checkout. Host and container checkout paths may be
+two known aliases for the same root. Missing or contradictory evidence is an
+unknown owner, so CIU refuses before Compose runs. This check belongs at
+deployment time because worktree allocation does not yet know which selected
+stack will start. See [the normative rules](SPEC.md#s88-explicit-container-name-ownership-preflight-ciu-104)
+and [the consumer steps](CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+
 ## Rejected alternatives
 
 - **SemVer-based feature inference** — rejected: a version bump carries no

@@ -55,6 +55,8 @@ CLOSED_PUBLIC_VALUES = {
     # exec-target config vocabulary (S16.7)
     "exec_targets",
     "up",
+    "shared_image_tags",
+    "--allow-shared-tag",
     "DRY_RUN_SAFE",
     "requires_worktree_mount",
     "stack",
@@ -215,6 +217,23 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
     assert "ciu exec --profile test tools/test-runner:test-runner" in consumers
     assert "ciu down --dir tools/admin-debug" in consumers
     assert "ciu clean --identity OLD_ID" in consumers
+    assert "shared_image_tags = true" in consumers
+    assert "--allow-shared-tag" in readme and "--allow-shared-tag" in consumers
+    assert "project-built image" in readme
+    assert "CIU-117" in design and "CIU-104" in design
+
+
+def test_worktree_image_optout_example_matches_the_shipped_loader():
+    consumers = (REPO_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        block for block in _toml_blocks(REPO_ROOT / "docs" / "CONSUMERS.md")
+        if "[ciu.worktree]" in block and "shared_image_tags" in block
+    ]
+    assert len(blocks) == 1
+    parsed = config_model.parse_toml_string(blocks[0], "worktree image opt-out example")
+    worktree._validate_worktree_table(parsed["ciu"]["worktree"])
+    assert parsed["ciu"]["worktree"]["shared_image_tags"] is True
+    assert "why-worktree-images-and-explicit-container-names-have-separate-guards-ciu-117-and-ciu-104" in consumers
 
 
 def test_worktree_startup_consumer_example_uses_the_shipped_profile_loader():
@@ -269,6 +288,32 @@ def test_workspace_identity_spec_keeps_export_and_authority_distinct():
     assert "Root selection and generated identity facts are" in spec
     assert "Derived identity has one source." in spec
     assert "a pre-set environment value always wins" not in spec
+
+
+def test_release_gate_child_env_uses_repo_sources_and_matches_the_assay_lane(
+    monkeypatch, tmp_path,
+):
+    """The release gate (`cmru tester-gate -- run-ciu-tests.py`) runs in an image whose
+    installed cmru predates installer extensions; the pytest child must therefore put the
+    repo's own sources first, resolved from the script (not the cwd), as assay.toml does."""
+    monkeypatch.chdir(tmp_path)
+    helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
+    env = helper["child_env"]({"PYTHONPATH": "/ambient", "KEEP": "1"})
+    parts = env["PYTHONPATH"].split(":")
+    repo = REPO_ROOT.parent
+    assert parts == [
+        str(REPO_ROOT / "src"),
+        str(repo / "cmru" / "src"),
+        str(repo / "libraries" / "cli-extended" / "src"),
+        str(repo / "libraries" / "worktree" / "src"),
+        "/ambient",
+    ]
+    assert env["KEEP"] == "1"
+    assert helper["child_env"]({})["PYTHONPATH"].split(":") == parts[:4]
+    lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
+    assert [
+        str((REPO_ROOT / p).resolve()) for p in lane["env"]["PYTHONPATH"].split(":")
+    ] == [str(Path(p).resolve()) for p in parts[:4]]
 
 
 def test_assay_lane_declares_the_complete_rigor_ladder():

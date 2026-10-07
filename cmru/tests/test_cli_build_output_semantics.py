@@ -475,6 +475,11 @@ def test_tarball_publish_validates_retained_version_file_and_artifact_selection(
 
 def test_tls_edge_retained_tarball_inventory_contains_the_publisher_version_file():
     repo_root = Path(__file__).resolve().parents[2]
+    if not (repo_root / "tls-edge" / "cmru.toml").is_file():
+        # The disposable gate fixtures (canary, mutation) copy a closed set of
+        # sibling files that excludes tls-edge; same guard as test_installer's
+        # real-config test. The full-suite lane still runs it.
+        pytest.skip("tls-edge tree is not part of the disposable gate fixture")
     config = tomllib.loads((repo_root / "tls-edge" / "cmru.toml").read_text(encoding="utf-8"))
     script = (repo_root / "tls-edge" / "scripts" / "build-artifact.sh").read_text(encoding="utf-8")
     publish_argv = config["steps"]["push"]["commands"][0]["argv"]
@@ -1453,7 +1458,7 @@ def test_bound_cmru_launcher_precedes_ambient_path_and_checks_identity(monkeypat
         cli._create_bound_cmru_launcher(mismatched)
 
 
-def test_bound_cmru_launcher_imports_sibling_sources_with_isolated_python(
+def test_bound_cmru_launcher_imports_only_the_worktree_sibling_source_with_isolated_python(
     monkeypatch, tmp_path,
 ):
     repo_root = tmp_path / "repo"
@@ -1478,11 +1483,13 @@ def test_bound_cmru_launcher_imports_sibling_sources_with_isolated_python(
     monkeypatch.delenv("PYTHONPATH", raising=False)
 
     def write_cli(import_worktree: bool) -> None:
-        imports = "from cli_extended import SOURCE_MARKER as CLI_EXTENDED_MARKER\n"
-        expected = "CLI_EXTENDED_MARKER == 'source'"
+        # D10: cli-extended is an installed wheel dependency, so its checkout
+        # (present here) must NOT be put on the launcher's import path.
+        imports = ""
+        expected = "not any('cli-extended' in entry for entry in sys.path)"
         if import_worktree:
             imports += "from worktree import SOURCE_MARKER as WORKTREE_MARKER\n"
-            expected = "CLI_EXTENDED_MARKER == WORKTREE_MARKER == 'source'"
+            expected += " and WORKTREE_MARKER == 'source'"
         (cmru_package / "cli.py").write_text(
             imports
             + "import sys\n"
@@ -1527,12 +1534,12 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     step = _step(
         "build",
         [{"label": "build", "argv": ["cmru", "tester-gate"], "cwd": "."}],
-        step_env={"CMRU_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
         quiet=True,
     )
     project = SimpleNamespace(
         name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
-        env={"CMRU_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
+        env={"CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
         runtime_kind="none", build_metadata={}, github_token="resolved-token",
         runner_steps={"build": step},
     )
@@ -1551,9 +1558,9 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
 
     assert captured["extra_env"] == {
-        "CMRU_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
+        "CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
     }
-    assert captured["protected_env"]["CMRU_BIN"] == str(launcher_directory[0] / "cmru")
+    assert captured["protected_env"]["CMRU_INTERNAL_BIN"] == str(launcher_directory[0] / "cmru")
     assert captured["protected_env"]["GITHUB_PUSH_PAT"] == "resolved-token"
     assert captured["path_prefixes"] == (launcher_directory[0],)
 
@@ -1564,14 +1571,14 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
     step = _step(
         "build",
         [{"label": "check", "argv": ["cmru", "version"], "cwd": "."}],
-        step_env={"CMRU_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
         env_command=["./set-env"],
         quiet=True,
     )
     monkeypatch.setattr(
         runner,
         "apply_env_command",
-        lambda *_args: os.environ.update({"CMRU_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin"}),
+        lambda *_args: os.environ.update({"CMRU_INTERNAL_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin"}),
     )
     monkeypatch.setattr(runner, "maybe_login_multi", lambda *_args: None)
     captured = []
@@ -1588,12 +1595,12 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
         step,
         tmp_path,
         tmp_path / "logs",
-        extra_env={"PATH": "/wrong/project", "CMRU_BIN": "/wrong/project/cmru"},
-        protected_env={"CMRU_BIN": "/bound/cmru"},
+        extra_env={"PATH": "/wrong/project", "CMRU_INTERNAL_BIN": "/wrong/project/cmru"},
+        protected_env={"CMRU_INTERNAL_BIN": "/bound/cmru"},
         path_prefixes=(Path("/bound"),),
     )
 
     argv, command_env = captured[0]
     assert argv == ["cmru", "version"]
-    assert command_env["CMRU_BIN"] == "/bound/cmru"
+    assert command_env["CMRU_INTERNAL_BIN"] == "/bound/cmru"
     assert command_env["PATH"].split(":", 1)[0] == "/bound"

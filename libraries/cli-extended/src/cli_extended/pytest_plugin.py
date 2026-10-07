@@ -86,6 +86,11 @@ def pytest_collection_finish(session: Any) -> None:
                 if line not in errors:
                     errors.append(line)
     if errors:
+        if not config.getoption("cli_case_partial"):
+            errors.append(
+                f"hint: for a focused (partial) run, pass {PARTIAL_OPTION}"
+                " (CI and gate runs stay strict)"
+            )
         raise pytest.UsageError(
             "cli-extended: CLI case test coverage failed:\n" + "\n".join(errors)
         )

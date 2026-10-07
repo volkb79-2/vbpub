@@ -533,8 +533,9 @@ def test_abandon_workspace_rejects_changed_local_tag_facts(monkeypatch, tmp_path
     assert removed == []
 
 
-def test_abandon_workspace_rejects_non_sha1_candidate_object_id(monkeypatch, tmp_path):
-    oid = "a" * 64
+def test_abandon_workspace_rejects_malformed_candidate_object_id(monkeypatch, tmp_path):
+    # REL-14: SHA-256 (64 hex) ids are valid now; only malformed ids are refused.
+    oid = "a" * 63
     workspace, _calls, removed, _forgotten = _install_transaction_abandon(
         monkeypatch, tmp_path,
         pushed=True,
@@ -1025,7 +1026,7 @@ def test_read_release_scope_for_path_reports_unverifiable_candidates(
         transaction.read_release_scope_for_path(candidate)
 
 
-def test_cleanup_build_output_refuses_a_valid_but_absent_record_before_apply(monkeypatch, tmp_path):
+def test_cleanup_build_output_refuses_a_valid_but_absent_record_before_apply(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     project.project_root.mkdir()
     (project.project_root / "artifacts").mkdir()
@@ -1043,11 +1044,12 @@ def test_cleanup_build_output_refuses_a_valid_but_absent_record_before_apply(mon
         lambda *_a, **kwargs: calls.append(kwargs) or [],
     )
 
-    with pytest.raises(RuntimeError, match="retained build record is incomplete or unsafe"):
-        cli.main([
-            "cleanup", "demo", "--delete-build-output",
-            "20260101T000000Z_" + "a" * 40, "--yes",
-        ])
+    assert cli.main([
+        "cleanup", "demo", "--delete-build-output",
+        "20260101T000000Z_" + "a" * 40, "--yes",
+    ]) == 4
+    err = capsys.readouterr().err
+    assert "retained build record is incomplete or unsafe" in err and "unexpected" not in err
     assert calls == []
 
 

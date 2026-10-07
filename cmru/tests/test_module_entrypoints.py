@@ -39,7 +39,7 @@ def test_runner_module_cli_alias_refuses_and_points_to_installed_verb(tmp_path, 
     )
     with pytest.raises(SystemExit) as raised:
         runpy.run_path(runner.__file__, run_name="__main__")
-    assert "cmru run-step" in str(raised.value.code)
+    assert "cmru run --step" in str(raised.value.code)
 
 
 def test_handlers_module_entrypoint_refuses_unconfigured_wheel_builder(tmp_path, monkeypatch):

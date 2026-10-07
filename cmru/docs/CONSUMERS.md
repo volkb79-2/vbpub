@@ -18,16 +18,16 @@ with this pasteable probe:
     cmru --version
 
 It prints one `cmru <version>` line on stdout and exits 0. The equivalent native
-verb is `cmru version`. Help from `cmru`, `cmru-agent`, and `cmru-controller`,
+verb is `cmru version`. Help from `cmru`,
 including nested verbs, begins with the generated CMRU identity. CMRU
 configuration diagnostics put that identity on line 1; shared
 `cli-extended` usage/refusal diagnostics put the actionable error first and
 then show relevant generated help, which begins with the same identity. Use
 `--help` or `cmru help <verb>`; CMRU's shared grammar deliberately does not add
 a separate short `-h` spelling.
-The documented `python3 -m cmru.handlers` calls are explicit project-step
-library adapters rather than a separately versioned operator entrypoint, so
-they are outside this top-level identity surface.
+`python3 -m cmru.handlers` is a bootstrap-only library adapter (the first-wheel
+build), not a separately versioned operator entrypoint, so it is outside this
+top-level identity surface. Project steps use `cmru handler <verb>`.
 
 ---
 
@@ -71,7 +71,7 @@ id = "example-wheel"
 description = "Example wheel project"
 prefix = "example-wheel-v"        # the tag prefix cmru owns; SemVer follows it
 artifacts = ["wheel"]             # an output INVENTORY, not a behaviour switch
-template_revision = 4
+template_revision = 5
 
 [project.version]
 strategy = "scm"
@@ -130,15 +130,21 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+  { label = "publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]
 ```
+
+Project steps call handlers as `cmru handler <verb> ...`, never
+`python3 -m cmru.handlers`: inside a release transaction `cmru` resolves to the
+launcher bound to the running cmru (its own library roots), while the module form
+resolves cmru from whatever interpreter and `PYTHONPATH` the step inherits.
+`cmru standards` flags the module form in project steps.
 
 The runtime declaration is mandatory and closed. Paste `kind = "none"` for a
 self-contained project step; use `kind = "ciu"` when the step deliberately
@@ -166,7 +172,6 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order    = ["example-wheel"]
-default_projects = ["example-wheel"]
 default_steps    = ["run-tests", "build", "push"]
 execution_mode   = "project-first"
 
@@ -208,9 +213,132 @@ adopter can render an installer from any working directory after installing CMRU
 cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
 ```
 
-The wheel also installs `cmru-agent` and `cmru-controller`; those are independent companion
-CLIs with their own registered verbs. `cmru --help` lists top-level CMRU commands, while
+`cmru --help` lists top-level CMRU commands, while
 `cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
+
+### Installer extensions (project-owned `get.py` commands)
+
+The rendered `get.py` is the generic transactional installer
+(`install`/`update`/`status`/`rollback`) and nothing else. A project that needs its own
+command declares it as a fragment and lists it in its `cmru.toml`:
+
+```text
+[project.installer]
+extensions = ["installer/mycmd.py"]   # project-relative, .py, no "..", must exist at render time
+```
+
+`cmru get-py` inlines each fragment verbatim at the template's `# @@EXTENSIONS@@` marker, in
+declared order, between `# --- extension: <path> sha256=<digest> ---` and
+`# --- end extension: <path> ---` lines. The result is still ONE file, byte-identical across
+renders. A fragment must:
+
+- parse, and import only the standard library (it brings its own `import` lines);
+- define top-level names that collide with neither the template nor another fragment;
+- use only the template names listed in the rendered file's `EXTENSION_API` tuple
+  (`EXIT_CONFIG`, `EXIT_FAIL`, `EXIT_PREREQ`, `_EXTENSIONS`, `_c`, `_current_version`,
+  `_root_dir`, `do_install`, `fatal`, `hr`, `info`, `ok`, `warn`);
+- register with a top-level `_EXTENSIONS.append(register)`, where
+  `register(subparsers) -> {command: handler}` adds its parser(s) and `handler(args, token)`
+  runs the command. A command name that duplicates a core or another extension's command exits 2.
+
+These render-time checks (which also refuse star imports, `global`/`nonlocal` of a template
+name, and module-scope rebinding of template names, and which read annotations) are a
+contract/lint guard over repo-owned fragments, **not a security boundary**: `globals()`,
+`getattr` and `exec` remain possible, so fragments must be reviewed like any other code.
+
+`EXTENSION_API` is a **stability contract**: changing or removing a name in it requires
+updating every in-repo fragment in the same change (today: ciu's `ciu/installer/enroll.py`).
+Re-render and commit the project's `get.py` after editing a fragment; ciu's
+`TestRenderedInstaller` byte-identity test guards the committed file against drift.
+Host enrollment (`get.py enroll`, a root-run `authorized_keys` writer) is ciu's fragment, so a
+project that renders `get.py` without `extensions` gets no enrollment code.
+
+## Authoring an installer for your project
+
+The rendered `get.py` is a fail-closed, transactional installer you ship as a release asset
+(normative contract: SPEC S6.1-S6.17). To give your project one:
+
+1. **Configure** `[project.installer]` in the project's `cmru.toml` (all paths are relative to
+   the release root; `asset_suffix` is always `.tar.xz`):
+
+   ```text
+   [project.myproj.installer]
+   install_dir_system = "/opt/myproj"        # absolute, normalised, >= 2 components (not /opt); user scope uses install_dir_user
+   install_dir_user   = "myproj"
+   asset_suffix       = ".tar.xz"
+   entrypoint         = "scripts/adapter.py" # optional project adapter (bootstrap/apply/rollback)
+   launchers          = ["myproj"]           # optional: <root>/bin/myproj -> current venv
+   # manifest_pubkey  = "<56-char minisign public key>"   # optional: require signed releases
+
+   [[project.myproj.installer.wheels]]       # optional: wheels installed offline into a venv
+   path         = "vendor/myproj-*.whl"
+   distribution = "myproj"
+   ```
+
+2. **Publish a bundle** per release, next to its checksum. The release assets are
+   `<tag>.tar.xz` (`<tag>-<variant>.tar.xz` for variants), `<tag>.tar.xz.sha256`
+   (`<64 hex>  <name>`) and `get.py`. The tarball has exactly ONE top-level directory that holds
+   `manifest.json` (and `manifest.json.minisig` when signed), the wheels under their globbed
+   paths, and the project files. The manifest is JSON with `schema_version: 1`, `tag`/`version`
+   if present equal to the release tag, one `{"sha256": ..., "wheel": ..., "size": ...}` entry
+   per configured wheel distribution (key = distribution name), and a `files` map
+   `{relpath: {"sha256": ..., "size": ..., "mode": ...}}` that MUST cover the `entrypoint` and
+   EVERY other regular file in the bundle: the installer refuses a bundle with a member that is
+   not listed there (wheels are hashed through their distribution entry instead), and a
+   symlink or hardlink only when its target is a listed file. A project whose release is a
+   plain tarball writes that manifest with `cmru handler bundle-manifest --name NAME
+   --tag TAG --root <staged top-level dir>` as the last step before `tar` (tls-edge's
+   `scripts/build-artifact.sh` does); `cmru.manifest.build_manifest(..., bundle_root=DIR)`
+   embeds the same `files` map for wheel-based bundles. A bad tree (symlink, special file,
+   missing root) or an invalid `--tag` is a one-line `[ERROR]` and a non-zero exit (1 for the
+   tree, 2 for the tag), never a traceback. Manifest `files` keys must be normalised relative
+   paths: `../x`, `..`, `/abs`, `a//b`, `./a`, NUL and backslash are refused.
+3. **Render and commit** `cmru get-py myproj --config cmru.toml --output get.py`.
+4. **Users** run the installer. It runs as root, so lead with the verified, chained form: a
+   private temp directory (no predictable `get.py` in the current directory), HTTPS only, and a
+   checksum that must pass before anything runs (`&&` stops the chain on any failure). Take
+   `<sha256-of-get.py>` from a source you already trust (your own release notes or controller):
+   cmru does not publish a checksum for `get.py`.
+
+   ```sh
+   d=$(mktemp -d) && cd "$d" && curl -fsSLo get.py --proto '=https' https://github.com/<owner>/<repo>/releases/download/<tag>/get.py && echo "<sha256-of-get.py>  get.py" | sha256sum -c - && sudo python3 get.py install --version <tag>
+   ```
+
+   The pipe form is **unverified**: nothing checks the script before root runs it, and
+   `curl -f ... | sudo python3 -` exits 0 on a 404 (empty input is an empty program), so a
+   failed download looks like a successful install. Use it only for a throwaway host. Stdin
+   carries the script, so a token for a private repo comes from `--github-token-file` or
+   `GITHUB_TOKEN`, never `--github-token-stdin`:
+
+   ```sh
+   curl -fsSL https://github.com/<owner>/<repo>/releases/download/<tag>/get.py \
+     | sudo python3 - install --version <tag>
+   ```
+
+   Then `python3 get.py update [--version TAG]`, `status` and `rollback [--version TAG]`.
+   `--version` installs exactly that tag; without it the highest release is resolved. Before the
+   first update after a migration from the old layout there is no rollback target (`rollback`
+   says so, exit 1).
+5. **Security properties.** Fail-closed on any verification error (exit 1, nothing changed);
+   SHA-256 sidecar checked before extraction; HTTPS only with an allowlisted host on every
+   redirect hop and the token never forwarded across a redirect; wheels installed offline with
+   `--require-hashes` into a per-release venv; a crash never leaves a half-built release live.
+   Crash recovery: each transaction starts by deleting leftover `.incomplete` release
+   directories, EXCEPT on a pre-W1 (legacy-layout) install, where that prune is skipped and the
+   old releases survive until the new release is live (a failed migration leaves the legacy
+   previous release in place).
+   **Signing is optional but absolute once enabled:** with `manifest_pubkey` the installer needs
+   `minisign`, verifies `manifest.json.minisig` with the pinned key, and requires the signed
+   trusted comment to be exactly
+
+   ```text
+   project=<name> tag=<tag> manifest_sha256=<sha256 of manifest.json>
+   ```
+
+   (replay protection: it binds the signature to this tag and these manifest bytes). Sign with
+   `cmru.manifest.build_trusted_comment(project=, tag=, manifest_path=)` and
+   `cmru.delegated.minisign_sign(...)` from a project-owned release step; `cmru release` does not
+   sign automatically yet (SPEC S6.15).
 
 ## Using the wheel and component interfaces
 
@@ -228,22 +356,22 @@ python3 -m venv .venv-cmru
 ```
 
 Use installed console scripts for operator workflows. `python -m cmru.handlers`
-is the supported component CLI because project contracts and the first-wheel
-bootstrap need it. `cmru.bundle` and `cmru.runner` are library modules; they do
-not expose module commands. The `cmru.cli`, `cmru.agent.cli`, and
-`cmru.controller.cli` module aliases are retired. Use `cmru run-step` for
+is the bootstrap-only component CLI (the first-wheel build runs before an
+installed `cmru` exists); project contracts use `cmru handler <verb>` instead.
+`cmru.bundle` and `cmru.runner` are library modules; they do not expose module
+commands. The `cmru.cli` module alias is retired. Use `cmru run --step NAME` for
 direct single-step CLI work, and use the documented Python functions to compose
 bundle or runner behavior:
 
 ```sh
 # Preview one configured project step without running it.
-.venv-cmru/bin/cmru run-step --config ./cmru.toml --step build --dry-run
+.venv-cmru/bin/cmru run --config ./cmru.toml --step build --dry-run
 
 # Show the inputs to a declared wheel handler without launching its build.
 .venv-cmru/bin/python -m cmru.handlers wheel-build --cwd . --dry-run
 ```
 
-`cmru run-step` reads the same project configuration and step declaration used
+`cmru run --step` reads the same project configuration and step declaration used
 by CMRU orchestration; it does not define a second step format. The bundle
 library reads its dedicated bundle TOML. Its loader rejects unknown keys and
 wrong TOML value types at each table boundary; see S9.4a in the spec.
@@ -256,16 +384,15 @@ from cmru.runner import run_step
 
 # These calls execute configured work. run_step may remove declared clean
 # directories and runs the step commands; run_bundle removes dist_dir first.
-# Use cmru run-step --dry-run when you need to inspect project step effects.
+# Use cmru run --step NAME --dry-run when you need to inspect project step effects.
 run_step(Path("cmru.toml"), "build")
 archive = run_bundle(Path("bundle.toml"))
 ```
 
 Prefer the declared project-step commands or these documented entrypoints over
 copying CMRU implementation code. Do not import private helpers as an API. For
-operator commands, use the installed `cmru`, `cmru-agent`, or `cmru-controller`
-script. The bundle module is a library, and the runner module's supported CLI
-is `cmru run-step`.
+operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
+is `cmru run --step NAME`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
 `CMRU_WHEEL_BUILDER_IMAGE`; the dry-run example only displays accepted inputs.
@@ -297,7 +424,7 @@ resolved plan before running the default set:
 
 ```sh
 cmru run example-wheel --dry-run
-cmru run example-wheel --build --dry-run
+cmru run example-wheel --step build --dry-run
 ```
 
 The first command previews configured defaults; the second previews only the
@@ -481,9 +608,11 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_MEMORY` | gate container memory ceiling (no default — refuses unbounded) |
 | `CMRU_TESTER_MEMORY_SWAP` | combined mem+swap total (Docker semantics) |
 | `CMRU_TESTER_CPUS` | finite decimal CPU ceiling of at least `0.00001`; smaller values would remove Docker's per-container bound |
-| `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image |
+| `CMRU_TESTER_PIDS_LIMIT` | positive integer `--pids-limit` for the gate container (no default; without it the ceiling is the host's systemd `DefaultTasksMax`, shared with production) |
+| `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image; runs privileged with host PID, so it must be digest-pinned (`repo@sha256:<64 hex>`) and present locally (`--pull=never`) |
 | `CMRU_TESTER_CGROUP_PARENT` | required host gates slice (`${CGROUP_PARENT_DEV_GATES}`) |
-| `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon) |
+| `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon); privileged, so digest-pinned and local like the probe image |
+| `CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT` | **only** with `--enable-docker`: the sidecar's own memory / CPU / pids limits |
 | `CMRU_WHEEL_BUILDER_IMAGE` | required by `wheel-build` |
 
 These reach the step through `cmru release`. **`cmru standards` checks this exact set** against
@@ -498,9 +627,31 @@ The CPU setting must be a finite decimal of at least `0.00001`; CMRU passes it t
 set `--cpu-period`, because Docker rejects those two CPU controls together. Smaller positive
 values, zero, non-finite values, and values Docker cannot represent are refused instead of
 being rounded to an absent CPU limit.
-`--memory`, `--memory-swap`, and `--cpus` bound the tester workload. With `--enable-docker`,
-the DinD sidecar is also placed under `CMRU_TESTER_CGROUP_PARENT`, but currently has no separate
-per-container CPU or memory cap; the policy decision is open in the canonical CLI audit.
+`--memory`, `--memory-swap`, `--cpus` and `--pids-limit` bound the tester workload. With
+`--enable-docker`, the DinD sidecar is also placed under `CMRU_TESTER_CGROUP_PARENT` and has its
+own required `--dind-memory`/`--dind-cpus`/`--dind-pids-limit` (decided 2026-10-05).
+
+The gate workload and the DinD sidecar run under `--init`, every container has an exact name
+(`cmru-tester-<uuid8>`, `cmru-probe-<uuid8>`, `cmru-tester-dind-<12 hex>`), and SIGTERM/SIGHUP
+stop and remove them by that name. After your command exits, cmru reads the container's own
+`pids.events` and `memory.events` (copied by an in-container wrapper to
+`.cmru/tester-gate-events-<uuid>.txt` in your worktree, removed afterwards): a missing file, a
+non-zero `pids.events max` or a non-zero `memory.events oom_kill` makes the step exit **3**
+(infrastructure failure, naming the counter) even if your command exited 0. A malformed
+events file is the same failure. Otherwise your command's own exit status is returned unchanged.
+`.cmru/` is git-ignored in vbpub; add it to your project's ignore file if the gate runs against a
+worktree you also diff.
+
+Two consequences to know about:
+- **`oom_kill > 0` anywhere in the gate's cgroup fails the step with exit 3, even when the
+  command exited 0.** That includes tests that provoke an OOM kill on purpose; run such tests
+  outside `tester-gate` (or in a child with its own limit) rather than expecting a pass.
+- **uid requirement.** The wrapper runs as the image's user (uid 1003 in `tester-unified`) and
+  must be able to create `.cmru/tester-gate-events-<uuid>.txt` in your mounted worktree. If the
+  host user that owns the worktree and the image uid do not match so that the directory is not
+  writable, the file is never written and every gate ends exit 3 with "events file is missing";
+  fix the ownership (the launcher creates `.cmru/` as the invoking host user) rather than
+  ignoring the failure.
 
 ### Reproducing a gate step by hand
 
@@ -511,7 +662,8 @@ forget, but it is faster to set it before the first try:
 ```sh
 export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
        CMRU_TESTER_MEMORY=3g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=1.5 \
-       CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim \
+       CMRU_TESTER_PIDS_LIMIT=4096 \
+       CMRU_TESTER_CGROUP_PROBE_IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' debian:trixie-slim)" \
        CMRU_TESTER_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:?CGROUP_PARENT_DEV_GATES is required}"
 # then run the step's argv
 ```
@@ -575,15 +727,11 @@ invocation resumes and writes `.assay/progress-cmru.jsonl`; its verdict is
 The disposable controls include the Topos and nyxloom CMRU manifests consumed
 by CMRU's estate-adoption test, so the full suite remains runnable in each
 baseline and mutant copy.
-`gate` also runs CMRU's total-coverage, cause-sensitive canary, and
-real-enrollment evidence lanes. It starts with the KI-26 installed-wheel
-acceptance lane, which builds the wheel, installs it into a fresh isolated venv,
-and invokes `cmru get-py` outside the source checkout.
-The registered real-enrollment lane requires Docker, the configured host-probe image, a loaded
-fragment-backed gates cgroup slice on the Docker host, and a successful fixture-image build; missing
-prerequisites or a failed build are lane failures, not skips. CMRU's privileged systemd probe
-checks the daemon host. Standalone local test runs may skip that container oracle when prerequisites
-are unavailable.
+`gate` also runs CMRU's total-coverage and cause-sensitive canary lanes. It
+starts with the KI-26 installed-wheel acceptance lane, which builds the wheel,
+installs it into a fresh isolated venv, and invokes `cmru get-py` outside the
+source checkout. (The former real-enrollment lane moved to ciu with `get.py
+enroll`; see "Installer extensions" below.)
 
 The host `gate` lane keeps CMRU publisher credentials out of tester-unified:
 it points visible root/project `cmru.secret.toml` overlays at private host
@@ -673,14 +821,16 @@ the same 1:1 scheme ciu uses. A successful release removes the worktree; a **fai
 it** for diagnosis and prints its exact path. The origin candidate branch is also retained. CMRU
 records the allocator's canonical identity input so the visible six-character token and the
 structured workspace context remain the same fact across resume and cleanup.
-publishes from the exact gated candidate SHA and only then fast-forwards `origin/main`; if a
-concurrent update rejects that final promotion, CMRU does not rebase the candidate or create a
-source revert. Inspect the retained candidate and resolve the external publication explicitly
+publishes from the exact gated candidate SHA and only then promotes it to `origin/main`; if a
+concurrent update rejects that final promotion, CMRU merges `origin/main` into the candidate when
+the project's own paths are untouched (bounded retries), otherwise it stops. It never rebases the
+candidate or creates a source revert. A build failure after the tag push rolls the tag back (the
+candidate stays resumable); once publishing began the tag is kept. Inspect the retained candidate and resolve the external publication explicitly
 before abandoning it. List and clean retained ones:
 
 ```
 cmru worktrees                                   # every retained failed build/release worktree
-cmru cleanup --discard-build-worktree <PATH> --yes
+cmru abandon <ABSOLUTE-PATH> --yes
 cmru abandon --dry-run                           # show all retained release candidates, no writes
 cmru abandon cmru-release-20260924_120000-example-a1b2c3 --dry-run
 cmru abandon cmru-release-20260924_120000-example-a1b2c3 --yes
@@ -867,10 +1017,15 @@ valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
+A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body (KI-30),
+and regenerating a stale generated history section overwrites hand edits inside it; see
+[release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
+
 After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
-that checkout is dirty, including with tracked or untracked files, ignored files, or ignored
-directories, CMRU refuses the cleanup rebase before invoking either rebase command and leaves
-the files and local ref untouched.
+that checkout is dirty with tracked or untracked (non-ignored) changes, CMRU refuses the cleanup
+rebase before invoking either rebase command and leaves the files and local ref untouched.
+Ordinary ignored build output does not block it; an ignored file blocks only where `origin/main`
+would add a file at that exact path.
 This warning does not put caller edits into the immutable remote snapshot, and
 `--allow-uncommitted` does not change that boundary. From a clean caller checkout, use the
 remedy printed by CMRU:
@@ -899,7 +1054,7 @@ CMRU moves those paths into `<project>/evidence/cmru-release/<immutable-id>/` af
 release succeeds and writes `evidence.json` with the gated source commit and SHA-256 hashes.
 The paths must be project-relative, contain no `..`, and contain no symlink component; a
 missing or unsafe declared path fails retention and keeps the release worktree available for
-inspection. Use `--discard-evidence-on-release` only when deliberately discarding those
+inspection. Use `release --discard evidence` only when deliberately discarding those
 outputs. `evidence_paths` is separate from `artifact_dirs`: evidence proves the gate's input
 commit and is not offered to a publisher.
 
@@ -943,8 +1098,8 @@ only its declared outputs; CMRU refuses any other write.
 Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, tracked in
 [`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md):
 
-- **OCI repack** is guarded off for production (`--repack` exits 2 before any side effect) until
-  it proves single-build + registry-digest equivalence (KI-02, `S14`).
+- **OCI repack** is unavailable: the `--repack` option was removed from the handler verbs while
+  KI-02 is open and returns when it is fixed, once it proves single-build + registry-digest equivalence (KI-02, `S14`).
 - **Durable post-tag publish resume** does not exist: `--resume` can continue a retained
   *pre-tag* worktree only after corrections are committed there; prepare and the required gate
   rerun, and the corrected candidate commit is what ships. It is not a post-tag retry (KI-06).

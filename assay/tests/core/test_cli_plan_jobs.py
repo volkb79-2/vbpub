@@ -17,7 +17,7 @@ from assay import cli, mutation, runner
 from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main, plan_jobs
 from assay.config import LaneFile, load_lane_file
-from assay.errors import AssayError, LaneConfigError, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 
 IDENTITY_KEYS = {
     "path",
@@ -155,6 +155,113 @@ def test_o16a_iii_the_discovery_is_the_full_pre_shard_tuple(git_repo: GitRepo):
     assert discovered.reuse_command_plan is None and discovered.reuse_command_cwd is None
 
 
+def test_a_file_source_root_keeps_same_directory_siblings_out_of_the_plan(
+    git_repo: GitRepo,
+):
+    git_repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
+    git_repo.write("src/shared/owned.py", "def owned(a, b):\n    return 0\n")
+    git_repo.write("src/shared/other_package.py", "def other(a, b):\n    return 0\n")
+    base = git_repo.commit_all("seed both packages")
+    git_repo.write(
+        "src/shared/owned.py",
+        "def owned(a, b):\n    return a > 0 and b < 1\n",
+    )
+    git_repo.write(
+        "src/shared/other_package.py",
+        "def other(a, b):\n    return a > 0 and b < 1\n",
+    )
+    git_repo.commit_all("change both packages")
+    toml = git_repo.write(
+        "assay.toml",
+        f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src/shared/owned.py"]
+base = "{base}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 20
+operators = ["python:compare-swap"]
+""",
+    )
+    git_repo.commit_all("configure exact file scope")
+
+    payload = _plan_payload(toml)
+
+    assert payload["by_file"] == {"src/shared/owned.py": 2}
+
+
+def test_plan_refuses_an_ignored_untracked_exact_file_source_root(
+    git_repo: GitRepo,
+):
+    git_repo.write(".gitignore", "__pycache__/\nsrc/owned.py\n")
+    git_repo.write("src/other.py", "def other():\n    return 0\n")
+    toml = git_repo.write(
+        "assay.toml",
+        """\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src/owned.py"]
+base = "HEAD^"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 20
+operators = ["python:compare-swap"]
+""",
+    )
+    git_repo.commit_all("seed lane with an exact file root")
+    git_repo.write("src/other.py", "def other():\n    return 1\n")
+    git_repo.commit_all("change a sibling source file")
+    git_repo.write("src/owned.py", "def owned():\n    return True\n")
+    lane_file, lane = _load(toml)
+
+    with pytest.raises(AssayError) as caught:
+        plan_jobs(lane_file, lane)
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["plan", "package", "--file", str(toml)],
+        stdout=out,
+        stderr=err,
+    )
+    assert code == Outcome.ERROR.exit_code
+    assert out.getvalue() == ""
+    assert "exact-file source root 'src/owned.py'" in err.getvalue()
+
+
 def test_o16a_iv_a_lane_without_an_adapter_raises(git_repo: GitRepo, monkeypatch):
     lane_file, lane = _load(_seed(git_repo))
     monkeypatch.setattr(cli, "_resolve_declared_adapters", lambda _lane: None)
@@ -206,14 +313,14 @@ def test_o16a_vii_allow_dirty_reaches_the_integrity_probe(git_repo: GitRepo):
     assert payload["worktree_integrity"]["overridden_dirty_paths"] == ["notes.txt"]
 
 
-def _v13_prior(tmp_path: Path) -> Path:
-    """A schema-13 verdict with one killed candidate, built from the packaged r2_pass fixture."""
+def _v14_prior(tmp_path: Path) -> Path:
+    """A schema-14 verdict with one killed candidate, built from r2_pass."""
     from conftest import TESTS_ROOT
 
     from assay.verify import verify_document
 
     document = json.loads((TESTS_ROOT / "fixtures" / "verdicts" / "r2_pass.json").read_text("utf-8"))
-    document["schema_version"] = 13
+    document["schema_version"] = 14
     body = document["claims"][1]["mutation"]
     ids = []
     for index, item in enumerate(body["killed"]):
@@ -247,7 +354,7 @@ def _v13_prior(tmp_path: Path) -> Path:
         ids.append(identifier)
     body["candidate_ids"] = ids
     assert verify_document(document) == []
-    prior = tmp_path / "prior-v13.json"
+    prior = tmp_path / "prior-v14.json"
     prior.write_text(json.dumps(document), encoding="utf-8")
     return prior
 
@@ -256,7 +363,7 @@ def test_o16a_viii_the_reuse_command_is_resolved_only_when_reuse_is_requested(
     git_repo: GitRepo, tmp_path: Path
 ):
     toml = _seed(git_repo, argv=_SEQUENTIAL_ARGV)
-    payload = _plan_payload(toml, "--reuse-from", str(_v13_prior(tmp_path)))
+    payload = _plan_payload(toml, "--reuse-from", str(_v14_prior(tmp_path)))
     assert payload["reuse_from"]["sequential_pytest_supported"] is True
     plain = _plan_payload(toml)
     assert "reuse_from" not in plain

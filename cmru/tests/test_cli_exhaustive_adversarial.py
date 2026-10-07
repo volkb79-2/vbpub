@@ -67,11 +67,15 @@ def test_main_cleanup_build_output_and_discard_worktree_route_exact_targets(monk
     monkeypatch.setattr(transaction, "delete_retained_build_output", lambda *args, **kwargs: deleted.append((args, kwargs)) or [tmp_path / "logs/id"])
     cli.main(["cleanup", "demo", "--dry-run", "--delete-build-output", "20240101T000000Z_" + "a" * 40, "--config", "x"])
     assert deleted and deleted[0][1]["dry_run"] is True
-    exc = cli.main(["cleanup", "demo", "--discard-build-worktree", "/tmp/w", "--dry-run", "--config", "x"])
-    assert exc == 2 and "do not pass a project target" in capsys.readouterr().err
-    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "w", "cmru/build/x", "a" * 40)
+    capsys.readouterr()
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "w", "cmru-build-20260924_120000-demo-ab12cd", "a" * 40,
+    )
     monkeypatch.setattr(transaction, "discard_build_workspace", lambda *args, **kwargs: workspace)
-    cli.main(["cleanup", "--discard-build-worktree", "/tmp/w", "--dry-run", "--config", "x"])
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    cli.main(["abandon", workspace.branch, "--dry-run", "--config", "x"])
     assert "Would discard" in capsys.readouterr().out
 
 
@@ -106,5 +110,5 @@ def test_main_default_cleanup_routes_to_cleanup_verb_with_project_filter(monkeyp
     monkeypatch.setattr(cli, "load_config", lambda _: _loaded(tmp_path))
     calls = []
     monkeypatch.setattr(cli, "run_cleanup_verb", lambda *args, **kwargs: calls.append((args, kwargs)))
-    cli.main(["cleanup", "demo", "--dry-run", "--config", "x"])
+    cli.main(["cleanup", "demo", "--policy", "--dry-run", "--config", "x"])
     assert calls[0][1]["project_filter"] == ["demo"] and calls[0][1]["dry_run"] is True

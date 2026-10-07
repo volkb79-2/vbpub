@@ -61,25 +61,23 @@ def test_run_dry_run_respects_step_first_project_order_and_rejects_bad_plans(
     assert f"cwd={tmp_path / 'alpha' / 'src'}" in output
 
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(
-        tmp_path, projects, mode="step-first", step_order={"build": ["missing"]},
-    ))
-    with pytest.raises(ValueError, match="Unknown project in step_project_order"):
-        cli.main(["run", "alpha", "--dry-run"])
-
-    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded(
         tmp_path, {"alpha": SimpleNamespace(**{**vars(alpha), "runner_steps": {}})},
         mode="step-first",
     ))
-    with pytest.raises(RuntimeError, match="required declared step 'build' is absent"):
-        cli.main(["run", "alpha", "--dry-run"])
+    # CLI-09: an undeclared step is a usage error naming the declared ones.
+    assert cli.main(["run", "alpha", "--dry-run"]) == 2
+    refusal = capsys.readouterr().err
+    assert "alpha: step(s) not declared: build; declared steps: (none)" in refusal
 
     project_without_cwd = SimpleNamespace(**{**vars(alpha), "cwd": None})
     monkeypatch.setattr(
         cli, "load_config",
         lambda _path: _loaded(tmp_path, {"alpha": project_without_cwd}),
     )
-    with pytest.raises(RuntimeError, match="derived project working directory is absent"):
-        cli.main(["run", "alpha", "--dry-run"])
+    assert cli.main(["run", "alpha", "--dry-run"]) == 3
+    err = capsys.readouterr().err
+    assert "[ERROR] alpha: derived project working directory is absent" in err
+    assert "unexpected" not in err
 
 
 @pytest.mark.parametrize("mode", ["project-first", "step-first"])
@@ -123,7 +121,7 @@ def test_multi_project_single_git_family_uses_one_transaction_dispatch(
 
     assert cli._dispatch_independent_git_families(
         "build", [], tmp_path / "cmru.toml", tmp_path, projects,
-        ["alpha", "beta"], original_target=None,
+        ["alpha", "beta"], original_target=None, forward_from=None,
     ) is None
 
 
@@ -185,14 +183,16 @@ def test_build_and_publish_dry_runs_share_the_declared_plan_without_credentials(
     monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *_a: pytest.fail("dry-run required credentials"))
     monkeypatch.setattr(cli, "run_project_step", lambda *_a, **_k: pytest.fail("dry-run executed a step"))
 
-    assert cli.main([verb, "demo", "--dry-run", "--config", "x"]) == 0
+    source = ["--from-checkout"] if verb == "publish" else []
+    assert cli.main([verb, "demo", *source, "--dry-run", "--config", "x"]) == 0
     output = capsys.readouterr().out
     assert f"demo:{step}: Would run declared step {step}" in output
     assert "argv=python build.py" in output
 
     project.runner_steps = {}
-    with pytest.raises(RuntimeError, match=f"required declared step {step!r} is absent"):
-        cli.main([verb, "demo", "--dry-run", "--config", "x"])
+    assert cli.main([verb, "demo", *source, "--dry-run", "--config", "x"]) == 3
+    err = capsys.readouterr().err
+    assert f"required declared step {step!r} is absent" in err and "unexpected" not in err
 
 
 def test_changelog_backfill_dry_run_prints_exact_diff_and_writes_nothing(
@@ -255,8 +255,9 @@ def test_get_py_dry_run_reports_each_destination_without_creating_it(
     assert f"Would write {output_file}" in capsys.readouterr().out
     assert not output_file.exists()
 
-    assert getpy.getpy_main(["alpha", "--dry-run"]) == 0
-    assert "Would render 1 installer(s) to stdout" in capsys.readouterr().out
+    # D4: stdout mode writes nothing, so --dry-run needs a write destination.
+    assert getpy.getpy_main(["alpha", "--dry-run"]) == 2
+    assert "--dry-run requires --output or --output-dir" in capsys.readouterr().err
 
 
 def test_standards_dry_run_updates_only_the_marker_preview(monkeypatch, tmp_path, capsys):
@@ -274,14 +275,14 @@ def test_standards_dry_run_updates_only_the_marker_preview(monkeypatch, tmp_path
 
     assert standards.standards_main([
         "demo", "--config", str(config), "--update", "--dry-run",
-    ]) == 2
+    ]) == 4  # the check still finds policy issues (refused by policy, redesign E)
     output = capsys.readouterr().out
-    assert "template_revision = 4" in output
+    assert f"template_revision = {standards.PROJECT_TEMPLATE_REVISION}" in output
     assert "Marker updates were previewed" in output
     assert "template_revision=3" in project_config.read_text(encoding="utf-8")
 
     assert standards.standards_main(["demo", "--config", str(config), "--dry-run"]) == 2
-    assert "standards --dry-run requires --update" in capsys.readouterr().err
+    assert "--dry-run requires --update" in capsys.readouterr().err
 
 
 def test_tool_dependency_refresh_dry_run_does_not_write_pin_files(monkeypatch, tmp_path, capsys):
@@ -320,10 +321,8 @@ def test_tool_dependency_refresh_dry_run_does_not_write_pin_files(monkeypatch, t
     ("module", "message"),
     [
         ("cmru.bundle", "Python library, not a command"),
-        ("cmru.runner", "Use the installed 'cmru run-step' command"),
+        ("cmru.runner", "Use the installed 'cmru run --step' command"),
         ("cmru.cli", "Use the installed 'cmru' command"),
-        ("cmru.agent.cli", "Use the installed 'cmru-agent' command"),
-        ("cmru.controller.cli", "Use the installed 'cmru-controller' command"),
     ],
 )
 def test_removed_module_cli_aliases_fail_with_the_canonical_interface(module, message):
@@ -345,9 +344,9 @@ def test_project_handler_dry_run_uses_registered_cli_and_skips_handler(
 
     assert handlers.main([
         "oci-image-build", "--cwd", str(tmp_path), "--bake-file", "bake.hcl",
-        "--target", "image", "--repack", "--dry-run",
+        "--bake-target", "image", "--repack", "--dry-run",
     ]) == 2
-    assert "path is disabled" in capsys.readouterr().err
+    assert "unrecognized arguments: --repack" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -374,7 +373,7 @@ def test_init_dry_run_validates_generated_contract_without_writing(
     monkeypatch, tmp_path, capsys,
 ):
     generated = tmp_path / "cmru.toml"
-    monkeypatch.setattr(scaffold, "collect_plan", lambda _options, _cwd: {"root": tmp_path})
+    monkeypatch.setattr(scaffold, "collect_plan", lambda _options, _cwd, _prompts: {"root": tmp_path})
     monkeypatch.setattr(scaffold, "build_files", lambda _plan, _root: [(generated, "valid")])
     monkeypatch.setattr(scaffold, "validate", lambda _files, _root: None)
 
@@ -386,25 +385,7 @@ def test_init_dry_run_validates_generated_contract_without_writing(
     assert not generated.exists()
 
 
-def test_runner_step_dry_run_uses_shared_renderer_without_invoking_step(
-    monkeypatch, tmp_path, capsys,
-):
-    project = SimpleNamespace(
-        name="demo", project_root=tmp_path / "demo", runner_steps={"build": _step()},
-    )
-    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.orchestration.toml")
-    monkeypatch.setattr(cli, "load_config", lambda _path: (tmp_path, {"demo": project}, ["demo"]))
-    monkeypatch.setattr(runner, "run_step", lambda *_: pytest.fail("dry-run invoked run_step"))
-
-    assert runner.runner_cli().run(argv=["demo", "--step", "build", "--dry-run", "--config", "x"]) == 0
-    output = capsys.readouterr().out
-    assert "Would remove" in output
-    assert "Would resolve dynamic environment" in output
-    assert "Would log in to configured registry" in output
-    assert "Would run declared step build" in output
-
-    assert runner.runner_cli().run(argv=["demo", "--step", "missing", "--dry-run", "--config", "x"]) == 2
-    assert "step 'missing' is not declared" in capsys.readouterr().err
+def test_runner_step_plan_rejects_an_invalid_command(tmp_path):
     malformed = _step()
     malformed.commands[:] = [{}]
     with pytest.raises(ValueError, match="contains an invalid command"):
@@ -539,25 +520,28 @@ def test_tester_gate_dry_run_prints_docker_argv_without_host_probes_or_launch(
     monkeypatch.setattr(tester_gate, "_git_common_dir", lambda _path: None)
     monkeypatch.setattr(tester_gate, "_probe_io_support", lambda *_: pytest.fail("dry-run probed privileged Docker IO"))
     monkeypatch.setattr(tester_gate, "dind_sidecar", lambda *_: pytest.fail("dry-run launched DinD"))
-    if enable_docker:
-        monkeypatch.setattr(tester_gate, "resolve_dind_image", lambda _value: "dind:test")
-
+    dind_image = "docker@sha256:" + "c" * 64
     argv = [
         "--cwd", ".", "--dry-run", "--image", "tester:test",
-        "--cgroup-parent", "gates.slice", "--cgroup-probe-image", "debian:test",
-        "--memory", "1g", "--memory-swap", "2g", "--cpus", "1",
+        "--cgroup-parent", "gates.slice", "--cgroup-probe-image", "debian@sha256:" + "d" * 64,
+        "--memory", "1g", "--memory-swap", "2g", "--cpus", "1", "--pids-limit", "64",
     ]
     if enable_docker:
-        argv += ["--enable-docker", "--dind-image", "dind:test"]
+        argv += [
+            "--enable-docker", "--dind-image", dind_image,
+            "--dind-memory", "2g", "--dind-cpus", "1.5", "--dind-pids-limit", "128",
+        ]
     argv += ["--device-read-iops", "/dev/sda:10", "--", "pytest", "-q"]
     assert tester_gate.main(argv) == 0
     output = capsys.readouterr().out
     assert "Host gates-slice verification skipped" in output
-    assert "docker run --cgroup-parent=gates.slice --rm" in output
-    assert "tester:test pytest -q" in output
-    assert ("docker run --cgroup-parent=gates.slice -d --rm --privileged" in output) is enable_docker
+    assert "docker run --cgroup-parent=gates.slice --rm --init" in output
+    assert "--pids-limit 64" in output
+    assert "tester:test sh -c" in output and "pytest -q" in output
+    assert ("docker run --cgroup-parent=gates.slice -d --rm --init --privileged --pull=never" in output) is enable_docker
     if enable_docker:
-        assert "dind:test" in output and "cmru-dry-run-dind-sidecar" in output
+        assert dind_image in output and "cmru-dry-run-dind-sidecar" in output
+        assert "--memory 2g --cpus 1.5 --pids-limit 128" in output
 
 
 @pytest.mark.parametrize("cpus", ["0", "-1", "NaN", "Infinity", "0.0000099"])
@@ -781,157 +765,3 @@ def test_transaction_child_accepts_validated_legacy_record_and_rejects_source_ro
     )
     with pytest.raises(RuntimeError, match="shared transaction record has a different source root"):
         transaction.is_transaction_child(child)
-
-
-def test_agent_cli_dry_runs_and_reconciler_suppress_mutations(monkeypatch, capsys, caplog):
-    from cmru.agent import cli as agent_cli
-    from cmru.agent.reconciler import Reconciler
-
-    monkeypatch.setattr(agent_cli, "_build_backend", lambda *_: pytest.fail("dry-run contacted the backend"))
-    assert agent_cli.cmd_enroll(SimpleNamespace(
-        node_id="node-a", landscape="test", token="", minisign_pubkey="",
-        scope="user", consul_addr="http://consul", dry_run=True,
-    )) == 0
-    assert "Would enroll node_id=node-a" in capsys.readouterr().out
-
-    monkeypatch.setenv("CMRU_NODE_ID", "node-from-env")
-    monkeypatch.setenv("CMRU_LANDSCAPE", "landscape-from-env")
-    monkeypatch.setenv("CONSUL_HTTP_ADDR", "http://consul-from-env")
-    assert agent_cli.cmd_enroll(SimpleNamespace(
-        node_id="", landscape="", token="", minisign_pubkey=None,
-        scope="system", consul_addr=None, dry_run=True,
-    )) == 0
-    output = capsys.readouterr().out
-    assert "node-from-env" in output and "landscape-from-env" in output
-    assert "http://consul-from-env" in output
-
-    monkeypatch.delenv("CMRU_LANDSCAPE")
-    monkeypatch.setattr(agent_cli, "_load_identity", lambda _scope: ("node-a", {"landscape": "test", "public_key": ""}))
-    assert agent_cli.cmd_run(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert "Would start the long-running reconciler" in capsys.readouterr().out
-
-    monkeypatch.setattr(agent_cli, "_load_identity", lambda _scope: ("node-a", {"landscape": "", "public_key": ""}))
-    monkeypatch.setenv("CMRU_LANDSCAPE", "landscape-from-env")
-    assert agent_cli.cmd_run(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert "landscape-from-env" in capsys.readouterr().out
-
-    backend = object()
-    captured = {}
-    class DryRunReconciler:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-        def once(self):
-            return True
-    monkeypatch.setattr(agent_cli, "_build_backend", lambda _args: backend)
-    monkeypatch.setattr("cmru.agent.reconciler.Reconciler", DryRunReconciler)
-    assert agent_cli.cmd_once(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert captured["backend"] is backend and captured["dry_run"] is True
-    assert "change would be applied" in capsys.readouterr().out
-    class NoChangeReconciler(DryRunReconciler):
-        def once(self):
-            return False
-    monkeypatch.setattr("cmru.agent.reconciler.Reconciler", NoChangeReconciler)
-    assert agent_cli.cmd_once(SimpleNamespace(scope="user", dry_run=True, release_root=None)) == 0
-    assert "no change" in capsys.readouterr().out
-
-    class WatchBackend:
-        def __init__(self, raw):
-            self.raw = raw
-            self.health = []
-        def watch_desired(self, *_args, **_kwargs):
-            return self.raw, 1
-        def pass_health_check(self, node):
-            self.health.append(node)
-        def read_desired_sig(self, *_args):
-            return None
-        def acquire_lock(self, *_args):
-            pytest.fail("dry-run acquired an apply lock")
-        def publish_observed(self, *_args):
-            pytest.fail("dry-run published state")
-
-    empty_backend = WatchBackend(None)
-    dry_reconciler = Reconciler(empty_backend, "node-a", "test", dry_run=True)
-    assert dry_reconciler.once() is False
-    assert empty_backend.health == []
-
-    payload = (
-        '{"schema_version":1,"generation":1,"action":"update",'
-        '"release":{"tag":"demo-v1","manifest_url":"https://example.invalid/m.json",'
-        '"manifest_sha256":"' + "a" * 64 + '"},"profiles":["core"],'
-        '"config_hash":"cfg","plan_id":"p","step_id":"p.step"}'
-    ).encode()
-    apply_backend = WatchBackend(payload)
-    monkeypatch.setattr("cmru.agent.reconciler.read_observed", lambda _scope: None)
-    assert Reconciler(apply_backend, "node-a", "test", dry_run=True).once() is True
-    assert apply_backend.health == []
-
-    noop_backend = WatchBackend(payload)
-    monkeypatch.setattr(Reconciler, "_is_noop", lambda *_: True)
-    assert Reconciler(noop_backend, "node-a", "test", dry_run=True).once() is False
-    assert noop_backend.health == []
-    Reconciler(object(), "node-a", "test", dry_run=True)._publish_error("invalid", "bad")
-    assert "Would publish error state" in caplog.text
-
-
-def test_controller_generation_and_rollout_dry_run_boundaries(monkeypatch, tmp_path, caplog):
-    caplog.set_level("INFO")
-    from cmru.controller import cli as controller_cli
-    from cmru.controller.planner import LandscapePlan, PlanStep
-    from cmru.controller.rollout import RolloutEngine
-
-    assert controller_cli._positive_generation("1") == 1
-    with pytest.raises(ValueError, match="positive integer"):
-        controller_cli._positive_generation("0")
-    with pytest.raises(ValueError, match="generation_base must be a positive integer"):
-        RolloutEngine(object(), "landscape", generation_base=0)
-
-    steps = [
-        PlanStep(
-            plan_id="plan", wave_name="canary", phase=1, wave_type="canary",
-            nodes=["node-a"], profiles=["core"], release_tag="demo-v1",
-            manifest_url="https://example.invalid/manifest.json", manifest_sha256="a" * 64,
-            config_hash="cfg", step_id="plan.phase-1.canary", required=True,
-            requires_approval=True,
-        ),
-        PlanStep(
-            plan_id="plan", wave_name="optional", phase=2, wave_type="dev",
-            nodes=["node-b"], profiles=["worker"], release_tag="demo-v1",
-            manifest_url="https://example.invalid/manifest.json", manifest_sha256="a" * 64,
-            config_hash="cfg", step_id="plan.phase-2.optional", required=False,
-            requires_approval=False,
-        ),
-    ]
-    plan = LandscapePlan("plan", "landscape", steps)
-    engine = RolloutEngine(object(), "landscape", generation_base=3, dry_run=True)
-    engine.publish(plan)
-    engine.approve("plan")
-    engine.hold("plan")
-    engine.release_hold("plan")
-    engine._write_plan_status("plan", "complete", None)
-    engine.rollback(plan, generation=9)
-    with pytest.raises(ValueError, match="rollback generation must be a positive integer"):
-        engine.rollback(plan, generation=0)
-
-    messages = caplog.text
-    assert "requires approval before publishing" in messages
-    assert "Would wait for wave canary health" in messages
-    assert "Would write desired state gen=103" in messages
-    assert "Would write desired state gen=203" in messages
-    assert "Would approve plan" in messages and "Would hold plan" in messages
-    assert "Would release hold" in messages and "Would write plan plan status=complete" in messages
-    assert "tag=demo-v1" in messages and "digest=" + "a" * 64 in messages
-
-    plan_path = tmp_path / "plan.toml"
-    plan_path.write_text("placeholder", encoding="utf-8")
-    from cmru.controller import planner as controller_planner
-    monkeypatch.setattr(controller_planner, "load_plan", lambda _path: plan)
-    seen = []
-    class CliEngine:
-        def publish(self, received):
-            seen.append(received)
-    monkeypatch.setattr(controller_cli, "_build_engine", lambda args, landscape: CliEngine())
-    assert controller_cli.main([
-        "publish", "--plan", str(plan_path), "--landscape", "landscape",
-        "--generation-base", "3", "--dry-run",
-    ]) == 0
-    assert seen == [plan]

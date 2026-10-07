@@ -4,116 +4,33 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- cleared 2026-09-09 after the 5.2.0 release, per this project's own
-     KI-23-adjacent housekeeping convention (see [5.0.0]'s cleared block
-     below for the prior occurrence): the retain-by-default change +
-     KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
+<!-- Empty on purpose: KI-30 refuses a tagged release while this body is non-empty, and KI-23
+     refuses one while a hand-authored `## [6.0.0] - UNRELEASED` heading exists, so this file
+     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
+     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
 
-### Added
-- Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
-- Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
-- Add opt-in rolling OCI tag checks that record manifest digests and detect moved tags.
+     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
+     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
+     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
+     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
+     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
+     nothing from them is lost by leaving this body empty. The breaking changes (command
+     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
+     dependency) are in `docs/UPGRADING-6.0.md`.
 
-### Changed
-- Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
+     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
+     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
+     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
+     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
+     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
+     one-line pointer to the 6.0.x notes.
 
-### Fixed
-- Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` by name into the build (KI-53).
-- Add the monorepo's sibling `cli-extended` and `worktree` source roots to
-  bound CMRU subprocesses, so system-Python release scripts can import the
-  matching runtime dependencies.
-- Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
-- Include the Topos and nyxloom manifests required by the estate adoption test in disposable mutation and canary controls.
-- Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
-- Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
-- Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
-- Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.
-- Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
-- Keep a skipped cleanup Release's tag and derive the clean-step version from applied cleanup results.
-- Recheck whole-package GHCR identity before confirmed deletion and report the clean-step version as a preview estimate.
-- Scope abandonment tag checks to the recorded projects and remove only local tags proven to come from that candidate's push attempt.
-- Preserve credential rotation when restoring secret overlays after the gate.
-- Prevent publishing an older retained build from moving the `-latest` pointer backward.
-- Bind retained publication to the captured Release ID and tag commit, rechecking them before metadata and asset mutations.
-- Treat GHCR 404 responses as absent-or-inaccessible and skip cleanup without certifying absence.
-- Install gate secret overlays without replacing a credential rotated at the masking boundary.
-- Copy resume credentials through no-follow paths and atomic mode-0600 destination files.
-- Verify staged retained artifact bytes against the build manifest before remote publication.
-- Require the registered real-enrollment lane to fail when prerequisites or fixture-image construction fail.
-- Verify the gates slice on the Docker host before starting enrollment fixtures.
-- Reject malformed, invalid, or out-of-pattern remote tag records before cleanup planning.
-
-### Testing
-- Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
-- Cover inclusive rolling-OCI age cutoffs, rolling-result override metadata, and the no-warning return contract.
-- Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
-- Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
-- Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
-- Cover symlinked credential destinations, altered retained upload staging, and required enrollment-lane prerequisites.
-- Cover Docker-host slice verification and malformed, invalid, duplicate, orphaned, or out-of-pattern remote tag records.
+     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
+     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
+     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
+     the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: release history -->
-
-## [5.6.0] - 2026-10-03
-<!-- cmru: generated -->
-<!-- cmru: source-end=4a46ee439a6418bff539460ebfbaf9169f21fcd2 -->
-
-### Added
-- feat(cmru): authenticate transactional Git operations (7c2d7a8be)
-- feat: resume mutations with an unchanged test suite and fixture closure (2dca79d55)
-- feat: adopt cli-extended and resolve CMRU CLI decisions (f6b577f41)
-
-### Fixed
-- fix(cmru): correct generated askpass quoting (04c5f4901)
-- fix(cmru): authenticate Git and freeze cleanup plans (aba42a3a9)
-- fix(cmru): preserve tester CPU parse diagnostics (489ce8849)
-- fix(cmru): enforce effective tester CPU ceiling (356d259f2)
-- fix(cmru): bind sibling sources in release subprocesses (ec95f86b1)
-- fix(cmru): reject empty artifact coordinates (231c91d5e)
-- fix: tighten CLI review semantics and tester-gate previews (44411a624)
-- fix: resume mutations across unrelated monorepo commits (a6c4274be)
-- fix: anchor CMRU Assay coverage to release tag (98f98d380)
-- fix: pass PATH through CMRU Assay lane (9c71d58e4)
-- fix: include CLI dependencies in mutation fixtures (9c78d26e8)
-- fix: make empty CMRU runs true no-ops (a6ed9457c)
-
-### Changed
-- Merge branch 'cmru-cli-decisions' into integration/cmru-local-cleanup-20260930 (7e639e1dc)
-- merge: nyxloom testability doctrine + cmru KI-35 (docs/testability-cleanup-20260928) (5248b345d)
-- merge: sync CMRU CLI work with current main (b14643995)
-- Document CMRU worktree library adoption (c64a1c1d7)
-- Document CMRU module and consumer interfaces (f78c392c3)
-- Strengthen CLI semantic boundary coverage (a3620b149)
-- Adopt cli-extended and audit CMRU CLI (83ab24cc6)
-- Record canonical CMRU CLI semantic audit (0a93ae4b6)
-- Resolve CLI source roots for scaffold validation (4de03ca51)
-- Include sibling imports in CMRU CLI probes (481c7ebac)
-- Add sibling CLI source roots to CMRU gate (131453a9e)
-- Adopt cli-extended across CMRU command surfaces (c54e90581)
-
-### Documentation
-- docs(cmru): reconcile FEAT-03 release status (4efd5f334)
-- docs: add tester-gate contract anchor (898447dc5)
-- docs: apply fresh review to the testability doctrine and cmru KI-35 (851d1648e)
-- docs: add mutation-testability design guidance; file cmru KI-35 (703505aa5)
-- docs: preserve mutation timeout contract wording (3f391d6ea)
-- docs: specify nested CLI group help behavior (7358159d2)
-
-### Testing
-- test(cmru): align cleanup fake with clean-step contract (700f0f936)
-- test(cmru): cover overflowing tester CPU exponents (53757b2a2)
-- test(cmru): use valid tester CPU resolver values (4324e57c1)
-- test(cmru): cover malformed build coordinates (cf37ed112)
-- test(cmru): model existing Git common directory (fad90a5a9)
-- test(cmru): close CLI mutation survivors (c83db8862)
-- test: cover tester gate cgroup refusal (e26f35c5e)
-- test: supply registered agent dry-run default (1588856cc)
-- test: cover remaining observable CLI semantics (046bf12c9)
-- test: cover CLI semantic boundaries for mutation resume (07b38d541)
-- test: cover cli-extended mutation fixture copy (7774d1561)
-- test: include estate manifests in CMRU fixture (4e4d9e6b9)
-- test: harden CLI semantic checks and transaction context (9b2273d58)
-- test: cover CMRU CLI branch alternatives (635decab3)
 
 ## [5.5.0] - 2026-09-26
 <!-- cmru: generated -->

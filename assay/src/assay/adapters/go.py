@@ -669,6 +669,7 @@ class GoAdapter:
         rel_paths: Sequence[str],
         *,
         remaining: Remaining | None = None,
+        sensitive_values: Sequence[str] = (),
     ) -> StatementBlockReport | None:
         """Where every cover block over *rel_paths* begins its own
         statements, derived from the SOURCE by the shipped oracle (A-397).
@@ -690,7 +691,10 @@ class GoAdapter:
         (:mod:`assay.adapters.go_stmtpos` documents each one).
         """
         return derive_statement_blocks(
-            repo_top, rel_paths, remaining=remaining
+            repo_top,
+            rel_paths,
+            remaining=remaining,
+            sensitive_values=sensitive_values,
         )
 
     def inject_import_break(self, text: str) -> tuple[str, str]:

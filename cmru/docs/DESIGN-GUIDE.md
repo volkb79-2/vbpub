@@ -90,16 +90,15 @@ surface for scripts that probe every first-party estate CLI in the same way; it
 does not create a second version source or change verb dispatch.
 
 The same identity is the first line of every help, usage, and configuration
-document emitted by the installed `cmru`, `cmru-agent`, and `cmru-controller`
-dispatchers, including nested verbs. CMRU configuration diagnostics put the
+document emitted by the installed `cmru`
+dispatcher, including nested verbs. CMRU configuration diagnostics put the
 identity first; `cli-extended` usage/refusal diagnostics put the actionable
 message first and then render the matching generated help. Normal command output
 is unchanged.
 
 ## One declared CLI grammar
 
-The CMRU wheel installs three operator CLIs: `cmru`, `cmru-agent`, and
-`cmru-controller`. Each uses `cli-extended` registrations as the source for
+The CMRU wheel installs one operator CLI, `cmru`. It uses `cli-extended` registrations as the source for
 argument parsing, option constraints, help, and dispatch. Root `cmru --help`
 stays a short command catalog, while `cmru help VERB` and `cmru VERB --help`
 show that verb's complete grammar. Nested commands delegate their remaining
@@ -117,8 +116,7 @@ rewrite argv before dispatch.
 testing, and compatibility surface without adding a use case. The same review
 removed numeric `init --layout` spellings and the deprecated tag option alias.
 The `handler` verb is the supported route to the project's explicit step
-handlers; `cmru-agent` and `cmru-controller` are separate installed commands,
-not hidden subcommands of `cmru`. The [canonical CLI grammar and semantic
+handlers. The [canonical CLI grammar and semantic
 audit](SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit) inventories their complete option surfaces
 and is updated with every product grammar change.
 
@@ -129,7 +127,7 @@ transaction. Resolving through ambient `PATH` could select an older installed
 wheel and run a different command contract inside a current source checkout.
 Before each step, CMRU creates a temporary launcher using its current Python
 interpreter and module root, puts that launcher first in `PATH`, and checks its
-reported version against the active runtime. The `CMRU_BIN` and `PATH` binding
+reported version against the active runtime. The internal `CMRU_INTERNAL_BIN` and `PATH` binding
 is reapplied after project environment setup, so a project setting cannot
 silently redirect a nested gate. A mismatch fails before the step command
 starts. This keeps project contracts portable and avoids requiring each
@@ -197,7 +195,8 @@ starts the gate, and places every helper and workload container in the declared 
 This makes the boundary honest: dry-run proves command construction, while a real launch
 proves host acceptance.
 
-The real-enrollment fixture uses CMRU's Docker-host systemd probe to check that the configured
+Container fixtures that need the gates slice (ciu's real-enrollment lane, which moved out of
+cmru with `get.py enroll`) use CMRU's Docker-host systemd probe to check that the configured
 gates slice is loaded and fragment-backed before the fixture starts. A local `systemctl` query
 can inspect the caller's namespace while Docker targets a different host. A nonempty name alone
 can refer to a typo or an unconfigured transient slice, which Docker may accept without the
@@ -215,10 +214,19 @@ supplied through `--cpus` or `CMRU_TESTER_CPUS`. It uses Docker's `--cpus` field
 Docker rejects a HostConfig that supplies both `NanoCPUs` (from `--cpus`) and `CpuPeriod`
 (from `--cpu-period`). The value is checked before starting privileged host probes.
 
-The optional DinD sidecar is a separate container. It receives the same gates-slice parent,
-but currently has no per-container CPU or memory cap. The CMRU S-CLI.9 audit records this as
-an open policy decision because reusing workload limits can double the per-step resource
-envelope, while separate sidecar limits add required inputs for the Docker-enabled path.
+The optional DinD sidecar is a separate container. It receives the same gates-slice parent and,
+decided 2026-10-05 (BG-07), its own required memory, CPU and pids limits
+(`CMRU_TESTER_DIND_MEMORY`/`_CPUS`/`_PIDS_LIMIT`): reusing the workload's limits would double the
+per-step envelope, so the Docker-enabled path pays for three extra required inputs instead.
+
+Process accounting (KI-52). The gate command is one cmru does not control, and git's detached
+auto-maintenance orphans one process per commit; with the command as PID 1 nothing reaps them,
+and on 2026-10-05 they filled the host-default pids ceiling (systemd `DefaultTasksMax`, not a
+declared limit), which made assay record false kills. So the workload and the sidecar run under
+`--init`, the workload gets a required `--pids-limit`, and, because `--rm` removes the cgroup at
+exit, an in-container wrapper copies the container's own `pids.events`/`memory.events` to a
+cmru-owned file on the mounted worktree. A non-zero `pids.events max` or `memory.events
+oom_kill`, or a missing file, is an infrastructure failure (exit 3), never a pass.
 
 Docker also rejects a `--memory-swap` total below `--memory` before creating the gate
 workload. Keep the value documented as a combined memory-plus-swap total; it is not the
@@ -235,20 +243,21 @@ data and a missing bundled `cli-extended` import.
 ### Operator commands, adapters, and libraries have separate jobs
 
 Installed console scripts and their registered verbs are the operator
-interface: `cmru`, `cmru-agent`, and `cmru-controller`. They use
+interface: `cmru`. It uses
 `cli-extended` to define grammar, options, help, and dispatch. CMRU does not
-maintain parallel hand-written parsers for those commands.
+maintain parallel hand-written parsers for that command.
 
-`python -m cmru.handlers` is the one supported component CLI. Project step
-contracts use it to invoke registered artifact handlers, and
-`build-initial-standalone.sh` needs it to build the first wheel before the
-installed `cmru` command exists. `python -m cmru.bundle`, `python -m
+`python -m cmru.handlers` is bootstrap-only: `build-initial-standalone.sh`
+needs it to build the first wheel before the installed `cmru` command exists.
+Project step contracts invoke registered artifact handlers as
+`cmru handler <verb>`, which inside a release transaction resolves to the
+bound launcher (`cmru standards` flags the module form). `python -m cmru.bundle`, `python -m
 cmru.runner`, and module aliases for the three operator scripts are retired;
 they now refuse with a pointer to the supported command or library API.
 
 The reusable `cmru.bundle.run_bundle` and `cmru.runner.run_step` functions
-remain supported Python APIs. PWMCP consumes the bundle API, and MDT consumes
-the runner API. Use `cmru run-step` for a direct operator invocation. CMRU does
+remain supported Python APIs. PWMCP consumes the bundle API, and MDT's
+`build-push.py` consumes the runner API. Use `cmru run --step NAME` for a direct operator invocation. CMRU does
 not add a root `cmru bundle` verb until a concrete operator workflow needs one.
 The standalone generated `get.py` remains an independent product and keeps its
 own `argparse` parser because adopters use it without installing CMRU.
@@ -470,8 +479,8 @@ file is then loaded by CMRU's real configuration reader.
 The old shell wrapper duplicated release dispatch and made the installed command and wrapper
 drift risks. `cmru release` now owns context discovery, `PYTHONUNBUFFERED`, the aggregate
 `cmru.release.log`, append separators, and the live tee. Retention is the default for logs,
-declared artifacts, and declared gate evidence; explicit `--discard-logs-on-release`,
-`--discard-artifacts-on-release`, and `--discard-evidence-on-release` opt out independently.
+declared artifacts, and declared gate evidence; explicit `release --discard logs`, `--discard artifacts`, and
+`--discard evidence` (repeatable) opt out independently.
 Evidence is declared separately from publishable artifacts because a coverage report or assay
 verdict proves the gated commit but is not a release asset. The declaration is bounded to
 project-relative files/directories and the transaction refuses missing or symlinked evidence
@@ -537,10 +546,8 @@ mutant and provide no valid R2 or canary evidence.
 The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
 changed-source campaign, and R3 runs an import-break canary. The gate also
-retains total-coverage, cause-sensitive canary, and real-enrollment lanes.
-The registered enrollment lane marks its fixture checks as required: absent Docker or gate-slice
-prerequisites and a failed fixture-image build must fail the lane. Local standalone test runs may
-skip the container oracle when Docker is unavailable.
+retains total-coverage and cause-sensitive canary lanes. (The real-enrollment lane moved to
+ciu's `run-gate.toml` with `get.py enroll`.)
 The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
 snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay
@@ -638,7 +645,7 @@ remote state retains the tag and candidate for inspection. A same-name remote ta
 different ref object is a conflict, not proof of absence, so CMRU preserves the local ref and
 candidate. After a confirmed-absent attempt, the same tag name may acquire a new annotated-tag
 object on retry; the ledger permits that rotation only when the prior exact object has a matching
-origin-absence proof. CMRU fast-forwards `origin/main` from the same candidate only after
+origin-absence proof. CMRU promotes `origin/main` from the same candidate only after
 publication succeeds. This keeps a failed build or upload out of `main` and lets a later project
 consume an earlier project's completed release in the same run. Resume checks attempted release
 tags and recorded results against origin before replaying a candidate. It refuses when a tag may
@@ -646,8 +653,9 @@ have been pushed without a completed result or when a recorded result has not be
 also keeps an existing candidate after a release-plan refusal. This prevents a successful child
 exit from erasing evidence of an incomplete post-tag release.
 
-The promotion is deliberately a single fast-forward push. CMRU does not rebase the candidate
+The promotion is a push of the exact candidate. CMRU does not rebase the candidate
 when another writer advances `origin/main`, because that would change the SHA that was gated and
-used to build the artifact. The candidate branch and worktree remain available for inspection;
+used to build the artifact; it merges `origin/main` into the candidate (bounded, `--no-ff`) only
+when the new commits leave the project's own paths untouched, otherwise it stops (REL-04). The candidate branch and worktree remain available for inspection;
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.

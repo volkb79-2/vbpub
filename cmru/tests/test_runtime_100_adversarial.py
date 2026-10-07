@@ -11,36 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import bundle, dependencies, delegated, ghcr, manifest, output, runner, standards
-from cmru.agent import adapter, protocol
-
-
-def test_adapter_loader_accepts_verified_release_adapter_and_rejects_bad_contract(tmp_path):
-    good = tmp_path / "scripts"; good.mkdir()
-    (good / "adapter.py").write_text(
-        "from cmru.agent.adapter import ProjectAdapter, StepResult, HealthResult\n"
-        "class Adapter(ProjectAdapter):\n"
-        " def validate(self, desired, installed_release): pass\n"
-        " def prepare(self, desired, release_root): pass\n"
-        " def apply_step(self, step): return StepResult(True, 0)\n"
-        " def health(self, step): return HealthResult('healthy')\n"
-        " def rollback(self, previous): pass\n"
-    )
-    loaded = adapter.load_adapter(tmp_path)
-    assert loaded.apply_step({}).success and loaded.health({}).status == "healthy"
-    (good / "adapter.py").write_text("class Adapter: pass\n")
-    with pytest.raises(RuntimeError, match="does not subclass"):
-        adapter.load_adapter(tmp_path)
-
-
-def test_protocol_observed_state_round_trip_preserves_nested_contract():
-    observed = protocol.ObservedState(
-        applied_generation=4, release_digest="sha", adapter_phase="applied",
-        health="healthy", message="ok",
-    )
-    encoded = observed.to_json()
-    assert protocol.ObservedState.from_json(encoded) == observed
-    with pytest.raises(AttributeError, match="get"):
-        protocol.ObservedState.from_json("[]")
 
 
 def test_dependency_graph_witnesses_artifact_alias_and_order_errors(tmp_path):
@@ -180,8 +150,3 @@ def test_standards_assessment_reports_tester_and_wheel_policy_gaps(tmp_path):
     result = standards.assess_projects(tmp_path, {"demo": project}, ["demo"], ["demo"])[0]
     assert any("explicit [env]" in problem for problem in result.problems)
     assert not any("no declared run-tests" in problem for problem in result.problems)
-
-
-def test_agent_release_ref_validation_rejects_invalid_json_contract():
-    with pytest.raises(protocol.DesiredStateError):
-        protocol.parse_desired_json(b'{"generation": true}')

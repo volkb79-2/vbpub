@@ -40,22 +40,30 @@ def test_cleanup_delete_build_output_and_discard_worktree_dispatch_exact_targets
     assert seen[0][1] == {"dry_run": True, "expected_identity": expected_identity}
     assert "Would delete retained local build output" in capsys.readouterr().out
 
-    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "failed", "cmru/build/x", "a" * 40)
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "failed", "cmru-build-20260924_120000-demo-ab12cd", "a" * 40,
+    )
     seen.clear()
     monkeypatch.setattr(transaction, "discard_build_workspace", lambda *args, **kwargs: seen.append((args, kwargs)) or workspace)
-    cli.main(["cleanup", "--discard-build-worktree", str(workspace.path), "--dry-run"])
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    from contextlib import nullcontext
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    cli.main(["abandon", str(workspace.path), "--dry-run"])
     assert seen[0][0][1] == workspace.path
     assert seen[0][1] == {"dry_run": True}
     assert "Would discard retained build worktree" in capsys.readouterr().out
 
 
-def test_cleanup_discard_revalidates_the_previewed_worktree(monkeypatch, tmp_path):
-    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
-    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
-    monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+def test_abandon_build_worktree_revalidates_the_previewed_worktree(monkeypatch, tmp_path):
     workspace = transaction.ReleaseWorkspace(
-        tmp_path, tmp_path / ".worktrees" / "cmru-build-x", "cmru/build/x", "a" * 40,
+        tmp_path, tmp_path / ".worktrees" / "cmru-build-x",
+        "cmru-build-20260924_120000-demo-ab12cd", "a" * 40,
     )
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [workspace])
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    from contextlib import nullcontext
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     calls = []
 
     def discard(root, path, *, dry_run, expected_workspace=None):
@@ -64,9 +72,7 @@ def test_cleanup_discard_revalidates_the_previewed_worktree(monkeypatch, tmp_pat
 
     monkeypatch.setattr(transaction, "discard_build_workspace", discard)
 
-    result = cli.main([
-        "cleanup", "--discard-build-worktree", str(workspace.path), "--yes",
-    ])
+    result = cli.main(["abandon", workspace.branch, "--yes"])
 
     assert result == 0
     assert calls == [

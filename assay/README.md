@@ -56,9 +56,13 @@ needs nothing extra:
   including historical runs, at its explicitly expected commit.
 - `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
   and a progress stream that holds a completed baseline (a preflight or an R0/R1
-  run at the same commit). It is a measured, advisory projection: it never
+  run at the same commit and lane). Its JSON names that lane, and it refuses a
+  plan/progress lane mismatch. It is a measured, advisory projection: it never
   classifies a candidate, and `assay plan` itself keeps its declared-budget
-  estimate and prints a stderr line pointing here.
+  estimate and prints a stderr line pointing here. Ingested R2 reports such as
+  Stryker's cannot be enumerated by `assay plan`; see the [first-run sizing
+  procedure](docs/CONSUMERS.md#size-an-ingested-javascript-r2-campaign-b137)
+  and [design rule](docs/DESIGN-GUIDE.md#plan-estimates-bind-lane-and-commit).
 - `campaign` closes out one declared mutation lane from its committed lane
   file, its progress stream and, when you have it, its verified verdict. It is
   read-only: it never judges, never runs a test and never writes a file. It
@@ -91,7 +95,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v13 verdict schema; a receipt
+Receipt verdicts are checked against the current v14 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -178,15 +182,15 @@ assay exists to close that gap mechanically, not by policy:
   `judge_sha256`. The key is optional and native-R2-only: omission preserves the
   legacy whole-tree identity exactly, while an explicit empty list is a distinct
   filtered identity domain. `argv`, declared environment names and values,
-  ambient environment names, cwd, links, project prefix, and assay version
-  remain identity inputs. See the
+  infrastructure names, passthrough value fingerprints, cwd, links, project
+  prefix, and assay version remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
 - **Native R2 can selectively replay verified kill witnesses after a fresh
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
-  runs the candidate's full suite. A v12 verdict is a cold start, and `assay
-  verify` still rejects it. See the
+  runs the candidate's full suite. A v12 or v13 verdict is a cold start under
+  v14, and `assay verify` rejects both. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -196,6 +200,41 @@ assay exists to close that gap mechanically, not by policy:
   state remains `ERROR`/`UNREADABLE_ARTIFACT`. See the
   [refusal design](docs/DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081)
   and [consumer pitfall](docs/CONSUMERS.md#b081-ownership-remedy).
+- **Passthrough environment values stay out of verdict JSON (B142).** A
+  resolved verdict retains each present variable's name and a fixed marker,
+  with a SHA-256 fingerprint for comparing runs. Exact echoes are masked
+  before tail truncation in command output, crash-resume records, failed probe
+  diagnostics and Go helper refusals. Changed passthrough fingerprints also
+  invalidate mutation resume state. This covers credentials such as a
+  database DSN even when its name does not contain `PASSWORD`. See the
+  [redaction rule](docs/DESIGN-GUIDE.md#redacting-passthrough-environment-values-b142)
+  and [consumer example](docs/CONSUMERS.md#keep-passthrough-secrets-out-of-verdicts-b142).
+- **Native R2 cannot count a cgroup-limited candidate as a kill (B145).**
+  Assay reads the calling worker thread's `/proc/thread-self/cgroup` identity
+  and `/proc/thread-self/status` capabilities, then records cgroup v2 PID and
+  memory events at that cgroup and active visible ancestors. It checks the
+  selected hierarchy mount ID and each opened control file against
+  `/proc/self/mountinfo`, so a parent overmount cannot redirect a sample
+  silently. Samples bracket each started full candidate command. If
+  an early stop prevents a full command from starting, the candidate stays
+  `budget_exceeded` and gets a shared zero-duration sample at sweep close;
+  replacement materialization or a saved-witness replay may already have run,
+  and that sample does not describe that earlier work. A positive delta during
+  a full command records the candidate as `crashed`; a positive replay delta
+  stops the lane with payload-free `ERROR/EXEC_FAILED`. Assay requires
+  read-only cgroup mounts and verifies that the candidate cannot write
+  `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
+  controls refuse the run.
+  This does not observe per-process limits such as `RLIMIT_NPROC` or
+  `RLIMIT_AS`. See the
+  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+- **Assay's own Git children cannot launch detached automatic maintenance (B147).**
+  Assay pins automatic maintenance and both detach settings off, independent
+  of system or image configuration. See the
+  [design rationale](docs/DESIGN-GUIDE.md#git-auto-maintenance-stays-disabled-at-the-boundary-b147)
+  and
+  [consumer guidance](docs/CONSUMERS.md#automatic-git-maintenance-in-assays-own-git-commands-b147).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
@@ -208,14 +247,26 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 13` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v12 verdict exactly as it refuses
-v11 (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 14` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+The verdict is a hard cut: `assay verify` refuses v13 and earlier verdicts
+(no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
+this release extends it with the explicit project-level
+`[defaults].env_passthrough` option. Existing v2 lane files still load, and a
+lane may omit its own `env_passthrough` only when that project table is
+present. A v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
+For the verdict-field addition and the effect on old verdicts and reuse, see
+the [v13-to-v14 migration notes](docs/CONSUMERS.md#migration-notes-v13-to-v14).
+The previous cut has its own [v12-to-v13 migration notes](docs/CONSUMERS.md#migration-notes-v12-to-v13).
+In v14, present `env_passthrough` values appear in `env_effective` as
+`"<passthrough>"`; their full SHA-256 fingerprints are in
+`env_effective_passthrough_sha256`. Fixed `env` values and infrastructure facts
+remain recorded as before. The digest is unkeyed and may be guessable for a
+low-entropy value; it supports comparison, not secrecy or authentication.
 
 ## What assay is, and is not
 
@@ -530,10 +581,12 @@ Why the oracle is a subprocess rather than a Python rule:
 
 ### JavaScript/TypeScript coverage and mutation ingestion
 
-`judge.language = "javascript"` resolves at **R1 only** — changed-line
-coverage over `.js`, `.jsx`, `.ts` and `.tsx`. One language name covers all
-four: TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions
-of the two, and every coverage tool in the ecosystem measures them into one
+`judge.language = "javascript"` resolves at **R1 and R2 by ingestion**.
+R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
+judges a Stryker report produced by the lane's own command (B046). Assay does
+not generate native JavaScript mutants. One language name covers all four:
+TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
+two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
 `.ts` and one `.tsx` file to declare two languages for one measurement.
 
@@ -668,13 +721,20 @@ for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
 The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
-(A-480), with no consumer checkout: an outer phase of the registered
-`tester-unified` gate runs `gate/python/qualify_sql.py` on the host after a green
-tester container, against assay's own schema
+(A-480), with no consumer checkout: after the ordinary registered
+`tester-unified` suite passes, a dedicated `tester-unified` qualification
+container runs `gate/python/qualify_sql.py` from an exact-OID clone with
+`--cgroupns=host`. Only this qualification container receives the Docker socket,
+so its real `assay run` witness can observe the cgroup ancestors required by
+B145 while driving assay's own schema
 (`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
-matrix and a witnessed `assay run`, in one digest-pinned, never-pulled container
-named `run-gate-assay-sql-<pid>-<epoch>`. A busy host or an absent image is an
-inconclusive run (`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. See
+matrix and a witnessed `assay run` against one digest-pinned, never-pulled
+PostgreSQL container named `run-gate-assay-sql-<pid>-<epoch>`. A busy host,
+name conflict, or absent image is an inconclusive run
+(`ASSAY_GATE_INCONCLUSIVE=`, exit 3), never a green one. Failure to remove the PostgreSQL fixture or its qualification
+runner also fails the gate before it can issue a registered receipt. The driver
+uses Docker IDs for both container lifecycles and fails closed when a daemon-side
+repository or socket bind source is missing. See
 [§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
 
 The two B015 semantic families, `python:uuid-equality-swap` and
@@ -868,8 +928,15 @@ answer.
    - `[lanes.<name>.judge]` — HOW: coverage format, `source_roots`,
      `fail_under`, mutation operators/budget, canary mechanism — only for
      the rigor levels actually declared.
-   - `where` facts (env, env_passthrough) — WHERE this specific lane
-     legitimately differs from the ambient environment.
+   - `where` facts (`env`, lane-level `env_passthrough`) — WHERE this specific
+     lane legitimately differs from the ambient environment. The optional
+     top-level `[defaults].env_passthrough` names project-wide allowed inputs;
+     see the [default policy](docs/DESIGN-GUIDE.md#5-defaults-doctrine-dstdns-agents-42a-applied).
+     A `source_roots` entry may name a directory or one exact, tracked file
+     present at the judged commit, reached without traversing a symlink; an
+     ignored or untracked worktree file is not enough. See
+     [the design rule](docs/DESIGN-GUIDE.md#file-scoped-source-roots) and
+     [worked lane](docs/CONSUMERS.md#scope-a-changed-lines-lane-to-one-file-b141).
 2. `assay run <lane>` executes the lane's declared command exactly once,
    measures the result against every declared rigor level, and writes one
    verdict artifact — a JSON document validated against a shipped JSON
@@ -882,6 +949,10 @@ answer.
 ```toml
 # assay.toml
 schema_version = 2
+
+# Explicit project-wide allowlist defaults. No names are built in.
+[defaults]
+env_passthrough = ["PATH"]
 
 # Optional project-top-relative paths whose pre-existing dirt is recorded.
 [isolation]
@@ -898,7 +969,6 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "--cov=mypkg", "--cov-branch", "--cov-report=json:cov.json"]
 env = {}
-env_passthrough = ["PATH"]
 budget = "20m"
 allow_argv_append = false
 
@@ -939,10 +1009,13 @@ Two more CLI verbs round out the surface:
   useful for auditing what a project claims before trusting its gate.
 - `assay plan <mutation-lane>` discovers candidates through a private commit
   snapshot, reports total/per-file/per-operator counts and deterministic IDs,
-  and estimates runtime without running the lane command or any mutant. Its
-  JSON carries the `commit` and `tree` it was made at, and the estimate is the
+  and estimates runtime without running the lane command or any mutant. Native
+  candidate discovery is required. An ingested R2 lane returns an `unsupported`
+  result because the foreign report does not expose Assay's candidate
+  inventory; it cannot be used with `plan-estimate`. A successful native plan
+  carries the lane, `commit` and `tree` it was made at, and its estimate is the
   declared budget (a placeholder when none is numeric), not a measurement; save
-  the JSON and pass it to `assay analyze plan-estimate` for a measured
+  that JSON and pass it to `assay analyze plan-estimate` for a measured
   projection. The B105 R2 driver plans first and its checker refuses a report
   whose campaign is not exactly that complete, unsharded plan at the expected
   commit and tree.

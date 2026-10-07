@@ -281,7 +281,9 @@ mean the kernel accepted a configured monitoring context. Check each session's
 - **Retention:** `--keep-sessions 200 --keep-days 14` by default (`serve`
   CLI flags) — the newest N finished sessions are kept, older ones dropped
   on every `stop`, or on demand via `ctl gc --json`. A live session is
-  never pruned.
+  never pruned. A finished session with an incomplete placement recovery
+  journal is also preserved until restoration is verified, even when those
+  retention limits are exceeded.
 - **`cgprofile.slice` (D-29) — the daemon's own containment.** An OPERATOR
   step, once per host, **before** the first `ciu up` on that host: see
   `infra/README.md` (`sudo cp infra/cgprofile.slice

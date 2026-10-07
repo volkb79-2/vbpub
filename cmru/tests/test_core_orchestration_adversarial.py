@@ -239,7 +239,8 @@ def test_transaction_revert_aborts_failed_revert_and_reports_manual_recovery(mon
 
 def test_transaction_run_child_propagates_child_exit_and_transaction_identity(monkeypatch, tmp_path):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "workspace", "cmru/release/id", "a" * 40)
-    monkeypatch.setenv("CMRU_BIN", "/opt/cmru")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "/opt/cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _root: True)
     seen = {}
     def fake_run(argv, **kwargs):
         seen["argv"] = argv

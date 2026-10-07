@@ -1077,6 +1077,7 @@ def render_stack(
     ciu_context: Mapping[str, object] | None = None,
     *,
     write_rendered: bool = True,
+    environ: Mapping[str, str] | None = None,
 ) -> dict:
     """Render stack templates into ciu.toml and return the merged stack config.
 
@@ -1112,7 +1113,11 @@ def render_stack(
         )
 
     defaults_config = render_toml_template(
-        defaults_path, _make_render_context(global_config, ciu_context=ciu_context)
+        defaults_path,
+        _make_render_context(
+            global_config, environ=environ, ciu_context=ciu_context
+        ),
+        environ=environ,
     )
     merged_stack: dict = defaults_config
 
@@ -1122,9 +1127,13 @@ def render_stack(
         raw_override = overrides_path.read_text(encoding="utf-8")
         scan_override_for_secrets(raw_override, str(overrides_path))
         overrides_context = _make_render_context(
-            deep_merge(global_config, defaults_config), ciu_context=ciu_context
+            deep_merge(global_config, defaults_config),
+            environ=environ,
+            ciu_context=ciu_context,
         )
-        overrides_config = render_toml_template(overrides_path, overrides_context)
+        overrides_config = render_toml_template(
+            overrides_path, overrides_context, environ=environ
+        )
         merged_stack = deep_merge(merged_stack, overrides_config)
 
     # S3.4: preserve [state] only; explicitly drop [secrets] (withdrawn)

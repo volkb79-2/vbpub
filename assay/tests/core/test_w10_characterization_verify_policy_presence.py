@@ -208,6 +208,7 @@ def _r0_only_verdict():
         argv_effective=("pytest", "-q"),
         env_declared={},
         env_effective={},
+        env_passthrough=(),
         scope="S1",
         enforcement="gate",
         outcome=Outcome.PASS,

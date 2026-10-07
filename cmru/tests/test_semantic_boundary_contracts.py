@@ -27,7 +27,6 @@ from cmru import (
     tool_deps,
     transaction,
 )
-from cmru.controller import cli as controller_cli
 
 OUTPUT_COMMIT = "a" * 40
 OUTPUT_ID = "20260927T120000Z_" + OUTPUT_COMMIT
@@ -347,6 +346,11 @@ def _install_config_loader(monkeypatch, tmp_path, names=("alpha", "beta"), *, ow
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    # resolve reads the installer section from the strict ForgeConfig (B1).
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config",
+        lambda _path: SimpleNamespace(projects={n: SimpleNamespace(installer=None) for n in projects}),
+    )
     return config_path
 
 
@@ -390,12 +394,8 @@ def _install_abandon_facts(monkeypatch, root, workspace, *, progress=None):
 @pytest.mark.parametrize(
     ("entrypoint", "argv", "missing"),
     [
-        (controller_cli.main, ["approve"], "--plan"),
-        (controller_cli.main, ["hold"], "--plan"),
-        (controller_cli.main, ["rollback"], "--plan"),
         (handlers.main, ["wheel-build", "--dry-run"], "--cwd"),
         (handlers.main, ["wheel-validate"], "--prefix"),
-        (lambda argv: runner.runner_cli().run(argv=argv), ["alpha"], "--step"),
         (tester_gate.main, ["--", "true"], "--cwd"),
     ],
 )
@@ -414,32 +414,6 @@ def test_handler_dry_run_hides_its_own_control_flag(capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Would run cmru handler wheel-build" in output
     assert "dry_run" not in output
-
-
-def test_controller_rollback_accepts_the_minimum_positive_generation(caplog):
-    from cmru.controller.planner import LandscapePlan, PlanStep
-    from cmru.controller.rollout import RolloutEngine
-
-    caplog.set_level("INFO")
-    step = PlanStep(
-        plan_id="plan", wave_name="canary", phase=1, wave_type="canary",
-        nodes=["node-a"], profiles=["core"], release_tag="demo-v1",
-        manifest_url="https://example.invalid/manifest.json", manifest_sha256="a" * 64,
-        config_hash="cfg", step_id="plan.phase-1.canary", required=True,
-        requires_approval=False,
-    )
-    engine = RolloutEngine(object(), "landscape", generation_base=3, dry_run=True)
-
-    engine.rollback(LandscapePlan("plan", "landscape", [step]), generation=1)
-
-    assert "action=rollback to 1" in caplog.text
-
-
-def test_run_step_without_its_required_step_reports_usage(capsys):
-    assert runner.runner_cli().run(argv=[]) == 2
-    diagnostic = capsys.readouterr().err.lower()
-    assert "usage:" in diagnostic
-    assert "--step" in diagnostic
 
 
 def test_init_help_marks_the_guided_command_interactive(capsys):
@@ -464,8 +438,6 @@ def test_init_without_arguments_starts_the_guided_flow(monkeypatch):
         (getpy.getpy_main, ["alpha,beta", "--output", "installer.py"]),
         (resolve.resolve_main, ["ghost"]),
         (resolve.resolve_main, ["alpha"]),
-        (lambda argv: runner.runner_cli().run(argv=argv), ["ghost", "--step", "build"]),
-        (lambda argv: runner.runner_cli().run(argv=argv), ["alpha,beta", "--step", "build"]),
         (standards.standards_main, ["ghost"]),
         (standards.standards_main, ["alpha", "--dry-run"]),
         (tool_deps.tool_deps_main, ["--refresh", "alpha", "--json"]),
@@ -488,21 +460,6 @@ def test_invalid_registered_invocations_render_usage(monkeypatch, tmp_path, caps
     assert "error" in diagnostic.lower()
 
 
-def test_run_step_unknown_dry_run_step_reports_a_concise_error_without_usage(
-    monkeypatch, tmp_path, capsys,
-):
-    config_path = _install_config_loader(monkeypatch, tmp_path)
-
-    result = runner.runner_cli().run(argv=[
-        "alpha", "--step", "missing", "--dry-run", "--config", str(config_path),
-    ])
-
-    diagnostic = capsys.readouterr().err
-    assert result == 2
-    assert "step 'missing' is not declared" in diagnostic
-    assert "usage:" not in diagnostic.lower()
-
-
 @pytest.mark.parametrize("base_commit", [None, "not-a-commit"])
 def test_abandon_refuses_an_unverifiable_base_commit(
     monkeypatch, tmp_path, capsys, base_commit,
@@ -519,7 +476,7 @@ def test_abandon_refuses_an_unverifiable_base_commit(
         SimpleNamespace(confirm=lambda _prompt: pytest.fail("dry-run prompted")),
     )
 
-    assert result == 2
+    assert result == 4  # exit_codes.REFUSED
     assert "original snapshot commit is unavailable" in capsys.readouterr().out
 
 
@@ -538,7 +495,7 @@ def test_abandon_preserves_remote_inspection_error_detail(monkeypatch, tmp_path,
         SimpleNamespace(confirm=lambda _prompt: pytest.fail("dry-run prompted")),
     )
 
-    assert result == 2
+    assert result == 4  # exit_codes.REFUSED
     assert "network unreachable" in capsys.readouterr().out
 
 

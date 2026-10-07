@@ -50,7 +50,7 @@ sys.exit(90)
     env = os.environ.copy()
     env["DIAGNOSTIC_CALLS"] = str(calls)
     proc = subprocess.run(
-        ["bash", "-c", function + '\nrun_self_hosted_lane "$1" "$2" "$3" "$4"',
+        ["bash", "-c", 'assay_git() { command git "$@"; }\n' + function + '\nrun_self_hosted_lane "$1" "$2" "$3" "$4"',
          "diagnostic-test", str(root), str(scratch), "test-version", "test-wheel"],
         capture_output=True, text=True, env=env, check=False)
     assert proc.returncode == 1

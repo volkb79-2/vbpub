@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -20,6 +21,19 @@ from assay.verify import verify_document
 CHECKER = PROJECT_ROOT / "tools" / "b105_report_check.py"
 VERSION = "7.1.1.dev-b105"
 WHEEL_SHA256 = hashlib.sha256(b"selected assay wheel").hexdigest()
+
+
+def test_checker_git_argv_disables_automatic_maintenance():
+    spec = importlib.util.spec_from_file_location("b105_report_check_test", CHECKER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    argv = module._git_argv("rev-parse", "HEAD")
+    pairs = tuple(zip(argv, argv[1:]))
+
+    assert ("-c", "maintenance.auto=false") in pairs
+    assert ("-c", "maintenance.autoDetach=false") in pairs
+    assert ("-c", "gc.autoDetach=false") in pairs
 
 
 def _git_value(*args: str) -> str:

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from cmru.release import sha256_file
 
@@ -93,6 +95,71 @@ def _validate_images(images: Optional[Dict[str, Any]], project: str) -> Dict[str
 # Public API
 # ---------------------------------------------------------------------------
 
+_BUNDLE_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+
+
+def bundle_tag_problem(tag: str) -> Optional[str]:
+    """Why `tag` is not a release tag the installer (`get.py`) accepts, else None. Mirrors
+    the installer's grammar: ``[A-Za-z0-9][A-Za-z0-9._+-]*`` and no ``..``."""
+    if not _BUNDLE_TAG_RE.fullmatch(tag) or ".." in tag:
+        return (f"invalid --tag {tag!r}: a release tag is made of [A-Za-z0-9._+-], starts "
+                "with a letter or digit and has no '..'")
+    return None
+
+
+def bundle_files(root: Path, exclude: Iterable[str] = ()) -> Dict[str, Dict[str, Any]]:
+    """The manifest ``files`` map of a bundle tree: ``{relpath: {sha256, size, mode}}`` for
+    every regular file below ``root`` (posix relative paths, sorted by canonical
+    serialization). ``exclude`` names root-level files that are not part of the content
+    (the manifest and its signature). A symlink or any non-regular entry is an error: the
+    installer (`get.py`) only installs hashed regular files, so a bundle that needs
+    anything else cannot be described.
+
+    ``mode`` is the permission bits (``0o755`` -> 493); informational for the installer,
+    which takes modes from the archive."""
+    root = Path(root)
+    if not root.is_dir():
+        raise ValueError(f"bundle root is not a directory: {root}")
+    skip = set(exclude)
+    files: Dict[str, Dict[str, Any]] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if rel in skip:
+            continue
+        if path.is_symlink() or (not path.is_dir() and not path.is_file()):
+            raise ValueError(f"bundle entry {rel!r} is a symlink or special file; the "
+                             "manifest can only describe regular files")
+        if path.is_dir():
+            continue
+        st = path.stat()
+        files[rel] = {"sha256": sha256_file(path), "size": st.st_size,
+                      "mode": stat.S_IMODE(st.st_mode)}
+    return files
+
+
+def build_bundle_manifest(
+    *,
+    project: str,
+    tag: str,
+    bundle_root: Path,
+    exclude: Iterable[str] = ("manifest.json", "manifest.json.minisig"),
+) -> Dict[str, Any]:
+    """The schema-1 manifest for a plain bundle (no wheels): what a project whose release
+    is a tarball of files (tls-edge) needs for the hardened ``get.py``.
+
+    ``{"schema_version": 1, "project", "tag", "created", "files"}`` -- ``files`` covers
+    every regular file in ``bundle_root`` (see ``bundle_files``), which is exactly what
+    the installer demands: it refuses any bundle member the manifest does not list.
+    Deterministic given SOURCE_DATE_EPOCH and the tree."""
+    return {
+        "schema_version": 1,
+        "project": project,
+        "tag": tag,
+        "created": _iso8601_from_epoch(_epoch()),
+        "files": bundle_files(bundle_root, exclude),
+    }
+
+
 def build_manifest(
     *,
     project: str,
@@ -105,6 +172,7 @@ def build_manifest(
     host_config_schema_version: int,
     platform: Dict[str, Any],
     upgrade: Dict[str, Any],
+    bundle_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Assemble the §3 manifest dict.
 
@@ -123,6 +191,10 @@ def build_manifest(
         host_config_schema_version:  Schema version integer for the host config.
         platform:                    {min_python, arch} dict.
         upgrade:                     {min_from, rollback_to} dict.
+        bundle_root:                 when given, the manifest also carries ``files``: the
+                                     sha256/size/mode of every regular file in that tree
+                                     (see ``bundle_files``), which the hardened get.py
+                                     requires for everything it installs.
 
     Returns:
         The assembled manifest dict (not yet serialized).
@@ -131,8 +203,6 @@ def build_manifest(
         RuntimeError:  SOURCE_DATE_EPOCH not set.
         TypeError/ValueError: images map has wrong shape.
     """
-    import importlib.metadata
-
     epoch = _epoch()
     created = _iso8601_from_epoch(epoch)
 
@@ -140,13 +210,10 @@ def build_manifest(
     cmru_sha256 = sha256_file(cmru_wheel)
     ciu_sha256 = sha256_file(ciu_wheel)
 
-    # cmru version from installed package metadata (stdlib importlib.metadata).
-    try:
-        cmru_version = importlib.metadata.version("cmru")
-    except importlib.metadata.PackageNotFoundError:
-        cmru_version = "0.0.0"
-
-    # ciu version: read from wheel filename or metadata if installed.
+    # Both versions come from the bundled wheels' own file names (D3): the
+    # manifest describes the wheels it ships, not whatever cmru happens to be
+    # installed in the building process.
+    cmru_version = _version_from_wheel_name(cmru_wheel)
     ciu_version = _version_from_wheel_name(ciu_wheel)
 
     validated_images = _validate_images(images, project)
@@ -173,16 +240,24 @@ def build_manifest(
         "platform": platform,
         "upgrade": upgrade,
     }
+    if bundle_root is not None:
+        manifest["files"] = bundle_files(bundle_root)
     return manifest
 
 
 def _version_from_wheel_name(wheel_path: Path) -> str:
-    """Extract version from wheel filename (PEP 427: <name>-<ver>-<tag>.whl)."""
-    stem = wheel_path.stem  # strip .whl
-    parts = stem.split("-")
-    if len(parts) >= 2:
-        return parts[1]
-    return "0.0.0"
+    """Extract the version from a wheel file name (PEP 427: <name>-<ver>-<tag>.whl).
+
+    A name without a version field is an error: there is no placeholder
+    version, because a manifest must never describe a wheel by a made-up one.
+    """
+    parts = wheel_path.stem.split("-")  # stem strips .whl
+    if len(parts) < 2 or not parts[1]:
+        raise ValueError(
+            f"cannot read a version from wheel file name {wheel_path.name!r} "
+            "(expected <name>-<version>-<tags>.whl)"
+        )
+    return parts[1]
 
 
 def write_manifest(manifest: Dict[str, Any], out_path: Path) -> Path:

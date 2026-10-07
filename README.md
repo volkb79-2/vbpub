@@ -17,7 +17,7 @@ one config and one installed CLI.
 | **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
 | **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
-| **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library | independently packageable; not yet in the cmru release set |
+| **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library (wheel) | cmru — `cli-extended-v*`; the root of the dependency graph (zero-release order: [`docs/BOOTSTRAP-FROM-ZERO.md`](docs/BOOTSTRAP-FROM-ZERO.md)) |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
@@ -123,7 +123,7 @@ cmru release                            # one-shot: detect changed → tag → p
 cmru release --dry-run                  # preview tags only, no writes
 cmru changelog assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
 cmru build <name>                       # retained isolated gate + build; no publish
-cmru publish <name>                     # run the project's declared publish step
+cmru publish <name> --build-output ID   # publish the exact bytes of a retained `cmru build`
 cmru cleanup --remove-assets 30d       # prune old releases / GHCR versions
 cmru --help                            # all verbs
 ```

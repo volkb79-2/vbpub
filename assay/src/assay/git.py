@@ -109,6 +109,7 @@ __all__ = [
     "repo_top",
     "resolve_base",
     "run",
+    "tree_entry_info",
     "tree_entry_kind",
     "verify_exact_commit",
 ]
@@ -173,6 +174,14 @@ _FIXED_CONFIG: tuple[str, ...] = (
     # useful result ("unable to create threaded lstat"). Pin the option at
     # the Git boundary; ambient GIT_CONFIG_* is intentionally discarded above.
     "-c", "core.preloadIndex=false",
+    # The replacement environment intentionally discards system and global
+    # configuration, including settings baked into a tester image. Keep Git's
+    # automatic maintenance disabled at this boundary: detached maintenance
+    # children can outlive their parent and exhaust the gate's PID limit
+    # (B145/B147).
+    "-c", "maintenance.auto=false",
+    "-c", "maintenance.autoDetach=false",
+    "-c", "gc.autoDetach=false",
     "-c", "commit.gpgSign=false",
     "-c", "core.excludesFile=",
 )
@@ -1039,9 +1048,10 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str, *, remaining: Remain
     return _zero_true_one_false(returncode, stderr, "git merge-base --is-ancestor")
 
 
-def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining) -> str | None:
-    """The exact object kind of *path* at *commit* -- ``"blob"``, ``"tree"``,
-    or ``None`` when absent.
+def tree_entry_info(
+    repo: Path, commit: str, path: str, *, remaining: Remaining
+) -> tuple[str, str] | None:
+    """The exact (mode, kind) of *path* at *commit*, or ``None`` if absent.
 
     Runs literal ``ls-tree -z <commit> -- <path>`` and parses ONE raw record:
     ``<mode> SP <type> SP <oid> TAB <path> NUL``. Empty output is absence
@@ -1050,7 +1060,8 @@ def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining)
     failure -- never a display-name parser, never pathspec expansion (the
     generic boundary's ``--literal-pathspecs`` is what makes a name
     containing ``*?[]`` or a literal newline an exact identity here, not a
-    glob).
+    glob). Mode/type pairs are also checked, so callers can distinguish a
+    regular file from a symlink even though both are blobs.
     """
     returncode, stdout, stderr = _run_raw(
         repo, "ls-tree", "-z", commit, "--", path, remaining=remaining
@@ -1078,10 +1089,35 @@ def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining)
     fields = meta.split(b" ")
     if len(fields) != 3:
         raise _git_failed("git ls-tree returned malformed entry metadata")
+    mode = _decode_or_reject(fields[0], "an ls-tree mode")
     kind = _decode_or_reject(fields[1], "an ls-tree object type")
     if kind not in ("blob", "tree"):
         raise _git_failed(f"git ls-tree returned an unsupported object type {kind!r}")
-    return kind
+    allowed_modes = {
+        ("100644", "blob"),
+        ("100755", "blob"),
+        ("120000", "blob"),
+        ("040000", "tree"),
+    }
+    if (mode, kind) not in allowed_modes:
+        raise _git_failed(
+            f"git ls-tree returned an unsupported mode/type pair {(mode, kind)!r}"
+        )
+    return mode, kind
+
+
+def tree_entry_kind(
+    repo: Path, commit: str, path: str, *, remaining: Remaining
+) -> str | None:
+    """The exact object kind of *path* at *commit* -- ``"blob"``, ``"tree"``,
+    or ``None`` when absent.
+
+    Compatibility wrapper for callers that need only Git's object kind;
+    callers that must distinguish ordinary files from symlinks use
+    :func:`tree_entry_info` and inspect the exact mode as well.
+    """
+    entry = tree_entry_info(repo, commit, path, remaining=remaining)
+    return None if entry is None else entry[1]
 
 
 def path_is_current(

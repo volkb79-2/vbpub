@@ -45,8 +45,7 @@ post_compose = [
   # ACL bootstrap, policies from [registry.consul.policies], tokens → Vault;
   # identities from its context (ciu.hookkit). `provides` = the facts the hook
   # creates, attributed to the primary (consul) and probed there before the next
-  # wave (S8.5.2). cmru_node tokens are issued per node by auto_config at
-  # enrollment, so they are not pre-minted here.
+  # wave (S8.5.2).
   { run = "./post_compose_consul.py", provides = [
     "vault:secret/consul/controller/token", "vault:secret/consul/worker-io/token",
     "vault:secret/consul/worker-db/token", "vault:secret/consul/webapp-server/token",

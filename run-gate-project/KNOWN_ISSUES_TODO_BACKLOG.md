@@ -5769,3 +5769,16 @@ return a closed recovery refusal before inventory or admission.
 **Oracles.** The live PID 1 refusal and low-`--pids-limit` checks passed in a detached `tester-unified` container; the latter's command returned zero while `pids.events:max` increased, and run-gate returned ERROR with raw `exit_code: 0` retained. Tests cover a changed `memory.events:oom_kill` counter, unchanged counters, unreadable files, moved cgroups, and raw-status preservation. The registered `selftest` lane with 100% changed-line coverage remains pending.
 
 **Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).
+
+## RG-85 — assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it)
+
+**Status:** OPEN. Filed 2026-10-06 during the 23.10.0 release-prep review (`run-gate-2310-adopt`). Severity Minor: the release gate (`selftest`) is unaffected, because it creates its own scratch root.
+
+**Observed.**
+- `assay.toml:43` and `:84` set `TMPDIR` and `GIT_CEILING_DIRECTORIES` to `/worktree/.run-gate`.
+- In a fresh checkout that directory does not exist. Python silently ignores a nonexistent `TMPDIR`, so tests fall back to `/tmp`.
+- Result: `assay-r1 --base main` failed with 116 tests, and it returned NOT_RUN when no writable `.run-gate` state mount existed. Both passed once `.run-gate/` was created by hand.
+
+**Fix direction.** Either give the assay lanes the same `mkdir -p .run-gate` prelude that the selftest lane got in 23.10.0 (`623332171`), or have run-gate create the lane scratch root before it launches any lane.
+
+**Oracles.** From a fresh `git worktree add` of main, with no `.run-gate/` present, `assay-r1 --base main` reaches PASS with no manual setup. A plant that drops the prelude, or the pre-launch creation, fails a test.

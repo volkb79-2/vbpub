@@ -55,6 +55,7 @@ ADAPTER_DEPS = {
     "assay.statement_attribution",
     "assay.records",
     "assay.guards",
+    "assay.redaction",
 }
 PARSER_DEPS = {"assay.errors", "assay.vocabulary", "assay.records", "assay.guards"}
 CORE_PARSER_SURFACE = {
@@ -148,6 +149,7 @@ def test_allowed_refuses_and_accepts_the_documented_edges():
         ("assay.coverage", "assay.coverage_parsers.lcov"),
         ("assay.adapters.go", "assay.adapters.go_modfile"),
         ("assay.adapters.go", "assay.records"),
+        ("assay.adapters.go_stmtpos", "assay.redaction"),
         ("assay.coverage_parsers.lcov", "assay.guards"),
     ]
     assert [edge for edge in refused if allowed(*edge)] == []

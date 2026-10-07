@@ -674,12 +674,13 @@ Subprocess test helpers (`cli_extended.testing`):
 - `home` MUST be absolute (`ValueError` otherwise). `env` MUST NOT contain
   `HOME` or any `XDG_*_HOME` key (`ValueError` naming the key); `home` is the
   only source. An empty string in `scrub_prefixes` is a `ValueError`.
-- `PYTHONPATH` is the directory of the imported `cli_extended` package, then
-  `pythonpath`, then any inherited value, but the library directory is added
-  only when `python` is None (the same interpreter). With an explicit `python`
-  the caller supplies `pythonpath` itself, because an installed library
-  directory is a whole `site-packages` that must not leak into a foreign
-  interpreter. `env` is applied last; a `None` value deletes the key.
+- `PYTHONPATH` is `pythonpath`, then any inherited value; nothing else is
+  added (CLI-EXT-27). With `library_path=True` the directory of the imported
+  `cli_extended` package is placed first. `python_args` are interpreter
+  options placed before the script or `-m`; `isolated=True` adds `-I`, drops
+  the inherited `PYTHONPATH`, and is a `ValueError` together with `pythonpath`
+  or `library_path` (CLI-EXT-19). `env` is applied last; a `None` value deletes
+  the key.
   `timeout` is a failsafe only.
 
 Every adoption MUST keep two contracts distinct: the generated grammar
@@ -803,7 +804,7 @@ tools; other rows remain future work and were not re-audited here.
 | `debian-install-v2.py` | adopted through `cli-extended` for registry, help/version, common options, output, and dispatch; `bootstrap-remote.py` is the documented stdlib-only bootstrap exception |
 | Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | adopted through `cli-extended` for generated verbs/help, identity/version, common diagnostics, and clean cancellation; Netcup retains API, confirmation, denylist, and install policy |
 | `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
-| `cmru`, `cmru-agent`, `cmru-controller`, `python -m cmru.handlers` | use the registered grammar and generated help; the CMRU SPEC records the semantic review. The active handler module is a project-step/bootstrap CLI; bundle and runner remain libraries; standalone generated `get.py` intentionally retains argparse. |
+| `cmru`, `python -m cmru.handlers` | use the registered grammar and generated help; the CMRU SPEC records the semantic review. The active handler module is a project-step/bootstrap CLI; bundle and runner remain libraries; standalone generated `get.py` intentionally retains argparse. |
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 

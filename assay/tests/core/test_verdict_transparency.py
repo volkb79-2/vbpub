@@ -19,14 +19,16 @@ so a gate PASS can describe a run that skipped most of the suite.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
 from conftest import verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
-from assay.errors import Outcome, ReasonCode
-from assay.verdict import LANE_RESOLVED_FIELDS, Verdict
+from assay.errors import REASON_CODES, Outcome, ReasonCode
+from assay.verify import verify_document
+from assay.verdict import Claim, LANE_RESOLVED_FIELDS, Verdict
 
 RESOLVED = {
     "lane": "package",
@@ -42,14 +44,13 @@ RESOLVED = {
     "argv_effective": ("pytest", "-q"),
     "env_declared": {"TZ": "UTC"},
     "env_effective": {"TZ": "UTC"},
+    "env_passthrough": (),
     "scope": "S2",
     "enforcement": "gate",
 }
 
 
 def a_claim() -> tuple:
-    from assay.verdict import Claim
-
     return (
         Claim(
             rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True
@@ -67,6 +68,34 @@ def test_what_ran_is_recorded_on_every_outcome_where_a_lane_resolved(outcome: st
     document = verdict_fixture(outcome)
     for field in LANE_RESOLVED_FIELDS:
         assert field in document, f"{outcome} does not record {field}"
+
+
+def test_the_verdict_records_the_effective_passthrough_union_even_when_a_name_is_absent():
+    verdict = Verdict(
+        **{
+            **RESOLVED,
+            "env_effective": {"TZ": "UTC", "PATH": "/usr/bin"},
+            "env_passthrough": ("PATH", "BUILD_VERSION"),
+        },
+        claims=a_claim(),
+    )
+
+    document = json.loads(verdict.to_json())
+
+    assert document["env_passthrough"] == ["PATH", "BUILD_VERSION"]
+    assert document["env_effective"]["PATH"] == "<passthrough>"
+    assert document["env_effective_passthrough_sha256"] == {
+        "PATH": hashlib.sha256(b"/usr/bin").hexdigest()
+    }
+    assert "BUILD_VERSION" not in document["env_effective"]
+
+
+def test_the_model_rejects_a_passthrough_name_that_collides_with_fixed_env():
+    with pytest.raises(ValueError, match="env_passthrough names.*env_declared"):
+        Verdict(
+            **{**RESOLVED, "env_passthrough": ("TZ",)},
+            claims=a_claim(),
+        )
 
 
 def test_a_verdict_for_a_lane_that_never_loaded_omits_them_rather_than_emptying():
@@ -105,7 +134,11 @@ def test_the_model_omits_the_group_when_it_was_never_given_one():
 
 @pytest.mark.parametrize(
     "dropped",
-    [f for f in LANE_RESOLVED_FIELDS if f != "argv_modified"],
+    [
+        f
+        for f in LANE_RESOLVED_FIELDS
+        if f not in {"argv_modified", "env_effective_passthrough_sha256"}
+    ],
 )
 def test_the_model_refuses_a_half_populated_group(dropped: str):
     assert Verdict(**RESOLVED, claims=a_claim()).lane == "package"  # untouched form
@@ -198,7 +231,99 @@ def test_the_declared_environment_is_carried_verbatim():
     actually saw. Both are recorded, so the two can be compared by a reader."""
     document = verdict_fixture("FAIL")
     assert document["env_declared"] == {"TZ": "UTC"}
-    assert document["env_effective"] == {"TZ": "UTC", "PATH": "/usr/bin"}
+    assert document["env_effective"] == {"TZ": "UTC", "PATH": "<passthrough>"}
+    assert document["env_effective_passthrough_sha256"] == {
+        "PATH": hashlib.sha256(b"/usr/bin").hexdigest()
+    }
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Outcome.PASS,
+        Outcome.FAIL,
+        Outcome.ERROR,
+        Outcome.NO_MEASUREMENT,
+        Outcome.BUDGET_EXCEEDED,
+    ],
+)
+def test_passthrough_values_are_redacted_for_every_terminal_outcome(outcome):
+    secrets = {
+        "SCHEMA_GATE_DSN": "postgresql://dstdns:dsn-secret@db/schema",
+        "X_PASSWORD": "p4ssw0rd-secret",
+    }
+    reason = None if outcome is Outcome.PASS else sorted(
+        REASON_CODES[outcome], key=lambda code: code.value
+    )[0]
+    claim = Claim(
+        rigor="R0",
+        source="computed",
+        status=outcome,
+        verified_by_assay=True,
+        reason_code=reason,
+    )
+    verdict = Verdict(
+        **{
+            **RESOLVED,
+            "outcome": outcome,
+            "reason_code": reason,
+            "env_effective": {"TZ": "UTC", **secrets},
+            "env_passthrough": tuple(secrets),
+            "result_stdout_tail": (
+                "starting with " + secrets["SCHEMA_GATE_DSN"]
+            ),
+            "result_stderr_tail": (
+                "failed with " + secrets["SCHEMA_GATE_DSN"] + " and "
+                + secrets["X_PASSWORD"]
+            ),
+        },
+        claims=(claim,),
+    )
+
+    payload = verdict.to_json().encode("utf-8")
+    document = json.loads(payload)
+    assert b"dsn-secret" not in payload
+    assert b"p4ssw0rd-secret" not in payload
+    assert document["env_effective"] == {
+        "TZ": "UTC",
+        "SCHEMA_GATE_DSN": "<passthrough>",
+        "X_PASSWORD": "<passthrough>",
+    }
+    assert set(document["env_effective_passthrough_sha256"]) == set(secrets)
+    assert document["result_stdout_tail"] == "starting with " + "*" * len(
+        secrets["SCHEMA_GATE_DSN"]
+    )
+    assert document["result_stderr_tail"] == (
+        "failed with " + "*" * len(secrets["SCHEMA_GATE_DSN"])
+        + " and " + "*" * len(secrets["X_PASSWORD"])
+    )
+    assert verify_document(document) == []
+
+
+def test_a_new_passthrough_value_produces_a_different_comparable_digest():
+    before = Verdict(
+        **{
+            **RESOLVED,
+            "env_effective": {"SCHEMA_GATE_DSN": "postgresql://u:old@db/schema"},
+            "env_passthrough": ("SCHEMA_GATE_DSN",),
+        },
+        claims=a_claim(),
+    ).to_dict()
+    after = Verdict(
+        **{
+            **RESOLVED,
+            "env_effective": {"SCHEMA_GATE_DSN": "postgresql://u:new@db/schema"},
+            "env_passthrough": ("SCHEMA_GATE_DSN",),
+        },
+        claims=a_claim(),
+    ).to_dict()
+
+    assert before["env_effective"]["SCHEMA_GATE_DSN"] == "<passthrough>"
+    assert after["env_effective"]["SCHEMA_GATE_DSN"] == "<passthrough>"
+    assert (
+        before["env_effective_passthrough_sha256"]["SCHEMA_GATE_DSN"]
+        != after["env_effective_passthrough_sha256"]["SCHEMA_GATE_DSN"]
+    )
 
 
 def test_a_non_string_environment_value_is_rejected(validator: Draft202012Validator):
