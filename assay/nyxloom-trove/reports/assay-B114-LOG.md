@@ -62,3 +62,34 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - Replaced the B115 executor test's minimal fake `Future` with `concurrent.futures.Future`; Python 3.14's executor path reads the real Future's private condition while the old fake did not provide it.
 - Source-backed regression command from `assay/` (`PYTHONPATH=src:analysis/src python -m pytest -q` over B105 boundaries, campaign deadlines, B114/B148, mutation resource/witness/reuse, CLI, verdict, docs, and dataclass tests): **942 passed, 1 skipped in 84.23s**. The final focused liveness replacement oracle passed separately (**1 passed in 7.98s**). `git diff --check` passed.
 - No registered gate or B105 full R2 campaign has started. The current tester-unified and self-qualification-preflight runs remain scheduled for the final reviewed merge commit, per the B114 plan. The latest `docker ps` showed only persistent estate containers and no assay/run-gate/tester gate.
+
+## Sol xhigh receipt and deadline repair — 2026-10-07
+
+- Replaced production cold-witness receipt files with one per-attempt framed
+  pipe for coverage baseline, no-coverage baseline, and mutation attempts.
+  Both the standard and liveness process runners pass the descriptor. The
+  parent drains concurrently, retains at most the receipt bound, and accepts
+  one complete frame only; extra, trailing, incomplete, or oversized bytes
+  leave no witness. The plugin closes its writer at session finish.
+- Changed the retained file-reader utility to Assay's bounded no-follow
+  regular-file reader. The ordered manifest now uses that same reader with a
+  64 MiB ceiling and must still match the pipe receipt's collection digest.
+- Added a final `deadline.remaining()` sample immediately after the snapshot
+  integrity helper returns, inside artifact-reservation cleanup. Expiry at
+  that classification boundary closes reservations and leaves the candidate
+  absent from state and candidate-progress events.
+- Added adversarial coverage for post-session receipt writes, duplicate and
+  oversized frames, FIFO and symlink receipt files, descriptor passing through
+  both process runners, and expiry between the final integrity sample and its
+  return. The six focused regressions passed. The affected local suite passed
+  **337 tests, with four B106 process tests deselected** because this cockpit
+  autoloads unreviewed Hypothesis/Schemathesis hooks that correctly invalidate
+  their expected replay witness; the tester image's pinned plugin set remains
+  the authoritative oracle for those cases.
+- Python compileall, selected Ruff import/error checks, and `git diff --check`
+  passed. An initial broad run's two remaining failures were stale P23
+  expectations that classified a candidate after its integrity deadline; the
+  assertions now follow B114/B117's unclassified boundary.
+- No registered gate or B105 campaign has been started by this repair. B087
+  coordination remains unavailable through this thread's agent address; hold
+  the shared registered gate and serial merge until that slot is coordinated.

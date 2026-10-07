@@ -13,18 +13,19 @@ from types import SimpleNamespace
 
 import pytest
 from _pytest.config import get_config
-
-from assay import liveness, mutation_witness
 from assay.mutation_witness import (
+    _PLUGIN_SOURCE,
     COLD_PYTEST_FLAG_OPTIONS,
     COLD_PYTEST_VALUE_OPTIONS,
     HOOK_FINGERPRINT_HOOKS,
-    _PLUGIN_SOURCE,
+    MAX_INTERNAL_RECEIPT_BYTES,
     WITNESS_COLD_ENV,
+    WITNESS_FD_ENV,
     WITNESS_LIVENESS_PLUGIN_PATH_ENV,
     WITNESS_MANIFEST_FILE_ENV,
     WITNESS_PLUGIN_PATH_ENV,
     WITNESS_TARGET_ENV,
+    ReceiptCapture,
     cold_shape_refusal,
     cold_witness_from_receipt,
     declared_failure_proof_ok,
@@ -38,6 +39,8 @@ from assay.mutation_witness import (
     witness_from_receipt,
 )
 from assay.runner import CommandPlan
+
+from assay import liveness, mutation_witness
 
 
 def _plan(argv: tuple[str, ...], *, env: dict[str, str] | None = None) -> CommandPlan:
@@ -124,22 +127,27 @@ def _run_child_pytest(
         liveness_plugin_path=liveness_plugin_path,
     )
     assert injected.active
+    capture = ReceiptCapture()
     attempt = make_attempt_plan(
         injected.plan,
-        receipt_path=receipt_path,
+        receipt_fd=capture.write_fd,
         target_node_id=None,
         cold=cold,
         manifest_path=receipt_path.parent / "manifest.txt" if cold else None,
     )
-    result = subprocess.run(
-        attempt.argv_effective,
-        cwd=project,
-        env=attempt.env_effective,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result, read_internal_receipt(receipt_path)
+    try:
+        result = subprocess.run(
+            attempt.argv_effective,
+            cwd=project,
+            env=attempt.env_effective,
+            check=False,
+            capture_output=True,
+            text=True,
+            pass_fds=(capture.write_fd,),
+        )
+    finally:
+        receipt = capture.finish()
+    return result, receipt
 
 
 def test_sequential_pytest_refuses_empty_override_and_untrusted_plugin_inputs():
@@ -374,6 +382,43 @@ def test_attempt_plan_adds_or_clears_target_node_id(tmp_path):
         plan, receipt_path=tmp_path / "receipt.json", target_node_id=None
     )
     assert WITNESS_TARGET_ENV not in untargeted.env_effective
+
+
+def test_attempt_plan_passes_a_pipe_descriptor_without_a_receipt_path():
+    plan = _plan(("pytest", "tests"), env={"ASSAY_MUTATION_WITNESS_FILE": "stale"})
+    capture = ReceiptCapture()
+    try:
+        attempt = make_attempt_plan(
+            plan,
+            receipt_fd=capture.write_fd,
+            target_node_id=None,
+        )
+        assert attempt.env_effective[WITNESS_FD_ENV] == str(capture.write_fd)
+        assert "ASSAY_MUTATION_WITNESS_FILE" not in attempt.env_effective
+    finally:
+        capture.finish()
+
+
+def test_receipt_capture_rejects_a_second_or_trailing_frame():
+    capture = ReceiptCapture()
+    frame = (2).to_bytes(4, "big") + b"{}"
+    try:
+        os.write(capture.write_fd, frame)
+        os.write(capture.write_fd, frame)
+    finally:
+        assert capture.finish() is None
+
+
+def test_receipt_capture_discards_oversized_frames():
+    capture = ReceiptCapture()
+    payload = b"x" * (MAX_INTERNAL_RECEIPT_BYTES + 1)
+    frame = len(payload).to_bytes(4, "big") + payload
+    try:
+        view = memoryview(frame)
+        while view:
+            view = view[os.write(capture.write_fd, view) :]
+    finally:
+        assert capture.finish() is None
 
 
 def test_attempt_plan_sets_cold_and_manifest_only_for_that_attempt(tmp_path):
@@ -945,6 +990,44 @@ def test_precollection_pytest_builtin_hook_substitution_cannot_prove_cold_result
     )
 
 
+def test_post_session_unconfigure_cannot_replace_the_receipt(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (project / "conftest.py").write_text(
+        "import json, os\n"
+        "def pytest_unconfigure(config):\n"
+        "    fd = int(os.environ['ASSAY_MUTATION_WITNESS_FD'])\n"
+        "    forged = json.dumps({'witness_node_id': 'tests/test_setup.py::test_target', "
+        "'witness_when': 'call', 'witness_outcome': 'failed', "
+        "'session_exit_status': 1}).encode()\n"
+        "    try:\n"
+        "        os.write(fd, len(forged).to_bytes(4, 'big') + forged)\n"
+        "    except OSError:\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    (tests / "test_setup.py").write_text(
+        "import pytest\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def setup_failure():\n"
+        "    raise RuntimeError('setup failed before the test call')\n"
+        "def test_target():\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
+
+    result, receipt = _run_child_pytest(
+        project, tmp_path / "plugins", tmp_path / "receipt.json"
+    )
+
+    assert result.returncode == 1
+    assert receipt is not None
+    assert receipt["witness_node_id"] is None
+    assert receipt["witness_when"] is None
+    assert receipt["witness_outcome"] is None
+
+
 @pytest.mark.parametrize(
     ("forged_mode", "fail_call"), [("fail", False), ("suppress", True)]
 )
@@ -1403,6 +1486,14 @@ def test_receipt_reader_returns_only_json_objects_and_handles_missing_files(tmp_
     path = tmp_path / "receipt.json"
     path.write_text(json.dumps({"ok": True}), encoding="utf-8")
     assert read_internal_receipt(path) == {"ok": True}
+
+
+def test_receipt_reader_refuses_a_symlink(tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text('{"ok":true}', encoding="utf-8")
+    link = tmp_path / "receipt.json"
+    link.symlink_to(target.name)
+    assert read_internal_receipt(link) is None
 
 
 def test_valid_failure_receipt_projects_and_replays_only_for_its_exact_target():

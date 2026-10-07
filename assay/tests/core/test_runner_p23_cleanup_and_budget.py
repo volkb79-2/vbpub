@@ -30,13 +30,13 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import pytest
-from conftest import GitRepo, make_lane, make_r2_judge
-
-from assay import mutation, runner
 from assay.adapters.python import PythonAdapter
 from assay.config import MutationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
+from conftest import GitRepo, make_lane, make_r2_judge
+
+from assay import mutation, runner
 
 MOMENT = datetime(2026, 8, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -298,8 +298,9 @@ def test_every_identity_after_an_expiry_is_budget_stopped_not_only_the_next(
     """The locked expiry case has exactly two sites, so the identity that
     observes expiry IS the last one and the "mark every remaining identity"
     rule is invisible. With three sites and ``jobs=1``, expiry after the first
-    mutant must budget-stop BOTH remaining identities, launch no further
-    process, and keep the completed one as evidence."""
+    mutant cannot be classified until its snapshot integrity proof completes.
+    Expiry during that proof leaves the current identity unclassified, budget-
+    stops the remaining identities, and launches no further process."""
     source = "def f(x):\n    return x > 0 and x > 1 and x > 2\n"
     base_rev, head_rev = _seed(git_repo, head_source=source)
     expired = False
@@ -338,8 +339,8 @@ def test_every_identity_after_an_expiry_is_budget_stopped_not_only_the_next(
         ReasonCode.LANE_TIMEOUT,
     )
     assert r2.mutation.total == 3
-    assert len(r2.mutation.killed) == 1, "the completed identity remains evidence"
-    assert len(r2.mutation.budget_exceeded) == 2, "BOTH later identities are stopped"
+    assert len(r2.mutation.killed) == 0
+    assert len(r2.mutation.budget_exceeded) == 3
     # buckets stay identity-ordered independent of completion order
     stopped = [outcome.start_byte for outcome in r2.mutation.budget_exceeded]
     assert stopped == sorted(stopped)
@@ -468,23 +469,24 @@ def test_a_non_utf8_source_file_renders_a_complete_r2_claim(git_repo: GitRepo):
     assert r2.mutation is None
 
 
-def test_mutation_integrity_check_is_lane_budgeted_yet_keeps_completed_evidence(
+def test_mutation_integrity_deadline_leaves_expired_candidate_unclassified(
     git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
 ):
-    """P26/A-212 and A-195 hold together at `_snapshot_left_dirt`'s call site.
+    """P26/A-212, A-195 and B114's integrity boundary hold together.
 
     The frozen P26 handoff §5 requires the mutation snapshot dirt/HEAD checks
-    to "pass ``deadline.remaining`` into the private helper" AND to "change no
-    bucket semantics". Two implementations each satisfy only one half, and
-    this oracle rejects both:
+    to pass ``deadline.remaining`` into the private helper. B114 adds one final
+    sample after the successful integrity return: a completed command is not
+    classifiable unless its snapshot was proven intact before expiry. This
+    oracle rejects both an unbounded Git child and a stale success:
 
     * omitting the callable leaves those Git children genuinely UNBOUNDED
       (``git._run_bounded`` waits in ``selector.select(None)``/``proc.wait()``
       with no timeout), so a hung ``status``/``rev-parse`` outlives the whole
       lane budget inside a worker — caught by the forwarding assertions;
-    * forwarding it naively lets an expiry observed at this AFTER-the-fact
-      bookkeeping step reclassify an already-decisive mutant, so the completed
-      identity's real result is discarded — caught by the bucket assertions.
+    * omitting the final sample lets expiry arrive after the last Git wait
+      sample but before `_snapshot_left_dirt` returns, so an unproven candidate
+      is incorrectly classified — caught by the bucket assertions.
 
     The deadline is driven by the same fake `monotonic` the sibling budget test
     uses (the mutant's own process flips it), so nothing here depends on wall
@@ -554,7 +556,8 @@ def test_mutation_integrity_check_is_lane_budgeted_yet_keeps_completed_evidence(
             ReasonCode.LANE_TIMEOUT,
         )
 
-    # (3) ...and the bucket semantics are byte-identical to before P26.
+    # (3) A command result without a timely, completed snapshot proof has no
+    # candidate bucket or state record.
     assert units == ["baseline", "mutant"], "no third or fourth process may start"
     r2 = verdict.claims[1]
     assert (r2.status, r2.reason_code) == (
@@ -562,8 +565,5 @@ def test_mutation_integrity_check_is_lane_budgeted_yet_keeps_completed_evidence(
         ReasonCode.LANE_TIMEOUT,
     )
     assert r2.mutation.total == 3
-    assert len(r2.mutation.killed) == 1, (
-        "an expiry seen at this AFTER-the-fact bookkeeping check discarded an "
-        "already-decisive mutant; completed identities remain evidence"
-    )
-    assert len(r2.mutation.budget_exceeded) == 2
+    assert len(r2.mutation.killed) == 0
+    assert len(r2.mutation.budget_exceeded) == 3

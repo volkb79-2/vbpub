@@ -309,14 +309,14 @@ def test_reuse_cold_witness_falls_back_when_replay_facts_do_not_match_baseline(
     git_repo.commit_all("advance commit for cold witness reuse")
     attempt_log.unlink(missing_ok=True)
 
-    original_reader = mutation._read_witness_receipt
+    original_finish = mutation.ReceiptCapture.finish
     tampered: list[str] = []
 
-    def tamper_replay_receipt(path: Path):
-        receipt = original_reader(path)
-        if receipt is None or not path.name.endswith("-replay.json"):
+    def tamper_replay_receipt(capture):
+        receipt = original_finish(capture)
+        if receipt is None or receipt.get("target_node_id") is None:
             return receipt
-        tampered.append(path.name)
+        tampered.append(str(receipt["target_node_id"]))
         if tamper == "missing":
             receipt.pop("collection_sha256", None)
         elif tamper == "collection":
@@ -325,7 +325,9 @@ def test_reuse_cold_witness_falls_back_when_replay_facts_do_not_match_baseline(
             receipt["hook_fingerprint_sha256"] = "0" * 64
         return receipt
 
-    monkeypatch.setattr(mutation, "_read_witness_receipt", tamper_replay_receipt)
+    monkeypatch.setattr(
+        mutation.ReceiptCapture, "finish", tamper_replay_receipt
+    )
     second = _run_cold_campaign(
         git_repo,
         config,

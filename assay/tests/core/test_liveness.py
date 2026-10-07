@@ -27,10 +27,11 @@ import json
 from pathlib import Path, PurePosixPath
 
 import pytest
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.mutation_witness import WITNESS_FD_ENV
+from assay.runner import CommandPlan, execute_plan
 
 from assay import liveness
-from assay.errors import AssayError, Outcome, ReasonCode
-from assay.runner import CommandPlan, execute_plan
 
 
 def _plan(
@@ -429,13 +430,14 @@ class _FakePopen:
         self._poll_after_ticks = poll_after_ticks
         self.procs: list[_FakeProc] = []
 
-    def __call__(self, argv, *, env, cwd, stdout, stderr, start_new_session):
+    def __call__(self, argv, *, env, cwd, stdout, stderr, start_new_session, **extra):
         self.calls.append(
             {
                 "argv": tuple(argv),
                 "env": dict(env),
                 "cwd": cwd,
                 "start_new_session": start_new_session,
+                **extra,
             }
         )
         proc = _FakeProc(
@@ -476,6 +478,28 @@ def test_liveness_runner_stamps_env_and_forwards_everything_else(
     assert call["env"][liveness.ASSAY_LIVENESS_EXIT_ENV] == "1"
     events_path = Path(call["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV])
     assert events_path.parent == tmp_path / "candidates"
+
+
+def test_liveness_runner_passes_the_private_receipt_descriptor(tmp_path: Path) -> None:
+    popen = _FakePopen()
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates",
+        expect_next_event_within_s=60.0,
+        popen=popen,
+        process_group_killer=lambda *_args: None,
+    )
+    cwd = tmp_path / "candidate-with-receipt"
+    cwd.mkdir()
+
+    result = runner(
+        ("pytest", "-q"),
+        env={WITNESS_FD_ENV: "83"},
+        cwd=cwd,
+        timeout=42.0,
+    )
+
+    assert result.returncode == 0
+    assert popen.calls[0]["pass_fds"] == (83,)
 
 
 def test_liveness_runner_events_path_is_deterministic_per_cwd(

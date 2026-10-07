@@ -45,6 +45,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   plan, and read reports, plans, tester receipts, deadlines and manifests as
   bounded no-follow regular files (64 MiB, 16 MiB and 4 KiB for report, plan
   and receipt).
+- Capture private cold-witness receipts over a bounded framed pipe, rejecting
+  extra or trailing bytes so post-session hooks cannot rewrite a witness;
+  safely read the ordered manifest and recheck the campaign deadline at the
+  candidate integrity boundary.
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->

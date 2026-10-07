@@ -12,8 +12,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from assay import mutation
+from assay.adapters.python import PythonAdapter
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.mutation import MutationDiscoveryError, MutationStateError
+from assay.verdict import Mutation
 from conftest import (
     GitRepo,
     make_deadline,
@@ -22,11 +24,8 @@ from conftest import (
     prepared_snapshot,
     zero_resource_limit_evidence_dict,
 )
-from assay.adapters.python import PythonAdapter
-from assay import runner
-from assay.errors import AssayError, Outcome, ReasonCode
-from assay.mutation import MutationDiscoveryError, MutationStateError
-from assay.verdict import Mutation
+
+from assay import mutation, runner
 
 
 def _job():
@@ -520,6 +519,69 @@ def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrup
     assert not result.killed and not result.survived and not result.crashed
     assert integrity_checks == [True]
     assert process_calls
+    assert not list(state_root.glob("*.json"))
+    assert not any(event.get("event") == "candidate" for event in progress)
+
+
+def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
+    git_repo: GitRepo, tmp_path, monkeypatch
+):
+    job = _job()
+    git_repo.write(job.path, job.original_text)
+    git_repo.commit_all("seed mutation worker")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state"
+    progress: list[dict[str, object]] = []
+    timeout_error = AssayError(
+        "lane deadline expired at the classification boundary",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    class Deadline:
+        expired = False
+
+        def remaining(self):
+            if self.expired:
+                raise timeout_error
+            return 30.0
+
+    deadline = Deadline()
+
+    def expire_after_integrity_sample(_job, _snapshot, *, remaining):
+        assert remaining() == 30.0
+        deadline.expired = True
+        return None
+
+    monkeypatch.setattr(
+        mutation, "_snapshot_left_dirt", expire_after_integrity_sample
+    )
+    plan = make_plan(make_lane(argv=("check",)))
+
+    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+        result = mutation._execute_mutation_jobs(
+            job_list=(job,),
+            deadline=deadline,
+            jobs=1,
+            prepared=prepared,
+            plan=plan,
+            process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+                list(argv), returncode=1, stdout="", stderr=""
+            ),
+            clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+            write_progress=progress.append,
+            execute_plan=runner.execute_plan,
+            resolve_run_cwd=lambda root, _plan: root,
+            total=1,
+            candidate_count=1,
+            state_root=state_root,
+            judge="j" * 64,
+        )
+
+    assert isinstance(result, Mutation)
+    assert len(result.budget_exceeded) == 1
+    assert not result.killed and not result.survived and not result.crashed
     assert not list(state_root.glob("*.json"))
     assert not any(event.get("event") == "candidate" for event in progress)
 

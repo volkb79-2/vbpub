@@ -11524,6 +11524,13 @@ matching plan and deadline.
 - [ ] A cold-policy full kill requires declared coverage-baseline evidence and
   a verified failed-call witness; B105 binds that node to the R2 manifest, and
   a witness may precede later tests in the started prefix.
+- [ ] Private receipts use one bounded framed pipe per attempt; extra frames
+  and trailing bytes refuse proof. The parent receipt reader cannot block on a
+  FIFO, and the ordered manifest is read as a bounded no-follow regular file.
+  A post-session hook cannot rewrite a completed receipt into a call failure.
+- [ ] Recheck the lane deadline immediately after a successful snapshot
+  integrity return; expiry at that boundary leaves the candidate unclassified
+  and absent from resume state and candidate progress.
 - [ ] One tester-unified and one self-qualification-preflight PASS on the final reviewed merge commit.
 
 ## B115 — B110 P4: bounded work-queue mutation executor

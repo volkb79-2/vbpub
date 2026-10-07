@@ -74,16 +74,14 @@ import fnmatch
 import math
 import os
 import shlex
-import signal
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
 import time
-import tomllib
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
-from .records import record
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -98,6 +96,8 @@ from typing import (
     TextIO,
 )
 
+import tomllib
+
 from . import (
     coverage,
     diff,
@@ -111,16 +111,7 @@ from . import (
     result_reports,
     safeio,
 )
-from .mutation_witness import (
-    inject_witness_plugin,
-    make_attempt_plan,
-    read_internal_receipt,
-    receipt_facts,
-    survivor_proof_ok,
-    cold_shape_refusal,
-    supports_sequential_pytest,
-)
-from .adapters.base import LanguageAdapter
+from .adapters.base import HelperInvocation, LanguageAdapter
 from .config import (
     MAX_INFRASTRUCTURE_VALUE_BYTES,
     MUTATION_BUDGET_PER_CANDIDATE_AUTO,
@@ -133,8 +124,6 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
-from .adapters.base import HelperInvocation
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -145,8 +134,22 @@ from .evaluate import (
     evaluate_targets,
     resolve_coverage_keys,
 )
-from .statement_attribution import attribute_statements
+from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
+from .mutation_witness import (
+    MAX_INTERNAL_MANIFEST_BYTES,
+    WITNESS_FD_ENV,
+    ReceiptCapture,
+    cold_shape_refusal,
+    inject_witness_plugin,
+    make_attempt_plan,
+    receipt_facts,
+    supports_sequential_pytest,
+    survivor_proof_ok,
+)
 from .output import VerdictOutput
+from .records import record
+from .redaction import redact_passthrough_text as _redact_passthrough_text
+from .statement_attribution import attribute_statements
 from .verdict import (
     CanaryAttempt,
     CanaryResult,
@@ -165,8 +168,8 @@ from .verdict import (
     R2Command,
     RefusalDetail,
     SnapshotPolicy,
-    WorktreeIntegrity,
     Verdict,
+    WorktreeIntegrity,
     claim_carries,
     claim_for,
     iso_utc,
@@ -174,7 +177,6 @@ from .verdict import (
     rollup,
     supported_helper_roles,
 )
-from .redaction import redact_passthrough_text as _redact_passthrough_text
 
 __all__ = [
     "CommandPlan",
@@ -394,6 +396,10 @@ def default_process_runner(
     makes about matching this path's policy. Tolerant decoding here is what
     makes both of those true instead of aspirational.
     """
+    receipt_fd = env.get(WITNESS_FD_ENV)
+    descriptor_options = (
+        {} if receipt_fd is None else {"pass_fds": (int(receipt_fd),)}
+    )
     proc = subprocess.Popen(
         list(argv),
         env=dict(env),
@@ -403,6 +409,7 @@ def default_process_runner(
         text=True,
         errors="replace",
         start_new_session=True,
+        **descriptor_options,
     )
     liveness.register_live_group(proc.pid)
     try:
@@ -3422,6 +3429,21 @@ def _execute_snapshot_unit(
     )
 
 
+def _run_with_receipt_capture(
+    capture: ReceiptCapture | None,
+    operation: Callable[..., Any],
+    **kwargs: Any,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Run one command and finish its optional private receipt capture."""
+    receipt = None
+    try:
+        result = operation(**kwargs)
+    finally:
+        if capture is not None:
+            receipt = capture.finish()
+    return result, receipt
+
+
 def _read_prepared_source_text(
     prepared: "isolation.SnapshotRepository", path: str, *, deadline: LaneDeadline
 ) -> str:
@@ -3881,7 +3903,6 @@ def _run_prepared_lane(
     r2_plan = None
     r2_command_payload: R2Command | None = None
     r2_manifest_node_ids: tuple[str, ...] = ()
-    coverage_receipt_path: Path | None = None
     if cold_witness:
         if witness_dir is None:
             raise mutation.R2CommandProofError(
@@ -3901,7 +3922,6 @@ def _run_prepared_lane(
                 "pytest receipt plugin"
             )
         plan = injected.plan
-        coverage_receipt_path = witness_dir / "coverage-baseline.json"
         frozen_cli_appended = (
             plan.argv_appended
             if plan.cli_argv_appended is None
@@ -3981,13 +4001,6 @@ def _run_prepared_lane(
                 }
             ),
         )
-    if cold_witness:
-        assert coverage_receipt_path is not None
-        baseline_plan = make_attempt_plan(
-            baseline_plan,
-            receipt_path=coverage_receipt_path,
-            target_node_id=None,
-        )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
         if cold_witness:
             assert r2_plan is not None
@@ -4019,7 +4032,17 @@ def _run_prepared_lane(
                     "commit": baseline_snapshot.commit,
                 }
             )
-        unit = _execute_snapshot_unit(
+        coverage_receipt_capture = None
+        if cold_witness:
+            coverage_receipt_capture = ReceiptCapture()
+            baseline_plan = make_attempt_plan(
+                baseline_plan,
+                receipt_fd=coverage_receipt_capture.write_fd,
+                target_node_id=None,
+            )
+        unit, coverage_receipt = _run_with_receipt_capture(
+            coverage_receipt_capture,
+            _execute_snapshot_unit,
             plan=baseline_plan,
             snapshot=baseline_snapshot,
             deadline=deadline,
@@ -4051,8 +4074,6 @@ def _run_prepared_lane(
         )
         result = unit.result
         if cold_witness:
-            assert coverage_receipt_path is not None
-            coverage_receipt = read_internal_receipt(coverage_receipt_path)
             coverage_facts = receipt_facts(coverage_receipt)
             if coverage_facts is None or not survivor_proof_ok(
                 coverage_receipt,
@@ -4764,7 +4785,6 @@ def _run_prepared_lane(
                         "cold witness: the coverage baseline collection, hooks, "
                         "or runtime could not be proven"
                     )
-                r2_receipt_path = witness_dir / "r2-baseline.json"
                 r2_manifest_sidecar = witness_dir / "r2-manifest.txt"
                 try:
                     with prepared.materialize(timeout=deadline.remaining()) as r2_snapshot:
@@ -4793,13 +4813,16 @@ def _run_prepared_lane(
                                 "cold witness: the R2 baseline cannot load the "
                                 "trusted pytest receipt plugin"
                             )
+                        r2_receipt_capture = ReceiptCapture()
                         r2_attempt_plan = make_attempt_plan(
                             r2_injection.plan,
-                            receipt_path=r2_receipt_path,
+                            receipt_fd=r2_receipt_capture.write_fd,
                             target_node_id=None,
                             manifest_path=r2_manifest_sidecar,
                         )
-                        r2_unit = _execute_snapshot_unit(
+                        r2_unit, r2_receipt = _run_with_receipt_capture(
+                            r2_receipt_capture,
+                            _execute_snapshot_unit,
                             plan=r2_attempt_plan,
                             snapshot=r2_snapshot,
                             deadline=deadline,
@@ -4829,7 +4852,6 @@ def _run_prepared_lane(
                             raise mutation.R2CommandProofError(
                                 "cold witness: the no-coverage R2 baseline did not pass"
                             )
-                        r2_receipt = read_internal_receipt(r2_receipt_path)
                         r2_facts = receipt_facts(r2_receipt)
                         if (
                             r2_facts is None
@@ -4852,14 +4874,20 @@ def _run_prepared_lane(
                                 "and runtime"
                             )
                         try:
-                            manifest_bytes = r2_manifest_sidecar.read_bytes()
+                            manifest_bytes = safeio.read_bounded_file(
+                                witness_dir,
+                                "r2-manifest.txt",
+                                limit=MAX_INTERNAL_MANIFEST_BYTES,
+                            )
+                            if manifest_bytes is None:
+                                raise ValueError("manifest is missing")
                             if manifest_bytes and not manifest_bytes.endswith(b"\n"):
                                 raise ValueError("manifest is missing its final newline")
                             r2_manifest_node_ids = tuple(
                                 line.decode("utf-8", errors="strict")
                                 for line in manifest_bytes.splitlines()
                             )
-                        except (OSError, UnicodeDecodeError, ValueError) as exc:
+                        except (AssayError, OSError, UnicodeDecodeError, ValueError) as exc:
                             raise mutation.R2CommandProofError(
                                 "cold witness: the no-coverage R2 baseline manifest "
                                 "is unreadable"

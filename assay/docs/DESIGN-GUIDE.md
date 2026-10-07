@@ -777,6 +777,15 @@ leaving the displayed hook fingerprint unchanged. Collection compares all
 four registrations; the registry monitor then checks each hook as pytest calls
 it. A mismatch disables both cold and replay proof.
 
+The private receipt travels over a per-attempt bounded, length-framed pipe.
+The parent drains it while pytest runs and accepts exactly one complete
+frame. The plugin closes its writer at `pytest_sessionfinish`; any extra frame
+or trailing bytes invalidate the capture, so a later `pytest_unconfigure` hook
+cannot rewrite the captured bytes or add another accepted claim. The ordered
+manifest remains a sidecar because it can be much larger;
+Assay reads it through the bounded no-follow regular-file reader and checks its
+digest against the receipt before using node IDs.
+
 The root `tests/conftest.py::pytest_sessionfinish` hook has one compatibility
 exception because Assay's B105 archive hook is inert when
 `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
