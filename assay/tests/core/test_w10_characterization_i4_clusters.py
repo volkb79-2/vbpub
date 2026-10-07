@@ -228,6 +228,7 @@ def test_reset_restores_the_eight_defaults_and_keeps_the_pid():
 def _receipt(**overrides):
     value = {
         "unsupported": False,
+        "unsupported_pytest_cov_only": False,
         "replay_supported": False,
         "target_node_id": None,
         "target_count": None,

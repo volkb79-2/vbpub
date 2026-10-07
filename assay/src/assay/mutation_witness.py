@@ -47,6 +47,7 @@ HOOK_FINGERPRINT_HOOKS = (
     "pytest_runtest_logstart",
     "pytest_runtest_logreport",
     "pytest_runtest_call",
+    "pytest_runtest_makereport",
     "pytest_runtest_setup",
     "pytest_runtest_teardown",
     "pytest_collectreport",
@@ -140,10 +141,18 @@ def survivor_proof_ok(
         return False
     if receipt.get("collection_error") is not False or receipt.get("started_prefix_ok") is not True:
         return False
+    unsupported = receipt.get("unsupported")
+    coverage_only = receipt.get("unsupported_pytest_cov_only")
+    if type(unsupported) is not bool or type(coverage_only) is not bool:
+        return False
+    if coverage_only and not unsupported:
+        return False
+    if unsupported and not coverage_only:
+        return False
     facts = receipt_facts(receipt)
     if facts is None or facts.started_count != facts.collection_count:
         return False
-    if command == "r2" and receipt.get("unsupported") is not False:
+    if command == "r2" and unsupported:
         return False
     return _facts_match(receipt, expected)
 
@@ -158,7 +167,11 @@ def cold_witness_from_receipt(
         return None
     if any(receipt.get(name) is not True for name in ("cold_requested", "stopped_cold", "started_prefix_ok")):
         return None
-    if receipt.get("unsupported") is not False or receipt.get("target_node_id") is not None:
+    if (
+        receipt.get("unsupported") is not False
+        or receipt.get("unsupported_pytest_cov_only") is not False
+        or receipt.get("target_node_id") is not None
+    ):
         return None
     if any(receipt.get(name) is not False for name in ("earlier_failure", "auxiliary_failure", "collection_error")):
         return None
@@ -208,6 +221,14 @@ def declared_failure_proof_ok(
     if type(receipt.get("session_exit_status")) is not int or receipt["session_exit_status"] != 1:
         return False
     if receipt.get("witness_when") != "call" or receipt.get("witness_outcome") != "failed":
+        return False
+    unsupported = receipt.get("unsupported")
+    coverage_only = receipt.get("unsupported_pytest_cov_only")
+    if type(unsupported) is not bool or type(coverage_only) is not bool:
+        return False
+    if coverage_only and not unsupported:
+        return False
+    if unsupported and not coverage_only:
         return False
     node_id = receipt.get("witness_node_id")
     if not isinstance(node_id, str) or not _bounded_node_id(node_id):
@@ -676,12 +697,14 @@ _INTERNAL_RECEIPT_KEYS = frozenset(
         "runtime_fingerprint_sha256",
         "config_sha256",
         "archive_hook_exception_used",
+        "unsupported_pytest_cov_only",
     }
 )
 
 
 _PLUGIN_SOURCE = r'''"""Temporary standard-library/pytest plugin written by assay."""
 import hashlib
+import importlib.metadata as metadata
 import json
 import os
 import platform
@@ -691,7 +714,8 @@ from pathlib import Path
 
 _HOOKS = (
     "pytest_runtestloop", "pytest_runtest_protocol", "pytest_runtest_logstart",
-    "pytest_runtest_logreport", "pytest_runtest_call", "pytest_runtest_setup",
+    "pytest_runtest_logreport", "pytest_runtest_call", "pytest_runtest_makereport",
+    "pytest_runtest_setup",
     "pytest_runtest_teardown", "pytest_collectreport",
     "pytest_collection_modifyitems", "pytest_sessionfinish",
 )
@@ -701,6 +725,7 @@ _TARGET = None
 _TARGET_COUNT = None
 _STANDARD_LOOP = False
 _REPLAY_SUPPORTED = False
+_UNSUPPORTED_PYTEST_COV_ONLY = False
 _EARLIER_FAILURE = False
 _AUXILIARY_FAILURE = False
 _COLLECTION_ERROR = False
@@ -731,60 +756,129 @@ def _bounded(value):
         return False
 
 
-def _only_builtin_hook_impls(config, hook_name, primary=None):
-    """Reject lifecycle hooks whose effect on replay is unknown."""
-    global _ARCHIVE_EXCEPTION_USED
+_REVIEWED_EXTERNAL_HOOKS = {
+    ("hypothesis", "pytest_runtest_call"): (
+        "hypothesispytest", "_hypothesis_pytestplugin", "pytest_runtest_call",
+        ("hookwrapper",),
+    ),
+    ("hypothesis", "pytest_runtest_makereport"): (
+        "hypothesispytest", "_hypothesis_pytestplugin", "pytest_runtest_makereport",
+        ("hookwrapper",),
+    ),
+    ("hypothesis", "pytest_collection_modifyitems"): (
+        "hypothesispytest", "_hypothesis_pytestplugin", "pytest_collection_modifyitems",
+        (),
+    ),
+    ("pytest-cov", "pytest_runtestloop"): (
+        "_cov", "pytest_cov.plugin", "CovPlugin.pytest_runtestloop", ("wrapper",),
+    ),
+    ("pytest-cov", "pytest_runtest_call"): (
+        "_cov", "pytest_cov.plugin", "CovPlugin.pytest_runtest_call", ("hookwrapper",),
+    ),
+}
+
+
+def _reviewed_external_hook(impl, hook_name, distribution_name):
+    expected = _REVIEWED_EXTERNAL_HOOKS.get((distribution_name, hook_name))
+    if expected is None:
+        return False
+    plugin_name, module_name, qualname, expected_flags = expected
+    function = impl.function
+    if (
+        getattr(impl, "plugin_name", None) != plugin_name
+        or getattr(function, "__module__", None) != module_name
+        or getattr(function, "__qualname__", None) != qualname
+    ):
+        return False
+    flags = tuple(sorted(
+        name for name in ("hookwrapper", "tryfirst", "trylast", "wrapper")
+        if getattr(impl, name, False)
+    ))
+    if flags != tuple(sorted(expected_flags)):
+        return False
+    module = sys.modules.get(module_name)
+    module_file = getattr(module, "__file__", None)
+    code_file = getattr(getattr(function, "__code__", None), "co_filename", None)
+    if not isinstance(module_file, str) or not isinstance(code_file, str):
+        return False
     try:
-        impls = getattr(config.hook, hook_name).get_hookimpls()
-    except Exception:
+        resolved_module_file = Path(module_file).resolve()
+        if resolved_module_file != Path(code_file).resolve():
+            return False
+        distribution = metadata.distribution(distribution_name)
+        declared_files = distribution.files
+        normalized_name = (distribution.metadata.get("Name") or "").casefold().replace("_", "-")
+        wanted_name = distribution_name.casefold().replace("_", "-")
+        if normalized_name != wanted_name or declared_files is None:
+            return False
+        return any(
+            Path(distribution.locate_file(item)).resolve() == resolved_module_file
+            for item in declared_files
+        )
+    except (ImportError, OSError, RuntimeError, ValueError, metadata.PackageNotFoundError):
         return False
 
-    def trusted(impl):
-        module_name = getattr(impl.function, "__module__", None)
-        module = sys.modules.get(module_name) if isinstance(module_name, str) else None
-        module_file = getattr(module, "__file__", None)
-        code_file = getattr(getattr(impl.function, "__code__", None), "co_filename", None)
-        if not isinstance(module_file, str) or not isinstance(code_file, str):
-            return False
+
+def _trusted_hook_impl(config, hook_name, impl):
+    global _ARCHIVE_EXCEPTION_USED
+    module_name = getattr(impl.function, "__module__", None)
+    module = sys.modules.get(module_name) if isinstance(module_name, str) else None
+    module_file = getattr(module, "__file__", None)
+    code_file = getattr(getattr(impl.function, "__code__", None), "co_filename", None)
+    if not isinstance(module_file, str) or not isinstance(code_file, str):
+        return False
+    try:
+        resolved_module_file = Path(module_file).resolve()
+        resolved_code_file = Path(code_file).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if resolved_module_file != resolved_code_file:
+        return False
+    if module_name == "assay_mutation_witness_plugin":
+        expected = os.environ.get("ASSAY_MUTATION_WITNESS_PLUGIN_PATH")
+        return bool(expected) and resolved_module_file == Path(expected).resolve()
+    if module_name == "assay_liveness_plugin":
+        expected = os.environ.get("ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH")
+        return bool(expected) and resolved_module_file == Path(expected).resolve()
+    if (
+        hook_name == "pytest_sessionfinish"
+        and module_name == "conftest"
+        and not any(name in os.environ for name in (
+            "ASSAY_B105_COVERAGE_SOURCE", "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
+            "ASSAY_B105_SOURCE_COMMIT", "ASSAY_B105_SOURCE_TREE",
+        ))
+    ):
         try:
-            resolved_module_file = Path(module_file).resolve()
-            resolved_code_file = Path(code_file).resolve()
-        except (OSError, RuntimeError):
+            relative = resolved_module_file.relative_to(Path(config.rootpath).resolve())
+        except (OSError, RuntimeError, ValueError):
             return False
-        if resolved_module_file != resolved_code_file:
-            return False
-        if module_name == "assay_mutation_witness_plugin":
-            expected = os.environ.get("ASSAY_MUTATION_WITNESS_PLUGIN_PATH")
-            return bool(expected) and resolved_module_file == Path(expected).resolve()
-        if module_name == "assay_liveness_plugin":
-            expected = os.environ.get("ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH")
-            return bool(expected) and resolved_module_file == Path(expected).resolve()
-        if (
-            hook_name == "pytest_sessionfinish"
-            and module_name == "conftest"
-            and not any(name in os.environ for name in (
-                "ASSAY_B105_COVERAGE_SOURCE", "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
-                "ASSAY_B105_SOURCE_COMMIT", "ASSAY_B105_SOURCE_TREE",
-            ))
-        ):
-            try:
-                relative = resolved_module_file.relative_to(Path(config.rootpath).resolve())
-            except (OSError, RuntimeError, ValueError):
-                return False
-            if relative.as_posix() == "tests/conftest.py":
-                _ARCHIVE_EXCEPTION_USED = True
-                return True
-        if not isinstance(module_name, str) or not module_name.startswith("_pytest."):
-            return False
+        if relative.as_posix() == "tests/conftest.py":
+            _ARCHIVE_EXCEPTION_USED = True
+            return True
+    if isinstance(module_name, str) and module_name.startswith("_pytest."):
         try:
             import _pytest
             pytest_root = Path(_pytest.__file__).resolve().parent
             resolved_module_file.relative_to(pytest_root)
+            return True
         except (AttributeError, OSError, RuntimeError, ValueError):
             return False
-        return True
+    return _reviewed_external_hook(impl, hook_name, "hypothesis")
 
-    if any(not trusted(impl) for impl in impls):
+
+def _only_builtin_hook_impls(config, hook_name, primary=None, *, allow_coverage=False):
+    """Accept pytest built-ins and reviewed Hypothesis hooks, rejecting unknown hooks."""
+    try:
+        impls = getattr(config.hook, hook_name).get_hookimpls()
+    except Exception:
+        return False
+    if any(
+        not (
+            _trusted_hook_impl(config, hook_name, impl)
+            or (allow_coverage and _reviewed_external_hook(impl, hook_name, "pytest-cov"))
+        )
+        for impl in impls
+    ):
         return False
     if primary is None:
         return True
@@ -794,6 +888,30 @@ def _only_builtin_hook_impls(config, hook_name, primary=None):
         and ordinary[0].plugin_name == primary[0]
         and ordinary[0].function.__module__ == primary[1]
     )
+
+
+def _coverage_hook_set_is_only_reviewed(config, *, xdist_active):
+    """True when the only unsupported execution hooks are reviewed pytest-cov hooks."""
+    if xdist_active:
+        return False
+    if not _only_builtin_hook_impls(
+        config, "pytest_runtestloop", primary=("main", "_pytest.main"), allow_coverage=True
+    ) or not _only_builtin_hook_impls(
+        config, "pytest_runtest_protocol", primary=("runner", "_pytest.runner"), allow_coverage=True
+    ):
+        return False
+    coverage_seen = False
+    for hook_name in _HOOKS:
+        try:
+            impls = getattr(config.hook, hook_name).get_hookimpls()
+        except Exception:
+            return False
+        for impl in impls:
+            if _reviewed_external_hook(impl, hook_name, "pytest-cov"):
+                coverage_seen = True
+            elif not _trusted_hook_impl(config, hook_name, impl):
+                return False
+    return coverage_seen
 
 
 def _hook_fingerprint(config):
@@ -940,6 +1058,7 @@ def _write(session_exit_status):
         return
     payload = {
         "unsupported": not _STANDARD_LOOP,
+        "unsupported_pytest_cov_only": bool(_UNSUPPORTED_PYTEST_COV_ONLY),
         "replay_supported": bool(_REPLAY_SUPPORTED),
         "target_node_id": _TARGET,
         "target_count": _TARGET_COUNT,
@@ -977,6 +1096,7 @@ def _write(session_exit_status):
 def pytest_collection_finish(session):
     global _SESSION, _ITEMS, _TARGET, _TARGET_COUNT, _STANDARD_LOOP, _REPLAY_SUPPORTED
     global _COLD, _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT, _RUNTIME_FINGERPRINT_SHA256, _CONFIG_SHA256
+    global _UNSUPPORTED_PYTEST_COV_ONLY
     _SESSION = session
     _ITEMS = tuple(item.nodeid for item in session.items)
     _TARGET = os.environ.get("ASSAY_MUTATION_WITNESS_TARGET")
@@ -1019,7 +1139,9 @@ def pytest_collection_finish(session):
         )
         replay_reports = _only_builtin_hook_impls(
             config, "pytest_runtest_logreport"
-        ) and _only_builtin_hook_impls(config, "pytest_collectreport")
+        ) and _only_builtin_hook_impls(config, "pytest_collectreport") and _only_builtin_hook_impls(
+            config, "pytest_runtest_makereport"
+        )
         replay_session_finish = _only_builtin_hook_impls(
             config, "pytest_sessionfinish"
         )
@@ -1032,6 +1154,13 @@ def pytest_collection_finish(session):
         )
     except Exception:
         _REPLAY_SUPPORTED = False
+    try:
+        _UNSUPPORTED_PYTEST_COV_ONLY = bool(
+            not _STANDARD_LOOP
+            and _coverage_hook_set_is_only_reviewed(config, xdist_active=xdist_active)
+        )
+    except Exception:
+        _UNSUPPORTED_PYTEST_COV_ONLY = False
     _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT = _hook_fingerprint(config)
     _RUNTIME_FINGERPRINT_SHA256 = _runtime_fingerprint(config)
     _CONFIG_SHA256 = _config_fingerprint(config)

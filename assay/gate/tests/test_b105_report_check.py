@@ -204,8 +204,33 @@ def _committed_source(commit: str, path: str) -> bytes:
     ).stdout
 
 
-def _deadline_bytes(document: dict, commit: str, tree: str) -> bytes:
+def _ordered_plan_sha256(candidate_ids: list[str]) -> str:
+    digest = hashlib.sha256()
+    for identity in candidate_ids:
+        digest.update(f"{len(identity)}:{identity},".encode("ascii"))
+    return digest.hexdigest()
+
+
+def _deadline_bytes(
+    document: dict,
+    commit: str,
+    tree: str,
+    *,
+    plan_ids: list[str] | None = None,
+    wheel_sha256: str = WHEEL_SHA256,
+) -> bytes:
     binding = document.get("campaign") or {}
+    if plan_ids is None:
+        r2_claim = next(
+            (item for item in document.get("claims", [])
+             if isinstance(item, dict) and item.get("rigor") == "R2"),
+            None,
+        )
+        r2_mutation = r2_claim.get("mutation") if isinstance(r2_claim, dict) else None
+        report_ids = r2_mutation.get("candidate_ids") if isinstance(r2_mutation, dict) else None
+        plan_digest = _ordered_plan_sha256(report_ids) if isinstance(report_ids, list) else None
+    else:
+        plan_digest = _ordered_plan_sha256(plan_ids)
     deadline = {
         "schema": "assay-campaign-deadline/1",
         "campaign": binding.get("name", "b105-test"),
@@ -215,11 +240,11 @@ def _deadline_bytes(document: dict, commit: str, tree: str) -> bytes:
         "expires_at_utc": binding.get("expires_at_utc", "2026-08-06T10:01:00Z"),
         "lanes": ["self-qualification", "self-qualification-preflight"],
         "plan_sha256": {
-            "self-qualification": None,
+            "self-qualification": plan_digest,
             "self-qualification-preflight": None,
         },
         "assay_version": VERSION,
-        "wheel_sha256": WHEEL_SHA256,
+        "wheel_sha256": wheel_sha256,
     }
     return json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
 
@@ -779,8 +804,22 @@ def _r2_case():
 
 
 def _refused_by_scope(tmp_path, document, plan, message):
+    commit, tree = _own_commit_and_tree()
+    candidates = plan.get("candidates") if isinstance(plan, dict) else None
+    plan_ids = [
+        row["id"]
+        for row in candidates or []
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    ]
+    raw_deadline = _deadline_bytes(document, commit, tree, plan_ids=plan_ids)
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
     result = _run_checker(
-        tmp_path, document, lane=SELF_QUALIFICATION, rigor=SELF_QUALIFICATION_RIGOR, plan=plan
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=raw_deadline,
     )
     assert result.returncode == 2, result.stdout
     assert result.stderr.startswith("B105_REPORT_REJECTED="), result.stderr
@@ -861,6 +900,85 @@ def test_o11_refusal_7_the_report_ids_must_be_exactly_the_plan_ids(tmp_path, cha
     else:
         mutation["candidate_ids"] = mutation["candidate_ids"][:1] + ["d" * 64]
     _refused_by_scope(tmp_path, document, plan, "R2 candidate_ids differ from the plan")
+
+
+def test_deadline_plan_digest_binds_the_ordered_plan_and_report_inventory(tmp_path):
+    document, plan = _r2_case()
+    plan["candidates"].reverse()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2
+    assert "deadline plan_sha256 for lane 'self-qualification' does not match the ordered plan" in result.stderr
+
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    plan["candidates"].reverse()
+    raw_deadline = _deadline_bytes(
+        document,
+        commit,
+        tree,
+        plan_ids=[row["id"] for row in plan["candidates"]],
+    )
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=raw_deadline,
+    )
+    assert result.returncode == 2
+    assert "R2 candidate_ids differ from the plan" in result.stderr
+
+
+def test_deadline_recomputed_for_foreign_plan_candidate_still_refuses_report(tmp_path):
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    plan["candidates"][0]["id"] = "d" * 64
+    raw_deadline = _deadline_bytes(
+        document,
+        commit,
+        tree,
+        plan_ids=[row["id"] for row in plan["candidates"]],
+    )
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=raw_deadline,
+    )
+    assert result.returncode == 2
+    assert "R2 candidate_ids differ from the plan" in result.stderr
+
+
+def test_report_candidate_inventory_order_must_match_plan_order(tmp_path):
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    raw_deadline = _deadline_bytes(
+        document, commit, tree, plan_ids=[row["id"] for row in plan["candidates"]]
+    )
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+    mutation = next(item for item in document["claims"] if item["rigor"] == "R2")["mutation"]
+    mutation["candidate_ids"].reverse()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=raw_deadline,
+    )
+    assert result.returncode == 2
+    assert "R2 candidate_ids differ from the plan" in result.stderr
 
 
 def test_o11_refusal_8_a_plan_without_r2_is_an_argument_refusal_before_the_report_is_read(tmp_path):
@@ -1090,6 +1208,23 @@ def test_p3d_deadline_checks_bind_the_report_and_fail_closed(tmp_path):
     assert "deadline file does not bind this commit/tree/lane/version" in result.stderr
 
     document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    wrong_wheel = _deadline_bytes(
+        document, commit, tree, wheel_sha256="0" * 64
+    )
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(wrong_wheel).hexdigest()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=wrong_wheel,
+    )
+    assert result.returncode == 2
+    assert "deadline wheel_sha256 does not match the expected wheel" in result.stderr
+
+    document, plan = _r2_case()
     document["started"] = "2026-08-06T00:00:00+00:00"
     result = _run_checker(
         tmp_path,
@@ -1100,6 +1235,22 @@ def test_p3d_deadline_checks_bind_the_report_and_fail_closed(tmp_path):
     )
     assert result.returncode == 2
     assert "report was not produced inside its campaign window" in result.stderr
+
+    document = _verifier_valid_report(PREFLIGHT, PREFLIGHT_RIGOR)
+    commit, tree = _own_commit_and_tree()
+    deadline = json.loads(_deadline_bytes(document, commit, tree))
+    deadline["plan_sha256"][PREFLIGHT] = "a" * 64
+    raw_deadline = json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=PREFLIGHT,
+        rigor=PREFLIGHT_RIGOR,
+        deadline_raw=raw_deadline,
+    )
+    assert result.returncode == 2
+    assert "deadline plan_sha256 for lane 'self-qualification-preflight' must be null" in result.stderr
 
 
 def test_p3d_manifest_and_campaign_arguments_are_checked_before_reading_report(tmp_path):

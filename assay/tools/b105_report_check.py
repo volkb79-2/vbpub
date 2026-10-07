@@ -187,12 +187,20 @@ def check_campaign_scope(
         raise ValueError("R2 claim mutation.candidate_ids is missing or not a list of 64-hex ids")
     if len(set(identities)) != len(identities):
         raise ValueError("R2 claim mutation.candidate_ids contains duplicates")
-    planned = {row["id"] for row in plan["candidates"]}
-    if set(identities) != planned or len(identities) != plan["candidate_count"]:
+    planned = [row["id"] for row in plan["candidates"]]
+    if identities != planned or len(identities) != plan["candidate_count"]:
         raise ValueError(
-            f"R2 candidate_ids differ from the plan: only in report "
-            f"{sorted(set(identities) - planned)}, only in plan {sorted(planned - set(identities))}"
+            "R2 candidate_ids differ from the plan: report inventory must match "
+            "the ordered plan exactly"
         )
+
+
+def _ordered_plan_sha256(candidate_ids: list[str]) -> str:
+    """Hash candidate IDs in discovery order using the campaign netstring format."""
+    digest = hashlib.sha256()
+    for identity in candidate_ids:
+        digest.update(f"{len(identity)}:{identity},".encode("ascii"))
+    return digest.hexdigest()
 
 
 _CAMPAIGN_BINDING_KEYS = frozenset(
@@ -278,6 +286,8 @@ def _check_deadline_binding(
     expected_tree: str,
     expected_lane: str,
     expected_version: str,
+    expected_wheel_sha256: str,
+    expected_plan_sha256: str | None,
 ) -> None:
     campaign = document.get("campaign")
     if not isinstance(campaign, dict) or set(campaign) != _CAMPAIGN_BINDING_KEYS:
@@ -295,6 +305,8 @@ def _check_deadline_binding(
         deadline = json.loads(
             deadline_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_pairs
         )
+        lanes = deadline.get("lanes") if isinstance(deadline, dict) else None
+        plan_sha256 = deadline.get("plan_sha256") if isinstance(deadline, dict) else None
         valid = (
             isinstance(deadline, dict)
             and deadline.get("schema") == "assay-campaign-deadline/1"
@@ -303,14 +315,32 @@ def _check_deadline_binding(
             and deadline.get("expires_at_utc") == campaign["expires_at_utc"]
             and deadline.get("commit") == expected_commit
             and deadline.get("git_tree") == expected_tree
-            and isinstance(deadline.get("lanes"), list)
-            and expected_lane in deadline["lanes"]
+            and isinstance(lanes, list)
+            and lanes == sorted(set(lanes))
+            and all(isinstance(lane, str) and lane for lane in lanes)
+            and expected_lane in lanes
             and deadline.get("assay_version") == expected_version
+            and isinstance(plan_sha256, dict)
+            and set(plan_sha256) == set(lanes)
+            and all(
+                value is None or (isinstance(value, str) and _CANDIDATE_ID.fullmatch(value))
+                for value in plan_sha256.values()
+            )
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         valid = False
     if not valid:
         raise ValueError("deadline file does not bind this commit/tree/lane/version")
+    if deadline.get("wheel_sha256") != expected_wheel_sha256:
+        raise ValueError("deadline wheel_sha256 does not match the expected wheel")
+    if deadline["plan_sha256"].get(expected_lane) != expected_plan_sha256:
+        if expected_plan_sha256 is None:
+            raise ValueError(
+                f"deadline plan_sha256 for lane {expected_lane!r} must be null"
+            )
+        raise ValueError(
+            f"deadline plan_sha256 for lane {expected_lane!r} does not match the ordered plan"
+        )
 
     try:
         created = _parse_utc(campaign["created_at_utc"])
@@ -635,6 +665,16 @@ def verify_report_document(
                 f"judge_provenance.{field} {provenance.get(field)!r} "
                 f"!= {expected!r}"
             )
+    expected_plan_sha256 = None
+    if "R2" in expected_rigor:
+        if plan is None:
+            raise ValueError("R2 is expected but no plan was given (--plan-json)")
+        deadline_plan = _plan_structure(
+            plan, expected_commit=expected_commit, expected_tree=expected_tree
+        )
+        expected_plan_sha256 = _ordered_plan_sha256(
+            [row["id"] for row in deadline_plan["candidates"]]
+        )
     _check_deadline_binding(
         document,
         deadline_path=deadline,
@@ -642,11 +682,12 @@ def verify_report_document(
         expected_tree=expected_tree,
         expected_lane=expected_lane,
         expected_version=expected_version,
+        expected_wheel_sha256=expected_wheel_sha256,
+        expected_plan_sha256=expected_plan_sha256,
     )
 
     if "R2" in expected_rigor:
-        if plan is None:
-            raise ValueError("R2 is expected but no plan was given (--plan-json)")
+        assert plan is not None
         check_campaign_scope(
             document, plan, expected_commit=expected_commit, expected_tree=expected_tree
         )

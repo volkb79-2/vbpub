@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from assay.mutation_witness import (
     WITNESS_TARGET_ENV,
     cold_shape_refusal,
     cold_witness_from_receipt,
+    declared_failure_proof_ok,
     inject_witness_plugin,
     make_attempt_plan,
     read_internal_receipt,
@@ -50,6 +53,7 @@ def _plan(argv: tuple[str, ...], *, env: dict[str, str] | None = None) -> Comman
 def _receipt(**overrides):
     value = {
         "unsupported": False,
+        "unsupported_pytest_cov_only": False,
         "replay_supported": False,
         "target_node_id": None,
         "target_count": None,
@@ -78,6 +82,44 @@ def _receipt(**overrides):
     }
     value.update(overrides)
     return value
+
+
+def _run_child_pytest(
+    project: Path,
+    plugin_dir: Path,
+    receipt_path: Path,
+    *,
+    pytest_args: tuple[str, ...] = (),
+    env_overrides: dict[str, str] | None = None,
+    cold: bool = False,
+):
+    env = os.environ.copy()
+    env.pop("PYTEST_PLUGINS", None)
+    env.pop("PYTEST_ADDOPTS", None)
+    if env_overrides:
+        env.update(env_overrides)
+    plan = _plan(
+        (sys.executable, "-m", "pytest", "-q", *pytest_args, "tests"),
+        env=env,
+    )
+    injected = inject_witness_plugin(plan, plugin_dir=plugin_dir, cwd=project)
+    assert injected.active
+    attempt = make_attempt_plan(
+        injected.plan,
+        receipt_path=receipt_path,
+        target_node_id=None,
+        cold=cold,
+        manifest_path=receipt_path.parent / "manifest.txt" if cold else None,
+    )
+    result = subprocess.run(
+        attempt.argv_effective,
+        cwd=project,
+        env=attempt.env_effective,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result, read_internal_receipt(receipt_path)
 
 
 def test_sequential_pytest_refuses_empty_override_and_untrusted_plugin_inputs():
@@ -292,12 +334,17 @@ def test_cold_shape_refusal_accepts_selection_and_disabled_randomizer(argv):
 
 def test_plugin_source_and_hook_fingerprint_contract_are_current():
     compile(_PLUGIN_SOURCE, "assay_mutation_witness_plugin.py", "exec")
-    assert HOOK_FINGERPRINT_HOOKS == (
+    expected_hooks = (
         "pytest_runtestloop", "pytest_runtest_protocol", "pytest_runtest_logstart",
-        "pytest_runtest_logreport", "pytest_runtest_call", "pytest_runtest_setup",
+        "pytest_runtest_logreport", "pytest_runtest_call", "pytest_runtest_makereport",
+        "pytest_runtest_setup",
         "pytest_runtest_teardown", "pytest_collectreport",
         "pytest_collection_modifyitems", "pytest_sessionfinish",
     )
+    namespace = {}
+    exec(compile(_PLUGIN_SOURCE, "assay_mutation_witness_plugin.py", "exec"), namespace)
+    assert HOOK_FINGERPRINT_HOOKS == expected_hooks
+    assert namespace["_HOOKS"] == expected_hooks
 
 
 def test_cold_and_survivor_proofs_require_complete_matching_receipts():
@@ -306,7 +353,19 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
     survivor = _receipt(session_exit_status=0)
     assert survivor_proof_ok(survivor, process_exit_status=0, expected=expected, command="r2")
     assert survivor_proof_ok(
+        {**survivor, "unsupported": True, "unsupported_pytest_cov_only": True},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    )
+    assert not survivor_proof_ok(
         {**survivor, "unsupported": True},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    )
+    assert not survivor_proof_ok(
+        {**survivor, "unsupported_pytest_cov_only": True},
         process_exit_status=0,
         expected=expected,
         command="declared",
@@ -338,6 +397,153 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
     assert cold_witness_from_receipt(
         {**cold, "session_exit_status": True}, process_exit_status=1, expected=expected
     ) is None
+
+
+def test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    plugin_dir = tmp_path / "plugins"
+    baseline_result, baseline = _run_child_pytest(
+        project, plugin_dir, tmp_path / "baseline.json", cold=True
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported"] is False
+    baseline_facts = receipt_facts(baseline)
+    assert baseline_facts is not None
+
+    (tests / "conftest.py").write_text(
+        "import pytest\n\n"
+        "@pytest.hookimpl(hookwrapper=True, tryfirst=True)\n"
+        "def pytest_runtest_makereport(item, call):\n"
+        "    outcome = yield\n"
+        "    report = outcome.get_result()\n"
+        "    if report.when == 'call' and report.outcome == 'passed':\n"
+        "        report.outcome = 'failed'\n"
+        "        report.longrepr = 'forged failure for cold-witness test'\n",
+        encoding="utf-8",
+    )
+    forged_result, forged = _run_child_pytest(
+        project, plugin_dir, tmp_path / "forged.json", cold=True
+    )
+    assert forged_result.returncode == 1
+    assert forged is not None
+    assert forged["unsupported"] is True
+    assert forged["unsupported_pytest_cov_only"] is False
+    assert forged["hook_fingerprint_sha256"] != baseline["hook_fingerprint_sha256"]
+    assert cold_witness_from_receipt(
+        forged, process_exit_status=forged_result.returncode, expected=baseline_facts
+    ) is None
+
+
+def test_declared_failure_proof_only_allows_reviewed_pytest_cov_unsupported_hooks():
+    node = "tests/test_example.py::test_case"
+    coverage_baseline = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=True,
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+        started_count=0,
+    )
+    expected = receipt_facts(coverage_baseline)
+    assert expected is not None
+    declared_failure = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=True,
+        witness_node_id=node,
+        started_count=1,
+    )
+    assert declared_failure_proof_ok(
+        declared_failure,
+        process_exit_status=1,
+        expected=expected,
+        manifest_node_ids=(node,),
+    )
+
+    refusals = (
+        {"unsupported_pytest_cov_only": False},
+        {"unsupported_pytest_cov_only": 1},
+        {"unsupported_pytest_cov_only": True, "unsupported": False},
+        {"collection_error": True},
+        {"auxiliary_failure": True},
+        {"earlier_failure": True},
+        {"started_prefix_ok": False},
+        {"hook_fingerprint_sha256": "d" * 64},
+    )
+    for change in refusals:
+        assert not declared_failure_proof_ok(
+            {**declared_failure, **change},
+            process_exit_status=1,
+            expected=expected,
+            manifest_node_ids=(node,),
+        ), change
+    missing_fact = dict(declared_failure)
+    del missing_fact["unsupported_pytest_cov_only"]
+    assert not declared_failure_proof_ok(
+        missing_fact,
+        process_exit_status=1,
+        expected=expected,
+        manifest_node_ids=(node,),
+    )
+    assert not declared_failure_proof_ok(
+        None,
+        process_exit_status=1,
+        expected=expected,
+        manifest_node_ids=(node,),
+    )
+
+
+def test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exception(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "tests").mkdir()
+    (project / "tests" / "test_ok.py").write_text(
+        "import os\n\n"
+        "def test_ok():\n"
+        "    if os.environ.get('FAIL_CALL'):\n"
+        "        assert False\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    receipt_path = tmp_path / "declared-receipt.json"
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        receipt_path,
+        pytest_args=("--cov=tests",),
+    )
+    assert result.returncode == 0, result.stderr
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is True
+    facts = receipt_facts(receipt)
+    assert facts is not None
+    assert survivor_proof_ok(
+        receipt, process_exit_status=0, expected=facts, command="declared"
+    )
+
+    failure_result, failure_receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "declared-failure.json",
+        pytest_args=("--cov=tests",),
+        env_overrides={"FAIL_CALL": "1"},
+    )
+    assert failure_result.returncode == 1
+    assert failure_receipt is not None
+    assert failure_receipt["unsupported"] is True
+    assert failure_receipt["unsupported_pytest_cov_only"] is True
+    assert declared_failure_proof_ok(
+        failure_receipt,
+        process_exit_status=failure_result.returncode,
+        expected=facts,
+        manifest_node_ids=("tests/test_ok.py::test_ok",),
+    )
 
 
 @pytest.mark.parametrize(

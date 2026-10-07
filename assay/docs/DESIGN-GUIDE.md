@@ -694,21 +694,30 @@ removing only recognized coverage options and appending
 `-p no:pytest_cov`. It keeps test selection and order. A passing coverage
 baseline and a passing uninstrumented baseline must collect the same ordered
 node IDs, including duplicates and count, and their reviewed hook fingerprints
-must match. Every candidate records its command variant and runtime
-collection/hook evidence. A cold kill also binds the failed node to its index
-in the ordered manifest and to the actual started-test prefix. A survivor or
-uncertain cold attempt runs the full declared command. Unsupported commands,
-plugins or hooks cannot produce a cold kill; the ordinary full-suite behavior
-remains the default when the option is absent.
+must match. The lifecycle check accepts pytest's built-in hooks and the exact
+reviewed Hypothesis hooks only when their module file belongs to the installed
+Hypothesis distribution and their plugin identity, function and wrapper flags
+match. The runtime fingerprint binds the installed plugin version. Other hooks
+make cold proof unavailable. Every candidate records its command variant and
+runtime collection/hook evidence. A cold kill also binds the failed node to its
+index in the ordered manifest and to the actual started-test prefix. A passing
+cold attempt is a survivor only after the complete transformed no-coverage R2
+command and its proof finish. An uncertain cold attempt gets one fresh full
+declared-command attempt. A declared fallback supplies a result only when its
+call failure or full pass is proven against the coverage baseline. With
+pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
+and must match that baseline. The ordinary full-suite behavior remains the
+default when the option is absent.
 
 These proofs live in the v15 verdict and are checked independently by
 `assay verify`. B105 adds a separate source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
 recomputes the command transform, validates the ordered manifest sidecar and
 checks that the verdict's campaign binding matches the persisted deadline.
-The deadline includes the commit, tree, tool version and R2 plan. Resume and
-retry spend the same absolute budget, so a restarted process cannot silently
-receive a fresh campaign allowance. The ordinary release lane stays R0-only;
+The deadline includes the commit, tree, tool version, selected wheel digest
+and ordered R2 plan. Resume and retry spend the same absolute budget, so a
+restarted process cannot silently receive a fresh campaign allowance. The
+ordinary release lane stays R0-only;
 B105's full qualification is still gated on the later bounded-pilot decision.
 
 #### Liveness process-group cleanup

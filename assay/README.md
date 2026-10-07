@@ -1122,8 +1122,10 @@ you're changing assay itself:
   with `assay run LANE --resume --progress .assay/progress-LANE.jsonl
   --cold-witness --r2-manifest .assay/r2-manifest-LANE.txt`. A killed candidate
   may stop at its first verified test-call failure; later tests are explicitly
-  unrun and could independently fail, hang, or crash. Survivors and uncertain
-  executions still run the full declared suite. The exact command transform,
+  unrun and could independently fail, hang, or crash. A proven passing cold
+  attempt completes the full transformed no-coverage command. An uncertain cold
+  attempt gets one full declared-command attempt. Only a proven result from
+  that attempt supplies the candidate outcome. The exact command transform,
   collection and hook checks, and persisted campaign deadline are documented
   in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
   [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does

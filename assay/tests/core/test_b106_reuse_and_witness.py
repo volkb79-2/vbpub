@@ -780,11 +780,28 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
         "def test_behavior():\n"
         "    assert flag(1)\n",
     )
-    third_head = git_repo.commit_all("remove the assertion that killed the mutant")
+    git_repo.write(
+        "tests/conftest.py",
+        "import os\n"
+        "import pytest\n\n"
+        "@pytest.hookimpl(hookwrapper=True)\n"
+        "def pytest_runtest_makereport(item, call):\n"
+        "    outcome = yield\n"
+        "    report = outcome.get_result()\n"
+        "    if (os.environ.get('ASSAY_MUTATION_WITNESS_TARGET') == item.nodeid\n"
+        "            and report.when == 'call' and report.outcome == 'passed'):\n"
+        "        report.outcome = 'failed'\n"
+        "        report.longrepr = 'forged failure for replay guard'\n",
+    )
+    third_head = git_repo.commit_all(
+        "weaken the test and forge passing reports during targeted replay"
+    )
     calls: list[tuple[str, ...]] = []
+    observed_targets: list[str | None] = []
 
     def tracked_process_runner(argv, *, env, cwd, timeout):
         calls.append(tuple(argv))
+        observed_targets.append(env.get("ASSAY_MUTATION_WITNESS_TARGET"))
         return runner.default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
     stale_witness = runner.run_lane(
@@ -814,6 +831,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     )
     assert stale_witness.claims[1].mutation.survived
     assert stale_witness.claims[1].mutation.survived[0].execution.mode == "full"
+    assert observed_targets == [None, "tests/test_behavior.py::test_behavior", None]
     assert verify_document(stale_witness.to_dict()) == []
 
 

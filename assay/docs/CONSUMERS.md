@@ -122,14 +122,20 @@ mutation command by removing only its recognized coverage options and adding
 `-p no:pytest_cov`; it preserves the declared test selection and order. The
 coverage baseline and no-coverage R2 baseline must collect the same ordered
 node IDs, and the candidate's runtime hook and collection fingerprints must
-match the proof. Unsupported commands or hooks do not get a cold kill.
+match the proof. Cold proof accepts pytest's built-in hooks and the reviewed
+Hypothesis hooks from the installed Hypothesis distribution. Other hooks make
+the attempt uncertain and cannot produce a cold kill.
 
 A `witness-cold` kill means one test-call failure was verified and the ordered
 manifest confirms the failing node was reached. Tests after that call are
-explicitly unrun; they could independently fail, hang, or crash. Survivors and
-uncertain attempts run the complete declared test command. This is an
-existential kill witness, not a claim that the whole suite ran. The default
-R2 behavior is unchanged when the flag is absent.
+explicitly unrun; they could independently fail, hang, or crash. A passing cold
+run that completes with matching proof is a survivor after the full transformed
+no-coverage command. An uncertain cold attempt gets one fresh full declared
+command; only its proven result supplies the outcome. If pytest-cov is present
+on that declared command, its reviewed hooks must be the only unsupported hooks
+and must match the coverage baseline. This is an existential kill witness, not
+a claim that the whole suite ran. The default R2 behavior is unchanged when the
+flag is absent.
 
 For a native Python pytest lane, inspect the plan, persist a deadline for the
 campaign, then pass both the resume/progress paths and the deadline into the
@@ -150,9 +156,9 @@ assay run "$lane" --resume \
   --cold-witness --r2-manifest "$manifest"
 ```
 
-The campaign deadline binds the exact commit, tree, tool version, lane and
-candidate plan. Keep it with the resume state for every retry; a retry does not
-receive a new clock. Assay writes the ordered manifest under the requested
+The campaign deadline binds the exact commit, tree, tool version, selected
+wheel digest, lane and ordered candidate plan. Keep it with the resume state
+for every retry; a retry does not receive a new clock. Assay writes the ordered manifest under the requested
 path. The independent verifier checks the receipt fields, and B105's report
 checker additionally binds the transform, committed lane/config and manifest
 to the exact source revision. See the

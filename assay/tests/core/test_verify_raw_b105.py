@@ -91,6 +91,36 @@ def test_raw_b106_identity_reconstruction_refuses_malformed_identity_inputs():
     assert any("does not match its recorded identity" in item for item in failures)
 
 
+def test_raw_v15_verifier_requires_evidence_for_a_cold_witness_kill():
+    baseline = {
+        "collection_count": 2,
+        "collection_sha256": "a" * 64,
+        "hook_fingerprint_sha256": "b" * 64,
+    }
+    policy = {
+        "cold_witness_kills": True,
+        "r2_command": {"r2_baseline": baseline},
+    }
+    entry = {
+        "execution": {"mode": "witness-cold"},
+        "evidence": {
+            "command": "r2",
+            "collection_count": 2,
+            "collection_sha256": "a" * 64,
+            "hook_fingerprint_sha256": "b" * 64,
+            "started_count": 1,
+            "failed_call_index": 0,
+        },
+    }
+
+    assert _check(raw_verify._check_v15_evidence, "killed", entry, policy) == []
+    del entry["evidence"]
+
+    failures = _check(raw_verify._check_v15_evidence, "killed", entry, policy)
+
+    assert any("cold-witness kill requires collection evidence" in item for item in failures)
+
+
 def test_raw_mutant_identity_order_checker_handles_shape_and_duplicate_cases():
     first = {
         "path": "src/a.py",

@@ -17,9 +17,32 @@ check. Preserve that replay contract separately in the internal receipt as
 `replay_supported`: ordinary full and prefix-replay receipts may carry a
 witness when this legacy predicate is true, while `cold_witness_from_receipt`
 and the no-coverage R2 baseline still require `unsupported == false` from the
-strict predicate. This keeps opt-in cold witnesses from erasing B106 evidence
-on ordinary runs. The receipt has 26 keys (the existing 10 plus 16 new
-fields); `replay_supported` is internal and never copied to verdicts.
+strict predicate. The strict hook set includes `pytest_runtest_makereport`;
+the B106 predicate checks it too, so an unreviewed report wrapper cannot forge
+a call failure. The tester image auto-loads Hypothesis, so its three relevant
+hooks are accepted only when module file ownership, plugin identity, function
+name and wrapper flags match the reviewed map. The runtime fingerprint binds
+the installed version. The declared pytest-cov fallback records
+`unsupported_pytest_cov_only=true` only when the exact reviewed pytest-cov
+hooks are the sole unsupported hooks. Its candidate hook/runtime fingerprint
+must still match the coverage baseline. This closes C22's previously
+undervetted-baseline residual; unknown hooks and report wrappers cannot prove
+a kill or survivor. The receipt has 27 keys (the existing 10 plus 17 new
+fields); `replay_supported` and `unsupported_pytest_cov_only` are internal and
+never copied to verdicts.
+
+**Current test-layout reconciliation — 2026-10-07.** The original placement
+instructions below refer to the pre-Wave-A `tests/zz_slow` split. That directory
+is absent from the current tree; B112's slow-tier decision remains open pending
+current timing evidence. Do not recreate the retired layout as part of B114.
+The current B114 regression oracles are in `tests/core/test_mutation_witness_unit.py`
+(including child-pytest hook and pytest-cov cases),
+`tests/core/test_b106_reuse_and_witness.py` (targeted-replay tampering),
+`tests/core/test_verify_raw_b105.py` (raw cold-kill evidence),
+`tests/core/test_w10_characterization_i4_clusters.py` (receipt schema), and
+`gate/tests/test_b105_report_check.py` (wheel, plan digest, and candidate-order
+binding). Real-cgroup termination behavior remains covered by the registered
+`tester-unified` gate.
 
 **Cause-sensitive kill rule, superseding the fallback table below:** a positive
 exit status does not prove a test call failed. A cold attempt can be `killed`
@@ -29,9 +52,9 @@ reaches exactly the failed node, process and session exits are both 1, and no
 signal, termination request, cgroup resource event, collection/setup/teardown
 failure, auxiliary failure, or other uncertainty is present. A declared-command
 fallback can be `killed` only with equivalent trusted call-phase proof against
-the coverage baseline. The one known pinned pytest-cov wrapper condition may
-make the cold receipt unsupported; it permits the single declared fallback but
-does not weaken the declared call-phase proof.
+the coverage baseline. The exact reviewed pytest-cov hooks may make the
+declared receipt unsupported; that exception permits the single declared
+fallback proof only when they are the sole unsupported hooks.
 
 If the declared attempt exits unsuccessfully without that proof, it is
 `crashed`/`ERROR/EXEC_FAILED`, or the existing whole-lane infrastructure error
@@ -172,6 +195,7 @@ B105_ARCHIVE_ENV = ("ASSAY_B105_COVERAGE_SOURCE", "ASSAY_B105_COVERAGE_ARCHIVE_D
                     "ASSAY_B105_SOURCE_COMMIT", "ASSAY_B105_SOURCE_TREE")
 HOOK_FINGERPRINT_HOOKS = ("pytest_runtestloop", "pytest_runtest_protocol",
     "pytest_runtest_logstart", "pytest_runtest_logreport", "pytest_runtest_call",
+    "pytest_runtest_makereport",
     "pytest_runtest_setup", "pytest_runtest_teardown", "pytest_collectreport",
     "pytest_collection_modifyitems", "pytest_sessionfinish")
 
@@ -206,14 +230,11 @@ def survivor_proof_ok(receipt, *, process_exit_status: int, expected: ReceiptFac
     #   (int, not bool); started_count == collection_count; receipt_facts(receipt)
     #   matches expected on collection_count, collection_sha256, duplicates == 0,
     #   hook_fingerprint_sha256 and runtime_fingerprint_sha256;
-    #   AND, only when command == "r2": not unsupported.
-    # command == "declared" (expected = coverage_facts) does NOT require "not
-    # unsupported": the declared command carries pytest-cov, whose
-    # pytest_runtestloop(wrapper=True) makes the receipt's `unsupported` true on every
-    # declared run (the plugin's trust check accepts only _pytest/witness/liveness
-    # impls). Hook-fingerprint equality with the coverage baseline, which carries the
-    # same wrapper, pins the hook set instead.
-    # command == "r2" (expected = r2_facts) keeps "not unsupported".
+    #   AND, command == "r2": not unsupported;
+    #   AND, command == "declared": unsupported is false OR the receipt's
+    #       unsupported_pytest_cov_only is true. That fact is true only when
+    #       exact reviewed pytest-cov hooks are the sole unsupported hooks.
+    # The hook/runtime fingerprint still must equal the coverage baseline.
 
 def cold_witness_from_receipt(receipt, *, process_exit_status: int,
         expected: ReceiptFacts) -> tuple[dict[str, Any], int, int] | None
@@ -249,10 +270,11 @@ def cold_witness_from_receipt(receipt, *, process_exit_status: int,
 | `config_sha256` | hex or null | sha256 of `config.inipath` bytes; null when there is no inipath |
 | `archive_hook_exception_used` | bool | the B105 conftest `pytest_sessionfinish` was trusted via the exception |
 | `replay_supported` | bool | the pre-B114 B106 targeted-replay hook predicate; permits legacy witness capture/replay only, never a cold kill |
+| `unsupported_pytest_cov_only` | bool | every unsupported lifecycle hook is one of the exact reviewed pytest-cov hooks; no unknown hook is present |
 
 The whole receipt stays ≤ 16 KiB (`MAX_INTERNAL_RECEIPT_BYTES`, mirrored by `16384` in the plugin). Node lists are **never** placed in the receipt. The ordered list goes only to the sidecar file (`WITNESS_MANIFEST_FILE_ENV`): one node ID per line, each followed by `\n`, UTF-8, written only when `manifest_supported`.
 
-**The full receipt is exactly 26 keys: the existing 10 at `mutation_witness.py:308-321` plus the 16 above (P3B-9 and B114's compatibility addendum).**
+**The full receipt is exactly 27 keys: the existing 10 plus the 17 v15 fields (P3B-9 and B114's compatibility/review addenda).**
 
 Valid, a cold kill:
 ```json
@@ -320,12 +342,16 @@ When it is used, set `_ARCHIVE_EXCEPTION_USED = True`. `test_custom_sessionfinis
 
 **Trust widening, to be documented (P3B-12).** The exception is not B105-specific in code. **Any** consumer's `tests/conftest.py` `pytest_sessionfinish`, with those four variables absent, becomes trusted for cold stops **and** for B106 prefix replay. DESIGN-GUIDE (the new cold-witness section) and CONSUMERS must state this, and must state that a consumer whose `tests/conftest.py` `pytest_sessionfinish` changes the session exit status defeats the proof. The mismatched-exit fixture (Luna set) shows the receipt check still refuses the obvious form of that.
 
-**Second trust-widening residual, to be documented with the one above (round-3 C22 note).**
-- The coverage baseline's hook set is **pinned but never vetted**. A declared survivor's proof is hook-fingerprint *equality* with the coverage baseline (C22), and that baseline's set legitimately contains pytest-cov's wrapper.
-- So a hook implementation that is registered only when pytest-cov (`_cov`) is loaded escapes both the R2 trust check and the fingerprint-equality proof.
-- In a qualifying run this can only produce a false **survivor**, which is the safe direction.
-- Through P10's declared-command fallback in the ledger audit, it could let a killable mutant be accepted into the ledger.
-- DESIGN-GUIDE (cold-witness section) and CONSUMERS state this. P10's audit documentation cross-references it.
+**C22 residual — closed by the 2026-10-07 review fix.** A declared receipt with
+`unsupported=true` now proves a survivor or call failure only when
+`unsupported_pytest_cov_only=true`. The plugin sets that fact only when every
+relevant hook is built-in, the exact reviewed Hypothesis hooks, the pinned
+B105 archive exception, or an exact pytest-cov implementation owned by its
+installed distribution; at least one exact pytest-cov hook must be present.
+Candidate hook/runtime fingerprints still have to match the coverage baseline.
+An extra hook or any `pytest_runtest_makereport` wrapper makes the fact false.
+The raw receipt parser rejects a missing or malformed flag. This closes the
+baseline-hook-set trust gap for declared fallback and the P10 ledger audit.
 
 **Plugin cold stop.** In `pytest_runtest_logreport`, when `_COLD and _TARGET is None`, on the **first failed report of any phase**:
 - if `report.when == "call"`, `_STANDARD_LOOP` holds, there is no earlier/auxiliary/collection failure, `_PREFIX_OK` holds and the node ID is bounded: set `_WITNESS`, `_STOPPED_COLD = True`, `_FAILED_CALL_INDEX = _STARTED - 1`;
@@ -524,8 +550,9 @@ The executor masks the position like an unsubmitted leftover and writes **no sta
 
 | Outcome | Receipt | Bucket | `execution` | `evidence` |
 |---|---|---|---|---|
-| FAIL, `returncode > 0` | any | killed | `full` (plus the witness exactly as the existing full branch at 2840-2854 records it) | `command:"declared"` facts if readable, else null |
-| PASS | `survivor_proof_ok(receipt, process_exit_status=0, expected=coverage_facts, command="declared")`: collection count/sha, dup 0, **hook sha and runtime sha equal to the coverage baseline's**, prefix ok, session status 0, `started_count == collection_count`. **`unsupported` is NOT required to be false** (C22, round-2 P3B2-2): pytest-cov's `pytest_runtestloop(wrapper=True)` always sets it on a `--cov` lane, and the hook-fingerprint equality pins the hook set. | survived | `full` | `command:"declared"`, facts |
+| FAIL, `returncode > 0` | `declared_failure_proof_ok(...)`: call-phase failure, matching collection/hook/runtime facts, exact started prefix and manifest node; if `unsupported`, `unsupported_pytest_cov_only` is true | killed | `full` + proven witness | `command:"declared"` facts if readable, else null |
+| FAIL, `returncode > 0` | any unproved receipt or unsupported hook set | crashed | `full` | `command:"declared"` facts if readable, else null |
+| PASS | `survivor_proof_ok(receipt, process_exit_status=0, expected=coverage_facts, command="declared")`: full prefix, clean receipt, matching collection/hook/runtime facts; if `unsupported`, `unsupported_pytest_cov_only` is true | survived | `full` | `command:"declared"`, facts |
 | PASS | anything else | **crashed** | `full` | `command:"declared"` facts if readable, else null |
 | BUDGET_EXCEEDED (`budget_per_candidate`) / hung / ERROR | any (not row 0) | per classifier | `full` | facts if readable, else null |
 
@@ -566,14 +593,15 @@ _execute_mutation_jobs plugin dir     (its own, 2609-2613; receipts named f"{ind
 | R2 plan construction | runner | the recorded R0 `argv_effective` still has `--cov*`; the R2 baseline's argv (read back from a `process_runner` spy) has no `--cov*`, ends with `-p no:pytest_cov` and the witness plugin, **and** `allow_argv_append=false` does not refuse | same | put the transform in `argv_effective` only → the spy sees `--cov` → red |
 | cold stop before a marker | plugin + `_run_one` | real pytest project: `test_a` passes, `test_b` fails (killed by the mutant), `test_c` writes a marker file. The marker path is **outside every snapshot**: a `tmp_path` directory passed to the test through a lane `env` entry (P3B-10). Cold kill → `witness-cold`, `started_count==2`, `failed_call_index==1`, **marker absent** | `_seed_pytest_mutation`-style fixture with 3 tests; lane `liveness="false"` so the counting `process_runner` sees every attempt (P3B-10) | disable the `shouldfail` → marker present → red |
 | survivor completes as full | same | an unkilled candidate: marker present; `mode:"full"`, `evidence.command:"r2"`, started == collection; **exactly 1 attempt** (counting `process_runner`: baselines + 1) | same | always run a declared attempt → the count is 2 → red |
-| survivor proof is complete (P3B-7, C22) | `survivor_proof_ok` | unit, `command="r2"`: a PASS receipt with, in turn, `started_prefix_ok:false`, `unsupported:true`, `session_exit_status:1`, `auxiliary_failure:true`, `started_count == collection_count - 1`. Each → not a survivor. Unit, `command="declared"`: the same list **except** `unsupported:true`, which → **still a survivor** when the hook/runtime facts equal the coverage baseline's; a declared receipt whose `hook_fingerprint_sha256` differs from the coverage baseline's → not a survivor | `tests/test_mutation_witness_unit.py` | check only the collection facts → each case accepted → red; require "not unsupported" for declared → the declared `unsupported:true` case rejected → red |
-| declared survivor on a `--cov` lane (C22, round-2 P3B2-2) | `_run_one` + plugin, real run | a lane whose argv carries `--cov=<pkg> --cov-branch` (pytest-cov really loaded). An unkilled candidate whose **cold** attempt is forced uncertain (a conftest makes the cold receipt's prefix break only when `ASSAY_MUTATION_WITNESS_COLD=1`, so the cold attempt is not provable) → the declared attempt PASSes with `unsupported:true` in its receipt → bucket **`survived`**, `evidence.command:"declared"` matching the coverage baseline, 2 attempts, R2 `FAIL/MUTANTS_SURVIVED`; the verdict verifies `[]` | `tests/zz_slow/test_b110_cold_witness_real_runs.py` | require "not unsupported" for declared → the candidate becomes `crashed` → R2 `ERROR/EXEC_FAILED` → red |
+| survivor and failure proofs are complete (C22 review fix) | `survivor_proof_ok`, `declared_failure_proof_ok` | unit: pytest-cov-only unsupported receipt with matching facts can prove a full survivor/call failure; an extra hook, malformed/missing flag, report wrapper, collection/setup/teardown failure or mismatched fingerprint cannot | `tests/core/test_mutation_witness_unit.py` | accept any `unsupported:true` receipt or ignore the flag/fingerprint → red |
+| declared pytest-cov survivor and call proof (C22 review fix) | plugin + proof predicates | child pytest with `--cov=tests`: a passing declared receipt has `unsupported=true` and `unsupported_pytest_cov_only=true` and proves a full survivor; a call failure with the same matching hook/runtime facts proves only when its started node matches the manifest | `tests/core/test_mutation_witness_unit.py::test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exception` | remove the exact-hook allowlist or accept an unsupported hook receipt without the private fact → red |
+| `pytest_runtest_makereport` wrapper | plugin + proof predicate | child pytest: a wrapper changes a passing call report to failed; the hook fingerprint changes, `unsupported` is true, and cold proof refuses | `tests/core/test_mutation_witness_unit.py::test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill` | omit makereport from either hook list or trust arbitrary wrappers → red |
 | liveness-active cold run (round-2 P3B2-4) | runner + plugin | a lane with `liveness = true` (plugin active) and `--cold-witness`: both baselines prove (no whole-lane refusal), and a killable candidate records `witness-cold` | same | omit `liveness_plugin_path=` on the R2-baseline injection → the liveness hooks are untrusted → `unsupported` → whole-lane refusal → red |
 | unproven PASS → crashed (P3B-8) | `_run_one`, `_classified_bucket` | (a) under the mutant, a test calls `pytest.exit("stop", returncode=0)` after the first test; (b) under the mutant, a test calls `os._exit(0)`, so there is no receipt. Each: cold attempt PASS but unproven → declared attempt → PASS but unproven → **crashed**, 2 attempts, R2 `ERROR/EXEC_FAILED`, and the verdict verifies | `tests/test_b110_cold_witness.py` | treat exit 0 as survived → `survived` recorded → red |
 | signal → never killed (C2, row S) | `_run_one` | under the mutant, a test sends itself `SIGKILL` (`os.kill(os.getpid(), signal.SIGKILL)`). With `--cold-witness`: `crashed`, **1** attempt, `evidence` null. Without `--cold-witness`: `killed`, byte-identical to today | same | map `returncode < 0` through the FAIL rows → `killed` in cold mode → red |
 | cold hung/budget is final (P3B-8) | `_run_one` | a busy-loop mutant with `budget_per_candidate = "3s"` and `liveness="false"` → `budget_exceeded` after exactly **1** cold attempt (no declared attempt) | same | re-run on budget → count 2 → red |
 | setup/teardown/collection failures never cold | same | three fixtures: the killing failure happens in a fixture's setup; in teardown after a call failure; at import (collection error). Each ends `mode:"full"`, `evidence.command:"declared"`, with 2 attempts | same | accept setup failures as cold → the setup case records `witness-cold` → red |
-| lookalike sessionfinish | plugin trust | the existing adversary `test_custom_sessionfinish_hook_forces_full_suite_fallback` still forces fallback. It lived at `test_b106_reuse_and_witness.py:820-924` at `db85f747` and is **now in `tests/zz_slow/test_b106_witness_real_runs.py`** (P1); find it by name and do not edit it. **Plus:** a `tests/conftest.py` `pytest_sessionfinish` under rootpath with `ASSAY_B105_COVERAGE_SOURCE` set in the child env → `unsupported` → R2 baseline refusal; with all four absent → trusted, `archive_hook_exception_used: true` | `tests/zz_slow/test_b110_cold_witness_real_runs.py`, plus the unchanged B106 adversary | match by basename only → a `sub/tests/conftest.py` lookalike is trusted → red |
+| lookalike sessionfinish | plugin trust | the existing adversary `test_custom_sessionfinish_hook_forces_full_suite_fallback` still forces fallback. It lives in `tests/core/test_b106_reuse_and_witness.py`; find it by name and do not edit it. **Plus:** a `tests/conftest.py` `pytest_sessionfinish` under rootpath with `ASSAY_B105_COVERAGE_SOURCE` set in the child env → `unsupported` → R2 baseline refusal; with all four absent → trusted, `archive_hook_exception_used: true` | `tests/core/test_b106_reuse_and_witness.py`, plus the B105 child-process tests | match by basename only → a `sub/tests/conftest.py` lookalike is trusted → red |
 | path normalization | plugin | (a) two baselines of the same project materialized under two different temp roots give an equal `hook_fingerprint_sha256`; (b) the same with `sysconfig.get_paths()` monkeypatched to a different `purelib` prefix (a relocated venv) → equal; (c) an unnamed plugin registered twice in two processes → equal (the `<anon>` token) | `tests/test_mutation_witness_unit.py` | use absolute paths → (a)/(b) unequal → red; use the raw pluggy name → (c) unequal → red |
 | collection digest parity | plugin vs `r2_command` | the plugin's `collection_sha256` equals `collection_digest` of the sidecar lines on a project with a **non-ASCII function name** `def test_é(): ...` (node ID `tests/test_u.py::test_é`, byte length ≠ character length). Parametrize IDs are ASCII-escaped by pytest 9.1.1 (`_ascii_escaped_by_config`), so `ids=["é"]` would not exercise this (P3B-2) | same | char-length netstring → red |
 | baseline refusal A5 (C1) | runner | (a) a test that passes only with coverage active (`import coverage; assert coverage.Coverage.current()`); (b) a `conftest.py` `pytest_collection_modifyitems` that reverses the order only when `pytest_cov` is not loaded → collection mismatch; (c) **duplicates:** the lane argv names the same test file twice with `--keep-duplicates` (pytest 9.1.1 renames duplicate parametrize IDs to `a0`/`a1`, so `ids=["a","a"]` cannot produce duplicates, P3B-2) → `collection_duplicates > 0`. Each → a **whole-lane** `ERROR/BAD_LANE_CONFIG` verdict: every declared claim (R0, R1 if declared, R2, R3 if declared) carries that pair, no R2 payload, and the document passes `assay verify` (`[]`) | `tests/test_b110_cold_witness.py` | render it payload-free on R2 beside a passing R0 → `assay verify` fails → red; fall back to a declared campaign → an R2 payload exists → red |
@@ -797,11 +825,11 @@ Verify each anchor with `grep -n`.
 - **docs/DESIGN-GUIDE.md:**
   - a new "### Cold witness kills and the R2-only command (B110)" section after the B106 section (the B106 section starts at :1015; insert before the next `###`). It explains:
     - why one verified call failure is sufficient;
-    - why survivors pay the full R2 command and what the survivor proof requires;
+    - why a passing cold survivor completes the full transformed no-coverage R2 command, while an uncertain cold attempt gets one full declared-command attempt;
     - the declared-command fallback;
     - the A5 proof refusal is **whole-lane**, with no fallback and discarded R0/R1 results (C1, A-458);
     - an R2-baseline timeout or termination is a **whole-lane** `BUDGET_EXCEEDED/LANE_TIMEOUT`, not a config error, because an R2-only timeout beside R0 PASS is unverifiable (C21);
-    - a declared survivor is proven by fingerprint equality with the coverage baseline, not by "not unsupported", because of pytest-cov's loop wrapper (C22);
+    - an unsupported declared survivor or call failure is proven only when the exact pytest-cov hooks are the sole unsupported hooks and candidate facts match the coverage baseline (C22 review fix);
     - in cold mode a signal-terminated attempt is `crashed`, never `killed` (C2);
     - unclassified attempts are left to P6 (C3);
     - the hook and runtime fingerprints with their normalization;

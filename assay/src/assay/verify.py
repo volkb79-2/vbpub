@@ -1878,7 +1878,15 @@ def _check_v15_evidence(
 ) -> None:
     """Validate v15 per-attempt collection facts without model reconstruction."""
     if "evidence" not in entry:
-        if policy.get("cold_witness_kills") is True and bucket == "survived":
+        execution = entry.get("execution")
+        mode = execution.get("mode") if isinstance(execution, dict) else None
+        if (
+            policy.get("cold_witness_kills") is True
+            and bucket == "killed"
+            and mode == "witness-cold"
+        ):
+            failures.append("cold-witness kill requires collection evidence")
+        elif policy.get("cold_witness_kills") is True and bucket == "survived":
             failures.append("cold-witness survivor requires collection evidence")
         return
     raw = entry.get("evidence")
