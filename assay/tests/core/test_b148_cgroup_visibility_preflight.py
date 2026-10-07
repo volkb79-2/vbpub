@@ -14,6 +14,7 @@ from assay import cli, mutation, resource_limits
 from assay.cli import main
 from assay.config import load_lane_file
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verify import verify_document
 
 
 def _native_lane(repo: GitRepo, marker: Path, *, max_mutants: int = 50) -> Path:
@@ -97,6 +98,7 @@ def test_selected_native_candidates_refuse_before_r0_when_cgroup_is_hidden(
     assert document["outcome"] == "NO_MEASUREMENT"
     assert document["reason_code"] == "CGROUP_OBSERVATION_UNAVAILABLE"
     assert all(claim["status"] == "NO_MEASUREMENT" for claim in document["claims"])
+    assert verify_document(document) == []
     assert not marker.exists()
     assert "complete cgroup v2 ancestor hierarchy" in err
     assert "configure the runner" in err

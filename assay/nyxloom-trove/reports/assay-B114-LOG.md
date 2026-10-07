@@ -220,3 +220,24 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - Next: commit the review closure, obtain a fresh exact-tip Sol xhigh review,
   then run the registered `tester-unified` and
   `self-qualification-preflight` lanes. B118 remains a B131 prerequisite.
+
+## Registered tester-unified failure and correction — 2026-10-07
+
+- `./run-gate.py tester-unified` on `6fe26462692dc3d77e672d2c45ce2bc645065f55`
+  exited 1 after 475.77s: **7,819 passed, 11 skipped, 1 failed**. The failure
+  was `test_the_transcribed_manifest_agrees_with_its_sibling_transcription`:
+  `test_errors.py` already transcribed B114's
+  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`, while the independent
+  conformance vocabulary and fixture set had not.
+- Added the missing pair to the conformance transcription, added a complete
+  refusal artifact to the fixture set, and made the B148 live pre-R0 refusal
+  test round-trip its emitted document through `assay verify`.
+- The corrected conformance, reason-code, and B148 tests pass: **207 passed in
+  2.68s** in the estate venv. This does not replace a fresh registered gate.
+- The fresh Sol xhigh review attempt of `6fe26462` stopped with Codex's usage
+  limit before returning findings; its exact before/after HEAD and clean status
+  match. Retry after the stated reset using the small follow-up diff since
+  `37470c55`, not the already-reviewed full branch.
+- Next: commit this correction, rerun `tester-unified`, obtain the fresh exact-tip
+  Sol xhigh review when the route is available, then run
+  `self-qualification-preflight`. No B105 R2 campaign ran.
