@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from . import safeio
-from .errors import AssayError
+from .errors import AssayError, Outcome, ReasonCode
 from .r2_command import UnrecognizedCoverageOption, transform_argv
 from .records import record
 
@@ -117,7 +117,37 @@ class ReceiptCapture:
             name="assay-witness-receipt",
             daemon=True,
         )
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException as exc:
+            # Thread creation can fail at the host's process limit. The
+            # constructor has not returned a capture for its caller to finish,
+            # so close every descriptor here and surface the failure through
+            # Assay's typed execution-error path. A raw RuntimeError would
+            # escape candidate accounting and could leave a mutation campaign
+            # without its infrastructure verdict.
+            self._stop.set()
+            if self._thread.ident is not None:
+                try:
+                    self._thread.join(self._JOIN_TIMEOUT_SECONDS)
+                except RuntimeError:
+                    pass
+            descriptors = [self.write_fd, self._read_fd]
+            if not self._thread.is_alive():
+                descriptors.append(self._drain_fd)
+            for descriptor in descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if isinstance(exc, Exception):
+                raise AssayError(
+                    "could not start the mutation-witness receipt reader; "
+                    "refusing to classify the candidate",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.EXEC_FAILED,
+                ) from exc
+            raise
 
     def _drain(self) -> None:
         try:

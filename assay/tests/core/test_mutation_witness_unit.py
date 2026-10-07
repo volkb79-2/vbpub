@@ -16,6 +16,7 @@ import pytest
 from _pytest.config import get_config
 
 from assay import liveness, mutation_witness
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation_witness import (
     _PLUGIN_SOURCE,
     COLD_PYTEST_FLAG_OPTIONS,
@@ -443,6 +444,41 @@ def test_receipt_capture_closes_pipe_if_reader_descriptor_dup_fails(monkeypatch)
                 os.close(descriptor)
             except OSError:
                 pass
+
+
+def test_receipt_capture_closes_descriptors_and_raises_typed_error_if_reader_thread_cannot_start(
+    monkeypatch,
+):
+    descriptors: list[int] = []
+    original_pipe = os.pipe
+    original_dup = os.dup
+
+    def record_pipe() -> tuple[int, int]:
+        pair = original_pipe()
+        descriptors.extend(pair)
+        return pair
+
+    def record_dup(fd: int) -> int:
+        duplicate = original_dup(fd)
+        descriptors.append(duplicate)
+        return duplicate
+
+    def fail_start(_thread):
+        raise RuntimeError("injected process-limit thread-start failure")
+
+    monkeypatch.setattr(os, "pipe", record_pipe)
+    monkeypatch.setattr(os, "dup", record_dup)
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+
+    with pytest.raises(AssayError, match="receipt reader") as raised:
+        ReceiptCapture()
+
+    assert raised.value.outcome is Outcome.ERROR
+    assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
 
 
 def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):

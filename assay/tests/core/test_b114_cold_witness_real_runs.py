@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -583,6 +584,46 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
         "configured:010:1",
         "configured:001:0",
     ]
+
+
+def test_cold_witness_reader_thread_start_failure_is_typed_and_never_a_kill(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    attempt_log = tmp_path / "attempts.log"
+    config = _seed_campaign(git_repo, attempt_log, max_mutants=1)
+    monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+    original_start = threading.Thread.start
+    failed_from: list[str] = []
+
+    def fail_receipt_reader_on_candidate(thread: threading.Thread) -> None:
+        if (
+            thread.name == "assay-witness-receipt"
+            and threading.current_thread() is not threading.main_thread()
+        ):
+            failed_from.append(threading.current_thread().name)
+            raise RuntimeError("injected process-limit thread-start failure")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_receipt_reader_on_candidate)
+    code, stdout, stderr, _progress, _manifest, verdict_path, _state_dir = (
+        _run_cold_campaign(
+            git_repo, config, tmp_path=tmp_path, attempt_log=attempt_log
+        )
+    )
+
+    assert failed_from
+    assert code == 2, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+    assert r2["status"] == "ERROR"
+    assert r2["reason_code"] == "EXEC_FAILED"
+    mutation = r2.get("mutation")
+    assert mutation is None or mutation["killed"] == []
+    assert cli.main(
+        ["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
 
 
 @pytest.mark.parametrize("failed_baseline", ["coverage", "r2"])
