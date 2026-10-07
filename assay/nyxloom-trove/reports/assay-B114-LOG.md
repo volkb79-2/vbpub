@@ -275,3 +275,5 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   timeout before injecting expiration, and the default runner must reap it via
   SIGKILL. Its 60s waits are hang failsafes only. Auto-budget tests passed
   (**3 passed, 50 deselected in 0.87s**); `git diff --check` passed.
+- Ruff `E4,E7,E9,F` over the five touched test modules and
+  `git diff --check 37470c55..HEAD` both passed.
