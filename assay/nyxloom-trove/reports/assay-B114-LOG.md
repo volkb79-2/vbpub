@@ -277,3 +277,12 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   (**3 passed, 50 deselected in 0.87s**); `git diff --check` passed.
 - Ruff `E4,E7,E9,F` over the five touched test modules and
   `git diff --check 37470c55..HEAD` both passed.
+- Sol xhigh follow-up review found two P3 gaps in the timeout oracle: it
+  injected `TimeoutExpired` above the real `Popen.communicate(timeout=...)`
+  boundary, and checked only the candidate leader after cleanup. Reworked the
+  test to synchronize on child output, call the real `communicate` with the
+  derived timeout, and verify a same-group descendant has exited. The focused
+  test passed (**1 passed in 0.75s**); `git diff --check` passed.
+- The full `test_mutation_progress_budget_plan.py` module passed (**53 passed in
+  7.78s**); Ruff `E4,E7,E9,F` and `git diff --check` passed after cleanup of the
+  now-unused module-level runner import.
