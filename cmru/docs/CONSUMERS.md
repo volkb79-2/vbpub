@@ -733,7 +733,12 @@ installs it into a fresh isolated venv, and invokes `cmru get-py` outside the
 source checkout. (The former real-enrollment lane moved to ciu with `get.py
 enroll`; see "Installer extensions" below.)
 
-The host `gate` lane keeps CMRU publisher credentials out of tester-unified:
+Release worktrees never contain a credential file: the launcher hands the resolved
+token to its transaction child over a private pipe (see the
+[credential handoff](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers)).
+The host `gate` lane still keeps CMRU publisher credentials out of tester-unified
+for any other checkout it is pointed at (this masking goes away with run-gate's
+narrow-mount release; cmru KI-64):
 it points visible root/project `cmru.secret.toml` overlays at private host
 backups outside the repository mount for the registered lane sequence, strips
 publisher-token and extra-mount variables from nested runner calls, and
@@ -793,8 +798,9 @@ CMRU resolves the selected project's release config from the transaction's
 isolated source snapshot. A central orchestration file inside that snapshot
 already points to snapshot paths; an external central file maps its registered
 project paths from the source Git root. If an in-repository orchestration change
-moved a project config since your caller checkout, CMRU reads its policy and
-places the copied project secret overlay at the path recorded in the snapshot.
+moved a project config since your caller checkout, CMRU reads its policy from the
+path recorded in the snapshot; the project secret overlay is read from your caller
+checkout on the host and handed to the child, never copied into the snapshot.
 Project config symlinks may point within the Git family; the resolved target
 must keep the `cmru.toml` filename accepted by the config loader. CMRU preserves
 the selected repository link path when it checks the snapshot and when it
@@ -881,10 +887,9 @@ valid, with its progress commit an ancestor of the candidate. Without that
 evidence CMRU refuses resume; inspect the retained checkout before starting a
 fresh release. A candidate whose scope cannot be read has no safe resume command
 until that metadata can be inspected.
-Before resuming, keep copied root and project `cmru.secret.toml` paths in the
-candidate as regular files, not symlinks. CMRU refuses unsafe credential paths
-instead of following them outside the candidate; inspect and repair the path
-before retrying. CMRU reads `project.release.git_tag` from the committed retained
+A resumed release needs no credential file in the candidate: the resuming launcher
+resolves the credential on the host from your checkout and hands it to the resumed
+child over the same private pipe, so the retained worktree stays secret-free. CMRU reads `project.release.git_tag` from the committed retained
 candidate before starting its child, so a candidate policy change receives the
 same Git-version preflight as a new release.
 

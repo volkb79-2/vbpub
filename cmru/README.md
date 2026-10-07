@@ -45,7 +45,8 @@ the family launchers. Each launcher fetches `origin/main` again and refuses if
 it moved after preflight, so every family uses the checked snapshot. A resumed
 release checks the committed candidate's tag policy before running its child;
 when an in-repository orchestration change moves a project config, its secret
-overlay follows the snapshot path. Project config symlinks resolve within that
+overlay is still read from the caller's checkout and handed to the child over a
+private pipe, never copied into the snapshot. Project config symlinks resolve within that
 snapshot from the selected repository path, even if the caller's checkout still
 points at an older target, and their targets must retain the `cmru.toml` filename.
 The selected `--config` link may use another basename when its tracked target is
@@ -307,8 +308,8 @@ branch/worktree for diagnosis; CMRU never rebases a candidate after building its
 pre-tag candidate; a release-plan refusal during resume also retains the existing candidate
 and its origin backup branch. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
-When resuming, CMRU installs copied credential overlays through no-follow paths and refuses
-symlink or nonregular destinations in the retained worktree.
+No credential file is ever copied into a release worktree, new or retained: when resuming,
+CMRU resolves the credential on the host and hands it to the resumed child over a private pipe.
 Release planning refuses when Git cannot read a project's history; it does not
 treat a failed history query as an unchanged project. See the
 [versioning design](docs/DESIGN-GUIDE.md#release-history-errors-refuse-the-plan).

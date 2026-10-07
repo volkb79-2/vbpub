@@ -346,6 +346,7 @@ def test_the_multi_family_preflight_keeps_a_refusal_exit_code(monkeypatch, tmp_p
     with pytest.raises(SystemExit) as exited:
         cli._release_launcher(
             [], vargs, tmp_path / "cmru.toml", tmp_path, {}, [], [], [], None, None, None,
+            github_config=None,
         )
     assert exited.value.code == exit_codes.CONFIG_ERROR
     err = capsys.readouterr().err

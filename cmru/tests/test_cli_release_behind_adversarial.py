@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from cmru import cli, transaction
+from cmru.credential_handoff import CredentialHandoff
 
 
 @pytest.fixture(autouse=True)
@@ -54,15 +55,12 @@ def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_be
         lambda *_args: {"demo": Path("new/demo/cmru.toml")},
     )
     workspace_args = {}
-    overlays = []
+    handed = []
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace_args.update(kwargs) or workspace)
     monkeypatch.setattr(
-        cli.transaction, "copy_secret_overlays",
-        lambda *args, **kwargs: overlays.append(
-            (args[-1], kwargs.get("candidate_config_paths")),
-        ),
+        cli.transaction, "run_child",
+        lambda *args, **kwargs: handed.append(kwargs.get("credentials")) or 0,
     )
-    monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args, **kwargs: None)
@@ -76,9 +74,9 @@ def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_be
         ])
     assert exc == 0
     assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
-    assert overlays == [(
-        [tmp_path / "old" / "demo" / "cmru.toml"], [Path("new/demo/cmru.toml")],
-    )]
+    # The parent hands its already-resolved credential to the child; it copies
+    # no secret file into the release worktree.
+    assert handed == [CredentialHandoff(root="token", projects={"demo": "token"})]
     output = capsys.readouterr().out
     assert "1 commit(s) behind origin/main" in output
     assert "Release transaction complete" in output
@@ -107,7 +105,6 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
         lambda _root, **kwargs: seen_refs.append(kwargs.get("ref")) or 0,
     )
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)
@@ -145,7 +142,6 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
         lambda _root, **kwargs: seen_refs.append(kwargs.get("ref")) or 0,
     )
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args, **kwargs: None)

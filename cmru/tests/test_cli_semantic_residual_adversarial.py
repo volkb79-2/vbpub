@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import cli, transaction
+from cmru.credential_handoff import CredentialHandoff
 
 
 def _config(tmp_path, project):
@@ -44,7 +45,6 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/build/abc", "a" * 40)
     calls = []
-    overlays = []
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_, **__: "b" * 40)
     monkeypatch.setattr(
         cli, "_project_config_paths_at_snapshot",
@@ -54,7 +54,6 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     )
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: overlays.append(args[-1]))
     monkeypatch.setattr(cli.transaction, "run_child", lambda w, args, **kwargs: calls.append((w, args, kwargs)) or 0)
     retained = [tmp_path / "demo" / "artifacts" / "build-1"]
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
@@ -63,8 +62,10 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     exc = cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
     assert exc == 0
     assert calls[0][1] == ["demo", "--config", "cmru.toml"]
-    assert calls[0][2] == {"verb": "build", "project_names": ["demo"]}
-    assert overlays == [[tmp_path / "demo" / "cmru.toml"]]
+    assert calls[0][2] == {
+        "verb": "build", "project_names": ["demo"],
+        "credentials": CredentialHandoff(root="token", projects={"demo": ""}),
+    }
     assert calls[-1] == ("removed", workspace)
     output = capsys.readouterr().out
     assert "cmru publish demo" in output

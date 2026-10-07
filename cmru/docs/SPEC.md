@@ -331,7 +331,9 @@ explicit continuation of the retained candidate and is bound to its recorded pro
 Explicit local abandonment is the separate top-level `cmru abandon [BRANCH]` lifecycle
 operation (S-CLI.8). `cmru release` never abandons a failed worktree implicitly.
 
-The repository-root secret document is copied mode `0600`, never committed.
+The repository-root secret document is never committed and never copied into a
+transaction worktree: the launcher resolves credentials on the host and hands them to
+the child over a private inherited pipe (CMRU-CREDPASS).
 
 **S-CLI.5b — Transaction branch/worktree naming (KI-16, shared-library aligned).** Every
 `cmru-release-*` and `cmru-build-*` transaction this tool creates is named:

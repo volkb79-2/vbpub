@@ -160,10 +160,6 @@ def test_transaction_source_and_workspace_refusals_are_explicit(tmp_path):
         transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="publish")
     with pytest.raises(RuntimeError, match="does not exist"):
         transaction.resume_workspace(root, tmp_path / "missing")
-    (root / "cmru.secret.toml").mkdir()
-    workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
-    with pytest.raises(RuntimeError, match="regular file"):
-        transaction.copy_secret_overlays(root, workspace, [])
 
 
 def test_transaction_build_output_and_project_root_require_authenticated_source(tmp_path):

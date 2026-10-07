@@ -274,14 +274,6 @@ def test_rotating_two_attempted_tags_reads_the_absence_proofs_once(tmp_path):
     assert transaction.read_release_tag_attempts(root, workspace) == rotated
 
 
-def test_the_never_opened_fd_sentinel_is_not_closed(monkeypatch):
-    closed: list[int] = []
-    monkeypatch.setattr(transaction.os, "close", closed.append)
-    transaction._close_fd_if_open(-1)
-    transaction._close_fd_if_open(7)
-    assert closed == [7]
-
-
 def test_symlink_resolution_never_loops_on_an_empty_pending_path(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "PurePosixPath", lambda *_a: SimpleNamespace(parts=()))
     with pytest.raises(RuntimeError, match="Symlink resolution exceeded its limit"):
@@ -320,7 +312,6 @@ def launcher_env(monkeypatch):
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli.transaction, "read_release_scope_for_path", lambda _p: ["demo"])
     monkeypatch.setattr(cli.transaction, "assert_resume_workspace_committed", lambda _p: None)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *a, **k: 0)
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *a, **k: None)

@@ -36,7 +36,6 @@ def _prepare_build(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args, **kwargs: None)
     return workspace
 
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
 
-from cmru import exit_codes
+from cmru import credential_handoff, exit_codes
 from cmru.config_names import (
     CONFIG_FILENAMES,
     ORCHESTRATION_CONFIG_FILENAME,
@@ -904,6 +904,19 @@ def _load_repository_secrets(
     only for operations on that project.  Thus a copied project remains portable,
     while an estate still has one obvious default credential source.
     """
+    try:
+        handoff = credential_handoff.child_handoff()
+    except RuntimeError as exc:
+        _error(str(exc))
+    if handoff is not None:
+        # A release-transaction child never reads a credential file: its parent
+        # resolved the credential on the host and handed it over a private pipe.
+        if handoff.nested:
+            root_token = _environment_token()
+            return root_token, {name: root_token for name in project_configs}
+        return handoff.root, {
+            name: handoff.projects.get(name, handoff.root) for name in project_configs
+        }
     config_root = config_root.resolve()
     root_raw = _read_secret_document(config_root / "cmru.secret.toml")
     root_token = _resolved_secret_token(root_raw, str(config_root / "cmru.secret.toml"))

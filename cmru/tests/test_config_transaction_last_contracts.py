@@ -123,11 +123,8 @@ def test_config_orchestration_rejects_entry_shape_order_and_cross_project_target
     assert "central orchestration facts" in capsys.readouterr().err
 
 
-def test_transaction_overlay_and_record_write_reject_nonregular_inputs(tmp_path):
+def test_transaction_record_write_rejects_nonregular_inputs(tmp_path):
     root = repo(tmp_path); workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
-    cfg = root / "demo" / "cmru.toml"; cfg.with_name("cmru.secret.toml").mkdir()
-    with pytest.raises(RuntimeError, match="regular file"):
-        transaction.copy_secret_overlays(root, workspace, [cfg])
     scope = transaction._scope_dir(root); scope.mkdir(); (scope / "x.results.json").write_text("[]")
     with pytest.raises(RuntimeError, match="invalid release result"):
         transaction.write_release_result(root, workspace, "demo", "tag")

@@ -39,21 +39,6 @@ def test_transaction_scope_and_result_records_are_sorted_and_validated(tmp_path,
     assert transaction.read_release_scope(tmp_path, workspace) is None
 
 
-def test_transaction_copy_secret_overlays_preserves_private_mode_and_rejects_outside(tmp_path):
-    repo = tmp_path / "repo"; repo.mkdir()
-    child = tmp_path / "child"; child.mkdir()
-    (repo / "cmru.secret.toml").write_text("token=secret\n", encoding="utf-8")
-    project = repo / "demo"; project.mkdir()
-    (project / "cmru.secret.toml").write_text("project=true\n", encoding="utf-8")
-    ws = _workspace(repo, child)
-    transaction.copy_secret_overlays(repo, ws, [project / "cmru.toml"])
-    assert (child / "cmru.secret.toml").read_text() == "token=secret\n"
-    assert (child / "demo" / "cmru.secret.toml").read_text() == "project=true\n"
-    assert oct((child / "cmru.secret.toml").stat().st_mode & 0o777) == "0o600"
-    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
-        transaction.copy_secret_overlays(repo, ws, [tmp_path / "outside" / "cmru.toml"])
-
-
 def test_transaction_build_output_id_requires_real_source_facts(monkeypatch, tmp_path):
     ws = _workspace(tmp_path, tmp_path / "child")
     monkeypatch.setattr(transaction, "_git", lambda *a, **k: "not-a-sha")

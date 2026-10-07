@@ -209,22 +209,6 @@ def test_detect_changed_projects_ignores_release_control_only_changes(tmp_path):
     assert version.detect_changed_projects(root, {"demo": project}) == []
 
 
-def test_transaction_secret_overlay_is_private_and_rejects_outside_config(tmp_path):
-    root = _repo(tmp_path)
-    (root / "cmru.secret.toml").write_text("token = 'secret'\n")
-    child = tmp_path / "child"
-    _git(root, "worktree", "add", "-q", "-b", "cmru/release/secret", str(child), "main")
-    ws = transaction.ReleaseWorkspace(root, child, "cmru/release/secret", _git(root, "rev-parse", "HEAD"))
-    config = root / "demo" / "cmru.toml"
-    config.write_text("x")
-    transaction.copy_secret_overlays(root, ws, [config])
-    copied = child / "cmru.secret.toml"
-    assert copied.read_text() == "token = 'secret'\n" and copied.stat().st_mode & 0o777 == 0o600
-    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
-        transaction.copy_secret_overlays(root, ws, [tmp_path / "outside.toml"])
-    _git(root, "worktree", "remove", "--force", str(child)); _git(root, "branch", "-D", "cmru/release/secret")
-
-
 def test_transaction_workspace_records_reject_corrupt_results_and_forget_markers(tmp_path):
     root = _repo(tmp_path)
     ws = transaction.ReleaseWorkspace(root, tmp_path / "ws", "cmru/release/token", "a" * 40)
