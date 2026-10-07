@@ -109,7 +109,7 @@ def read_cgroup_pids(abs_path: str) -> List[int]:
     that is :mod:`lib.subtree`'s job; this is the "no --token" default source
     and also what a token-aware caller unions with the resolved subtree
     before calling :meth:`SummaryAccumulator.add_sample`). PID 0 is discarded:
-    cgroupfs uses it as the translation for tasks outside a private PID
+    cgroupfs can use it for tasks not addressable in the reader's PID
     namespace, and it is not a process identity that sampling can use."""
     text = util.read_text(os.path.join(abs_path, "cgroup.procs"))
     if not text:

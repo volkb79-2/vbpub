@@ -867,12 +867,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   five (`INFO`, `R-44c`, names a NEXT STEP rather than a defect — e.g. "no
   footprint manifest yet"); exit 2
   iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
-  it **does start containers**: short-lived read-only probes, bounded at ONE
-  inventory probe per (environment, judge identity), ONE batched
-  `command -v` probe per environment, and ONE Assay state-root probe per
-  assay environment — never one per lane, and none at all for a project with
-  no `kind = "assay"` lane. `--check-env` runs only the inventory and tool
-  probes; an assay-lane invocation adds one state-root probe for that lane.
+  it **does start short-lived probes**: at most ONE inventory probe per
+  (environment, judge identity), ONE batched `command -v` probe per
+  environment, and ONE Assay state-root check per assay environment — never
+  one per lane, and none at all for a project with no `kind = "assay"` lane.
+  The state-root check uses the declared runner: a creatable but absent
+  default `.run-gate` root is `[SKIP]` in `ephemeral` and `host` environments;
+  a known invalid parent fails. Doctor does not create the root or probe
+  lane-user access, because the first live lane in those environments creates
+  it before checking access; a
+  configured `state_root` or an `exec` environment is checked through that
+  runner, never by host-statting a container path. `--check-env` runs only the
+  inventory and tool probes; an assay-lane invocation adds one state-root
+  check for that lane.
   That count is a claim, so a test owns it
   (`test_doctor_probe_cost_is_inventory_tools_and_state_root_per_environment`):
   a cost stated in the spec and not measured is a cost that
@@ -1544,10 +1551,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     its durable mount uses another in-container path. An unavailable state
     area refuses before Assay with NOT_RUN/`state-mount` and names the mount
     remedy. `doctor` checks once per assay environment. `--dry-run` prints
-    the planned probe. run-gate never creates or chowns the root inside an
-    exec runner: CIU (or the environment owner) must mount the durable host
-    directory read-write. The inner command creates only per-project
-    descendants beneath this checked root. An unknown probe result is ERROR,
+    the planned probe. A live lane creates the default checkout-owned
+    `.run-gate` directory when absent and refuses a symlink or other object
+    there; `doctor` reports the not-yet-created state of an ephemeral or
+    bare-host lane as unverified rather than certifying or failing the live
+    lane. An exec runner is probed directly. Run-Gate never creates or
+    chowns an explicitly configured root inside an exec runner: CIU (or the
+    environment owner) must mount the durable host directory read-write.
+    The inner command creates only per-project descendants beneath this
+    checked root. An unknown probe result is ERROR,
     never a writable-root certification. For `doctor`, a confirmed missing
     or unwritable root is FAIL and an indeterminate probe is SKIP.
 

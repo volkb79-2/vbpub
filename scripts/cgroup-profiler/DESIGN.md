@@ -82,11 +82,15 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
   scipy/numpy underneath. Do not hand-roll any of that.
 
 **A third mode, RG-55: the always-on daemon.** `cgprofile serve` is a
-privileged, long-lived process with private PID/cgroup namespaces, read-only
-host `/proc`, a writable host cgroupfs bind for opt-in placement, and the host
-system bus mounted only into the daemon. D-25's cgroup path whitelist is an
+privileged, long-lived process with the host PID namespace (so DAMON sysfs
+resolves host `pid_target` values), a private cgroup namespace, no network,
+read-only host `/proc`, a writable host cgroupfs bind for opt-in placement,
+and the host system bus mounted only into the daemon. Workload, helper, gate,
+and test containers remain private. D-25's cgroup path whitelist is an
 application-level guard on ordinary operations, not an OS boundary against
-arbitrary code execution in the privileged daemon. D-31 asks systemd to create
+arbitrary code execution in the privileged daemon. Host PID mode adds
+process-table visibility and PID-operation authority; numeric PID signalling
+remains prohibited. D-31 asks systemd to create
 one delegated scope beneath the verified gates slice per placed lane; the
 daemon owns only its `rg-<token>` leaf beneath that scope, never a child of the
 systemd-owned slice. D-32 deliberately keeps this single-operator,
@@ -623,7 +627,8 @@ cgprofile ctl     <version|start|status|host|stop|report|gc>    RG-55 socket cli
 
 `SubtreeResolver(cgroup, cgroup_root, token, proc_root)`: direct target-cgroup
 PIDs come from `cgroup.procs`, or from host `/proc/<pid>/cgroup` resolution
-when a private PID namespace renders those entries as zero. A pid belongs to
+when the selected PID view cannot represent those entries (for example, a
+private PID namespace renders them as zero). A pid belongs to
 the profiled lane iff it is directly in the target cgroup and
 `/proc/<pid>/environ` (NUL-separated, `errors="replace"`) carries
 `RUN_GATE_PROFILE_SESSION=<token>`, plus every descendant of such a pid
@@ -706,9 +711,11 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   process that might judge a lane's liveness (run-gate's own in-process
   stall watcher, chief among them) dies with that process; the daemon
   outlives any one consumer AND already reads the lane's cgroup on a fixed
-  cadence through explicit host `/proc` and cgroup binds, while keeping
-  private PID and cgroup namespaces. Host PID translation is resolved from
-  the mounted `/hostproc` view rather than a host-namespace shortcut.
+  cadence through explicit host `/proc` and cgroup binds. The daemon uses the
+  host PID namespace so DAMON sysfs can resolve host `pid_target` values, but
+  keeps its cgroup namespace private. Host PID mode is not granted to
+  workload/helper/gate/test containers; the D-15 boundary still forbids
+  numeric PID signalling and uses systemd for delegated-scope ownership.
   Implemented as `lib/liveness.py`'s `LivenessTracker` (the state machine:
   `ok`/`stalled`/`hung`/`runaway`/`throttled`/`over_ceiling`, the idle
   clock's pause condition, §8.4) wired into `lib/serve.py`'s discovery

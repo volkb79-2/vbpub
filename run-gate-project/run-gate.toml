@@ -7,11 +7,11 @@
 # this passes. Dogfooding by design — run-gate gates itself through its own
 # machinery.
 #
-# The lane uses `bare-host` so its tests exercise run-gate's direct host
-# subprocess path instead of starting a second judged container. The suite
-# itself is launched inside tester-unified by the repository's gate runner.
-# Use tester-unified's dedicated venv explicitly; its system python does not
-# carry pytest.
+# The lane owns its tester-unified container so Run-Gate itself enforces
+# placement, --init, and resource caps; callers do not need an outer
+# `cmru tester-gate` wrapper. Inside that container, the suite exercises
+# Run-Gate's direct host-subprocess path. Use tester-unified's dedicated
+# venv explicitly; its system python does not carry pytest.
 # `host` continues to mean an ephemeral container by default (R-38).
 # test_run_gate.py's own suite is self-referential: many tests exercise
 # physical_path()'s REAL /proc/self/mountinfo lookup against pytest's own
@@ -35,19 +35,24 @@
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
 # not a meaningful check). Both --source and --coverage-json are plain
 # "run-gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
-# invokes `git diff --relative ...`, which reports paths relative to CWD,
-# and run_host_lane execs argv with cwd = the effective project dir (i.e.
-# run-gate-project/ itself) — so the bare filename is what git actually
-# reports, not a repo-root-relative path.
+# invokes `git diff --relative ...`, which reports paths relative to CWD.
+# The selftest command explicitly enters the effective project dir before
+# pytest and coverage_gate.py run, so the bare filename is what git reports,
+# not a repo-root-relative path.
 # =============================================================================
 schema_version = 1
 
 [lanes.selftest]
 kind = "command"
-environment = "bare-host"
-argv = ["bash", "-c", "mkdir -p .run-gate/selftest-tmp && GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/selftest-tmp && GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
+
+[lanes.selftest.resources]
+memory = "1g"
+memory_swap = "16g"
+cpus = "3"
 
 # =============================================================================
 # RG-55 wave, package P2, C2: assay lanes (D-11). `selftest` above stays the
@@ -65,9 +70,8 @@ artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 # `.py` source under a non-test path and cannot enter the judged set either
 # way.
 #
-# `kind = "assay"`, bare-host (same reason as `selftest`: the lane exercises
-# this project's host-subprocess path, while the outer gate still runs in
-# tester-unified; see that lane's header). `clean_tree = true` is the documented default (README "Lane
+# `kind = "assay"`, tester-unified (each lane owns its isolated container;
+# see `selftest` above). `clean_tree = true` is the documented default (README "Lane
 # schema"), declared explicitly here because an assay R1+/R2 lane's own
 # DIRTY_TREE check would refuse a moment later anyway (assay/docs/
 # CONSUMERS.md) — stating the position once, at the layer that can name the
@@ -77,7 +81,7 @@ artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 [lanes.assay-r1]
 kind = "assay"
 assay_lane = "r1"                   # -> assay.toml [lanes.r1]
-environment = "bare-host"
+environment = "tester-unified"
 clean_tree = true
 budget = "30m"
 
@@ -105,15 +109,15 @@ environment = "bare-host"
 clean_tree = true
 budget = "4h"
 
-# R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, one
-# canary today — median-not-mean on `duration_stats`, the RG-27 trap). A
+# R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, including
+# the median-not-mean `duration_stats` RG-27 trap). A
 # plain `kind = "command"` lane, not `kind = "assay"`: the canary script
 # runs its own disposable tar copy and pytest invocation directly (see the
 # script's own header for why it does not go through `assay run` itself).
 [lanes.assay-r3]
 kind = "command"
-environment = "bare-host"
-argv = ["bash", "-c", "exec tools/canary-run.sh"]
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && exec tools/canary-run.sh"]
 budget = "15m"
 
 # The implementation/release gate for THIS project's assay lanes: proves

@@ -1018,9 +1018,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the profiling daemon. Refuses `--cap` structurally (this parser
     defines no such flag — see build_parser()'s `serve_parser`) and refuses
-    to start unless explicit host proc/cgroup bind mounts expose the host
-    observations run-gate needs. PID and cgroup namespaces remain private
-    (RG55-INTERFACE-CONTRACT.md §5).
+    to start unless its deployment explicitly selects the host PID namespace
+    and host proc/cgroup mounts expose the observations run-gate needs. The
+    cgroup namespace remains private (RG55-INTERFACE-CONTRACT.md §5).
     """
     if not access.have_host_cgroup_view(access.CGROUP_ROOT):
         _err(
@@ -1028,12 +1028,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
             f"{access.CGROUP_ROOT}; keep the cgroup namespace private "
             "(RG55-INTERFACE-CONTRACT.md §5)"
         )
+    if os.environ.get(access.PID_NAMESPACE_MODE_ENV) != "host":
+        _err(
+            "serve is the daemon-only host-PID mode: set "
+            f"{access.PID_NAMESPACE_MODE_ENV}=host and deploy the daemon with "
+            "the host PID namespace; workload, helper, gate, and test "
+            "containers must remain private (RG55-INTERFACE-CONTRACT.md §5)"
+        )
     if not access.have_host_proc_view(access.PROC_ROOT):
         _err(
             "serve needs the host /proc tree explicitly bind-mounted read-only "
-            "and CGPROFILE_PROC_ROOT set to that mount; its PID 1 must resolve "
-            "to a different PID namespace from this container. Keep the PID "
-            "namespace private (RG55-INTERFACE-CONTRACT.md §5)"
+            "and CGPROFILE_PROC_ROOT set to that mount; with "
+            f"{access.PID_NAMESPACE_MODE_ENV}=host, PID 1 in that view must "
+            "resolve to the daemon's PID namespace "
+            "(RG55-INTERFACE-CONTRACT.md §5)"
         )
     from lib import serve as serve_mod
 

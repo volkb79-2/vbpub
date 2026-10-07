@@ -198,9 +198,10 @@ today.
             and gate-slice PSI/capacity before it asks for placement.
 2  control  run-gate sends `ctl start --place` over the selected carrier
             (`/run/cgprofile/ctl.sock` or `docker exec`); both carry the same protocol.
-3  bridge   the private-namespace daemon validates the target and records each PID's
-            original unit/cgroup. Through the mounted host system bus it asks systemd
-            to create a per-token transient scope in `dev-gates.slice` with delegation.
+3  bridge   the daemon (host PID namespace; private cgroup and network namespaces)
+            validates the target and records each PID's original unit/cgroup.
+            Through the mounted host system bus it asks systemd to create a
+            per-token transient scope in `dev-gates.slice` with delegation.
             It reads the scope's actual `ControlGroup` from systemd and verifies that
             this path is beneath the loaded gates slice's actual `ControlGroup`.
 4  place    after verifying `Delegate=`, required controllers, and scope identity,
@@ -208,9 +209,10 @@ today.
             through the systemd manager API. Once the delegated root is empty it
             enables required controllers there, writes leaf limits and reads them
             back. It verifies host-proc cgroup membership before reporting applied.
-            The gates-slice ceiling contains the staging interval. No PID/cgroup/
-            network host namespace is joined; no child is created directly under
-            the gates slice.
+            The gates-slice ceiling contains the staging interval. Only the
+            daemon joins the host PID namespace; its cgroup and network namespaces
+            stay private. No host cgroup/network namespace is joined, and no child
+            is created directly under the gates slice.
 5  observe  the daemon samples the owned leaf (CPU, memory/peak/pressure, I/O,
             process activity) and applies progress policy; run-gate receives status,
             liveness and verdicts. For example, assay's progress stream supplies its
@@ -407,8 +409,8 @@ run-gate / ciu in cockpit
    │  ctl protocol: mounted socket, or docker-exec carrier
    ▼
 /run/cgprofile/ctl.sock ───────────────► cgprofile host daemon
-                                         (cgprofile.slice; private PID,
-                                          cgroup and network namespaces)
+                                         (cgprofile.slice; host PID,
+                                          private cgroup/network namespaces)
                                                    │
                                   host system D-Bus│ StartTransientUnit /
                                   mounted in daemon│ AttachProcessesToUnit /
@@ -450,12 +452,14 @@ ownership contract.
 
 The round-6 probe made that architecture error observable: after the path was
 corrected to an absolute unit subpath, the systemd manager still refused the
-move because the destination unit was non-delegated. The private PID
-namespace is a separate constraint: writing a host PID directly to
-`cgroup.procs` from the daemon can fail with `ESRCH`, because that PID is not
-addressable in the daemon's PID namespace. The systemd manager bridge solves
-that PID-namespace mismatch without joining the host PID or cgroup namespace;
-it does **not** make a non-delegated destination valid.
+move because the destination unit was non-delegated. In that probe the daemon
+also had a private PID namespace, so writing a host PID directly to
+`cgroup.procs` could fail with `ESRCH`; the systemd manager bridge avoided that
+PID-namespace mismatch without requiring host PID access. RW-467 later
+authorized host PID mode for the managed daemon so DAMON can address host
+`pid_target` values. The systemd manager bridge remains necessary because
+systemd owns scope lifecycle and placement; host PID access does **not** make
+a non-delegated slice a valid destination or transfer ownership of its tree.
 
 ### Ownership and placement lifecycle
 
@@ -642,8 +646,11 @@ against principals that are already host administrators.
 
 This decision does **not** claim that the daemon is harmless or that its
 application checks contain a compromised process. The current no-broker
-daemon has a private control protocol, private PID/cgroup/network namespaces,
-no Docker socket, and no network. Its normal request path accepts defined
+daemon has a private control protocol, the host PID namespace, a private
+cgroup namespace, no Docker socket, and no network. Host-PID visibility grants
+process-table visibility and PID-operation authority; numeric-PID signalling
+remains prohibited, but those application checks do not contain a compromised
+daemon. Its normal request path accepts defined
 verbs and arguments, validates its targets, and guards cgroup writes. Those
 are meaningful controls against malformed caller input and ordinary code
 mistakes. They all execute within the daemon's own trust boundary, however.
@@ -685,7 +692,7 @@ The wire protocol to cgprofile is newline-delimited JSON, one request per
 connection; streaming `watch` returns one JSON object per line. The socket
 carrier and `docker exec` carrier carry the same verbs and response shapes.
 The host system-bus interface is separate: systemd Manager method calls and
-property queries perform unit lifecycle and namespace-safe PID moves. Direct
+property queries perform unit lifecycle and identity-checked PID moves. Direct
 cgroupfs writes perform the leaf/controller/limit operations the daemon owns
 under A3. DAMON uses its sysfs interface. A read-only bind of the bus socket
 would not make those RPCs read-only; the current daemon mount is not such a

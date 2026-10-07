@@ -117,6 +117,20 @@ retired spelling such as `--to` cannot be accepted accidentally as an alias for
 `--token`. A consumer may opt in with `CliRegistry(..., allow_abbrev=True)` only
 when prefix matching is an intentional part of its public grammar and is tested.
 
+**Fallback (default) verb.** A multi-verb registry may mark one verb
+`VerbSpec(fallback=True)`; it must declare at least one `ArgumentSpec`, must not
+use `delegate=`, and a second fallback or a `single_command` registry is a
+`ValueError`. When the first token is not a registered verb, delegate, `help` or
+`version`, the effective argv is `[<fallback>, *argv]`, so `tool LANE ...` is
+`tool run LANE ...`. The leading options skipped to find that first token are the
+root parser's options plus the fallback verb's own (`--name value`, `--name=value`).
+`--`, an unknown leading option, a leading `--help` or `--version`, and an empty
+argv are never rewritten (empty argv prints help and exits `0`). The rewrite never
+swallows an error: the verb parser or handler reports it. `RegisteredCli.parse_args(argv)`
+applies the same normalisation and runs no handler; `RegisteredCli.fallback_verb`
+is the verb name or `None`. The catalog labels the verb `default verb` and adds
+the usage line `tool [options] ARG ...`.
+
 An error before a known verb can be identified prints the top-level help. A
 parser must not let argument ordering hide a more useful command-local error;
 for example, `tool extract` should explain that its session log is missing and
@@ -876,7 +890,9 @@ The JSON surface schema version is `7`; each route records
 candidate signatures so a change to empty-invocation behavior requires review.
 Both route fields MUST be booleans. Markdown rendering MUST refuse a route
 record missing either field; it MUST NOT treat missing parser facts as
-`false`.
+`false`. The route of a fallback verb additionally records `"fallback": true`
+(part of its signature context); the key MUST be absent from every other route
+so a manifest without a fallback verb is unchanged.
 Each route also records
 `parser_settings` along its path. Each setting contains `parser_path`,
 `allow_abbrev`, `prefix_chars`, `fromfile_prefix_chars`, the
@@ -1446,10 +1462,10 @@ registered by `register_doctor(registry, checks, *, description=...)` with
 `DoctorCheck(name, description, run)` objects. `run(runtime, args)` receives
 the `CliRuntime` and the parsed `argparse.Namespace` (so it can read
 consumer options) and returns a
-`CheckResult(status, summary, remedy=None, details={})`. `register_doctor`
-also takes `options: Sequence[OptionSpec] = ()`, added to the `doctor` verb;
-an option flag equal to `--check`, `-h` or any library-owned control flag
-raises `ValueError`.
+`CheckResult(status, summary, remedy=None, details={}, lines=())`.
+`register_doctor` also takes `options: Sequence[OptionSpec] = ()`, added to the
+`doctor` verb; an option flag equal to `--check`, `-h` or any library-owned
+control flag raises `ValueError`; and `fail_exit_code: int = 1` (see item 7).
 
 1. **Result.** `status` is one of `ok`, `warn`, `fail`, `skip`; anything else
    raises `ValueError`. `summary` is a non-empty single line. `details` MUST be
@@ -1470,14 +1486,18 @@ raises `ValueError`.
    `check crashed: <Type>: <message>` and the remaining checks still run.
    `KeyboardInterrupt` propagates.
 5. **Text output** (stdout via the primary stream): one line per check
-   `[OK]|[WARN]|[FAIL]|[SKIP] <name>: <summary>`, an indented
+   `[OK]|[WARN]|[FAIL]|[SKIP] <name>: <summary>`, one `    <line>` (four spaces)
+   per entry of `CheckResult.lines` (a tuple of single-line strings; anything
+   else raises `ValueError`), an indented
    `    remedy: <text>` line when a remedy is set, then
    `doctor: <n> ok, <n> warn, <n> fail, <n> skip`.
 6. **JSON output.** `{"tool", "version", "checks": [{"name", "status",
    "summary", "remedy", "details"}], "summary": {"ok", "warn", "fail",
-   "skip"}}`; `remedy` is `null` when absent.
+   "skip"}}`; `remedy` is `null` when absent. A check gains a `"lines"` array
+   if and only if its `lines` is non-empty.
 7. **Exit code.** 0 when no check is `fail` (warnings and skips do not fail the
-   run); 1 when any check is `fail`; 2 for a usage error.
+   run); `fail_exit_code` (default 1; an integer 1..255, else `ValueError` at
+   registration) when any check is `fail`; 2 for a usage error.
 8. **Automatic `skills` check.** At run time, not registration time, so the
    order of `register_skills_verbs` and `register_doctor` does not matter, a
    registry carrying `_cli_extended_skills` gets a built-in check `skills`

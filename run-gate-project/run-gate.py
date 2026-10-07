@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 55  # rev 55: RG-84 (filed RG-83) PID 1 and cgroup resource-event guard
+__revision__ = 56  # rev 56: RG-88 nullable DAMON footprint disclosure
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -3191,8 +3191,8 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     # in one sentence would silently describe different things.
     host = resources.get("host") or {}
     damon = resources.get("damon")
-    hot = (damon or {}).get("hot_bytes", {}).get("p90") \
-        if isinstance(damon, dict) else None
+    hot_bytes = damon.get("hot_bytes") if isinstance(damon, dict) else None
+    hot = hot_bytes.get("p90") if isinstance(hot_bytes, dict) else None
     over = mem.get("peak_over_baseline_bytes")
     over_seg = f" (+{_fmt_mib(over)} over baseline)" \
         if isinstance(over, (int, float)) and not isinstance(over, bool) else ""
@@ -7528,8 +7528,9 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
 
     # RG-49: assay resume state has to live on a durable mount owned by the
     # environment. Probe once per assay environment as that lane's user. A
-    # missing/unwritable root is a confirmed failure; a failed Docker probe
-    # is SKIP, never an [OK] inferred from not seeing an error.
+    # An absent default root is pending live creation, an invalid or
+    # unwritable root is a confirmed failure, and a failed Docker probe is
+    # SKIP, never an [OK] inferred from not seeing an error.
     assay_environments: dict[str, tuple[dict, str]] = {}
     for lane_name, lane in sorted(lanes.items()):
         if lane.get("kind") != "assay":
@@ -7552,6 +7553,23 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         root = assay_state_root(doctor_repo, env)
         state_dir = assay_state_dir(doctor_repo, doctor_project_dir,
                                     env.get("state_root"))
+        if env.get("state_root") is None and env.get("mode") in (
+                None, "host", "ephemeral"):
+            root_status, root_reason = default_assay_state_root_status(root)
+            if root_status == "creatable":
+                record("SKIP", topic,
+                       f"{root} is absent; a live Assay lane will create it "
+                       "before mounting and probing it, so lane-user "
+                       "writability is not yet determined")
+                continue
+            if root_status == "invalid":
+                record("FAIL", topic, root_reason or
+                       f"default Assay state root {root} is invalid")
+                continue
+            if root_status == "unknown":
+                record("SKIP", topic, root_reason or
+                       f"cannot inspect default Assay state root {root}")
+                continue
         try:
             probe_slice = _probe_slice(env, env_source)
             writable, why = probe_assay_state_root(
@@ -8188,13 +8206,56 @@ def assay_state_root(repo: Path, env: dict | None = None) -> Path:
     return Path(configured) if configured is not None else repo / ".run-gate"
 
 
+def ensure_default_assay_state_root(path: Path) -> None:
+    """Create and validate Run-Gate's default, repo-owned state mount.
+
+    Container lanes mount this directory before launch; a bare-host Assay
+    lane has no mount builder, so its first run must establish the same
+    durable root itself. Do not accept a symlink or another existing object
+    as that root: it is also the in-container pytest temporary root.
+    """
+    try:
+        path.mkdir(exist_ok=True)
+        info = path.lstat()
+    except OSError as exc:
+        raise GateError(f"cannot create or inspect default Assay state root "
+                        f"{path}: {exc}") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        fail(f"default Assay state root {path} is not a real directory")
+
+
+def default_assay_state_root_status(path: Path) -> tuple[str, str | None]:
+    """Classify the default root without creating it for doctor/dry-run."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        parent_status, reason = host_state_directory_status(path.parent)
+        if parent_status == "ready":
+            return "creatable", None
+        if parent_status == "unknown":
+            return "unknown", reason
+        return "invalid", f"parent {path.parent} is not a writable directory"
+    except NotADirectoryError:
+        return "invalid", f"parent {path.parent} is not a directory"
+    except OSError as exc:
+        return "unknown", f"cannot inspect {path}: {exc}"
+    if not stat.S_ISDIR(info.st_mode):
+        return "invalid", f"{path} is not a real directory"
+    return "ready", None
+
+
 def assay_state_root_remedy(state_root: Path, env_name: str,
                             env: dict | None) -> str:
     """Name a repair that matches whether the mount path is configurable."""
     if not env or env.get("mode") == "host":
-        return (f"ensure '{state_root}' is a directory writable by the lane "
-                "user on this host (create it there if missing), and make "
-                "any existing state directories writable too")
+        if not env or env.get("state_root") is None:
+            return (f"ensure the checkout parent permits Run-Gate to create "
+                    f"'{state_root}' as a real directory, and make that root "
+                    "and any existing state directories writable by the "
+                    "lane user on this host")
+        return (f"ensure configured state root '{state_root}' exists and is "
+                "writable by the lane user on this host, including any "
+                "existing state directories")
     if env.get("state_root") is not None:
         return (f"mount the durable host directory read-write at '{state_root}' "
                 f"in environment '{env_name}' and ensure existing state "
@@ -8351,10 +8412,21 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
     state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
     if not env or env.get("mode") == "host":
         if dry_run:
-            print(f"run-gate: assay state root preflight: would check "
+            action = "would check"
+            if (env or {}).get("state_root") is None:
+                status, reason = default_assay_state_root_status(state_root)
+                if status == "invalid":
+                    fail(reason or f"default Assay state root {state_root} is invalid")
+                if status == "unknown":
+                    fail_infra(reason or f"cannot inspect {state_root}")
+                if status == "creatable":
+                    action = "would create and check"
+            print(f"run-gate: assay state root preflight: {action} "
                   f"{state_root} and the nearest existing directory for "
                   f"{state_dir} are writable on this host", flush=True)
             return
+        if (env or {}).get("state_root") is None:
+            ensure_default_assay_state_root(state_root)
     else:
         probe_argv = build_env_probe_argv(
             docker or "docker", env, env_name, repo, worktree, env_source,
@@ -8801,7 +8873,16 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
         run_argv += ["--rejudge", ",".join(rejudge)]
     if selective.get("rejudge_outcome"):
         run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
-    parts.append(f"{command} {shlex.join(run_argv)}")
+    # RG-85: the test command needs a real, writable path inside the selected
+    # checkout mount. A literal such as `/worktree/.run-gate` is not a
+    # namespace fact: tester-unified runs at the mounted checkout's actual
+    # path, which varies by host and worktree. Derive both values from the
+    # state mount already verified above; the consumer assay.toml forwards
+    # these names through its explicit env_passthrough list.
+    quoted_temp_root = shlex.quote(str(state_root_path))
+    parts.append(f"TMPDIR={quoted_temp_root} "
+                 f"GIT_CEILING_DIRECTORIES={quoted_temp_root} "
+                 f"{command} {shlex.join(run_argv)}")
     return " && ".join(parts)
 
 
@@ -9103,7 +9184,8 @@ def main_checkout_opted_in() -> bool:
 
 def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
                           *, with_state: bool = False,
-                          create_state: bool = False) -> list[str]:
+                          create_state: bool = False,
+                          plan_missing_state: bool = False) -> list[str]:
     """The ONE mount set for an ephemeral container lane or probe.
 
     linked worktree: the judged worktree (dual, phys + namespace) + the shared
@@ -9141,12 +9223,20 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
     # `<common>/worktrees` read-only with its real contents, own admin dir rw
     mounts += git_worktrees_mount_flags(plan, repo)
     mounts += git_config_overlay_flags(plan, repo)
-    if with_state and (env or {}).get("state_root") is None \
-            and plan["kind"] != "plain":
+    if with_state and (env or {}).get("state_root") is None:
         state = repo / ".run-gate"
         if create_state:
-            state.mkdir(exist_ok=True)
-        if state.is_dir():
+            ensure_default_assay_state_root(state)
+            state_status = "ready"
+        else:
+            status, reason = default_assay_state_root_status(state)
+            if status == "invalid":
+                fail(reason or f"default Assay state root {state} is invalid")
+            if status == "unknown":
+                fail_infra(reason or f"cannot inspect {state}")
+            state_status = status
+        if (state_status == "ready" or plan_missing_state) \
+                and plan["kind"] != "plain":
             mounts += _dual(state, repo)
     return mounts
 
@@ -10321,7 +10411,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # Assay-state probes through build_env_probe_argv().
     mounts = [*container_mount_flags(
         repo, worktree, env, with_state=lane["kind"] == "assay",
-        create_state=lane["kind"] == "assay" and not dry_run),
+        create_state=lane["kind"] == "assay" and not dry_run,
+        plan_missing_state=lane["kind"] == "assay" and dry_run),
         *extra_mount_flags()]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,

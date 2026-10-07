@@ -41,9 +41,11 @@ RUN apt-get update \
 FROM python:3.14-slim
 
 # `busctl` is the stdlib-free transport for the one host-systemd placement
-# operation.  The daemon uses only AttachProcessesToUnit over the explicitly
-# mounted system bus; it does not run systemd as PID 1 and never joins a host
-# namespace.
+# operation. The daemon uses only AttachProcessesToUnit over the explicitly
+# mounted system bus; it does not run systemd as PID 1. This image does not
+# select namespaces: the managed CIU service alone joins the host PID namespace
+# and retains a private cgroup namespace. One-shot helpers keep private PID and
+# cgroup namespaces.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends systemd \
     && rm -rf /var/lib/apt/lists/*

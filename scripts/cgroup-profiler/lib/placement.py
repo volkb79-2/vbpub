@@ -6,14 +6,15 @@ into a long-lived devcontainer) and a **bare-host** lane have neither: their
 cgroup is shared with the IDE, the agents and the caller, so ``memory.peak``,
 ``memory.pressure`` and ``io.stat`` are somebody else's numbers and the
 lane's declared ``resources.memory`` is advisory. D-31's answer is that the
-private-namespace daemon asks host systemd to create a transient delegated
-scope beneath the verified gates slice, then creates its own
+daemon (host PID namespace, private cgroup and network namespaces) asks host
+systemd to create a transient delegated scope beneath the verified gates
+slice, then creates its own
 ``rg-<token>`` leaf beneath that scope. Host systemd's
 ``AttachProcessesToUnit`` D-Bus method moves host PIDs into the leaf and back;
-the daemon never joins a host namespace or writes into the systemd-owned
-slice. Before any move, a write-ahead journal records each PID's start-time
-identity and exact original cgroup/unit so a later daemon can restore only
-processes it can still prove it owns.
+the daemon uses the host PID namespace, but does not write into the
+systemd-owned slice. Before any move, a write-ahead journal records each
+PID's start-time identity and exact original cgroup/unit so a later daemon
+can restore only processes it can still prove it owns.
 
 **Why a delegated scope between the gates slice and profiler leaf** (D-31):
 systemd owns slice cgroups and does not support delegating them as a writable
@@ -43,8 +44,8 @@ admits exactly:
   bounded gates slice (never a parent, sibling, or path chosen by a label);
 * ``mkdir``/``rmdir`` of ``<delegated scope>/rg-*``;
 * the original cgroup's ``cgroup.procs`` only for move-back at ``stop``;
-  production PID transfers use the host manager so host PIDs are never
-  misinterpreted through the daemon's private PID namespace.
+  production PID transfers use the host manager so systemd remains the owner
+  of scope lifecycle and exact-unit attachment.
 
 Every other cgroup path — a production tier, the gates slice's own
 ``memory.max``, another session's leaf — raises :class:`HostWriteError`
@@ -81,14 +82,13 @@ def _systemd_attach_process(
 ) -> bool:
     """Ask host systemd to move one host PID into ``subcgroup``.
 
-    A daemon with private PID and cgroup namespaces cannot write a host PID
-    into ``cgroup.procs``: the kernel translates that PID through the writer's
-    namespace and returns ``ESRCH``. The systemd manager is already the host
-    cgroup authority; its D-Bus method performs the same move in the host PID
-    namespace without relaxing D-15. The daemon receives no Docker socket and
-    never joins a host namespace. ``unit_name`` is either the verified gates
-    slice (move into the lane leaf) or the unit owning the original scope
-    (move a survivor back).
+    The daemon is deliberately deployed in the host PID namespace so DAMON
+    can resolve host ``pid_target`` values. Placement still uses the systemd
+    manager as the owner of the delegated scope and exact-unit attachment;
+    this keeps the systemd-owned boundary explicit and does not grant the
+    daemon a Docker socket. ``unit_name`` is either the verified gates slice
+    (move into the lane leaf) or the unit owning the original scope (move a
+    survivor back).
     """
     # systemd requires an absolute subcgroup path within the named unit.
     # A bare rg-token leaf name is refused by the live host bus, leaving
@@ -1459,8 +1459,8 @@ class LanePlacement:
         except Exception:  # noqa: BLE001 - unreadable membership is unknown
             return None
         entries = [line.strip() for line in raw if line.strip()]
-        # A cgroupfs view can render host tasks as zero inside a private PID
-        # namespace. If the explicit host-proc resolver cannot account for
+        # A cgroupfs view can render tasks invisible to the writer's PID
+        # namespace as zero. If the explicit proc resolver cannot account for
         # every visible entry, that is unknown, never proof of emptiness.
         if len(entries) != len(visible):
             return None

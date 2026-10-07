@@ -39,14 +39,25 @@ _LABELS = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skip": "[SKIP]"}
 
 @dataclass(frozen=True)
 class CheckResult:
-    """Outcome of one check; ``details`` must be JSON-serialisable."""
+    """Outcome of one check; ``details`` must be JSON-serialisable.
+
+    ``lines`` are extra single-line strings printed in human output, indented
+    four spaces under the check line and before the remedy; JSON output carries
+    them as ``"lines"`` only when there are some.
+    """
 
     status: str
     summary: str
     remedy: str | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
+    lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.lines, tuple) or not all(
+            isinstance(line, str) and "\n" not in line and "\r" not in line
+            for line in self.lines
+        ):
+            raise ValueError("check lines must be a tuple of single-line strings")
         if self.status not in STATUSES:
             raise ValueError(
                 f"check status must be one of {', '.join(STATUSES)}; got {self.status!r}"
@@ -146,7 +157,23 @@ def _execute(
     return result
 
 
-def _make_handler(registry: CliRegistry, checks: tuple[DoctorCheck, ...]):
+def _check_record(name: str, result: CheckResult) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "name": name,
+        "status": result.status,
+        "summary": result.summary,
+        "remedy": result.remedy,
+        "details": dict(result.details),
+    }
+    if result.lines:
+        # Only when non-empty: the JSON of tools that never set lines is unchanged.
+        record["lines"] = list(result.lines)
+    return record
+
+
+def _make_handler(
+    registry: CliRegistry, checks: tuple[DoctorCheck, ...], fail_exit_code: int
+):
     def handler(args: Any, runtime: CliRuntime) -> int:
         available = list(checks)
         skills = getattr(registry, "_cli_extended_skills", None)
@@ -174,16 +201,7 @@ def _make_handler(registry: CliRegistry, checks: tuple[DoctorCheck, ...]):
             runtime.output.primary({
                 "tool": runtime.identity.command_name,
                 "version": runtime.identity.version,
-                "checks": [
-                    {
-                        "name": name,
-                        "status": result.status,
-                        "summary": result.summary,
-                        "remedy": result.remedy,
-                        "details": dict(result.details),
-                    }
-                    for name, result in results
-                ],
+                "checks": [_check_record(name, result) for name, result in results],
                 "summary": counts,
             })
         else:
@@ -191,13 +209,15 @@ def _make_handler(registry: CliRegistry, checks: tuple[DoctorCheck, ...]):
                 runtime.output.primary(
                     f"{_LABELS[result.status]} {name}: {result.summary}"
                 )
+                for line in result.lines:
+                    runtime.output.primary(f"    {line}")
                 if result.remedy:
                     runtime.output.primary(f"    remedy: {result.remedy}")
             runtime.output.primary(
                 f"doctor: {counts['ok']} ok, {counts['warn']} warn, "
                 f"{counts['fail']} fail, {counts['skip']} skip"
             )
-        return 1 if counts["fail"] else 0
+        return fail_exit_code if counts["fail"] else 0
 
     return handler
 
@@ -208,13 +228,24 @@ def register_doctor(
     *,
     description: str = "check this tool's environment and report problems",
     options: Sequence[OptionSpec] = (),
+    fail_exit_code: int = 1,
 ) -> None:
     """Register the read-only ``doctor`` verb with ``--check NAME`` and ``--json``.
 
     ``options`` are extra consumer options on the verb; checks read them from
     the ``args`` namespace.  They may not reuse ``--check`` or a library flag.
+    ``fail_exit_code`` (1..255, default 1) is the exit status when any check
+    fails; a clean or warn-only run exits 0.
     """
 
+    if (
+        not isinstance(fail_exit_code, int)
+        or isinstance(fail_exit_code, bool)
+        or not 1 <= fail_exit_code <= 255
+    ):
+        raise ValueError(
+            f"fail_exit_code must be an integer from 1 to 255, got {fail_exit_code!r}"
+        )
     if hasattr(registry, "_cli_extended_doctor"):
         raise ValueError("doctor is already registered on this registry")
     ordered = tuple(checks)
@@ -251,6 +282,6 @@ def register_doctor(
             ),
             *options,
         ),
-        handler=_make_handler(registry, ordered),
+        handler=_make_handler(registry, ordered, fail_exit_code),
     ))
     registry._cli_extended_doctor = ordered  # type: ignore[attr-defined]

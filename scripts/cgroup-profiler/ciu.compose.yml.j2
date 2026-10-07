@@ -1,7 +1,8 @@
 # cgprofile — the RG-55 profiling daemon. Rendered by ciu from
 # ciu.defaults.toml.j2 (+ optional ciu.toml.j2 overrides). See that file
 # for the field docs; RG55-INTERFACE-CONTRACT.md §1/§5 for the contract
-# this container's shape (private namespaces, explicit mounts, network) keeps.
+# this container's shape (daemon-only host PID namespace, private cgroup
+# namespace, explicit mounts, no network) keeps.
 #
 # ONE service, ONE host singleton (ciu.global.defaults.toml.j2's own
 # comment on `deploy.environment_tag = "host"`) — container_name below
@@ -43,14 +44,18 @@ services:
       - "{{ cgprofile.daemon.gates_slice }}"
 
     # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's safety envelope ──────
-    # Namespaces stay private. The host observations the sampler needs are
-    # explicit host mounts: proc is read-only; cgroup v2 is writable only
+    # This daemon alone joins the host PID namespace so DAMON's pid_target
+    # resolves host PIDs in the writer's namespace. Its cgroup namespace
+    # remains private; helper, workload, gate, and test containers stay
+    # private in every namespace. Host observations are explicit mounts:
+    # proc is read-only; cgroup v2 is writable only
     # because opt-in P6 placement creates guarded rg-* leaves and moves lane
     # pids. lib.placement.CgroupWriteGuard enforces the D-25 whitelist before
     # every cgroup write. Privilege is also retained for DAMON sysfs; serve
     # refuses --cap and confines its other writes to session storage and its
     # own kdamonds.
     privileged: true
+    pid: "host"
     cgroup: "private"
     # No docker socket, no network at all (§5: "no docker socket inside the
     # daemon — that is why targets are `containerid:` and the consumer
@@ -61,6 +66,7 @@ services:
     restart: unless-stopped
     environment:
       CGPROFILE_PROC_ROOT: /hostproc
+      CGPROFILE_PID_NAMESPACE_MODE: host
       {% if cgprofile.daemon.allow_uids %}
       # §8.1's SO_PEERCRED allowlist applies to the socket carrier only;
       # the exec carrier arrives as uid 0 and is always allowed.
@@ -113,10 +119,10 @@ services:
         read_only: false
         bind:
           create_host_path: false
-      # Private PID namespaces make a host PID unaddressable to a direct
-      # cgroup.procs write.  Placement therefore asks host systemd's narrow
-      # AttachProcessesToUnit method to perform that one move; the daemon
-      # still never joins a host namespace or receives the Docker socket.
+      # Placement retains systemd's AttachProcessesToUnit bridge so systemd
+      # owns scope lifecycle and each move is attached to a verified unit;
+      # the daemon's host PID namespace is not a reason to bypass that owner.
+      # The daemon receives no Docker socket.
       - type: bind
         source: /run/dbus/system_bus_socket
         target: /run/dbus/system_bus_socket
