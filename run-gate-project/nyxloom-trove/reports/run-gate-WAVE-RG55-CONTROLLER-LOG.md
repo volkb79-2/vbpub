@@ -7313,3 +7313,22 @@ earlier path summary was incorrect. The placement oracle for candidate
 untriaged until each has a behavioral oracle or contract-based equivalence
 proof. The current Assay v7.2.1 plan remains a cold-start full campaign, so
 these old records are diagnostic and cannot substitute for current-tree R2.
+
+### RW-469 — 2026-10-07 04:23:22 UTC — reconcile P6 candidate with current main and tools
+
+The operator authorized starting tests and noted newer Run-Gate/CIU releases.
+The clean CIU-managed P6 candidate was at `bc8704771`, based on main
+`b2c7522b6`; main had advanced to `1264d9401`, including Assay 8.0.0 and
+Run-Gate 23.10.0. Merged current main into the existing attached candidate
+branch as `bc8de1019` without conflicts. `ciu worktree inspect
+rg55-p6-final-r2-20261006 --json` confirms the record remains `ready`,
+registered, attached to the recorded branch, and clean.
+
+The prior Assay 7.2.1/schema-13 plan is obsolete. As before, do not plan or
+launch on the merge commit: make one ordinary controller-record-only commit
+after this sync, then run a fresh Assay 8 plan against request base
+`db29266f8a006b22a30609a74de7645d1e4c50b7` and verify the full candidate
+set before gates. Current `run-gate admission show` still reports disabled
+with no published object; a canary container was already active at the
+04:21Z check, so no P6 gate was started and the shared slot must be checked
+again at its expected completion or the next 25-minute interval.
