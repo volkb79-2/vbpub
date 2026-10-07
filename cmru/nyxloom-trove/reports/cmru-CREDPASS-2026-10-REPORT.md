@@ -27,9 +27,10 @@ look); this branch is NOT rebased onto it. Implementation commit: `c12ef1340`. T
   containers" rewritten, plus the snapshot paragraph), `docs/RELEASE-TRANSACTIONS.md`,
   `docs/CONSUMERS.md` (3 places), `docs/SPEC.md`, `README.md`; `tests/test_docs_config_examples.py`
   phrase assertions follow.
-- Backlog: `KNOWN_ISSUES_TODO_BACKLOG.md` KI-63 (remove gate-side secret masking once run-gate
-  mounts only the worktree under test; depends on RG-NARROW). KI-63 was free on the integration
-  branch at `e9fd37c53`; another package filing KI-63 would collide at merge.
+- Backlog: `KNOWN_ISSUES_TODO_BACKLOG.md` KI-64 (remove gate-side secret masking once run-gate
+  mounts only the worktree under test; depends on RG-NARROW). Filed as KI-63 on the original
+  branch at `e9fd37c53`; renumbered to KI-64 at the cmru 6.1 integration because KI-63 became
+  the release-gate walk hotfix on main.
 - Gate masking (`tools/run_release_gate.py` `_mask_secret_overlays`) is KEPT. It was never
   release-worktree-specific code (it masks any visible `cmru.secret.toml` under the mounted
   repository), so nothing in it became dead when the copy went; nothing was removed from it.
