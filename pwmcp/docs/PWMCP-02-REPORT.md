@@ -146,6 +146,10 @@ coverage claim: executable 634/634 covered, branches 172/172, pct 100.0, conside
                 files_missing_coverage [], missing_lines {}, missing_branch_lines {}
 ```
 
+The gate was run a second time on the tip that carries this report's text before the final
+documentation-only commit (`194f01e1d`): `r1: PASS (exit 0)`, same 634/634 lines and 172/172
+branches, 100.0%.
+
 Gate log lines worth knowing (not caused by this package): `run-gate: WARNING profiling: cleanup
 crashed unexpectedly: 'NoneType' object has no attribute 'get'`, and assay's `no judge_provenance
 recorded` notice because the lane installs assay from the worktree source.
