@@ -5741,7 +5741,7 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-83 — `install_fake_assay` writes its fake `assay` and `assay.real` into the first entry of the real `$PATH` (the operator's `~/.local/bin`) in tests that have not isolated PATH
 
-**Status: OPEN (filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host).**
+**Status: FIXED by RG-87 (2026-10-07): the leak mechanism (shims written into the real `PATH[0]`) recurred on 2026-10-06 and is closed there, with a session guard; see the RG-87 section below. The other asks here (repoint HOME/XDG at tmp, the `invoke_script(home=...)` route) are NOT done and stay tracked under RG-82 AC-23. Originally filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host.**
 
 **Observed (source and filesystem; line numbers at filing time).**
 
