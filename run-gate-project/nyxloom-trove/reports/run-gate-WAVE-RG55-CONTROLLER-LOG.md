@@ -7431,3 +7431,15 @@ ancestor-event observer while preserving the gate's private cgroup namespace,
 fail-closed behavior, and candidate attribution. RG-88 now has a detailed
 backlog section alongside its summary row. No code or gate result is implied
 by filing these entries; RG-89 and R2 remain open.
+
+### RW-476 — 2026-10-07 09:50:21 UTC — reconcile releases against current CMRU state
+
+CMRU 6.1.0 `status` on this candidate reports: CIU unchanged at 7.16.0,
+Assay unchanged at 8.0.0, Run-Gate changed from the `run-gate-v23.10.0` tag
+and due for patch release `23.10.1`, and cgroup-profiler untagged with
+metadata-derived `0.1.0`. The old 23.7/23.8/23.9 targets are superseded by
+the current main release baseline; do not recreate those versions. Preserve
+RW-434's settled combined first cgprofile `1.0.0` release plan rather than
+accepting CMRU's metadata-derived `0.1.0`; when acceptance is complete use
+the supported CMRU release flow with explicit `--set-version 1.0.0`. Release
+Run-Gate as 23.10.1 after its gates/review. No release was performed here.
