@@ -1748,3 +1748,39 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix:** a `PermissionError` on a directory whose owner is not the effective uid (or any path that vanished between listing and scanning, a bare `FileNotFoundError`; worktrees come and go on the shared tree) is skipped with a one-line stderr WARN naming it. Rationale: an overlay must be a regular file owned by the effective uid (`_read_secret`), and a foreign-owned directory we cannot list is equally unlistable for the gate container's mapped uid, so it can neither hold a usable overlay nor expose one. Every other error (own-uid PermissionError, other OSError, `filename` None, unknown owner) still fails closed.
 
 **Oracle:** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `/workspaces/vbpub` returns and WARNs for `vol-postgres-data`.
+
+### KI-65 — release-gate secret masker inventories the whole mount root, so a concurrent tmp `cmru.secret.toml` fails the restore step (related: KI-63, run-gate RG-86) — *open, severity: major (false release failure)*
+
+**Observed:** `tools/run_release_gate.py` inventories and masks every `cmru.secret.toml` across the whole mount root, then restores them (~line 193). A concurrent worktree removal, or a run-gate selftest creating and removing a tmp `cmru.secret.toml`, mid-run makes the restore step fail, and the release sequence fails even though every lane passed (seen 2026-10-07 in a review run). KI-63 already had to teach the same walk to tolerate foreign-owned and vanished paths; this is the same root cause (a whole-tree walk of a tree that changes).
+
+**Expected:** the masking is scoped to the judged worktree, or retired. run-gate 23.10.0 narrows ephemeral lane mounts to the judged worktree (RG-86), and CREDPASS removes secret copies from release worktrees, so a whole-root inventory no longer protects anything the lane can see. A secret file appearing or vanishing outside the judged worktree must not affect the verdict; a vanished file inside it must restore as a no-op, not an error.
+
+**Oracle:** a test that creates and removes a `cmru.secret.toml` outside the judged worktree between inventory and restore and still gets a passing sequence; the inventory walk is rooted at the judged worktree (or the masker is removed with its tests); `_secret_overlay_paths` no longer touches `vol-postgres-data`.
+
+### KI-66 — `installed_wheel_smoke` cleanup removes only what its own build created (regression test missing) — *fixed 2026-10-07 (`cmru-post6`), severity: minor*
+
+**Observed:** `_build_wheel` in `tools/installed_wheel_smoke.py` runs an in-tree `pip wheel` that leaves `<name>.egg-info/` and `build/` in the source directory; the cleanup (commit 5f6d855ba) must delete only those it created, never a pre-existing `build/`. No test pinned that, so a cleanup that deleted a pre-existing `build/` would have passed the gate.
+
+**Expected:** a pre-existing `build/` (and its contents) survives both a failing and a succeeding build; the egg-info and a `build/` the build itself created are removed in both cases. Limit: a file the build adds INSIDE a pre-existing `build/` is not removed (the unit of ownership is the directory).
+
+**Oracle:** `tests/test_packaging_cli_extended.py::test_wheel_build_cleanup_keeps_a_preexisting_build_dir_and_removes_its_own_egg_info` and `::test_wheel_build_cleanup_removes_the_build_dir_and_egg_info_it_created` (both parametrised over a raising and a succeeding build via a monkeypatched `_run`). Planted mutation (cleanup ignoring `preexisting`) fails the first.
+
+### KI-67 — bound launcher puts `cmru/src` first on `sys.path`, so a stale `cmru/src/cmru.egg-info` shadows the installed metadata and the refusal hides the cause — *partially fixed 2026-10-07 (`cmru-post6`): message only; the sys.path change is open, severity: minor*
+
+**Observed:** `_create_bound_cmru_launcher` (`src/cmru/cli.py`) prepends the source root to `sys.path`. A stale, git-ignored `cmru/src/cmru.egg-info` (a September dev build reporting 5.3.2.dev36) then shadowed the installed 6.0.0 metadata, and the identity check refused every project command ("expected 'cmru 6.0.0', got 'cmru 5.3.2.dev36...'"). Failing closed is right, but nothing in the message pointed at the cause.
+
+**Fixed:** the refusal now appends `cmru metadata resolved from <path>` (the interpreter's `importlib.metadata.distribution('cmru')._path`, probed with the launcher's own `sys.path` prefix) and a hint that a stale egg-info next to the source shadows the installed metadata.
+
+**Remaining ask:** make the launcher append rather than prepend the source root, or ignore `*.egg-info` under it, so the stale file cannot win at all (not done: changing import order of the bound launcher is not trivially safe without a full gate against an editable and a non-editable install).
+
+**Oracle:** `tests/test_cli_build_output_semantics.py::test_bound_cmru_launcher_identity_refusal_names_the_shadowing_metadata_location` (planted: hint text removed, fails). For the remaining ask: a launcher run with a stale egg-info under the source root reports the installed version.
+
+### KI-68 — REL-02: regenerating a stale generated changelog section silently drops hand edits — *docs fixed 2026-10-07 (`cmru-post6`); the WARN is open, severity: minor*
+
+**Observed:** when project commits land after a generated section's `source-end`, cmru regenerates the section from commit subjects and discards any hand-written lines in it without a word. run-gate 23.10.0's release lost hand-curated text that two of its tests pin.
+
+**Fixed (docs):** `docs/RELEASE-TRANSACTIONS.md` (REL-02 section) and `docs/CONSUMERS.md` now say: hand-curate a pending generated section only by also advancing its `source-end` in the same final commit, or curate after the release (keeping the markers intact).
+
+**Remaining ask:** when regeneration replaces a section whose body contains non-generated lines (anything not matching the generator's own output for the old range), print a WARN naming the section and the dropped lines, or refuse unless an explicit flag is given.
+
+**Oracle:** a release test with a hand-edited stale generated section asserts the WARN (or refusal) names the dropped line; a current section stays byte-identical with no WARN.

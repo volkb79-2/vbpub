@@ -1020,6 +1020,8 @@ source-first tag/build/publish/promote workflow.
 A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body (KI-30),
 and regenerating a stale generated history section overwrites hand edits inside it; see
 [release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
+To hand-curate a pending generated section, advance its `source-end` marker in the same final
+commit (so it counts as current), or curate after the release; otherwise the edit is dropped.
 
 After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
 that checkout is dirty with tracked or untracked (non-ignored) changes, CMRU refuses the cleanup

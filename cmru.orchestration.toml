@@ -44,10 +44,6 @@ registry = ["ghcr.io"]
 #   | L3 modern-debian-tools-python-debug (stages the wheels of L0-L2).
 # project_order must be a topological order of every level; the preflight enforces it.
 project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "cgroup-profiler"]
-# TODO(cmru-6.0 post-release): remove shim. cmru 6.0 ignores `default_projects`
-# (accepted with a one-line stderr warning, CLI-04); the OLD cmru 5.5 still REQUIRES
-# it, so this keeps main readable by a non-editable 5.5 during the landing window.
-default_projects = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may

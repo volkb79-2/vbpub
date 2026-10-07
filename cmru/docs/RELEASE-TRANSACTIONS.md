@@ -264,6 +264,15 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   outside `<!-- cmru: generated -->` sections. A current section stays byte-identical. cmru's
   own `file:` version-bump commit (`chore: bump <prefix> to <version>`) is not project work
   and never makes a section stale, so a resumed `file:` release re-tags the same commit.
+  **Hand-curating a pending generated section** (text inside it, such as a summary block or a
+  reworded entry) is only safe if the SAME final commit also advances that section's
+  `<!-- cmru: source-end=<sha> -->` marker to the project's current head, so cmru sees the section
+  as current and keeps it byte-identical. Otherwise any project commit landing after the old
+  `source-end` makes cmru regenerate the section from commit subjects and silently drop the
+  edit (seen in run-gate 23.10.0, whose release lost hand-curated text that two of its tests
+  pin). The alternative that cannot go wrong: curate AFTER the release (a post-release
+  commit, keeping the markers intact). Tracked as KI-68 (a WARN when regeneration discards
+  non-generated lines).
 
 ### Post-publication recovery
 

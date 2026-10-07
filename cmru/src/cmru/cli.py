@@ -414,9 +414,38 @@ def _create_bound_cmru_launcher(directory: Path) -> Path:
         raise RuntimeError(
             "CMRU runtime binding failed identity verification before project command: "
             f"expected {expected!r}, got stdout={result.stdout.strip()!r}, "
-            f"stderr={result.stderr.strip()!r}, exit={result.returncode}"
+            f"stderr={result.stderr.strip()!r}, exit={result.returncode}; "
+            + _bound_launcher_metadata_hint(import_roots)
         )
     return launcher
+
+
+def _bound_launcher_metadata_hint(import_roots: list[Path]) -> str:
+    """Name where the launcher's interpreter resolves cmru's distribution metadata.
+
+    The launcher puts the source roots first on ``sys.path``, so a stale, git-ignored
+    ``cmru.egg-info`` under the source root shadows the installed release's metadata.
+    The refusal is correct (fail closed) but its cause is otherwise invisible.
+    """
+    probe = (
+        "import sys; "
+        f"sys.path[:0] = {[str(path) for path in import_roots]!r}; "
+        "import importlib.metadata as m; "
+        "print(getattr(m.distribution('cmru'), '_path', None))"
+    )
+    try:
+        found = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=False,
+        )
+        location = found.stdout.strip() if found.returncode == 0 else ""
+    except OSError:
+        location = ""
+    location = location or "<unresolved>"
+    return (
+        f"cmru metadata resolved from {location}; a stale egg-info next to the source "
+        "(for example cmru/src/cmru.egg-info from an old dev build) shadows the installed "
+        "metadata: delete it if that is the location shown"
+    )
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
