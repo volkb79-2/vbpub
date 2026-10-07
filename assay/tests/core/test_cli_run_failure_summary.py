@@ -243,7 +243,7 @@ def test_a_passthrough_secret_in_a_failing_id_is_masked_in_the_summary(
     lane = set_key(
         R0_LANE,
         "argv",
-        f'["/bin/sh", "-c", "echo \\"FAILED tests/t.py::t[$X_PASSWORD]\\"; exit 1"]',
+        '["/bin/sh", "-c", "echo \\"FAILED tests/t.py::t[$X_PASSWORD]\\"; exit 1"]',
     )
     lane = set_key(lane, "env_passthrough", '["PATH", "X_PASSWORD"]')
     path = git_repo.write("assay.toml", lane)
