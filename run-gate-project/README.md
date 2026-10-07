@@ -360,14 +360,19 @@ supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
 the drift this design exists to remove.
 
 Asking has a price, stated rather than hidden: those questions are answered
-INSIDE the lane's environment. `doctor` starts short read-only probes: one
-inventory probe per environment+judge, one batched `command -v` probe per
-environment for the fitness check, and one Assay state-root probe per assay
-environment. `--check-env` runs the first two probes only. An assay-lane
-invocation adds one state-root probe for its lane; `--dry-run` prints that
-probe without running it. They judge nothing, write nothing, and never start
-your judged lane; a project with no `kind = "assay"` lane starts none of
-them.
+INSIDE the lane's environment. `doctor` performs one inventory probe per
+environment+judge, one batched `command -v` probe per environment, and at most
+one Assay state-root check per assay environment. It reports a creatable but
+absent default `.run-gate` root as `[SKIP]` in `ephemeral` and `host`
+environments; a known invalid parent fails. Doctor does not create the root
+or launch a lane-user probe. The first live lane in those environments
+creates it and checks access. A configured `state_root` or an `exec`
+environment is checked through its declared runner, never by host-statting a
+container path. `--check-env` runs only the inventory and tool probes. A live
+assay invocation adds one state-root check for its lane; `--dry-run`
+discloses that check without running it. These checks judge nothing and write
+nothing into your tree, and they never start your judged lane; a project with
+no `kind = "assay"` lane starts none of them.
 
 For ephemeral environments, these probes receive the configured container
 user and RUN_GATE_EXTRA_MOUNTS just like the judged lane, so the preflight

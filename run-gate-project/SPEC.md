@@ -867,12 +867,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   five (`INFO`, `R-44c`, names a NEXT STEP rather than a defect — e.g. "no
   footprint manifest yet"); exit 2
   iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
-  it **does start containers**: short-lived read-only probes, bounded at ONE
-  inventory probe per (environment, judge identity), ONE batched
-  `command -v` probe per environment, and ONE Assay state-root probe per
-  assay environment — never one per lane, and none at all for a project with
-  no `kind = "assay"` lane. `--check-env` runs only the inventory and tool
-  probes; an assay-lane invocation adds one state-root probe for that lane.
+  it **does start short-lived probes**: at most ONE inventory probe per
+  (environment, judge identity), ONE batched `command -v` probe per
+  environment, and ONE Assay state-root check per assay environment — never
+  one per lane, and none at all for a project with no `kind = "assay"` lane.
+  The state-root check uses the declared runner: a creatable but absent
+  default `.run-gate` root is `[SKIP]` in `ephemeral` and `host` environments;
+  a known invalid parent fails. Doctor does not create the root or probe
+  lane-user access, because the first live lane in those environments creates
+  it before checking access; a
+  configured `state_root` or an `exec` environment is checked through that
+  runner, never by host-statting a container path. `--check-env` runs only the
+  inventory and tool probes; an assay-lane invocation adds one state-root
+  check for that lane.
   That count is a claim, so a test owns it
   (`test_doctor_probe_cost_is_inventory_tools_and_state_root_per_environment`):
   a cost stated in the spec and not measured is a cost that

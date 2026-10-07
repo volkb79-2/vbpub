@@ -268,16 +268,18 @@ inside the runner would make the immediate run pass but keep state in the
 container's writable layer, which is lost when the runner is recreated.
 
 Run-Gate creates its default checkout-owned `.run-gate` directory before a
-live ephemeral container or bare-host Assay lane probes it. A symlink or another object
-at that path is refused. An explicitly configured `state_root` is an
-environment-owned mount and must already exist; Run-Gate does not invent it.
-The root is then probed in the lane's own environment and must be writable by
-the lane user. When keyed state directories already exist, the deepest
-existing directory on that path must also be writable. `doctor` cannot
-certify a missing default root's in-container permissions before creation,
-so it reports that state as unverified for an ephemeral lane. An exec runner
-owns its mount; `doctor` probes that runner instead of inferring its state
-from the checkout path.
+live ephemeral container or bare-host Assay lane probes it. A symlink or
+another object at that path is refused. An explicitly configured `state_root`
+is an environment-owned mount and must already exist; Run-Gate does not
+invent it. The root is then checked in the lane's own environment and must
+be writable by the lane user. When keyed state directories already exist, the
+deepest existing directory on that path must also be writable. `doctor`
+reports a creatable but absent default `.run-gate` root as `[SKIP]` in
+`ephemeral` and `host` environments; a known invalid parent fails. It neither
+creates the root nor pretends it can certify the future lane user's access.
+The first live lane in those environments creates the root and checks access.
+A configured `state_root` or an `exec` environment is checked
+through its declared runner, never by host-statting a container path.
 When the default `<checkout>/.run-gate` path is not mounted there, the result
 is NOT_RUN/`state-mount` with the required read-write mount named. A container
 environment can set `state_root` when its durable mount uses another path;

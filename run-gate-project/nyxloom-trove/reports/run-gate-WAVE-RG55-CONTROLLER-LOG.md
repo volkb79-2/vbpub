@@ -7537,3 +7537,26 @@ and both full gates remain release/closeout work. The reviewer could not
 prove a loaded parent or safe isolated daemon probe from this cockpit and
 launched none. These are not product-code review blockers for the authorized
 provisional merge, but remain explicit release blockers.
+
+### RW-481 — 2026-10-07 12:23:47 UTC — Correct the doctor state-root cost oracle
+
+The exact-tree Run-Gate selftest on `819cbda18ec68288409efb8473b389fb5c7a3389`
+failed only at
+`TestAssayToolchainFitness.test_doctor_probe_cost_is_inventory_tools_and_state_root_per_environment`:
+1,711 passed, 2 skipped, 1 failed. The fixture used an ephemeral environment
+with no default `.run-gate` directory, while the reviewed B2 behavior
+intentionally reports an absent default root as `[SKIP]` without creating it
+or probing lane-user access. The first live lane creates the root and checks
+access. The assertion nevertheless counted a third Docker probe as if the
+root already existed. This is a stale test setup, not a reason to weaken the
+non-mutating doctor behavior.
+
+Binding resolution: preserve the B2 behavior. Parameterize the oracle over
+missing and existing roots: the missing-root case asserts inventory+tool
+probes only, `[SKIP]`, and no root creation; the existing-root case asserts
+one additional read-only state-root probe. Align README, DESIGN-GUIDE,
+CONSUMERS, and SPEC with that distinction, including that a configured
+`state_root` or an `exec` environment is checked through its declared runner,
+not by host-statting a container path. No production code changed in this
+correction. `git diff --check` passes; all short gates and final review must
+run on the committed correction tip. No merge or release was made.

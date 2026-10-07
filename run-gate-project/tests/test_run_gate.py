@@ -1163,8 +1163,13 @@ class TestRG78ClosedExitTable:
             assert "creates" in body and ".run-gate" in body
             assert "TMPDIR" in body and "GIT_CEILING_DIRECTORIES" in body
             assert "configured" in body and "state_root" in body
+            assert "absent default `.run-gate`" in body
+            assert "`[SKIP]`" in body
             assert "run-gate does not synthesize this root" not in body
             assert "root must already exist" not in body
+        spec = (RUN_GATE_DIR / "SPEC.md").read_text(encoding="utf-8")
+        assert "absent default `.run-gate`" in spec
+        assert "`[SKIP]`" in spec
 
     def test_git_boundary_for_central_config_is_documented_everywhere(self):
         docs = (
@@ -7402,15 +7407,22 @@ class TestAssayToolchainFitness:
         clean_tree = false
     """
 
+    @pytest.mark.parametrize("root_exists", [False, True])
     def test_doctor_probe_cost_is_inventory_tools_and_state_root_per_environment(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys, root_exists):
         """B2/RG-49 oracle: the cost claim in SPEC R-30 is a NUMBER, so a test owns
         it. Probing per LANE cost one container per lane on a shared
         environment (4 for 3 lanes) while the spec promised one — a
         quantitatively false claim is still a false claim. The union of every
         lane's tools is a property of the environment's PATH, not of the lane
-        asking, so it is asked once."""
-        self._project(tmp_path, monkeypatch, self.THREE_LANE_CFG)
+        asking, so it is asked once. An existing default root gets one
+        read-only state check; a missing default root is reported pending
+        creation without a lane-user probe."""
+        repo, _project = self._project(
+            tmp_path, monkeypatch, self.THREE_LANE_CFG)
+        state_root = run_gate.assay_state_root(repo)
+        if root_exists:
+            state_root.mkdir()
         log = fake_docker_executing(tmp_path, monkeypatch)
         install_fake_assay(monkeypatch, _fake_judge(
             _inventory(external_tools=["sh"], argv0="bash")))
@@ -7418,11 +7430,16 @@ class TestAssayToolchainFitness:
         assert code == 0, out
         assert out.count("[OK] lane ") == 3          # every lane still reported
         probes = [call for call in docker_runs(log) if "--rm" in call]
-        assert len(probes) == 3, probes  # inventory + tools + one state-root probe
+        assert len(probes) == 2 + int(root_exists), probes
         assert sum("lanes --json" in call[-1] for call in probes) == 1
         assert sum("command -v" in call[-1] for call in probes) == 1
         assert sum("RUN_GATE_STATE_ROOT_READY" in call[-1]
-                   for call in probes) == 1
+                   for call in probes) == int(root_exists)
+        if root_exists:
+            assert "[OK] Assay state root for env tester-unified" in out
+        else:
+            assert "[SKIP] Assay state root for env tester-unified" in out
+            assert not state_root.exists()
 
     def test_batched_tool_probe_still_names_only_each_lane_own_missing_tool(
             self, tmp_path, monkeypatch, capsys):

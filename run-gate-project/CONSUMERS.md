@@ -695,17 +695,22 @@ treated as "nothing needed".
 > **`doctor` and `--check-env` START CONTAINERS for this check.** Fitness
 > cannot be read, only observed, so the inventory question and the
 > `command -v` checks execute inside the lane's own environment. `doctor`
-> also probes Assay's durable state root once per assay environment, as the
-> lane user; a live assay invocation probes it once per lane. `--check-env`
-> does not run the state-root check. These probes are
+> also checks Assay's durable state root at most once per assay environment;
+> a live assay invocation checks it once per lane. A creatable but absent
+> default `.run-gate` root is `[SKIP]` in `ephemeral` and `host` environments;
+> a known invalid parent fails. Doctor does not create the root or launch a
+> lane-user probe, because the first live lane in those environments creates
+> it before checking access. A configured `state_root` or an `exec` environment
+> is checked through its declared runner, never by host-statting a container
+> path. `--check-env` does not run the state-root check. These checks are
 > short-lived and read-only (`assay lanes` runs nothing; `command -v` is a
 > shell builtin), they judge nothing and write nothing into your tree, and
 > ephemeral ones carry `--cgroup-parent` like every container run-gate
 > starts. The cost is bounded: `doctor` runs **one inventory probe per
 > (environment, judge identity), one batched `command -v` probe per
-> environment, and one state-root probe per assay environment**;
+> environment, and at most one state-root check per assay environment**;
 > `--check-env` runs only the first two; a live assay invocation adds one
-> state-root probe for its lane. A project with no `kind = "assay"` lane
+> state-root check for its lane. A project with no `kind = "assay"` lane
 > starts none of these probes, and neither verb ever starts your judged
 > lane. If you run `doctor` in a context where starting a container is
 > unacceptable, that is the check to know about.
