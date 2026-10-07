@@ -4739,6 +4739,21 @@ class TestPointerLinkageEstate:
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
         assert proc.returncode == 0, f"{cmru_doc}:\n{proc.stdout}{proc.stderr}"
 
+    def test_release_gate_owns_tester_isolation_and_caps(self):
+        """Run-Gate, not CMRU's outer wrapper, owns the test container."""
+        gate_doc = tomllib.loads((RUN_GATE_DIR / "run-gate.toml").read_text())
+        cmru_doc = tomllib.loads((RUN_GATE_DIR / "cmru.toml").read_text())
+
+        assert gate_doc["lanes"]["selftest"]["environment"] == "tester-unified"
+        assert gate_doc["lanes"]["selftest"]["resources"] == {
+            "memory": "1g", "memory_swap": "16g", "cpus": "3",
+        }
+        commands = cmru_doc["steps"]["run-tests"]["commands"]
+        assert len(commands) == 1
+        assert commands[0]["argv"] == ["./run-gate.py", "selftest"]
+        for lane_name in ("assay-r1", "assay-r3"):
+            assert gate_doc["lanes"][lane_name]["environment"] == "tester-unified"
+
     def test_cmru_toml_id_matches_orchestration_key(self):
         """cmru's config loader errors ('config declares project.id=X,
         expected Y') if run-gate-project/cmru.toml's id ever diverges from
