@@ -125,3 +125,40 @@ SPEC `R-45b` (keys, modules) and new `R-45e`, README, CONSUMERS, CHANGES (23.10.
 ### Gate
 `cmru tester-gate --cwd . -- ./run-gate.py selftest` from `run-gate-project/`, tree clean at `1d6d2aa47`, `CMRU_TESTER_*` exported from `cmru.orchestration.toml` as in round 2, foreground under `flock ... nice -n 19 ionice -c 3`, log `narrow-selftest-r3.log` in the scratchpad. Read in a separate step: `1690 passed, 2 skipped, 1 warning`; `diff-coverage OK: 156/156 changed executable lines covered (100.0%); branches 70/70 taken`; `lane 'selftest' verdict PASS; exit_code 0`. A docker-identity profiling WARNING (no docker socket inside tester-unified) is the same coarse-rusage notice as before. The real-container smoke is among the skips inside tester-unified; I ran it from the devcontainer.
 Mutation (R2) not run.
+
+## 8. Round 4 (fresh implementer; round-3 verifier REJECT: B-NEW-1, B-NEW-2; 2026-10-07)
+
+Everything below is what I ran. Code commit `06d96b690`, merge of `origin/main` (RG-87) `b0778d958`, then a test-count fix commit (see `git log`).
+
+### B-NEW-1 submodule configs
+`_nested_git_config_files` walks `<common>/modules` with `os.walk` and returns every file named `config` or `config.worktree` at any depth (`modules/libs/a/config`, `modules/libs/a/modules/b/config`); in a dir holding `HEAD` the bulk dirs `objects/refs/logs/hooks/info` are not descended. Each gets a sanitized read-only overlay. Test `test_nested_submodule_configs_are_all_overlaid_and_nothing_leaks` plants credentials at four depths plus a `config.worktree`, checks every overlay, and scans every file under `modules/` as the container would see it (overlay copy substituted). The real-container smoke greps the whole common dir (objects excluded) inside the lane for the nested credentials.
+
+### B-NEW-2 data loss (design change per controller ruling)
+`git_worktrees_mount_flags`: `<common>/worktrees` mounted READ-ONLY with its REAL contents, the judged worktree's own admin dir mounted READ-WRITE on top (nested bind), each at both mount paths: 4 `-v` values, independent of the sibling count. Hiding code and the sibling cap are gone; the 256 cap remains for module plus sibling `config.worktree` overlays. Existing sibling `config.worktree` files get sanitized overlays. No `worktrees/` dir means no such mount. Plain checkout: whole `worktrees/` read-only.
+
+Live results (real lane container `tester-unified:local`, throwaway repo from `_narrow_repo`, test `TestRgNarrowRealContainer`, one container at a time under flock):
+- `git gc --prune=now` kept the detached-HEAD-only commit and the staged-only blob (`cat-file -e` in the container, then again on the host); host `git fsck --no-dangling` clean. gc prints `error: cannot lock ref 'worktrees/<n>/HEAD' ... Read-only file system` and `failed to run reflog` on stderr (it cannot expire sibling reflogs), yet exits 0 under `set -e` and the objects survive. Lanes that run gc will see that noise.
+- `git worktree prune -v`: `failed to delete ... Read-only file system` for each sibling; the admin dirs (incl. the prunable `gone` one) survive on the host.
+- `git branch -D held` (checked out in a sibling): `cannot delete branch 'held' used by worktree`, refused.
+- Sibling `HEAD`/`index` visible, `touch` in a sibling admin dir and creating `worktrees/new-admin` fail.
+- No credential (`FAKEPASSWORD123`, `fakeuser`, `FAKEBASIC456`, nested submodule `FAKEMODA`/`FAKEMODB`) found by a recursive grep of the common dir inside the container.
+- Judged worktree: `status`, `log`, `commit --allow-empty` work; `git clone --no-local` (assay's snapshot shape) works.
+- `git worktree add` in the container FAILS: `fatal: could not create directory of '<common>/worktrees/<name>': Read-only file system`. What breaks: any in-container creation of a new linked worktree (and `worktree remove`/`prune` of others). assay's snapshot uses `clone --no-local`, so it is unaffected; the smoke asserts the failure so the consequence stays visible. Anything needing `worktree add` must opt out of this mount set. The old smoke used `! cmd` under `set -e`, which does not abort; I replaced those with a `no` helper that really fails the lane.
+
+### Docs
+SPEC `R-45b` and `R-45e` rewritten, README, CONSUMERS and the 23.10.0 CHANGES bullet updated inside the existing section; `__revision__` untouched (55).
+
+### Plants (applied, run against the RgNarrow selection, killed, reverted)
+| Plant | Result |
+|---|---|
+| (a) `glob("*/config")` instead of the recursive walk | 2 failed; the real-container smoke (credential grep, seen in the log) is one, the other was not named in my filtered output (expected: the nested-submodule mount-plan test) |
+| (b) round-3 empty-dir hiding of each sibling instead of the ro `worktrees/` mount | 3 failed: `test_linked_worktree_mounts_only_worktree_and_git_dir`, `test_worktrees_dir_is_ro_with_real_contents_and_own_admin_rw`, and the smoke, which with the gc step moved first dies at `git cat-file -e <detached HEAD commit>` (gc deleted it; `Device or resource busy` on prune) |
+| (c) own admin dir mounted read-only | 3 failed: the same two mount-plan tests and the smoke (git exit 128 on the first in-container commit) |
+
+### Merge
+`origin/main` merged (RG-87 `6f07e95d7`): conflicts in `KNOWN_ISSUES_TODO_BACKLOG.md` (kept RG-85, RG-86, RG-87) and `tests/test_run_gate.py` (kept both test blocks; `shim_dir_of` is main's version). CHANGES merged automatically with both bullets in 23.10.0.
+
+### Gate
+`cmru tester-gate --cwd . -- ./run-gate.py selftest` from `run-gate-project/`, `CMRU_TESTER_*` exported per section 7, flock/nice/ionice. First run (merged tree): FAIL, `test_command_lane_full_docker_argv` still expected 6 mounts; fixed to 10. Second run, read separately: `1699 passed, 2 skipped, 1 warning`; `diff-coverage OK: 165/165 changed executable lines covered (100.0%); branches 72/72 taken`; `lane 'selftest' verdict PASS; exit_code 0`. Logs: scratchpad `narrow-selftest-r4.log`, `narrow-selftest-r4b.log`. Smoke is skipped inside tester-unified; I ran `-k "RgNarrow or full_docker_argv" -rs` from the devcontainer on the committed tree: 30 passed, no skips, no leftover containers.
+
+Process note: in one message I issued two Edit calls without Intent lines (the `git_config_overlay_flags` docstring and the `container_mount_flags` call site), against the one-edit rule. Mutation (R2) not run.
