@@ -39,8 +39,9 @@ name: nyxloom-nyxloomd
 
 services:
   nyxloomd:
-    # Context is the vbpub repository root (../..) so the Nyxloom wheel can
-    # bundle libraries/cli-extended. Same Dockerfile + same NYXLOOM_VERSION arg that
+    # Context is the vbpub repository root (../..) so the Dockerfile can
+    # build the cli-extended wheel from libraries/cli-extended and install it
+    # beside the Nyxloom wheel (a dependency, not bundled; see NYX-CLIX). Same Dockerfile + same NYXLOOM_VERSION arg that
     # ../docker-bake.hcl uses, so a local `ciu up` build and a cmru release build
     # produce the SAME image — one recipe, two drivers. NYXLOOM_VERSION defaults
     # to 0.0.0-dev here; build-push.py injects the real git-tag version at release.

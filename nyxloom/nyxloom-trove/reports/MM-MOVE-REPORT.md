@@ -43,7 +43,7 @@ Updated:
 | `scripts/debian-install-v2/debian_install_v2/notify.py`, `README.md`, `TODO.md` | CONSUMER.md path | consumer doc/docstring |
 | `scripts/netcup/README.md` (201, 214), `DESIGN-GUIDE.md` | CONSUMER.md link, secret path `../../mattermost/.ciu/secrets/installer_webhook_url` | consumer contract |
 | `docs/CONSUMERS.md:157` | secret path | consumer contract |
-| `mattermost/README.md` | `--dir`, secret paths, `--define-root` now `/workspaces/vbpub/mattermost`, project-store secret paths `mattermost/.ciu/secrets/mattermost/<name>` (INFERENCE, see below), every `nyxloom-1dd3d1-mattermost` literal replaced by `<container_prefix>-mattermost`, new "Location" paragraph, labels.prefix note | runbook |
+| `mattermost/README.md` | `--dir`, secret paths, `--root-folder /workspaces/vbpub/mattermost` (follow-up: was wrongly `--define-root`), project-store secret paths `mattermost/.ciu/secrets/mattermost/<name>` (INFERENCE, see below), every `nyxloom-1dd3d1-mattermost` literal replaced by `<container_prefix>-mattermost`, new "Location" paragraph, labels.prefix note | runbook |
 | `mattermost/CONSUMER.md`, `ciu.defaults.toml.j2`, `ciu.compose.yml.j2` (comment `../nyxloom/ntfy/server.yml`) | paths and comments | text only |
 | `mattermost/docker-compose.yml` | the absolute `/home/vb/volkb79-2/vbpub/nyxloom/mattermost/vol-*` bind paths (functional) and the postgres secret path; header comments | the plain-compose fallback binds absolute paths |
 | `mattermost/tests/*.py` | `parents[1] / "mattermost" / "hooks"` to `parents[1] / "hooks"` (same for tools), docstrings | the files moved one level |
@@ -179,7 +179,8 @@ Wheel and plant artifacts are in the scratchpad (`wheel-proof/`, `wheel-plant/`)
    the new one: the templates still emit the same Traefik router name `nyxloom-mattermost` and the same public Host
    rule, so two live copies would contend for one route (INFERENCE from the labels, not tested).
 3. `ciu up --dir mattermost -y` from `/workspaces/vbpub` (NOT bare `ciu up`; the root declares no profile).
-   Expect to need `--define-root /workspaces/vbpub/mattermost` only where the README recipes show it. First run
+   First run `ciu env generate --root-folder /workspaces/vbpub/mattermost` (ciu 7.15 has no `--define-root`; the
+   README's earlier `--define-root` text was wrong and is corrected in the follow-up round). First run
    creates `mattermost/ciu.instance.generated.toml`, `mattermost/.ciu/`, `mattermost/vol-*`; note
    `ciu env generate` creates and attaches the devcontainer to a docker network as a side effect (it did when I ran it
    in a scratch copy; I removed that network, `mattermost-9uqz27-network`, by exact name afterwards).
@@ -198,6 +199,19 @@ Wheel and plant artifacts are in the scratchpad (`wheel-proof/`, `wheel-plant/`)
 8. After merge, rebuild the nyxloomd image once (NOT RUN here) and reinstall nyxloom into `~/.venv` cli-extended first.
 9. `ciu worktree create` instances of `nyxloom` no longer start Mattermost; `ciu up` in nyxloom root brings only
    nyxloomd.
+
+## Follow-up round (review ACCEPT-conditional)
+- B1: `cmru.orchestration.toml` nyxloom `depends_on = ["cli-extended", "cmru"]`. From `nyxloom/`, `cmru status` exit 0
+  (`nyxloom-v0.10.0`, next `nyxloom-v0.10.1`) and `cmru dependencies` exit 0 (`nyxloom <- cli-extended, cmru`).
+- README: all 8+ `--define-root` uses are `--root-folder` (verified in `ciu up --help`, `ciu down --help`,
+  `ciu env generate --help`); the Deploy block documents `ciu env generate --root-folder ...` then `ciu up --dir mattermost -y`.
+- Guard: `mattermost/tests/test_stack_paths.py` (8 tests; suite now 132). Plant 1 (compose bind path reverted to
+  `nyxloom/mattermost`): 2 failed. Plant 2 (`post_compose` pointed at `../nyxloom/mattermost/hooks/...`): 2 failed.
+  Both reverted by `git checkout`.
+- Nits: pyproject comment points at `cmru.toml [env] NYXLOOM_RELEASE_NOTES`; stale "bundle" comments fixed in
+  `nyxloomd/ciu.compose.yml.j2` and `docker-bake.hcl`; `mattermost` row added to `TESTING-ESTATE-CHECKLIST.md`.
+- Ruling: NL-39 filed (released, sha256-verified cli-extended wheel for the nyxloomd image, CX-D2); the Dockerfile has a
+  one-line `TODO(NL-39)`; not implemented.
 
 ## Limits of this report
 - The mattermost lane's coverage is reported, not enforced; no mutation/assay lane was added.

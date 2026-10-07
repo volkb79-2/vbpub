@@ -41,6 +41,8 @@ COPY nyxloom/src ./nyxloom/src
 # wheel is built here from the monorepo source (the stand-in for the released
 # asset, which is on GitHub Releases only, never PyPI) and installed FIRST in
 # the final stage. It is NOT vendored into the nyxloom wheel.
+# TODO(NL-39): replace this source build + pretend version with the RELEASED
+# cli-extended wheel, sha256-verified like tester-unified (CX-D2).
 COPY libraries/cli-extended/pyproject.toml libraries/cli-extended/README.md ./libraries/cli-extended/
 COPY libraries/cli-extended/src ./libraries/cli-extended/src
 # The library resolves its version from its own git tag, which a no-.git context

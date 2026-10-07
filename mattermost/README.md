@@ -22,8 +22,13 @@ renders.
 ## Deploy (ciu-managed — the ONLY supported path)
 
 ```bash
-cd /workspaces/vbpub && ciu up --dir mattermost -y
+cd /workspaces/vbpub
+ciu env generate --root-folder /workspaces/vbpub/mattermost   # first time only; also creates the instance network
+ciu up --dir mattermost -y
 ```
+
+(The flag is `--root-folder`; ciu 7.15 has no `--define-root`. This root declares
+no deployment profile, so a bare `ciu up` selects nothing: always pass `--dir`.)
 
 **Location (MM-MOVE, 2026-10-07).** This directory used to be `nyxloom/mattermost`,
 a sub-stack of nyxloom's ciu root. It is now its OWN standalone ciu root at the
@@ -433,7 +438,7 @@ of the hardening is conditional on being public.
 
 ```bash
 cd /workspaces/vbpub
-R="--define-root /workspaces/vbpub/mattermost"
+R="--root-folder /workspaces/vbpub/mattermost"
 ```
 
 ### 0. Pre-flight — READ-ONLY, and it gates everything after it
@@ -835,11 +840,11 @@ docker exec <container_prefix>-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) pg_dump -U mmuser mattermost' > ~/mattermost.sql
 
 # 1. STOP first — a live copy would need crash recovery
-ciu down --define-root /workspaces/vbpub/mattermost
+ciu down --root-folder /workspaces/vbpub/mattermost
 docker rm <container_prefix>-mattermost <container_prefix>-mattermost-db   # no -v: named volumes survive
 
 # 2. let ciu create the hostdirs with the right ownership
-ciu up --dir mattermost -y --dry-run --define-root /workspaces/vbpub/mattermost
+ciu up --dir mattermost -y --dry-run --root-folder /workspaces/vbpub/mattermost
 
 # 3. copy the data in, then RE-ASSERT the ownership `cp -a` clobbers.
 #    `cp -a /from/. /to/` copies the SOURCE directory's own owner/mode onto
@@ -856,7 +861,7 @@ docker run --rm -v "$P":/t alpine:3.20 sh -c '
 
 # 4. real up, then verify BOTH data and governance — a recreate is exactly
 #    where governance silently drops (P106's own lesson).
-ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost
+ciu up --dir mattermost -y --root-folder /workspaces/vbpub/mattermost
 docker exec <container_prefix>-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) psql -U mmuser -d mattermost -tAc \
    "select (select count(*) from users), (select count(*) from teams), (select count(*) from channels), (select count(*) from posts)"'
@@ -886,7 +891,7 @@ own first.
 #    and a line naming intake_pat as NOT minted. This is also the first live
 #    exercise of the ` (private)` channel-name parse -- if `channel list`
 #    drifted, the hook refuses here, before anything is widened.
-ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost
+ciu up --dir mattermost -y --root-folder /workspaces/vbpub/mattermost
 docker exec <container_prefix>-mattermost mmctl --local channel list nyxloom   # expect `intake (private)`
 docker exec <container_prefix>-mattermost mmctl --local channel users list nyxloom:intake --all
 
@@ -900,7 +905,7 @@ docker exec <container_prefix>-mattermost mmctl --local channel users list nyxlo
 # doesn't have the feature enabled yet and this command exits rc=1. That is
 # expected -- no token or secret file is written on this refusal -- and the
 # very next (real) `ciu up` proceeds normally once the container recreates.
-ciu up --dir mattermost -y --dry-run --define-root /workspaces/vbpub/mattermost
+ciu up --dir mattermost -y --dry-run --root-folder /workspaces/vbpub/mattermost
 # ciu's rendered compose output is `ciu.compose.yml` at the stack root (S8.5)
 # -- NOT the hand-maintained `docker-compose.yml` fallback beside it, which
 # receives no ciu overlay and is not what `ciu up` deploys.
@@ -908,7 +913,7 @@ grep ENABLEUSERACCESSTOKENS mattermost/ciu.compose.yml   # expect "true"
 
 # 2. Real up. The container RECREATES (an env change), so re-verify governance
 #    in the same breath -- a recreate is exactly where it silently drops.
-ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost
+ciu up --dir mattermost -y --root-folder /workspaces/vbpub/mattermost
 docker inspect <container_prefix>-mattermost \
   --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
 
@@ -920,7 +925,7 @@ docker inspect <container_prefix>-mattermost \
 #    verdicts are never read from a pipe tail).
 docker exec <container_prefix>-mattermost mmctl --local token list nyxloom-intake
 ls -l mattermost/.ciu/secrets/intake_pat          # 0440, non-empty
-ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost \
+ciu up --dir mattermost -y --root-folder /workspaces/vbpub/mattermost \
   >/tmp/p109-reup.log 2>&1; echo "ciu up rc=$?"           # rc MUST be 0
 grep tokens_minted /tmp/p109-reup.log                     # expect tokens_minted=[]
 docker exec <container_prefix>-mattermost mmctl --local token list nyxloom-intake   # still exactly ONE
