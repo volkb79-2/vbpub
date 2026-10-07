@@ -638,6 +638,10 @@ def render_cli_surface_markdown(
             )
         else:
             invocation_mode = "command route; parser handles remaining tokens"
+        if route.get("fallback"):
+            invocation_mode += (
+                "; default verb: a first token that is not a verb selects this verb"
+            )
         overrides = {
             key: value
             for key, value in (
