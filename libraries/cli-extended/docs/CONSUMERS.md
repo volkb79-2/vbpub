@@ -140,6 +140,39 @@ block after a parser error, missing verb, unknown help topic or
 `Run '<prog> --help' for full help.`. Exit codes are unchanged. Update tests
 that assert the old stderr when you opt in.
 
+## A default verb for `tool LANE ...` grammars (0.4.0)
+
+A tool whose everyday call is `tool NAME [options]` (run-gate: `run-gate LANE`)
+marks that verb `fallback=True` instead of hand-parsing the first token:
+
+```python
+registry.register(VerbSpec(
+    "run", description="Run a lane.", fallback=True, handler=run,
+    arguments=(ArgumentSpec("lane", "lane to run"),),
+    options=(OptionSpec(("--worktree",), "worktree", metavar="PATH"),),
+))
+```
+
+- `tool LANE`, `tool --worktree X LANE`, `tool --worktree=X LANE` and
+  `tool run LANE` all select `run`. The fallback name is inserted FIRST because the
+  root parser accepts no options before a verb; the verb's own parser accepts
+  every option in any position. Leading options are recognised using the root
+  parser's options plus the fallback verb's.
+- Never rewritten: an empty argv (prints help, exit 0), `--` or an unknown
+  leading option (a normal usage error, exit 2), a leading `--help`/`--version`.
+- Registered verbs, delegates, `help` and `version` win. A name that is also a
+  verb (a lane called `list`) needs `tool run list`; refuse such names at load.
+- Rules enforced at registration: at most one fallback per registry, at least one
+  `ArgumentSpec`, no `delegate=`, not `single_command` (`ValueError`).
+- Errors are not swallowed: `tool docter` is `tool run docter`, so your handler
+  reports `unknown lane 'docter'`.
+- `app.parse_args(argv)` returns the namespace `app.run(argv=argv)` would hand
+  the handler (same normalisation, no handler runs); use it in tests.
+- Help marks the verb `[default verb]` and adds `tool [options] LANE ...` to the
+  usage block. The surface route record gets `"fallback": true` for that verb
+  only; no other manifest changes, so upgrading needs no `surface sync` unless
+  you adopt the feature (then re-judge that route's cases).
+
 ## Replacing handler-side option checks and name-list parsing
 
 **Every declared option is an attribute.** A handler can read each option of
@@ -604,7 +637,10 @@ parser may dispatch or reject according to required syntax.
 Route records must include boolean `single_command` and `no_args_action`
 values. If a generated manifest is missing either fact, Markdown rendering
 refuses it; correct the exporter or manifest source rather than filling in a
-default.
+default. A route record carries `"fallback": true` only for a `fallback=True`
+verb (the key is absent elsewhere); the Markdown invocation mode then adds that
+a first token that is not a verb selects the route, and the key is part of that
+route's case-signature context.
 It also records argparse's negative-number matcher and whether each parser has
 negative-number-like options, so the checker classifies signed numeric values
 using the built parser's rules; custom or uninspectable matchers make the
@@ -1234,7 +1270,13 @@ A check can read its own options. Pass them with
 `run(runtime, args)`.
 
 `example doctor`, `example doctor --check docker --json` and CI use the same
-exit code (1 only for `fail`). Do not name a check `skills`. The automatic
+exit code (1 only for `fail`; `register_doctor(registry, checks,
+fail_exit_code=2)` sets another value, an integer 1..255, for a tool whose
+convention reserves 1). A check may return `CheckResult(..., lines=("a detail",))`
+for extra human-output detail: each single-line string is printed four spaces in
+under the check line, before `remedy:`, and appears in the JSON check as
+`"lines"` only when non-empty (doctor JSON of tools that never set it is
+unchanged; `details` stays the JSON-only structured field). Do not name a check `skills`. The automatic
 `skills` check is a `warn` when the skills were never installed and a `fail`
 when any installed skill is stale, modified, foreign or orphaned, or an
 interrupted install left files behind.

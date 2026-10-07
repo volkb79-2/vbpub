@@ -897,6 +897,7 @@ def _describe_parser(
     nested_route: bool = False,
     child_aliases: tuple[str, ...] = (),
     child_help: str | None = None,
+    fallback: bool = False,
 ) -> list[dict[str, Any]]:
     selected_spec = route_spec or (verb_specs[0] if verb_specs else None)
     route_id = _route_id(
@@ -1149,6 +1150,10 @@ def _describe_parser(
         "subcommands_required": subcommands_required,
         "subcommand_groups": subcommand_groups,
     }
+    if fallback:
+        # LCR-1: present only for the fallback verb, so every manifest of a
+        # tool without one stays byte-identical.
+        record["fallback"] = True
     records = [record]
     for child_parser, child_names, help_text in nested_children:
         child_name, *aliases = child_names
@@ -1412,6 +1417,7 @@ def _walk_registered_cli(
                 no_args_action=app.no_args_action,
                 incomplete=incomplete,
                 inherited_parser_settings=parser_settings_for_children,
+                fallback=spec.fallback,
             )
         )
     if local_incomplete:
@@ -1740,6 +1746,9 @@ def _generate_candidates(
         if route.get("constraints"):
             # Consumer-declared grammar: part of the route's signed context.
             route_context["constraints"] = route["constraints"]
+        if route.get("fallback"):
+            # Present only for a fallback verb, so other signatures are unchanged.
+            route_context["fallback"] = True
         member_shapes = []
         for member_id in sorted(set(members)):
             action = actions_by_id.get(member_id)

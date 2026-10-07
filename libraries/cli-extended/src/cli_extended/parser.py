@@ -33,6 +33,8 @@ from .output import (
 from .progress import ProgressMode, ProgressRenderer
 from .prompts import PromptAPI, PromptCancelled, PromptDriver
 
+FALLBACK_LABEL = "default verb"
+
 
 def _nargs_display(label: str, nargs: Any) -> str:
     if nargs == "?":
@@ -345,8 +347,11 @@ class VerbSpec:
     dry_run: bool = False
     constraints: tuple[Constraint, ...] = ()
     dry_run_help: str | None = None
+    fallback: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.fallback, bool):
+            raise TypeError("fallback must be a bool")
         if self.dry_run_help is not None:
             if (
                 not isinstance(self.dry_run_help, str)
@@ -429,6 +434,17 @@ class VerbSpec:
         return tuple(labels)
 
     @property
+    def help_labels(self) -> tuple[str, ...]:
+        """Behavior labels as shown in help; the fallback verb adds ``default verb``.
+
+        ``behavior_labels`` stays the surface-manifest vocabulary: the fallback
+        marker is exported as its own route key, not as a behavior.
+        """
+        if self.fallback:
+            return (FALLBACK_LABEL, *self.behavior_labels)
+        return self.behavior_labels
+
+    @property
     def confirmation_enabled(self) -> bool:
         """Whether this verb accepts the shared ``--yes`` confirmation option."""
         if self.confirmation_required is not None:
@@ -441,7 +457,7 @@ class VerbSpec:
     def summary(self) -> str:
         """Return the top-level one-line description with behavior cues."""
 
-        labels = self.behavior_labels
+        labels = self.help_labels
         description = self.summary_description or self.description
         if not labels:
             return description
@@ -496,7 +512,7 @@ class VerbSpec:
         """Return behavior and example sections shared by generated help."""
 
         sections = []
-        labels = self.behavior_labels
+        labels = self.help_labels
         if labels:
             sections.append("Behavior: " + "; ".join(labels) + ".")
         if self.confirmation_enabled:
@@ -653,6 +669,15 @@ class HelpCatalog:
         if len(names) != len(set(names)):
             raise ValueError("top-level help cannot contain duplicate verb names")
 
+    @property
+    def fallback_usage(self) -> str | None:
+        """Usage line of the fallback verb, e.g. ``prog [options] LANE ...``."""
+
+        for verb in self.verbs:
+            if verb.fallback:
+                return f"{self.prog} [options] {verb.arguments[0].display} ..."
+        return None
+
     def add_global_options(
         self, options: Iterable[OptionSpec | tuple[str, str]]
     ) -> None:
@@ -694,6 +719,9 @@ class HelpCatalog:
         width = width or self.width or help_columns()
         width = max(60, width)
         lines = [self.identity.headline, "", f"Usage: {self.usage}"]
+        fallback_usage = self.fallback_usage
+        if fallback_usage is not None:
+            lines.append(f"       {fallback_usage}")
         lines.extend(
             (f"       {self.prog} help [verb]", f"       {self.prog} version", "")
         )
@@ -766,9 +794,15 @@ class HelpCatalog:
         width = width or self.width or 120
         width = max(60, width)
         lines = [f"# {self.identity.headline}", "", "## Usage", "", "```text"]
+        fallback_usage = self.fallback_usage
         lines.extend(
             (
                 f"Usage: {self.usage}",
+                *(
+                    (f"       {fallback_usage}",)
+                    if fallback_usage is not None
+                    else ()
+                ),
                 f"       {self.prog} help [verb]",
                 f"       {self.prog} version",
                 "```",
@@ -808,11 +842,11 @@ class HelpCatalog:
                 command_parser = self.command_parsers.get(verb.name)
                 if verb.configure is not None and command_parser is not None:
                     lines.extend((heading, ""))
-                    if verb.behavior_labels:
+                    if verb.help_labels:
                         lines.extend(
                             (
                                 "**Behavior:** "
-                                + "; ".join(verb.behavior_labels)
+                                + "; ".join(verb.help_labels)
                                 + ".",
                                 "",
                             )
@@ -827,9 +861,9 @@ class HelpCatalog:
                     )
                     continue
                 lines.extend((heading, "", verb.description, ""))
-                if verb.behavior_labels:
+                if verb.help_labels:
                     lines.extend(
-                        ("**Behavior:** " + "; ".join(verb.behavior_labels) + ".", "")
+                        ("**Behavior:** " + "; ".join(verb.help_labels) + ".", "")
                     )
                 if verb.examples:
                     lines.extend(("**Examples:**", "", "```sh"))
@@ -1026,13 +1060,17 @@ def discover_command_parsers(
 
 
 def _leading_option_remainder(
-    argv: Sequence[str], parser: ExtendedArgumentParser
+    argv: Sequence[str],
+    parser: ExtendedArgumentParser,
+    extra: ExtendedArgumentParser | None = None,
 ) -> list[str] | None:
     """Return argv after leading root options, or None if it is ambiguous.
 
     This is used only to recognize the reserved ``help`` and ``version``
     command forms when global options precede them. Normal command parsing is
-    still delegated entirely to argparse.
+    still delegated entirely to argparse. ``extra`` is a second parser whose
+    options are recognised too (the fallback verb's, LCR-1): the scan then
+    walks the union of the root's and that parser's options.
     """
 
     index = 0
@@ -1047,6 +1085,8 @@ def _leading_option_remainder(
 
         option, separator, _value = token.partition("=")
         action = parser._option_string_actions.get(option)
+        if action is None and extra is not None:
+            action = extra._option_string_actions.get(option)
         if action is None:
             return None
         if separator:
@@ -1071,6 +1111,35 @@ def _leading_option_remainder(
         else:
             return None
     return []
+
+
+def _fallback_argv(
+    argv: Sequence[str],
+    parser: ExtendedArgumentParser,
+    command_parsers: Mapping[str, ExtendedArgumentParser],
+    fallback: str | None,
+) -> list[str]:
+    """Return the argv to parse after applying the fallback-verb rewrite (LCR-1).
+
+    The single normalisation used by ``run_cli`` and ``RegisteredCli.parse_args``.
+    A first token that is not a registered verb, delegate, ``help`` or
+    ``version`` selects the fallback verb, which is placed FIRST: the root
+    parser accepts no options before a verb, while the verb's own parser
+    accepts every option in any position. ``--``, an unknown leading option, a
+    leading ``--help``/``--version`` and an empty argv are never rewritten.
+    """
+
+    if fallback is None or not argv:
+        return list(argv)
+    tokens = _leading_option_remainder(
+        argv, parser, extra=command_parsers.get(fallback)
+    )
+    if tokens is None:
+        return list(argv)
+    # Delegate groups are registered verbs too, so command_parsers covers them.
+    if tokens and (tokens[0] in command_parsers or tokens[0] in {"help", "version"}):
+        return list(argv)
+    return [fallback, *argv]
 
 
 def _common_option_conflict(argv: Sequence[str]) -> str | None:
@@ -1398,12 +1467,28 @@ class RegisteredCli:
     skills_package: tuple[str, str] | None = None
     identity_banner: str = "once"
     error_help: str = "full"
+    fallback_verb: str | None = None
 
     @property
     def catalog(self) -> HelpCatalog | None:
         """Return the generated help catalog when this CLI has verbs."""
 
         return self.parser.catalog
+
+    def parse_args(self, argv: Sequence[str] | None = None) -> argparse.Namespace:
+        """Parse ``argv`` exactly as :meth:`run` would, without running a handler.
+
+        Applies the same fallback-verb normalisation as ``run``. Parse errors
+        raise :class:`UsageError`; ``--help``/``--version`` exit as argparse
+        does, so callers that embed this should catch ``SystemExit``.
+        """
+
+        raw = list(sys.argv[1:] if argv is None else argv)
+        parsers = discover_command_parsers(self.parser)
+        parsers.update(self.command_parsers)
+        return self.parser.parse_args(
+            _fallback_argv(raw, self.parser, parsers, self.fallback_verb)
+        )
 
     def run(
         self,
@@ -1434,6 +1519,7 @@ class RegisteredCli:
             unexpected_exceptions=self.unexpected_exceptions,
             identity_banner=self.identity_banner,
             error_help=self.error_help,
+            fallback_verb=self.fallback_verb,
             **kwargs,
         )
 
@@ -1511,6 +1597,25 @@ class CliRegistry:
             raise ValueError(f"{verb.name!r} is reserved for standard CLI behavior")
         if any(existing.name == verb.name for existing in self._verbs):
             raise ValueError(f"verb {verb.name!r} is already registered")
+        if verb.fallback:
+            if verb.delegate is not None:
+                raise ValueError(
+                    f"fallback verb {verb.name!r} cannot delegate to another CLI"
+                )
+            if not verb.arguments:
+                raise ValueError(
+                    f"fallback verb {verb.name!r} must declare at least one "
+                    "ArgumentSpec (the token that selects it)"
+                )
+            existing_fallback = next(
+                (existing.name for existing in self._verbs if existing.fallback),
+                None,
+            )
+            if existing_fallback is not None:
+                raise ValueError(
+                    f"verb {verb.name!r} cannot also be a fallback verb; "
+                    f"{existing_fallback!r} already is (at most one per registry)"
+                )
         self._verbs.append(verb)
 
     @staticmethod
@@ -1588,6 +1693,13 @@ class CliRegistry:
             )
         if self.no_args_action and not self.single_command:
             raise ValueError("no_args_action is only valid for a single-command CLI")
+        fallback_verb = next(
+            (verb.name for verb in self._verbs if verb.fallback), None
+        )
+        if fallback_verb is not None and self.single_command:
+            raise ValueError(
+                "a fallback verb is only valid for a multi-verb CLI, not single_command"
+            )
         any_dry_run = any(verb.dry_run for verb in self._verbs)
         missing_handlers = [
             verb.name for verb in self._verbs
@@ -1767,6 +1879,7 @@ class CliRegistry:
             getattr(self, "_cli_extended_skills", None),
             self.identity_banner,
             self.error_help,
+            fallback_verb,
         )
 
 
@@ -1933,6 +2046,7 @@ def run_cli(
     unexpected_exceptions: str = "raise",
     identity_banner: str = "once",
     error_help: str = "full",
+    fallback_verb: str | None = None,
     secrets: Sequence[str] = (),
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
@@ -1951,6 +2065,7 @@ def run_cli(
     discovered_parsers = discover_command_parsers(parser)
     discovered_parsers.update(command_parsers or {})
     command_parsers = discovered_parsers
+    raw = _fallback_argv(raw, parser, command_parsers, fallback_verb)
     if parser.catalog is not None:
         parser.catalog.validate_parser(parser)
     help_output = CliOutput(
