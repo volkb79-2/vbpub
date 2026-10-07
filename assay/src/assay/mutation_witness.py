@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from . import safeio
-from .errors import AssayError
+from .errors import AssayError, Outcome, ReasonCode
 from .r2_command import UnrecognizedCoverageOption, transform_argv
 from .records import record
 
@@ -87,75 +87,133 @@ class ReceiptCapture:
     _JOIN_TIMEOUT_SECONDS = 2.0
 
     def __init__(self) -> None:
-        read_fd, write_fd = os.pipe()
+        try:
+            read_fd, write_fd = os.pipe()
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                raise self._startup_error(exc) from exc
+            raise
         drain_fd: int | None = None
         try:
             drain_fd = os.dup(read_fd)
             os.set_blocking(read_fd, False)
             os.set_blocking(drain_fd, False)
-        except BaseException:
-            for descriptor in (drain_fd, read_fd, write_fd):
-                if descriptor is not None:
+            self._read_fd = read_fd
+            self.write_fd = write_fd
+            # The reader thread owns a distinct descriptor. If it does not
+            # stop before finish()'s join timeout, the parent may close and
+            # reuse its descriptor without letting that stale thread read
+            # another capture.
+            self._drain_fd = drain_fd
+            self._drain_fd_lock = threading.Lock()
+            self._drain_fd_closed = False
+            self._stop = threading.Event()
+            self._data = bytearray()
+            self._overflow = False
+            self._read_failed = False
+            self._finished = False
+            self._thread = threading.Thread(
+                target=self._drain,
+                name="assay-witness-receipt",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException as exc:
+            thread = getattr(self, "_thread", None)
+            stop = getattr(self, "_stop", None)
+            if stop is not None:
+                stop.set()
+            descriptors = [write_fd, read_fd]
+            for descriptor in descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if drain_fd is not None:
+                drain_lock = getattr(self, "_drain_fd_lock", None)
+                if drain_lock is None:
                     try:
-                        os.close(descriptor)
+                        os.close(drain_fd)
                     except OSError:
                         pass
+                else:
+                    # Either the thread closes the descriptor while holding
+                    # this lock, or startup cleanup does. If start was
+                    # interrupted before the reader publishes its ident, a
+                    # later reader sees the closed flag and never touches a
+                    # descriptor number that may have been reused.
+                    with drain_lock:
+                        self._close_drain_fd_locked()
+            if thread is not None:
+                try:
+                    thread.join(self._JOIN_TIMEOUT_SECONDS)
+                except BaseException:
+                    pass
+            if isinstance(exc, Exception):
+                raise self._startup_error(exc) from exc
             raise
-        self._read_fd = read_fd
-        self.write_fd = write_fd
-        # The reader thread owns a distinct descriptor. If it does not stop
-        # before finish()'s join timeout, the parent may close and reuse its
-        # descriptor without letting that stale thread read another capture.
-        self._drain_fd = drain_fd
-        self._stop = threading.Event()
-        self._data = bytearray()
-        self._overflow = False
-        self._read_failed = False
-        self._finished = False
-        self._thread = threading.Thread(
-            target=self._drain,
-            name="assay-witness-receipt",
-            daemon=True,
+
+    @staticmethod
+    def _startup_error(cause: Exception) -> AssayError:
+        """Turn any receipt-capture setup failure into a typed lane error."""
+        return AssayError(
+            "could not initialize the mutation-witness receipt reader; "
+            f"refusing to classify this attempt ({cause})",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
         )
-        self._thread.start()
+
+    def _close_drain_fd_locked(self) -> None:
+        """Close the drain descriptor once, with ``_drain_fd_lock`` held."""
+        if getattr(self, "_drain_fd_closed", False):
+            return
+        self._drain_fd_closed = True
+        try:
+            os.close(self._drain_fd)
+        except OSError:
+            pass
 
     def _drain(self) -> None:
-        try:
-            poller = select.poll()
-            poller.register(self._drain_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
-            maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
-            while not self._stop.is_set():
-                try:
-                    ready = poller.poll(int(self._POLL_INTERVAL_SECONDS * 1000))
-                except OSError:
-                    self._read_failed = True
-                    return
-                if self._stop.is_set():
-                    return
-                for _fd, _events in ready:
-                    while not self._stop.is_set():
-                        try:
-                            chunk = os.read(self._drain_fd, self._READ_CHUNK_BYTES)
-                        except BlockingIOError:
-                            break
-                        except InterruptedError:
-                            continue
-                        except OSError:
-                            self._read_failed = True
-                            return
-                        if not chunk:
-                            return
-                        if len(self._data) + len(chunk) <= maximum:
-                            self._data.extend(chunk)
-                        else:
-                            self._overflow = True
-        except OSError:
-            self._read_failed = True
-        finally:
+        with self._drain_fd_lock:
+            if self._drain_fd_closed:
+                return
             try:
-                os.close(self._drain_fd)
+                poller = select.poll()
+                poller.register(
+                    self._drain_fd, select.POLLIN | select.POLLHUP | select.POLLERR
+                )
+                maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
+                while not self._stop.is_set():
+                    try:
+                        ready = poller.poll(int(self._POLL_INTERVAL_SECONDS * 1000))
+                    except OSError:
+                        self._read_failed = True
+                        return
+                    if self._stop.is_set():
+                        return
+                    for _fd, _events in ready:
+                        while not self._stop.is_set():
+                            try:
+                                chunk = os.read(
+                                    self._drain_fd, self._READ_CHUNK_BYTES
+                                )
+                            except BlockingIOError:
+                                break
+                            except InterruptedError:
+                                continue
+                            except OSError:
+                                self._read_failed = True
+                                return
+                            if not chunk:
+                                return
+                            if len(self._data) + len(chunk) <= maximum:
+                                self._data.extend(chunk)
+                            else:
+                                self._overflow = True
             except OSError:
-                pass
+                self._read_failed = True
+            finally:
+                self._close_drain_fd_locked()
 
     def _drain_final_bytes(self) -> None:
         """Drain after the reader has stopped, requiring all writers closed."""
