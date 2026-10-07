@@ -7560,3 +7560,19 @@ CONSUMERS, and SPEC with that distinction, including that a configured
 not by host-statting a container path. No production code changed in this
 correction. `git diff --check` passes; all short gates and final review must
 run on the committed correction tip. No merge or release was made.
+
+### RW-482 — 2026-10-07 12:29:48 UTC — Normalize Markdown in the docs oracle
+
+The next exact-tree Run-Gate selftest, on
+`ac737e21a93f354b18127b35b78cad8ff894a0cd`, exited 1 in
+`run-gate-vbpub-selftest-283754-1791375899`: 1,712 passed, 2 skipped, 1
+failed. Both missing-root and existing-root behavioral cases passed. The sole
+failure was the cross-document phrase assertion: `CONSUMERS.md` is a Markdown
+blockquote whose line-prefix markers split “absent default” across source
+lines, so a raw substring comparison falsely rejected correct wording.
+
+Resolution: normalize Markdown blockquote line markers and whitespace before
+asserting the docs contract. This is a test-only correction; product behavior
+and documentation are unchanged. The corrected exact tree still needs a
+fresh selftest and the remaining short gates; this failure is not accepted as
+gate evidence. No merge or release was made.

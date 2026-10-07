@@ -1160,16 +1160,18 @@ class TestRG78ClosedExitTable:
             )
         ]
         for body in docs:
+            normalized = " ".join(body.replace("\n>", "").split())
             assert "creates" in body and ".run-gate" in body
             assert "TMPDIR" in body and "GIT_CEILING_DIRECTORIES" in body
             assert "configured" in body and "state_root" in body
-            assert "absent default `.run-gate`" in body
-            assert "`[SKIP]`" in body
+            assert "absent default `.run-gate`" in normalized
+            assert "`[SKIP]`" in normalized
             assert "run-gate does not synthesize this root" not in body
             assert "root must already exist" not in body
         spec = (RUN_GATE_DIR / "SPEC.md").read_text(encoding="utf-8")
-        assert "absent default `.run-gate`" in spec
-        assert "`[SKIP]`" in spec
+        normalized_spec = " ".join(spec.split())
+        assert "absent default `.run-gate`" in normalized_spec
+        assert "`[SKIP]`" in normalized_spec
 
     def test_git_boundary_for_central_config_is_documented_everywhere(self):
         docs = (
