@@ -61,6 +61,42 @@ JSON / non-v2 script is left alone" tolerance branches of `_customscript_key_rec
 
 Both verdicts were read in a separate step from the run.
 
+## Review round 1 fixes
+
+Code and tests in `b9b699014` (on top of `e6d755ef4`).
+
+1. BLOCKER credential leak: `redact_url()` (customscript.py, and a standalone copy in `bootstrap-remote.py`)
+   strips userinfo and keeps host[:port]. `describe_fetch_source` prints the redacted URL; the real URL is still
+   passed to `git ls-remote` and the fetch. `bootstrap-remote.py fetch_subtree` debug line and its three error
+   messages use the redacted URL. Other `repo_url` uses in the package: none printed (grep checked). Tests:
+   user:token, token-only and port URLs, for `describe_fetch_source`, the `build-customscript` CLI stderr, and
+   `fetch_subtree` errors plus debug output; plus the real URL reaching `ls-remote`. Note: query/fragment are not
+   stripped.
+2. Detached HEAD (`rev-parse --abbrev-ref HEAD` == `HEAD`): no branch-mismatch warning, commit comparison only.
+   Test `test_fetch_source_detached_head_only_compares_commits`.
+3. Stage2: `Installer.resume()` now calls `_secure_bootstrap_files()` first (covers `custom_script.output2`);
+   that helper now also skips symlinks. Test `test_stage2_resume_restricts_provider_files_before_anything_else`
+   (includes a symlink that must not be followed).
+4. Ordering: `test_restrict_provider_files_runs_before_the_env_parsing` (invalid `DEBUG_MODE`; modes already 0600
+   when `_env_bool` is first called).
+
+| Plant | Product change | Killed by |
+|-------|----------------|-----------|
+| a | raw `repo_url` in the info line | 6 failures (`test_fetch_source_never_emits_url_credentials` x3, `test_cli_build_stderr_never_contains_url_credentials` x3) |
+| b | detached-HEAD warning re-enabled | `test_fetch_source_detached_head_only_compares_commits` |
+| c | chmod removed from `resume()` | `test_stage2_resume_restricts_provider_files_before_anything_else` |
+| d | `restrict_provider_files()` moved after `DEBUG_MODE` parsing | `test_restrict_provider_files_runs_before_the_env_parsing` |
+
+Plants b-d and the second run of a were reverted with `git checkout -- <file>` after committing the fixes.
+
+Gates (HEAD `b9b699014`, flock + nice/ionice, foreground, verdict read in a separate step):
+`scripts/debian-install-v2/run-gate.py --worktree .../lt-polish r0-r1` PASS, exit 0 (1066 passed, 11 skipped,
+total coverage 96%); `scripts/netcup/run-gate.py --worktree .../lt-polish suite` PASS, exit 0 (719 passed).
+
+Process deviations this round: one message issued two Edit calls (the `resume()` chmod and the symlink skip in
+`_secure_bootstrap_files`) without an Intent line; the first plant (a) was applied before the fixes were
+committed, so it was reverted by Edit (a checkout would have discarded them) and re-run after the commit.
+
 ## Process deviations
 
 - The previous implementer issued two Edit calls in one message (the journald move: add + remove),
