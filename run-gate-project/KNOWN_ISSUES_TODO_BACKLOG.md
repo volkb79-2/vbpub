@@ -106,6 +106,7 @@ SPEC §9.
 | RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test in this branch, package gate pending) |
+| RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5819,3 +5820,60 @@ return a closed recovery refusal before inventory or admission.
 - `shim_dir_of` returns `PATH[0]` only when that directory is one this suite created (`fake_docker` registers its `tmp_path/shim`). Otherwise it makes a private `run-gate-test-bin-*` dir and PREPENDS it via `monkeypatch.setenv`. No pre-existing `PATH` directory is ever written to.
 - `tests/conftest.py` gains a session guard (`pytest_sessionstart`/`pytest_sessionfinish`): it snapshots every `PATH` directory plus `$HOME/.local/bin` and `$HOME/.venv/bin` (entry name, mode, size, mtime_ns) and fails the session with exit code 1 if anything was created, modified or removed there.
 - Oracles: `test_rg87_shims_never_land_in_a_preexisting_path_dir` and `test_rg87_fake_docker_dir_is_reused_for_later_shims` in `tests/test_run_gate.py`; `tests/test_path_write_guard.py` plants a write into a PATH dir and into `$HOME/.local/bin` in a real inner pytest session and requires the session to fail. Plants: restoring the `PATH[0]` behaviour fails the first oracle; disabling the guard hook fails the two planted-write tests.
+
+## RG-88 — nullable unavailable-DAMON measurements crash footprint disclosure formatting
+
+**Status:** Formatter guard and regression oracle are implemented in Run-Gate
+rev 56 on the RG-55 candidate; the registered package gate is pending. Severity
+Minor: the exception occurs during profile cleanup and does not alter the lane
+verdict, but loses valid profile-resource disclosure.
+
+**Observed.** A valid profile summary may contain
+`resources.damon.hot_bytes = null` when DAMON is unavailable. The footprint
+disclosure assumed both `damon` and `hot_bytes` were objects and called
+`.get("p90")`; cleanup then logged `profiling cleanup crashed unexpectedly`
+and omitted otherwise valid profile resources.
+
+**Fix and oracle.** The formatter checks that `damon` and `hot_bytes` are
+objects before reading `p90`, while retaining the rest of the disclosure.
+`tests/test_run_gate.py::test_unavailable_damon_with_null_hot_bytes_keeps_the_disclosure`
+plants the unavailable-DAMON shape and asserts the line survives without a
+cleanup exception.
+
+## RG-89 — native Assay R2 has no trusted ancestor-counter view in the private-cgroup test environment
+
+**Status:** OPEN, filed 2026-10-07 after the RG-55 Run-Gate rev 56 candidate's
+Assay 8.0.0 R2 attempt stopped before candidate execution. Severity Major:
+without a supported observer path, registered native mutation lanes return
+`ERROR/EXEC_FAILED` before judging any mutants.
+
+**Observed.** Assay B145 intentionally refuses native R2 when the cgroup
+namespace hides process ancestors, because it cannot soundly observe
+`pids.events`/`memory.events` at enforcing ancestors. Run-Gate's tester-unified
+container retains a private cgroup namespace, so `/proc/thread-self/cgroup`
+resolves to `/` and Assay reports that the process's parent cgroups are hidden.
+The RG-55 attempt ran the R0 baseline, then returned `ERROR/EXEC_FAILED` with
+all three candidates pending. The exact verdict and progress artifacts are in
+the candidate worktree's ignored `scripts/cgroup-profiler/.assay/` directory.
+
+**Constraint.** Do not bypass this refusal with `--cgroupns=host`; gate and
+workload namespaces remain private. A read-only external view must not become
+a candidate-controlled source of evidence or leak broader host process data.
+
+**Fix direction.** Coordinate a supported Run-Gate/Assay/tester-unified
+observer contract that can bind before/after resource-event samples to the
+exact executing candidate and its real enforcing ancestors while the gate
+container retains a private cgroup namespace. Preserve fail-closed behavior
+when identity, ancestry, mounts, or counters cannot be verified. The design
+must also prevent unrelated sibling activity from being attributed as a
+candidate result; if attribution is uncertain, no mutant bucket may be
+fabricated.
+
+**Oracles.** Native R2 reaches candidate execution in the standard private-
+cgroup-namespace tester environment with a trusted exact-candidate observer;
+the worker's cgroup identity and sampled ancestry are bound across each
+candidate window. Missing/hidden/overmounted ancestors and missing enforcing
+counters still refuse before mutation. A real candidate resource-limit event
+is classified as infrastructure, never `killed`; unrelated sibling activity
+cannot produce a candidate kill or survivor. No gate/test container joins the
+host cgroup namespace or receives an unbounded host-process view.

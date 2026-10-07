@@ -7418,3 +7418,16 @@ The outstanding R2 refusal is an Assay/runner visibility incompatibility, not
 a reason to grant host cgroup namespace to the daemon or gate. Do not relaunch
 until a supported read-only way to observe the candidate's real cgroup
 ancestor event counters is agreed with the Assay workstream.
+
+### RW-475 — 2026-10-07 09:45:05 UTC — file the Assay 8 / Run-Gate R2 integration gap
+
+Assay backlog B145 explicitly requires visible ancestor event counters and
+refuses native R2 when a private cgroup namespace hides them. The candidate's
+Assay 8.0.0 attempt matched that contract: it passed the R0 baseline, then
+returned `ERROR/EXEC_FAILED` before any candidate ran. This is not a mutant
+result and not a reason to use `--cgroupns=host`. Filed Run-Gate RG-89 as an
+open cross-tool integration issue: define a trustworthy exact-candidate
+ancestor-event observer while preserving the gate's private cgroup namespace,
+fail-closed behavior, and candidate attribution. RG-88 now has a detailed
+backlog section alongside its summary row. No code or gate result is implied
+by filing these entries; RG-89 and R2 remain open.
