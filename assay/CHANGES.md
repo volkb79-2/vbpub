@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs. A marked `backfilled-after-release` entry was generated after its immutable tag already existed.
 
+## [Unreleased]
+
+### BREAKING CHANGE
+- verdict schema v15 is a hard cut from v14. `assay verify` rejects v14 and
+  older verdicts; v12–v14 verdicts are cold starts for `--reuse-from`, and
+  mutation state with an older judge identity is re-executed. Consumers must
+  repin Assay before relying on v15 verdict fields.
+
+### Added
+- Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
+  command, ordered collection and hook facts; a `witness-cold` kill records its
+  failed test call and labels later tests unrun. Survivors and uncertain runs
+  execute the full declared suite.
+- Persist campaign deadlines across preflight, resume and retry, and bind B105
+  reports to the source commit, lane command, pytest configuration, manifest
+  and deadline.
+- Bound mutation worker submissions to the configured job count while keeping
+  candidate events ordered.
+
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=e464cebcfc17c1929354f3ebc6bf9e3e355576a8 -->

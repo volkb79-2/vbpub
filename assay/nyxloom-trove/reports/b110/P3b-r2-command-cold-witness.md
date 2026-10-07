@@ -3,13 +3,23 @@
 ## Current contract reconciliation — 2026-10-07
 
 This package now targets verdict v15 (v14 is already shipped in Assay 8.0.0)
-and judge identity `/8` (the current label is `/7`). The active implementation
+and judge identity `/8` (B145's prior label is `/7`). The active implementation
 is in the CIU-managed `assay-b114-cold-witness` worktree. B117/P6 and B115/P4
 are included in this serial wave before this package changes the executor.
 B111/P0 and B113/P2 shipped in Wave A / Assay 7.2.0. Wave A W1/W4 superseded
 or completed B112's original argv, dataclass, and test-scope work; only its
 slow-tier redecision remains, pending current timing evidence, and is not a
 precondition for this package.
+
+**B114 compatibility addendum — 2026-10-07.** The cold path's complete
+lifecycle-hook allowlist is stricter than B106's pre-existing targeted replay
+check. Preserve that replay contract separately in the internal receipt as
+`replay_supported`: ordinary full and prefix-replay receipts may carry a
+witness when this legacy predicate is true, while `cold_witness_from_receipt`
+and the no-coverage R2 baseline still require `unsupported == false` from the
+strict predicate. This keeps opt-in cold witnesses from erasing B106 evidence
+on ordinary runs. The receipt has 26 keys (the existing 10 plus 16 new
+fields); `replay_supported` is internal and never copied to verdicts.
 
 **Cause-sensitive kill rule, superseding the fallback table below:** a positive
 exit status does not prove a test call failed. A cold attempt can be `killed`
@@ -49,7 +59,7 @@ failure.
 - Two runtime-proven baselines come first: the coverage baseline and a new no-cov R2 baseline, each with an ordered collection manifest, a hook fingerprint and a runtime fingerprint.
 - Then per-candidate cold attempts run. They stop at the first verified call failure (`witness-cold`), or a completed pass is the survivor's full run. On any uncertainty, one declared-command full attempt is authoritative.
 
-Without `--cold-witness` the behaviour is byte-identical to today, apart from the v14 defaults P3a emits.
+Without `--cold-witness` the behaviour is byte-identical to today, apart from the v15 defaults P3a emits.
 
 ---
 
@@ -238,10 +248,11 @@ def cold_witness_from_receipt(receipt, *, process_exit_status: int,
 | `runtime_fingerprint_sha256` | hex or null | plan §5 canonical JSON |
 | `config_sha256` | hex or null | sha256 of `config.inipath` bytes; null when there is no inipath |
 | `archive_hook_exception_used` | bool | the B105 conftest `pytest_sessionfinish` was trusted via the exception |
+| `replay_supported` | bool | the pre-B114 B106 targeted-replay hook predicate; permits legacy witness capture/replay only, never a cold kill |
 
 The whole receipt stays ≤ 16 KiB (`MAX_INTERNAL_RECEIPT_BYTES`, mirrored by `16384` in the plugin). Node lists are **never** placed in the receipt. The ordered list goes only to the sidecar file (`WITNESS_MANIFEST_FILE_ENV`): one node ID per line, each followed by `\n`, UTF-8, written only when `manifest_supported`.
 
-**The full receipt is exactly 25 keys: the existing 10 at `mutation_witness.py:308-321` plus the 15 above (P3B-9).**
+**The full receipt is exactly 26 keys: the existing 10 at `mutation_witness.py:308-321` plus the 16 above (P3B-9 and B114's compatibility addendum).**
 
 Valid, a cold kill:
 ```json
@@ -359,18 +370,18 @@ The input is defined in the signature comment above: `transform_argv(plan.argv_d
 
 **Single-dash clusters are parsed, not substring-matched (round-2 P3B2-8).** Before the rows below apply, `cold_shape_refusal` expands every token matching `^-[^-]` into `(option, value)` pairs, so `-qprandomly` becomes `-q` plus `-p randomly`, and `-qoaddopts=-n4` becomes `-q` plus `-o addopts=-n4`. The rows are then evaluated on the expanded pairs.
 
-The letter classes are taken from pytest 9.1.1 plus pytest-xdist 3.8.0's parser, as inspected on the host at carve time:
-- **Flag letters (no value):** `q`, `v`, `s`, `l`, `x`, `d`, `f`, `V`, `h`.
+The letter classes are taken from pytest 9.1.1 plus pytest-xdist 3.8.0's parser, as inspected on the host at implementation time. Explicitly load `xdist.plugin` before reading the installed parser's `_actions`:
+- **Flag letters (no value):** `q`, `v`, `s`, `l`, `x`, `d`, `V`, `h`.
 - **Value letters:** `W`, `c`, `k`, `m`, `n`, `o`, `p`, `r`. The rest of the token is the value; if the rest is empty, the next argv token is.
 
 Walk the letters left to right: a flag letter emits `(-<letter>, None)`; a value letter emits `(-<letter>, value)` and ends the token. Then:
 - **Any other letter** refuses with `unrecognized short option cluster <token>`. This is conservative: a new plugin letter can never slip through.
 - `-x` → the fail-fast row.
-- `-d` / `-f` (xdist dist / looponfail) → `parallel option`.
+- `-d` (xdist dist) → `parallel option`. pytest-xdist 3.8.0 no longer registers a short `-f` looponfail option; `-f` is therefore an unknown short letter and is refused closed by the cluster parser. `--looponfail*` remains refused as a parallel option if a consumer plugin registers it.
 - `-h` / `-V` → `not a sequential pytest command`.
 - `-k`, `-m`, `-r` and `-W` values are allowed. They are selection/report options that the declared lane already carries and that the transform preserves; the collection-manifest equality proves the selection at runtime.
 
-Add a unit test that reads the installed pytest's short options (`_pytest.config.get_config()` parser `_actions`, as the carver did) and asserts the two letter sets above are exactly its flag and value short options. Letter-set drift after a pytest upgrade then goes red instead of silently weakening the table.
+Add a unit test that reads the installed pytest's short options (`_pytest.config.get_config()._parser.optparser._actions`), explicitly imports `xdist.plugin`, and asserts the two letter sets above are exactly its flag and value short options. This checks the actual pytest/xdist parser rather than assuming that an obsolete xdist alias is still present. Letter-set drift after a pytest upgrade then goes red instead of silently weakening the table.
 
 | Condition | Reason (substring tests assert) |
 |---|---|
@@ -383,7 +394,7 @@ Add a unit test that reads the installed pytest's short options (`_pytest.config
 | `--lf`, `--last-failed`, `--ff`, `--failed-first`, `--nf`, `--new-first`, `--sw`, `--stepwise`, `--stepwise-skip`, `--sw-skip` | `order-changing option` |
 | a token starting `--randomly` or `--random-order`; `-p randomly`/`-prandomly`, `-p random_order`/`-prandom_order`, `-p pytest_randomly`/`-ppytest_randomly` (the enabling forms only; `-p no:randomly`, `-pno:randomly` and other `no:` forms stay allowed) | `order-changing option` |
 | `-p pytest_cov`, `-ppytest_cov`, `-p pytest-cov`, `-ppytest-cov` (it would re-enable the plugin the transform disables) | `coverage plugin re-enabled` |
-| `-n` (any value, separate or joined), `-d`, `-f`, `--numprocesses*`, `--dist*`, `--looponfail*`, `-p xdist`, `-pxdist` | `parallel option` |
+| `-n` (any value, separate or joined), `-d`, `--numprocesses*`, `--dist*`, `--looponfail*`, `-p xdist`, `-pxdist` | `parallel option` |
 | `PYTEST_ADDOPTS` present with a non-empty value, or `PYTEST_PLUGINS` present | `pytest environment option` |
 | `COVERAGE_PROCESS_START` or `COVERAGE_PROCESS_CONFIG` present with a non-empty value. The tester image installs `a1_coverage.pth`, so either would re-enable coverage in the child despite `-p no:pytest_cov` | `coverage re-enabled by environment` |
 | lane has no R2, R2 is ingested, or the adapter is not python (checked in `run_lane`, lane-level) | `cold witness needs a native python R2 lane` |
@@ -570,10 +581,10 @@ _execute_mutation_jobs plugin dir     (its own, 2609-2613; receipts named f"{ind
 | `--r2-manifest` (P3B-8, round-2 P3B2-9) | cli/runner | without `--cold-witness` → **pre-run `LaneConfigError`**: exit 2, **no verdict file written**, 0 `process_runner` calls; a tracked visible path → the same pre-run refusal; a gitignored path → the file equals the sidecar byte for byte; an unwritable destination directory at write time → whole-lane `ERROR/OUTPUT_WRITE_FAILED` that verifies `[]` | same | write non-atomically / skip the visibility check / emit a verdict for the argument refusal → red |
 | `--cold-witness` + `--shard` (P3B-8) | runner | `--shard 0/2 --cold-witness` → in-shard kills are `witness-cold` with `evidence`, and the verdict verifies | same | refuse the combination → red |
 | A6 recorded R0 (P3B-8) | runner | with `--cold-witness`, the verdict's top-level `argv_appended` contains `-p assay_mutation_witness_plugin`, `env_effective` shows the witness plugin dir on `PYTHONPATH`, and the verdict verifies | same | inject into a copy that R0 never records → red |
-| judge identity | mutation | the digest changes when any of `cold_witness_kills`, the transform id, `r2_collection_sha256`, `r2_hook_fingerprint_sha256`, `runtime_fingerprint_sha256`, `coverage_hook_fingerprint_sha256`, `coverage_runtime_fingerprint_sha256` or the ledger sha changes, and the combined v14 label is `/7` (A-482 passthrough fingerprints and A-483/B145 resource-evidence compatibility, including worker-context guards, are included through that version; `/4`, `/5`, and `/6` evidence is superseded). The existing equality tests (`tests/test_mutation_judge_identity.py:272-462`) stay green | `tests/test_mutation_judge_identity.py` | omit the hook sha (P3B-4) → a changed hook set leaves resumable records → red |
+| judge identity | mutation | the digest changes when any of `cold_witness_kills`, the transform id, `r2_collection_sha256`, `r2_hook_fingerprint_sha256`, `runtime_fingerprint_sha256`, `coverage_hook_fingerprint_sha256`, `coverage_runtime_fingerprint_sha256` or the ledger sha changes, and the combined v15 label is `/8` (A-482 passthrough fingerprints and A-483/B145 resource-evidence compatibility, including worker-context guards, are included through `/7`; `/4`, `/5`, and `/6` evidence is superseded). The existing equality tests (`tests/test_mutation_judge_identity.py:272-462`) stay green | `tests/test_mutation_judge_identity.py` | omit the hook sha (P3B-4) → a changed hook set leaves resumable records → red |
 | state/resume | mutation | a cold campaign resumed with `--resume` re-reads `witness-cold` + evidence and does not re-execute (count 0). A record with the `evidence` key deleted, or with a 5-key evidence object, raises **`MutationStateError`** (P3B-3; like `tests/test_b105_mutation_boundaries.py:225-240`). A record from a non-cold campaign is judge-rejected and re-executes | `tests/test_b105_mutation_boundaries.py`-style | route shape errors to "rejected → re-execute" → the corruption is silently re-run → red |
 | resume across a relocated venv (P3B-4) | plugin + mutation | combined axis: `--resume` with `sysconfig` paths relocated between the two invocations **and** an unnamed conftest plugin **and** a declared survivor → count 0 re-executions, and the consolidated verdict verifies `[]` | same | absolute site-packages paths → every record judge-mismatches (or the verdict fails X6) → red |
-| A8 order | `_run_one` | `--reuse-from` (a v14 prior) + `--cold-witness`: an eligible prior kill replays (1 attempt, `witness-prefix`); an ineligible one goes cold | `tests/zz_slow/test_b110_cold_witness_real_runs.py` (a real run). P1's exact-name pin forbids adding it to `zz_slow/test_b106_witness_real_runs.py`. | — |
+| A8 order | `_run_one` | `--reuse-from` (a v15 prior) + `--cold-witness`: an eligible prior kill replays (1 attempt, `witness-prefix`); an ineligible one goes cold | `tests/zz_slow/test_b110_cold_witness_real_runs.py` (a real run). P1's exact-name pin forbids adding it to `zz_slow/test_b106_witness_real_runs.py`. | — |
 | static cluster parsing (round-2 P3B2-8) | `cold_shape_refusal` | `-qprandomly` → `order-changing option`; `-qoaddopts=-n4` → `pytest override`; `-qx` → `fail-fast option`; `-qn4` → `parallel option`; `-qZ` → `unrecognized short option cluster`; `-qk expr` / `-qkexpr` → eligible; plus the letter-set drift test against the installed pytest parser | `tests/test_b110_cold_witness.py` | substring-match clusters → `-qprandomly` accepted → red |
 | verdict validity | all | every verdict produced by the new tests passes `assay verify` (`_verify_with_assay_cli` pattern) | all new tests | — |
 | plan preview | cli | `assay plan --cold-witness` on the B105 lane → `eligible: true`, `argv_transformed` without `--cov*`. With a `-x` lane → `eligible:false`, refusal `fail-fast option` | `tests/test_b105_cli_boundaries.py` | — |

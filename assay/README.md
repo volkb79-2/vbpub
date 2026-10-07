@@ -95,7 +95,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v14 verdict schema; a receipt
+Receipt verdicts are checked against the current v15 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -189,8 +189,8 @@ assay exists to close that gap mechanically, not by policy:
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
-  runs the candidate's full suite. A v12 or v13 verdict is a cold start under
-  v14, and `assay verify` rejects both. See the
+  runs the candidate's full suite. A v12, v13, or v14 verdict is a cold start
+  under v15, and `assay verify` rejects all three. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -247,10 +247,10 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 14` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-The verdict is a hard cut: `assay verify` refuses v13 and earlier verdicts
+`VERDICT_SCHEMA_VERSION = 15` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+The verdict is a hard cut: `assay verify` refuses v14 and earlier verdicts
 (no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
-this release extends it with the explicit project-level
+the 8.0.0 release extended it with the explicit project-level
 `[defaults].env_passthrough` option. Existing v2 lane files still load, and a
 lane may omit its own `env_passthrough` only when that project table is
 present. A v2 assay
@@ -260,9 +260,9 @@ and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
 For the verdict-field addition and the effect on old verdicts and reuse, see
-the [v13-to-v14 migration notes](docs/CONSUMERS.md#migration-notes-v13-to-v14).
+the [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
 The previous cut has its own [v12-to-v13 migration notes](docs/CONSUMERS.md#migration-notes-v12-to-v13).
-In v14, present `env_passthrough` values appear in `env_effective` as
+In v15, present `env_passthrough` values appear in `env_effective` as
 `"<passthrough>"`; their full SHA-256 fingerprints are in
 `env_effective_passthrough_sha256`. Fixed `env` values and infrastructure facts
 remain recorded as before. The digest is unkeyed and may be guessable for a
@@ -1113,14 +1113,22 @@ you're changing assay itself:
   full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is
   incomplete. The in-container gate has a 7h30m timeout and Nyxloom has an
   8-hour outer watchdog. Do not treat partial or timed-out state as a pass;
-  B110's structural rework and bounded pilot must land before another full
+  B114's cold-witness and campaign-deadline support is now available, but the
+  B118 bounded pilot and go/no-go decision must happen before another full
   qualification attempt.
 
-  B110 also proposes an opt-in cold-witness policy, which is not shipped yet.
-  Under that policy, one verified test-call failure would be enough to classify
-  a candidate as killed; tests after the failure would be reported as unrun and
-  could independently fail, hang, or crash. Survivors and uncertain executions
-  would still run the full declared suite.
+  B114 ships the opt-in `--cold-witness` policy for the supported native Python
+  pytest shape. Check a lane with `assay plan LANE --cold-witness`, then run it
+  with `assay run LANE --resume --progress .assay/progress-LANE.jsonl
+  --cold-witness --r2-manifest .assay/r2-manifest-LANE.txt`. A killed candidate
+  may stop at its first verified test-call failure; later tests are explicitly
+  unrun and could independently fail, hang, or crash. Survivors and uncertain
+  executions still run the full declared suite. The exact command transform,
+  collection and hook checks, and persisted campaign deadline are documented
+  in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
+  [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does
+  not complete Assay's separate B105 whole-source qualification; the bounded
+  pilot remains a prerequisite to another full campaign.
 
 ## Further reading
 

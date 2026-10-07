@@ -41,9 +41,27 @@ from assay.resource_limits import ResourceLimitCounters
 FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
 
-def _v14_killed_source() -> dict:
+@pytest.fixture(autouse=True)
+def _cgroup_counters_are_isolated_from_the_devcontainer(monkeypatch):
+    """Keep behavioral R2 tests independent of the host cgroup namespace.
+
+    The registered tester-unified gate exercises real counter discovery and
+    visibility. These tests cover reuse/witness behavior; their resource-event
+    cases replace this read explicitly with controlled samples.
+    """
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
+
+
+def _v15_killed_source() -> dict:
     document = json.loads((FIXTURES / "r2_pass.json").read_text(encoding="utf-8"))
-    document["schema_version"] = 14
+    document["schema_version"] = verdict.VERDICT_SCHEMA_VERSION
     mutation = document["claims"][1]["mutation"]
     candidate_ids = []
     for index, item in enumerate(mutation["killed"]):
@@ -81,8 +99,8 @@ def _v14_killed_source() -> dict:
     return document
 
 
-@pytest.mark.parametrize("version", [12, 13])
-def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
+@pytest.mark.parametrize("version", [12, 13, 14])
+def test_v12_through_v14_are_bounded_cold_starts_without_candidate_inspection(
     tmp_path: Path, version: int
 ):
     path = tmp_path / "old.json"
@@ -100,7 +118,8 @@ def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
     assert source.candidate_ids == frozenset()
     assert source.outcomes == {}
     assert verify_document(json.loads(path.read_text()))[0].startswith(
-        f"schema_version {version} is not this verifier's version 14"
+        f"schema_version {version} is not this verifier's version "
+        f"{verdict.VERDICT_SCHEMA_VERSION}"
     )
 
 
@@ -108,7 +127,7 @@ def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
     ("content", "detail"),
     [
         ('{"schema_version":14,"schema_version":14}', "duplicate object key"),
-        ('{"schema_version":15}', "unsupported"),
+        ('{"schema_version":15}', "current v15 verifier rejected"),
         ('{"schema_version":true}', "must be an integer"),
         ('{"schema_version":NaN}', "invalid JSON"),
     ],
@@ -126,8 +145,8 @@ def test_reuse_source_rejects_unreadable_or_foreign_envelopes(
     assert detail in str(caught.value)
 
 
-def test_complete_v14_campaign_exposes_only_killed_witnesses(tmp_path: Path):
-    document = _v14_killed_source()
+def test_complete_v15_campaign_exposes_only_killed_witnesses(tmp_path: Path):
+    document = _v15_killed_source()
     path = tmp_path / "prior.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -145,8 +164,8 @@ def test_complete_v14_campaign_exposes_only_killed_witnesses(tmp_path: Path):
     assert prior_only_candidates(source, [eligible[0]]) == [eligible[1]]
 
 
-def test_current_v14_verifier_rejects_incomplete_candidate_inventory():
-    document = _v14_killed_source()
+def test_current_v15_verifier_rejects_incomplete_candidate_inventory():
+    document = _v15_killed_source()
     document["claims"][1]["mutation"]["candidate_ids"].pop()
 
     failures = verify_document(document)
@@ -238,32 +257,32 @@ def test_raw_b106_receipt_refuses_malformed_and_non_killed_witnesses():
 
 
 def test_raw_b106_mutation_provenance_accepts_a_complete_native_record():
-    document = _v14_killed_source()
+    document = _v15_killed_source()
 
     assert _raw_failures(raw_verify._check_b106_mutation_provenance, document) == []
 
 
 def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["candidate_ids"] = ["bad"]
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("malformed digest" in item for item in failures)
     assert any("does not equal" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["source_sha256"] = "bad"
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("malformed B106 digest" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["candidate_id"] = "f" * 64
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("does not match its recorded identity inputs" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["execution"] = {}
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
@@ -273,13 +292,13 @@ def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
 def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_ids(
     monkeypatch,
 ):
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["candidate_ids"] = [mutation["candidate_ids"][0]] * 2
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("candidate_ids contains a duplicate" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     same_candidate = "c" * 64
     monkeypatch.setattr(raw_verify, "candidate_id_from_fields", lambda **_kwargs: same_candidate)
@@ -291,7 +310,7 @@ def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_id
 
 
 def test_raw_b106_mutation_provenance_handles_ingested_and_limit_sentinel_shapes():
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     document["judgment"]["r2"]["producer"] = "ingested"
     document["claims"][1]["mutation"]["candidate_ids"] = []
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
@@ -611,8 +630,8 @@ operators = ["python:compare-swap"]
     head = repo.commit_all("add current candidate")
     assert repo.head() == head
 
-    prior = tmp_path / "prior-v14.json"
-    prior.write_text(json.dumps(_v14_killed_source()), encoding="utf-8")
+    prior = tmp_path / "prior-v15.json"
+    prior.write_text(json.dumps(_v15_killed_source()), encoding="utf-8")
     out = io.StringIO()
     exit_code = main(
         [
@@ -727,7 +746,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     assert first_outcome.execution.mode == "full"
     assert first_outcome.execution.witness.node_id == "tests/test_behavior.py::test_behavior"
     assert verify_document(original.to_dict()) == []
-    prior = tmp_path / "prior-v14.json"
+    prior = tmp_path / "prior-v15.json"
     prior.write_text(json.dumps(original.to_dict()), encoding="utf-8")
 
     git_repo.write(

@@ -11,6 +11,7 @@ import shutil
 import sys
 import tomllib
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -50,9 +51,10 @@ def _git_value(*args: str) -> str:
 def _verifier_valid_report(lane: str, rigor: tuple[str, ...]) -> dict:
     fixture_dir = PROJECT_ROOT / "tests" / "fixtures" / "verdicts"
     document = json.loads((fixture_dir / "pass.json").read_text(encoding="utf-8"))
-    targets = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))[
-        "lanes"
-    ][lane]["judge"]["targets"]
+    committed_assay_toml = tomllib.loads(
+        _committed_source(_git_value("rev-parse", "HEAD"), "assay/assay.toml").decode("utf-8")
+    )
+    targets = committed_assay_toml["lanes"][lane]["judge"]["targets"]
     if lane == "self-qualification":
         r2 = json.loads((fixture_dir / "r2_pass.json").read_text(encoding="utf-8"))
         r3 = json.loads((fixture_dir / "r3_pass.json").read_text(encoding="utf-8"))
@@ -95,6 +97,79 @@ def _verifier_valid_report(lane: str, rigor: tuple[str, ...]) -> dict:
             },
         }
     )
+    if lane == "self-qualification":
+        committed_lane = tomllib.loads(
+            _committed_source(document["commit"], "assay/assay.toml").decode("utf-8")
+        )["lanes"][lane]
+        argv = committed_lane["argv"]
+        transformed = [
+            token
+            for token in argv
+            if token != "--cov-branch"
+            and not (token.startswith("--cov=") and len(token) > len("--cov="))
+            and not (
+                token.startswith("--cov-report=")
+                and len(token) > len("--cov-report=")
+            )
+        ]
+        manifest = _manifest_bytes()
+        collection_sha = _manifest_digest(manifest)
+        common = {
+            "collection_count": 2,
+            "collection_sha256": collection_sha,
+            "duplicates": 0,
+            "hook_fingerprint_sha256": "a" * 64,
+            "hook_count": 3,
+            "runtime_fingerprint_sha256": "b" * 64,
+        }
+        document.update(
+            {
+                "argv_declared": argv,
+                "argv_appended": [],
+                "argv_effective": argv,
+                "argv_modified": False,
+                "env_declared": {},
+                "env_effective": {},
+                "env_passthrough": ["PATH"],
+            }
+        )
+        r2_policy = document["judgment"]["r2"]
+        r2_policy["cold_witness_kills"] = True
+        r2_policy["r2_command"] = {
+            "transform": "assay-r2-pytest-nocov/1",
+            "argv_declared": argv,
+            "argv_transformed": transformed,
+            "appended": ["-p", "no:pytest_cov"],
+            "cwd": "assay",
+            "config_sha256": hashlib.sha256(
+                _committed_source(document["commit"], "assay/pyproject.toml")
+            ).hexdigest(),
+            "coverage_baseline": common,
+            "r2_baseline": {
+                **common,
+                "hook_fingerprint_sha256": "c" * 64,
+                "wall_s": 1.25,
+            },
+        }
+
+    started = datetime.fromisoformat(document["started"])
+    ended = datetime.fromisoformat(document["ended"])
+    created = (started - timedelta(minutes=1)).astimezone(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+    expires = (ended + timedelta(minutes=1)).astimezone(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+    tree = _git_value("rev-parse", "HEAD^{tree}")
+    document["campaign"] = {
+        "name": f"b105-test-{document['commit'][:12]}",
+        "deadline_sha256": "",
+        "created_at_utc": created,
+        "expires_at_utc": expires,
+    }
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(
+        _deadline_bytes(document, document["commit"], tree)
+    ).hexdigest()
     failures = verify_document(document)
     assert failures == [], f"positive fixture is not accepted by assay verify: {failures}"
     return document
@@ -118,6 +193,49 @@ def _verify_with_assay_cli(tmp_path: Path, document: dict) -> None:
 
 _AUTO_RECEIPT = object()
 _AUTO_PLAN = object()
+_AUTO_MANIFEST = object()
+
+
+def _committed_source(commit: str, path: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", f"{commit}:{path}"],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _deadline_bytes(document: dict, commit: str, tree: str) -> bytes:
+    binding = document.get("campaign") or {}
+    deadline = {
+        "schema": "assay-campaign-deadline/1",
+        "campaign": binding.get("name", "b105-test"),
+        "commit": commit,
+        "git_tree": tree,
+        "created_at_utc": binding.get("created_at_utc", "2026-08-06T08:59:00Z"),
+        "expires_at_utc": binding.get("expires_at_utc", "2026-08-06T10:01:00Z"),
+        "lanes": ["self-qualification", "self-qualification-preflight"],
+        "plan_sha256": {
+            "self-qualification": None,
+            "self-qualification-preflight": None,
+        },
+        "assay_version": VERSION,
+        "wheel_sha256": WHEEL_SHA256,
+    }
+    return json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
+
+
+def _manifest_bytes() -> bytes:
+    return b"tests/test_a.py::test_a\ntests/test_b.py::test_b\n"
+
+
+def _manifest_digest(raw: bytes) -> str:
+    digest = hashlib.sha256()
+    for line in raw.splitlines():
+        digest.update(str(len(line)).encode("ascii"))
+        digest.update(b":")
+        digest.update(line)
+        digest.update(b",")
+    return digest.hexdigest()
 
 
 def _plan_for(document: dict, commit: str, tree: str) -> dict:
@@ -151,6 +269,8 @@ def _run_checker(
     repo_root: Path = REPO_ROOT,
     receipt: object = _AUTO_RECEIPT,
     plan: object = _AUTO_PLAN,
+    manifest: object = _AUTO_MANIFEST,
+    deadline_raw: bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the checker in full mode.
 
@@ -183,6 +303,21 @@ def _run_checker(
         plan_path = tmp_path / "plan.json"
         plan_path.write_text(plan if isinstance(plan, str) else json.dumps(plan), encoding="utf-8")
         plan_flags = ["--plan-json", str(plan_path)]
+    if manifest is _AUTO_MANIFEST:
+        manifest = _manifest_bytes() if "R2" in rigor else None
+    manifest_flags: list[str] = []
+    if isinstance(manifest, Path):
+        manifest_flags = ["--r2-manifest", str(manifest)]
+    elif isinstance(manifest, bytes):
+        manifest_path = tmp_path / "r2-manifest.txt"
+        manifest_path.write_bytes(manifest)
+        manifest_flags = ["--r2-manifest", str(manifest_path)]
+    elif manifest is not None:
+        raise TypeError("manifest must be bytes, Path or None")
+    deadline_path = tmp_path / "campaign-deadline.json"
+    deadline_path.write_bytes(
+        deadline_raw if deadline_raw is not None else _deadline_bytes(document, commit, tree)
+    )
     return subprocess.run(
         [
             sys.executable,
@@ -195,8 +330,11 @@ def _run_checker(
             commit,
             "--expected-tree",
             tree,
+            "--deadline",
+            str(deadline_path),
             *receipt_flags,
             *plan_flags,
+            *manifest_flags,
             "--expected-lane",
             lane,
             "--expected-rigor",
@@ -394,6 +532,15 @@ def _run_hermetic(tmp_path: Path, repo: Path) -> subprocess.CompletedProcess[str
     document["commit"] = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
     ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(
+        _deadline_bytes(document, document["commit"], tree)
+    ).hexdigest()
     document["judgment"]["r1"]["targets"] = ["src/assay/__init__.py", "src/assay/mod.py"]
     return _run_checker(
         tmp_path,
@@ -788,3 +935,196 @@ def test_o11_earlier_refusals_win_over_the_campaign_scope(tmp_path):
     plan["shard"] = "0/2"  # a refusal 3 plan
     document["assay_version"] = "0.0.0"  # a step 5 refusal
     _refused_by_scope(tmp_path, document, plan, "verdict assay_version")
+
+
+def _r2_policy(document: dict) -> dict:
+    return document["judgment"]["r2"]
+
+
+def _r2_mutation(document: dict) -> dict:
+    return next(item["mutation"] for item in document["claims"] if item["rigor"] == "R2")
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate", "message"),
+    [
+        ("C1", lambda d: _r2_policy(d).__setitem__("cold_witness_kills", False),
+         "B105 R2 requires cold_witness_kills true"),
+        ("C2", lambda d: _r2_policy(d).__setitem__("r2_command", None),
+         "B105 R2 report has no r2_command"),
+        ("C3", lambda d: d["argv_declared"].append("--ignore=other.py"),
+         "declared argv differs from assay.toml"),
+        ("C4", lambda d: _r2_policy(d)["r2_command"].__setitem__("transform", "guess"),
+         "unexpected R2 transform"),
+        ("C5", lambda d: _r2_policy(d)["r2_command"]["argv_transformed"].append("--cov=left"),
+         "argv_transformed is not the transform of the committed argv"),
+        ("C6", lambda d: _r2_policy(d)["r2_command"].__setitem__("appended", []),
+         "unexpected R2 appended argv"),
+        ("C7", lambda d: _r2_policy(d)["r2_command"].__setitem__("cwd", "."),
+         "unexpected R2 cwd"),
+        ("C8", lambda d: _r2_policy(d)["r2_command"]["coverage_baseline"].__setitem__("collection_count", 99),
+         "R2 and coverage baseline collections differ"),
+        ("C9", lambda d: d["env_effective"].__setitem__("ASSAY_B105_SOURCE_COMMIT", "leak"),
+         "archive-hook variables present in the qualification run"),
+        ("C13", lambda d: _r2_policy(d)["r2_command"].__setitem__("config_sha256", "0" * 64),
+         "R2 pytest config differs from assay/pyproject.toml at"),
+    ],
+)
+def test_p3d_v15_source_and_consistency_checks_refuse_each_tamper(
+    tmp_path, label, mutate, message
+):
+    document, plan = _r2_case()
+    mutate(document)
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2, (label, result.stdout, result.stderr)
+    assert message in result.stderr, result.stderr
+
+
+def test_p3d_c10_manifest_must_be_well_formed_and_match_the_r2_baseline(tmp_path):
+    document, plan = _r2_case()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        manifest=b"tests/test_a.py::test_a",
+    )
+    assert result.returncode == 2
+    assert "R2 manifest sidecar does not match r2_baseline" in result.stderr
+
+
+def test_p3d_c11_every_cold_kill_must_name_the_manifest_entry_at_its_failed_index(tmp_path):
+    document, plan = _r2_case()
+    mutation = _r2_mutation(document)
+    outcome = mutation["killed"][0]
+    outcome["execution"] = {
+        "mode": "witness-cold",
+        "witness": {
+            "node_id": "tests/test_wrong.py::test_wrong",
+            "when": "call",
+            "outcome": "failed",
+            "session_exit_status": 1,
+            "process_exit_status": 1,
+        },
+    }
+    outcome["evidence"] = {"started_count": 1, "failed_call_index": 0}
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2
+    assert f"cold kill {outcome['candidate_id']} is not the manifest's node at its failed index" in result.stderr
+
+
+def test_p3d_c12_survivor_evidence_must_match_its_selected_baseline(tmp_path):
+    document, plan = _r2_case()
+    mutation = _r2_mutation(document)
+    outcome = mutation["killed"].pop()
+    mutation["survived"].append(outcome)
+    outcome["execution"] = {"mode": "full"}
+    outcome["evidence"] = {
+        "command": "r2",
+        "collection_sha256": "f" * 64,
+    }
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2
+    assert "candidate evidence collection differs from r2_baseline" in result.stderr
+
+
+def test_p3d_deadline_checks_bind_the_report_and_fail_closed(tmp_path):
+    document, plan = _r2_case()
+    document.pop("campaign")
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2
+    assert "B105 report carries no campaign binding" in result.stderr
+
+    document, plan = _r2_case()
+    document["campaign"]["deadline_sha256"] = "0" * 64
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2
+    assert "campaign deadline_sha256 does not match the deadline file" in result.stderr
+
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    deadline = json.loads(_deadline_bytes(document, commit, tree))
+    deadline["commit"] = "0" * 40
+    raw_deadline = json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=raw_deadline,
+    )
+    assert result.returncode == 2
+    assert "deadline file does not bind this commit/tree/lane/version" in result.stderr
+
+    document, plan = _r2_case()
+    document["started"] = "2026-08-06T00:00:00+00:00"
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+    )
+    assert result.returncode == 2
+    assert "report was not produced inside its campaign window" in result.stderr
+
+
+def test_p3d_manifest_and_campaign_arguments_are_checked_before_reading_report(tmp_path):
+    document, plan = _r2_case()
+    document["outcome"] = "FAIL"
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        manifest=None,
+    )
+    assert result.returncode == 2
+    assert "--r2-manifest is required for an R2 report" in result.stderr
+    assert "B105_REPORT_REJECTED" not in result.stderr
+
+    document = _verifier_valid_report(PREFLIGHT, PREFLIGHT_RIGOR)
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=PREFLIGHT,
+        rigor=PREFLIGHT_RIGOR,
+        manifest=_manifest_bytes(),
+    )
+    assert result.returncode == 2
+    assert "--r2-manifest given for a report without R2" in result.stderr
+    assert "B105_REPORT_REJECTED" not in result.stderr

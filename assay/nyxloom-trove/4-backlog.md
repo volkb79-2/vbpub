@@ -132,7 +132,7 @@ items:
   - {id: B128, title: "Wave A: shallow snapshot for both B105 lanes once no test reads repository history", type: refactor, component: isolation, context_estimate: small}
   - {id: B129, title: "Wave A: DRY consolidation of repeated judge rules (shared record decorator + reflective contract test, guard helpers, per-rigor helpers)", type: refactor, component: core, context_estimate: medium}
   - {id: B130, title: "Wave A: component boundary map and import contracts; measure cross-component test coupling for a possible component-scoped R2", type: research, component: architecture, context_estimate: small}
-  - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v14 cold witness", type: feature, component: analysis, context_estimate: small}
+  - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v15 cold witness", type: feature, component: analysis, context_estimate: small}
   - {id: B132, title: "SQL adapter emits mutants for constructs PostgreSQL may refuse (UNIQUE DEFERRABLE / NULLS NOT DISTINCT / INCLUDE / USING INDEX; FK MATCH FULL / DEFERRABLE / SET NULL (col)) -- measure on W5's harness", type: bug, component: sql, context_estimate: small}
   - {id: B133, title: "SQL operator labels misdescribe their effect (NOT IN 'widening' narrows; drop-check also rewrites CREATE POLICY ... WITH CHECK)", type: bug, component: sql, context_estimate: small}
   - {id: B136, title: "assay analyze plan-estimate never checks that the baseline progress file belongs to the planned lane (assay plan JSON carries no lane name), so a foreign lane's baseline yields plausible budget numbers", type: bugfix, component: analysis, context_estimate: small}
@@ -195,9 +195,9 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
-- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — IMPLEMENTED on `assay-b136-b141`; critical, unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
-- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — OPEN, deferred to the next wave (non-release blocker; filed 2026-10-06)
-- B147 — hermetic Git boundary permits detached automatic maintenance — IMPLEMENTED on `assay-b136-b141`; unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-06; folded into the B145 wave)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — SHIPPED in `assay-v8.0.0` (2026-10-07; B145/B147 wave; contaminated post-03:11Z results must be discarded before retry)
+- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — SUMMARY SHIPPED in `assay-v8.0.0`; two residuals remain open: retain the first failure in the verdict and warn when coverage is combined with `--maxfail`/`-x`
+- B147 — hermetic Git boundary permits detached automatic maintenance — SHIPPED in `assay-v8.0.0` (2026-10-07 with B145)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
@@ -11961,7 +11961,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
 
-**Status: IMPLEMENTED on `assay-b136-b141`; registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`, unreleased and grouped with the planned v14 / 8.0.0 wave.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
+**Status: SHIPPED in `assay-v8.0.0` (2026-10-07); registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
 
 **Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
 
@@ -12028,9 +12028,14 @@ B145 and B147 merged to `main` as `25c3af6b`. B146 remains deferred;
 release remains grouped with the planned
 v14 / 8.0.0 wave.
 
+**Release reconciliation (2026-10-07):** Assay 8.0.0 shipped B145, B146's
+summary improvement, and B147. Older notes above that describe the release as
+pending are historical. B146's two residual expectations remain open; see its
+residual section below.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
-**Status: IMPLEMENTED on `assay-73-B` (2026-10-06): `assay run`'s summary gains an `R0: FAIL (first failing test: NAME)` line, read from the retained output tail by `src/assay/failure_summary.py` (pytest, `go test` text and JSON, vitest, jest). The headline pair is unchanged (a failing suite that dirtied the tree still headlines `NO_MEASUREMENT/DIRTY_TREE`); output with no recognised failure adds no line. SQL R0 and `result_report` JSON files are not read; the name is the first failure inside the bounded tail.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
+**Status: SUMMARY SHIPPED in `assay-v8.0.0` (2026-10-07), implemented on `assay-73-B` (2026-10-06): `assay run`'s summary gains an `R0: FAIL (first failing test: NAME)` line, read from the retained output tail by `src/assay/failure_summary.py` (pytest, `go test` text and JSON, vitest, jest). The headline pair is unchanged (a failing suite that dirtied the tree still headlines `NO_MEASUREMENT/DIRTY_TREE`); output with no recognised failure adds no line. SQL R0 and `result_report` JSON files are not read; the name is the first failure inside the bounded tail.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
 
 **Expected:** the concise run summary reports R0 as `FAIL` and names the first failing test when the baseline command has a test failure. Genuine preflight/no-measurement outcomes remain `NO_MEASUREMENT` with their existing reason; they are not rewritten as test failures.
 
@@ -12042,7 +12047,7 @@ v14 / 8.0.0 wave.
 
 ## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
 
-**Status: IMPLEMENTED on `assay-b136-b141`; covered by the registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`, unreleased and grouped with the planned v14 / 8.0.0 wave (2026-10-06).** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+**Status: SHIPPED in `assay-v8.0.0` (2026-10-07); covered by the registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`.** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
 
 **Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
 

@@ -7,16 +7,27 @@ import sys
 from pathlib import Path
 
 import pytest
+from _pytest.config import get_config
 
 from assay.mutation_witness import (
+    COLD_PYTEST_FLAG_OPTIONS,
+    COLD_PYTEST_VALUE_OPTIONS,
+    HOOK_FINGERPRINT_HOOKS,
+    _PLUGIN_SOURCE,
+    WITNESS_COLD_ENV,
     WITNESS_LIVENESS_PLUGIN_PATH_ENV,
+    WITNESS_MANIFEST_FILE_ENV,
     WITNESS_PLUGIN_PATH_ENV,
     WITNESS_TARGET_ENV,
+    cold_shape_refusal,
+    cold_witness_from_receipt,
     inject_witness_plugin,
     make_attempt_plan,
     read_internal_receipt,
+    receipt_facts,
     replay_witness_from_receipt,
     supports_sequential_pytest,
+    survivor_proof_ok,
     witness_from_receipt,
 )
 from assay.runner import CommandPlan
@@ -39,6 +50,7 @@ def _plan(argv: tuple[str, ...], *, env: dict[str, str] | None = None) -> Comman
 def _receipt(**overrides):
     value = {
         "unsupported": False,
+        "replay_supported": False,
         "target_node_id": None,
         "target_count": None,
         "earlier_failure": False,
@@ -48,6 +60,21 @@ def _receipt(**overrides):
         "witness_outcome": "failed",
         "session_exit_status": 1,
         "stopped_at_target": False,
+        "cold_requested": False,
+        "stopped_cold": False,
+        "collection_error": False,
+        "manifest_supported": True,
+        "collection_count": 1,
+        "collection_sha256": "a" * 64,
+        "collection_duplicates": 0,
+        "started_count": 1,
+        "started_prefix_ok": True,
+        "failed_call_index": None,
+        "hook_fingerprint_sha256": "b" * 64,
+        "hook_count": 10,
+        "runtime_fingerprint_sha256": "c" * 64,
+        "config_sha256": None,
+        "archive_hook_exception_used": False,
     }
     value.update(overrides)
     return value
@@ -62,6 +89,24 @@ def test_sequential_pytest_refuses_empty_override_and_untrusted_plugin_inputs():
     assert not supports_sequential_pytest(argv, env={"PYTEST_PLUGINS": "external"})
     assert not supports_sequential_pytest(argv, env={"PYTEST_ADDOPTS": "'unterminated"})
     assert not supports_sequential_pytest(argv, env={"PYTEST_ADDOPTS": "-n 2"})
+
+
+def test_cold_short_option_classes_match_installed_pytest_and_xdist_parser():
+    config = get_config()
+    config.pluginmanager.import_plugin("xdist.plugin")
+    flags: set[str] = set()
+    values: set[str] = set()
+    for action in config._parser.optparser._actions:
+        for option in action.option_strings:
+            if len(option) != 2 or not option.startswith("-"):
+                continue
+            if action.nargs == 0:
+                flags.add(option[1])
+            else:
+                values.add(option[1])
+
+    assert flags == COLD_PYTEST_FLAG_OPTIONS
+    assert values == COLD_PYTEST_VALUE_OPTIONS
 
 
 @pytest.mark.parametrize(
@@ -198,6 +243,103 @@ def test_attempt_plan_adds_or_clears_target_node_id(tmp_path):
     assert WITNESS_TARGET_ENV not in untargeted.env_effective
 
 
+def test_attempt_plan_sets_cold_and_manifest_only_for_that_attempt(tmp_path):
+    plan = _plan(("pytest", "tests"), env={WITNESS_COLD_ENV: "stale", WITNESS_MANIFEST_FILE_ENV: "stale"})
+    cold = make_attempt_plan(
+        plan,
+        receipt_path=tmp_path / "receipt.json",
+        target_node_id=None,
+        cold=True,
+        manifest_path=tmp_path / "manifest.txt",
+    )
+    assert cold.env_effective[WITNESS_COLD_ENV] == "1"
+    assert cold.env_effective[WITNESS_MANIFEST_FILE_ENV] == str(tmp_path / "manifest.txt")
+    full = make_attempt_plan(plan, receipt_path=tmp_path / "full.json", target_node_id=None)
+    assert WITNESS_COLD_ENV not in full.env_effective
+    assert WITNESS_MANIFEST_FILE_ENV not in full.env_effective
+
+
+@pytest.mark.parametrize(
+    ("argv", "appended", "env", "reason"),
+    [
+        (("pytest", "tests", "--cov"), (), {}, "unrecognized coverage option"),
+        (("pytest", "tests", "-qoaddopts=-n4"), (), {}, "pytest override"),
+        (("pytest", "tests", "-cfoo.ini"), (), {}, "pytest configuration override"),
+        (("pytest", "tests", "-qx"), (), {}, "fail-fast option"),
+        (("pytest", "tests", "-pxdist"), (), {}, "parallel option"),
+        (("pytest", "tests", "-prandomly"), (), {}, "order-changing option"),
+        (("pytest", "tests", "-ppytest_cov"), (), {}, "coverage plugin re-enabled"),
+        (("pytest", "tests"), ("-pxdist",), {}, "parallel option"),
+        (("pytest", "tests"), (), {"PYTEST_ADDOPTS": "-x"}, "pytest environment option"),
+        (("pytest", "tests"), (), {"COVERAGE_PROCESS_START": ".coveragerc"}, "coverage re-enabled by environment"),
+    ],
+)
+def test_cold_shape_refusal_rejects_unprovable_pytest_shapes(argv, appended, env, reason):
+    assert reason in (cold_shape_refusal(argv, env, appended=appended) or "")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("pytest", "tests", "-qkexpr"),
+        ("pytest", "tests", "-qk", "expr"),
+        ("pytest", "tests", "-pno:randomly"),
+    ],
+)
+def test_cold_shape_refusal_accepts_selection_and_disabled_randomizer(argv):
+    assert cold_shape_refusal(argv, {}) is None
+
+
+def test_plugin_source_and_hook_fingerprint_contract_are_current():
+    compile(_PLUGIN_SOURCE, "assay_mutation_witness_plugin.py", "exec")
+    assert HOOK_FINGERPRINT_HOOKS == (
+        "pytest_runtestloop", "pytest_runtest_protocol", "pytest_runtest_logstart",
+        "pytest_runtest_logreport", "pytest_runtest_call", "pytest_runtest_setup",
+        "pytest_runtest_teardown", "pytest_collectreport",
+        "pytest_collection_modifyitems", "pytest_sessionfinish",
+    )
+
+
+def test_cold_and_survivor_proofs_require_complete_matching_receipts():
+    expected = receipt_facts(_receipt())
+    assert expected is not None
+    survivor = _receipt(session_exit_status=0)
+    assert survivor_proof_ok(survivor, process_exit_status=0, expected=expected, command="r2")
+    assert survivor_proof_ok(
+        {**survivor, "unsupported": True},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    )
+    assert not survivor_proof_ok(
+        {**survivor, "unsupported": True},
+        process_exit_status=0,
+        expected=expected,
+        command="r2",
+    )
+    assert not survivor_proof_ok(
+        {**survivor, "started_prefix_ok": False},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    )
+    cold = _receipt(
+        cold_requested=True,
+        stopped_cold=True,
+        failed_call_index=0,
+    )
+    proof = cold_witness_from_receipt(cold, process_exit_status=1, expected=expected)
+    assert proof is not None
+    assert proof[1:] == (1, 0)
+    assert proof[0]["node_id"] == "tests/test_example.py::test_case"
+    assert cold_witness_from_receipt(
+        {**cold, "collection_error": True}, process_exit_status=1, expected=expected
+    ) is None
+    assert cold_witness_from_receipt(
+        {**cold, "session_exit_status": True}, process_exit_status=1, expected=expected
+    ) is None
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -245,6 +387,35 @@ def test_valid_failure_receipt_projects_and_replays_only_for_its_exact_target():
     ) == expected
     assert replay_witness_from_receipt(
         receipt, process_exit_status=1, target_node_id="another::test"
+    ) is None
+
+
+def test_legacy_b106_replay_support_does_not_certify_a_cold_witness():
+    node = "tests/test_example.py::test_case"
+    receipt = _receipt(
+        unsupported=True,
+        replay_supported=True,
+        target_node_id=node,
+        target_count=1,
+        witness_node_id=node,
+        stopped_at_target=True,
+    )
+    assert witness_from_receipt(receipt, process_exit_status=1) is not None
+    assert replay_witness_from_receipt(
+        receipt, process_exit_status=1, target_node_id=node
+    ) is not None
+
+    expected = receipt_facts(_receipt())
+    assert expected is not None
+    cold_receipt = _receipt(
+        unsupported=True,
+        replay_supported=True,
+        cold_requested=True,
+        stopped_cold=True,
+        failed_call_index=0,
+    )
+    assert cold_witness_from_receipt(
+        cold_receipt, process_exit_status=1, expected=expected
     ) is None
 
 

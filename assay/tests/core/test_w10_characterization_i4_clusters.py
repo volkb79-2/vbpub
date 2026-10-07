@@ -228,6 +228,7 @@ def test_reset_restores_the_eight_defaults_and_keeps_the_pid():
 def _receipt(**overrides):
     value = {
         "unsupported": False,
+        "replay_supported": False,
         "target_node_id": None,
         "target_count": None,
         "earlier_failure": False,
@@ -237,6 +238,21 @@ def _receipt(**overrides):
         "witness_outcome": "failed",
         "session_exit_status": 1,
         "stopped_at_target": False,
+        "cold_requested": False,
+        "stopped_cold": False,
+        "collection_error": False,
+        "manifest_supported": True,
+        "collection_count": 1,
+        "collection_sha256": "a" * 64,
+        "collection_duplicates": 0,
+        "started_count": 1,
+        "started_prefix_ok": True,
+        "failed_call_index": None,
+        "hook_fingerprint_sha256": "b" * 64,
+        "hook_count": 10,
+        "runtime_fingerprint_sha256": "c" * 64,
+        "config_sha256": None,
+        "archive_hook_exception_used": False,
     }
     value.update(overrides)
     return value
@@ -559,6 +575,7 @@ def _r2_with(mode, targets):
         mode=mode,
         targets=targets,
         kill_attribution="unattributed",
+        cold_witness_kills=False,
     )
 
 

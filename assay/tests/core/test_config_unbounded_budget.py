@@ -296,25 +296,27 @@ def test_the_one_admissible_shape_is_a_native_R2_sweep(tmp_path):
 
 
 def test_no_child_of_an_unbounded_R0_R1_R3_lane_ever_gets_no_timeout(
-    git_repo: GitRepo, tmp_path, monkeypatch
+    git_repo: GitRepo, tmp_path, monkeypatch, capsys
 ):
     """(Round-1 blocker B1.) The reviewer's own repro, pinned at the process
     boundary rather than at the loader.
 
-    A load-time assertion alone would not have caught the ORIGINAL defect any
-    better than the tests that missed it: what makes this one binding is that
-    it instruments the actual `subprocess.run` call and asserts no child of
-    this lane was ever launched with `timeout=None`. Before the fix the
-    lane's own argv ran exactly that way.
+    The current loader refuses an unbounded R0/R1 command before launch. The
+    child-wait seam still proves the boundary: if a future edit accidentally
+    admits the lane, its command reaches `_wait_child` and the recorded
+    `timeout=None` makes this test fail. Pin the refusal text too, so an
+    unrelated early error cannot satisfy the oracle.
     """
     recorded: list[object] = []
-    real_run = subprocess.run
+    from assay import runner
 
-    def record(*args, **kwargs):
-        recorded.append(kwargs.get("timeout", "MISSING"))
-        return real_run(*args, **kwargs)
+    real_wait = runner._wait_child
 
-    monkeypatch.setattr(subprocess, "run", record)
+    def record(proc, timeout):
+        recorded.append(timeout)
+        return real_wait(proc, timeout)
+
+    monkeypatch.setattr(runner, "_wait_child", record)
 
     git_repo.write(
         "assay.toml",
@@ -331,6 +333,10 @@ def test_no_child_of_an_unbounded_R0_R1_R3_lane_ever_gets_no_timeout(
     exit_code = main(["run", "only", "--file", str(git_repo.path / "assay.toml")])
 
     assert exit_code != 0, "the lane must be refused, not run"
+    captured = capsys.readouterr()
+    assert "budget = 'unbounded' is refused on this lane" in captured.err
+    assert "an R0/R1 lane is ONE command" in captured.err
+    assert recorded == [], "preflight refusal must occur before starting any child"
     assert None not in recorded, (
         "a child of an unbounded R0/R1+R3 lane was launched with no timeout at "
         f"all: {recorded}"
@@ -583,7 +589,7 @@ def _seed(repo: GitRepo) -> tuple[str, str]:
 
 
 def test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout(
-    git_repo, tmp_path
+    git_repo, tmp_path, monkeypatch
 ):
     """Box 2, measured rather than asserted: a real Git repository, real P22
     snapshots, the real mutation sweep, and `budget = "unbounded"` with
@@ -600,6 +606,22 @@ def test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout(
       declaration a lie, and it is precisely the trap `min(remaining,
       per_candidate)` is there to avoid now that `remaining` can be infinite.
     """
+    from assay import mutation
+    from assay.resource_limits import ResourceLimitCounters
+
+    # This test measures timeout propagation, not host cgroup visibility. The
+    # registered tester-unified lane separately exercises the real cgroup
+    # discovery, while a static zero sample keeps this behavioral oracle
+    # runnable in a cockpit with a private cgroup namespace.
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
+
     base_rev, head_rev = _seed(git_repo)
     timeouts: list[object] = []
 

@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from .records import record
 from datetime import datetime, timezone
@@ -85,6 +86,12 @@ from .guards import (
     is_strict_int,
 )
 from .candidate_identity import candidate_id_from_fields
+from .r2_command import (
+    R2_APPENDED,
+    R2_TRANSFORM_ID,
+    UnrecognizedCoverageOption,
+    transform_argv,
+)
 from .vocabulary import (
     INGESTED_OPERATOR_RE,
     MAX_INGESTED_MUTANTS,
@@ -128,6 +135,7 @@ __all__ = [
     "VERDICT_SCHEMA_VERSION",
     "CanaryAttempt",
     "CanaryResult",
+    "CampaignBinding",
     "Claim",
     "Coverage",
     "Evidence",
@@ -143,9 +151,13 @@ __all__ = [
     "JudgmentResolved",
     "Mutation",
     "MutationExecution",
+    "MutantEvidence",
     "MutationWitnessReceipt",
     "MutantOutcome",
     "MutationProducerTool",
+    "R2BaselineFacts",
+    "R2Command",
+    "EquivalenceLedger",
     "ResourceLimitEvidence",
     "SnapshotPolicy",
     "WorktreeIntegrity",
@@ -371,7 +383,16 @@ __all__ = [
 #: Native R2 outcomes also carry cgroup v2 process-limit and OOM event deltas;
 #: any positive delta must be classified as `crashed`. These v14 additions
 #: ship together before the first v14 release; `assay verify` refuses v13.
-VERDICT_SCHEMA_VERSION = 14
+#:
+#: **Bumped 14 -> 15 (B114/B110 P3).** Native R2 policy records whether
+#: cold-witness kills were enabled, the versioned no-coverage command and
+#: both independently measured baselines, plus an explicit null equivalence
+#: ledger slot. Candidate outcomes may carry collection and hook evidence for
+#: cold/declared attempts. Liveness policy discloses its effective CPU and
+#: idle windows. Campaign deadlines bind resumed work to one commit and plan.
+#: Versions 12-14 are bounded `--reuse-from` cold starts; v11 and older remain
+#: refused. Producers emit v15, and `assay verify` refuses v14.
+VERDICT_SCHEMA_VERSION = 15
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -1530,6 +1551,195 @@ class MutationWitnessReceipt:
 
 
 @record
+class R2BaselineFacts:
+    """One runtime-proven ordered collection baseline for native R2."""
+
+    collection_count: int
+    collection_sha256: str
+    duplicates: int
+    hook_fingerprint_sha256: str
+    hook_count: int
+    runtime_fingerprint_sha256: str | None = None
+    wall_s: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("collection_count", "duplicates", "hook_count"):
+            value = getattr(self, name)
+            if not is_strict_int(value):
+                raise ValueError(f"R2 baseline {name} must be an integer, got {value!r}")
+        if self.collection_count < 0 or self.hook_count < 0:
+            raise ValueError("R2 baseline collection_count and hook_count must be >= 0")
+        if self.duplicates != 0:
+            raise ValueError("R2 baseline duplicates must equal 0")
+        for name in ("collection_sha256", "hook_fingerprint_sha256"):
+            if not is_sha256_hex(getattr(self, name)):
+                raise ValueError(f"R2 baseline {name} must be a SHA-256 digest")
+        if self.runtime_fingerprint_sha256 is not None and not is_sha256_hex(
+            self.runtime_fingerprint_sha256
+        ):
+            raise ValueError(
+                "R2 baseline runtime_fingerprint_sha256 must be a SHA-256 digest or None"
+            )
+        if self.wall_s is not None and (
+            not is_real(self.wall_s) or not math.isfinite(float(self.wall_s)) or self.wall_s < 0
+        ):
+            raise ValueError("R2 baseline wall_s must be finite and >= 0 or None")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "collection_count": self.collection_count,
+            "collection_sha256": self.collection_sha256,
+            "duplicates": self.duplicates,
+            "hook_fingerprint_sha256": self.hook_fingerprint_sha256,
+            "hook_count": self.hook_count,
+            "runtime_fingerprint_sha256": self.runtime_fingerprint_sha256,
+        }
+        if self.wall_s is not None:
+            payload["wall_s"] = self.wall_s
+        return payload
+
+
+@record
+class R2Command:
+    """The declared and transformed native R2 command plus its baselines."""
+
+    transform: str
+    argv_declared: tuple[str, ...]
+    argv_transformed: tuple[str, ...]
+    appended: tuple[str, ...]
+    cwd: str
+    config_sha256: str | None
+    coverage_baseline: R2BaselineFacts
+    r2_baseline: R2BaselineFacts
+
+    def __post_init__(self) -> None:
+        if self.transform != R2_TRANSFORM_ID:
+            raise ValueError(f"R2 command transform must be {R2_TRANSFORM_ID!r}")
+        for name in ("argv_declared", "argv_transformed", "appended"):
+            value = getattr(self, name)
+            if not isinstance(value, tuple) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"R2 command {name} must be a tuple of strings")
+        try:
+            expected = transform_argv(self.argv_declared)
+        except (TypeError, UnrecognizedCoverageOption) as exc:
+            raise ValueError(f"R2 command argv_declared cannot be transformed: {exc}") from exc
+        if self.argv_transformed != expected:
+            raise ValueError("R2 command argv_transformed differs from the declared transform")
+        if self.appended != R2_APPENDED:
+            raise ValueError(f"R2 command appended must equal {R2_APPENDED!r}")
+        if (
+            not is_nonempty_str(self.cwd)
+            or "\\" in self.cwd
+            or "\x00" in self.cwd
+            or self.cwd.startswith("/")
+            or self.cwd.endswith("/")
+            or (self.cwd != "." and any(part in {"", ".", ".."} for part in self.cwd.split("/")))
+        ):
+            raise ValueError("R2 command cwd must be a normalized project-relative POSIX path")
+        if self.config_sha256 is not None and not is_sha256_hex(self.config_sha256):
+            raise ValueError("R2 command config_sha256 must be a SHA-256 digest or None")
+        if not isinstance(self.coverage_baseline, R2BaselineFacts):
+            raise ValueError("R2 command coverage_baseline has the wrong type")
+        if not isinstance(self.r2_baseline, R2BaselineFacts):
+            raise ValueError("R2 command r2_baseline has the wrong type")
+        if self.coverage_baseline.runtime_fingerprint_sha256 is None:
+            raise ValueError("R2 command coverage_baseline requires a runtime fingerprint")
+        if self.r2_baseline.runtime_fingerprint_sha256 is None:
+            raise ValueError("R2 command r2_baseline requires a runtime fingerprint")
+        if self.coverage_baseline.wall_s is not None:
+            raise ValueError("R2 command coverage_baseline must omit wall_s")
+        if self.r2_baseline.wall_s is None:
+            raise ValueError("R2 command r2_baseline requires wall_s")
+        if self.coverage_baseline.collection_count != self.r2_baseline.collection_count:
+            raise ValueError("R2 command baselines have different collection_count values")
+        if self.coverage_baseline.collection_sha256 != self.r2_baseline.collection_sha256:
+            raise ValueError("R2 command baselines have different collection_sha256 values")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "transform": self.transform,
+            "argv_declared": list(self.argv_declared),
+            "argv_transformed": list(self.argv_transformed),
+            "appended": list(self.appended),
+            "cwd": self.cwd,
+            "config_sha256": self.config_sha256,
+            "coverage_baseline": self.coverage_baseline.to_dict(),
+            "r2_baseline": self.r2_baseline.to_dict(),
+        }
+
+
+@record
+class EquivalenceLedger:
+    """Reserved ledger envelope; production and audit remain disabled in v15."""
+
+    path: str
+    sha256: str
+    entry_count: int
+    audit_sha256: str
+
+    def __post_init__(self) -> None:
+        _check_wire_path(self.path, "equivalence ledger path")
+        if not is_sha256_hex(self.sha256):
+            raise ValueError("equivalence ledger sha256 must be a SHA-256 digest")
+        if not is_sha256_hex(self.audit_sha256):
+            raise ValueError("equivalence ledger audit_sha256 must be a SHA-256 digest")
+        if not is_strict_int(self.entry_count) or self.entry_count < 1:
+            raise ValueError("equivalence ledger entry_count must be an integer >= 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "sha256": self.sha256,
+            "entry_count": self.entry_count,
+            "audit_sha256": self.audit_sha256,
+        }
+
+
+@record
+class MutantEvidence:
+    """Ordered collection and execution-prefix facts for one R2 attempt."""
+
+    command: str
+    collection_count: int
+    collection_sha256: str
+    hook_fingerprint_sha256: str
+    started_count: int | None = None
+    failed_call_index: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.command not in ("r2", "declared"):
+            raise ValueError("mutant evidence command must be 'r2' or 'declared'")
+        if not is_strict_int(self.collection_count) or self.collection_count < 0:
+            raise ValueError("mutant evidence collection_count must be an integer >= 0")
+        for name in ("collection_sha256", "hook_fingerprint_sha256"):
+            if not is_sha256_hex(getattr(self, name)):
+                raise ValueError(f"mutant evidence {name} must be a SHA-256 digest")
+        if (self.started_count is None) != (self.failed_call_index is None):
+            raise ValueError("mutant evidence started_count and failed_call_index must appear together")
+        if self.started_count is not None:
+            if not is_strict_int(self.started_count) or self.started_count < 1:
+                raise ValueError("mutant evidence started_count must be an integer >= 1")
+            if not is_strict_int(self.failed_call_index):
+                raise ValueError("mutant evidence failed_call_index must be an integer")
+            if self.command != "r2":
+                raise ValueError("only R2 evidence may record a failed call prefix")
+            if self.failed_call_index != self.started_count - 1:
+                raise ValueError("mutant evidence failed_call_index must end the started prefix")
+            if self.started_count > self.collection_count:
+                raise ValueError("mutant evidence started_count exceeds collection_count")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "command": self.command,
+            "collection_count": self.collection_count,
+            "collection_sha256": self.collection_sha256,
+            "hook_fingerprint_sha256": self.hook_fingerprint_sha256,
+            "started_count": self.started_count,
+            "failed_call_index": self.failed_call_index,
+        }
+
+
+@record
 class MutationExecution:
     """How a native candidate reached its recorded outcome."""
 
@@ -1538,11 +1748,13 @@ class MutationExecution:
     prior_verdict_sha256: str | None = None
     prior_node_id: str | None = None
     current_node_id: str | None = None
+    anchor: str | None = None
 
     def __post_init__(self) -> None:
-        if self.mode not in ("full", "witness-prefix"):
+        if self.mode not in ("full", "witness-prefix", "witness-cold", "ledger"):
             raise ValueError(
-                "mutation execution mode must be 'full' or 'witness-prefix'"
+                "mutation execution mode must be 'full', 'witness-prefix', "
+                "'witness-cold' or 'ledger'"
             )
         if self.witness is not None and not isinstance(
             self.witness, MutationWitnessReceipt
@@ -1555,10 +1767,41 @@ class MutationExecution:
                     self.prior_verdict_sha256,
                     self.prior_node_id,
                     self.current_node_id,
+                    self.anchor,
                 )
             ):
-                raise ValueError("full execution cannot carry prior-witness fields")
+                raise ValueError("full execution cannot carry prefix or ledger fields")
             return
+        if self.mode == "witness-cold":
+            if self.witness is None:
+                raise ValueError("witness-cold execution requires a witness receipt")
+            if any(value is not None for value in (
+                self.prior_verdict_sha256,
+                self.prior_node_id,
+                self.current_node_id,
+                self.anchor,
+            )):
+                raise ValueError("witness-cold execution cannot carry prefix or ledger fields")
+            return
+        if self.mode == "ledger":
+            if not is_nonempty_str(self.anchor):
+                raise ValueError("ledger execution requires a non-empty anchor")
+            try:
+                anchor_size = len(self.anchor.encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                raise ValueError("ledger execution anchor must be valid UTF-8") from exc
+            if anchor_size > 4096:
+                raise ValueError("ledger execution anchor exceeds 4096 UTF-8 bytes")
+            if any(value is not None for value in (
+                self.witness,
+                self.prior_verdict_sha256,
+                self.prior_node_id,
+                self.current_node_id,
+            )):
+                raise ValueError("ledger execution cannot carry witness or prefix fields")
+            return
+        if self.anchor is not None:
+            raise ValueError("witness-prefix execution cannot carry a ledger anchor")
         if self.witness is None:
             raise ValueError("witness-prefix execution requires a witness receipt")
         if not is_sha256_hex(self.prior_verdict_sha256):
@@ -1596,6 +1839,8 @@ class MutationExecution:
                     "current_node_id": self.current_node_id,
                 }
             )
+        elif self.mode == "ledger":
+            payload["anchor"] = self.anchor
         return payload
 
 
@@ -1675,6 +1920,9 @@ class MutantOutcome:
     #: including zero deltas. Ingested outcomes have no per-candidate
     #: execution and therefore cannot carry this field.
     resource_limit_evidence: ResourceLimitEvidence | None = None
+    #: (B114/schema v15) collection and started-prefix facts for a cold or
+    #: declared attempt. Ingested outcomes never carry execution evidence.
+    evidence: MutantEvidence | None = None
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "MutantOutcome.path")
@@ -1735,6 +1983,8 @@ class MutantOutcome:
             self.resource_limit_evidence, ResourceLimitEvidence
         ):
             raise ValueError("MutantOutcome.resource_limit_evidence has the wrong type")
+        if self.evidence is not None and not isinstance(self.evidence, MutantEvidence):
+            raise ValueError("MutantOutcome.evidence has the wrong type")
         b106_values = (
             self.candidate_id,
             self.source_sha256,
@@ -1768,10 +2018,18 @@ class MutantOutcome:
                     "MutantOutcome.candidate_id does not match its recorded "
                     "identity inputs"
                 )
-            if self.resource_limit_evidence is None:
+            assert isinstance(self.execution, MutationExecution)
+            if self.execution.mode == "ledger" and self.resource_limit_evidence is not None:
+                raise ValueError("ledger execution cannot carry per-execution resource evidence")
+            if (
+                self.resource_limit_evidence is None
+                and self.execution.mode != "ledger"
+            ):
                 raise ValueError(
-                    "native MutantOutcome requires resource_limit_evidence"
+                    "native executed MutantOutcome requires resource_limit_evidence"
                 )
+        elif self.evidence is not None:
+            raise ValueError("ingested MutantOutcome cannot carry execution evidence")
         elif self.resource_limit_evidence is not None:
             raise ValueError(
                 "ingested MutantOutcome cannot carry resource_limit_evidence"
@@ -1811,8 +2069,10 @@ class MutantOutcome:
             payload["mutated_file_sha256"] = self.mutated_file_sha256
             assert self.execution is not None
             payload["execution"] = self.execution.to_dict()
-            assert self.resource_limit_evidence is not None
-            payload["resource_limit_evidence"] = self.resource_limit_evidence.to_dict()
+            if self.resource_limit_evidence is not None:
+                payload["resource_limit_evidence"] = self.resource_limit_evidence.to_dict()
+        if self.evidence is not None:
+            payload["evidence"] = self.evidence.to_dict()
         return payload
 
 
@@ -2017,11 +2277,16 @@ class Mutation:
                     seen_candidates[item.candidate_id] = name
 
                 if name != "killed" and item.execution is not None:
-                    if item.execution.witness is not None or item.execution.mode == "witness-prefix":
+                    if (
+                        item.execution.witness is not None
+                        or item.execution.mode in ("witness-prefix", "witness-cold")
+                    ):
                         raise ValueError(
                             f"mutation.{name} cannot carry a kill witness or "
-                            "witness-prefix execution"
+                            "witness execution"
                         )
+                if name != "equivalent" and item.execution is not None and item.execution.mode == "ledger":
+                    raise ValueError(f"mutation.{name} cannot carry a ledger execution")
 
     def _check_kill_signal_is_killed_only(self) -> None:
         """(P33/A-223e) a ``kill_signal`` is legal ONLY on a ``killed`` entry.
@@ -2739,6 +3004,14 @@ class JudgmentR2:
     #: ONLY to native R2 lanes"), so an ingested judgment has nothing
     #: honest to put here.
     liveness: Mapping[str, Any] | None = None
+    #: (B114/schema v15) whether native kills used the no-coverage cold witness.
+    cold_witness_kills: bool | None = None
+    #: The exact command transform and both runtime-proven baselines. Always
+    #: present on native judgments, null when cold-witness was not enabled.
+    r2_command: R2Command | None = None
+    #: Reserved v15 wire only. B105 refuses non-null ledgers until P10a is
+    #: repaired and P10b produces independently bound audit evidence.
+    equivalence_ledger: EquivalenceLedger | None = None
 
     def __post_init__(self) -> None:
         # B046: the producer fork, checked FIRST -- every field below is
@@ -2849,17 +3122,21 @@ class JudgmentR2:
 
     #: (B046) assay's OWN R2 policy -- the fields a native run declares and an
     #: ingested one has nothing honest to put in.
-    _NATIVE_ONLY_FIELDS: ClassVar[tuple[str, ...]] = (
+    _NATIVE_REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = (
         "jobs",
         "max_mutants",
         "operators",
+        "cold_witness_kills",
+    )
+    _NATIVE_OPTIONAL_FIELDS: ClassVar[tuple[str, ...]] = (
         "equivalence_artifact",
-        # (B091/D-23, and RW-36's `liveness` trailing beside it) Trailing, on
-        # `equivalence_artifact`'s own footing: native-only but OPTIONAL,
-        # never required -- see `_check_producer_fork`'s own trailing-slice
-        # comment.
         "budget_per_candidate_derived_s",
         "liveness",
+        "r2_command",
+        "equivalence_ledger",
+    )
+    _NATIVE_ONLY_FIELDS: ClassVar[tuple[str, ...]] = (
+        _NATIVE_REQUIRED_FIELDS + _NATIVE_OPTIONAL_FIELDS
     )
     #: (B046) facts derived FROM an ingested report -- absent from a native
     #: document, which would otherwise claim a computation that never ran.
@@ -2884,11 +3161,7 @@ class JudgmentR2:
         """
         if self.producer == "native":
             present, forbidden_label = self._INGESTED_ONLY_FIELDS, "native"
-            # (B091/D-23/RW-36) `[:-3]`: the three TRAILING entries of
-            # `_NATIVE_ONLY_FIELDS` -- `equivalence_artifact`,
-            # `budget_per_candidate_derived_s` and `liveness` -- are
-            # native-only but OPTIONAL, never required of a native document.
-            required = self._NATIVE_ONLY_FIELDS[:-3]
+            required = self._NATIVE_REQUIRED_FIELDS
         else:                                         # is OPTIONAL natively
             present, forbidden_label = self._NATIVE_ONLY_FIELDS, "ingested"
             required = self._INGESTED_ONLY_FIELDS
@@ -2955,6 +3228,14 @@ class JudgmentR2:
                 f"judgment.r2.operators contains a duplicate: "
                 f"{list(self.operators)}"
             )
+        if type(self.cold_witness_kills) is not bool:
+            raise ValueError("judgment.r2.cold_witness_kills must be a bool")
+        if self.r2_command is not None and not isinstance(self.r2_command, R2Command):
+            raise ValueError("judgment.r2.r2_command has the wrong type")
+        if self.equivalence_ledger is not None and not isinstance(
+            self.equivalence_ledger, EquivalenceLedger
+        ):
+            raise ValueError("judgment.r2.equivalence_ledger has the wrong type")
         if self.budget_per_candidate_derived_s is not None and (
             not is_finite_positive(self.budget_per_candidate_derived_s)
         ):
@@ -2966,16 +3247,19 @@ class JudgmentR2:
         if self.liveness is not None:
             if (
                 not isinstance(self.liveness, Mapping)
-                or set(self.liveness) != {"active", "reason", "plugin"}
+                or set(self.liveness)
+                != {"active", "reason", "plugin", "cpu_window_s", "idle_floor_s"}
             ):
                 raise ValueError(
                     "judgment.r2.liveness must be a mapping with exactly "
-                    f"the keys active/reason/plugin, or None, got "
+                    f"the keys active/reason/plugin/cpu_window_s/idle_floor_s, or None, got "
                     f"{self.liveness!r}"
                 )
             active = self.liveness["active"]
             reason = self.liveness["reason"]
             plugin = self.liveness["plugin"]
+            cpu_window_s = self.liveness["cpu_window_s"]
+            idle_floor_s = self.liveness["idle_floor_s"]
             if not isinstance(active, bool):
                 raise ValueError(
                     f"judgment.r2.liveness.active must be a bool, got {active!r}"
@@ -3001,6 +3285,18 @@ class JudgmentR2:
                     "judgment.r2.liveness.plugin must be None when active "
                     "is false -- nothing was materialised"
                 )
+            for name, value in (
+                ("cpu_window_s", cpu_window_s),
+                ("idle_floor_s", idle_floor_s),
+            ):
+                if active and not is_finite_positive(value):
+                    raise ValueError(
+                        f"judgment.r2.liveness.{name} must be finite and > 0 when active"
+                    )
+                if not active and value is not None:
+                    raise ValueError(
+                        f"judgment.r2.liveness.{name} must be None when inactive"
+                    )
 
     def _check_ingested_record(self) -> None:
         """(B046) The shape of the four fields an ingested judgment carries.
@@ -3103,6 +3399,15 @@ class JudgmentR2:
             payload["jobs"] = self.jobs
             payload["max_mutants"] = self.max_mutants
             payload["operators"] = list(self.operators or ())
+            payload["cold_witness_kills"] = self.cold_witness_kills
+            payload["r2_command"] = (
+                None if self.r2_command is None else self.r2_command.to_dict()
+            )
+            payload["equivalence_ledger"] = (
+                None
+                if self.equivalence_ledger is None
+                else self.equivalence_ledger.to_dict()
+            )
         else:
             assert self.producer_tool is not None  # _check_producer_fork
             payload["producer_tool"] = self.producer_tool.to_dict()
@@ -4395,6 +4700,43 @@ class WorktreeIntegrity:
 
 
 @record
+class CampaignBinding:
+    """Immutable link between one verdict and its persisted campaign clock."""
+
+    name: str
+    deadline_sha256: str
+    created_at_utc: str
+    expires_at_utc: str
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.name):
+            raise ValueError("campaign.name does not match the campaign-name grammar")
+        if not is_sha256_hex(self.deadline_sha256):
+            raise ValueError("campaign.deadline_sha256 must be a SHA-256 digest")
+        values: list[datetime] = []
+        for name in ("created_at_utc", "expires_at_utc"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value
+            ):
+                raise ValueError(f"campaign.{name} must use YYYY-MM-DDTHH:MM:SSZ")
+            try:
+                values.append(datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError as exc:
+                raise ValueError(f"campaign.{name} is not a valid UTC timestamp") from exc
+        if values[1] <= values[0]:
+            raise ValueError("campaign.expires_at_utc must be later than created_at_utc")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "deadline_sha256": self.deadline_sha256,
+            "created_at_utc": self.created_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+        }
+
+
+@record
 class Verdict:
     """One verdict: one lane, one commit (§7).
 
@@ -4504,6 +4846,9 @@ class Verdict:
     #: bounded rather than silently lossy.
     result_stdout_dropped_bytes: int = 0
     result_stderr_dropped_bytes: int = 0
+    #: (B117/schema v15) campaign clock binding, omitted when no persisted
+    #: deadline was supplied.
+    campaign: CampaignBinding | None = None
     schema_version: int = VERDICT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -4539,6 +4884,8 @@ class Verdict:
                 f"worktree_integrity must be a WorktreeIntegrity, got "
                 f"{self.worktree_integrity!r}"
             )
+        if self.campaign is not None and not isinstance(self.campaign, CampaignBinding):
+            raise ValueError("campaign must be a CampaignBinding or None")
         if self.env_effective_incomplete and self.declared_rigor is None:
             raise ValueError(
                 "env_effective_incomplete requires the lane-resolved group "
@@ -4971,6 +5318,7 @@ class Verdict:
         )
         if judgment_r2 is not None:
             self._check_operator_language_agrees(judgment_r2)
+            self._check_cold_witness_policy(r2_claim, judgment_r2)
         if r2_judged and judgment_r2 is not None:
             # P21/A-180: `killed` is now in this sweep. Under v3 it was a bare
             # count, so a killed mutant produced by an operator the lane never
@@ -5197,14 +5545,153 @@ class Verdict:
         something else — which is exactly what A-209's both-present pattern
         exists to forbid one field over.
         """
-        if mutation.equivalent and policy.equivalence_artifact is None:
+        if policy.equivalence_artifact is not None and policy.equivalence_ledger is not None:
+            raise ValueError(
+                "judgment.r2 cannot declare both equivalence_artifact and "
+                "equivalence_ledger"
+            )
+        if (
+            mutation.equivalent
+            and policy.equivalence_artifact is None
+            and policy.equivalence_ledger is None
+        ):
             raise ValueError(
                 f"claim[R2].mutation records {len(mutation.equivalent)} "
-                f"equivalent mutant(s) but judgment.r2 declares no "
-                f"equivalence_artifact -- equivalence is established by "
-                f"comparing that artifact's bytes, so with none declared there "
-                f"is nothing the proof could have been read from"
+                f"equivalent mutant(s) but judgment.r2 declares no proof source"
             )
+
+    def _check_cold_witness_policy(
+        self, claim: Claim | None, policy: JudgmentR2
+    ) -> None:
+        """Bind cold execution modes and per-attempt facts to their baselines."""
+        if policy.producer != "native":
+            return
+        mutation = None if claim is None else claim.mutation
+        if (
+            policy.equivalence_ledger is not None
+            and policy.equivalence_artifact is not None
+        ):
+            raise ValueError(
+                "judgment.r2 cannot declare both equivalence_artifact and "
+                "equivalence_ledger"
+            )
+        if mutation is None:
+            if policy.r2_command is not None:
+                raise ValueError("payload-free judgment.r2 cannot carry r2_command")
+            if policy.equivalence_ledger is not None:
+                raise ValueError(
+                    "judgment.r2.equivalence_ledger requires a mutation payload"
+                )
+            return
+
+        cold_enabled = policy.cold_witness_kills is True
+        command = policy.r2_command
+        if cold_enabled and command is None:
+            raise ValueError("cold-witness R2 payload requires judgment.r2.r2_command")
+        if not cold_enabled and command is not None:
+            raise ValueError("judgment.r2.r2_command requires cold_witness_kills=true")
+        if command is not None and command.argv_declared != self.argv_declared:
+            raise ValueError(
+                "judgment.r2.r2_command.argv_declared differs from top-level argv_declared"
+            )
+
+        cold_baseline = None if command is None else command.r2_baseline
+        coverage_baseline = None if command is None else command.coverage_baseline
+        for bucket in MUTATION_BUCKETS:
+            for item in getattr(mutation, bucket):
+                execution = item.execution
+                evidence = item.evidence
+                cold_execution = (
+                    execution is not None and execution.mode == "witness-cold"
+                )
+                ledger_execution = (
+                    execution is not None and execution.mode == "ledger"
+                )
+                if not cold_enabled and (evidence is not None or cold_execution):
+                    raise ValueError(
+                        "cold-disabled native outcomes cannot carry evidence or "
+                        "witness-cold execution"
+                    )
+                if cold_execution and (bucket != "killed" or not cold_enabled):
+                    raise ValueError(
+                        f"mutation.{bucket} cannot carry witness-cold execution"
+                    )
+                if ledger_execution and (
+                    bucket != "equivalent" or policy.equivalence_ledger is None
+                ):
+                    raise ValueError(
+                        f"mutation.{bucket} ledger execution requires an equivalent "
+                        "entry and judgment.r2.equivalence_ledger"
+                    )
+
+                if evidence is None:
+                    if cold_execution:
+                        raise ValueError(
+                            "witness-cold kill requires started-prefix evidence"
+                        )
+                    if bucket == "survived" and cold_enabled:
+                        raise ValueError("cold-witness survivor requires collection evidence")
+                    continue
+
+                if cold_execution:
+                    if evidence.started_count is None:
+                        raise ValueError(
+                            "witness-cold kill requires started-prefix evidence"
+                        )
+                    if cold_baseline is None:
+                        raise ValueError("witness-cold kill requires an R2 command baseline")
+                    self._check_evidence_matches_baseline(evidence, cold_baseline, "r2")
+                else:
+                    if evidence.started_count is not None:
+                        raise ValueError(
+                            f"mutation.{bucket}.evidence started-prefix facts require witness-cold"
+                        )
+                    if bucket == "survived" and cold_enabled:
+                        if evidence.command == "r2":
+                            baseline = cold_baseline
+                        else:
+                            baseline = coverage_baseline
+                        if baseline is None:
+                            raise ValueError("survivor evidence has no matching command baseline")
+                        self._check_evidence_matches_baseline(
+                            evidence, baseline, evidence.command
+                        )
+
+        ledger = policy.equivalence_ledger
+        if ledger is not None:
+            if policy.equivalence_artifact is not None:
+                raise ValueError(
+                    "judgment.r2.equivalence_ledger cannot accompany equivalence_artifact"
+                )
+            if len(mutation.equivalent) != ledger.entry_count:
+                raise ValueError(
+                    "equivalence ledger entry_count differs from mutation.equivalent"
+                )
+            if any(
+                item.execution is None
+                or item.execution.mode != "ledger"
+                or item.evidence is not None
+                or item.resource_limit_evidence is not None
+                for item in mutation.equivalent
+            ):
+                raise ValueError(
+                    "equivalence-ledger entries must be unexecuted ledger outcomes "
+                    "without candidate or resource evidence"
+                )
+
+    @staticmethod
+    def _check_evidence_matches_baseline(
+        evidence: MutantEvidence, baseline: R2BaselineFacts, command: str
+    ) -> None:
+        if evidence.command != command:
+            raise ValueError("mutant evidence command differs from its baseline")
+        for name in (
+            "collection_count",
+            "collection_sha256",
+            "hook_fingerprint_sha256",
+        ):
+            if getattr(evidence, name) != getattr(baseline, name):
+                raise ValueError(f"mutant evidence {name} differs from its baseline")
 
     def _check_kill_attribution(self, mutation: Mutation, policy: JudgmentR2) -> None:
         """(P33/V5-4, invariant 4) attribution consistency, per clause.
@@ -5605,6 +6092,8 @@ class Verdict:
             payload["snapshot_policy"] = self.snapshot_policy.to_dict()
         if self.worktree_integrity is not None:
             payload["worktree_integrity"] = self.worktree_integrity.to_dict()
+        if self.campaign is not None:
+            payload["campaign"] = self.campaign.to_dict()
         if self.result_stdout_tail is not None:
             payload["result_stdout_tail"] = _redact_passthrough_text(
                 self.result_stdout_tail, passthrough_values_to_redact

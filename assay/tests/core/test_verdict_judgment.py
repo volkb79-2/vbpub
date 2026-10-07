@@ -61,7 +61,7 @@ BASE_R1_POLICY = dict(
 #: (P33/V5-4) `kill_attribution` is REQUIRED on every `JudgmentR2`, and it is
 #: derived from `kill_signal_artifact`'s presence -- which P33 refuses at
 #: config load, so `unattributed` is what every lane in this build renders.
-BASE_R2_POLICY = dict(kill_attribution="unattributed")
+BASE_R2_POLICY = dict(kill_attribution="unattributed", cold_witness_kills=False)
 
 BASE_VERDICT = {
     "lane": "package",
@@ -455,6 +455,9 @@ def test_judgment_r2_untouched_form_builds():
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
         "kill_attribution": "unattributed",
+        "cold_witness_kills": False,
+        "r2_command": None,
+        "equivalence_ledger": None,
         # B035/A-329: `mode` is ALWAYS on the wire, exactly as
         # `judgment.r1.mode` is, and defaults to the only scope that existed
         # before whole-target judging.
@@ -544,6 +547,8 @@ def test_judgment_r2_liveness_round_trips_when_present():
             "active": True,
             "reason": "auto-pytest-argv",
             "plugin": ".assay/liveness/assay_liveness_plugin.py",
+            "cpu_window_s": 30.0,
+            "idle_floor_s": 15.0,
         },
         **BASE_R2_POLICY,
     )
@@ -551,6 +556,8 @@ def test_judgment_r2_liveness_round_trips_when_present():
         "active": True,
         "reason": "auto-pytest-argv",
         "plugin": ".assay/liveness/assay_liveness_plugin.py",
+        "cpu_window_s": 30.0,
+        "idle_floor_s": 15.0,
     }
 
 
@@ -563,6 +570,8 @@ def test_judgment_r2_liveness_inactive_form_round_trips():
             "active": False,
             "reason": "language-not-python",
             "plugin": None,
+            "cpu_window_s": None,
+            "idle_floor_s": None,
         },
         **BASE_R2_POLICY,
     )
@@ -629,6 +638,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
             operators=("python:compare-swap",),
             kill_attribution="unattributed",
             kill_signal_artifact=".assay/kill-signal.txt",
+            cold_witness_kills=False,
         )
     with pytest.raises(ValueError, match="no kill_signal_artifact"):
         JudgmentR2(
@@ -636,6 +646,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="declared",
+            cold_witness_kills=False,
         )
 
 
@@ -646,6 +657,7 @@ def test_judgment_r2_refuses_an_unknown_kill_attribution():
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="probably",
+            cold_witness_kills=False,
         )
 
 
@@ -1244,7 +1256,7 @@ def test_verdict_refuses_equivalent_mutants_with_no_declared_equivalence_artifac
     unpaired = JudgmentR2(
         jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
     )
-    with pytest.raises(ValueError, match="declares no\n?.*equivalence_artifact"):
+    with pytest.raises(ValueError, match="declares no proof source"):
         _r2_verdict(mutation=mutation, policy=unpaired, language="sql")
 
 
@@ -1277,6 +1289,7 @@ def test_verdict_refuses_a_declared_attribution_leaving_a_kill_unexplained():
         operators=("sql:drop-check",),
         kill_attribution="declared",
         kill_signal_artifact=".assay/kill-signal.txt",
+        cold_witness_kills=False,
     )
     explained = native_mutation(
         candidate_count=1,

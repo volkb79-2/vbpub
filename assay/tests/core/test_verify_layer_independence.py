@@ -48,6 +48,7 @@ from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main
 from assay.errors import REASON_CODES, Outcome, ReasonCode
 from assay.resource_limits import ResourceLimitObservationError
+from assay.verdict import VERDICT_SCHEMA_VERSION
 
 #: (P33/V5-3) FIVE buckets since v5. `equivalent` joins the raw operator
 #: sweep for the same reason `killed` did in P21: a bucket the sweep does not
@@ -115,7 +116,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -150,6 +151,9 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
                 # B046/schema v9: required, and `native` is what every
                 # hand-built policy in this module has always described.
                 "producer": "native",
+                "cold_witness_kills": False,
+                "r2_command": None,
+                "equivalence_ledger": None,
                 "jobs": 1,
                 "max_mutants": 50,
                 "operators": ["python:compare-swap"],
@@ -636,7 +640,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         }
     )
     document = {
-        "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -667,6 +671,9 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
                 # B046/schema v9: required, and `native` is what every
                 # hand-built policy in this module has always described.
                 "producer": "native",
+                "cold_witness_kills": False,
+                "r2_command": None,
+                "equivalence_ledger": None,
                 "jobs": 1,
                 "max_mutants": 50,
                 "operators": ["sql:drop-check"],
@@ -1063,7 +1070,7 @@ def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():
                   equivalence_artifact=".assay/schema-dump.sql")
     assert _raw(lambda d, f: check(claim, paired, f), document) == []
     failures = _raw(lambda d, f: check(claim, document["judgment"]["r2"], f), document)
-    assert failures and any("equivalence_artifact" in f for f in failures), failures
+    assert failures and any("equivalence proof source" in f for f in failures), failures
 
 
 def test_raw_layer_clause_declared_attribution_requires_its_artifact():

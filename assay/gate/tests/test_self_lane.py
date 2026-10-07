@@ -403,6 +403,12 @@ def test_o12_the_driver_plans_before_it_runs_an_r2_lane_and_hands_the_plan_to_th
     assert '"$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2' in body
     assert '--plan-json "$plan_path"' in body
     assert '${plan_args[@]+"${plan_args[@]}"}' in body
+    assert 'lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")' in body
+    assert 'r2_manifest_args=(--r2-manifest "$r2_manifest_path")' in body
+    assert 'rm -f -- "$r2_manifest_path"' in body
+    assert '--deadline "$deadline"' in body
+    assert '${r2_manifest_args[@]+"${r2_manifest_args[@]}"}' in body
+    assert 'echo "B105_R2_MANIFEST=$r2_manifest_path"' in body
     # Plan first, then run, then the checker that reads the plan.
     assert (
         body.index('"$assay_bin" plan "$lane"')
@@ -450,6 +456,7 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
         ".assay/coverage-self-qualification-preflight-snapshots",
+        ".assay/r2-manifest-self-qualification.txt",
     ]
 
     preflight = run_gate["lanes"][PREFLIGHT_ID]
@@ -468,6 +475,20 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
         encoding="utf-8"
     )
     assert "--resume" in script
+    assert "campaign init" in script
+    assert '--campaign-deadline "$deadline"' in script
+    assert 'lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")' in script
+    assert '--deadline "$deadline"' in script
+    assert "B105_CAMPAIGN_DEADLINE=$deadline" in script
+    assert "B105_CAMPAIGN_INIT_REFUSED=1" in script
+    assert "B105_TIMEOUT_FAILSAFE=1" in script
+    run_start = script.index('if timeout --verbose --signal=TERM --kill-after=30s')
+    verify_start = script.index('echo "B105_PHASE=assay-verify-$lane"', run_start)
+    wrapped_run = script[run_start:verify_start]
+    assert '"$assay_bin" run "$lane"' in wrapped_run
+    assert "run_status >= 124" in wrapped_run
+    assert wrapped_run.index("B105_TIMEOUT_FAILSAFE=1") > wrapped_run.index("run_status >= 124")
+    assert script.index("B105_TIMEOUT_FAILSAFE=1", run_start) < verify_start
     assert 'local progress_path=".assay/progress-$lane.jsonl"' in script
     assert "git clone --no-local --no-checkout" in script
     assert "--require-hashes" in script

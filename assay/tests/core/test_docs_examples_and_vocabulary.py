@@ -148,8 +148,15 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
 
 def test_consumers_migration_check_detects_a_missing_recent_cut():
     consumer_text = CONSUMERS.read_text(encoding="utf-8")
-    broken = consumer_text.replace("## Migration notes (v12 to v13)\n", "", 1)
-    with pytest.raises(AssertionError, match=r"\(12, 13\)"):
+    missing_cut = (
+        f"## Migration notes (v{VERDICT_SCHEMA_VERSION - 2} to "
+        f"v{VERDICT_SCHEMA_VERSION - 1})\n"
+    )
+    broken = consumer_text.replace(missing_cut, "", 1)
+    with pytest.raises(
+        AssertionError,
+        match=rf"\({VERDICT_SCHEMA_VERSION - 2}, {VERDICT_SCHEMA_VERSION - 1}\)",
+    ):
         _assert_recent_verdict_migrations_are_documented(
             broken, VERDICT_SCHEMA_VERSION
         )

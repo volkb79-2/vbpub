@@ -99,26 +99,64 @@ binds, so a missing daemon-side source fails at launch rather than creating a
 phantom directory.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
 the separate 60-minute R0/R1 preflight. This interim budget resets on a new
-invocation, so do not use resume/retry to bypass the overall ceiling. B110
-must persist one campaign deadline before another full attempt. The 7h30m
+invocation, so do not use resume/retry to bypass the overall ceiling. B114
+persists one campaign deadline across preflight, resume and retry. The 7h30m
 timeout starts only after run-gate/container startup and covers the in-container
 B105 driver command; it stops before outer evidence collection. Nyxloom's
 8-hour watchdog is a separate outer failsafe, not the campaign-wide deadline.
 Reaching any limit is incomplete, never a candidate outcome or qualification
 pass. The latest full-source attempt stopped after 15 of 3,760 candidates; an
 earlier attempt stopped after 38 completions. B105 currently has no
-qualification result. B110 requires a structural rework and bounded pilot
+qualification result. B114 ships the cold-witness execution and campaign
+deadline support, but B118's bounded pilot and go/no-go decision must happen
 before another full attempt; the target is 6 hours and the hard ceiling is 8
 hours, with no increase to the approved RAM envelope. Until that work and a
-verifier-accepted full report exist, do not interpret an invocation or a
+verifier-accepted full report exists, do not interpret an invocation or a
 resumed partial report as qualification.
 
-B110 also proposes an opt-in cold-witness policy, which is not available yet.
-With that policy, a candidate would be called killed from one verified failure
-during a test call. Tests after that failure would not run and could
-independently fail, hang, or crash; the report must disclose this limitation.
-Survivors and uncertain executions would still run the complete declared test
-suite.
+### Cold-witness R2 (B114)
+
+Cold-witness mode is an explicit opt-in for the supported native Python pytest
+command shape. `assay plan` checks whether a lane can use it. Assay derives the
+mutation command by removing only its recognized coverage options and adding
+`-p no:pytest_cov`; it preserves the declared test selection and order. The
+coverage baseline and no-coverage R2 baseline must collect the same ordered
+node IDs, and the candidate's runtime hook and collection fingerprints must
+match the proof. Unsupported commands or hooks do not get a cold kill.
+
+A `witness-cold` kill means one test-call failure was verified and the ordered
+manifest confirms the failing node was reached. Tests after that call are
+explicitly unrun; they could independently fail, hang, or crash. Survivors and
+uncertain attempts run the complete declared test command. This is an
+existential kill witness, not a claim that the whole suite ran. The default
+R2 behavior is unchanged when the flag is absent.
+
+For a native Python pytest lane, inspect the plan, persist a deadline for the
+campaign, then pass both the resume/progress paths and the deadline into the
+run. The example uses a one-hour budget; choose a deadline that matches the
+lane's approved campaign budget:
+
+```sh
+lane="worker_lane"
+campaign="worker-r2"
+deadline=".assay/campaign-deadline-${campaign}.json"
+manifest=".assay/r2-manifest-${lane}.txt"
+
+assay plan "$lane" --cold-witness
+assay campaign init --campaign "$campaign" --lane "$lane" --hours 1
+assay run "$lane" --resume \
+  --progress ".assay/progress-${lane}.jsonl" \
+  --campaign-deadline "$deadline" \
+  --cold-witness --r2-manifest "$manifest"
+```
+
+The campaign deadline binds the exact commit, tree, tool version, lane and
+candidate plan. Keep it with the resume state for every retry; a retry does not
+receive a new clock. Assay writes the ordered manifest under the requested
+path. The independent verifier checks the receipt fields, and B105's report
+checker additionally binds the transform, committed lane/config and manifest
+to the exact source revision. See the
+[cold-witness design](DESIGN-GUIDE.md#cold-witness-r2-b114).
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing
@@ -3016,12 +3054,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v14 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v15 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
   candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
-  under the v14 verifier.
+  under the v15 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -3031,7 +3069,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v14 verdict. On a later commit, Assay always
+each killed candidate. Keep that v15 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -3062,9 +3100,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 or v13 verdict is a cold start under v14: `assay plan`
+that candidate. A v12, v13, or v14 verdict is a cold start under v15: `assay plan`
 marks its evidence unproven and `assay run` runs every candidate fully after
-the baseline; `assay verify` refuses both versions. Wrapped commands, xdist, custom test loops,
+the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist, custom test loops,
 or uncertain pytest hooks also use full runs. `--reuse-from` cannot be combined
 with `--shard`, because the feature returns a complete unsharded campaign.
 The [B106 design](DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
@@ -3154,7 +3192,7 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v14, a hard cut from v13. Lane schema v2 was a
+The current verdict schema is v15, a hard cut from v14. Lane schema v2 was a
 hard cut from v1 and remains current (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -3162,9 +3200,9 @@ for why interpreting an old lane file as if it declared the new grammar would be
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v13 and
-earlier verdicts on the schema version alone; see the [v13-to-v14 migration
-notes](#migration-notes-v13-to-v14).
+table at all — it is simply an unknown key. `assay verify` rejects v14 and
+earlier verdicts on the schema version alone; see the [v14-to-v15 migration
+notes](#migration-notes-v14-to-v15).
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
 
@@ -3238,6 +3276,27 @@ helper's stderr refusal. Records written by older Assay versions are not
 rewritten; inspect or remove old mutation-state files before sharing or
 archiving them if their commands may have echoed a credential.
 
+## Migration notes (v14 to v15)
+
+Verdict schema v15 is a **hard cut**. `assay verify` rejects v14 and older
+verdicts by schema version; there is no dual-version verifier or in-place
+upgrade. Repin Assay and regenerate any archived verdict that must pass the
+current verifier. Mutation state with a v12, v13 or v14 judge identity starts
+cold; it cannot supply a reusable witness to v15. The mutation-state container
+format remains version 1.
+
+The v15 native R2 verdict records whether cold-witness kills were enabled, the
+versioned no-coverage command transform, ordered collection and hook
+fingerprints, per-candidate execution evidence, and any verified failing test
+call. A cold kill means later tests were not run. Survivors and uncertain
+attempts still run the declared suite. The independent verifier checks the
+evidence relationships; B105's source-bound report checker also checks the
+committed lane argv, pytest configuration, manifest sidecar and campaign
+deadline against the judged commit. Lane schema remains v2, and cold-witness
+mode is opt-in through `assay run --cold-witness` for its supported native
+Python pytest command shape. See [Cold-witness R2 (B114)](#cold-witness-r2-b114)
+for the command and its limits.
+
 ## Migration notes (v12 to v13)
 
 Verdict schema v13 was a **hard cut**. `assay verify` refuses a v12 verdict by
@@ -3249,8 +3308,9 @@ For `--reuse-from`, a v12 verdict is a cold start: it supplies no reusable
 mutation witness, so the current candidate runs in full. You may keep a v12
 artifact as historical evidence, but it cannot save candidate work. The v13
 cut did not change lane schema v2 or require a lane-file edit. When upgrading
-directly to v14, also apply the separate [v13-to-v14 migration
-notes](#migration-notes-v13-to-v14).
+directly to v15, also apply the [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14) and the [v14-to-v15 migration
+notes](#migration-notes-v14-to-v15).
 
 Adopt in this order: repin Assay, regenerate any archived verdicts that must
 verify under the new pin, then compare or reuse current-run evidence. No lane

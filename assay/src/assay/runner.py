@@ -52,9 +52,10 @@ proves :func:`execute_command`'s ``EXEC_FAILED``/``BUDGET_EXCEEDED`` mapping
 without a real missing binary or a real wall-clock wait — AUTHORING.md §3b.A's
 constraint on timing-dependent oracles. The default runner still exists and is
 exercised directly (not only mocked away) by the environment-isolation
-proof (O2): ``subprocess.run`` never merges a non-``None`` ``env`` with the
-parent's, so passing exactly :attr:`CommandPlan.env_effective` is what makes
-"no ambient leak" true by construction, not by convention.
+proof (O2): ``default_process_runner`` passes exactly
+:attr:`CommandPlan.env_effective` to ``Popen``; a non-``None`` ``env`` replaces
+the parent's environment rather than merging it, so "no ambient leak" is true
+by construction, not by convention.
 
 What :func:`execute_command` never does, on purpose: it does not read
 ``judge`` config, does not parse coverage, does not compute R1-R3.
@@ -73,16 +74,17 @@ import fnmatch
 import math
 import os
 import shlex
+import signal
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
 import tomllib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from .records import record
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import (
@@ -105,8 +107,18 @@ from . import (
     measurability,
     mutation,
     mutation_parsers,
+    r2_command,
     result_reports,
     safeio,
+)
+from .mutation_witness import (
+    WITNESS_MANIFEST_FILE_ENV,
+    inject_witness_plugin,
+    make_attempt_plan,
+    read_internal_receipt,
+    receipt_facts,
+    cold_shape_refusal,
+    supports_sequential_pytest,
 )
 from .adapters.base import LanguageAdapter
 from .config import (
@@ -149,6 +161,8 @@ from .verdict import (
     JudgmentR2,
     JudgmentR3,
     JudgmentResolved,
+    R2BaselineFacts,
+    R2Command,
     RefusalDetail,
     SnapshotPolicy,
     WorktreeIntegrity,
@@ -213,6 +227,53 @@ Clock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
 
 
+def request_termination() -> bool:
+    """Mark this Assay invocation as terminating before its children are killed."""
+    was_set = liveness._TERMINATION.is_set()
+    liveness._TERMINATION.set()
+    return not was_set
+
+
+def termination_requested() -> bool:
+    return liveness._TERMINATION.is_set()
+
+
+def _reset_termination_for_tests() -> None:
+    liveness._reset_live_groups_for_tests()
+
+
+def _lane_timeout(message: str = "lane termination or deadline expired") -> AssayError:
+    return AssayError(
+        message,
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+
+def campaign_bounded_deadline(
+    lane_deadline: "LaneDeadline",
+    *,
+    expires_at_utc: datetime,
+    wall_now: datetime,
+    monotonic_now: float,
+) -> "LaneDeadline":
+    """Convert the persisted UTC expiry to one monotonic bound for this process."""
+    for name, value in (("expires_at_utc", expires_at_utc), ("wall_now", wall_now)):
+        if (
+            value.tzinfo is None
+            or value.utcoffset() != timedelta(0)
+        ):
+            raise ValueError(f"{name} must be timezone-aware UTC")
+    if not is_real(monotonic_now) or not math.isfinite(monotonic_now):
+        raise ValueError(f"monotonic_now must be a finite real number, got {monotonic_now!r}")
+    remaining = (expires_at_utc - wall_now).total_seconds()
+    return LaneDeadline(
+        expires_at=min(lane_deadline.expires_at, monotonic_now + remaining),
+        monotonic=lane_deadline.monotonic,
+        honors_termination=lane_deadline.honors_termination,
+    )
+
+
 @record
 class LaneDeadline:
     """One lane-wide monotonic deadline; no lower layer chooses a clock.
@@ -237,6 +298,7 @@ class LaneDeadline:
 
     expires_at: float
     monotonic: MonotonicClock
+    honors_termination: bool = True
 
     @classmethod
     def start(
@@ -284,9 +346,12 @@ class LaneDeadline:
         return type(self)(
             expires_at=min(self.expires_at, self.monotonic() + float(seconds)),
             monotonic=self.monotonic,
+            honors_termination=self.honors_termination,
         )
 
     def remaining(self) -> float:
+        if self.honors_termination and termination_requested():
+            raise _lane_timeout("Assay termination was requested")
         if self.unbounded:
             # (B067) The one non-finite return, and it is the truth: this
             # lane declared no total bound. Converted to "no timeout" by
@@ -316,8 +381,8 @@ def default_process_runner(
 ) -> subprocess.CompletedProcess[str]:
     """The real boundary: an actual child process, the seam's default.
 
-    ``env`` REPLACES the child's environment completely -- ``subprocess.run``
-    never merges a non-``None`` ``env`` with the parent's -- which is what
+    ``env`` REPLACES the child's environment completely -- ``Popen`` never
+    merges a non-``None`` ``env`` with the parent's -- which is what
     makes "the child receives exactly lane env plus declared passthrough, and
     no ambient sentinel" true by construction rather than by convention (O2).
 
@@ -329,15 +394,42 @@ def default_process_runner(
     makes about matching this path's policy. Tolerant decoding here is what
     makes both of those true instead of aspirational.
     """
-    return subprocess.run(
+    proc = subprocess.Popen(
         list(argv),
         env=dict(env),
         cwd=cwd,
-        timeout=timeout,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         errors="replace",
+        start_new_session=True,
     )
+    liveness.register_live_group(proc.pid)
+    try:
+        try:
+            stdout, stderr = _wait_child(proc, timeout)
+        except subprocess.TimeoutExpired:
+            liveness._killpg_group(proc.pid, signal.SIGKILL)
+            try:
+                proc.wait()
+            except Exception:
+                pass
+            raise
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+    finally:
+        # A normal leader exit can leave same-group descendants alive. Kill the
+        # recorded group before unregistering it; if it is already empty,
+        # killpg's ESRCH is an expected best-effort cleanup result.
+        liveness._killpg_group(proc.pid, signal.SIGKILL)
+        liveness.unregister_live_group(proc.pid)
+
+
+def _wait_child(
+    proc: subprocess.Popen[str], timeout: float | None
+) -> tuple[str, str]:
+    """The child wait seam, kept separate to pin timeout cleanup behavior."""
+    stdout, stderr = proc.communicate(timeout=timeout)
+    return stdout, stderr
 
 
 COMMAND_TAIL_BYTES = 64 * 1024
@@ -1209,16 +1301,26 @@ def execute_plan(
         create_missing_parents=result_report_create_missing_parents,
     )
     try:
-        return _execute_plan_inner(
-            plan,
-            run_cwd=run_cwd,
-            child_timeout=child_timeout,
-            process_runner=process_runner,
-            clock=clock,
-            started_at=started_at,
-            reservation=reservation,
-            result_report=result_report,
-        )
+        if termination_requested():
+            raise _lane_timeout("Assay termination was requested before child launch")
+        try:
+            result = _execute_plan_inner(
+                plan,
+                run_cwd=run_cwd,
+                child_timeout=child_timeout,
+                process_runner=process_runner,
+                clock=clock,
+                started_at=started_at,
+                reservation=reservation,
+                result_report=result_report,
+            )
+        except BaseException as exc:
+            if termination_requested():
+                raise _lane_timeout("Assay termination interrupted child execution") from exc
+            raise
+        if termination_requested():
+            raise _lane_timeout("Assay termination interrupted child execution")
+        return result
     finally:
         # `consume` already closed the descriptor on the path that reached it;
         # `close` is idempotent and never unlinks, so this covers every
@@ -3567,6 +3669,7 @@ class _PreparedOutcome:
     """
 
     result: CommandResult
+    command_plan: CommandPlan
     claims: tuple[Claim, ...]
     judgment: Judgment | None
     ended: str
@@ -3695,6 +3798,11 @@ def _run_prepared_lane(
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
     liveness_dir: Path | None = None,
+    expected_plan_sha256: str | None = None,
+    campaign_deadline_sha256: str | None = None,
+    cold_witness: bool = False,
+    r2_manifest: Path | None = None,
+    witness_dir: Path | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
@@ -3768,6 +3876,46 @@ def _run_prepared_lane(
         liveness_injected = liveness_injection.active
         liveness_reason = liveness_injection.reason
         liveness_plugin_path = liveness_injection.plugin
+    coverage_facts = None
+    r2_facts = None
+    r2_plan = None
+    r2_command_payload: R2Command | None = None
+    r2_manifest_node_ids: tuple[str, ...] = ()
+    coverage_receipt_path: Path | None = None
+    if cold_witness:
+        if witness_dir is None:
+            raise mutation.R2CommandProofError(
+                "cold witness: the lane-run plugin directory is unavailable"
+            )
+        liveness_plugin = (
+            Path(liveness_plugin_path) if liveness_plugin_path is not None else None
+        )
+        injected = inject_witness_plugin(
+            plan,
+            plugin_dir=witness_dir,
+            liveness_plugin_path=liveness_plugin,
+        )
+        if not injected.active:
+            raise mutation.R2CommandProofError(
+                "cold witness: the coverage command cannot load the trusted "
+                "pytest receipt plugin"
+            )
+        plan = injected.plan
+        coverage_receipt_path = witness_dir / "coverage-baseline.json"
+        frozen_cli_appended = (
+            plan.argv_appended
+            if plan.cli_argv_appended is None
+            else plan.cli_argv_appended
+        )
+        transformed_argv = r2_command.transform_argv(plan.argv_declared)
+        r2_appended = plan.argv_appended + r2_command.R2_APPENDED
+        r2_plan = replace(
+            plan,
+            argv_declared=transformed_argv,
+            argv_appended=r2_appended,
+            argv_effective=transformed_argv + r2_appended,
+            cli_argv_appended=frozen_cli_appended,
+        )
     # B031/A-320. This used to be an UNCONDITIONAL
     # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
     # a CWD-relative path in the CONSUMER's live worktree, built by
@@ -3833,10 +3981,28 @@ def _run_prepared_lane(
                 }
             ),
         )
+    if cold_witness:
+        assert coverage_receipt_path is not None
+        baseline_plan = make_attempt_plan(
+            baseline_plan,
+            receipt_path=coverage_receipt_path,
+            target_node_id=None,
+        )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        if cold_witness:
+            assert r2_plan is not None
+            r2_cwd = resolve_run_cwd(baseline_snapshot.project_root, r2_plan)
+            if not supports_sequential_pytest(
+                r2_plan.argv_effective,
+                cwd=r2_cwd,
+                env=r2_plan.env_effective,
+            ):
+                raise AssayError(
+                    "cold witness is not eligible: not a sequential pytest command",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
         if reuse_source is not None:
-            from .mutation_witness import supports_sequential_pytest
-
             # Inspect the same committed snapshot whose baseline is about
             # to run. The invoking worktree can contain allowed dirty
             # paths, so it cannot be the source of pytest configuration.
@@ -3884,6 +4050,11 @@ def _run_prepared_lane(
             progress_heartbeat_seconds=progress_heartbeat_seconds,
         )
         result = unit.result
+        if cold_witness:
+            assert coverage_receipt_path is not None
+            coverage_facts = receipt_facts(
+                read_internal_receipt(coverage_receipt_path)
+            )
         r0_claim = build_r0_claim(result)
         # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
         # measurement A1's own `budget_per_candidate_derived_s` already
@@ -3904,8 +4075,19 @@ def _run_prepared_lane(
             liveness.compute_liveness_calibration(
                 liveness_baseline_events_path,
                 mutation.baseline_wall_seconds(result),
+                idle_floor_s=lane.judge.mutation.liveness_idle_floor_s,
             )
             if liveness_injected
+            else None
+        )
+        liveness_cpu_window_s = (
+            lane.judge.mutation.liveness_cpu_window_s
+            if lane.judge.mutation.liveness_cpu_window_s is not None
+            else liveness._HUNG_CPU_WINDOW_S
+        ) if liveness_injected else None
+        liveness_idle_floor_s = (
+            liveness_calibration.idle_floor_s
+            if liveness_calibration is not None
             else None
         )
 
@@ -3949,7 +4131,11 @@ def _run_prepared_lane(
                 for level in rigor_levels
             )
             return _PreparedOutcome(
-                result=result, claims=claims, judgment=None, ended=iso_utc(clock())
+                result=result,
+                command_plan=plan,
+                claims=claims,
+                judgment=None,
+                ended=iso_utc(clock()),
             )
 
         claims: tuple[Claim, ...] = (r0_claim,)
@@ -4540,6 +4726,7 @@ def _run_prepared_lane(
                         liveness_calibration.pre_first_event_within_s
                     ),
                     sampler=liveness.tree_sample,
+                    cpu_window_s=lane.judge.mutation.liveness_cpu_window_s,
                 )
             else:
                 candidate_process_runner = process_runner
@@ -4560,11 +4747,192 @@ def _run_prepared_lane(
                         "fully after baseline PASS",
                         file=diagnostics,
                     )
+            if cold_witness:
+                assert r2_plan is not None and witness_dir is not None
+                if (
+                    coverage_facts is None
+                    or coverage_facts.duplicates != 0
+                    or coverage_facts.runtime_fingerprint_sha256 is None
+                ):
+                    raise mutation.R2CommandProofError(
+                        "cold witness: the coverage baseline collection, hooks, "
+                        "or runtime could not be proven"
+                    )
+                r2_receipt_path = witness_dir / "r2-baseline.json"
+                r2_manifest_sidecar = witness_dir / "r2-manifest.txt"
+                try:
+                    with prepared.materialize(timeout=deadline.remaining()) as r2_snapshot:
+                        r2_cwd = resolve_run_cwd(r2_snapshot.project_root, r2_plan)
+                        if not mutation.supports_sequential_pytest(
+                            r2_plan.argv_effective,
+                            cwd=r2_cwd,
+                            env=r2_plan.env_effective,
+                        ):
+                            raise mutation.R2CommandProofError(
+                                "cold witness: the R2 command is not sequential "
+                                "under the committed pytest configuration"
+                            )
+                        r2_injection = inject_witness_plugin(
+                            r2_plan,
+                            plugin_dir=witness_dir,
+                            cwd=r2_cwd,
+                            liveness_plugin_path=(
+                                Path(liveness_plugin_path)
+                                if liveness_plugin_path is not None
+                                else None
+                            ),
+                        )
+                        if not r2_injection.active:
+                            raise mutation.R2CommandProofError(
+                                "cold witness: the R2 baseline cannot load the "
+                                "trusted pytest receipt plugin"
+                            )
+                        r2_attempt_plan = make_attempt_plan(
+                            r2_injection.plan,
+                            receipt_path=r2_receipt_path,
+                            target_node_id=None,
+                            manifest_path=r2_manifest_sidecar,
+                        )
+                        r2_unit = _execute_snapshot_unit(
+                            plan=r2_attempt_plan,
+                            snapshot=r2_snapshot,
+                            deadline=deadline,
+                            wants_coverage=False,
+                            coverage_artifact=None,
+                            coverage_format=None,
+                            coverage_producer=None,
+                            process_runner=process_runner,
+                            clock=clock,
+                            create_missing_parents=True,
+                            progress=progress_stream,
+                            progress_heartbeat_seconds=progress_heartbeat_seconds,
+                            progress_phase="r2-baseline",
+                        )
+                        if r2_unit.post_reason is not None:
+                            raise r2_unit.post_reason
+                        r2_result = r2_unit.result
+                        if (
+                            r2_result.outcome is Outcome.BUDGET_EXCEEDED
+                            and r2_result.reason_code is ReasonCode.LANE_TIMEOUT
+                        ):
+                            raise mutation.R2BaselineTimeoutError(
+                                "cold witness: the no-coverage R2 baseline reached "
+                                "the lane deadline"
+                            )
+                        if r2_result.outcome is not Outcome.PASS:
+                            raise mutation.R2CommandProofError(
+                                "cold witness: the no-coverage R2 baseline did not pass"
+                            )
+                        r2_receipt = read_internal_receipt(r2_receipt_path)
+                        r2_facts = receipt_facts(r2_receipt)
+                        if (
+                            r2_facts is None
+                            or r2_facts.duplicates != 0
+                            or r2_facts.runtime_fingerprint_sha256 is None
+                            or not isinstance(r2_receipt, Mapping)
+                            or r2_receipt.get("unsupported") is not False
+                            or r2_facts.collection_count != coverage_facts.collection_count
+                            or r2_facts.collection_sha256 != coverage_facts.collection_sha256
+                        ):
+                            raise mutation.R2CommandProofError(
+                                "cold witness: the no-coverage R2 baseline did not "
+                                "prove the same unique collection, trusted hooks, "
+                                "and runtime"
+                            )
+                        try:
+                            manifest_bytes = r2_manifest_sidecar.read_bytes()
+                            if manifest_bytes and not manifest_bytes.endswith(b"\n"):
+                                raise ValueError("manifest is missing its final newline")
+                            r2_manifest_node_ids = tuple(
+                                line.decode("utf-8", errors="strict")
+                                for line in manifest_bytes.splitlines()
+                            )
+                        except (OSError, UnicodeDecodeError, ValueError) as exc:
+                            raise mutation.R2CommandProofError(
+                                "cold witness: the no-coverage R2 baseline manifest "
+                                "is unreadable"
+                            ) from exc
+                        if (
+                            len(r2_manifest_node_ids) != r2_facts.collection_count
+                            or r2_command.collection_digest(r2_manifest_node_ids)
+                            != r2_facts.collection_sha256
+                        ):
+                            raise mutation.R2CommandProofError(
+                                "cold witness: the no-coverage R2 manifest digest "
+                                "does not match its receipt"
+                            )
+                        relative_cwd = r2_cwd.relative_to(r2_snapshot.root).as_posix()
+                        coverage_baseline_facts = R2BaselineFacts(
+                            collection_count=coverage_facts.collection_count,
+                            collection_sha256=coverage_facts.collection_sha256,
+                            duplicates=coverage_facts.duplicates,
+                            hook_fingerprint_sha256=coverage_facts.hook_fingerprint_sha256,
+                            hook_count=coverage_facts.hook_count,
+                            runtime_fingerprint_sha256=coverage_facts.runtime_fingerprint_sha256,
+                        )
+                        r2_baseline_facts = R2BaselineFacts(
+                            collection_count=r2_facts.collection_count,
+                            collection_sha256=r2_facts.collection_sha256,
+                            duplicates=r2_facts.duplicates,
+                            hook_fingerprint_sha256=r2_facts.hook_fingerprint_sha256,
+                            hook_count=r2_facts.hook_count,
+                            runtime_fingerprint_sha256=r2_facts.runtime_fingerprint_sha256,
+                            wall_s=mutation.baseline_wall_seconds(r2_result),
+                        )
+                        r2_command_payload = R2Command(
+                            transform=r2_command.R2_TRANSFORM_ID,
+                            argv_declared=tuple(plan.argv_declared),
+                            argv_transformed=tuple(
+                                r2_command.transform_argv(plan.argv_declared)
+                            ),
+                            appended=r2_command.R2_APPENDED,
+                            cwd=relative_cwd,
+                            config_sha256=r2_facts.config_sha256,
+                            coverage_baseline=coverage_baseline_facts,
+                            r2_baseline=r2_baseline_facts,
+                        )
+                    if r2_manifest is not None:
+                        temporary_name = None
+                        descriptor = None
+                        try:
+                            r2_manifest.parent.mkdir(parents=True, exist_ok=True)
+                            descriptor, temporary_name = tempfile.mkstemp(
+                                prefix=".assay-r2-manifest-",
+                                dir=r2_manifest.parent,
+                            )
+                            with os.fdopen(descriptor, "wb") as stream:
+                                descriptor = None
+                                stream.write(manifest_bytes)
+                                stream.flush()
+                            os.replace(temporary_name, r2_manifest)
+                            temporary_name = None
+                        except OSError as exc:
+                            raise mutation.R2ManifestWriteError(
+                                f"cold witness: could not atomically write R2 manifest "
+                                f"{r2_manifest}: {exc}"
+                            ) from exc
+                        finally:
+                            if descriptor is not None:
+                                os.close(descriptor)
+                            if temporary_name is not None:
+                                try:
+                                    os.unlink(temporary_name)
+                                except FileNotFoundError:
+                                    pass
+                except AssayError as exc:
+                    if isinstance(exc, mutation.R2BaselineTimeoutError):
+                        raise
+                    if exc.reason_code is ReasonCode.LANE_TIMEOUT:
+                        raise mutation.R2BaselineTimeoutError(
+                            f"cold witness: the no-coverage R2 baseline ran out "
+                            f"of lane time: {exc}"
+                        ) from exc
+                    raise
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
                     prepared=prepared,
-                    plan=plan,
+                    plan=r2_plan if cold_witness else plan,
                     deadline=deadline,
                     targets=targets,
                     adapter=adapter,
@@ -4604,6 +4972,8 @@ def _run_prepared_lane(
                         if liveness_calibration is not None
                         else None
                     ),
+                    liveness_cpu_window_s=liveness_cpu_window_s,
+                    liveness_idle_floor_s=liveness_idle_floor_s,
                     liveness_events_dir=liveness_candidates_dir,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
@@ -4637,14 +5007,32 @@ def _run_prepared_lane(
                         if (resume or shard_index is not None)
                         else None
                     ),
+                    expected_plan_sha256=expected_plan_sha256,
+                    campaign_deadline_sha256=campaign_deadline_sha256,
                     resume=resume,
                     shard_index=shard_index,
                     shard_count=shard_count,
                     rejudge_ids=rejudge_ids,
                     rejudge_outcomes=rejudge_outcomes,
                     reuse_witnesses=reuse_witnesses,
+                    cold_witness=cold_witness,
+                    declared_plan=plan if cold_witness else None,
+                    r2_facts=r2_facts if cold_witness else None,
+                    coverage_facts=coverage_facts if cold_witness else None,
+                    r2_baseline_s=(
+                        r2_command_payload.r2_baseline.wall_s
+                        if cold_witness and r2_command_payload is not None
+                        else None
+                    ),
+                    manifest_node_ids=r2_manifest_node_ids,
                 )
-            except mutation.InvalidRejudgeIdError:
+            except (
+                mutation.InvalidRejudgeIdError,
+                mutation.CampaignPlanMismatchError,
+                mutation.R2CommandProofError,
+                mutation.R2ManifestWriteError,
+                mutation.R2BaselineTimeoutError,
+            ):
                 # (B094/A-458) The current candidate set exists only here,
                 # after the baseline (and any R1 result) has been measured.
                 # Let the existing outer whole-lane refusal render
@@ -4693,6 +5081,14 @@ def _run_prepared_lane(
                     liveness_active=liveness_injected,
                     liveness_reason=liveness_reason,
                     liveness_plugin=liveness_plugin_path,
+                    liveness_cpu_window_s=liveness_cpu_window_s,
+                    liveness_idle_floor_s=liveness_idle_floor_s,
+                    cold_witness_kills=cold_witness,
+                    r2_command=(
+                        r2_command_payload
+                        if r2_claim.mutation is not None
+                        else None
+                    ),
                 )
         ended = iso_utc(clock())
 
@@ -4871,6 +5267,7 @@ def _run_prepared_lane(
 
     return _PreparedOutcome(
         result=result,
+        command_plan=plan,
         claims=claims,
         judgment=judgment,
         ended=ended,
@@ -5100,6 +5497,10 @@ def _build_judgment_r2(
     liveness_active: bool = False,
     liveness_reason: str | None = None,
     liveness_plugin: str | None = None,
+    liveness_cpu_window_s: float | None = None,
+    liveness_idle_floor_s: float | None = None,
+    cold_witness_kills: bool = False,
+    r2_command: R2Command | None = None,
 ) -> JudgmentR2:
     """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
 
@@ -5153,10 +5554,14 @@ def _build_judgment_r2(
         shard_index=shard_index,
         shard_count=shard_count,
         budget_per_candidate_derived_s=budget_per_candidate_derived_s,
+        cold_witness_kills=cold_witness_kills,
+        r2_command=r2_command,
         liveness={
             "active": liveness_active,
             "reason": liveness_reason,
             "plugin": liveness_plugin,
+            "cpu_window_s": liveness_cpu_window_s if liveness_active else None,
+            "idle_floor_s": liveness_idle_floor_s if liveness_active else None,
         },
     )
 
@@ -5247,6 +5652,7 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
     supported = supported_helper_roles(new_claims)
     return _PreparedOutcome(
         result=outcome.result,
+        command_plan=outcome.command_plan,
         claims=new_claims,
         judgment=new_judgment,
         ended=outcome.ended,
@@ -5291,6 +5697,10 @@ def _run_higher_rigor_lane(
     state_dir: Path | None = None,
     allow_dirty: bool = False,
     dirty_ignore: tuple[str, ...] = (),
+    expected_plan_sha256: str | None = None,
+    campaign_deadline_sha256: str | None = None,
+    cold_witness: bool = False,
+    r2_manifest: Path | None = None,
     #: (B019/A-328) `run_lane`'s already-resolved comparison DECLARATION --
     #: the lane's `judge.base` or the gate request's `--request-base`,
     #: whichever the lane's `judge.base_source` named, with every
@@ -5378,6 +5788,24 @@ def _run_higher_rigor_lane(
             detail=detail,
             worktree_integrity=worktree_integrity,
         )
+
+    if cold_witness:
+        refusal = cold_shape_refusal(
+            plan.argv_declared,
+            plan.env_effective,
+            appended=plan.argv_appended,
+        )
+        if refusal is not None:
+            error = AssayError(
+                f"cold witness is not eligible: {refusal}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+            return refuse_all(
+                error.outcome,
+                error.reason_code,
+                detail=announce_refusal(error, diagnostics=diagnostics),
+            )
 
     # (B053/DA-R3) Both guards compose their sentence HERE, where the fact is
     # known -- which files are uncommitted, which two revisions disagree --
@@ -5467,7 +5895,17 @@ def _run_higher_rigor_lane(
                     snapshot_policy=snapshot_policy,
                     project_prefix=project_prefix,
                 )
-                with tempfile.TemporaryDirectory(prefix="assay-liveness-") as raw_liveness_dir:
+                with ExitStack() as temporary_directories:
+                    raw_liveness_dir = temporary_directories.enter_context(
+                        tempfile.TemporaryDirectory(prefix="assay-liveness-")
+                    )
+                    raw_witness_dir = (
+                        temporary_directories.enter_context(
+                            tempfile.TemporaryDirectory(prefix="assay-witness-")
+                        )
+                        if cold_witness
+                        else None
+                    )
                     prepared_outcome = _run_prepared_lane(
                         lane,
                         plan=plan,
@@ -5494,8 +5932,18 @@ def _run_higher_rigor_lane(
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
                         liveness_dir=Path(raw_liveness_dir),
+                        expected_plan_sha256=expected_plan_sha256,
+                        campaign_deadline_sha256=campaign_deadline_sha256,
+                        cold_witness=cold_witness,
+                        r2_manifest=r2_manifest,
+                        witness_dir=(
+                            Path(raw_witness_dir)
+                            if raw_witness_dir is not None
+                            else None
+                        ),
                         diagnostics=diagnostics,
                     )
+                    plan = prepared_outcome.command_plan
                 outcome_holder.append(
                     replace(
                         prepared_outcome,
@@ -5693,6 +6141,10 @@ def run_lane(
     allow_dirty: bool = False,
     dirty_ignore: tuple[str, ...] = (),
     diagnostics: "TextIO | None" = None,
+    expected_plan_sha256: str | None = None,
+    campaign_deadline_sha256: str | None = None,
+    cold_witness: bool = False,
+    r2_manifest: Path | None = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
     dispatch on declared rigor, then either run the direct R0-only clean-tree
@@ -5798,6 +6250,8 @@ def run_lane(
                 state_dir=state_dir,
                 reuse_from=reuse_from,
                 request_base=request_base,
+                expected_plan_sha256=expected_plan_sha256,
+                campaign_deadline_sha256=campaign_deadline_sha256,
                 snapshot_limits=snapshot_limits,
                 allow_dirty=allow_dirty,
                 dirty_ignore=dirty_ignore,
@@ -6093,6 +6547,47 @@ def run_lane(
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor
 
+    def _refuse_cold_witness(message: str) -> Verdict:
+        detail = announce_refusal(
+            AssayError(
+                message,
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            ),
+            diagnostics=diagnostics,
+        )
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+            detail=detail,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=project_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+
+    if r2_manifest is not None and not cold_witness:
+        return _refuse_cold_witness("--r2-manifest requires --cold-witness")
+    if cold_witness and not (
+        r2_declared
+        and adapter is not None
+        and adapter.name == "python"
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and not lane.judge.mutation.is_ingested
+    ):
+        return _refuse_cold_witness(
+            "--cold-witness requires a native Python R2 lane"
+        )
+
     shard_index: int | None = None
     shard_count: int | None = None
     if shard is not None:
@@ -6329,6 +6824,10 @@ def run_lane(
             allow_dirty=allow_dirty,
             dirty_ignore=dirty_ignore,
             base_declaration=base_declaration,
+            expected_plan_sha256=expected_plan_sha256,
+            campaign_deadline_sha256=campaign_deadline_sha256,
+            cold_witness=cold_witness,
+            r2_manifest=r2_manifest,
             diagnostics=diagnostics,
         )
 

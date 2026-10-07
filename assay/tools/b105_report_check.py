@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 import sys
+import tomllib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -192,6 +195,344 @@ def check_campaign_scope(
         )
 
 
+_CAMPAIGN_BINDING_KEYS = frozenset(
+    {"name", "deadline_sha256", "created_at_utc", "expires_at_utc"}
+)
+_B105_ARCHIVE_ENV = frozenset(
+    {
+        "ASSAY_B105_COVERAGE_SOURCE",
+        "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
+        "ASSAY_B105_SOURCE_COMMIT",
+        "ASSAY_B105_SOURCE_TREE",
+    }
+)
+_R2_TRANSFORM = "assay-r2-pytest-nocov/1"
+_R2_APPENDED = ["-p", "no:pytest_cov"]
+_MANIFEST_MAX_BYTES = 16 * 1024 * 1024
+_MANIFEST_MAX_NODE_ID_BYTES = 4096
+
+
+def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _read_committed_file(repo_root: Path, commit: str, relative_path: str) -> bytes:
+    result = subprocess.run(
+        _git_argv("-C", str(repo_root), "show", f"{commit}:{relative_path}"),
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"cannot read committed {relative_path} at {commit}: "
+            f"{result.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    return result.stdout
+
+
+def _project_prefix(repo_root: Path) -> str:
+    try:
+        prefix = PROJECT_DIR.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        raise ValueError(
+            f"checker project {PROJECT_DIR} is not inside repo root {repo_root}"
+        ) from None
+    return "" if prefix == "." else prefix + "/"
+
+
+def _committed_lane(
+    repo_root: Path, commit: str, lane: str
+) -> tuple[dict[str, Any], str]:
+    prefix = _project_prefix(repo_root)
+    try:
+        raw = _read_committed_file(repo_root, commit, f"{prefix}assay.toml")
+        root = tomllib.loads(raw.decode("utf-8"))
+        lanes = root["lanes"]
+        value = lanes[lane]
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(f"cannot read committed lane {lane!r}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"committed lane {lane!r} is not a table")
+    return value, prefix
+
+
+def _parse_utc(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("timestamp is not a string")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp is not timezone-aware")
+    return parsed
+
+
+def _check_deadline_binding(
+    document: dict[str, Any],
+    *,
+    deadline_path: Path,
+    expected_commit: str,
+    expected_tree: str,
+    expected_lane: str,
+    expected_version: str,
+) -> None:
+    campaign = document.get("campaign")
+    if not isinstance(campaign, dict) or set(campaign) != _CAMPAIGN_BINDING_KEYS:
+        raise ValueError("B105 report carries no campaign binding")
+    try:
+        deadline_bytes = deadline_path.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            "campaign deadline_sha256 does not match the deadline file"
+        ) from exc
+    if hashlib.sha256(deadline_bytes).hexdigest() != campaign["deadline_sha256"]:
+        raise ValueError("campaign deadline_sha256 does not match the deadline file")
+
+    try:
+        deadline = json.loads(
+            deadline_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_pairs
+        )
+        valid = (
+            isinstance(deadline, dict)
+            and deadline.get("schema") == "assay-campaign-deadline/1"
+            and deadline.get("campaign") == campaign["name"]
+            and deadline.get("created_at_utc") == campaign["created_at_utc"]
+            and deadline.get("expires_at_utc") == campaign["expires_at_utc"]
+            and deadline.get("commit") == expected_commit
+            and deadline.get("git_tree") == expected_tree
+            and isinstance(deadline.get("lanes"), list)
+            and expected_lane in deadline["lanes"]
+            and deadline.get("assay_version") == expected_version
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError("deadline file does not bind this commit/tree/lane/version")
+
+    try:
+        created = _parse_utc(campaign["created_at_utc"])
+        expires = _parse_utc(campaign["expires_at_utc"])
+        started = _parse_utc(document.get("started"))
+        ended = _parse_utc(document.get("ended"))
+        inside_window = created <= started and ended <= expires
+    except (TypeError, ValueError, OverflowError):
+        inside_window = False
+    if not inside_window:
+        raise ValueError("report was not produced inside its campaign window")
+
+
+def _independent_r2_transform(argv: list[str]) -> list[str]:
+    """Reimplement P3b's narrow transform without importing assay code."""
+    transformed: list[str] = []
+    for token in argv:
+        if not isinstance(token, str):
+            raise ValueError("argv entries are not strings")
+        if token == "--cov-branch":
+            continue
+        if token.startswith("--cov=") and len(token) > len("--cov="):
+            continue
+        if token.startswith("--cov-report=") and len(token) > len("--cov-report="):
+            continue
+        if (
+            token in {"--cov", "--no-cov"}
+            or token.startswith("--cov")
+            or token.startswith("--no-cov")
+        ):
+            raise ValueError(f"unrecognized coverage option {token}")
+        transformed.append(token)
+    return transformed
+
+
+def _manifest_lines(path: Path) -> list[bytes]:
+    try:
+        size = path.stat().st_size
+        if size > _MANIFEST_MAX_BYTES:
+            raise ValueError("size limit")
+        raw = path.read_bytes()
+    except (OSError, ValueError) as exc:
+        raise ValueError("R2 manifest sidecar does not match r2_baseline") from exc
+    if len(raw) > _MANIFEST_MAX_BYTES or (raw and not raw.endswith(b"\n")):
+        raise ValueError("R2 manifest sidecar does not match r2_baseline")
+    if not raw:
+        return []
+    lines = raw.split(b"\n")[:-1]
+    if any(
+        not line
+        or b"\r" in line
+        or len(line) > _MANIFEST_MAX_NODE_ID_BYTES
+        for line in lines
+    ):
+        raise ValueError("R2 manifest sidecar does not match r2_baseline")
+    try:
+        for line in lines:
+            line.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("R2 manifest sidecar does not match r2_baseline") from exc
+    if len(lines) != len(set(lines)):
+        raise ValueError("R2 manifest sidecar does not match r2_baseline")
+    return lines
+
+
+def _manifest_digest(lines: list[bytes]) -> str:
+    digest = hashlib.sha256()
+    for line in lines:
+        digest.update(str(len(line)).encode("ascii"))
+        digest.update(b":")
+        digest.update(line)
+        digest.update(b",")
+    return digest.hexdigest()
+
+
+def _r2_claim(
+    document: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    claims = document.get("claims")
+    claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
+        None,
+    ) if isinstance(claims, list) else None
+    judgment = document.get("judgment")
+    policy = judgment.get("r2") if isinstance(judgment, dict) else None
+    mutation = claim.get("mutation") if isinstance(claim, dict) else None
+    if not isinstance(claim, dict) or not isinstance(policy, dict) or not isinstance(mutation, dict):
+        raise ValueError("B105 R2 report has no mutation payload")
+    return claim, policy, mutation
+
+
+def _check_v15_r2(
+    document: dict[str, Any],
+    *,
+    repo_root: Path,
+    expected_commit: str,
+    expected_lane: str,
+    r2_manifest: Path,
+) -> None:
+    _, policy, mutation = _r2_claim(document)
+    raw_command = policy.get("r2_command")
+    if policy.get("cold_witness_kills") is not True:
+        raise ValueError("B105 R2 requires cold_witness_kills true")
+    if not isinstance(raw_command, dict):
+        raise ValueError("B105 R2 report has no r2_command")
+    try:
+        source_lane, prefix = _committed_lane(repo_root, expected_commit, expected_lane)
+        source_argv = source_lane.get("argv")
+    except ValueError as exc:
+        raise ValueError(
+            f"declared argv differs from assay.toml at {expected_commit}"
+        ) from exc
+    if (
+        not isinstance(source_argv, list)
+        or source_argv != document.get("argv_declared")
+        or source_argv != raw_command.get("argv_declared")
+    ):
+        raise ValueError(f"declared argv differs from assay.toml at {expected_commit}")
+    if raw_command.get("transform") != _R2_TRANSFORM:
+        raise ValueError("unexpected R2 transform")
+    try:
+        transformed = _independent_r2_transform(source_argv)
+    except ValueError as exc:
+        raise ValueError(
+            "argv_transformed is not the transform of the committed argv"
+        ) from exc
+    if raw_command.get("argv_transformed") != transformed:
+        raise ValueError("argv_transformed is not the transform of the committed argv")
+    if raw_command.get("appended") != _R2_APPENDED:
+        raise ValueError("unexpected R2 appended argv")
+    if raw_command.get("cwd") != "assay":
+        raise ValueError("unexpected R2 cwd")
+
+    coverage = raw_command.get("coverage_baseline")
+    r2 = raw_command.get("r2_baseline")
+    if not isinstance(coverage, dict) or not isinstance(r2, dict) or any(
+        coverage.get(key) != r2.get(key)
+        for key in ("collection_sha256", "collection_count")
+    ):
+        raise ValueError("R2 and coverage baseline collections differ")
+
+    if source_lane.get("env") != {} or source_lane.get("env_passthrough") != ["PATH"]:
+        raise ValueError("committed qualification lane environment policy differs")
+    effective_env = document.get("env_effective")
+    if not isinstance(effective_env, dict) or _B105_ARCHIVE_ENV & set(effective_env):
+        raise ValueError("archive-hook variables present in the qualification run")
+
+    lines = _manifest_lines(r2_manifest)
+    if (
+        _manifest_digest(lines) != r2.get("collection_sha256")
+        or len(lines) != r2.get("collection_count")
+    ):
+        raise ValueError("R2 manifest sidecar does not match r2_baseline")
+
+    killed = mutation.get("killed")
+    if not isinstance(killed, list):
+        raise ValueError("cold kill manifest binding could not inspect killed outcomes")
+    for outcome in killed:
+        if not isinstance(outcome, dict):
+            continue
+        execution = outcome.get("execution")
+        if not isinstance(execution, dict) or execution.get("mode") != "witness-cold":
+            continue
+        candidate_id = outcome.get("candidate_id", "<unknown>")
+        evidence = outcome.get("evidence")
+        witness = execution.get("witness")
+        failed_index = evidence.get("failed_call_index") if isinstance(evidence, dict) else None
+        started_count = evidence.get("started_count") if isinstance(evidence, dict) else None
+        node_id = witness.get("node_id") if isinstance(witness, dict) else None
+        if (
+            type(failed_index) is not int
+            or type(started_count) is not int
+            or failed_index + 1 != started_count
+            or failed_index < 0
+            or failed_index >= len(lines)
+            or not isinstance(node_id, str)
+            or lines[failed_index].decode("utf-8") != node_id
+        ):
+            raise ValueError(
+                f"cold kill {candidate_id} is not the manifest's node at its failed index"
+            )
+
+    coverage_sha = coverage.get("collection_sha256")
+    r2_sha = r2.get("collection_sha256")
+    survived = mutation.get("survived")
+    for bucket, outcomes in (("survived", survived), ("killed", killed)):
+        if not isinstance(outcomes, list):
+            continue
+        for outcome in outcomes:
+            if not isinstance(outcome, dict):
+                continue
+            execution = outcome.get("execution")
+            if bucket == "killed" and not (
+                isinstance(execution, dict) and execution.get("mode") == "witness-cold"
+            ):
+                continue
+            evidence = outcome.get("evidence")
+            if not isinstance(evidence, dict):
+                continue
+            command = evidence.get("command")
+            expected_sha = (
+                r2_sha if command == "r2" else coverage_sha if command == "declared" else None
+            )
+            if expected_sha is not None and evidence.get("collection_sha256") != expected_sha:
+                raise ValueError("candidate evidence collection differs from r2_baseline")
+
+    try:
+        committed_config = _read_committed_file(
+            repo_root, expected_commit, f"{prefix}pyproject.toml"
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"R2 pytest config differs from assay/pyproject.toml at {expected_commit}"
+        ) from exc
+    if raw_command.get("config_sha256") != hashlib.sha256(committed_config).hexdigest():
+        raise ValueError(
+            f"R2 pytest config differs from assay/pyproject.toml at {expected_commit}"
+        )
+    if policy.get("equivalence_ledger") is not None:
+        raise ValueError("ledger binding not implemented (B110-P10b)")
+
+
 def verify_report_document(
     document: Any,
     *,
@@ -204,10 +545,13 @@ def verify_report_document(
     expected_wheel_sha256: str,
     producer_exit: int,
     plan: dict | None = None,
+    r2_manifest: Path | None = None,
+    deadline: Path,
 ) -> None:
     """Refuse a valid-but-adverse or internally unrelated verdict.
 
     ``plan`` is ``assay plan``'s JSON, required exactly when R2 is expected.
+    ``deadline`` is the exact campaign deadline file passed to the producer.
     """
     if type(producer_exit) is not int or producer_exit != 0:
         raise ValueError(f"Assay producer exit was {producer_exit!r}, expected 0")
@@ -291,11 +635,29 @@ def verify_report_document(
                 f"judge_provenance.{field} {provenance.get(field)!r} "
                 f"!= {expected!r}"
             )
+    _check_deadline_binding(
+        document,
+        deadline_path=deadline,
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+        expected_lane=expected_lane,
+        expected_version=expected_version,
+    )
+
     if "R2" in expected_rigor:
         if plan is None:
             raise ValueError("R2 is expected but no plan was given (--plan-json)")
         check_campaign_scope(
             document, plan, expected_commit=expected_commit, expected_tree=expected_tree
+        )
+        if r2_manifest is None:
+            raise ValueError("--r2-manifest is required for an R2 report")
+        _check_v15_r2(
+            document,
+            repo_root=repo_root,
+            expected_commit=expected_commit,
+            expected_lane=expected_lane,
+            r2_manifest=r2_manifest,
         )
 
 
@@ -315,6 +677,7 @@ _FULL_FLAGS = (
     "expected_version",
     "expected_wheel_sha256",
     "producer_exit",
+    "deadline",
 )
 
 
@@ -362,10 +725,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt-only", action="store_true")
     parser.add_argument("--tester-unified-receipt", type=Path)
     parser.add_argument("--plan-json", type=Path)
+    parser.add_argument("--r2-manifest", type=Path)
+    parser.add_argument("--deadline", type=Path)
     args = parser.parse_args(argv)
 
     if args.receipt_only:
-        extra = [f"--{name.replace('_', '-')}" for name in (*_FULL_FLAGS, "plan_json") if name not in ("expected_commit", "expected_tree") and getattr(args, name) is not None]
+        extra = [f"--{name.replace('_', '-')}" for name in (*_FULL_FLAGS, "plan_json", "r2_manifest") if name not in ("expected_commit", "expected_tree") and getattr(args, name) is not None]
         if extra:
             parser.error(f"--receipt-only takes no other flag than the receipt, commit and tree: {', '.join(extra)}")
         missing = [
@@ -381,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--receipt-only requires {', '.join(missing)}")
         try:
             _read_receipt(args.tester_unified_receipt, expected_commit=args.expected_commit, expected_tree=args.expected_tree)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError) as exc:
             print(f"B105_REPORT_REJECTED={exc}", file=sys.stderr)
             return 2
         print(f"B105_TESTER_UNIFIED_PASS=commit={args.expected_commit} tree={args.expected_tree}")
@@ -392,6 +757,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"the following arguments are required: {', '.join(missing)}")
     if args.plan_json is not None and "R2" not in args.expected_rigor.split(","):
         parser.error("--plan-json is only valid when R2 is in --expected-rigor")
+    if "R2" in args.expected_rigor.split(",") and args.r2_manifest is None:
+        parser.error("--r2-manifest is required for an R2 report")
+    if "R2" not in args.expected_rigor.split(",") and args.r2_manifest is not None:
+        parser.error("--r2-manifest given for a report without R2")
 
     try:
         if args.expected_lane == RECEIPT_REQUIRED_FOR:
@@ -425,8 +794,10 @@ def main(argv: list[str] | None = None) -> int:
             expected_wheel_sha256=args.expected_wheel_sha256,
             producer_exit=args.producer_exit,
             plan=plan,
+            r2_manifest=args.r2_manifest,
+            deadline=args.deadline,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError) as exc:
         print(f"B105_REPORT_REJECTED={exc}", file=sys.stderr)
         return 2
 

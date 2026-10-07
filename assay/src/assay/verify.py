@@ -86,12 +86,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 from datetime import datetime
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, TextIO
 
 from .candidate_identity import candidate_id_from_fields
 from .mutation import judge_mutation
+from .r2_command import R2_APPENDED, R2_TRANSFORM_ID, UnrecognizedCoverageOption, transform_argv
 from .verdict import (
     CLAIM_DETAIL_BYTES,
     DISCARD_REASONS,
@@ -101,6 +104,7 @@ from .verdict import (
     VERDICT_SCHEMA_VERSION,
     CanaryAttempt,
     CanaryResult,
+    CampaignBinding,
     Claim,
     Coverage,
     Evidence,
@@ -113,10 +117,14 @@ from .verdict import (
     JudgmentR3,
     JudgmentR4,
     JudgmentResolved,
+    EquivalenceLedger,
     MutantOutcome,
     Mutation,
     MutationExecution,
     MutationWitnessReceipt,
+    MutantEvidence,
+    R2BaselineFacts,
+    R2Command,
     ResourceLimitEvidence,
     MutationProducerTool,
     Outcome,
@@ -1327,10 +1335,16 @@ def _check_equivalence_pairing(
     equivalent = mutation.get("equivalent")
     if not isinstance(equivalent, list) or not equivalent:
         return
-    if "equivalence_artifact" not in judgment_r2:
+    artifact = judgment_r2.get("equivalence_artifact")
+    ledger = judgment_r2.get("equivalence_ledger")
+    if artifact is not None and ledger is not None:
+        failures.append(
+            "judgment.r2 declares both equivalence_artifact and equivalence_ledger"
+        )
+    if artifact is None and ledger is None:
         failures.append(
             f"the R2 payload claims {len(equivalent)} provably-inert mutant(s) "
-            f"while judgment.r2 declares no equivalence_artifact to have "
+            f"while judgment.r2 declares no equivalence proof source to have "
             f"compared them against"
         )
 
@@ -1663,6 +1677,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
         "mutated_file_sha256",
         "execution",
     }
+    native_only_fields = b106_fields | {"evidence"}
     entries = list(_mutant_entries(mutation))
     if producer == "ingested":
         if "candidate_ids" in mutation:
@@ -1670,7 +1685,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
                 "an ingested mutation payload carries the native candidate inventory"
             )
         for bucket, entry in entries:
-            present = sorted(b106_fields & set(entry))
+            present = sorted(native_only_fields & set(entry))
             if present:
                 failures.append(
                     f"ingested mutation.{bucket} entry carries native B106 "
@@ -1749,7 +1764,19 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
                     f"native mutation.{bucket} candidate_id does not match its "
                     "recorded identity inputs"
                 )
-        _check_b106_execution(bucket, entry.get("execution"), failures)
+        cold_policy = (
+            policy.get("cold_witness_kills")
+            if type(policy.get("cold_witness_kills")) is bool
+            else None
+        )
+        _check_b106_execution(
+            bucket,
+            entry.get("execution"),
+            failures,
+            cold_policy=cold_policy,
+            ledger_declared=policy.get("equivalence_ledger") is not None,
+        )
+        _check_v15_evidence(bucket, entry, policy, failures)
         _check_b145_resource_limit_evidence(bucket, entry, failures)
 
     if len(outcome_ids) != len(set(outcome_ids)):
@@ -1761,7 +1788,14 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
         )
 
 
-def _check_b106_execution(bucket: str, execution: Any, failures: list[str]) -> None:
+def _check_b106_execution(
+    bucket: str,
+    execution: Any,
+    failures: list[str],
+    *,
+    cold_policy: bool | None = None,
+    ledger_declared: bool = False,
+) -> None:
     if not isinstance(execution, dict):
         failures.append(f"native mutation.{bucket} execution must be an object")
         return
@@ -1777,6 +1811,32 @@ def _check_b106_execution(bucket: str, execution: Any, failures: list[str]) -> N
             )
         if "witness" in execution:
             _check_b106_receipt(execution["witness"], bucket, failures)
+        return
+    if mode == "witness-cold":
+        if set(execution) != {"mode", "witness"}:
+            failures.append(
+                "witness-cold execution must carry exactly its current witness receipt"
+            )
+        if bucket != "killed":
+            failures.append("only a killed outcome may use witness-cold execution")
+        if cold_policy is not True:
+            failures.append("witness-cold execution requires cold_witness_kills true")
+        _check_b106_receipt(execution.get("witness"), bucket, failures)
+        return
+    if mode == "ledger":
+        if set(execution) != {"mode", "anchor"}:
+            failures.append("ledger execution must carry exactly its anchor")
+        if bucket != "equivalent":
+            failures.append("only an equivalent outcome may use ledger execution")
+        if not ledger_declared:
+            failures.append("ledger execution requires a declared equivalence ledger")
+        anchor = execution.get("anchor")
+        try:
+            anchor_size = len(anchor.encode("utf-8")) if isinstance(anchor, str) else None
+        except UnicodeEncodeError:
+            anchor_size = None
+        if not isinstance(anchor, str) or not anchor or anchor_size is None or anchor_size > 4096:
+            failures.append("ledger execution anchor must be non-empty UTF-8 of at most 4096 bytes")
         return
     if mode != "witness-prefix":
         failures.append(f"mutation.{bucket} has an unknown execution mode")
@@ -1813,9 +1873,281 @@ def _check_b106_execution(bucket: str, execution: Any, failures: list[str]) -> N
         )
 
 
+def _check_v15_evidence(
+    bucket: str, entry: dict[str, Any], policy: dict[str, Any], failures: list[str]
+) -> None:
+    """Validate v15 per-attempt collection facts without model reconstruction."""
+    if "evidence" not in entry:
+        if policy.get("cold_witness_kills") is True and bucket == "survived":
+            failures.append("cold-witness survivor requires collection evidence")
+        return
+    raw = entry.get("evidence")
+    if not isinstance(raw, dict):
+        failures.append(f"native mutation.{bucket} evidence must be an object")
+        return
+    required = {
+        "command", "collection_count", "collection_sha256",
+        "hook_fingerprint_sha256", "started_count", "failed_call_index",
+    }
+    if set(raw) != required:
+        failures.append("mutant evidence must carry exactly its six v15 fields")
+    if raw.get("command") not in ("r2", "declared"):
+        failures.append("mutant evidence command must be 'r2' or 'declared'")
+    count = raw.get("collection_count")
+    if not _is_int(count) or count < 0:
+        failures.append("mutant evidence collection_count must be an integer >= 0")
+    for name in ("collection_sha256", "hook_fingerprint_sha256"):
+        if not _is_sha256_digest(raw.get(name)):
+            failures.append(f"mutant evidence {name} must be a SHA-256 digest")
+    started = raw.get("started_count")
+    failed_index = raw.get("failed_call_index")
+    has_started = started is not None
+    has_index = failed_index is not None
+    if has_started != has_index:
+        failures.append("mutant evidence started_count and failed_call_index must appear together")
+    if has_started:
+        if not _is_int(started) or started < 1:
+            failures.append("mutant evidence started_count must be an integer >= 1")
+        if not _is_int(failed_index):
+            failures.append("mutant evidence failed_call_index must be an integer")
+        if raw.get("command") != "r2":
+            failures.append("only R2 evidence may record a failed call prefix")
+        if _is_int(started) and _is_int(failed_index):
+            if failed_index != started - 1:
+                failures.append("mutant evidence failed_call_index must end the started prefix")
+            if _is_int(count) and started > count:
+                failures.append("mutant evidence started_count exceeds collection_count")
+    if policy.get("cold_witness_kills") is not True:
+        failures.append("cold-disabled native outcomes cannot carry evidence")
+        return
+    execution = entry.get("execution")
+    mode = execution.get("mode") if isinstance(execution, dict) else None
+    cold = mode == "witness-cold"
+    if cold:
+        if bucket != "killed":
+            failures.append("only a killed outcome may carry witness-cold evidence")
+        if not has_started:
+            failures.append("witness-cold kill requires started-prefix evidence")
+        baseline_name = "r2_baseline"
+    elif bucket == "survived":
+        if has_started:
+            failures.append("survivor evidence cannot carry started-prefix facts")
+        baseline_name = "r2_baseline" if raw.get("command") == "r2" else "coverage_baseline"
+    else:
+        if has_started:
+            failures.append("non-cold outcome evidence cannot carry started-prefix facts")
+        return
+    command = policy.get("r2_command")
+    baseline = command.get(baseline_name) if isinstance(command, dict) else None
+    if not isinstance(baseline, dict):
+        failures.append(f"mutant evidence has no {baseline_name} to match")
+        return
+    for name in ("collection_count", "collection_sha256", "hook_fingerprint_sha256"):
+        if raw.get(name) != baseline.get(name):
+            failures.append(f"mutant evidence {name} differs from {baseline_name}")
+
+
+def _check_v15_r2_command(document: dict[str, Any], failures: list[str]) -> None:
+    """Raw v15 policy, command, baseline, and ledger checks (X1–X12)."""
+    claims = document.get("claims")
+    claim = _raw_claim(claims, "R2") if isinstance(claims, list) else None
+    if claim is None:
+        return
+    judgment = document.get("judgment")
+    policy = judgment.get("r2") if isinstance(judgment, dict) else None
+    if not isinstance(policy, dict):
+        return
+    producer = policy.get("producer")
+    fields = {"cold_witness_kills", "r2_command", "equivalence_ledger"}
+    if producer == "native":
+        missing = sorted(fields - set(policy))
+        if missing:
+            failures.append(f"native judgment.r2 requires v15 field(s) {missing}")
+        cold = policy.get("cold_witness_kills")
+        if type(cold) is not bool:
+            failures.append("native judgment.r2 cold_witness_kills must be a bool")
+    elif producer == "ingested":
+        present = sorted(fields & set(policy))
+        if present:
+            failures.append(f"ingested judgment.r2 forbids v15 native field(s) {present}")
+        cold = None
+    else:
+        return
+
+    mutation = _mutation_of(claim)
+    payload_present = isinstance(mutation, dict)
+    raw_command = policy.get("r2_command")
+    if producer == "native":
+        if cold is False and raw_command is not None:
+            failures.append("r2_command requires cold_witness_kills true")
+        if cold is True and payload_present and raw_command is None:
+            failures.append("cold-witness R2 payload requires r2_command")
+        if not payload_present and raw_command is not None:
+            failures.append("payload-free R2 claim cannot carry r2_command")
+
+    if raw_command is not None:
+        if not isinstance(raw_command, dict):
+            failures.append("judgment.r2.r2_command must be an object or null")
+            raw_command = None
+        else:
+            expected_keys = {
+                "transform", "argv_declared", "argv_transformed", "appended",
+                "cwd", "config_sha256", "coverage_baseline", "r2_baseline",
+            }
+            if set(raw_command) != expected_keys:
+                failures.append("r2_command has missing or unknown fields")
+            if raw_command.get("transform") != R2_TRANSFORM_ID:
+                failures.append(f"r2_command transform must be {R2_TRANSFORM_ID!r}")
+            arrays: dict[str, list[str]] = {}
+            for name in ("argv_declared", "argv_transformed", "appended"):
+                value = raw_command.get(name)
+                if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+                    failures.append(f"r2_command.{name} must be a list of strings")
+                else:
+                    arrays[name] = value
+            if "argv_declared" in arrays:
+                try:
+                    transformed = list(transform_argv(arrays["argv_declared"]))
+                except (TypeError, UnrecognizedCoverageOption) as exc:
+                    failures.append(f"r2_command argv_declared cannot be transformed: {exc}")
+                else:
+                    if arrays.get("argv_transformed") != transformed:
+                        failures.append("r2_command argv_transformed differs from declared transform")
+            if arrays.get("appended") is not None and tuple(arrays["appended"]) != R2_APPENDED:
+                failures.append("r2_command appended argv is not the pinned no-cov plugin pair")
+            if arrays.get("argv_declared") is not None and arrays["argv_declared"] != document.get("argv_declared"):
+                failures.append("r2_command argv_declared differs from top-level argv_declared")
+            cwd = raw_command.get("cwd")
+            if (
+                not isinstance(cwd, str) or not cwd or "\\" in cwd or "\x00" in cwd
+                or cwd.startswith("/") or cwd.endswith("/")
+                or (cwd != "." and any(part in ("", ".", "..") for part in cwd.split("/")))
+            ):
+                failures.append("r2_command cwd must be normalized and project-relative")
+            config_sha = raw_command.get("config_sha256")
+            if config_sha is not None and not _is_sha256_digest(config_sha):
+                failures.append("r2_command config_sha256 must be a SHA-256 digest or null")
+            baselines: dict[str, dict[str, Any]] = {}
+            for name, keys in (
+                ("coverage_baseline", {"collection_count", "collection_sha256", "duplicates", "hook_fingerprint_sha256", "hook_count", "runtime_fingerprint_sha256"}),
+                ("r2_baseline", {"collection_count", "collection_sha256", "duplicates", "hook_fingerprint_sha256", "hook_count", "runtime_fingerprint_sha256", "wall_s"}),
+            ):
+                value = raw_command.get(name)
+                if not isinstance(value, dict):
+                    failures.append(f"r2_command.{name} must be an object")
+                    continue
+                baselines[name] = value
+                if set(value) != keys:
+                    failures.append(f"r2_command.{name} has missing or unknown fields")
+                for count_name in ("collection_count", "duplicates", "hook_count"):
+                    count = value.get(count_name)
+                    if not _is_int(count) or count < 0:
+                        failures.append(f"r2_command.{name}.{count_name} must be a non-negative integer")
+                if value.get("duplicates") != 0 or type(value.get("duplicates")) is not int:
+                    failures.append(f"r2_command.{name}.duplicates must equal 0")
+                for digest_name in ("collection_sha256", "hook_fingerprint_sha256", "runtime_fingerprint_sha256"):
+                    if not _is_sha256_digest(value.get(digest_name)):
+                        failures.append(f"r2_command.{name}.{digest_name} must be a SHA-256 digest")
+                if name == "coverage_baseline" and "wall_s" in value:
+                    failures.append("coverage_baseline must omit wall_s")
+                if name == "r2_baseline":
+                    wall = value.get("wall_s")
+                    if isinstance(wall, bool) or not isinstance(wall, (int, float)) or not math.isfinite(wall) or wall < 0:
+                        failures.append("r2_baseline.wall_s must be finite and >= 0")
+            coverage = baselines.get("coverage_baseline")
+            r2 = baselines.get("r2_baseline")
+            if coverage is not None and r2 is not None:
+                for key in ("collection_count", "collection_sha256"):
+                    if coverage.get(key) != r2.get(key):
+                        failures.append(f"R2 and coverage baseline {key} values differ")
+
+    raw_ledger = policy.get("equivalence_ledger")
+    if raw_ledger is not None:
+        if not isinstance(raw_ledger, dict):
+            failures.append("equivalence_ledger must be an object or null")
+            raw_ledger = None
+        else:
+            if set(raw_ledger) != {"path", "sha256", "entry_count", "audit_sha256"}:
+                failures.append("equivalence_ledger has missing or unknown fields")
+            path = raw_ledger.get("path")
+            if (
+                not _is_text(path) or "\\" in path or "\x00" in path
+                or path.startswith("/") or path.endswith("/")
+                or any(part in ("", ".", "..") for part in path.split("/"))
+            ):
+                failures.append("equivalence_ledger path is not normalized and relative")
+            if not _is_sha256_digest(raw_ledger.get("sha256")) or not _is_sha256_digest(raw_ledger.get("audit_sha256")):
+                failures.append("equivalence_ledger digests must be SHA-256 values")
+            if not _is_int(raw_ledger.get("entry_count")) or raw_ledger.get("entry_count") < 1:
+                failures.append("equivalence_ledger entry_count must be an integer >= 1")
+    artifact = policy.get("equivalence_artifact")
+    if raw_ledger is not None and artifact is not None:
+        failures.append("equivalence_ledger cannot accompany equivalence_artifact")
+
+    entries = list(_mutant_entries(mutation))
+    ledger_entries = [entry for bucket, entry in entries if isinstance(entry.get("execution"), dict) and entry["execution"].get("mode") == "ledger"]
+    if ledger_entries:
+        for bucket, entry in entries:
+            if isinstance(entry.get("execution"), dict) and entry["execution"].get("mode") == "ledger" and bucket != "equivalent":
+                failures.append("ledger execution is legal only in the equivalent bucket")
+        if raw_ledger is None:
+            failures.append("ledger execution requires a declared equivalence_ledger")
+    if raw_ledger is not None and isinstance(mutation, dict):
+        equivalent = mutation.get("equivalent")
+        equivalent = equivalent if isinstance(equivalent, list) else []
+        if raw_ledger.get("entry_count") != len(equivalent):
+            failures.append("equivalence ledger entry_count differs from equivalent outcomes")
+        for entry in equivalent:
+            execution = entry.get("execution") if isinstance(entry, dict) else None
+            if not isinstance(execution, dict) or execution.get("mode") != "ledger":
+                failures.append("every equivalence-ledger outcome must use ledger execution")
+            if isinstance(entry, dict) and ("evidence" in entry or "resource_limit_evidence" in entry):
+                failures.append("ledger outcomes cannot carry candidate or resource evidence")
+    elif raw_ledger is not None:
+        failures.append("equivalence_ledger requires an R2 mutation payload")
+
+
+def _check_v15_campaign(document: dict[str, Any], failures: list[str]) -> None:
+    """Validate the optional top-level campaign binding, independently."""
+    if "campaign" not in document:
+        return
+    raw = document.get("campaign")
+    required = {"name", "deadline_sha256", "created_at_utc", "expires_at_utc"}
+    if not isinstance(raw, dict):
+        failures.append("campaign binding must be an object")
+        return
+    if set(raw) != required:
+        failures.append("campaign binding has missing or unknown fields")
+    name = raw.get("name")
+    if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name) is None:
+        failures.append("campaign.name does not match the campaign-name grammar")
+    if not _is_sha256_digest(raw.get("deadline_sha256")):
+        failures.append("campaign.deadline_sha256 must be a SHA-256 digest")
+    moments: list[datetime] = []
+    for field in ("created_at_utc", "expires_at_utc"):
+        value = raw.get(field)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value) is None:
+            failures.append(f"campaign.{field} must use YYYY-MM-DDTHH:MM:SSZ")
+            continue
+        try:
+            moments.append(datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            failures.append(f"campaign.{field} is not a valid UTC timestamp")
+    if len(moments) == 2 and moments[1] <= moments[0]:
+        failures.append("campaign.expires_at_utc must be later than created_at_utc")
+
+
 def _check_b145_resource_limit_evidence(
     bucket: str, entry: dict[str, Any], failures: list[str]
 ) -> None:
+    execution = entry.get("execution")
+    if isinstance(execution, dict) and execution.get("mode") == "ledger":
+        if "resource_limit_evidence" in entry:
+            failures.append(
+                f"native mutation.{bucket} ledger execution cannot carry "
+                "per-execution resource_limit_evidence"
+            )
+        return
     raw = entry.get("resource_limit_evidence")
     if not isinstance(raw, dict):
         failures.append(
@@ -2143,6 +2475,27 @@ def _reconstruct_discarded(raw: dict) -> tuple[MutantOutcome, ...] | None:
     return tuple(_reconstruct_mutant_outcome(item) for item in raw["discarded"])
 
 
+def _reconstruct_r2_baseline(raw: dict) -> R2BaselineFacts:
+    baseline = R2BaselineFacts(**raw)
+    _reject_unknown_keys(raw, baseline.to_dict(), "judgment.r2.r2_command baseline")
+    return baseline
+
+
+def _reconstruct_r2_command(raw: dict) -> R2Command:
+    command = R2Command(
+        transform=raw["transform"],
+        argv_declared=tuple(raw["argv_declared"]),
+        argv_transformed=tuple(raw["argv_transformed"]),
+        appended=tuple(raw["appended"]),
+        cwd=raw["cwd"],
+        config_sha256=raw["config_sha256"],
+        coverage_baseline=_reconstruct_r2_baseline(raw["coverage_baseline"]),
+        r2_baseline=_reconstruct_r2_baseline(raw["r2_baseline"]),
+    )
+    _reject_unknown_keys(raw, command.to_dict(), "judgment.r2.r2_command")
+    return command
+
+
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
     # B031/A-323: `shard_index`/`shard_count` are REGISTERED here. They were
     # not, from `7a4f6333` (which added them to the dataclass and the schema)
@@ -2212,7 +2565,24 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         # `{"active", "reason", "plugin"}` shape `JudgmentR2.__post_init__`
         # validates -- JSON's own dict, no separate reconstruction needed.
         liveness=raw.get("liveness"),
+        cold_witness_kills=raw.get("cold_witness_kills"),
+        r2_command=(
+            _reconstruct_r2_command(raw["r2_command"])
+            if isinstance(raw.get("r2_command"), dict)
+            else None
+        ),
+        equivalence_ledger=(
+            EquivalenceLedger(**raw["equivalence_ledger"])
+            if isinstance(raw.get("equivalence_ledger"), dict)
+            else None
+        ),
     )
+    if isinstance(raw.get("equivalence_ledger"), dict):
+        _reject_unknown_keys(
+            raw["equivalence_ledger"],
+            r2.equivalence_ledger.to_dict(),
+            "judgment.r2.equivalence_ledger",
+        )
     _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
     return r2
 
@@ -2311,6 +2681,7 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
             prior_verdict_sha256=raw_execution.get("prior_verdict_sha256"),
             prior_node_id=raw_execution.get("prior_node_id"),
             current_node_id=raw_execution.get("current_node_id"),
+            anchor=raw_execution.get("anchor"),
         )
     item = MutantOutcome(
         path=raw["path"],
@@ -2329,6 +2700,11 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         resource_limit_evidence=(
             ResourceLimitEvidence.from_dict(raw["resource_limit_evidence"])
             if isinstance(raw.get("resource_limit_evidence"), dict)
+            else None
+        ),
+        evidence=(
+            MutantEvidence(**raw["evidence"])
+            if isinstance(raw.get("evidence"), dict)
             else None
         ),
     )
@@ -2520,6 +2896,11 @@ def _reconstruct_verdict(document: dict) -> Verdict:
         judgment_kwargs["worktree_integrity"] = _reconstruct_worktree_integrity(
             document["worktree_integrity"]
         )
+    if "campaign" in document:
+        campaign_raw = document["campaign"]
+        campaign = CampaignBinding(**campaign_raw)
+        _reject_unknown_keys(campaign_raw, campaign.to_dict(), "campaign")
+        judgment_kwargs["campaign"] = campaign
     if "result_stdout_tail" in document:
         judgment_kwargs["result_stdout_tail"] = document["result_stdout_tail"]
         judgment_kwargs["result_stdout_dropped_bytes"] = document[
@@ -3226,6 +3607,8 @@ def verify_document(document: Any) -> list[str]:
     _check_r2_producer_vocabulary(document, failures)
     _check_mutation_payload_shapes(document, failures)
     _check_b106_mutation_provenance(document, failures)
+    _check_v15_r2_command(document, failures)
+    _check_v15_campaign(document, failures)
     _check_ingested_r2_agrees_with_its_payload(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)

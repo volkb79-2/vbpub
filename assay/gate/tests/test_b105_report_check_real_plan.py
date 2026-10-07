@@ -19,8 +19,23 @@ import pytest
 from gate.tests.support import PROJECT_ROOT, GitRepo
 
 from assay.cli import main
+from assay import mutation
+from assay.resource_limits import ResourceLimitCounters
 
 CHECKER_PATH = PROJECT_ROOT / "tools" / "b105_report_check.py"
+
+
+@pytest.fixture(autouse=True)
+def _cgroup_reads_are_isolated_from_the_devcontainer(monkeypatch):
+    """This test exercises planner/runner identity, not host cgroup discovery."""
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
 
 
 def _checker():

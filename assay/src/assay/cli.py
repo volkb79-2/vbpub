@@ -58,17 +58,23 @@ code *is* the verdict (§6), and stdout is for humans.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
+import re
 import shlex
+import signal
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import replace
 from .records import record
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import Counter
-from typing import Any, Literal, Sequence, TextIO, TypedDict
+from typing import Any, Callable, Literal, Sequence, TextIO, TypedDict
 
 from . import __version__
 from . import (
@@ -78,11 +84,13 @@ from . import (
     failure_summary,
     git,
     isolation,
+    liveness,
     measurability,
     mutation,
     provenance,
     registry,
     runner,
+    safeio,
 )
 from .adapters.base import LanguageAdapter
 from .adapters.go import GoAdapter
@@ -130,7 +138,7 @@ from .output import (
     resolve_state_directory,
     validate_progress_destination,
 )
-from .verdict import Evidence, EvidenceDeclaration, Verdict
+from .verdict import CampaignBinding, Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
@@ -277,11 +285,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--resume", action="store_true")
     run.add_argument(
+        "--cold-witness",
+        action="store_true",
+        help=(
+            "for native Python R2, prove mutation kills with a no-coverage "
+            "cold attempt and a trusted pytest receipt"
+        ),
+    )
+    run.add_argument(
+        "--r2-manifest",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "write the verified ordered no-coverage R2 collection manifest "
+            "atomically to PATH; requires --cold-witness"
+        ),
+    )
+    run.add_argument(
         "--allow-dirty",
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v14 verdict; project isolation.dirty_ignore paths "
+            "them in the v15 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -295,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v14 verdict; v12/v13 start cold, and every uncertain candidate "
+            "native v15 verdict; v12-v14 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -340,6 +366,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan.add_argument("lane", help="the mutation lane name to inspect")
     plan.add_argument("--operators", default=None)
+    plan.add_argument(
+        "--cold-witness",
+        action="store_true",
+        help="statically check whether this lane can use native Python R2 cold witnesses",
+    )
     plan.add_argument(
         "--allow-dirty",
         action="store_true",
@@ -435,6 +466,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--campaign-deadline",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "bind this run and its resume records to a persisted campaign "
+            "deadline created by `assay campaign init`"
+        ),
+    )
+    run.add_argument(
         "--require-judge-provenance",
         action="store_true",
         help=(
@@ -449,6 +490,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    campaign = subparsers.add_parser(
+        "campaign",
+        help="manage persisted mutation-campaign deadlines",
+    )
+    campaign_actions = campaign.add_subparsers(
+        dest="campaign_action", required=True
+    )
+    campaign_init = campaign_actions.add_parser(
+        "init",
+        help="create a deadline bound to the current commit and full lane plans",
+    )
+    campaign_init.add_argument("--campaign", required=True, metavar="NAME")
+    campaign_init.add_argument(
+        "--lane", action="append", required=True, metavar="LANE"
+    )
+    expires = campaign_init.add_mutually_exclusive_group(required=True)
+    expires.add_argument("--hours", type=float, metavar="H")
+    expires.add_argument("--expires-at", metavar="ISO8601Z")
+    campaign_init.add_argument("--file", type=Path, default=None, metavar="PATH")
+    campaign_init.add_argument(
+        "--state-dir", action="append", default=[], metavar="DIR"
+    )
+    campaign_init.add_argument("--wheel-sha256", default=None, metavar="HEX")
+    campaign_init.add_argument("--out", type=Path, default=None, metavar="PATH")
+
     build_verify_parser(subparsers)
 
     return parser
@@ -459,6 +525,59 @@ def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     from assay_analysis.cli import main as analyze_main
 
     return analyze_main(argv, stdout=stdout, stderr=stderr)
+
+
+def _termination_signal_handler(signum: int, frame: object) -> None:
+    """Mark termination first, then kill children without raising in signal context."""
+    del frame
+    try:
+        first_request = runner.request_termination()
+    except BaseException:
+        first_request = True
+    if not first_request:
+        return
+    try:
+        liveness.terminate_live_process_groups()
+    except BaseException:
+        pass
+    try:
+        os.write(
+            2,
+            (
+                f"assay: termination requested (signal {signum}); "
+                "stopping and writing an incomplete verdict\n"
+            ).encode("ascii"),
+        )
+    except BaseException:
+        pass
+
+
+def _install_termination_handlers() -> Callable[[], None]:
+    """Install run-only handlers on the main thread and return their restorer."""
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+    signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    previous = {signum: signal.getsignal(signum) for signum in signals}
+    installed: list[int] = []
+    try:
+        for signum in signals:
+            signal.signal(signum, _termination_signal_handler)
+            installed.append(signum)
+    except BaseException:
+        for signum in reversed(installed):
+            signal.signal(signum, previous[signum])
+        raise
+    restored = False
+
+    def restore() -> None:
+        nonlocal restored
+        if restored:
+            return
+        restored = True
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+    return restore
 
 
 def main(
@@ -487,9 +606,15 @@ def main(
             else:
                 _render_lanes(lane_file, out)
         elif args.command == "run":
-            return _cmd_run(args, appended, out, err)
+            restore_handlers = _install_termination_handlers()
+            try:
+                return _cmd_run(args, appended, out, err)
+            finally:
+                restore_handlers()
         elif args.command == "plan":
             return _cmd_plan(args, out, err)
+        elif args.command == "campaign" and args.campaign_action == "init":
+            return _cmd_campaign_init(args, out, err)
         elif args.command == "verify":
             return cmd_verify(args.path, stdin=inp, stderr=err)
         else:
@@ -734,6 +859,360 @@ def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
 resolve_declared_adapters = _resolve_declared_adapters
 
 
+_CAMPAIGN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_CAMPAIGN_OID_RE = re.compile(r"[0-9a-f]{40}\Z")
+_CAMPAIGN_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_CAMPAIGN_TIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+_CAMPAIGN_DEADLINE_KEYS = frozenset(
+    {
+        "schema",
+        "campaign",
+        "commit",
+        "git_tree",
+        "lanes",
+        "assay_version",
+        "wheel_sha256",
+        "plan_sha256",
+        "created_at_utc",
+        "expires_at_utc",
+    }
+)
+_CAMPAIGN_DEADLINE_LIMIT = 64 * 1024
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _campaign_timestamp(raw: Any, *, field: str) -> datetime:
+    if not isinstance(raw, str) or _CAMPAIGN_TIME_RE.fullmatch(raw) is None:
+        raise LaneConfigError(
+            f"campaign deadline {field} must be UTC YYYY-MM-DDTHH:MM:SSZ"
+        )
+    try:
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise LaneConfigError(f"campaign deadline {field} is not a valid UTC time") from exc
+
+
+def _parse_campaign_deadline(path: Path, *, lane: str) -> tuple[dict[str, Any], bytes, datetime]:
+    absolute = Path(os.path.normpath(os.path.abspath(os.path.expanduser(str(path)))))
+    try:
+        raw = safeio.read_bounded_input(
+            absolute.parent,
+            absolute.name,
+            limit=_CAMPAIGN_DEADLINE_LIMIT,
+        )
+    except AssayError as exc:
+        raise LaneConfigError(f"cannot trust campaign deadline {absolute}: {exc}") from exc
+    if raw is None:
+        raise LaneConfigError(f"campaign deadline does not exist: {absolute}")
+    return _parse_campaign_deadline_bytes(raw, absolute=absolute, lane=lane)
+
+
+def _parse_campaign_deadline_bytes(
+    raw: bytes, *, absolute: Path, lane: str
+) -> tuple[dict[str, Any], bytes, datetime]:
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise LaneConfigError(f"campaign deadline {absolute} is not valid unique-key JSON: {exc}") from exc
+    if not isinstance(document, dict) or set(document) != _CAMPAIGN_DEADLINE_KEYS:
+        raise LaneConfigError(
+            f"campaign deadline {absolute} must contain exactly the declared fields"
+        )
+    if document["schema"] != "assay-campaign-deadline/1":
+        raise LaneConfigError(f"campaign deadline {absolute} has an unknown schema")
+    if (
+        not isinstance(document["campaign"], str)
+        or _CAMPAIGN_NAME_RE.fullmatch(document["campaign"]) is None
+    ):
+        raise LaneConfigError(f"campaign deadline {absolute} has an invalid campaign name")
+    if (
+        not isinstance(document["commit"], str)
+        or _CAMPAIGN_OID_RE.fullmatch(document["commit"]) is None
+    ):
+        raise LaneConfigError(f"campaign deadline {absolute} has an invalid commit")
+    if (
+        not isinstance(document["git_tree"], str)
+        or _CAMPAIGN_OID_RE.fullmatch(document["git_tree"]) is None
+    ):
+        raise LaneConfigError(f"campaign deadline {absolute} has an invalid git_tree")
+    lanes = document["lanes"]
+    if (
+        not isinstance(lanes, list)
+        or not lanes
+        or any(not isinstance(item, str) or not item for item in lanes)
+        or lanes != sorted(set(lanes))
+    ):
+        raise LaneConfigError(f"campaign deadline {absolute} lanes must be sorted and unique")
+    if lane not in lanes:
+        raise LaneConfigError(f"campaign deadline {absolute} does not include lane {lane!r}")
+    if not isinstance(document["assay_version"], str) or not document["assay_version"]:
+        raise LaneConfigError(f"campaign deadline {absolute} has an invalid assay_version")
+    wheel_sha256 = document["wheel_sha256"]
+    if wheel_sha256 is not None and (
+        not isinstance(wheel_sha256, str)
+        or _CAMPAIGN_SHA256_RE.fullmatch(wheel_sha256) is None
+    ):
+        raise LaneConfigError(f"campaign deadline {absolute} has an invalid wheel_sha256")
+    plan_sha256 = document["plan_sha256"]
+    if not isinstance(plan_sha256, dict) or set(plan_sha256) != set(lanes):
+        raise LaneConfigError(
+            f"campaign deadline {absolute} plan_sha256 keys must exactly match lanes"
+        )
+    for lane_name, value in plan_sha256.items():
+        if value is not None and (
+            not isinstance(value, str) or _CAMPAIGN_SHA256_RE.fullmatch(value) is None
+        ):
+            raise LaneConfigError(
+                f"campaign deadline {absolute} has an invalid plan_sha256 for {lane_name!r}"
+            )
+    created_at = _campaign_timestamp(document["created_at_utc"], field="created_at_utc")
+    expires_at = _campaign_timestamp(document["expires_at_utc"], field="expires_at_utc")
+    if expires_at <= created_at:
+        raise LaneConfigError(f"campaign deadline {absolute} expires before it was created")
+    return document, raw, expires_at
+
+
+def _campaign_git_identity(lane_file: LaneFile, lane: Lane) -> tuple[str, str]:
+    deadline = runner.LaneDeadline.start(
+        budget_seconds=lane.budget_seconds,
+        monotonic=time.monotonic,
+    )
+    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+    tree = git.run(
+        lane_file.project_root,
+        "rev-parse",
+        f"{commit}^{{tree}}",
+        remaining=deadline.remaining,
+    ).strip()
+    repo_top = git.repo_top(lane_file.project_root, remaining=deadline.remaining)
+    try:
+        runner._resolve_snapshot_worktree_integrity(
+            repo=lane_file.project_root,
+            repo_top=repo_top,
+            project_root=lane_file.project_root,
+            dirty_ignore=lane_file.dirty_ignore,
+            allow_dirty=False,
+            remaining=deadline.remaining,
+        )
+    except AssayError as exc:
+        raise LaneConfigError(
+            f"campaign init requires a clean worktree under the lane's declared "
+            f"dirty-ignore policy: {exc}"
+        ) from exc
+    return commit, tree
+
+
+def _campaign_state_records_match(state_dir: Path, deadline_sha256: str) -> None:
+    if not state_dir.exists():
+        return
+    if not state_dir.is_dir():
+        raise LaneConfigError(f"campaign state directory is not a directory: {state_dir}")
+    try:
+        names = tuple(entry.name for entry in state_dir.iterdir())
+    except OSError as exc:
+        raise LaneConfigError(f"cannot inspect campaign state directory {state_dir}: {exc}") from exc
+    for name in names:
+        if re.fullmatch(r"[0-9a-f]{64}\.json", name) is None:
+            continue
+        try:
+            raw = safeio.read_bounded_input(
+                state_dir,
+                name,
+                limit=mutation.MUTATION_STATE_RECORD_LIMIT,
+            )
+        except AssayError as exc:
+            raise LaneConfigError(
+                f"cannot trust state record {state_dir / name}: {exc}"
+            ) from exc
+        if raw is None:
+            continue
+        try:
+            record = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            record = None
+        if (
+            not isinstance(record, dict)
+            or record.get("campaign_deadline_sha256") != deadline_sha256
+        ):
+            raise LaneConfigError(
+                f"state record {state_dir / name} is not bound to the campaign "
+                "deadline being initialized; move that state directory aside deliberately"
+            )
+
+
+def _cmd_campaign_init(
+    args: argparse.Namespace, out: TextIO, err: TextIO
+) -> int:
+    del err
+    if _CAMPAIGN_NAME_RE.fullmatch(args.campaign) is None:
+        raise LaneConfigError("--campaign must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+    if args.hours is not None and (
+        not math.isfinite(args.hours) or not 0 < args.hours <= 24
+    ):
+        raise LaneConfigError("--hours must be a decimal in (0, 24]")
+    if args.wheel_sha256 is not None and _CAMPAIGN_SHA256_RE.fullmatch(args.wheel_sha256) is None:
+        raise LaneConfigError("--wheel-sha256 must be 64 lowercase hexadecimal characters")
+    if len(args.lane) != len(set(args.lane)):
+        raise LaneConfigError("--lane values must be unique")
+
+    lane_file = _resolve_lane_file(args.file)
+    lane_names = tuple(sorted(args.lane))
+    lanes = tuple(lane_file.lane(name) for name in lane_names)
+    first_commit, first_tree = _campaign_git_identity(lane_file, lanes[0])
+
+    plan_digests: dict[str, str | None] = {}
+    for lane in lanes:
+        if "R2" not in lane.rigor:
+            plan_digests[lane.name] = None
+            continue
+        if lane.judge is None or lane.judge.mutation is None:
+            raise LaneConfigError(
+                f"lane {lane.name!r} declares R2 without a mutation configuration"
+            )
+        adapter = _resolve_declared_adapters(lane)
+        if adapter is None:
+            raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
+        base_declaration = runner.resolve_base_declaration(lane, None)
+        discovered = _discover_plan_jobs(
+            lane_file,
+            lane,
+            adapter=adapter,
+            base_declaration=base_declaration,
+            operators=lane.judge.mutation.operators,
+            allow_dirty=False,
+            resolve_reuse_command=False,
+        )
+        if discovered.commit != first_commit or discovered.tree != first_tree:
+            raise LaneConfigError(
+                "the worktree commit or tree changed while campaign plans were discovered"
+            )
+        if discovered.jobs == mutation.UNSUPPORTED:
+            raise LaneConfigError(
+                f"lane {lane.name!r} has no supported full mutation plan to bind"
+            )
+        if len(discovered.jobs) > lane.judge.mutation.max_mutants:
+            raise LaneConfigError(
+                f"lane {lane.name!r} exceeds max_mutants, so Assay cannot bind its full plan"
+            )
+        plan_digests[lane.name] = mutation.plan_sha256(
+            [mutation.candidate_id(job) for job in discovered.jobs]
+        )
+
+    # Re-check both tree identity and the same snapshot integrity rule after
+    # planning, so a concurrent checkout edit cannot be written into a fresh
+    # campaign document.
+    last_commit, last_tree = _campaign_git_identity(lane_file, lanes[-1])
+    if (last_commit, last_tree) != (first_commit, first_tree):
+        raise LaneConfigError("the worktree changed while campaign plans were discovered")
+
+    now = datetime.now(timezone.utc)
+    if args.expires_at is not None:
+        expires_at = _campaign_timestamp(args.expires_at, field="--expires-at")
+    else:
+        exact_expiry = now + timedelta(hours=args.hours)
+        expires_at = exact_expiry.replace(microsecond=0)
+        if expires_at < exact_expiry:
+            expires_at += timedelta(seconds=1)
+    if expires_at <= now:
+        raise LaneConfigError("--expires-at must be strictly in the future")
+    created_at = now.replace(microsecond=0)
+
+    document = {
+        "schema": "assay-campaign-deadline/1",
+        "campaign": args.campaign,
+        "commit": first_commit,
+        "git_tree": first_tree,
+        "lanes": list(lane_names),
+        "assay_version": __version__,
+        "wheel_sha256": args.wheel_sha256,
+        "plan_sha256": plan_digests,
+        "created_at_utc": created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at_utc": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    serialized = (json.dumps(document, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    if args.out is None:
+        target = lane_file.project_root / ".assay" / f"campaign-deadline-{args.campaign}.json"
+    else:
+        target = Path(os.path.normpath(os.path.abspath(os.path.expanduser(str(args.out)))))
+
+    try:
+        existing_raw = safeio.read_bounded_input(
+            target.parent,
+            target.name,
+            limit=_CAMPAIGN_DEADLINE_LIMIT,
+        )
+    except AssayError as exc:
+        raise LaneConfigError(f"cannot trust existing campaign deadline {target}: {exc}") from exc
+    same_existing = False
+    if existing_raw is not None:
+        existing, existing_raw, _ = _parse_campaign_deadline_bytes(
+            existing_raw,
+            absolute=target,
+            lane=lane_names[0],
+        )
+        identity_keys = (
+            "campaign",
+            "commit",
+            "git_tree",
+            "lanes",
+            "assay_version",
+            "wheel_sha256",
+            "plan_sha256",
+        )
+        if any(existing[key] != document[key] for key in identity_keys):
+            raise LaneConfigError(
+                f"campaign deadline already exists with a different identity: {target}"
+            )
+        same_existing = True
+
+    state_deadline_sha256 = hashlib.sha256(
+        existing_raw if same_existing else serialized
+    ).hexdigest()
+    state_dirs: list[Path] = []
+    for raw_state_dir in args.state_dir:
+        state_dir = Path(resolve_state_directory(raw_state_dir))
+        for root, inside in _containments(state_dir, lane_file.project_root):
+            _refuse_a_visible_store_inside_the_tree(
+                raw_state_dir,
+                flag="--state-dir",
+                what="those records",
+                root=root,
+                probe=inside / f"{'0' * 64}.json",
+            )
+        state_dirs.append(state_dir)
+    for state_dir in state_dirs:
+        _campaign_state_records_match(state_dir, state_deadline_sha256)
+
+    if not same_existing:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".campaign-deadline-", dir=target.parent
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(serialized)
+                stream.flush()
+            os.replace(temporary_name, target)
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+            raise
+    print(target, file=out)
+    return Outcome.PASS.exit_code
+
+
 def _cmd_run(
     args: argparse.Namespace,
     appended: list[str],
@@ -744,6 +1223,20 @@ def _cmd_run(
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
+    r2_manifest = _resolve_r2_manifest(args, lane_file.project_root)
+    campaign_deadline = (
+        _parse_campaign_deadline(campaign_deadline_arg, lane=lane.name)
+        if (campaign_deadline_arg := getattr(args, "campaign_deadline", None)) is not None
+        else None
+    )
+    if campaign_deadline is not None:
+        campaign_doc = campaign_deadline[0]
+        plan_digest = campaign_doc["plan_sha256"][lane.name]
+        if ("R2" in lane.rigor) != (plan_digest is not None):
+            raise LaneConfigError(
+                f"campaign deadline plan_sha256 for lane {lane.name!r} does not "
+                "match whether the lane declares R2"
+            )
     if getattr(args, "operators", None):
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
         # B034/A-326: the same refusal `config._load_mutation` gives a
@@ -836,6 +1329,8 @@ def _cmd_run(
                     ),
                     progress_heartbeat_seconds=heartbeat_seconds,
                     state_dir=state_dir,
+                    r2_manifest=r2_manifest,
+                    campaign_deadline=campaign_deadline,
                 )
         return _run_reserved(
             args,
@@ -848,6 +1343,8 @@ def _cmd_run(
             label_grace_seconds=label_grace_seconds,
             progress_heartbeat_seconds=heartbeat_seconds,
             state_dir=state_dir,
+            r2_manifest=r2_manifest,
+            campaign_deadline=campaign_deadline,
         )
     finally:
         if destination is not None:
@@ -886,6 +1383,30 @@ def _resolve_state_dir(
             # A representative record name, because the directory itself
             # does not exist yet -- see the helper's own docstring.
             probe=inside / f"{'0' * 64}.json",
+        )
+    return resolved
+
+
+def _resolve_r2_manifest(
+    args: argparse.Namespace, project_root: Path
+) -> "Path | None":
+    """Resolve and preflight the optional cold-witness manifest destination."""
+    raw = getattr(args, "r2_manifest", None)
+    cold_witness = getattr(args, "cold_witness", False)
+    if raw is None:
+        return None
+    if not cold_witness:
+        raise LaneConfigError("--r2-manifest requires --cold-witness")
+    resolved = Path(
+        os.path.normpath(os.path.abspath(os.path.expanduser(raw)))
+    )
+    for root, relative in _containments(resolved, project_root):
+        _refuse_a_visible_store_inside_the_tree(
+            raw,
+            flag="--r2-manifest",
+            what="the R2 manifest",
+            root=root,
+            probe=relative,
         )
     return resolved
 
@@ -1133,6 +1654,22 @@ def _timed_out_evidence(
     )
 
 
+def _unresolved_evidence(
+    declared_evidence: tuple[EvidenceDeclaration, ...], exc: AssayError
+) -> tuple[Evidence, ...]:
+    """Bind a pre-loader refusal to every declared evidence identity."""
+    return tuple(
+        Evidence(
+            source=item.source,
+            key=item.key,
+            status=exc.outcome,
+            verified_by_assay=False,
+            reason_code=exc.reason_code,
+        )
+        for item in declared_evidence
+    )
+
+
 def _run_reserved(
     args: argparse.Namespace,
     lane: Lane,
@@ -1150,7 +1687,18 @@ def _run_reserved(
     #: (B066) The already-resolved, already-refused `--state-dir`, or `None`
     #: for today's `<project_root>/.assay/mutation-state/`.
     state_dir: "Path | None" = None,
+    r2_manifest: "Path | None" = None,
+    campaign_deadline: tuple[dict[str, Any], bytes, datetime] | None = None,
 ) -> int:
+    campaign_binding = None
+    if campaign_deadline is not None:
+        campaign_document, campaign_bytes, _ = campaign_deadline
+        campaign_binding = CampaignBinding(
+            name=campaign_document["campaign"],
+            deadline_sha256=hashlib.sha256(campaign_bytes).hexdigest(),
+            created_at_utc=campaign_document["created_at_utc"],
+            expires_at_utc=campaign_document["expires_at_utc"],
+        )
     # P26/A-212: one LaneDeadline, started here -- before HEAD is even
     # resolved -- reaches HEAD, attestation, adapter resolution, and the
     # whole of run_lane (direct R0 or higher rigor). CLI never passes
@@ -1251,6 +1799,8 @@ def _run_reserved(
         stream, print the summary, and return the exit code. Nested, because
         it closes over `destination`, `args`, `out` and `_emit_verdict_written`.
         """
+        if campaign_binding is not None and verdict.campaign is None:
+            verdict = replace(verdict, campaign=campaign_binding)
         if destination is not None:
             # Exactly once, and the summary is printed only after it succeeded:
             # a run that could not deliver the artifact it was asked for must not
@@ -1306,6 +1856,7 @@ def _run_reserved(
         grace = runner.LaneDeadline(
             expires_at=time.monotonic() + label_grace_seconds,
             monotonic=time.monotonic,
+            honors_termination=False,
         )
         try:
             commit = git.head_rev(lane_file.project_root, remaining=grace.remaining)
@@ -1351,6 +1902,86 @@ def _run_reserved(
     # the lane itself all now have a run to be attributed to. Idempotent, so
     # the timeout branch above having already emitted one is not a second.
     _emit_run_header(commit)
+
+    expected_plan_sha256: str | None = None
+    campaign_deadline_sha256: str | None = None
+    if campaign_deadline is not None:
+        campaign_doc, campaign_raw, expires_at_utc = campaign_deadline
+        expected_plan_sha256 = campaign_doc["plan_sha256"][lane.name]
+        campaign_deadline_sha256 = hashlib.sha256(campaign_raw).hexdigest()
+        try:
+            current_tree = git.run(
+                lane_file.project_root,
+                "rev-parse",
+                f"{commit}^{{tree}}",
+                remaining=deadline.remaining,
+            ).strip()
+        except AssayError as exc:
+            if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
+                raise
+            detail = runner.announce_refusal(exc, diagnostics=err)
+            verdict = runner.refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                detail=detail,
+                argv_append=appended,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=__version__,
+                judge_provenance=judge_provenance,
+                evidence=_timed_out_evidence(declared_evidence, exc),
+                declared_evidence=declared_evidence,
+            )
+            return _deliver_verdict(verdict)
+
+        identity_mismatches: list[str] = []
+        if campaign_doc["commit"] != commit:
+            identity_mismatches.append(
+                f"commit expected {campaign_doc['commit']}, observed {commit}"
+            )
+        if campaign_doc["git_tree"] != current_tree:
+            identity_mismatches.append(
+                f"git_tree expected {campaign_doc['git_tree']}, observed {current_tree}"
+            )
+        if campaign_doc["assay_version"] != __version__:
+            identity_mismatches.append(
+                f"assay_version expected {campaign_doc['assay_version']}, "
+                f"observed {__version__}"
+            )
+        if identity_mismatches:
+            exc = AssayError(
+                "campaign deadline identity does not match this run: "
+                + "; ".join(identity_mismatches),
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+            detail = runner.announce_refusal(exc, diagnostics=err)
+            verdict = runner.refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                detail=detail,
+                argv_append=appended,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=__version__,
+                judge_provenance=judge_provenance,
+                evidence=_unresolved_evidence(declared_evidence, exc),
+                declared_evidence=declared_evidence,
+            )
+            return _deliver_verdict(verdict)
+
+        # Convert UTC to monotonic exactly once, after identity checks so an
+        # expired document for a different tree remains an identity refusal.
+        deadline = runner.campaign_bounded_deadline(
+            deadline,
+            expires_at_utc=expires_at_utc,
+            wall_now=datetime.now(timezone.utc),
+            monotonic_now=time.monotonic(),
+        )
 
     # No declaration means no loader call. Otherwise each declared source's
     # own directory exists by config invariant (B004/A-430's PER-SOURCE
@@ -1526,12 +2157,16 @@ def _run_reserved(
                 progress_stream=progress_stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                cold_witness=getattr(args, "cold_witness", False),
+                r2_manifest=r2_manifest,
                 reuse_from=getattr(args, "reuse_from", None),
                 # B019/A-328: the gate request's own comparison base, threaded
                 # verbatim. `run_lane` decides whether this lane delegated to
                 # it, and refuses every disagreement -- the CLI does not
                 # adjudicate.
                 request_base=getattr(args, "request_base", None),
+                expected_plan_sha256=expected_plan_sha256,
+                campaign_deadline_sha256=campaign_deadline_sha256,
                 snapshot_limits=lane_file.snapshot_limits,
                 allow_dirty=getattr(args, "allow_dirty", False),
                 dirty_ignore=lane_file.dirty_ignore,
@@ -1835,6 +2470,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
     """
     lane_file = _resolve_lane_file(args.file)
     lane = lane_file.lane(args.lane)
+    cold_witness = getattr(args, "cold_witness", False)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
         raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
     reuse_source = None
@@ -1910,7 +2546,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         base_declaration=base_declaration,
         operators=operators,
         allow_dirty=getattr(args, "allow_dirty", False),
-        resolve_reuse_command=reuse_source is not None,
+        resolve_reuse_command=reuse_source is not None or cold_witness,
     )
     commit = discovered.commit
     tree = discovered.tree
@@ -2041,16 +2677,72 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
                     reuse_source,
                     [_plan_candidate_id(job) for job in jobs],
                 ),
-                "classification_counts": dict(
-                    sorted(
-                        Counter(labels).items()
-                    )
-                ),
+                "classification_counts": dict(sorted(Counter(labels).items())),
             }
+    if cold_witness:
+        payload["cold_witness"] = _cold_witness_plan_preview(
+            lane,
+            adapter=adapter,
+            command_plan=discovered.reuse_command_plan,
+            cwd=discovered.reuse_command_cwd,
+        )
     print(json.dumps(payload, indent=2, sort_keys=True), file=out)
     if payload["status"] == "ok" and err is not None:
         print(PLAN_ESTIMATE_HINT, file=err)
     return 0
+
+
+def _cold_witness_plan_preview(
+    lane: Lane,
+    *,
+    adapter: LanguageAdapter | None,
+    command_plan: Any,
+    cwd: Path | None,
+) -> dict[str, Any]:
+    """Render the static cold-witness eligibility facts used by ``assay plan``."""
+    from .mutation_witness import cold_shape_refusal, supports_sequential_pytest
+    from .r2_command import (
+        R2_APPENDED,
+        UnrecognizedCoverageOption,
+        transform_argv,
+    )
+
+    if not (
+        "R2" in lane.rigor
+        and adapter is not None
+        and adapter.name == "python"
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and not lane.judge.mutation.is_ingested
+    ):
+        refusal = "cold witness needs a native Python R2 lane"
+        transformed: list[str] | None = None
+    elif command_plan is None or cwd is None:
+        refusal = "command environment could not be resolved"
+        transformed = None
+    else:
+        try:
+            transformed = list(transform_argv(command_plan.argv_declared))
+        except UnrecognizedCoverageOption as exc:
+            refusal = f"unrecognized coverage option {exc}"
+            transformed = None
+        else:
+            refusal = cold_shape_refusal(
+                command_plan.argv_declared,
+                command_plan.env_effective,
+                appended=command_plan.argv_appended,
+            )
+            if refusal is None and not supports_sequential_pytest(
+                (*transformed, *command_plan.argv_appended, *R2_APPENDED),
+                cwd=cwd,
+                env=command_plan.env_effective,
+            ):
+                refusal = "not a sequential pytest command"
+    return {
+        "eligible": refusal is None,
+        "refusal": refusal,
+        "argv_transformed": transformed,
+    }
 
 
 def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
