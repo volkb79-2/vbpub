@@ -224,7 +224,14 @@ assay exists to close that gap mechanically, not by policy:
   stops the lane with payload-free `ERROR/EXEC_FAILED`. Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
   `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
-  controls refuse the run.
+  controls refuse the run. If a private cgroup namespace hides ancestors,
+  Assay may use the explicitly configured
+  `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
+  ancestor condition; all identity, ancestry, and attribution checks remain
+  fail-closed. Run-Gate's `resource_observer = "cgprofile"` mounts a
+  separate observer-only socket, never the daemon control socket. See the
+  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   This does not observe per-process limits such as `RLIMIT_NPROC` or
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)

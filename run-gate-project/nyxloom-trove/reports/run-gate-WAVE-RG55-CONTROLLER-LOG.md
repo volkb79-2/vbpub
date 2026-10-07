@@ -7593,3 +7593,168 @@ Resolution: add tests for those actual behavioral states; do not weaken the
 floor or add coverage exclusions. No product code is changing in this repair.
 The exact-tree selftest must be rerun after these oracles are committed before
 any other gate or merge. No merge or release was made.
+
+### RW-484 — 2026-10-07 17:01:17 UTC — resolve R2 visibility without a host broker
+
+The corrected Run-Gate source is rev 56 on provisional main. Its exact-tree
+selftest passed at `976433ea4378b8f2bd859ff405a7bbcfdca80f30`: 1,721 passed,
+2 skipped; changed executable lines 66/66 and branches 36/36. The 3-CPU
+container completed in 152.44 seconds. Host memory PSI `full avg10` was 0.02%
+at launch. DAMON remained unavailable with `EBUSY`; this is profiling
+disclosure, not a test verdict change.
+
+Assay 8.0.0 B145 refuses native R2 when a private cgroup namespace hides
+enforcing ancestors. Preserve D-32: do not add a separate host broker or give
+the gate/test container a host PID or cgroup namespace. Instead, extend the
+already-managed cgprofile daemon's existing AF_UNIX control protocol with one
+read-only resource-counter query. It accepts no caller-selected PID or cgroup
+path: SO_PEERCRED identifies the client process, the requested native TID must
+be proven to belong to that process, and the daemon derives the cgroup from
+host state, restricted to the configured gates slice. It returns only that
+lane cgroup's ancestry counters/limits/signature, no host PID list or sibling
+cgroup data, and performs no write or placement operation.
+
+Run-Gate R2 lanes opt into the observer explicitly. Container lanes receive
+only the existing socket directory as a read-only bind plus the socket's
+observed GID; namespaces remain private and no Docker socket is added. Assay
+uses its existing local observer when ancestors are visible; otherwise the
+explicit socket endpoint is required and any endpoint/identity failure stays
+fail-closed. A resource event visible only at a shared ancestor is
+unattributable: abort the mutation lane without recording a candidate bucket.
+Only evidence in the candidate cgroup's own hierarchical counters may mark
+that candidate resource-limited. Thus sibling events cannot fabricate a kill
+or survivor. Keep this as a read-only data seam in the existing daemon, not a
+host placement broker; document the trust boundary and mirror the protocol
+contract byte-for-byte.
+
+This ruling authorizes the implementation and its necessary Run-Gate, Assay,
+cgprofile, contract, adoption-document, and regression-test changes. Exact
+short gates, R2, full gates, fresh review, release, and live observer probes
+remain required; this ruling is not release evidence.
+
+### RW-485 — 2026-10-07 17:07:49 UTC — keep the observer transport read-only
+
+RW-484's proposed read-only bind of the existing `/run/cgprofile/ctl.sock`
+would still expose its full read/write command protocol: filesystem
+read-only does not make an AF_UNIX service protocol read-only. Do not mount
+the control socket into an R2 container.
+
+Implement a second, observer-only AF_UNIX listener in the existing
+cgprofile daemon, under the existing `/run/cgprofile` directory. Its only
+accepted operation is the resource-counter observation query; all control
+verbs are unavailable on that listener. Run-Gate mounts only that socket
+file read-only into explicitly opted-in R2 containers and grants its
+observed group ID. The existing `ctl.sock`, its protocol, and its callers
+remain unchanged. This is not a separate process, service, host broker, or
+placement authority: it is a read-only endpoint in the already-authorized
+daemon. Keep peer-credential and host-cgroup-scope checks on this endpoint,
+and fail closed if the observer socket is absent, replaced, or unreadable.
+
+This narrows RW-484's transport detail without changing its no-broker
+decision or the candidate/ancestor attribution rule. Amend both protocol
+contract mirrors and the Run-Gate/Assay/cgprofile user docs and tests to name
+the separate observer-only socket and prove that `start`, `stop`, `place`,
+and other control verbs cannot be sent through it. No merge or release is
+authorized by this ruling.
+
+### RW-486 — 2026-10-07 17:45:01 UTC — translate the daemon's private cgroup view by verified mount root
+
+Live inspection of `cgprofile-host-daemon` confirmed the production shape:
+the daemon has `pid=host`, retains a private cgroup namespace, and mounts
+the host cgroup2 hierarchy at `/sys/fs/cgroup`. Its mountinfo root is
+`/../..`; a peer in the devcontainer appears in host procfs as
+`0::/../../dev.slice/dev-interactive.slice/docker-<id>.scope`. This is the
+kernel's documented cgroup-namespace representation for a task outside the
+namespace root, not a canonical host path. Rejecting every `..` path would
+therefore make the observer unusable; normalizing it without a proven mount
+mapping would be unsafe.
+
+The observer must bind these two facts: accept a cgroup2 mount root consisting
+only of N leading parent components, then accept a peer cgroup path only when
+it begins with exactly the same N parent components. Strip that exact prefix
+to derive the hierarchy-root-relative host path. A root mount (`/`) accepts
+only canonical paths with no parent components. Any mismatch, path inside the
+daemon's private subtree, non-root mount, nested mount/overmount, or path that
+does not resolve beneath the configured gates slice is refused. Keep the
+derived canonical path for all filesystem reads and return no namespace-
+relative path to Assay.
+
+The host's `/sys/fs/cgroup` bind is read-write because cgprofile's existing
+placement role needs it; this observer operation itself remains read-only.
+It must never add a cgroup write, placement verb, or mount of `ctl.sock` to
+the tester container. This ruling is supported by the live mount/proc
+observations and Linux's documented `/../..` cgroup-namespace form; tests
+must exercise both the ordinary full-root view and this exact private-
+namespace translation, plus mismatched-prefix refusals.
+
+### RW-487 — 2026-10-07 18:00:35 UTC — freeze the native-R2 observer wire contract
+
+The observer is a second AF_UNIX listener at
+`/run/cgprofile/resource-observer.sock`, separate from `ctl.sock`, served by
+the existing daemon. Its only operation is `resource-limits`; the request
+contains exactly `verb`, `args.thread_id`, and `contract`, where the native
+TID is a positive integer. The daemon binds it to SO_PEERCRED PID/UID, proves
+the TID is a live thread of that peer and that all peer threads share one
+cgroup and credentials, then returns a complete leaf-to-root cgroup-v2
+ancestry with limits, event counters, and mount identity. It returns no PID,
+task list, caller-selected path, sibling data, or control operation. The
+existing ctl protocol and access policy are unchanged.
+
+Run-Gate's closed `resource_observer = "cgprofile"` option is legal only on
+Assay lanes using `tester-unified`. It checks the fixed host socket's type,
+owner, group, and mode, then mounts only that socket read-only, adds its
+observed GID, and sets Assay's endpoint variable. Missing or unsafe socket
+state is an infrastructure refusal. Assay first uses its local B145 reader;
+remote fallback occurs only when that reader specifically proves ancestor
+hiding. Other local errors and all remote identity, ancestry, mount, or
+counter errors remain fail-closed. Shared-ancestor event deltas without the
+same leaf delta abort the lane before candidate classification.
+
+The design, response fields, bounds, refusal shape, and private-namespace
+mount-root mapping are normative in §9 of both byte-identical
+`RG55-INTERFACE-CONTRACT.md` copies. This is a read-only data endpoint in the
+existing no-broker daemon, not a placement capability or a new host service.
+
+### RW-488 — 2026-10-07 18:41:19 UTC — correct whole-suite observer integration failures
+
+The first registered cgprofile `unit` gate on the uncommitted RG-89 candidate
+completed in 135.01 seconds: 2,458 passed, 2 failed. The failures were a
+broken README anchor to the observer protocol heading and an existing socket
+permissions test that asserted only the control socket's group ownership,
+omitting the newly added observer socket. After correcting those, the second
+unit gate completed in 131.83 seconds: 2,459 passed, 1 failed; the remaining
+failure found the same stale protocol anchor in DESIGN-GUIDE (and the consumer
+guide's anchor was also found by searching all references). All three adopter
+documents now link to the generated `8-native-r2-resource-observer-rg-89`
+anchor. No gate is accepted yet; rerun the complete unit gate on the corrected
+candidate, followed by whole-project coverage and canaries.
+
+### RW-489 — 2026-10-07 18:44:28 UTC — pass the corrected cgprofile unit gate
+
+The registered whole-package `unit` gate passed on the corrected RG-89
+candidate: 2,460 passed, four existing Python fork/deprecation warnings, in
+128.83 seconds. The gate's host placement probe verified `dev-gates.slice`
+loaded and the test container's 3-CPU cap. Host memory PSI `full avg10` was
+0.01 at the 90-second health check and 0.00 after completion. This is unit
+evidence only; whole-project line/branch coverage and canary gates remain.
+
+### RW-490 — 2026-10-07 18:49:44 UTC — pass cgprofile whole-project coverage
+
+The registered `coverage` gate passed on the same candidate: 2,460 passed,
+four existing Python fork/deprecation warnings, in 131.80 seconds. The
+whole-package report is 100% line and 100% branch coverage (8,307 statements,
+3,070 branches; zero missing lines or branches). The gate's host placement
+probe passed and its test container was capped at 3 CPUs in `dev-gates.slice`.
+The registered canary gate, exact committed-tree reruns, live observer
+acceptance, Assay R2, review, release, and daemon rollout remain outstanding.
+
+### RW-491 — 2026-10-07 18:50:48 UTC — pass cgprofile canaries; DAMON remains unavailable
+
+The registered cgprofile `r3` lane passed using Run-Gate source rev57: all
+seven canaries rejected their adverse mutation and none survived. The
+tester-unified container was planned under `dev-gates.slice` at 3 CPUs; the
+lane exited 0. Run-Gate's profile record identified the existing daemon as
+`cgprofile 0.0.0-dev`, but DAMON start returned `EBUSY`; this is not measured
+DAMON-overhead evidence. No daemon state was changed. The three cgprofile
+registered lanes are green on the dirty candidate; they must be rerun on the
+committed exact tree before release review.

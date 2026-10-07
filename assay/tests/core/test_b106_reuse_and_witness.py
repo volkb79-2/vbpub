@@ -41,6 +41,24 @@ from assay.resource_limits import ResourceLimitCounters
 FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_candidate_resource_counters(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests exercise witness/reuse behavior, not host cgroup visibility.
+    # Make their R2 resource window deterministic in private cgroup namespaces;
+    # focused B145/observer tests cover the real local and remote readers.
+    monkeypatch.setattr(
+        mutation,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: ResourceLimitCounters(
+            pids_max=0,
+            memory_max=0,
+            memory_oom=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+        ),
+    )
+
+
 def _v14_killed_source() -> dict:
     document = json.loads((FIXTURES / "r2_pass.json").read_text(encoding="utf-8"))
     document["schema_version"] = 14
@@ -855,7 +873,7 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
         )
     )
     monkeypatch.setattr(
-        mutation, "read_current_cgroup_counters", lambda: next(samples)
+        mutation, "read_candidate_resource_counters", lambda **_kwargs: next(samples)
     )
     commands: list[tuple[str, ...]] = []
 

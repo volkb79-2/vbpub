@@ -12012,6 +12012,16 @@ B145 and B147 merged to `main` as `25c3af6b`. B146 remains deferred;
 release remains grouped with the planned
 v14 / 8.0.0 wave.
 
+**RG-89 controller update (2026-10-07):** The B145 core remains the
+classification guard, but a private cgroup namespace is now supported through
+an explicit peer-bound observer when the local reader specifically proves
+ancestors are hidden. The observer is a separate read-only cgprofile socket,
+not `ctl.sock`; it derives only the caller's complete gates-slice ancestry.
+Assay's judge identity advances from `/7` to `/8`, invalidating all earlier
+B145 resume evidence. The Assay, Run-Gate, and cgprofile changes are in the
+`rg89-resource-observer` integration worktree; registered exact-tree gates,
+review, release, and live observer acceptance remain pending.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
 **Status: IMPLEMENTED on `assay-73-B` (2026-10-06): `assay run`'s summary gains an `R0: FAIL (first failing test: NAME)` line, read from the retained output tail by `src/assay/failure_summary.py` (pytest, `go test` text and JSON, vitest, jest). The headline pair is unchanged (a failing suite that dirtied the tree still headlines `NO_MEASUREMENT/DIRTY_TREE`); output with no recognised failure adds no line. SQL R0 and `result_report` JSON files are not read; the name is the first failure inside the bounded tail.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.

@@ -14,7 +14,9 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 56  # rev 56: RG-88 nullable DAMON footprint disclosure
+__revision__ = 57  # rev 57: RG-89 Assay resource-observer socket
+# R2 Assay lanes may opt into the cgprofile observer-only socket; its mount,
+# GID grant, and private-namespace constraints are closed in the lane schema.
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -352,6 +354,9 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 
 
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
+CGPROFILE_RESOURCE_OBSERVER_SOURCE = "/run/cgprofile/resource-observer.sock"
+CGPROFILE_RESOURCE_OBSERVER_TARGET = "/tmp/cgprofile-resource-observer.sock"
+ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
 # now routes through the same container machinery every named environment
@@ -848,7 +853,8 @@ def command_lane_is_composite(lane: dict) -> bool:
 LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
-             "profile", "exit_map", "accepts_args", "lanes", "stop_on"}
+             "profile", "exit_map", "accepts_args", "lanes", "stop_on",
+             "resource_observer"}
 PIN_KEYS = {"sha256", "version"}
 
 
@@ -914,6 +920,16 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
             not isinstance(table["environment"], str)
             or not table["environment"].strip()):
         fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
+    if "resource_observer" in table:
+        if table["resource_observer"] != "cgprofile":
+            fail(f"{where} [lanes.{name}]: 'resource_observer' must be "
+                 "'cgprofile'")
+        if kind != "assay":
+            fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
+                 "only for assay lanes")
+        if table.get("environment") != "tester-unified":
+            fail(f"{where} [lanes.{name}]: 'resource_observer' requires "
+                 "environment = \"tester-unified\"")
     if kind == "sequence":
         members = table.get("lanes")
         if not isinstance(members, list) or not members or not all(
@@ -5990,6 +6006,49 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
+def resource_observer_docker_flags(lane: dict) -> list[str]:
+    """Mount only cgprofile's read-only resource-observer socket.
+
+    The observer protocol is a separate daemon listener; never mount the
+    control socket here. Validate the host object instead of allowing Docker
+    to create a missing bind source as an empty directory or file.
+    """
+    if lane.get("resource_observer") is None:
+        return []
+    if lane.get("resource_observer") != "cgprofile":
+        fail("lane resource_observer must be 'cgprofile'")
+    if lane.get("kind") != "assay" or lane.get("environment") != "tester-unified":
+        fail("resource_observer='cgprofile' requires an assay lane in tester-unified")
+    socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    try:
+        parent = os.lstat(socket_path.parent)
+        observed = os.lstat(socket_path)
+    except OSError as exc:
+        fail_infra(f"cgprofile resource observer socket is unavailable at "
+                   f"{socket_path}: {exc}")
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 \
+            or parent.st_mode & 0o002:
+        fail_infra(f"cgprofile resource observer directory is not a safe "
+                   f"root-owned directory: {socket_path.parent}")
+    if not stat.S_ISSOCK(observed.st_mode):
+        fail_infra(f"cgprofile resource observer path is not a Unix socket: "
+                   f"{socket_path}")
+    if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
+        fail_infra("cgprofile resource observer socket ownership does not "
+                   "match its root-owned socket directory")
+    if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
+        fail_infra("cgprofile resource observer socket must be group-connectable "
+                   "and not accessible to other users")
+    return [
+        "--mount",
+        f"type=bind,source={socket_path},target="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+        "--group-add", str(observed.st_gid),
+        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+    ]
+
+
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
                          script: str,
@@ -10413,7 +10472,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         repo, worktree, env, with_state=lane["kind"] == "assay",
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
-        *extra_mount_flags()]
+        *extra_mount_flags(),
+        *resource_observer_docker_flags(lane)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,

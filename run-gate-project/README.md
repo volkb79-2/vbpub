@@ -61,7 +61,12 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
-   `R-43h`).
+   `R-43h`); and `resource_observer = "cgprofile"` for an Assay lane in
+   `tester-unified`, which exposes only the read-only observer socket to
+   recover hidden cgroup ancestors for native R2. It does not expose
+   `ctl.sock` or change the lane's private cgroup namespace. See the
+   [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
+   and [consumer setup](CONSUMERS.md#native-r2-resource-observer).
 
 ## Gate and evidence
 
@@ -230,12 +235,16 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    excluded, as it is on every assay lane. The comparison base is
    delegated to the invoking gate request (`judge.base_source =
    "request"`), never hardcoded.
-3. **`assay-r2`** — mutation testing (R2) over the same scope, bare-host
-   and serial (`jobs = 1`, HOST LOAD §6), budget 4h. Bare-host lanes do not
-   have a live stall watcher, so this lane declares no `stall_timeout`. Run separately,
+3. **`assay-r2`** — mutation testing (R2) over the same scope in a private
+   `tester-unified` container, capped at 3 CPUs with two isolated mutant
+   workers. Its `resource_observer = "cgprofile"` opt-in mounts only the
+   daemon's read-only resource-observer socket; the control socket is not
+   exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
+   the complete host cgroup ancestry required by B145 while keeping the
+   mutation campaign inside its own container. The 4h budget is a lane-level
+   outer bound, not a per-candidate performance verdict. Run separately,
    pre-merge — never a member of `gate-full` (below), so a routine "does
-   this gate clean" check never has to pay for a lane that can take
-   hours.
+   this gate clean" check never has to pay for a lane that can take hours.
 4. **`assay-r3`** — the canary: `tools/canary-run.sh` breaks one
    provably-covered invariant (today: `duration_stats`'s median, flipped
    to a mean) in a disposable copy and asserts the exact test that

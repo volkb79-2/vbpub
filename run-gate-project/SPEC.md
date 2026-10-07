@@ -90,6 +90,10 @@ Rev 18 (run-gate rev 55): RG-84 refuses to run as container PID 1 and compares
 the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
 each real lane; any resource event or unreadable comparison returns
 infrastructure ERROR with the raw lane status retained.
+Rev 19 (run-gate rev 57): RG-89 adds the opt-in
+`resource_observer = "cgprofile"` lane contract for native Assay R2 in a
+private cgroup namespace; only cgprofile's observer-only socket is mounted
+read-only and its observed GID is granted to the tester container.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -295,7 +299,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   table — `memory`, `memory_swap`, `cpu_weight`, `io_weight`, `shared`,
   `cpus` (RG-48, rev 10)), `profile` (RG-55, rev 10: `false` to disable
   profiling for this lane outright, or a table `{enabled, damon}`
-  overriding `[profile]`'s own defaults — `R-43h`), `description` (optional
+  overriding `[profile]`'s own defaults — `R-43h`),
+  `resource_observer` (RG-89: only `"cgprofile"`, only on an Assay lane
+  explicitly using `environment = "tester-unified"`; it mounts a separate
+  observer-only Unix socket read-only, grants its observed GID, and fails
+  closed if that host socket or its ownership/mode is not safe), `description` (optional
   non-empty string, one line, shown by `--help`), `required_env` (optional
   unique list of valid environment-variable names this lane's tests
   REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
@@ -2330,6 +2338,46 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     --no-local` and is unaffected. A sibling `config.worktree` that exists
     gets the `R-45b` sanitized read-only overlay; module plus sibling
     config files are capped at 256 (infrastructure error beyond).
+
+- `R-46` **Private-namespace Assay R2 resource observer (RG-89).**
+  `resource_observer = "cgprofile"` is an optional, closed lane key. It is
+  legal only when `kind = "assay"` and the lane explicitly names
+  `environment = "tester-unified"`. Before building Docker argv, Run-Gate
+  lstat-checks the fixed source
+  `/run/cgprofile/resource-observer.sock`: it must be a Unix socket, root
+  owned, in the root-owned socket directory with matching GID, group
+  connectable, and not accessible to other users. Missing or unsafe state is
+  infrastructure ERROR; Docker must not invent a bind source. The container
+  receives only that socket file at
+  `/tmp/cgprofile-resource-observer.sock`, via a read-only bind; Run-Gate
+  supplies the observed socket GID as a supplementary group and sets
+  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container target. It does not
+  mount `ctl.sock`, grant the Docker socket, or change the container's
+  private PID/cgroup/network namespaces.
+  - The observer listener belongs to the existing cgprofile daemon and accepts
+    exactly one `resource-limits` request with a positive native thread ID.
+    It has no `start`, `stop`, `place`, or other control verbs. The daemon
+    binds the request to `SO_PEERCRED`, proves the requested native TID maps
+    to a live thread of that peer, proves all peer threads share cgroup and
+    credentials, and refuses capability/DAC states that could migrate the
+    peer into an unsampled cgroup. The request cannot name a PID, path, or
+    slice. The service maps the private-namespace cgroup path through its
+    mountinfo-verified full-root cgroup2 mount and returns only that peer
+    cgroup's ancestry beneath the configured gates slice—never PIDs,
+    processes, or sibling cgroup data.
+  - Assay first uses its already-validated local cgroup view. It calls the
+    configured observer only for the specific hidden-ancestor refusal; other
+    local errors do not trigger fallback. It validates the response schema,
+    thread identity, full leaf-to-root ancestry, mount IDs, limits, and event
+    counters before using the sample. Per-path deltas remain internal to
+    Assay: an event at a shared ancestor without a matching candidate-leaf
+    delta is an infrastructure error with no candidate bucket. Only a
+    candidate-attributable resource event may classify a started candidate as
+    `crashed`; a resource event never certifies `killed` or `survived`.
+  - This is a read-only observation seam in the existing daemon, not a host
+    broker, placement authority, or namespace-sharing shortcut. The separate
+    socket is required because a read-only filesystem bind does not restrict
+    the verbs accepted by a Unix socket protocol.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

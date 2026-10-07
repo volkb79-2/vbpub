@@ -8,17 +8,22 @@ assuming a host path. Matching cgroup2 mounts must be read-only, preventing a
 candidate from creating or removing child cgroups. Assay also verifies that
 candidate credentials cannot write `cgroup.procs` on the candidate cgroup or
 any ancestor: `CLONE_INTO_CGROUP` checks inode permissions without honoring a
-read-only mount. If the cgroup namespace hides ancestors, observation fails
-closed because an ancestor limit can reject work without incrementing a child's
-local event counter.
+read-only mount. If the local cgroup namespace hides ancestors, observation
+fails closed by default because an ancestor limit can reject work without
+incrementing a child's local event counter. Native R2 may consult an
+explicitly configured, peer-bound read-only observer only for that specific
+hidden-ancestor case; other local-reader failures never fall through remotely.
 """
 
 from __future__ import annotations
 
 import errno
+import json
 import os
 import re
+import socket
 import stat
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -41,6 +46,10 @@ class ResourceLimitObservationError(RuntimeError):
     """Required cgroup resource-limit counters or ancestors are not visible."""
 
 
+class ResourceLimitAncestorsHiddenError(ResourceLimitObservationError):
+    """The local cgroup view omits ancestors, but a configured observer may see them."""
+
+
 @record
 class ResourceLimitCounters:
     pids_max: int
@@ -53,6 +62,11 @@ class ResourceLimitCounters:
     # or configured limit during one candidate an infrastructure error instead
     # of hiding a counter from the aggregate merely because it became unlimited.
     limit_signature: tuple[LimitSignatureEntry, ...] = ()
+    # Internal per-cgroup snapshots used only to ensure an event is attributable
+    # to the lane leaf. They are never serialized into mutation verdicts.
+    path_event_counters: tuple[
+        tuple[str, int | None, int | None, int | None, int | None, int | None], ...
+    ] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -92,6 +106,24 @@ class ResourceLimitCounters:
                 or (entry[4] and not entry[7])
             ):
                 raise ValueError("limit_signature entries are malformed")
+        if type(self.path_event_counters) is not tuple:
+            raise ValueError("path_event_counters must be a tuple")
+        seen_paths: set[str] = set()
+        for entry in self.path_event_counters:
+            if (
+                type(entry) is not tuple
+                or len(entry) != 6
+                or not isinstance(entry[0], str)
+                or not entry[0].startswith("/")
+                or str(PurePosixPath(entry[0])) != entry[0]
+                or entry[0] in seen_paths
+                or any(
+                    value is not None and (type(value) is not int or value < 0)
+                    for value in entry[1:]
+                )
+            ):
+                raise ValueError("path_event_counters entries are malformed")
+            seen_paths.add(entry[0])
 
 
 @record
@@ -160,18 +192,15 @@ class ResourceLimitEvidence:
                 "cgroup paths, mount identities, controller files, or resource "
                 "limits changed during a candidate command"
             )
+        pids, memory_max, memory_oom, memory_oom_kill, memory_oom_group_kill = (
+            _candidate_counter_deltas(before, after)
+        )
         return cls(
-            pids_events_max=CounterDelta.between(before.pids_max, after.pids_max),
-            memory_events_max=CounterDelta.between(before.memory_max, after.memory_max),
-            memory_events_oom=CounterDelta.between(
-                before.memory_oom, after.memory_oom
-            ),
-            memory_events_oom_kill=CounterDelta.between(
-                before.memory_oom_kill, after.memory_oom_kill
-            ),
-            memory_events_oom_group_kill=CounterDelta.between(
-                before.memory_oom_group_kill, after.memory_oom_group_kill
-            ),
+            pids_events_max=pids,
+            memory_events_max=memory_max,
+            memory_events_oom=memory_oom,
+            memory_events_oom_kill=memory_oom_kill,
+            memory_events_oom_group_kill=memory_oom_group_kill,
         )
 
     @classmethod
@@ -215,6 +244,73 @@ class ResourceLimitEvidence:
                 "oom_group_kill": self.memory_events_oom_group_kill.to_dict(),
             },
         }
+
+
+def _candidate_counter_deltas(
+    before: ResourceLimitCounters, after: ResourceLimitCounters
+) -> tuple[CounterDelta, CounterDelta, CounterDelta, CounterDelta, CounterDelta]:
+    """Use leaf counters only and reject any unmatched shared-ancestor event."""
+    if not before.path_event_counters and not after.path_event_counters:
+        # Compatibility for in-memory fixtures and pre-collection callers.
+        # Both production readers below always attach per-path samples.
+        return (
+            CounterDelta.between(before.pids_max, after.pids_max),
+            CounterDelta.between(before.memory_max, after.memory_max),
+            CounterDelta.between(before.memory_oom, after.memory_oom),
+            CounterDelta.between(before.memory_oom_kill, after.memory_oom_kill),
+            CounterDelta.between(
+                before.memory_oom_group_kill, after.memory_oom_group_kill
+            ),
+        )
+    if (
+        not before.path_event_counters
+        or not after.path_event_counters
+        or len(before.path_event_counters) != len(after.path_event_counters)
+        or any(
+            old[0] != new[0]
+            for old, new in zip(
+                before.path_event_counters, after.path_event_counters, strict=True
+            )
+        )
+    ):
+        raise ResourceLimitObservationError(
+            "cgroup ancestry samples changed during a candidate command"
+        )
+
+    per_path: list[tuple[CounterDelta | None, ...]] = []
+    for old, new in zip(
+        before.path_event_counters, after.path_event_counters, strict=True
+    ):
+        deltas: list[CounterDelta | None] = []
+        for old_value, new_value in zip(old[1:], new[1:], strict=True):
+            if old_value is None or new_value is None:
+                if old_value is not new_value:
+                    raise ResourceLimitObservationError(
+                        "cgroup event-counter availability changed during a candidate command"
+                    )
+                deltas.append(None)
+            else:
+                deltas.append(CounterDelta.between(old_value, new_value))
+        per_path.append(tuple(deltas))
+
+    candidate_deltas: list[CounterDelta] = []
+    for metric_index in range(5):
+        leaf_delta = per_path[0][metric_index]
+        leaf_value = 0 if leaf_delta is None else leaf_delta.delta
+        for ancestor in per_path[1:]:
+            ancestor_delta = ancestor[metric_index]
+            if ancestor_delta is not None and ancestor_delta.delta > 0 and (
+                leaf_delta is None or ancestor_delta.delta != leaf_value
+            ):
+                raise ResourceLimitObservationError(
+                    "a shared ancestor resource event is not attributable to the "
+                    "candidate cgroup; mutation outcomes are withheld"
+                )
+        if leaf_delta is None:
+            candidate_deltas.append(CounterDelta(before=0, after=0, delta=0))
+        else:
+            candidate_deltas.append(leaf_delta)
+    return tuple(candidate_deltas)  # type: ignore[return-value]
 
 
 def _counter_delta_from_dict(raw: Any) -> CounterDelta:
@@ -492,7 +588,7 @@ def _visible_cgroup_directories(
         if root == PurePosixPath("/")
     ]
     if not full_hierarchy_mounts:
-        raise ResourceLimitObservationError(
+        raise ResourceLimitAncestorsHiddenError(
             "the visible cgroup2 mount omits ancestors above its mount root"
         )
 
@@ -508,13 +604,13 @@ def _visible_cgroup_directories(
     relative_path = cgroup_path.relative_to(PurePosixPath("/"))
     current_directory = mount_point.joinpath(*relative_path.parts)
     if cgroup_path == PurePosixPath("/"):
-        raise ResourceLimitObservationError(
+        raise ResourceLimitAncestorsHiddenError(
             "the cgroup namespace hides the process's parent cgroups"
         )
     if _path_is_present(mount_point / "pids.max") or _path_is_present(
         mount_point / "memory.max"
     ):
-        raise ResourceLimitObservationError(
+        raise ResourceLimitAncestorsHiddenError(
             "the visible cgroup2 mount root is a non-root cgroup and may hide ancestors"
         )
 
@@ -739,6 +835,17 @@ def read_current_cgroup_counters(
         memory_oom += counters["oom"]
         memory_oom_kill += counters["oom_kill"]
         memory_oom_group_kill += counters["oom_group_kill"]
+    path_event_counters = tuple(
+        (
+            str(directory),
+            pids_samples.get(index, {}).get("max"),
+            memory_samples.get(index, {}).get("max"),
+            memory_samples.get(index, {}).get("oom"),
+            memory_samples.get(index, {}).get("oom_kill"),
+            memory_samples.get(index, {}).get("oom_group_kill"),
+        )
+        for index, directory in enumerate(directories)
+    )
     return ResourceLimitCounters(
         pids_max=pids_max,
         memory_max=memory_max,
@@ -746,4 +853,234 @@ def read_current_cgroup_counters(
         memory_oom_kill=memory_oom_kill,
         memory_oom_group_kill=memory_oom_group_kill,
         limit_signature=tuple(limit_signature),
+        path_event_counters=path_event_counters,
     )
+
+
+def read_candidate_resource_counters(
+    *, observer_socket_path: str | None = None,
+) -> ResourceLimitCounters:
+    """Use the local hierarchy, consulting cgprofile only for hidden ancestors."""
+    try:
+        return read_current_cgroup_counters()
+    except ResourceLimitAncestorsHiddenError:
+        if observer_socket_path is None:
+            raise
+        if not isinstance(observer_socket_path, str) or not observer_socket_path:
+            raise ResourceLimitObservationError(
+                "ASSAY_RESOURCE_OBSERVER_SOCKET must be a non-empty absolute socket path"
+            ) from None
+        if not os.path.isabs(observer_socket_path):
+            raise ResourceLimitObservationError(
+                "ASSAY_RESOURCE_OBSERVER_SOCKET must be an absolute socket path"
+            ) from None
+        return read_resource_observer_counters(observer_socket_path)
+
+
+def read_resource_observer_counters(socket_path: str) -> ResourceLimitCounters:
+    """Fetch one authenticated thread sample from cgprofile's observer-only socket."""
+    if not isinstance(socket_path, str) or not socket_path:
+        raise ResourceLimitObservationError(
+            "configured resource observer socket path must be non-empty"
+        )
+    if not os.path.isabs(socket_path):
+        raise ResourceLimitObservationError(
+            "configured resource observer socket path must be absolute"
+        )
+    path = Path(socket_path)
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ResourceLimitObservationError(
+            f"cannot inspect configured resource observer socket: {exc}"
+        ) from exc
+    if not stat.S_ISSOCK(metadata.st_mode):
+        raise ResourceLimitObservationError(
+            "configured resource observer endpoint is not a Unix socket"
+        )
+
+    thread_id = threading.get_native_id()
+    request = json.dumps(
+        {"verb": "resource-limits", "args": {"thread_id": thread_id}, "contract": 1},
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    response = bytearray()
+    try:
+        client.settimeout(5.0)
+        client.connect(socket_path)
+        client.sendall(request)
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            response.extend(chunk)
+            if len(response) > 1024 * 1024:
+                raise ResourceLimitObservationError(
+                    "resource observer response exceeds 1 MiB"
+                )
+    except ResourceLimitObservationError:
+        raise
+    except OSError as exc:
+        raise ResourceLimitObservationError(
+            f"resource observer socket request failed: {exc}"
+        ) from exc
+    finally:
+        client.close()
+    if not response.endswith(b"\n") or response.count(b"\n") != 1:
+        raise ResourceLimitObservationError(
+            "resource observer response is not exactly one JSON line"
+        )
+    try:
+        document = json.loads(response[:-1].decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ResourceLimitObservationError(
+            "resource observer response is not valid UTF-8 JSON"
+        ) from exc
+    return _resource_counters_from_observer(document, thread_id)
+
+
+def _resource_counters_from_observer(
+    document: Any, expected_thread_id: int
+) -> ResourceLimitCounters:
+    if not isinstance(document, Mapping):
+        raise ResourceLimitObservationError("resource observer response is not an object")
+    if document.get("ok") is not True:
+        error = document.get("error")
+        if (
+            document.get("ok") is False
+            and document.get("contract") == 1
+            and isinstance(error, Mapping)
+            and isinstance(error.get("message"), str)
+        ):
+            raise ResourceLimitObservationError(
+                f"resource observer refused the query: {error['message']}"
+            )
+        raise ResourceLimitObservationError("resource observer returned a malformed error")
+    if set(document) != {
+        "ok", "contract", "cgroup_version", "thread_id", "gates_slice", "cgroups",
+    }:
+        raise ResourceLimitObservationError(
+            "resource observer response has unknown or missing fields"
+        )
+    if type(document["contract"]) is not int or document["contract"] != 1:
+        raise ResourceLimitObservationError("resource observer contract version is not 1")
+    if type(document["cgroup_version"]) is not int or document["cgroup_version"] != 2:
+        raise ResourceLimitObservationError("resource observer did not report cgroup v2")
+    if type(document["thread_id"]) is not int or document["thread_id"] != expected_thread_id:
+        raise ResourceLimitObservationError("resource observer thread identity does not match")
+    gates_path = _canonical_observer_path(document["gates_slice"], "gates_slice")
+    raw_cgroups = document["cgroups"]
+    if not isinstance(raw_cgroups, list) or not raw_cgroups:
+        raise ResourceLimitObservationError("resource observer cgroups must be a non-empty list")
+
+    signatures: list[LimitSignatureEntry] = []
+    path_counters: list[tuple[str, int | None, int | None, int | None, int | None, int | None]] = []
+    pids_total = 0
+    memory_totals = [0, 0, 0, 0]
+    pids_available = False
+    memory_available = False
+    previous_path: PurePosixPath | None = None
+    mount_id: int | None = None
+    for raw in raw_cgroups:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "path", "mount_id", "pids_max_present", "pids_max",
+            "memory_max_present", "memory_max", "pids_events", "memory_events",
+        }:
+            raise ResourceLimitObservationError("resource observer cgroup entry is malformed")
+        path_value = _canonical_observer_path(raw["path"], "cgroup path")
+        if previous_path is not None and path_value != previous_path.parent:
+            raise ResourceLimitObservationError("resource observer cgroups are not ordered leaf-to-root")
+        previous_path = path_value
+        if type(raw["mount_id"]) is not int or raw["mount_id"] <= 0:
+            raise ResourceLimitObservationError("resource observer mount ID is invalid")
+        if mount_id is None:
+            mount_id = raw["mount_id"]
+        elif mount_id != raw["mount_id"]:
+            raise ResourceLimitObservationError("resource observer cgroups span multiple mounts")
+
+        pids_present, pids_limit = _observer_limit(
+            raw["pids_max_present"], raw["pids_max"], "pids.max"
+        )
+        memory_present, memory_limit = _observer_limit(
+            raw["memory_max_present"], raw["memory_max"], "memory.max"
+        )
+        pids_events = _observer_events(raw["pids_events"], {"max"}, "pids.events")
+        memory_events = _observer_events(
+            raw["memory_events"],
+            {"max", "oom", "oom_kill", "oom_group_kill"},
+            "memory.events",
+        )
+        if pids_present and pids_events is None:
+            raise ResourceLimitObservationError("finite or unlimited pids.max lacks pids.events")
+        if memory_present and memory_events is None:
+            raise ResourceLimitObservationError("finite or unlimited memory.max lacks memory.events")
+        signatures.append((
+            str(path_value), raw["mount_id"], pids_present, pids_limit,
+            memory_present, memory_limit, pids_events is not None, memory_events is not None,
+        ))
+        path_counters.append((
+            str(path_value),
+            None if pids_events is None else pids_events["max"],
+            None if memory_events is None else memory_events["max"],
+            None if memory_events is None else memory_events["oom"],
+            None if memory_events is None else memory_events["oom_kill"],
+            None if memory_events is None else memory_events["oom_group_kill"],
+        ))
+        if pids_events is not None:
+            pids_available = True
+            pids_total += pids_events["max"]
+        if memory_events is not None:
+            memory_available = True
+            for index, key in enumerate(("max", "oom", "oom_kill", "oom_group_kill")):
+                memory_totals[index] += memory_events[key]
+
+    if previous_path != PurePosixPath("/"):
+        raise ResourceLimitObservationError("resource observer ancestry does not reach the hierarchy root")
+    candidate_path = PurePosixPath(path_counters[0][0])
+    if candidate_path == gates_path or not candidate_path.is_relative_to(gates_path):
+        raise ResourceLimitObservationError("resource observer candidate is outside its gates slice")
+    if not pids_available:
+        raise ResourceLimitObservationError("resource observer has no pids.events counters")
+    if not memory_available:
+        raise ResourceLimitObservationError("resource observer has no memory.events counters")
+    return ResourceLimitCounters(
+        pids_max=pids_total,
+        memory_max=memory_totals[0],
+        memory_oom=memory_totals[1],
+        memory_oom_kill=memory_totals[2],
+        memory_oom_group_kill=memory_totals[3],
+        limit_signature=tuple(signatures),
+        path_event_counters=tuple(path_counters),
+    )
+
+
+def _canonical_observer_path(value: Any, label: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ResourceLimitObservationError(f"resource observer {label} is not absolute")
+    path = PurePosixPath(value)
+    if str(path) != value or ".." in path.parts or "." in path.parts:
+        raise ResourceLimitObservationError(f"resource observer {label} is not canonical")
+    return path
+
+
+def _observer_limit(present: Any, value: Any, name: str) -> tuple[bool, int | None]:
+    if type(present) is not bool:
+        raise ResourceLimitObservationError(f"resource observer {name} presence is malformed")
+    if value is not None and (type(value) is not int or value < 0):
+        raise ResourceLimitObservationError(f"resource observer {name} value is malformed")
+    if not present and value is not None:
+        raise ResourceLimitObservationError(f"resource observer absent {name} has a value")
+    return present, value
+
+
+def _observer_events(
+    raw: Any, required: set[str], name: str
+) -> dict[str, int] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != required:
+        raise ResourceLimitObservationError(f"resource observer {name} fields are malformed")
+    if any(type(value) is not int or value < 0 for value in raw.values()):
+        raise ResourceLimitObservationError(f"resource observer {name} counters are malformed")
+    return {key: raw[key] for key in required}

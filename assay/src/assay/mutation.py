@@ -151,7 +151,7 @@ from .resource_limits import (
     ResourceLimitCounters,
     ResourceLimitEvidence,
     ResourceLimitObservationError,
-    read_current_cgroup_counters,
+    read_candidate_resource_counters,
 )
 from .vocabulary import MUTATION_OPERATORS
 
@@ -236,7 +236,7 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/7"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/8"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -2046,12 +2046,13 @@ class _MutantRun:
 def _read_candidate_resource_counters() -> ResourceLimitCounters:
     """Fail closed when the lane cannot expose exact cgroup v2 counters."""
     try:
-        return read_current_cgroup_counters()
+        return read_candidate_resource_counters(
+            observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+        )
     except ResourceLimitObservationError as exc:
         raise AssayError(
-            "cannot observe cgroup v2 process and memory limit events across "
-            "the candidate cgroup's visible ancestors for native "
-            f"R2 candidate execution: {exc}",
+            "cannot observe the required cgroup v2 process and memory limit "
+            f"events for native R2 candidate execution: {exc}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
         ) from exc

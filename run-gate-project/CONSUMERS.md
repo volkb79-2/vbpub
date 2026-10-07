@@ -199,6 +199,13 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
                                     # FALLBACK for lanes that declare none of their own
                                     # (this lane's own value wins when both are set) --
                                     # the only resources key an environment accepts.
+
+[lanes.native-r2]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r2"
+resource_observer = "cgprofile"
+clean_tree = true
 ```
 
 For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
@@ -206,6 +213,34 @@ For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
 `assay_command` and pins. External immutable mode supplies both, plus the
 `[lanes.<name>.pins.assay]` version and SHA-256 table; the target assay lane,
 not the pin table, owns its mutation budget.
+
+### Native R2 resource observer
+
+Native Assay R2 must inspect the candidate cgroup and every enforcing
+ancestor; a private cgroup namespace hides that ancestry, and Assay refuses
+instead of guessing. When the existing cgprofile daemon is available, an
+Assay lane may opt in with `resource_observer = "cgprofile"` as shown above.
+This value is closed and legal only for `kind = "assay"` with the explicit
+`tester-unified` environment.
+
+Run-Gate checks the fixed
+`/run/cgprofile/resource-observer.sock` source and mounts only that socket
+read-only at `/tmp/cgprofile-resource-observer.sock`. It grants the socket's
+observed GID to the tester container and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to that target. It does not mount
+`/run/cgprofile/ctl.sock`, the Docker socket, or any host namespace. The
+existing daemon's separate observer listener accepts only a resource-limit
+query bound to the caller's peer credentials and native thread ID; it returns
+the caller cgroup's ancestry under the configured gates slice, without PIDs or
+sibling cgroups.
+
+Assay uses local counters when its own hierarchy view is complete. Remote
+observation is used only when the local error specifically indicates hidden
+ancestors; a missing socket, malformed identity, incomplete ancestry, or
+uncertain shared-ancestor event remains an infrastructure ERROR with no
+candidate bucket. Do not mount the control socket as a fallback: a read-only
+bind does not restrict the verbs accepted by its protocol. See the
+[design rationale](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer).
 
 ## Closed results and runner mode migration
 

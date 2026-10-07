@@ -155,10 +155,19 @@ and every visible ancestor with those interfaces. A finite `memory.max`
 requires its event file. If the candidate's memory controller is inactive,
 visible active ancestor counters are sampled too. `max` catches a memory limit boundary even when
 the OOM path does not run; `oom_kill` also catches a global OOM kill when the
-candidate's `memory.max` is unlimited. Run Docker lanes with `--cgroupns=host`
-so Assay can see the actual hierarchy root. A private cgroup namespace or a
-cgroup mount rooted below an ancestor cannot prove that a parent limit was
-untouched, so Assay refuses native R2 with `ERROR/EXEC_FAILED`. Every visible
+candidate's `memory.max` is unlimited. Keep Docker lanes in a private cgroup
+namespace; do not use `--cgroupns=host` as a workaround. Assay first reads
+its local cgroup view. If that view specifically proves ancestors are hidden,
+a caller may explicitly provide `ASSAY_RESOURCE_OBSERVER_SOCKET` for a
+trusted observer-only Unix socket. The endpoint must bind the request to the
+caller's peer credentials and native thread ID, derive the cgroup itself,
+return a complete verified ancestry, and expose no control verbs. Run-Gate's
+`resource_observer = "cgprofile"` option mounts the separate cgprofile
+observer socket read-only, supplies its observed GID, and sets this variable.
+Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
+protocol read-only. Without the explicit endpoint, or on any endpoint,
+identity, mount, or counter failure, Assay returns `ERROR/EXEC_FAILED`.
+Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block

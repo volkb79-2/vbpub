@@ -154,7 +154,15 @@ else) talks to over a Unix socket instead of spawning a collector per lane.
 The daemon alone uses the host PID namespace, allowing DAMON sysfs to resolve
 host `pid_target` values; it keeps a private cgroup namespace, has no network,
 and receives no Docker socket. Workload, helper, gate, and test containers
-remain private. It also receives a read-only host `/proc` bind and an
+remain private. The daemon exposes its existing control protocol on
+`/run/cgprofile/ctl.sock` and a distinct, observer-only
+`/run/cgprofile/resource-observer.sock` for explicitly opted-in native R2
+lanes. That second listener accepts only a peer-bound resource-counter query;
+it is not a broker and provides no control or placement operation. Run-Gate
+mounts only that socket into the selected tester container, never `ctl.sock`.
+See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)
+and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
+It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
 make systemd RPCs read-only. The daemon uses systemd's `AttachProcessesToUnit`
@@ -221,7 +229,7 @@ mean the kernel accepted a configured monitoring context. Check each session's
   observes host proc/cgroup state through explicit mounts, which cannot be
   meaningfully duplicated. The daemon joins the host PID namespace, while its
   cgroup namespace remains private.
-- **`--network none`, no docker socket inside the container.** The only
+- **`--network none`, no docker socket inside the container.** The control
   surface is `/run/cgprofile/ctl.sock`, reached with `docker exec
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
   docker access to that container. `ctl`'s own client-side timeout is 25 s;

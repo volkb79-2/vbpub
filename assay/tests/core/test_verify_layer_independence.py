@@ -513,11 +513,11 @@ def test_assay_run_emits_a_b145_counter_refusal_its_own_verify_accepts(
     repo.write("src/m.py", "def f(x):\n    return x >= 0\n")
     repo.commit_all("measurable source change")
 
-    def counters_unavailable():
+    def counters_unavailable(**_kwargs):
         raise ResourceLimitObservationError("required cgroup counters unavailable")
 
     monkeypatch.setattr(
-        "assay.mutation.read_current_cgroup_counters", counters_unavailable
+        "assay.mutation.read_candidate_resource_counters", counters_unavailable
     )
     target = repo.path / "verdict.json"
     out, err = io.StringIO(), io.StringIO()
