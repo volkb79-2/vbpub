@@ -21,6 +21,40 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.16.0] - 2026-10-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->
+
+### Added
+- feat(cmru): W2-INTEG cross-package seams (CMRU_INTERNAL_* env, run-step delegate removed, REFUSED alias dropped, SPEC S8, rename sweep, interactive extra, estate contract guard) (f20cfcf74)
+- feat(cmru): W1-INSTALLER finish: INS-18, rollback message, signature docs, authoring guide, plant table, report (c664861b3)
+- feat(cmru,ciu): installer extensions mechanism; move get.py enroll into ciu (W1-CIU-ENROLL, O4) (3aada2d08)
+- feat(cmru)!: retire cmru-agent/controller; CLI-04/05/14/18 + CLI-T1, doc drift (W0-RETIRE) (f6fef1d6b)
+
+### Fixed
+- fix(ciu): secrets materialization self-deadlocks when a stack is its own ciu root (dca8e1f75)
+- fix(cmru): W2-INTEG review round 1 (C1-C7, run_step removal) (508bc83d6)
+- fix(ciu): release-gate pytest child gets repo sources on PYTHONPATH (W1-CIU-ENROLL) (f5ce838cc)
+- fix(cmru,ciu): review fixes for W1-CIU-ENROLL (checker gaps, hard-fail drift guard, CIU-131) (2ac2fe2ea)
+- fix(cmru): W0-GATE review fixes - deterministic gate-report tests, sample/template handler argv, git probe env, mutant-killing tests, CIU-129/NL-31 filed (35b7f2968)
+- fix(cmru): review fixes for W0-RETIRE (warn once, estate config, docs) (531e48659)
+
+### Changed
+- Merge nyxloom-successor-2026-10: extract presets (watch/successor/review/ledger), option groups, intent pairing, stop state, effects (9d162f711)
+- merge main into cmru-wave-2026-10 (ciu CIU-117/132 and cgprofile work); backlog table keeps CIU-129..132 (839e8841c)
+- W1-INSTALLER round2: symlink-clause tests, manifest key grammar, install_dir shape, bundle-manifest errors, M49b, docs (abb6840cd)
+- W1-INSTALLER round1: template/producer fixes (WIP, tests next) (7193017cf)
+- wip(cmru-w1-installer): generic get.py installer rewrite (fail-closed, per-release dirs, rollback, offline hash-locked wheels, signature policy); checkpoint (c15d5d873)
+- merge(cmru-w0-gate): BG-03 no-maxfail + named failures; BG-04/REL-07 bound cmru handler; REL-11, BG-09/10/11 (b9ed0cc01)
+
+### Documentation
+- docs(nyxloom,ciu): NL-38/CIU-118 review fixes (hard/warn split, oracles match design, port source, sibling prod names) (a7720a53e)
+- docs(nyxloom,ciu): NL-38 design ruling (runtime discovery of mattermost target) and CIU-118 service-discovery follow-up (fd2063c6d)
+
+### Testing
+- test(ciu): regression for self-root materialize lock deadlock; file CIU-133 FIXED (b8057a86e)
+- test(ciu): render test pins CGROUP_PARENT_DEV_GATES for config interpolation (7360a9281)
+
 ## [7.15.3] - 2026-10-06
 <!-- cmru: generated -->
 <!-- cmru: source-end=4b3d65cc1854e4d55d0714c45e7a7912a226c78b -->
