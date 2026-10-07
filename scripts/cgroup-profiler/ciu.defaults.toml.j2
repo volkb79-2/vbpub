@@ -2,11 +2,11 @@
 # cgprofile — the RG-55 profiling daemon, ciu stack defaults
 # ==========================================================================
 #
-# One service, `daemon`: `cgprofile serve` as PID 1 inside
-# `cgprofile-host-daemon` (RG55-INTERFACE-CONTRACT.md §1.8). The daemon alone
-# uses the host PID namespace; its cgroup namespace stays private. It has
-# read-only host proc and D-25-guarded host cgroup placement access, with a
-# separate DAMON sysfs mount — a HOST SINGLETON (see
+# One service, `daemon`: runs `cgprofile serve` inside `cgprofile-host-daemon`
+# (RG55-INTERFACE-CONTRACT.md §1.8); it is not PID 1 in the host namespace.
+# The managed service alone joins the host PID namespace; its cgroup namespace
+# stays private. It has read-only host proc and D-25-guarded host cgroup
+# placement access, with a separate DAMON sysfs mount — a HOST SINGLETON (see
 # ciu.global.defaults.toml.j2's comment on `deploy.environment_tag = "host"`),
 # never a per-instance/per-worktree stack. `ciu up` from this directory.
 

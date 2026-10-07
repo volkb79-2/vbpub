@@ -47,6 +47,8 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    defaults = (PROJECT_ROOT / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     target = "DESIGN-GUIDE.md#daemon-safety-and-placement"
     assert target in readme
@@ -54,10 +56,17 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "The daemon alone uses" in readme
     assert "host PID namespace so DAMON sysfs can resolve host" in readme
     assert "the daemon never joins a host namespace" not in readme
+    assert "PID and cgroup namespaces remain private." not in readme
+    assert "consistency check, not host authentication" in readme
     assert "## Daemon safety and placement" in design
     assert "host PID namespace" in design
+    assert "not an independent attestation" in design
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
+    assert "not an independent proof" in consumers
+    assert "it is not PID 1 in the host namespace" in defaults
+    assert "never joins a host" not in dockerfile
+    assert "This image does not" in dockerfile
     assert (
         "host cgroup bind is read-only because it does not perform daemon placement"
         in " ".join(design.split())

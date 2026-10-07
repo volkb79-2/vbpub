@@ -169,8 +169,12 @@ writes session storage and DAMON sysfs during normal operation. Host PID mode
 adds process-table visibility and PID-operation authority; the application
 checks and write guard do not contain arbitrary code execution in this
 privileged daemon. Stall policy never signals numeric PIDs. See the
-[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
-`scripts/cgroup-profiler/`'s own **standalone ciu root** —
+[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). At startup,
+the daemon compares PID 1 in `/hostproc` with its own PID namespace; this is a
+consistency check, not host authentication. The managed CIU Compose service is
+the deployment authority: it selects `pid: "host"` and binds the host's
+`/proc` at `/hostproc`. Its Compose configuration lives in the
+`scripts/cgroup-profiler/` standalone CIU root;
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 The default stack uses the local development image; to deploy a versioned GHCR
 release, pin the complete image coordinate in `ciu.toml.j2` and verify the
@@ -215,7 +219,8 @@ mean the kernel accepted a configured monitoring context. Check each session's
   worktree running `ciu up --dir .` collides on that name and refuses to
   start a sibling, on purpose: the daemon owns the host's DAMON facility and
   observes host proc/cgroup state through explicit mounts, which cannot be
-  meaningfully duplicated. PID and cgroup namespaces remain private.
+  meaningfully duplicated. The daemon joins the host PID namespace, while its
+  cgroup namespace remains private.
 - **`--network none`, no docker socket inside the container.** The only
   surface is `/run/cgprofile/ctl.sock`, reached with `docker exec
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with

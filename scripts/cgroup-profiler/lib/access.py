@@ -6,8 +6,9 @@ Two modes, auto-detected:
 **direct** — the process has an explicit view of the host's cgroup v2 root
 (running on the host, or with the host cgroup tree bind-mounted at
 ``/sys/fs/cgroup``). Host process files are read through
-``CGPROFILE_PROC_ROOT`` when configured; the process's own identity still
-comes from its private ``/proc``.
+``CGPROFILE_PROC_ROOT`` when configured; the process's own identity comes
+from local ``/proc``, whose PID namespace is determined by deployment (host
+for the managed daemon, private for the helper).
 
 **helper** — the common devcontainer case. Rather than shuttle individual file
 reads across a container boundary (which cannot sustain a 250 ms cadence), the
@@ -106,14 +107,17 @@ def have_host_cgroup_view(root: str = CGROUP_ROOT) -> bool:
 
 
 def have_host_proc_view(proc_root: str = PROC_ROOT) -> bool:
-    """Require the configured host proc view to match its PID-namespace mode.
+    """Require the configured proc view to match this process's PID namespace.
 
     A bind-mounted procfs still reports cgroup paths relative to the reader's
     cgroup namespace, so PID 1's ``/proc/<pid>/cgroup`` is not a sound host
-    view check. The daemon explicitly uses
-    ``CGPROFILE_PID_NAMESPACE_MODE=host`` so DAMON sysfs can resolve host
-    ``pid_target`` values; the
-    one-shot helper defaults to ``private`` and needs a broader proc view.
+    view check. This PID-namespace comparison is a consistency guard, not an
+    independent proof that the selected procfs is the host's. The managed
+    daemon's CIU Compose service supplies that deployment fact with
+    ``pid: "host"`` and an explicit host-``/proc`` bind. The daemon explicitly
+    uses ``CGPROFILE_PID_NAMESPACE_MODE=host`` so DAMON sysfs can resolve host
+    ``pid_target`` values; the one-shot helper defaults to ``private`` and
+    needs a broader proc view.
     Unknown modes fail closed.
     """
     try:

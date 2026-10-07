@@ -141,8 +141,11 @@ normal count or age limit has been reached. Do not delete that session record
 to make the retention count look clean.
 On startup `serve` requires the daemon-only host-PID mode and verifies that
 PID 1 in the configured proc view belongs to the daemon's PID namespace; a
-missing or mismatched view is refused. `private` remains the default mode for
-the one-shot helper and normal callers; do not enable `host` mode for helpers,
+missing or mismatched view is refused. This is a consistency check, not an
+independent proof that the procfs bind is the host's: the managed CIU Compose
+service supplies the deployment authority by selecting `pid: "host"` and
+binding host `/proc` at `/hostproc`. `private` remains the default mode for the
+one-shot helper and normal callers; do not enable `host` mode for helpers,
 workloads, gates, or tests. The host-PID mode is a deployment choice in this
 daemon's Compose service, not a new host-setup unit or cockpit bind mount, so
 it does not require rebuilding the devcontainer. Container targets arrive as

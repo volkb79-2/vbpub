@@ -7362,3 +7362,59 @@ still-active pre-change daemon, whose `HostConfig.PidMode` is private; it is
 not a probe of the approved host-PID/private-cgroup candidate. Preserve the
 result as baseline context and repeat a live DAMON start/stop after the
 candidate is deployed from main.
+
+### RW-473 — 2026-10-07 09:33:26 UTC — tool-version/base audit and Sol review round 7
+
+Installed tools are Assay 8.0.0, CMRU 6.1.0, and CIU 7.16.0. The installed
+Run-Gate entrypoint reports rev 55; the candidate's `run-gate.py` is rev 56
+because it includes RG-88. Local `main`, local `origin/main`, and the remote
+`origin/main` all remain `4670f53a67038a8a19b27ffe33e8308ec6f93fde`, the
+candidate's recorded base. No rebase is needed solely because the installed
+CLI versions changed. CMRU reports no cgprofile release tag and derives
+`0.1.0` from the current project metadata, while the settled RG-55 release
+plan says the combined first release is `1.0.0`; do not accept the implicit
+`0.1.0` as a changed product decision. Use the settled explicit release
+target when release gates are complete.
+
+A fresh caller-routed `gpt-6-sol`/xhigh review returned CONDITIONAL on
+candidate `2ecb3b9a`; the full artifact is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round7.md`.
+It found no demonstrated code blocker, but identified current docs/comments
+that still described a private-PID daemon and clarified that the runtime
+namespace check proves proc-view agreement, not independently that a procfs
+bind is host procfs. Those corrections are now in the candidate worktree,
+including the active placement-flow design and source comments. They remain
+untested and unreviewed at the corrected tree; do not merge on round 7 alone.
+
+The exact Assay 8.0.0 R2 attempt on tree `2ecb3b9a` returned
+`ERROR/EXEC_FAILED` before any mutant ran: native-R2 event-counter preflight
+refused because the private cgroup namespace hides the process's parent
+cgroups. `.assay/verdict-r2.json` and `.assay/r2-progress.jsonl` are the
+evidence; all three selected candidates remain unjudged. Assay currently
+reads `/proc/thread-self/cgroup` and `/proc/self/mountinfo` directly and has
+no supported environment override for an external host-ancestor view. Keep
+the daemon's cgroup namespace private and do not bypass with
+`--cgroupns=host`. Coordinate a supported read-only ancestor-observation
+interface with the Assay workstream before restarting R2. The old daemon's
+DAMON `EINVAL` and the host-PID/private-cgroup live acceptance, including
+placement/socket probes, remain unresolved.
+
+### RW-474 — 2026-10-07 09:35:40 UTC — complete round-7 documentation corrections
+
+The round-7 findings are corrected in the current worktree: the daemon's host
+PID/private-cgroup deployment is stated consistently in README, consumer and
+design guidance, the current placement-flow design, the D-32 trust discussion,
+Compose defaults, the image comment, and the `access.py`/`placement.py` source
+comments. Historical descriptions of the earlier private-PID probes remain
+historical and are not rewritten. `have_host_proc_view` is now explicitly
+described as a proc-view/daemon agreement check; Compose's `pid: "host"` plus
+host `/proc` bind is the managed deployment fact, not an independent runtime
+host-identity proof. A structural test guards these user-facing statements.
+The contract mirror comparison and `git diff --check` pass. The new review
+artifact is retained as P1 round 7. No gate or test has run on this corrected
+tree yet; it needs a fresh registered gate set and fix-verification review.
+
+The outstanding R2 refusal is an Assay/runner visibility incompatibility, not
+a reason to grant host cgroup namespace to the daemon or gate. Do not relaunch
+until a supported read-only way to observe the candidate's real cgroup
+ancestor event counters is agreed with the Assay workstream.

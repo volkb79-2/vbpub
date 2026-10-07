@@ -6,8 +6,9 @@ into a long-lived devcontainer) and a **bare-host** lane have neither: their
 cgroup is shared with the IDE, the agents and the caller, so ``memory.peak``,
 ``memory.pressure`` and ``io.stat`` are somebody else's numbers and the
 lane's declared ``resources.memory`` is advisory. D-31's answer is that the
-private-namespace daemon asks host systemd to create a transient delegated
-scope beneath the verified gates slice, then creates its own
+daemon (host PID namespace, private cgroup and network namespaces) asks host
+systemd to create a transient delegated scope beneath the verified gates
+slice, then creates its own
 ``rg-<token>`` leaf beneath that scope. Host systemd's
 ``AttachProcessesToUnit`` D-Bus method moves host PIDs into the leaf and back;
 the daemon uses the host PID namespace, but does not write into the

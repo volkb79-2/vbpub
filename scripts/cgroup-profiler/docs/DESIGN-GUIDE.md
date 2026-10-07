@@ -184,6 +184,10 @@ existing broader-proc-view check remains: PID 1 in the selected proc view
 must belong to a namespace distinct from the helper's. Container names,
 labels, and helper-mode `self` are resolved on the Docker-aware caller to full
 container IDs; the daemon locates those IDs in its explicit host cgroup view.
+The daemon's PID check is a consistency check between its configured proc view
+and local namespace, not an independent attestation that the procfs bind is
+the host's. The managed CIU Compose service provides the deployment fact with
+`pid: "host"` and an explicit host `/proc` bind.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
 session volume and the DAMON admin sysfs state required for observation, in
