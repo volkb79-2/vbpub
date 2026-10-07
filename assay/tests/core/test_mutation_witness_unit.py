@@ -422,17 +422,46 @@ def test_receipt_capture_discards_oversized_frames():
         assert capture.finish() is None
 
 
+def test_receipt_capture_closes_pipe_if_reader_descriptor_dup_fails(monkeypatch):
+    original_pipe = os.pipe
+    read_fd, write_fd = original_pipe()
+    monkeypatch.setattr(os, "pipe", lambda: (read_fd, write_fd))
+
+    def fail_dup(_fd: int) -> int:
+        raise OSError("injected descriptor exhaustion")
+
+    monkeypatch.setattr(os, "dup", fail_dup)
+    try:
+        with pytest.raises(OSError, match="injected descriptor exhaustion"):
+            ReceiptCapture()
+        for descriptor in (read_fd, write_fd):
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+    finally:
+        for descriptor in (read_fd, write_fd):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):
     read_entered = threading.Event()
     release_read = threading.Event()
+    later_read_entered = threading.Event()
+    release_later_read = threading.Event()
     capture = ReceiptCapture()
     stale_reader_fd = capture._drain_fd
+    later_reader_fd: int | None = None
     original_read = os.read
 
     def delayed_read(fd: int, size: int) -> bytes:
         if fd == stale_reader_fd and not read_entered.is_set():
             read_entered.set()
             assert release_read.wait(2.0)
+        if fd == later_reader_fd:
+            later_read_entered.set()
+            assert release_later_read.wait(2.0)
         return original_read(fd, size)
 
     monkeypatch.setattr(os, "read", delayed_read)
@@ -447,19 +476,23 @@ def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypat
         later_capture = ReceiptCapture()
         assert later_capture._read_fd == capture._read_fd
         assert later_capture._read_fd != stale_reader_fd
+        later_reader_fd = later_capture._drain_fd
         expected = {"ok": True}
         payload = json.dumps(expected).encode()
         os.write(
             later_capture.write_fd,
             len(payload).to_bytes(4, "big") + payload,
         )
+        assert later_read_entered.wait(1.0)
 
         release_read.set()
         capture._thread.join(1.0)
         assert not capture._thread.is_alive()
+        release_later_read.set()
         assert later_capture.finish() == expected
     finally:
         release_read.set()
+        release_later_read.set()
         if not capture._finished:
             capture.finish()
         capture._thread.join(1.0)

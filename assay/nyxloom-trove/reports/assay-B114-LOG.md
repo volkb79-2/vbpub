@@ -115,3 +115,22 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   No registered gate or B105 campaign has run. Next: commit and request a
   fresh exact-tip Sol xhigh review, then coordinate the registered gates with
   B087.
+
+## Sol xhigh follow-up P3 closure — 2026-10-07
+
+- The review of `dee6f9a3d` found two P3s: pipe descriptors leaked if the
+  reader descriptor duplication failed during construction, and the race
+  regression allowed the later reader to consume the frame before the stalled
+  reader resumed.
+- `ReceiptCapture` now closes every acquired pipe descriptor if duplication
+  or nonblocking setup raises. The regression holds the later reader inside
+  `os.read` until the stalled reader resumes, making a stale read from the
+  reused parent descriptor reliably consume the frame before the later reader
+  can do so.
+- Receipt-focused tests passed (**4 passed**). The affected local suite passed
+  **232 tests, 2 deselected in 50.70s**; the deselections require cgroup
+  ancestors unavailable in the cockpit. Ruff import/error checks, compileall,
+  and `git diff --check` passed.
+- No registered gate or B105 campaign has run. Next: commit and request a
+  fresh exact-tip Sol xhigh review; coordinate gate timing with B087 before
+  starting the registered lanes.

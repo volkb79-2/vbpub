@@ -87,13 +87,26 @@ class ReceiptCapture:
     _JOIN_TIMEOUT_SECONDS = 2.0
 
     def __init__(self) -> None:
-        self._read_fd, self.write_fd = os.pipe()
+        read_fd, write_fd = os.pipe()
+        drain_fd: int | None = None
+        try:
+            drain_fd = os.dup(read_fd)
+            os.set_blocking(read_fd, False)
+            os.set_blocking(drain_fd, False)
+        except BaseException:
+            for descriptor in (drain_fd, read_fd, write_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+            raise
+        self._read_fd = read_fd
+        self.write_fd = write_fd
         # The reader thread owns a distinct descriptor. If it does not stop
         # before finish()'s join timeout, the parent may close and reuse its
         # descriptor without letting that stale thread read another capture.
-        self._drain_fd = os.dup(self._read_fd)
-        os.set_blocking(self._read_fd, False)
-        os.set_blocking(self._drain_fd, False)
+        self._drain_fd = drain_fd
         self._stop = threading.Event()
         self._data = bytearray()
         self._overflow = False
