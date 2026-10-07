@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -96,7 +97,18 @@ def _build_wheel(source: Path, wheelhouse: Path, *, cwd: Path) -> None:
     if os.environ.get("CMRU_SMOKE_NO_BUILD_ISOLATION"):
         # Offline hosts: build with the interpreter's own setuptools/setuptools_scm.
         command.append("--no-build-isolation")
-    _run([*command, str(source)], cwd=cwd)
+    # An in-tree `pip wheel` leaves `<name>.egg-info/` and `build/` in the source directory.
+    # A leftover `cmru.egg-info` is then found by importlib.metadata for any later process
+    # started with that directory first on sys.path, so the NEXT lane of the same gate
+    # (coverage) would report this build's dev version instead of the image's installed one.
+    # Remove only what this build created.
+    preexisting = {p for p in (*source.glob("*.egg-info"), source / "build") if p.exists()}
+    try:
+        _run([*command, str(source)], cwd=cwd)
+    finally:
+        for created in (*source.glob("*.egg-info"), source / "build"):
+            if created.exists() and created not in preexisting:
+                shutil.rmtree(created, ignore_errors=True)
 
 
 def main() -> int:
