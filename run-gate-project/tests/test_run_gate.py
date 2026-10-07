@@ -11754,18 +11754,19 @@ class TestEstateBudgetTimeoutPairing:
     invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
     nothing and is skipped by construction."""
 
-    # Review fix: accumulated across the parametrized sweep so a final
-    # aggregate test can prove the pairing mechanism is ALIVE estate-wide
-    # (per-trove skips must never add up to a vacuously green sweep).
-    PAIRINGS_SEEN: list[tuple[str, str]] = []
+    TROVES = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
 
-    @pytest.mark.parametrize("trove", sorted(
-        (RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))),
-        ids=lambda p: p.parent.parent.name)
-    def test_consumer_timeouts_never_cut_lanes_short(self, trove):
+    @staticmethod
+    def _pair(trove):
+        """Return [(gate_name, lane_name, timeout, budget)] for one trove,
+        or None when its project has no run-gate.toml. Pure function of the
+        files on disk (RG-62: the rot-guard below used to read a class-level
+        list filled by the parametrized siblings, so its verdict depended on
+        which siblings had already run: silent skip when it ran first, false
+        failure when only some had)."""
         proj_dir = trove.parent.parent
         if not (proj_dir / "run-gate.toml").is_file():
-            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+            return None
         project, _, central, central_path = run_gate.load_config(proj_dir)
         lanes = run_gate.merge_lanes(
             project.get("lanes", {}), central,
@@ -11775,8 +11776,6 @@ class TestEstateBudgetTimeoutPairing:
         for gate_name, gate in gates.items():
             timeout = gate.get("timeout_seconds")
             if timeout is not None and not isinstance(timeout, int):
-                # Review fix: an unparseable timeout used to be silently
-                # skipped — exactly the rot this sweep exists to catch.
                 pytest.fail(
                     f"{trove}: [gates.{gate_name}] timeout_seconds must be "
                     f"integer seconds, got {timeout!r} — the pairing sweep "
@@ -11788,18 +11787,24 @@ class TestEstateBudgetTimeoutPairing:
                 budget = lane.get("budget")
                 if budget is None:
                     continue
-                # Whole-token on BOTH sides anchored at whitespace/ends
-                # (review fix): the old lookaround let 'out/suite.json'
-                # pair as lane 'suite'.
                 if re.search(rf"(?:^|\s){re.escape(lane_name)}(?:\s|$)",
                              argv_text):
-                    paired.append((gate_name, lane_name))
-                    self.PAIRINGS_SEEN.append((proj_dir.name, gate_name))
-                    assert timeout >= _budget_seconds(budget), (
-                        f"{trove}: [gates.{gate_name}] timeout_seconds="
-                        f"{timeout} is TIGHTER than {proj_dir.name} lane "
-                        f"'{lane_name}' budget {budget} — widen the consumer "
-                        f"timeout or shrink the declared budget")
+                    paired.append((gate_name, lane_name, timeout, budget))
+        return paired
+
+    @pytest.mark.parametrize("trove", TROVES,
+                             ids=lambda p: p.parent.parent.name)
+    def test_consumer_timeouts_never_cut_lanes_short(self, trove):
+        proj_dir = trove.parent.parent
+        paired = self._pair(trove)
+        if paired is None:
+            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+        for gate_name, lane_name, timeout, budget in paired:
+            assert timeout >= _budget_seconds(budget), (
+                f"{trove}: [gates.{gate_name}] timeout_seconds="
+                f"{timeout} is TIGHTER than {proj_dir.name} lane "
+                f"'{lane_name}' budget {budget} — widen the consumer "
+                f"timeout or shrink the declared budget")
         assert paired, (
             f"{trove}: no gate↔lane pairing found — either the trove stopped "
             f"pointing at run-gate lanes or the pairing regex rotted")
@@ -11807,11 +11812,17 @@ class TestEstateBudgetTimeoutPairing:
     def test_estate_pairing_sweep_is_alive(self):
         """Rot-guard (review fix): the per-trove tests each prove their own
         pairings, but a mass rename could empty every trove at once. The
-        aggregate demands the sweep found REAL gate↔lane pairs somewhere."""
-        if not self.PAIRINGS_SEEN:
+        aggregate demands the sweep found REAL gate↔lane pairs somewhere.
+        It scans the troves itself (RG-62), so its verdict never depends on
+        which parametrized siblings ran before it."""
+        seen = []
+        for trove in self.TROVES:
+            seen.extend((trove.parent.parent.name, p[0])
+                        for p in (self._pair(trove) or []))
+        if not self.TROVES:
             pytest.skip("no troves scanned (estate layout absent)")
-        assert len(self.PAIRINGS_SEEN) >= 3, (
-            f"estate-wide pairing collapsed to {self.PAIRINGS_SEEN} — the "
+        assert len(seen) >= 3, (
+            f"estate-wide pairing collapsed to {seen} — the "
             f"sweep's grammar and the estate's gate tables have drifted "
             f"apart; fix one or the other, never widen this guard to pass")
 
@@ -13323,14 +13334,29 @@ class TestHistoryEligibilityGuard:
         assert rec["dirty"] is False
         assert lane_slot(proj)["history"][0]["duration_seconds"] == 10.0
 
-    def test_tree_state_is_sampled_before_the_lane_not_after(self, tmp_path):
+    def test_tree_state_is_sampled_before_the_lane_not_after(
+            self, tmp_path, monkeypatch):
         """A lane that leaves artifacts behind must not retro-disqualify its
         own (clean at start) measurement."""
         repo, proj = make_history_repo(tmp_path)
         new_commit(repo, "a")
         rec = run_gate.start_run_record("suite", repo, repo)
         (repo / "lane-artifact.txt").write_text("written BY the lane")
-        rec["_started_monotonic"] = time.monotonic() - 4.0
+        # RG-62: freeze the clock `finish_run_record` reads, so the 4.0 s
+        # duration is exact instead of 4.0 plus however long the host took
+        # between this stamp and the finish call (observed 4.001 under load).
+        # Only `run_gate`'s own `time` name is replaced; every other
+        # attribute still resolves to the real module.
+        real_time = time
+
+        class _FrozenClock:
+            monotonic = staticmethod(lambda: 1000.0)
+
+            def __getattr__(self, name):
+                return getattr(real_time, name)
+
+        monkeypatch.setattr(run_gate, "time", _FrozenClock())
+        rec["_started_monotonic"] = 1000.0 - 4.0
         run_gate.finish_run_record(rec, exit_code=0)
         run_gate.record_invocation(proj, repo, rec, 10)
         assert lane_slot(proj)["history"][0]["duration_seconds"] == 4.0
