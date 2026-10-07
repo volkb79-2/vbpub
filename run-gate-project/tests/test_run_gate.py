@@ -24729,11 +24729,20 @@ class TestRgNarrowMounts:
                               f"{ph(repo / '.git')}:{ph(repo / '.git')}",
                               f"{ph(repo / '.git')}:{repo / '.git'}"]
         # exactly the dual worktree + dual git dir (read-write: ciu v8 SPEC
-        # S16.4.9) + the two read-only credential-free config overlays + the
-        # two read-only empty mounts hiding the sibling worktree's admin dir
-        assert len(values) == 8
-        assert all(v.endswith(":ro") for v in values[4:])
-        assert not any(v.endswith(":rw") or ":ro" in v for v in values[:4])
+        # S16.4.9) + `worktrees/` read-only (real contents) + the judged admin
+        # dir read-write on top + the two read-only config overlays: TWO
+        # worktrees mounts however many siblings there are (round 4)
+        assert len(values) == 10
+        admin = repo / ".git" / "worktrees" / wt.name
+        assert values[4:6] == [f"{ph(repo / '.git' / 'worktrees')}:"
+                               f"{ph(repo / '.git' / 'worktrees')}:ro",
+                               f"{ph(repo / '.git' / 'worktrees')}:"
+                               f"{repo / '.git' / 'worktrees'}:ro"]
+        assert values[6:8] == [f"{ph(admin)}:{ph(admin)}",
+                               f"{ph(admin)}:{admin}"]
+        assert all(v.endswith(":ro") for v in values[8:])
+        assert not any(v.endswith(":rw") or ":ro" in v
+                       for v in (*values[:4], *values[6:8]))
         destinations = [v.split(":")[1] for v in values]
         # neither the main checkout, nor its ignored secret, nor the sibling
         # worktree is mounted at, above or below any destination
@@ -24798,79 +24807,129 @@ class TestRgNarrowMounts:
             for needle in needles:
                 assert needle not in body, (path, needle)
 
-    def test_sibling_admin_dirs_are_hidden_under_an_empty_ro_mount(
+    def test_worktrees_dir_is_ro_with_real_contents_and_own_admin_rw(
             self, tmp_path, monkeypatch):
-        """Round-3 D1: `git worktree prune` in the container must hit a
-        read-only mountpoint, never the host's sibling admin dirs."""
+        """Round-4 B-NEW-2: siblings stay VISIBLE (their HEAD/index keep their
+        objects alive under `git gc`); the dir is read-only so `prune` hits
+        EROFS; the judged admin dir is the one rw mount on top."""
         repo = _narrow_repo(tmp_path)
         wt = make_worktree(repo, repo / ".worktrees", "w1")
-        make_worktree(repo, repo / ".worktrees", "other")
-        make_worktree(repo, repo / ".worktrees", "third")
+        for name in ("other", "third", "fourth"):
+            make_worktree(repo, repo / ".worktrees", name)
         _phys_stub(monkeypatch)
         plan = run_gate.git_mount_plan(wt, repo)
         own = plan["admin"].name
-        names = sorted(p.name for p in (repo / ".git" / "worktrees").iterdir())
-        assert own in names and len(names) == 3
+        root = repo / ".git" / "worktrees"
         flags = run_gate.container_mount_flags(repo, wt, {})
-        admin_root = f"{repo / '.git' / 'worktrees'}/"
-        hidden = {}
-        for value in flags[1::2]:
-            source, destination, *rest = value.split(":")
-            destination = destination.removeprefix("/phys")  # dual mount
-            if destination.startswith(admin_root):
-                hidden.setdefault(destination.removeprefix(admin_root),
-                                  []).append((source, rest))
-        assert sorted(hidden) == sorted(n for n in names if n != own)
-        sources = set()
-        for entries in hidden.values():
-            assert [rest for _s, rest in entries] == [["ro"], ["ro"]]
-            sources |= {s for s, _r in entries}
-        assert len(sources) == 1  # ONE shared empty dir
-        empty = Path(next(iter(sources)).removeprefix("/phys"))
-        assert empty.is_dir() and list(empty.iterdir()) == []
-        assert empty.stat().st_mode & 0o777 == 0o755
-        # the judged worktree's own admin dir is NOT hidden
-        assert not any(v.split(":")[1].removeprefix("/phys").startswith(
-            f"{admin_root}{own}") for v in flags[1::2])
+        under = [v for v in flags[1::2]
+                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))]
+        # two mounts per path-view, independent of the 3 siblings
+        assert len(under) == 4
+        ro = [v for v in under if v.endswith(":ro")]
+        rw = [v for v in under if not v.endswith(":ro")]
+        assert len(ro) == 2 and len(rw) == 2
+        assert all(v.split(":")[0].removeprefix("/phys") == str(root)
+                   for v in ro)  # the REAL dir, not an empty stand-in
+        assert all(v.split(":")[0].removeprefix("/phys") == str(root / own)
+                   for v in rw)
+        # no sibling-specific mount at all
+        assert not any(name in v for v in flags[1::2]
+                       for name in ("other", "third", "fourth"))
 
-    def test_plain_checkout_hides_every_registered_worktree_admin_dir(
+    def test_plain_checkout_mounts_worktrees_dir_read_only(
             self, tmp_path, monkeypatch):
         repo = _narrow_repo(tmp_path)
         make_worktree(repo, repo / ".worktrees", "other")
         _phys_stub(monkeypatch)
         monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, "1")
         flags = run_gate.container_mount_flags(repo, repo, {})
-        hidden = [v for v in flags[1::2]
-                  if v.split(":")[1].removeprefix("/phys").startswith(
-                      f"{repo}/.git/worktrees/")]
-        assert len(hidden) == 2 and all(v.endswith(":ro") for v in hidden)
+        under = [v for v in flags[1::2]
+                 if v.split(":")[1].removeprefix("/phys").startswith(
+                     f"{repo}/.git/worktrees")]
+        assert len(under) == 2 and all(v.endswith(":ro") for v in under)
 
-    def test_submodule_configs_are_overlaid_with_sanitized_copies(
+    def test_no_worktrees_dir_means_no_worktrees_mount(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        _phys_stub(monkeypatch)
+        monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, "1")
+        assert not (repo / ".git" / "worktrees").exists()
+        flags = run_gate.container_mount_flags(repo, repo, {})
+        assert not any(".git/worktrees" in v for v in flags[1::2])
+
+    def test_sibling_config_worktree_gets_a_sanitized_overlay(
+            self, tmp_path, monkeypatch):
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        make_worktree(repo, repo / ".worktrees", "other")
+        sibling = repo / ".git" / "worktrees" / "other" / "config.worktree"
+        sibling.write_text(
+            '[remote "o"]\n\turl = https://u:FAKESIBPASS@s.example/s.git\n')
+        _phys_stub(monkeypatch)
+        flags = run_gate.container_mount_flags(repo, wt, {})
+        overlay = [v for v in flags[1::2] if v.endswith(":ro")
+                   and v.split(":")[1].removeprefix("/phys") == str(sibling)]
+        assert len(overlay) == 2
+        text = Path(overlay[0].split(":")[0].removeprefix("/phys")).read_text()
+        assert "FAKESIBPASS" not in text and "https://s.example/s.git" in text
+
+    def test_nested_submodule_configs_are_all_overlaid_and_nothing_leaks(
+            self, tmp_path, monkeypatch):
+        """Round-4 B-NEW-1: `modules/libs/a/config` and the nested
+        `modules/libs/a/modules/b/config` (+ a config.worktree) are overlaid;
+        a whole-tree scan of every file the container would see finds no
+        credential, and bulk dirs of a git dir are not descended."""
+        repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        modules = repo / ".git" / "modules"
+        cred = '[remote "origin"]\n\turl = https://u:{}@m.example/s.git\n'
+        layout = {"libs/a/config": "FAKEMODA",
+                  "libs/a/modules/b/config": "FAKEMODB",
+                  "libs/a/modules/b/config.worktree": "FAKEMODBWT",
+                  "top/config": "FAKEMODTOP"}
+        for rel, secret in layout.items():
+            path = modules / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(cred.format(secret))
+        # a git dir's bulk dirs hold a file literally named `config`: skipped
+        for rel in ("libs/a/HEAD", "libs/a/modules/b/HEAD"):
+            (modules / rel).write_text("ref: refs/heads/main\n")
+        (modules / "libs/a/objects").mkdir()
+        (modules / "libs/a/objects/config").write_text("not a git config\n")
+        _phys_stub(monkeypatch)
+        flags = run_gate.container_mount_flags(repo, wt, {})
+        values = flags[1::2]
+        seen = {}
+        for rel in layout:
+            target = str(modules / rel)
+            overlay = [v for v in values if v.endswith(":ro")
+                       and v.split(":")[1].removeprefix("/phys") == target]
+            assert len(overlay) == 2, rel
+            seen[rel] = Path(overlay[0].split(":")[0].removeprefix("/phys"))
+        assert not any(str(modules / "libs/a/objects/config") in v
+                       for v in values)
+        # what the container sees: every mounted file, with overlays applied
+        overlaid = {v.split(":")[1].removeprefix("/phys"): v.split(":")[0]
+                    for v in values if v.endswith(":ro")
+                    and v.split(":")[1].removeprefix("/phys").endswith(
+                        ("config", "config.worktree"))}
+        for path in (p for p in modules.rglob("*") if p.is_file()):
+            effective = Path(overlaid.get(str(path), str(path)).removeprefix(
+                "/phys")) if str(path) in overlaid else path
+            body = effective.read_text()
+            for secret in ("FAKEMODA", "FAKEMODB", "FAKEMODTOP"):
+                assert secret not in body, (path, secret)
+
+    def test_too_many_module_config_files_are_an_infrastructure_error(
             self, tmp_path, monkeypatch):
         repo = _narrow_repo(tmp_path)
         wt = make_worktree(repo, repo / ".worktrees", "w1")
         module = repo / ".git" / "modules" / "sub"
         module.mkdir(parents=True)
-        (module / "config").write_text(
-            '[remote "origin"]\n\turl = https://modu:FAKEMODPASS@m.example/s.git\n')
-        _phys_stub(monkeypatch)
-        flags = run_gate.container_mount_flags(repo, wt, {})
-        overlay = [v for v in flags[1::2]
-                   if v.split(":")[1] == f"{module / 'config'}"
-                   or v.split(":")[1] == f"/phys{module / 'config'}"]
-        assert len(overlay) == 2 and all(v.endswith(":ro") for v in overlay)
-        copy = Path(overlay[0].split(":")[0].removeprefix("/phys"))
-        text = copy.read_text()
-        assert "FAKEMODPASS" not in text and "https://m.example/s.git" in text
-
-    def test_too_many_hidden_git_dirs_are_an_infrastructure_error(
-            self, tmp_path, monkeypatch):
-        repo = _narrow_repo(tmp_path)
-        wt = make_worktree(repo, repo / ".worktrees", "w1")
-        make_worktree(repo, repo / ".worktrees", "other")
+        (module / "config").write_text("[core]\n\tbare = false\n")
         _phys_stub(monkeypatch)
         monkeypatch.setattr(run_gate, "_MAX_GIT_OVERLAYS", 0)
-        with pytest.raises(run_gate.GateInfraError, match="cannot be hidden"):
+        with pytest.raises(run_gate.GateInfraError, match="cannot be sanitized"):
             run_gate.container_mount_flags(repo, wt, {})
 
     def test_state_mount_only_for_assay_and_not_with_declared_root(
@@ -25075,8 +25134,37 @@ class TestRgNarrowRealContainer:
             pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
         monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
         repo = _narrow_repo(tmp_path)
+        # state only a SIBLING worktree's admin dir keeps alive (round-4
+        # B-NEW-2): a detached-HEAD commit, and a blob staged only in its index
+        other_wt = make_worktree(repo, repo / ".worktrees", "other")
+        (other_wt / "only-head.txt").write_text("only reachable from HEAD\n")
+        git(other_wt, "checkout", "-q", "--detach")
+        git(other_wt, "add", "only-head.txt")
+        git(other_wt, "commit", "-qm", "ONLYHEAD")
+        (other_wt / "staged-only.txt").write_text("only in the index\n")
+        git(other_wt, "add", "staged-only.txt")
+        head_sha = subprocess.run(
+            ["git", "-C", str(other_wt), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True).stdout.strip()
+        blob_sha = subprocess.run(
+            ["git", "-C", str(other_wt), "rev-parse", ":staged-only.txt"],
+            check=True, capture_output=True, text=True).stdout.strip()
+        make_worktree(repo, repo / ".worktrees", "held")  # branch `held`
+        gone = make_worktree(repo, repo / ".worktrees", "gone")
+        shutil.rmtree(gone)  # registered but missing: `prune` would delete it
+        # credentials in a nested submodule git dir (round-4 B-NEW-1)
+        for rel, secret in (("libs/a", "FAKEMODA"),
+                            ("libs/a/modules/b", "FAKEMODB")):
+            mod = repo / ".git" / "modules" / rel
+            mod.mkdir(parents=True)
+            (mod / "config").write_text(
+                f'[remote "origin"]\n\turl = https://u:{secret}@m.example/s.git\n')
         script = (
-            "set -ex; cd {worktree}/proj; "  # -x: a failing step names itself
+            "set -ex; "  # -x: a failing step names itself
+            # `! cmd` is ignored by `set -e`; `no` really fails the lane
+            "no() { if \"$@\"; then echo \"UNEXPECTED SUCCESS: $*\"; exit 1; "
+            "fi; }; "
+            "cd {worktree}/proj; "
             f"test -f .local-overlay; "  # the worktree keeps ALL its own files
             f"test ! -e {repo}/cmru.secret.toml; "
             f"test ! -e {repo}/README.md; "
@@ -25085,23 +25173,36 @@ class TestRgNarrowRealContainer:
             "test \"$(git log -1 --format=%s)\" = 'lane config proj'; "
             "git rev-parse HEAD >/dev/null; git status --porcelain >/dev/null; "
             "git diff --stat >/dev/null; git rev-parse --git-common-dir; "
-            # assay's repository snapshot runs `git worktree add` (writes the
-            # common dir), then reads the snapshot
-            "git worktree add -q --detach /tmp/narrow-snap HEAD; "
-            "test \"$(git -C /tmp/narrow-snap log -1 --format=%s)\" = "
-            "'lane config proj'; git worktree remove --force /tmp/narrow-snap; "
-            # D1: the sibling's worktree path is NOT mounted, so an unguarded
-            # `git worktree prune` would delete its admin dir on the HOST. The
-            # sibling admin dir is an empty read-only mount: prune fails on it.
+            "git -c user.name=a -c user.email=a@b.invalid commit --allow-empty "
+            "-qm in-container; "
+            "test \"$(git log -1 --format=%s)\" = in-container; "
+            # gc sees the siblings' HEAD and index and keeps their objects
+            # (FIRST, so only the gc check can fail a lane that hides them)
+            "git gc --prune=now -q; "
+            f"git cat-file -e {head_sha}; git cat-file -e {blob_sha}; "
+            # assay's snapshot is `clone --no-local`; `git worktree add` needs a
+            # NEW admin dir under the read-only `worktrees/` and must fail
+            "git clone -q --no-local {worktree} /tmp/narrow-clone; "
+            "git -C /tmp/narrow-clone log -1 >/dev/null; "
+            "no git worktree add -q --detach /tmp/narrow-snap HEAD; "
             "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
-            "test -z \"$(ls -A $common/worktrees/other)\"; "
-            "! touch $common/worktrees/other/x 2>/dev/null; "
+            # siblings are VISIBLE (real HEAD/index) but read-only
+            "test -f $common/worktrees/other/HEAD; "
+            "test -f $common/worktrees/other/index; "
+            "no touch $common/worktrees/other/x; "
+            "no touch $common/worktrees/new-admin; "
+            # prune hits EROFS: the missing worktree's admin dir survives
             "git worktree prune -v || true; "
+            "test -d $common/worktrees/gone; "
             "test -d $common/worktrees/other; "
+            # a branch checked out in a sibling cannot be deleted
+            "no git branch -D held; git rev-parse --verify -q held >/dev/null; "
             "git status --porcelain >/dev/null; git log -1 >/dev/null; "
-            "cfg=$(git rev-parse --git-common-dir)/config; "
-            "! grep -e FAKEPASSWORD123 -e fakeuser -e FAKEBASIC456 \"$cfg\"; "
-            "! git config --list | grep -e FAKEPASSWORD123 -e FAKEBASIC456; "
+            # no credential anywhere under the git common dir (objects aside)
+            "no grep -rIl -e FAKEPASSWORD123 -e fakeuser -e FAKEBASIC456 "
+            "-e FAKEMODA -e FAKEMODB $common --exclude-dir=objects; "
+            "no sh -c 'git config --list | grep -e FAKEPASSWORD123 "
+            "-e FAKEBASIC456'; "
             "test \"$(git config --get remote.origin.url)\" = "
             "https://example.invalid/x.git; "
             "echo NARROW-OK")
@@ -25118,19 +25219,26 @@ class TestRgNarrowRealContainer:
         """)
         proj = make_project(repo, config)
         wt = make_worktree(repo, repo / ".worktrees", "w1")
-        other = make_worktree(repo, repo / ".worktrees", "other")
-        (other / "other.secret").write_text("FAKE-OTHER-SECRET\n")
+        (other_wt / "other.secret").write_text("FAKE-OTHER-SECRET\n")
         (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "NARROW-OK" in proc.stdout, proc.stdout
-        # D1: the in-container prune left every host admin dir intact
-        for name in ("w1", "other"):
+        # the in-container prune and gc left every host admin dir and every
+        # sibling-only object intact
+        for name in ("w1", "other", "held", "gone"):
             assert (repo / ".git" / "worktrees" / name / "gitdir").is_file(), name
+        for sha in (head_sha, blob_sha):
+            subprocess.run(["git", "-C", str(repo), "cat-file", "-e", sha],
+                           check=True)
+        fsck = subprocess.run(["git", "-C", str(repo), "fsck", "--no-dangling"],
+                              capture_output=True, text=True)
+        assert fsck.returncode == 0 and "error" not in fsck.stderr.lower(), \
+            fsck.stdout + fsck.stderr
         listing = subprocess.run(
             ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
             check=True, capture_output=True, text=True).stdout
-        assert listing.count("worktree ") == 3
+        assert listing.count("worktree ") == 5
         # the refusal path with the same real repo: main checkout, no opt-in
         refused = run_tool(proj, "suite")
         assert refused.returncode == 2 and "refused" in refused.stderr

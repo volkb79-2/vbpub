@@ -387,11 +387,13 @@ the tool's reason to exist and MUST be implemented + tested:
   (all its own files, git-ignored ones included) plus the git common dir
   (read-write, ciu v8 SPEC S16.4.9), `<repo>/.run-gate` for assay state, and
   explicit `RUN_GATE_EXTRA_MOUNTS`; never the main checkout or other
-  worktrees. `<common>/config` (and submodule `modules/*/config`) is overlaid
-  with a per-run credential-free copy. Every sibling worktree's admin dir
-  under `<common>/worktrees/` is hidden under an empty read-only mount, so an
-  in-container `git worktree prune` cannot delete other worktrees' admin dirs
-  on the host (it fails EBUSY on the mountpoint). A plain (main) checkout is refused unless `--allow-main-checkout` /
+  worktrees. `<common>/config` (and every `config`/`config.worktree` at any
+  depth under `modules/`) is overlaid with a per-run credential-free copy.
+  `<common>/worktrees/` is mounted read-only with its real contents and the
+  judged worktree's own admin dir read-write on top, so an in-container `git
+  worktree prune` fails (EROFS), `gc` keeps every sibling's objects and
+  `branch -D` of a sibling's branch is refused; `git worktree add` cannot
+  create a new admin dir inside the container. A plain (main) checkout is refused unless `--allow-main-checkout` /
   `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (WARNs). `mode = "exec"` lanes are
   unaffected. Isolation comes from mounting less; run-gate knows no
   project's secret file names.

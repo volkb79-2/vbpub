@@ -2272,9 +2272,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     READ-ONLY with a per-run copy re-rendered from `git config --file X
     --list -z`, kept in a private 0700 directory outside every mount
     (system temp; `<repo>/.run-gate` only when system temp has no host
-    path), removed at process exit. Every `<common>/modules/*/config`
-    (submodule repositories; at most 256 with the hidden dirs of `R-45e`)
-    gets the same sanitized overlay. Removed: URL userinfo in keys and
+    path), removed at process exit. Every file named `config` or
+    `config.worktree` at ANY depth under `<common>/modules` (submodule
+    repositories are named by path: `modules/libs/a/config`, nested
+    `modules/libs/a/modules/b/config`; the `objects`/`refs`/`logs`/`hooks`/
+    `info` dirs of a git dir are not descended) and every existing sibling
+    `<common>/worktrees/*/config.worktree` (at most 256 files in all, see
+    `R-45e`) gets the same sanitized overlay. Removed: URL userinfo in keys and
     values (http/https/ftp/ftps and any `<x>+http(s)` scheme such as
     `git+https`: any userinfo; other schemes only `user:pass@`),
     `credential.*`, `*.extraheader`, `*.cookiefile`, `core.askpass`,
@@ -2294,16 +2298,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-45d` Out of scope.** `mode = "exec"` lanes and probes (containers
     owned by ciu or the project's stack) compute no run-gate mounts and are
     never refused.
-  - **`R-45e` Sibling admin dirs are hidden (prune hazard).** The common
-    directory is read-write, so an in-container `git worktree prune` would
-    delete, ON THE HOST, the admin dirs of every worktree whose path is not
-    mounted. Every sibling `<common>/worktrees/<name>` (all but the judged
-    worktree's own) is therefore covered, at both mount paths, by ONE empty
-    read-only directory (0755, in the private dir of `R-45b`). Prune then
-    fails on the mountpoint (EBUSY) and cannot delete; the siblings' files
-    (`gitdir`, `config.worktree`, ...) are invisible. More than 256 hidden
-    dirs plus submodule configs is an infrastructure error, never a partial
-    hide.
+  - **`R-45e` Sibling admin dirs are read-only and VISIBLE (prune/gc
+    hazard).** The common directory is read-write, so an in-container `git
+    worktree prune` would delete, ON THE HOST, the admin dirs of every
+    worktree whose path is not mounted, and a `git gc --prune=now` that
+    cannot see a sibling's `HEAD` and `index` deletes the objects only those
+    reference (round 3 hid the siblings behind an empty directory and lost
+    data that way; `git branch -D` of a sibling's checked-out branch also
+    succeeded). `<common>/worktrees` is therefore mounted READ-ONLY with its
+    REAL contents, at both mount paths, and the judged worktree's OWN admin
+    dir `<common>/worktrees/<own>` is mounted READ-WRITE on top of it (a
+    nested bind mount): two mounts however many siblings exist. For a plain
+    checkout the whole `worktrees/` dir is read-only; with no `worktrees/`
+    dir there is no such mount. Effects: `prune` fails (EROFS); `gc` sees
+    every sibling's `HEAD`/`index`; `branch -D` of a sibling's branch is
+    refused as on the host; the judged worktree's own status/log/commit
+    work. Consequence: `git worktree add` from inside the container cannot
+    create a NEW admin dir (EROFS); assay's snapshot uses `clone
+    --no-local` and is unaffected. A sibling `config.worktree` that exists
+    gets the `R-45b` sanitized read-only overlay; module plus sibling
+    config files are capped at 256 (infrastructure error beyond).
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

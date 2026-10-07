@@ -300,11 +300,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   overlaid read-only with a per-run copy minus credentials (URL userinfo,
   `credential.*`, `*.extraheader`, whole `sendemail.*`/`imap.*` sections, keys
   ending in pass/password/token/secret/apikey, `git+https://` userinfo,
-  credential-bearing `url.*.insteadOf`; submodule `modules/*/config` too).
-  Because the common dir is read-write, every sibling worktree's admin dir
-  (`<common>/worktrees/<name>`) is hidden under an empty read-only mount, so
-  `git worktree prune` inside a container cannot delete other worktrees'
-  admin dirs on the host. Ephemeral lanes on a plain (main) checkout are
+  credential-bearing `url.*.insteadOf`; every `config`/`config.worktree` at
+  any depth under `modules/`, nested submodules included). Because the
+  common dir is read-write, `<common>/worktrees` is mounted read-only with
+  its real contents and the judged worktree's own admin dir read-write on
+  top: `git worktree prune` inside a container fails (EROFS) instead of
+  deleting other worktrees' admin dirs on the host, `git gc` still sees every
+  sibling's HEAD and index (it keeps their objects), and `git branch -D` of a
+  sibling's branch is refused. `git worktree add` inside the container cannot
+  create a new admin dir; assay's snapshot (`clone --no-local`) is unaffected. Ephemeral lanes on a plain (main) checkout are
   REFUSED unless `--allow-main-checkout` / `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`,
   which WARNs. `mode = "exec"` lanes are unchanged. Breaking for callers that
   ran ephemeral lanes from a main checkout: use a worktree or opt in.

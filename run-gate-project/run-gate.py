@@ -9022,17 +9022,12 @@ _MAX_GIT_OVERLAYS = 256  # bound on sibling admin dirs / submodule configs
 
 
 def git_config_overlay_flags(plan: dict, repo: Path) -> list[str]:
-    """What the container sees of the (read-write) git common dir besides the
-    judged worktree's own state:
-
-    - every git config file (`<common>/config`, `config.worktree`, the judged
-      admin dir's `config.worktree`, each `<common>/modules/*/config`) is
-      overlaid read-only with a per-run sanitized copy;
-    - every SIBLING `<common>/worktrees/<name>` admin dir (all but the judged
-      worktree's own) is hidden under an EMPTY read-only mount. That hides
-      their files (`config.worktree`, `gitdir`, ...) AND makes an in-container
-      `git worktree prune` fail on the mountpoint (EBUSY) instead of deleting
-      the other worktrees' admin dirs on the host (RG-86 round 3, D1)."""
+    """Every git config file the container could read a credential from is
+    overlaid read-only with a per-run sanitized copy: `<common>/config`,
+    `config.worktree`, the judged admin dir's `config.worktree`, every
+    `config`/`config.worktree` at ANY depth under `<common>/modules` (nested
+    submodules), and any sibling `worktrees/*/config.worktree`. At most
+    `_MAX_GIT_OVERLAYS` of the module/sibling files."""
     common, admin = plan["common"], plan["admin"]
     targets = [common / "config", common / "config.worktree"]
     if admin is not None:
@@ -9040,32 +9035,61 @@ def git_config_overlay_flags(plan: dict, repo: Path) -> list[str]:
     if not targets[0].is_file():
         fail_infra(f"git config {targets[0]} is missing; cannot build the "
                    f"credential-free overlay")
-    modules = sorted((common / "modules").glob("*/config"))
-    own = admin.name if admin is not None else None
-    siblings = sorted(path for path in (common / "worktrees").glob("*")
-                      if path.is_dir() and path.name != own)
-    if len(modules) + len(siblings) > _MAX_GIT_OVERLAYS:
-        fail_infra(f"{common} holds {len(modules)} submodule configs and "
-                   f"{len(siblings)} sibling worktree admin dirs; more than "
-                   f"{_MAX_GIT_OVERLAYS} cannot be hidden/sanitized safely")
+    extra = _nested_git_config_files(common / "modules")
+    # sibling per-worktree configs (usually absent): sanitized overlays on top
+    # of the read-only `worktrees/` mount; the judged one is already a target
+    extra += [path for path in sorted(
+        (common / "worktrees").glob("*/config.worktree"))
+        if path not in targets]
+    if len(extra) > _MAX_GIT_OVERLAYS:
+        fail_infra(f"{common} holds {len(extra)} submodule/sibling git "
+                   f"config files; more than {_MAX_GIT_OVERLAYS} cannot be "
+                   f"sanitized safely")
     private, _phys = _make_private_dir(repo)
     flags: list[str] = []
-    for index, target in enumerate(
-            [t for t in targets if t.is_file()] + modules):
+    for index, target in enumerate([t for t in targets if t.is_file()] + extra):
         copy_path = private / f"{index}.config"
         copy_path.write_text(sanitized_git_config_text(target), encoding="utf-8")
         copy_path.chmod(0o644)
         source = physical_path(copy_path)
         for destination in _dual(target, repo)[1::2]:
             flags += ["-v", f"{source}:{destination.split(':', 1)[1]}:ro"]
-    if siblings:
-        empty = private / "empty"
-        empty.mkdir()
-        empty.chmod(0o755)  # the container user may differ from the owner
-        source = physical_path(empty)
-        for sibling in siblings:
-            for destination in _dual(sibling, repo)[1::2]:
-                flags += ["-v", f"{source}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+_GIT_DIR_BULK = frozenset({"objects", "refs", "logs", "hooks", "info"})
+
+
+def _nested_git_config_files(modules: Path) -> list[Path]:
+    """Every `config` / `config.worktree` file anywhere under `<common>/modules`
+    (git names a submodule's dir by its PATH, so `modules/libs/a/config` and
+    `modules/libs/a/modules/b/config` exist; round-3 `*/config` missed them).
+    The bulk dirs of a git dir (objects, refs, ...) are not descended into."""
+    found: list[Path] = []
+    for root, dirs, files in os.walk(modules):
+        if "HEAD" in files:
+            dirs[:] = [d for d in dirs if d not in _GIT_DIR_BULK]
+        dirs.sort()
+        found += [Path(root) / name for name in sorted(files)
+                  if name in ("config", "config.worktree")]
+    return found
+
+
+def git_worktrees_mount_flags(plan: dict, repo: Path) -> list[str]:
+    """RG-86 round 4: `<common>/worktrees` is mounted READ-ONLY with its REAL
+    contents (so `git gc` sees every sibling's HEAD and index and keeps their
+    objects, `git branch -D` of a branch checked out elsewhere is refused, and
+    `git worktree prune` hits EROFS), and the judged worktree's OWN admin dir
+    is mounted read-write on top (a nested bind mount). Two mounts regardless
+    of the number of siblings. Hiding the siblings behind an empty directory
+    (round 3) let `gc --prune=now` delete objects only they referenced."""
+    directory = plan["common"] / "worktrees"
+    if not directory.is_dir():
+        return []
+    flags = [item for value in _dual(directory, repo)[1::2]
+             for item in ("-v", f"{value}:ro")]
+    if plan["admin"] is not None:
+        flags += _dual(plan["admin"], repo)
     return flags
 
 
@@ -9112,6 +9136,8 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
         # repository snapshot runs `git worktree add`). The admin dir lives
         # inside the common dir, so it needs no mount of its own.
         mounts = [*_dual(worktree, repo), *_dual(plan["common"], repo)]
+    # `<common>/worktrees` read-only with its real contents, own admin dir rw
+    mounts += git_worktrees_mount_flags(plan, repo)
     mounts += git_config_overlay_flags(plan, repo)
     if with_state and (env or {}).get("state_root") is None \
             and plan["kind"] != "plain":
