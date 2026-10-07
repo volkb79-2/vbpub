@@ -1447,7 +1447,7 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         "source = Path('pkg/flags.py').read_text(encoding='utf-8')\n"
         "if 'a = False' in source:\n"
         "    signal.alarm(60)\n"
-        "    descendant = subprocess.Popen(['/bin/sleep', '60'], "
+        "    descendant = subprocess.Popen(['/bin/sleep', '600'], "
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "    print(f'BLOCKED {descendant.pid}', flush=True)\n"
         "    signal.pause()\n"
