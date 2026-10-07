@@ -375,6 +375,7 @@ def _native_r2(**overrides):
         "max_mutants": 10,
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",
+        "cold_witness_kills": False,
     }
     values.update(overrides)
     return JudgmentR2(**values)

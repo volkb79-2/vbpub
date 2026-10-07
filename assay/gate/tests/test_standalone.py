@@ -87,6 +87,7 @@ from gate.tests.support import (
     why_invalid,
 )
 from assay.candidate_identity import candidate_id_from_fields
+from assay.verdict import VERDICT_SCHEMA_VERSION
 
 GO_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "canary" / "go" / "greet" / "greet.go"
 assert GO_FIXTURE.is_file(), f"expected the committed Go canary fixture at {GO_FIXTURE}"
@@ -341,7 +342,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -714,7 +715,7 @@ def _expected_r2_artifact(
                 )
             ]
     document = {
-        "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -775,6 +776,9 @@ def _expected_r2_artifact(
                 # P33/V5-4: derived from the absence of
                 # `kill_signal_artifact`, which `config` refuses until P34.
                 "kill_attribution": "unattributed",
+                "cold_witness_kills": False,
+                "r2_command": None,
+                "equivalence_ledger": None,
                 # B035/A-329: every R2 lane in this module is changed-line
                 # scoped (each declares `judge.base` and no `judge.mode`), so
                 # the installed wheel records that scope -- and it is what
@@ -793,6 +797,8 @@ def _expected_r2_artifact(
                     "active": liveness_active,
                     "reason": liveness_reason,
                     "plugin": liveness_plugin,
+                    "cpu_window_s": None,
+                    "idle_floor_s": None,
                 },
                 # `budget_per_candidate_derived_s` deliberately absent here:
                 # (B091/A1) it is measured from THIS run's own real baseline
@@ -1293,7 +1299,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1664,7 +1670,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,

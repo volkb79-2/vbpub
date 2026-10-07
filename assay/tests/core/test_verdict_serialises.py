@@ -305,6 +305,7 @@ def build_inconclusive() -> Verdict:
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
+                cold_witness_kills=False,
             ),
         ),
         snapshot_policy=REPOSITORY_POLICY,

@@ -503,7 +503,7 @@ must stop and ask, never invent one:
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
 | `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED`, `RED_FIRST_UNPROVEN` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED`, `CGROUP_OBSERVATION_UNAVAILABLE` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED`, `CANDIDATE_HUNG` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
 
@@ -520,6 +520,10 @@ free, rather than costing a second cut of its own.**
   `detail`. **A mismatch is `NO_MEASUREMENT` and never `FAIL`**: it says the
   measurement's subject is unknown, not that the code is bad, and a `FAIL`
   would let a consumer read "the code is bad" off a deployment fact.
+- **`NO_MEASUREMENT`/`CGROUP_OBSERVATION_UNAVAILABLE`** (B148/A-484) — native
+  R2 has selected candidates, but the process cannot inspect the full cgroup
+  v2 ancestor hierarchy B145 requires. This is a pre-R0 environment refusal;
+  candidate-time observation failures remain `ERROR/EXEC_FAILED`.
 - **`FAIL`/`RED_FIRST_UNPROVEN`** (F015/M7, A-433 as amended by A-434 under
   DA-R18) — the R4 red-first (`fail-before/pass-after`) claim's judged
   refusal: assay materialised both commits and ran the declared tests on
@@ -661,8 +665,9 @@ event cannot be hidden by a later command. A positive delta never certifies a
 kill or survivor. The visible cgroup paths, controller availability, and
 configured limits must match between the bracketing samples. If they change,
 or if a required counter is missing, malformed, or unreadable, native R2 fails
-closed. A cgroup namespace that hides ancestors or a cgroup mount rooted below the
-hierarchy root also refuses native R2 before its candidate sweep. Worker
+closed. B148 refuses before R0 when native candidates are selected but the
+preflight cannot see all ancestors; a candidate-time loss of observation
+remains `ERROR/EXEC_FAILED`. Worker
 creation failure at the executor boundary yields a payload-free
 `ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
 cannot escape the verdict path. This contract observes cgroup v2 events; it
@@ -677,6 +682,33 @@ does not change: this is a change in what the judge identity covers, not the
 record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
 execution counters.
+
+#### Native R2 cgroup visibility preflight (B148)
+
+B145's full cgroup reader is the capability probe; a shallow check for a
+visible `0::/` path would certify the wrong thing. Before R0, `assay run`
+checks the capability and, only when it is unavailable, uses the planner's
+candidate discovery and shard selection to determine whether native R2 would
+submit any candidate. The plan uses the same declared source roots, operator
+selection, candidate ceiling and deterministic shard function as R2. A
+selected candidate with an unavailable hierarchy produces
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
+The operator must run the lane where the complete ancestor hierarchy can be
+observed; Assay does not choose a Docker cgroup namespace or add a config
+override for this fact.
+
+The refusal does not apply to ingested R2, unsupported discovery, an empty
+candidate selection, or a discovery result over `max_mutants`; those cases
+have no native candidate command that can be submitted. If candidate
+discovery itself fails while visibility is unavailable, R0 still does not
+start. Lane-wide errors retain their typed pair; `MUTATION_DISCOVERY_FAILED`
+is R2-claim-only, so its exact diagnostic is carried in the lane-wide cgroup
+refusal rather than emitting a schema-invalid R0 claim (A-484). A failed
+discovery is not evidence that the candidate set is empty. `assay plan` reports whether the current
+selection requires observation and the probe result. `assay lanes --json`
+reports ambient availability with `applies_to =
+"conditional_native_r2_candidates"`; it does not claim that an unplanned lane
+will refuse.
 
 ### Cold-witness R2 (B114)
 

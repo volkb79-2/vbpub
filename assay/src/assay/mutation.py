@@ -131,8 +131,6 @@ from .mutation_witness import (
     ReceiptFacts,
     cold_witness_from_receipt,
     declared_failure_proof_ok,
-    inject_witness_plugin,
-    make_attempt_plan,
     receipt_facts,
     replay_witness_from_receipt as _replay_witness_from_receipt,
     survivor_proof_ok,
@@ -3708,6 +3706,7 @@ def _execute_mutation_jobs(
                 receipt,
                 process_exit_status=result.returncode,
                 target_node_id=target_node_id,
+                expected_facts=r2_facts if cold_witness else None,
             )
             if (
                 witness is None

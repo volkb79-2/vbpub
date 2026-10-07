@@ -29,6 +29,7 @@ PRODUCER_ONLY_VERDICT_NAMES = frozenset({"claim_for", "claim_carries", "_require
 
 _VERDICT_NAMES = (
     "CLAIM_DETAIL_BYTES",
+    "CampaignBinding",
     "CanaryAttempt",
     "CanaryResult",
     "Claim",
@@ -37,6 +38,7 @@ _VERDICT_NAMES = (
     "EXIT_CODES",
     "Evidence",
     "EvidenceDeclaration",
+    "EquivalenceLedger",
     "Helper",
     "JudgeProvenance",
     "Judgment",
@@ -51,9 +53,12 @@ _VERDICT_NAMES = (
     "MutationExecution",
     "MutationProducerTool",
     "MutationWitnessReceipt",
+    "MutantEvidence",
     "Outcome",
     "REASON_CODES",
     "ReasonCode",
+    "R2BaselineFacts",
+    "R2Command",
     "RedFirstResult",
     "ResourceLimitEvidence",
     "SnapshotPolicy",
@@ -69,6 +74,15 @@ _VERDICT_NAMES = (
 #: The committed base: every assay-internal name ``verify.py`` imported before W10.
 VERIFY_IMPORT_BASE = frozenset(
     {("assay.candidate_identity", "candidate_id_from_fields"), ("assay.mutation", "judge_mutation")}
+    | {
+        ("assay.r2_command", name)
+        for name in (
+            "R2_APPENDED",
+            "R2_TRANSFORM_ID",
+            "UnrecognizedCoverageOption",
+            "transform_argv",
+        )
+    }
     | {("assay.verdict", name) for name in _VERDICT_NAMES}
 )
 

@@ -112,7 +112,6 @@ from . import (
     safeio,
 )
 from .mutation_witness import (
-    WITNESS_MANIFEST_FILE_ENV,
     inject_witness_plugin,
     make_attempt_plan,
     read_internal_receipt,

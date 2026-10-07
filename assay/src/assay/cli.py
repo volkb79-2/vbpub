@@ -89,6 +89,7 @@ from . import (
     mutation,
     provenance,
     registry,
+    resource_limits,
     runner,
     safeio,
 )
@@ -1811,6 +1812,29 @@ def _run_reserved(
             _print_run_summary(verdict, out)
         return verdict.exit_code
 
+    def _deliver_refusal(exc: AssayError) -> int:
+        detail = runner.announce_refusal(exc, diagnostics=err)
+        refusal_evidence = (
+            _timed_out_evidence(declared_evidence, exc)
+            if exc.reason_code is ReasonCode.LANE_TIMEOUT
+            else evidence
+        )
+        verdict = runner.refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            detail=detail,
+            argv_append=appended,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=__version__,
+            judge_provenance=judge_provenance,
+            evidence=refusal_evidence,
+            declared_evidence=declared_evidence,
+        )
+        return _deliver_verdict(verdict)
+
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     except AssayError as exc:
@@ -2125,6 +2149,87 @@ def _run_reserved(
         # attestation-timeout verdict carries. The one thing it cannot carry
         # is a `CommandResult` -- the command never ran, which is what
         # `NO_MEASUREMENT`/`LANE_TIMEOUT` says.
+        if _has_native_r2(lane):
+            capability = resource_limits.inspect_current_cgroup_observation()
+            if not capability.available:
+                try:
+                    if (
+                        getattr(args, "reuse_from", None) is not None
+                        and getattr(args, "shard", None) is not None
+                    ):
+                        raise LaneConfigError(
+                            "--reuse-from cannot be combined with --shard; "
+                            "selective reuse produces only a complete unsharded "
+                            "campaign"
+                        )
+                    _parse_mutation_shard(getattr(args, "shard", None))
+                    base_declaration = runner.resolve_base_declaration(
+                        lane, getattr(args, "request_base", None)
+                    )
+                    discovered = _discover_plan_jobs(
+                        lane_file,
+                        lane,
+                        adapter=adapter,
+                        base_declaration=base_declaration,
+                        operators=lane.judge.mutation.operators,
+                        allow_dirty=getattr(args, "allow_dirty", False),
+                        resolve_reuse_command=False,
+                        deadline=deadline,
+                    )
+                except AssayError as exc:
+                    # Without visibility, candidate selection is a required
+                    # precondition. A failed discovery is not evidence that
+                    # the lane has no candidates, so its own typed error
+                    # takes precedence and R0 remains unstarted. A native
+                    # mutation-discovery code is R2-claim-only in the wire
+                    # schema; keep its diagnostic in the lane-wide cgroup
+                    # refusal rather than emitting a claim that cannot verify.
+                    if exc.reason_code is ReasonCode.MUTATION_DISCOVERY_FAILED:
+                        exc = AssayError(
+                            "cannot determine whether native R2 candidates are "
+                            "selected because mutation discovery failed while "
+                            "cgroup observation is unavailable; "
+                            f"discovery error: {exc}; cgroup observation error: "
+                            f"{capability.reason}",
+                            outcome=Outcome.NO_MEASUREMENT,
+                            reason_code=ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
+                        )
+                    return _deliver_refusal(exc)
+
+                if discovered.commit != commit:
+                    return _deliver_refusal(
+                        AssayError(
+                            "HEAD changed while Assay checked native R2 candidate "
+                            f"selection for cgroup visibility: resolved {commit}, "
+                            f"then observed {discovered.commit}; rerun against one "
+                            "unchanged commit",
+                            outcome=Outcome.NO_MEASUREMENT,
+                            reason_code=ReasonCode.HEAD_CHANGED,
+                        )
+                    )
+                if discovered.jobs != mutation.UNSUPPORTED:
+                    mutation_config = lane.judge.mutation
+                    if len(discovered.jobs) <= mutation_config.max_mutants:
+                        selected_jobs = _select_plan_jobs(
+                            discovered.jobs, getattr(args, "shard", None)
+                        )
+                        if selected_jobs:
+                            return _deliver_refusal(
+                                AssayError(
+                                    "native R2 candidates are selected, but this "
+                                    "process cannot observe the complete cgroup v2 "
+                                    "ancestor hierarchy required to distinguish "
+                                    "resource-limit failures from mutant kills; run "
+                                    "Assay where the complete hierarchy is visible; "
+                                    "configure the runner so this process can observe "
+                                    "its complete cgroup v2 ancestor hierarchy. "
+                                    f"Observation failed: {capability.reason}",
+                                    outcome=Outcome.NO_MEASUREMENT,
+                                    reason_code=(
+                                        ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE
+                                    ),
+                                )
+                            )
         try:
             verdict = runner.run_lane(
                 lane,
@@ -2227,6 +2332,41 @@ def _plan_candidate_id(job: mutation.MutantJob) -> str:
     return mutation.candidate_id(job)
 
 
+def _has_native_r2(lane: Lane) -> bool:
+    return (
+        "R2" in lane.rigor
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and not lane.judge.mutation.is_ingested
+    )
+
+
+def _parse_mutation_shard(raw: str | None) -> tuple[int, int]:
+    if raw is None:
+        return 0, 1
+    try:
+        raw_index, raw_count = raw.split("/", 1)
+        index = int(raw_index)
+        count = int(raw_count)
+    except ValueError as exc:
+        raise LaneConfigError("--shard must have the form INDEX/COUNT") from exc
+    try:
+        mutation.select_mutation_shard((), index=index, count=count)
+    except ValueError as exc:
+        raise LaneConfigError(f"--shard {raw!r}: {exc}") from exc
+    return index, count
+
+
+def _select_plan_jobs(
+    jobs: Sequence[mutation.MutantJob], shard: str | None
+) -> tuple[mutation.MutantJob, ...]:
+    index, count = _parse_mutation_shard(shard)
+    selected = mutation.select_mutation_shard(
+        [mutation.candidate_id(job) for job in jobs], index=index, count=count
+    )
+    return tuple(jobs[position] for position in selected)
+
+
 PLAN_ESTIMATE_HINT = (
     "assay plan: estimated_serial_seconds and estimated_wall_seconds come from the "
     "declared budget_per_candidate (a 60 s placeholder when it is omitted, auto or "
@@ -2254,11 +2394,13 @@ def _discover_plan_jobs(
     operators: tuple[str, ...],
     allow_dirty: bool,
     resolve_reuse_command: bool,
+    deadline: runner.LaneDeadline | None = None,
 ) -> _PlanDiscovery:
     """Single planner-jobs extraction (C29); P6 reuses it."""
-    deadline = runner.LaneDeadline.start(
-        budget_seconds=lane.budget_seconds, monotonic=time.monotonic
-    )
+    if deadline is None:
+        deadline = runner.LaneDeadline.start(
+            budget_seconds=lane.budget_seconds, monotonic=time.monotonic
+        )
     commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     tree = git.run(
         lane_file.project_root,
@@ -2554,6 +2696,12 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
     worktree_integrity = discovered.worktree_integrity
     reuse_command_plan = discovered.reuse_command_plan
     reuse_command_cwd = discovered.reuse_command_cwd
+    cgroup_capability = (
+        resource_limits.inspect_current_cgroup_observation()
+        if _has_native_r2(lane)
+        else None
+    )
+    resource_observation_applies_to = "none"
 
     if jobs == mutation.UNSUPPORTED:
         mutation_format = lane.judge.mutation.format
@@ -2578,16 +2726,14 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             ),
         }
     else:
-        selected_indices = mutation.select_mutation_shard(
-            [mutation.candidate_id(job) for job in jobs],
-            index=0,
-            count=1,
-        ) if shard_index is None else mutation.select_mutation_shard(
-            [mutation.candidate_id(job) for job in jobs],
-            index=shard_index,
-            count=shard_count,
-        )
-        jobs = tuple(jobs[index] for index in selected_indices)
+        candidate_limit_exceeded = len(jobs) > lane.judge.mutation.max_mutants
+        jobs = _select_plan_jobs(jobs, args.shard)
+        if (
+            _has_native_r2(lane)
+            and not candidate_limit_exceeded
+            and jobs
+        ):
+            resource_observation_applies_to = "selected_candidates"
         by_operator = Counter(job.site.operator for job in jobs)
         by_file = Counter(job.path for job in jobs)
         per_candidate = lane.judge.mutation.budget_per_candidate
@@ -2686,6 +2832,15 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             command_plan=discovered.reuse_command_plan,
             cwd=discovered.reuse_command_cwd,
         )
+    payload["resource_observation"] = {
+        "applies_to": resource_observation_applies_to,
+        "available": (
+            cgroup_capability.available if cgroup_capability is not None else None
+        ),
+        "reason": (
+            cgroup_capability.reason if cgroup_capability is not None else None
+        ),
+    }
     print(json.dumps(payload, indent=2, sort_keys=True), file=out)
     if payload["status"] == "ok" and err is not None:
         print(PLAN_ESTIMATE_HINT, file=err)
@@ -2828,18 +2983,30 @@ def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
     -- nothing below needs its own try/except for that.
     """
     built_in = _built_in_registry()
+    cgroup_capability = (
+        resource_limits.inspect_current_cgroup_observation()
+        if any(_has_native_r2(lane) for lane in lane_file.lanes.values())
+        else None
+    )
     document = {
         "inventory_schema": LANE_INVENTORY_SCHEMA_VERSION,
         "assay_version": __version__,
         "lanes": [
-            _lane_inventory_entry(lane, built_in)
+            _lane_inventory_entry(
+                lane, built_in, cgroup_capability=cgroup_capability
+            )
             for lane in lane_file.lanes.values()
         ],
     }
     print(json.dumps(document, indent=2, sort_keys=True), file=out)
 
 
-def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, Any]:
+def _lane_inventory_entry(
+    lane: Lane,
+    built_in: registry.Registry,
+    *,
+    cgroup_capability: resource_limits.ResourceObservationCapability | None = None,
+) -> dict[str, Any]:
     """One lane's own entry in :func:`_render_lanes_json`'s document."""
     judge = lane.judge
     language = judge.language if judge is not None else None
@@ -2913,6 +3080,23 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
         "snapshot_selection": (
             lane.isolation.snapshot_selection if lane.isolation is not None else None
         ),
+        "resource_observation": {
+            "applies_to": (
+                "conditional_native_r2_candidates"
+                if _has_native_r2(lane)
+                else "none"
+            ),
+            "available": (
+                cgroup_capability.available
+                if _has_native_r2(lane) and cgroup_capability is not None
+                else None
+            ),
+            "reason": (
+                cgroup_capability.reason
+                if _has_native_r2(lane) and cgroup_capability is not None
+                else None
+            ),
+        },
     }
 
 

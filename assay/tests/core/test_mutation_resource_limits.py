@@ -42,6 +42,58 @@ from assay.verdict import MUTATION_BUCKETS, MutantOutcome, Mutation
 from assay.verify import _check_b145_resource_limit_evidence
 
 _REAL_MOUNT_ID_FOR_FD = resource_limits._mount_id_for_fd
+_REAL_INSPECT_CURRENT_CGROUP_OBSERVATION = (
+    resource_limits.inspect_current_cgroup_observation
+)
+
+
+def test_cgroup_capability_probe_uses_a_worker_thread(monkeypatch):
+    main_thread = threading.get_ident()
+    observed_threads: list[int] = []
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(
+        resource_limits,
+        "inspect_current_cgroup_observation",
+        _REAL_INSPECT_CURRENT_CGROUP_OBSERVATION,
+    )
+    monkeypatch.setattr(
+        resource_limits,
+        "read_current_cgroup_counters",
+        lambda: observed_threads.append(threading.get_ident()) or counters,
+    )
+
+    capability = resource_limits.inspect_current_cgroup_observation()
+
+    assert capability.available is True
+    assert capability.reason is None
+    assert len(observed_threads) == 1
+    assert observed_threads[0] != main_thread
+
+
+def test_cgroup_capability_probe_preserves_full_reader_refusal(monkeypatch):
+    monkeypatch.setattr(
+        resource_limits,
+        "inspect_current_cgroup_observation",
+        _REAL_INSPECT_CURRENT_CGROUP_OBSERVATION,
+    )
+    monkeypatch.setattr(
+        resource_limits,
+        "read_current_cgroup_counters",
+        lambda: (_ for _ in ()).throw(
+            ResourceLimitObservationError("the ancestor is hidden")
+        ),
+    )
+
+    capability = resource_limits.inspect_current_cgroup_observation()
+
+    assert capability.available is False
+    assert capability.reason == "the ancestor is hidden"
 
 
 @pytest.fixture(autouse=True)

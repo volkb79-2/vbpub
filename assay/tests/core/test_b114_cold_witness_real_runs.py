@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from conftest import GitRepo
 
-from assay import cli
+from assay import cli, mutation
 
 
-def _seed_campaign(repo: GitRepo, attempt_log: Path) -> Path:
+def _seed_campaign(repo: GitRepo, attempt_log: Path, *, max_mutants: int = 3) -> Path:
     repo.write(
         ".gitignore",
         ".assay/\n.pytest_cache/\n__pycache__/\ncoverage.json\n.coverage\n",
@@ -35,7 +35,9 @@ def _seed_campaign(repo: GitRepo, attempt_log: Path) -> Path:
         "    return ''.join('1' if '>= 0' in inspect.getsource(fn) else '0'\n"
         "                   for fn in (mod.early, mod.survivor, mod.fallback))\n\n"
         "def _record(name):\n"
-        "    mode = 'cold' if os.environ.get('ASSAY_MUTATION_WITNESS_COLD') == '1' else 'full'\n"
+        "    mode = ('cold' if os.environ.get('ASSAY_MUTATION_WITNESS_COLD') == '1'\n"
+        "            else 'replay' if os.environ.get('ASSAY_MUTATION_WITNESS_TARGET')\n"
+        "            else 'full')\n"
         "    with Path(os.environ['ASSAY_TEST_ATTEMPT_LOG']).open('a', encoding='utf-8') as stream:\n"
         "        stream.write(f'{mode}|{name}|{_flags()}\\n')\n\n"
         "def test_early_kill():\n"
@@ -124,7 +126,7 @@ artifact = "coverage.json"
 
 [lanes.package.judge.mutation]
 jobs = 1
-max_mutants = 3
+max_mutants = {max_mutants}
 operators = ["python:compare-swap"]
 budget_per_candidate = "120s"
 liveness = false
@@ -134,33 +136,40 @@ liveness = false
     return repo.path / "assay.toml"
 
 
-def _run_cold_campaign(repo: GitRepo, config: Path, *, tmp_path: Path, attempt_log: Path):
+def _run_cold_campaign(
+    repo: GitRepo,
+    config: Path,
+    *,
+    tmp_path: Path,
+    attempt_log: Path,
+    run_id: str = "package",
+    reuse_from: Path | None = None,
+):
     (repo.path / ".assay").mkdir(exist_ok=True)
-    progress = repo.path / ".assay/progress-package.jsonl"
-    manifest = repo.path / ".assay/r2-manifest-package.txt"
-    verdict = repo.path / ".assay/verdict-package.json"
-    state_dir = repo.path / ".assay/mutation-state"
+    progress = repo.path / f".assay/progress-{run_id}.jsonl"
+    manifest = repo.path / f".assay/r2-manifest-{run_id}.txt"
+    verdict = repo.path / f".assay/verdict-{run_id}.json"
+    state_dir = repo.path / f".assay/mutation-state-{run_id}"
+    argv = [
+        "run",
+        "package",
+        "--file",
+        str(config),
+        "--cold-witness",
+        "--r2-manifest",
+        str(manifest),
+        "--resume",
+        "--progress",
+        str(progress),
+        "--state-dir",
+        str(state_dir),
+        "--verdict-json",
+        str(verdict),
+    ]
+    if reuse_from is not None:
+        argv.extend(["--reuse-from", str(reuse_from)])
     stdout, stderr = io.StringIO(), io.StringIO()
-    code = cli.main(
-        [
-            "run",
-            "package",
-            "--file",
-            str(config),
-            "--cold-witness",
-            "--r2-manifest",
-            str(manifest),
-            "--resume",
-            "--progress",
-            str(progress),
-            "--state-dir",
-            str(state_dir),
-            "--verdict-json",
-            str(verdict),
-        ],
-        stdout=stdout,
-        stderr=stderr,
-    )
+    code = cli.main(argv, stdout=stdout, stderr=stderr)
     return (
         code,
         stdout.getvalue(),
@@ -170,6 +179,175 @@ def _run_cold_campaign(repo: GitRepo, config: Path, *, tmp_path: Path, attempt_l
         verdict,
         state_dir,
     )
+
+
+def test_reuse_cold_witness_rejects_a_replay_receipt_with_collection_error(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A collection error in an unrelated module cannot certify a reused kill.
+
+    The phase file is outside the judged tree and declared as passthrough. It
+    makes the collection error occur only during targeted replay; the
+    subsequent cold attempt collects the full suite cleanly.
+    """
+    attempt_log = tmp_path / "attempts.log"
+    phase_file = tmp_path / "collection-phase.txt"
+    phase_file.write_text("clean", encoding="utf-8")
+    config = _seed_campaign(git_repo, attempt_log, max_mutants=3)
+    config_text = config.read_text(encoding="utf-8")
+    config_text = config_text.replace(
+        '"tests", "-q",\n',
+        '"tests", "-q", "--continue-on-collection-errors",\n',
+    ).replace(
+        '"ASSAY_B114_LIVENESS_ATTACK_LOG",\n',
+        '"ASSAY_B114_LIVENESS_ATTACK_LOG", "ASSAY_B114_COLLECTION_PHASE_FILE",\n',
+    )
+    git_repo.write("assay.toml", config_text)
+    git_repo.write(
+        "tests/test_collection_bomb.py",
+        "import os\n"
+        "from pathlib import Path\n\n"
+        "target = os.environ.get('ASSAY_MUTATION_WITNESS_TARGET')\n"
+        "phase = os.environ.get('ASSAY_B114_COLLECTION_PHASE_FILE')\n"
+        "if target and phase and Path(phase).read_text(encoding='utf-8') == 'replay':\n"
+        "    raise ImportError('B114 replay-only collection error')\n",
+    )
+    campaign_tests = git_repo.path / "tests/test_campaign.py"
+    campaign_source = campaign_tests.read_text(encoding="utf-8")
+    campaign_source_with_all_mutants_killed = campaign_source.replace(
+        "    assert mod.survivor(1) is True\n",
+        "    assert mod.survivor(1) is True\n"
+        "    assert mod.survivor(0) is False\n",
+    )
+    assert campaign_source_with_all_mutants_killed != campaign_source
+    git_repo.write(
+        "tests/test_campaign.py",
+        campaign_source_with_all_mutants_killed,
+    )
+    git_repo.commit_all("add replay-only collection error fixture")
+    monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+    monkeypatch.setenv("ASSAY_B114_COLLECTION_PHASE_FILE", str(phase_file))
+
+    first = _run_cold_campaign(
+        git_repo,
+        config,
+        tmp_path=tmp_path,
+        attempt_log=attempt_log,
+        run_id="initial",
+    )
+    assert first[0] == 0, f"stdout:\n{first[1]}\nstderr:\n{first[2]}"
+    first_verdict = json.loads(first[5].read_text(encoding="utf-8"))
+    first_r2 = next(claim for claim in first_verdict["claims"] if claim["rigor"] == "R2")
+    first_early = next(
+        outcome
+        for outcome in first_r2["mutation"]["killed"]
+        if outcome["lineno"] == 2
+    )
+    assert first_early["execution"]["mode"] == "witness-cold"
+
+    git_repo.write("README.md", "Advance the reuse base without changing the judged suite.\n")
+    git_repo.commit_all("advance commit for cold witness reuse")
+    attempt_log.unlink(missing_ok=True)
+    phase_file.write_text("replay", encoding="utf-8")
+    second = _run_cold_campaign(
+        git_repo,
+        config,
+        tmp_path=tmp_path,
+        attempt_log=attempt_log,
+        run_id="reuse",
+        reuse_from=first[5],
+    )
+    assert second[0] == 0, f"stdout:\n{second[1]}\nstderr:\n{second[2]}"
+    document = json.loads(second[5].read_text(encoding="utf-8"))
+    r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+    second_early = next(
+        outcome
+        for outcome in r2["mutation"]["killed"]
+        if outcome["lineno"] == 2
+    )
+    assert second_early["execution"]["mode"] == "witness-cold"
+    assert all(
+        outcome["execution"]["mode"] != "witness-prefix"
+        for outcome in r2["mutation"]["killed"]
+    )
+    rows = [line.split("|") for line in attempt_log.read_text().splitlines()]
+    replay_early = next(
+        index
+        for index, row in enumerate(rows)
+        if row == ["replay", "early", "100"]
+    )
+    cold_early = next(
+        index
+        for index, row in enumerate(rows)
+        if row == ["cold", "early", "100"]
+    )
+    assert replay_early < cold_early
+    assert cli.main(["verify", str(second[5])], stdout=io.StringIO(), stderr=io.StringIO()) == 0
+
+
+@pytest.mark.parametrize("tamper", ["missing", "collection", "hook"])
+def test_reuse_cold_witness_falls_back_when_replay_facts_do_not_match_baseline(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+):
+    attempt_log = tmp_path / "attempts.log"
+    config = _seed_campaign(git_repo, attempt_log, max_mutants=3)
+    monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+
+    first = _run_cold_campaign(
+        git_repo,
+        config,
+        tmp_path=tmp_path,
+        attempt_log=attempt_log,
+        run_id="initial",
+    )
+    assert first[0] == 1, f"stdout:\n{first[1]}\nstderr:\n{first[2]}"
+
+    git_repo.write("README.md", "Advance the reuse base without changing the judged suite.\n")
+    git_repo.commit_all("advance commit for cold witness reuse")
+    attempt_log.unlink(missing_ok=True)
+
+    original_reader = mutation._read_witness_receipt
+    tampered: list[str] = []
+
+    def tamper_replay_receipt(path: Path):
+        receipt = original_reader(path)
+        if receipt is None or not path.name.endswith("-replay.json"):
+            return receipt
+        tampered.append(path.name)
+        if tamper == "missing":
+            receipt.pop("collection_sha256", None)
+        elif tamper == "collection":
+            receipt["collection_sha256"] = "0" * 64
+        else:
+            receipt["hook_fingerprint_sha256"] = "0" * 64
+        return receipt
+
+    monkeypatch.setattr(mutation, "_read_witness_receipt", tamper_replay_receipt)
+    second = _run_cold_campaign(
+        git_repo,
+        config,
+        tmp_path=tmp_path,
+        attempt_log=attempt_log,
+        run_id="reuse",
+        reuse_from=first[5],
+    )
+    assert tampered
+    assert second[0] == 1, f"stdout:\n{second[1]}\nstderr:\n{second[2]}"
+    document = json.loads(second[5].read_text(encoding="utf-8"))
+    r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+    early = next(
+        outcome for outcome in r2["mutation"]["killed"] if outcome["lineno"] == 2
+    )
+    assert early["execution"]["mode"] == "witness-cold"
+    rows = [line.split("|") for line in attempt_log.read_text().splitlines()]
+    assert [row[:2] for row in rows if row[1] == "early" and row[2] == "100"][:2] == [
+        ["replay", "early"],
+        ["cold", "early"],
+    ]
+    assert cli.main(["verify", str(second[5])], stdout=io.StringIO(), stderr=io.StringIO()) == 0
 
 
 def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
@@ -203,7 +381,7 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
             git_repo, config, tmp_path=tmp_path, attempt_log=attempt_log
         )
     )
-    assert code == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    assert code == 1, f"stdout:\n{stdout}\nstderr:\n{stderr}"
     document = json.loads(verdict_path.read_text(encoding="utf-8"))
     r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
     mutation = r2["mutation"]
@@ -367,7 +545,7 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
     code, stdout, stderr, _, _, verdict_path, _ = _run_cold_campaign(
         repo, config, tmp_path=tmp_path, attempt_log=attempt_log
     )
-    assert code == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    assert code == 1, f"stdout:\n{stdout}\nstderr:\n{stderr}"
     document = json.loads(verdict_path.read_text(encoding="utf-8"))
     mutation = next(
         claim["mutation"] for claim in document["claims"] if claim["rigor"] == "R2"

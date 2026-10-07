@@ -1492,6 +1492,7 @@ def test_failure_receipt_projection_rejects_ambiguous_or_foreign_facts(
         {"target_node_id": None},
         {"stopped_at_target": False},
         {"earlier_failure": True},
+        {"collection_error": True},
     ],
 )
 def test_replay_receipt_requires_one_exact_target_and_no_earlier_failure(overrides):

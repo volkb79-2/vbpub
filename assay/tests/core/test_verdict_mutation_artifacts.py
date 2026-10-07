@@ -97,7 +97,10 @@ RESOLVED = JudgmentResolved(
 #: (P33/V5-4) Derived, not declared: `kill_signal_artifact` is refused at
 #: config load until P34, so every lane this build can run renders
 #: `unattributed`.
-UNATTRIBUTED = {"kill_attribution": "unattributed"}
+UNATTRIBUTED = {
+    "kill_attribution": "unattributed",
+    "cold_witness_kills": False,
+}
 
 #: Replacement hashes, hand-computed rather than read back from the code
 #: under test (A-067). Each is sha256 of the REPLACEMENT BYTES only.
@@ -543,6 +546,7 @@ def _sql_r2_policy(
         max_mutants=200,
         operators=operators,
         kill_attribution=kill_attribution,
+        cold_witness_kills=False,
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=equivalence_artifact,
     )

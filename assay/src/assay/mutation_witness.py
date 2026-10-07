@@ -3,21 +3,17 @@
 from __future__ import annotations
 
 import configparser
-import hashlib
 import json
 import os
-import platform
 import re
 import shlex
-import sys
-import sysconfig
 import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .records import record
-from .r2_command import R2_APPENDED, UnrecognizedCoverageOption, transform_argv
+from .r2_command import UnrecognizedCoverageOption, transform_argv
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .runner import CommandPlan
@@ -639,7 +635,14 @@ def replay_witness_from_receipt(
     *,
     process_exit_status: int | None,
     target_node_id: str,
+    expected_facts: ReceiptFacts | None = None,
 ) -> dict[str, Any] | None:
+    # A replay can still reach the target node after pytest reports a failed
+    # collection for another module (for example with
+    # ``--continue-on-collection-errors``). That receipt cannot certify the
+    # suite prefix used by cold-policy reuse.
+    if receipt is None or not _is_false(receipt, "collection_error"):
+        return None
     witness = witness_from_receipt(receipt, process_exit_status=process_exit_status)
     if witness is None or witness["node_id"] != target_node_id:
         return None
@@ -652,6 +655,8 @@ def replay_witness_from_receipt(
     if receipt.get("stopped_at_target") is not True:
         return None
     if not _is_false(receipt, "earlier_failure"):
+        return None
+    if expected_facts is not None and not _facts_match(receipt, expected_facts):
         return None
     return witness
 

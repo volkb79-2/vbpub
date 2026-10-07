@@ -11517,6 +11517,7 @@ matching plan and deadline.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
 - [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
 - [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
+- [ ] B148's full cgroup visibility preflight refuses selected native candidates before R0 and reports the same candidate-selection facts in `assay plan`.
 - [ ] Docs are synced.
 - [ ] A cold-policy full kill requires declared coverage-baseline evidence and
   a verified failed-call witness; B105 binds that node to the R2 manifest, and
@@ -12096,3 +12097,20 @@ residual section below.
 **Oracles:** the ordinary bootstrap and substantive argv both carry the three settings; P22 object and init argv carry them too; with a repository-local value of `true`, real Git invoked through Assay reports `false` for each key. Removing a fixed setting makes its real-Git assertion fail.
 
 **Related:** B145, CMRU KI-52, and run-gate RG-83/RG-84.
+
+## B148 — native R2 discovers a private cgroup namespace only after R0
+
+**Status: FOLDED INTO B114 (2026-10-07; A-484); acceptance remains open until B114's final registered gate.** Filed on `rg-small`; no files from that worktree are part of this package.
+
+**Observed:** A private cgroup namespace hides the ancestors B145 must observe. Native R2 then fails late with `ERROR/EXEC_FAILED`, after the lane's R0 command has already run. An unchanged retry repeats the same environment failure and spends the R0 cost first.
+
+**Chosen contract:** Before R0, probe with B145's complete cgroup reader. If it is unavailable, discover the same ordered candidate set that `assay plan` uses, apply the same operator and shard selection, and refuse with `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` only when a selected native candidate is within `max_mutants`. Discovery failure also stops before R0; it is never interpreted as an empty candidate set. Lane-wide typed discovery errors retain their pair. A native mutation-discovery error is R2-claim-only in the verdict schema, so its exact diagnostic is carried by the lane-wide cgroup refusal rather than producing an unverifiable R0 claim. Ingested R2, unsupported discovery, an empty selection, and an over-limit inventory do not trigger this refusal. The read-only plan reports selected-candidate applicability and ambient capability; `lanes --json` reports only conditional applicability because it does not discover candidates. Assay does not choose a cgroup namespace on the consumer's behalf.
+
+**Acceptance:**
+- [ ] Selected native candidates with hidden ancestors refuse before R0; visible hierarchy continues to the lane command.
+- [ ] Empty shard, ingested R2, unsupported discovery, and over-limit candidate inventories retain their existing R0/outcome behavior.
+- [ ] Discovery failure while the hierarchy is unavailable stops before R0; lane-wide errors retain their pair, and R2-only discovery errors remain diagnosable without emitting a schema-invalid R0 claim.
+- [ ] `assay plan` uses the same candidate and shard selection; `assay lanes --json` reports conditional ambient capability without claiming an unplanned lane will refuse.
+- [ ] README, DESIGN-GUIDE, and CONSUMERS describe the reason code, report fields, and runner remedy; vocabulary and anchor tests cover them.
+
+**Related:** B114 and B145.

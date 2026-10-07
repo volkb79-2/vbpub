@@ -18,6 +18,7 @@ from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main, plan_jobs
 from assay.config import LaneFile, load_lane_file
 from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from assay.verdict import VERDICT_SCHEMA_VERSION
 
 IDENTITY_KEYS = {
     "path",
@@ -313,14 +314,14 @@ def test_o16a_vii_allow_dirty_reaches_the_integrity_probe(git_repo: GitRepo):
     assert payload["worktree_integrity"]["overridden_dirty_paths"] == ["notes.txt"]
 
 
-def _v14_prior(tmp_path: Path) -> Path:
-    """A schema-14 verdict with one killed candidate, built from r2_pass."""
+def _v15_prior(tmp_path: Path) -> Path:
+    """A current-schema verdict with killed candidates, built from r2_pass."""
     from conftest import TESTS_ROOT
 
     from assay.verify import verify_document
 
     document = json.loads((TESTS_ROOT / "fixtures" / "verdicts" / "r2_pass.json").read_text("utf-8"))
-    document["schema_version"] = 14
+    document["schema_version"] = VERDICT_SCHEMA_VERSION
     body = document["claims"][1]["mutation"]
     ids = []
     for index, item in enumerate(body["killed"]):
@@ -354,7 +355,7 @@ def _v14_prior(tmp_path: Path) -> Path:
         ids.append(identifier)
     body["candidate_ids"] = ids
     assert verify_document(document) == []
-    prior = tmp_path / "prior-v14.json"
+    prior = tmp_path / "prior-v15.json"
     prior.write_text(json.dumps(document), encoding="utf-8")
     return prior
 
@@ -363,7 +364,7 @@ def test_o16a_viii_the_reuse_command_is_resolved_only_when_reuse_is_requested(
     git_repo: GitRepo, tmp_path: Path
 ):
     toml = _seed(git_repo, argv=_SEQUENTIAL_ARGV)
-    payload = _plan_payload(toml, "--reuse-from", str(_v14_prior(tmp_path)))
+    payload = _plan_payload(toml, "--reuse-from", str(_v15_prior(tmp_path)))
     assert payload["reuse_from"]["sequential_pytest_supported"] is True
     plain = _plan_payload(toml)
     assert "reuse_from" not in plain

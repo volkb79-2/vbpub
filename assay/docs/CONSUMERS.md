@@ -247,7 +247,9 @@ the OOM path does not run; `oom_kill` also catches a global OOM kill when the
 candidate's `memory.max` is unlimited. Run Docker lanes with `--cgroupns=host`
 so Assay can see the actual hierarchy root. A private cgroup namespace or a
 cgroup mount rooted below an ancestor cannot prove that a parent limit was
-untouched, so Assay refuses native R2 with `ERROR/EXEC_FAILED`. Every visible
+untouched. With selected native candidates, B148 refuses before R0 with
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; a visibility loss during a
+candidate remains `ERROR/EXEC_FAILED`. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block
@@ -276,6 +278,44 @@ B145 resume records are automatically cold starts under the new judge
 identity. Ingested third-party R2 reports have no local candidate process and
 do not carry these counters. See the
 [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
+
+### Native R2 cgroup visibility preflight (B148)
+
+Native R2 needs the complete cgroup v2 ancestor hierarchy B145 uses to
+separate a test failure from a process or memory limit event. Assay probes that
+same full reader before R0. If native candidates are selected and the
+hierarchy is hidden, it writes a `NO_MEASUREMENT` verdict with reason code
+`CGROUP_OBSERVATION_UNAVAILABLE` and leaves the lane command unstarted. The
+message names the observation failure; configure the runner so the Assay
+process can see the full hierarchy, then run again.
+
+Check the candidate selection without running R0:
+
+```bash
+mkdir -p .assay
+assay plan unit --file assay.toml > .assay/plan-unit.json
+```
+
+The plan's `resource_observation` object reports `applies_to =
+"selected_candidates"` when the bounded selected native candidate set needs
+the counters, plus `available` and `reason` from the full probe. An empty
+selection, ingested R2, unsupported discovery, or candidate-limit refusal
+does not require local candidate counters. `assay lanes --json` reports the
+ambient probe as `applies_to = "conditional_native_r2_candidates"`; this is
+conditional because inventory does not discover a plan. For lanes that do not
+use native R2, `applies_to` is `"none"` and availability is `null`.
+
+If discovery fails while cgroup observation is unavailable, R0 remains
+unstarted. Assay keeps lane-wide discovery errors under their own reason; an
+R2-only `MUTATION_DISCOVERY_FAILED` is included in the cgroup refusal detail
+because the verdict schema does not permit that code on the R0 claim.
+
+Do not retry an unchanged hidden-ancestor run; move it to a runner that exposes
+the full cgroup hierarchy. Assay does not silently select a namespace setting
+or add a lane option that could substitute for the kernel's visibility.
+Candidate-time reader errors still use B145's `ERROR/EXEC_FAILED`, since a
+successful preflight cannot prove that observability stayed stable later. See
+the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does
 not dirty the judged tree:
@@ -2479,6 +2519,11 @@ assay lanes --json --file assay.toml
       "budget": "15m",
       "cwd": null,
       "link_paths": [],
+      "resource_observation": {
+        "applies_to": "none",
+        "available": null,
+        "reason": null
+      },
       "snapshot_selection": "repository"
     }
   ]

@@ -24,6 +24,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   candidate events ordered.
 
 ### Fixed
+- Refuse native R2 before R0 when B145's full cgroup hierarchy is unavailable
+  for a selected candidate set within the mutation cap; expose the same
+  capability and selection applicability in `assay plan` (B148).
 - Require cold-policy full kills to carry declared-command coverage evidence
   and a verified failed-call witness. Accept a declared retry's witness anywhere
   in its verified started prefix, and bind B105 full-kill witnesses to the R2
