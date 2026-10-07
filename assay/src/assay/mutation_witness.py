@@ -9,11 +9,10 @@ import re
 import select
 import shlex
 import threading
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
-
-import tomllib
 
 from . import safeio
 from .errors import AssayError
@@ -77,7 +76,7 @@ class ReceiptCapture:
 
     The child gets only the pipe's write descriptor. The parent drains it in a
     thread while the command runs, so a child cannot block on a full pipe. The
-    retained bytes are capped, and ``read()`` accepts exactly one complete
+    retained bytes are capped, and final decoding accepts exactly one complete
     frame with no trailing data. This keeps post-session pytest hooks from
     replacing a receipt after ``pytest_sessionfinish`` has emitted it.
     """
@@ -89,7 +88,12 @@ class ReceiptCapture:
 
     def __init__(self) -> None:
         self._read_fd, self.write_fd = os.pipe()
+        # The reader thread owns a distinct descriptor. If it does not stop
+        # before finish()'s join timeout, the parent may close and reuse its
+        # descriptor without letting that stale thread read another capture.
+        self._drain_fd = os.dup(self._read_fd)
         os.set_blocking(self._read_fd, False)
+        os.set_blocking(self._drain_fd, False)
         self._stop = threading.Event()
         self._data = bytearray()
         self._overflow = False
@@ -103,16 +107,22 @@ class ReceiptCapture:
         self._thread.start()
 
     def _drain(self) -> None:
-        poller = select.poll()
-        poller.register(self._read_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
-        maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
-        while True:
-            try:
-                ready = poller.poll(int(self._POLL_INTERVAL_SECONDS * 1000))
+        try:
+            poller = select.poll()
+            poller.register(self._drain_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+            maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
+            while not self._stop.is_set():
+                try:
+                    ready = poller.poll(int(self._POLL_INTERVAL_SECONDS * 1000))
+                except OSError:
+                    self._read_failed = True
+                    return
+                if self._stop.is_set():
+                    return
                 for _fd, _events in ready:
-                    while True:
+                    while not self._stop.is_set():
                         try:
-                            chunk = os.read(self._read_fd, self._READ_CHUNK_BYTES)
+                            chunk = os.read(self._drain_fd, self._READ_CHUNK_BYTES)
                         except BlockingIOError:
                             break
                         except InterruptedError:
@@ -126,28 +136,36 @@ class ReceiptCapture:
                             self._data.extend(chunk)
                         else:
                             self._overflow = True
-                if self._stop.is_set():
-                    # Drain bytes already available at process completion, but
-                    # do not wait for descendants that retained an inherited
-                    # descriptor to close it.
-                    while True:
-                        try:
-                            chunk = os.read(self._read_fd, self._READ_CHUNK_BYTES)
-                        except BlockingIOError:
-                            return
-                        except InterruptedError:
-                            continue
-                        except OSError:
-                            self._read_failed = True
-                            return
-                        if not chunk:
-                            return
-                        if len(self._data) + len(chunk) <= maximum:
-                            self._data.extend(chunk)
-                        else:
-                            self._overflow = True
+        except OSError:
+            self._read_failed = True
+        finally:
+            try:
+                os.close(self._drain_fd)
+            except OSError:
+                pass
+
+    def _drain_final_bytes(self) -> None:
+        """Drain after the reader has stopped, requiring all writers closed."""
+        maximum = MAX_INTERNAL_RECEIPT_BYTES + self._HEADER_BYTES
+        while True:
+            try:
+                chunk = os.read(self._read_fd, self._READ_CHUNK_BYTES)
+            except BlockingIOError:
+                # A descendant still owns the write end and could change this
+                # receipt after finish() returns, so fail closed.
+                self._read_failed = True
+                return
+            except InterruptedError:
+                continue
             except OSError:
                 self._read_failed = True
+                return
+            if not chunk:
+                return
+            if len(self._data) + len(chunk) <= maximum:
+                self._data.extend(chunk)
+            else:
+                self._overflow = True
                 return
 
     def finish(self) -> dict[str, Any] | None:
@@ -164,22 +182,26 @@ class ReceiptCapture:
         if self._thread.is_alive():
             self._read_failed = True
         try:
-            os.close(self._read_fd)
-        except OSError:
-            pass
-        if self._overflow or self._read_failed or self._thread.is_alive():
-            return None
-        raw = bytes(self._data)
-        if len(raw) < self._HEADER_BYTES:
-            return None
-        payload_length = int.from_bytes(raw[: self._HEADER_BYTES], "big")
-        if (
-            payload_length <= 0
-            or payload_length > MAX_INTERNAL_RECEIPT_BYTES
-            or len(raw) != self._HEADER_BYTES + payload_length
-        ):
-            return None
-        return _decode_internal_receipt(raw[self._HEADER_BYTES :])
+            if not self._thread.is_alive() and not self._overflow and not self._read_failed:
+                self._drain_final_bytes()
+            if self._overflow or self._read_failed or self._thread.is_alive():
+                return None
+            raw = bytes(self._data)
+            if len(raw) < self._HEADER_BYTES:
+                return None
+            payload_length = int.from_bytes(raw[: self._HEADER_BYTES], "big")
+            if (
+                payload_length <= 0
+                or payload_length > MAX_INTERNAL_RECEIPT_BYTES
+                or len(raw) != self._HEADER_BYTES + payload_length
+            ):
+                return None
+            return _decode_internal_receipt(raw[self._HEADER_BYTES :])
+        finally:
+            try:
+                os.close(self._read_fd)
+            except OSError:
+                pass
 
 
 def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:

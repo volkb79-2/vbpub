@@ -93,3 +93,25 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - No registered gate or B105 campaign has been started by this repair. B087
   coordination remains unavailable through this thread's agent address; hold
   the shared registered gate and serial merge until that slot is coordinated.
+
+## Sol xhigh receipt-drain P2 closure — 2026-10-07
+
+- The exact-tip Sol xhigh review of `6c89ea61` found that a stalled receipt
+  drain thread could outlive `finish()` and read a later capture after the
+  parent reused its read descriptor.
+- Gave the drain thread a duplicated read descriptor, checked the stop event
+  after polling and inside the inner read loop, and moved the final bounded
+  drain to the parent after the reader exits. The final drain requires EOF;
+  `EAGAIN` means a descendant may still write and leaves the receipt
+  untrusted. If the join times out, the parent closes only its descriptor,
+  while the thread retains its distinct descriptor until exit.
+- Added a regression that stalls the old reader during `os.read`, forces the
+  next capture to reuse the parent's descriptor number, and verifies that the
+  second capture still receives its own complete frame. Receipt-focused tests
+  passed (**3 passed**). The affected local suite passed **231 tests, 2
+  deselected in 53.58s**; the deselections are candidate campaigns requiring
+  cgroup ancestors unavailable in the cockpit.
+- Python compilation, Ruff import/error checks, and `git diff --check` passed.
+  No registered gate or B105 campaign has run. Next: commit and request a
+  fresh exact-tip Sol xhigh review, then coordinate the registered gates with
+  B087.

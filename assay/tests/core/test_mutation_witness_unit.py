@@ -7,12 +7,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from _pytest.config import get_config
+
+from assay import liveness, mutation_witness
 from assay.mutation_witness import (
     _PLUGIN_SOURCE,
     COLD_PYTEST_FLAG_OPTIONS,
@@ -39,8 +42,6 @@ from assay.mutation_witness import (
     witness_from_receipt,
 )
 from assay.runner import CommandPlan
-
-from assay import liveness, mutation_witness
 
 
 def _plan(argv: tuple[str, ...], *, env: dict[str, str] | None = None) -> CommandPlan:
@@ -419,6 +420,51 @@ def test_receipt_capture_discards_oversized_frames():
             view = view[os.write(capture.write_fd, view) :]
     finally:
         assert capture.finish() is None
+
+
+def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):
+    read_entered = threading.Event()
+    release_read = threading.Event()
+    capture = ReceiptCapture()
+    stale_reader_fd = capture._drain_fd
+    original_read = os.read
+
+    def delayed_read(fd: int, size: int) -> bytes:
+        if fd == stale_reader_fd and not read_entered.is_set():
+            read_entered.set()
+            assert release_read.wait(2.0)
+        return original_read(fd, size)
+
+    monkeypatch.setattr(os, "read", delayed_read)
+    monkeypatch.setattr(ReceiptCapture, "_JOIN_TIMEOUT_SECONDS", 0.01)
+    later_capture: ReceiptCapture | None = None
+    try:
+        os.write(capture.write_fd, b"stale")
+        assert read_entered.wait(1.0)
+        assert capture.finish() is None
+        assert capture._thread.is_alive()
+
+        later_capture = ReceiptCapture()
+        assert later_capture._read_fd == capture._read_fd
+        assert later_capture._read_fd != stale_reader_fd
+        expected = {"ok": True}
+        payload = json.dumps(expected).encode()
+        os.write(
+            later_capture.write_fd,
+            len(payload).to_bytes(4, "big") + payload,
+        )
+
+        release_read.set()
+        capture._thread.join(1.0)
+        assert not capture._thread.is_alive()
+        assert later_capture.finish() == expected
+    finally:
+        release_read.set()
+        if not capture._finished:
+            capture.finish()
+        capture._thread.join(1.0)
+        if later_capture is not None and not later_capture._finished:
+            later_capture.finish()
 
 
 def test_attempt_plan_sets_cold_and_manifest_only_for_that_attempt(tmp_path):
