@@ -349,7 +349,11 @@ def generate_release_changelog(
     existing_versions = set(_HEADING_RE.findall(existing))
     if heading in existing_versions:
         expected = f"## [{heading}]"
-        start = existing.index(expected)
+        # Anchor to a real heading line: prose or a comment that merely MENTIONS
+        # `## [X]` mid-line (e.g. inside the [Unreleased] notes) is not the section.
+        start = re.search(
+            rf"^{re.escape(expected)} - \d{{4}}-\d{{2}}-\d{{2}}$", existing, re.MULTILINE,
+        ).start()
         next_heading = existing.find("\n## [", start + len(expected))
         section = existing[start:next_heading if next_heading >= 0 else len(existing)]
         if _GENERATED_MARKER not in section:

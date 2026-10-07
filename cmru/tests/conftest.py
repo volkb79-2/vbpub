@@ -40,6 +40,18 @@ def preserved_environ():
 
 
 @pytest.fixture(autouse=True)
+def _declared_gates_cgroup_parent(monkeypatch):
+    """Hermeticity: the real estate config DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no default.
+
+    The assay lane runs pytest with ``env_passthrough = ["PATH"]``, so the host's variable is
+    absent there and every test that loads ``cmru.orchestration.toml`` would exit 2. Provide a
+    fake value for every test (never the host's); tests proving the declared-config refusal
+    ``delenv`` it themselves (``test_the_real_estate_config_refuses_without_the_gates_cgroup_parent``).
+    """
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "test-gates.slice")
+
+
+@pytest.fixture(autouse=True)
 def _restore_process_environment():
     with preserved_environ():
         yield
