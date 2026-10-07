@@ -54,20 +54,54 @@ def _repo_with_changes(tmp_path: Path, text: str) -> Path:
     return tmp_path
 
 
+def _next_major_above_newest_release(text: str) -> str:
+    """The next major above the newest dated heading in ``text``.
+
+    Derived from the tree so the test holds both before release-prep (newest is the last
+    release) and inside the release transaction (newest is the freshly generated section).
+    """
+    newest = re.search(r"^## \[(\d+)\.\d+\.\d+\] - \d{4}-\d{2}-\d{2}$", text, re.MULTILINE)
+    assert newest is not None
+    return f"{int(newest.group(1)) + 1}.0.0"
+
+
+def test_a_generated_section_is_found_despite_prose_mentioning_its_heading(tmp_path):
+    """Regression: `## [X]` quoted mid-line in the [Unreleased] notes is not the section.
+
+    A re-run for the same version must treat the real generated section as generated
+    (idempotent / --resume safe), never report it as hand-authored.
+    """
+    marker = "<!-- cmru: release history -->"
+    text = (
+        "# Changelog\n\n## [Unreleased]\n<!-- generates the `## [6.0.0]` section -->\n\n"
+        f"{marker}\n"
+    )
+    repo = _repo_with_changes(tmp_path, text)
+
+    assert generate_release_changelog(repo, _project(), set_version="6.0.0") is True
+    again = generate_release_changelog(repo, _project(), set_version="6.0.0")
+    assert again is False
+    history = (repo / "cmru" / "CHANGES.md").read_text(encoding="utf-8")
+    assert len(re.findall(r"^## \[6\.0\.0\]", history, re.MULTILINE)) == 1
+
+
 def test_shipped_changes_md_has_no_hand_authored_unreleased_heading():
     text = REAL_CHANGES.read_text(encoding="utf-8")
     assert re.findall(r"^## \[[^\]]+\] - UNRELEASED$", text, re.MULTILINE) == []
 
 
 def test_release_time_changelog_preflight_passes_on_this_trees_changes_md(tmp_path):
-    repo = _repo_with_changes(tmp_path, REAL_CHANGES.read_text(encoding="utf-8"))
+    text = REAL_CHANGES.read_text(encoding="utf-8")
+    version = _next_major_above_newest_release(text)
+    repo = _repo_with_changes(tmp_path, text)
 
-    assert generate_release_changelog(repo, _project(), set_version="6.0.0") is True
+    assert generate_release_changelog(repo, _project(), set_version=version) is True
 
     history = (repo / "cmru" / "CHANGES.md").read_text(encoding="utf-8")
-    assert re.search(r"^## \[6\.0\.0\] - \d{4}-\d{2}-\d{2}$", history, re.MULTILINE)
+    escaped = re.escape(version)
+    assert re.search(rf"^## \[{escaped}\] - \d{{4}}-\d{{2}}-\d{{2}}$", history, re.MULTILINE)
     assert "feat(cmru)!: redesign the command line" in history
-    assert len(re.findall(r"^## \[6\.0\.0\]", history, re.MULTILINE)) == 1
+    assert len(re.findall(rf"^## \[{escaped}\]", history, re.MULTILINE)) == 1
     assert re.findall(r"^## \[[^\]]+\] - UNRELEASED$", history, re.MULTILINE) == []
 
 

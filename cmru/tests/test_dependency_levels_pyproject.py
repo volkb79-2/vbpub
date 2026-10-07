@@ -24,6 +24,21 @@ ORCHESTRATION = REPO_ROOT / "cmru.orchestration.toml"
 DOC = REPO_ROOT / "docs" / "BOOTSTRAP-FROM-ZERO.md"
 
 
+def test_the_real_estate_config_refuses_without_the_gates_cgroup_parent(monkeypatch, capsys):
+    """The declared-config contract (223e0bb05) stays pinned: no default, unset => exit 2.
+
+    The suite-wide fixture supplies a fake value so the other real-config tests are hermetic;
+    this one removes it and proves the shipped config still refuses.
+    """
+    monkeypatch.delenv("CGROUP_PARENT_DEV_GATES", raising=False)
+
+    with pytest.raises(SystemExit) as refused:
+        load_forge_config(ORCHESTRATION)
+
+    assert refused.value.code == 2
+    assert "CGROUP_PARENT_DEV_GATES" in capsys.readouterr().err
+
+
 def _project(root: Path, name: str, *, requires=(), extras=None, dist: str | None = None) -> SimpleNamespace:
     project_root = root / name
     project_root.mkdir(parents=True, exist_ok=True)

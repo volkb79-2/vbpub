@@ -41,5 +41,14 @@ def preserved_environ():
 
 @pytest.fixture(autouse=True)
 def _restore_process_environment():
+    # Hermeticity: the real estate config DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no
+    # default. The assay lane runs pytest with ``env_passthrough = ["PATH"]``, so the host's
+    # variable is absent there and every test that loads ``cmru.orchestration.toml`` would
+    # exit 2. Every test gets a fake value (never the host's); the test proving the
+    # declared-config refusal (``test_the_real_estate_config_refuses_without_the_gates_cgroup_parent``)
+    # ``delenv``s it. It is set HERE, inside the snapshot, and not through a second
+    # ``monkeypatch`` fixture: that would be torn down AFTER this restore and re-introduce
+    # values a test's own ``monkeypatch.delenv`` recorded (a leak the zz probe catches).
     with preserved_environ():
+        os.environ["CGROUP_PARENT_DEV_GATES"] = "test-gates.slice"
         yield
