@@ -11505,8 +11505,10 @@ tester receipt, deadline and manifest files through bounded no-follow
 regular-file descriptors (64 MiB, 16 MiB and 4 KiB for report, plan and
 receipt). Same-module/path hook substitution must be unsupported even when
 the resulting hook fingerprint matches the baseline. Add real active-liveness
-`assay run` candidate cases for both forged and suppressed failures, and assert
-each attack forces a declared-command fallback with the true outcome retained.
+`assay run` candidate cases that install forged-failure and suppressed-failure
+report-hook replacements. Assert each replacement is detected before its hook
+can provide cold-witness proof, forces declared-command fallback, and preserves
+the true killed/survived outcomes.
 Add full-checker reader tests for regular files, FIFOs, symlinks, and over-limit
 inputs. The 3,760-candidate positive fixture must pass `assay verify` with its
 inventory equal to the complete outcome buckets, then pass the checker with a
@@ -11563,6 +11565,7 @@ matching plan and deadline.
 - refusals for absent, stale or mismatched deadline evidence;
 - UTC→monotonic conversion once per process;
 - SIGTERM/SIGINT and expiry terminate every candidate process group;
+- a deadline or termination during post-command snapshot integrity leaves the candidate unclassified, out of state/progress, and eligible for re-execution on resume;
 - gate-script and run-gate integration.
 
 **Acceptance:**

@@ -481,6 +481,8 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
         "    flags = ''.join('1' if '>= 0' in inspect.getsource(fn) else '0'\n"
         "                   for fn in (mod.early, mod.survivor, mod.fallback))\n"
         "    if flags not in ('100', '010'):\n"
+        "        with open(os.environ['ASSAY_B114_LIVENESS_ATTACK_LOG'], 'a', encoding='utf-8') as stream:\n"
+        "            stream.write(f'configured:{flags}:0\\n')\n"
         "        return\n"
         "    hook = config.hook.pytest_runtest_logreport\n"
         "    impl = next(item for item in hook.get_hookimpls()\n"
@@ -490,9 +492,6 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
         "    namespace['_b114_original_liveness_hook'] = original\n"
         "    namespace['_b114_attack_flags'] = flags\n"
         "    source = '''def _b114_forged_liveness_hook(report):\n"
-        "    import json\n"
-        "    import os\n"
-        "    from pathlib import Path\n"
         "    flags = _b114_attack_flags\n"
         "    attack = {'100': 'suppress', '010': 'forge'}.get(flags)\n"
         "    before = report.outcome\n"
@@ -505,12 +504,6 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
         "        elif attack == 'forge' and before == 'passed':\n"
         "            report.outcome = 'failed'\n"
         "            report.longrepr = 'forged liveness failure'\n"
-        "        if report.outcome != before:\n"
-        "            record = {'flags': flags, 'attack': attack, 'nodeid': report.nodeid,\n"
-        "                      'before': before, 'after': report.outcome}\n"
-        "            attack_log = Path(os.environ['ASSAY_B114_LIVENESS_ATTACK_LOG'])\n"
-        "            with attack_log.open('a', encoding='utf-8') as stream:\n"
-        "                stream.write(json.dumps(record, sort_keys=True) + '\\n')\n"
         "    return _b114_original_liveness_hook(report)\n"
         "'''\n"
         "    exec(compile(source, original.__code__.co_filename, 'exec'), namespace)\n"
@@ -518,7 +511,9 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
         "    forged.__module__ = original.__module__\n"
         "    forged.__qualname__ = original.__qualname__\n"
         "    forged.__name__ = original.__name__\n"
-        "    impl.function = forged\n",
+        "    impl.function = forged\n"
+        "    with open(os.environ['ASSAY_B114_LIVENESS_ATTACK_LOG'], 'a', encoding='utf-8') as stream:\n"
+        "        stream.write(f'configured:{flags}:1\\n')\n",
     )
     repo.commit_all("seed B114 active-liveness hook replacement attack")
     monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
@@ -581,26 +576,10 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
     for flags in ("100", "010", "001"):
         assert rows_by_attempt[("full", flags)] == ["early", "survivor", "fallback"]
 
-    attacks = [
-        json.loads(line)
-        for line in attack_log.read_text(encoding="utf-8").splitlines()
-        if line
-    ]
-    assert attacks == [
-        {
-            "flags": "100",
-            "attack": "suppress",
-            "nodeid": "tests/test_campaign.py::test_early_kill",
-            "before": "failed",
-            "after": "passed",
-        },
-        {
-            "flags": "010",
-            "attack": "forge",
-            "nodeid": "tests/test_campaign.py::test_early_kill",
-            "before": "passed",
-            "after": "failed",
-        },
+    assert attack_log.read_text(encoding="utf-8").splitlines() == [
+        "configured:100:1",
+        "configured:010:1",
+        "configured:001:0",
     ]
 
 

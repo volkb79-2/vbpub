@@ -24,6 +24,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   candidate events ordered.
 
 ### Fixed
+- Leave a candidate unclassified and out of resume state when lane or campaign
+  termination interrupts its post-command snapshot integrity check (B117).
 - Refuse native R2 before R0 when B145's full cgroup hierarchy is unavailable
   for a selected candidate set within the mutation cap; expose the same
   capability and selection applicability in `assay plan` (B148).

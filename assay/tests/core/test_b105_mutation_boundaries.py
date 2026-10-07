@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import subprocess
+from concurrent.futures import Future as ConcurrentFuture
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -464,6 +465,65 @@ def test_mutation_worker_propagates_non_timeout_post_execution_git_failure(
     assert caught.value is failure
 
 
+def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrupts_integrity_check(
+    git_repo: GitRepo, tmp_path, monkeypatch
+):
+    job = _job()
+    git_repo.write(job.path, job.original_text)
+    git_repo.commit_all("seed mutation worker")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state"
+    progress: list[dict[str, object]] = []
+    process_calls: list[tuple[str, ...]] = []
+    integrity_checks: list[bool] = []
+    timeout = AssayError(
+        "Assay termination was requested",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def terminate_during_integrity(_job, _snapshot, *, remaining):
+        (_snapshot.root / _job.path).write_text(
+            "post-command snapshot mutation\n", encoding="utf-8"
+        )
+        integrity_checks.append(True)
+        raise timeout
+
+    def run(argv, *, env, cwd, timeout):
+        process_calls.append(tuple(argv))
+        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mutation, "_snapshot_left_dirt", terminate_during_integrity)
+    plan = make_plan(make_lane(argv=("check",)))
+
+    with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
+        result = mutation._execute_mutation_jobs(
+            job_list=(job,),
+            deadline=make_deadline(),
+            jobs=1,
+            prepared=prepared,
+            plan=plan,
+            process_runner=run,
+            clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+            write_progress=progress.append,
+            execute_plan=runner.execute_plan,
+            resolve_run_cwd=lambda root, _plan: root,
+            total=1,
+            candidate_count=1,
+            state_root=state_root,
+            judge="j" * 64,
+        )
+
+    assert isinstance(result, Mutation)
+    assert len(result.budget_exceeded) == 1
+    assert not result.killed and not result.survived and not result.crashed
+    assert integrity_checks == [True]
+    assert process_calls
+    assert not list(state_root.glob("*.json"))
+    assert not any(event.get("event") == "candidate" for event in progress)
+
+
 def test_mutation_worker_keeps_the_first_fatal_error_when_another_worker_fails(
 ):
     errors = [
@@ -475,12 +535,10 @@ def test_mutation_worker_keeps_the_first_fatal_error_when_another_worker_fails(
         for index in range(2)
     ]
 
-    class Future:
+    class Future(ConcurrentFuture):
         def __init__(self, error):
-            self.error = error
-
-        def result(self):
-            raise self.error
+            super().__init__()
+            self.set_exception(error)
 
     class Executor:
         def __enter__(self):

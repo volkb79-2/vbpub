@@ -2451,10 +2451,8 @@ def _snapshot_left_dirt(
 
     *remaining* (P26/A-212) bounds this check's own Git children by the one
     lane deadline; :func:`run_mutation` passes ``deadline.remaining``, so a
-    hung ``status``/``rev-parse`` can never outlive the lane budget. Because
-    this check runs after a mutant is already decided, that call site absorbs
-    exactly ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` (see its own comment) so an
-    already-decisive result is never discarded for a partial sample; a
+    hung ``status``/``rev-parse`` can never outlive the lane budget. The
+    candidate remains unclassified unless this integrity check completes; a
     legacy/library caller may still omit *remaining*.
     """
     if git.dirty_paths(snapshot.root, remaining=remaining):
@@ -3600,35 +3598,16 @@ def _execute_mutation_jobs(
                     candidate_events
                 )
             integrity_started_monotonic = time.monotonic()
-            try:
-                # P26/A-212: the ONE lane deadline IS forwarded here, so this
-                # check's own Git children are bounded by the same budget as
-                # every other lane-owned call. `remaining=None` would leave
-                # them genuinely unbounded -- `git._run_bounded` then waits in
-                # `selector.select(None)`/`proc.wait()` with no timeout -- so a
-                # single hung `status`/`rev-parse` could outlive the entire
-                # lane budget from inside a worker.
-                dirt = _snapshot_left_dirt(
-                    job, snapshot, remaining=deadline.remaining
-                )
-            except AssayError as exc:
-                # ...but this check runs AFTER the mutant's own process already
-                # produced a decisive result, so an expiry observed HERE must
-                # not retroactively reclassify a COMPLETED identity: this
-                # function's own bucket rule is "completed identities remain
-                # evidence, never discarded for a partial sample". Absorbing
-                # exactly that pair keeps the bucket semantics unchanged while
-                # still refusing to start an unbounded child. Every other
-                # AssayError -- a real Git failure, and A-195's own returned
-                # DIRTY_TREE/HEAD_CHANGED below -- still stops the whole claim.
-                # A NOT-YET-STARTED mutant is unaffected: it is budget-stopped
-                # earlier, at `materialize_timeout`/`execute_plan`'s samples.
-                if not (
-                    exc.outcome is Outcome.BUDGET_EXCEEDED
-                    and exc.reason_code is ReasonCode.LANE_TIMEOUT
-                ):
-                    raise
-                dirt = None
+            # P26/A-212: the ONE lane deadline IS forwarded here, so this
+            # check's own Git children are bounded by the same budget as
+            # every other lane-owned call. `remaining=None` would leave them
+            # genuinely unbounded -- `git._run_bounded` then waits in
+            # `selector.select(None)`/`proc.wait()` with no timeout -- so a
+            # single hung `status`/`rev-parse` could outlive the entire lane.
+            # If the deadline or termination request fires before this
+            # integrity proof completes, propagate it: a completed command is
+            # not a classified candidate until its snapshot is proven intact.
+            dirt = _snapshot_left_dirt(job, snapshot, remaining=deadline.remaining)
             integrity_finished_monotonic = time.monotonic()
             equivalence_bytes: bytes | None = None
             kill_signal_text: str | None = None
