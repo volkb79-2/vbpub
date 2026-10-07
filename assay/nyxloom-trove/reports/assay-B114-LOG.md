@@ -134,3 +134,17 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - No registered gate or B105 campaign has run. Next: commit and request a
   fresh exact-tip Sol xhigh review; coordinate gate timing with B087 before
   starting the registered lanes.
+
+## Sol xhigh regression-timeout P3 closure — 2026-10-07
+
+- The review of `c43c97764` found that the fd-reuse regression left its
+  10-millisecond join timeout active for the later capture, so scheduler delay
+  could turn a valid frame into a flaky test failure. It found no other new
+  P0–P3 issue and confirmed both prior P3 fixes.
+- The test now restores the original join timeout before finishing the later
+  capture. Receipt-focused tests passed (**4 passed**); the affected suite
+  passed **232 tests, 2 deselected in 50.45s**. Ruff import/error checks,
+  compileall, and `git diff --check` passed.
+- No registered gate or B105 campaign has run. Commit and request a fresh
+  exact-tip Sol xhigh review; continue holding shared gate execution for B087
+  coordination.

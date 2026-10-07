@@ -465,6 +465,7 @@ def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypat
         return original_read(fd, size)
 
     monkeypatch.setattr(os, "read", delayed_read)
+    normal_join_timeout = ReceiptCapture._JOIN_TIMEOUT_SECONDS
     monkeypatch.setattr(ReceiptCapture, "_JOIN_TIMEOUT_SECONDS", 0.01)
     later_capture: ReceiptCapture | None = None
     try:
@@ -489,6 +490,9 @@ def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypat
         capture._thread.join(1.0)
         assert not capture._thread.is_alive()
         release_later_read.set()
+        monkeypatch.setattr(
+            ReceiptCapture, "_JOIN_TIMEOUT_SECONDS", normal_join_timeout
+        )
         assert later_capture.finish() == expected
     finally:
         release_read.set()
