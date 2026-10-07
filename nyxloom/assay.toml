@@ -162,7 +162,7 @@ env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # [lanes.session-extract.judge.mutation]). The plan estimates 8640 s wall with two
 # mutation jobs at the 120s per-candidate failsafe (a worst-case bound); allow 3h
 # for baseline, scheduling, and verdict overhead.
-budget = "3h"
+budget = "4h"  # cap 200 x 120s / 2 jobs = 12000s worst case (3h20m) plus overhead
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -191,7 +191,9 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 2
-max_mutants = 150
+# Cap 200: 151 candidates were measured at a1bd314d0 (over the old 150 cap) and the
+# round-3 fixes (Intent post-pass, stop-state tail, clarify-declined match) add a few.
+max_mutants = 200
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

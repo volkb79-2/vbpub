@@ -2965,7 +2965,8 @@ transcript. Evidence (controller scratchpad, not in the repo): `resume-exp/evide
 
 (P3 was invalid: the harness blocked a bare `sleep 300`; re-run as P3b.)
 
-- **TaskStop = resumable, 4/4, context intact.** Not a transcript property: the agent's own
+- **TaskStop = resumable, 2/2 real stops (P3b, P4) plus 2 completed-agent resumes (P1, P2), context
+  intact.** (Originally recorded as "4/4"; corrected below: only P3b and P4 were stops.) Not a transcript property: the agent's own
   transcript renders BOTH kinds of stop identically (tool_result "The user doesn't want to proceed
   with this tool use... rejected" + "[Request interrupted by user for tool use]"), so the agent
   believes the user declined. The only distinction is the sidecar `.meta.json`
@@ -2999,8 +3000,11 @@ counts as a user stop. Both in NL-32. An upstream request is NL-34.
 `--tool-calls none|intent|intent-or-call|call` (the old `--show-tool-calls` /
 `--show-tool-call-intent` remain as deprecated aliases with identical output), `--tool-errors
 show|hide` (default show; failed results rendered regardless of the call mode), a whole-session
-ledger with an external-effects bucket (configurable `--effect-pattern`; defaults: git push/merge/
-tag, ssh, mutating curl, snapshot/install verbs, docker rm/stop, systemctl, apt), `--stop-state`
+ledger with an external-effects bucket (configurable `--effect-pattern`; defaults, see
+`DEFAULT_EFFECT_PATTERNS` in `shellcmd.py`: git push/merge/rebase/reset --hard/tag, systemctl
+state changes, apt/dpkg installs and removals, docker rm/stop/kill/run/restart and volume/network/
+image rm, mutating curl, the netcup-style create/delete/attach-iso/power/install-host/boot-order
+verbs, plus scp uploads; ssh itself is NOT an effect), `--stop-state`
 (cause from `.meta.json`, in-flight call, last intent; interrupt records classified as STOP, no
 longer `OPERATOR:`), and `--successor-brief` (header, verbatim original brief, later turns,
 timeline, ledger, stop state, `--order`). Per the operator's decision there is NO redaction

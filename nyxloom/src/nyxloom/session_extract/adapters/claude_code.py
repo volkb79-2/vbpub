@@ -600,6 +600,12 @@ class StreamState:
     # sharing message.id). Cleared by any other block or user record.
     pending_intent: str = ""
     pending_intent_msg: str | None = None
+    # The already-emitted ASSISTANT_TEXT event that carries the pending Intent
+    # line (full text, Intent line included) and the prose before that line.
+    # The line is removed from the prose ONLY when it is actually paired to an
+    # Edit/Write call (round-3 ruling D5): an unpaired Intent line is content.
+    pending_intent_event: NormalizedEvent | None = None
+    pending_intent_rest: str = ""
 
 
 def _remember_askuserquestion(rec: dict[str, Any], state: StreamState) -> None:
@@ -906,12 +912,12 @@ def parse_record(
                     intent_line, rest = toolresult.paired_intent(text)
                     state.pending_intent = intent_line
                     state.pending_intent_msg = msg_id
-                    if intent_line and config.tool_call_mode in ("intent", "intent-or-call"):
-                        # The Intent line is shown on its Edit/Write call
-                        # instead; keep only any prose before it.
-                        text = rest
-                    if text:
-                        events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
+                    text_event = NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text)
+                    events.append(text_event)
+                    # The Intent line is stripped from this event later, and
+                    # only if an Edit/Write call of the same message pairs it.
+                    state.pending_intent_event = text_event if intent_line else None
+                    state.pending_intent_rest = rest
             elif btype == "tool_use":
                 name = str(block.get("name") or "unknown")
                 tool_input = block.get("input")
@@ -937,6 +943,16 @@ def parse_record(
                 call_event = _tool_call_event(name, tool_input, config, seq, uuid, ts, paired)
                 if call_event is not None:
                     events.append(call_event)
+                    if (paired and state.pending_intent_event is not None
+                            and config.tool_call_mode in ("intent", "intent-or-call")
+                            and not toolresult.tool_intent(tool_input)):
+                        # Paired and shown on this call: remove the line from
+                        # the prose (an empty remainder drops the event in
+                        # parse()). Any other case leaves the line in place.
+                        state.pending_intent_event.text = state.pending_intent_rest
+                        if not state.pending_intent_rest:
+                            state.pending_intent_event.meta["paired_intent_emptied"] = "1"
+                state.pending_intent_event = None
             elif btype == "thinking" and config.include_thinking:
                 text = block.get("thinking", "")
                 if text:
@@ -1142,4 +1158,5 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             continue
         events.extend(record_events)
 
-    return events
+    # A text event that held only a paired Intent line (shown on its call).
+    return [e for e in events if not e.meta.get("paired_intent_emptied")]

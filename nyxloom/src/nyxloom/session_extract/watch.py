@@ -63,7 +63,35 @@ def items(ev: NormalizedEvent) -> list[tuple[str, str]]:
         return [("operator", answer.strip()) for answer in answers]
     if ev.text.startswith(_INTERVIEW_PREFIX):
         return [("assistant", ev.text.splitlines()[0][len(_INTERVIEW_PREFIX):])]
+    if is_clarify_declined(ev.text):
+        return [("operator", DECLINED_LABEL)]
     return [("operator", ev.text)]
+
+
+DECLINED_LABEL = "[declined; wants to clarify]"
+_DECLINED_RE = re.compile(r"^\s*the user doesn['’]t want to proceed with this tool use", re.IGNORECASE)
+_CLARIFY_RE = re.compile(r"\bwants? to clarify\b", re.IGNORECASE)
+_NO_ANSWER_RE = re.compile(r"\(no answer provided\)", re.IGNORECASE)
+_ANSWER_ROW_RE = re.compile(r"^\s*answer:", re.IGNORECASE | re.MULTILINE)
+
+
+def is_clarify_declined(text: str) -> bool:
+    """True for the harness's rejected-AskUserQuestion boilerplate in which the
+    operator declined to answer and asked to clarify ("The user doesn't want to
+    proceed with this tool use ... wants to clarify these questions ...
+    Questions asked: ... (No answer provided)"). That text is harness wording,
+    not something the operator typed, so watch shows one compact line instead.
+
+    Matched structurally (the denial opener, the clarify phrase, at least one
+    "(No answer provided)" row, and NO `Answer:` row, since a real answer is
+    operator content and must stay verbatim) rather than by exact string.
+    VERSION-SENSITIVE: this is Claude Code's own wording, checked against
+    2.1.289 only; a harness change degrades to the raw text being shown,
+    never to dropped content (the same approach as `harness.py`)."""
+    return bool(
+        _DECLINED_RE.match(text) and _CLARIFY_RE.search(text)
+        and _NO_ANSWER_RE.search(text) and not _ANSWER_ROW_RE.search(text)
+    )
 
 
 def agent_id(path: Path | str) -> str | None:

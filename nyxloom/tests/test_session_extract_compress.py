@@ -386,6 +386,50 @@ def test_intent_lines_pair_only_within_one_message_and_to_edit_tools(tmp_path, c
     assert "Intent: first" in out3  # `call` mode does not show intent: the text stays as prose
 
 
+def test_unpaired_intent_lines_stay_in_the_prose(tmp_path, capsys):
+    """Round-3 blocker (ruling D5): only an Intent line actually paired to an
+    Edit/Write call is removed from the prose."""
+    recs = [
+        _brief(),
+        # (1) Intent followed by a Bash call (same message): not paired
+        _blocks("a1", _ts(1), [_text("Plan is set.\nIntent: run the destructive migration on staging")], "m1"),
+        _blocks("a2", _ts(1, 1), [_use("t1", "Bash", command="./migrate.sh --apply")], "m1"),
+        _result("r1", "t1", _ts(1, 2), "done"),
+        # (2) Intent as the last text of a message, nothing after it
+        _blocks("a3", _ts(2), [_text("Finished the first part.\nIntent: next I will drop the old table")], "m2"),
+    ]
+    fp = _write(tmp_path, recs)
+    for mode in ("intent", "intent-or-call"):
+        _, out, _ = _run(capsys, fp, "--profile", "all", "--tool-calls", mode)
+        assert "Intent: run the destructive migration on staging" in out, mode
+        assert "Intent: next I will drop the old table" in out, mode
+    # (3) an Edit whose call is omitted renders no intent, so the line stays
+    omitted = [
+        _brief(),
+        _blocks("a1", _ts(1), [_text("Intent: rewrite the config"),
+                               _use("t1", "Edit", file_path="/a", old_string="x", new_string="y")], "m1"),
+    ]
+    fp2 = _write(tmp_path, omitted, "agent-o.jsonl")
+    _, out2, _ = _run(capsys, fp2, "--profile", "all", "--tool-calls", "intent-or-call", "--edit-calls", "omit")
+    assert "Intent: rewrite the config" in out2 and "[tool call: Edit]" not in out2
+    # ...and with the call shown the same line is NOT duplicated: exactly once
+    for extra in ((), ("--edit-calls", "collapse")):
+        _, out3, _ = _run(capsys, fp2, "--profile", "all", "--tool-calls", "intent-or-call", *extra)
+        assert out3.count("rewrite the config") == 1, extra
+        assert "Intent:" not in out3
+
+
+def test_paired_intent_with_prose_before_it_renders_prose_and_intent_once(tmp_path, capsys):
+    recs = [
+        _brief(),
+        _blocks("a1", _ts(1), [_text("Some prose first.\nIntent: change the default"),
+                               _use("t1", "Write", file_path="/e", content="z")], "m1"),
+    ]
+    _, out, _ = _run(capsys, _write(tmp_path, recs), "--profile", "all", "--tool-calls", "intent-or-call")
+    assert "Some prose first." in out and "Intent:" not in out
+    assert out.count("change the default") == 1
+
+
 def test_edit_calls_collapse_and_omit(tmp_path, capsys):
     fp = _session(tmp_path)
     _, out, _ = _run(capsys, fp, "--profile", "all", "--tool-calls", "intent", "--edit-calls", "collapse")

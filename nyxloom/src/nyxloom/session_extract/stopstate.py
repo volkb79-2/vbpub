@@ -131,12 +131,14 @@ def build_stop_state(path: Path) -> StopState:
                                 tail_interrupt = True
                                 tail_kind = "interrupt"
                             else:
+                                tail_interrupt = False
                                 tail_kind = "user_text"
                 elif isinstance(content, str):
                     if toolresult.is_interrupt_text(content):
                         tail_interrupt = True
                         tail_kind = "interrupt"
                     else:
+                        tail_interrupt = False
                         tail_kind = "user_text"
 
     in_flight = None
@@ -148,7 +150,8 @@ def build_stop_state(path: Path) -> StopState:
         if kind is None:
             in_flight = f"{name}: {summary}" if summary else name
             in_flight_outcome = "no result recorded (the transcript ends before the call returned)"
-        elif kind == "denied":
+        elif kind == "denied" and tail_kind in ("user_result", "interrupt"):
+            # Only while nothing (assistant text, operator text) follows it.
             in_flight = f"{name}: {summary}" if summary else name
             in_flight_outcome = "rejected by the harness (stop/interrupt): it did NOT complete"
 

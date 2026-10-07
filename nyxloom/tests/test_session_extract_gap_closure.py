@@ -208,3 +208,53 @@ def test_follow_in_watch_mode_skips_events_that_are_not_prose(tmp_path):
     follower.tick()
     follower.close()
     assert out.getvalue() == ""
+
+
+# --- round 3 (SUCCESSOR-2 review fixes) -------------------------------------------
+
+def test_stamp_mode_gap_boundary_is_inclusive():
+    """A gap of EXACTLY `gap_minutes` is shown (`>=`); one second less is not."""
+    from nyxloom.session_extract.render import _stamp_mode
+
+    prev = "2026-01-01T10:00:00Z"
+    exact = _ev(EventKind.ASSISTANT_TEXT, "x", "2026-01-01T10:05:00Z")
+    short = _ev(EventKind.ASSISTANT_TEXT, "x", "2026-01-01T10:04:59Z")
+    over = _ev(EventKind.ASSISTANT_TEXT, "x", "2026-01-01T10:05:01Z")
+    assert _stamp_mode(exact, prev, "gaps", "pre", 5) == "pre"
+    assert _stamp_mode(short, prev, "gaps", "pre", 5) == "none"
+    assert _stamp_mode(over, prev, "gaps", "pre", 5) == "pre"
+
+
+_DECLINED = (
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a "
+    "file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\n"
+    "The user wants to clarify these questions.\n"
+    "    This means they may have additional information, context or questions for you.\n"
+    "    Start by asking them what they would like to clarify.\n\n"
+    "    Questions asked:\n"
+    '- "How should CLI-EXT-05 reach them?"\n'
+    "  (No answer provided)"
+)
+
+
+def test_watch_clarify_declined_interview_is_one_compact_operator_line():
+    assert watch.items(_ev(EventKind.QA_PAIR, _DECLINED)) == [("operator", watch.DECLINED_LABEL)]
+    assert watch.DECLINED_LABEL == "[declined; wants to clarify]"
+    # whitespace, curly apostrophe and case variations still match structurally
+    variant = _DECLINED.replace("doesn't", "doesn’t").replace("\n    ", "\n\t").upper()
+    assert watch.is_clarify_declined(variant)
+    out = watch.WatchFormatter(timestamps="none").format(_ev(EventKind.QA_PAIR, _DECLINED))
+    assert out == "OPERATOR: [declined; wants to clarify]\n\n"
+
+
+def test_watch_clarify_declined_requires_the_whole_shape():
+    # a real answer in the envelope is operator content and stays verbatim
+    answered = _DECLINED.replace("(No answer provided)", "Answer: use the shim")
+    assert not watch.is_clarify_declined(answered)
+    assert watch.items(_ev(EventKind.QA_PAIR, answered)) == [("operator", answered)]
+    # missing opener / clarify phrase / unanswered row: not matched
+    assert not watch.is_clarify_declined(_DECLINED.replace("doesn't want to proceed", "refused"))
+    assert not watch.is_clarify_declined(_DECLINED.replace("wants to clarify", "has questions"))
+    assert not watch.is_clarify_declined(_DECLINED.replace("(No answer provided)", ""))
+    # ordinary operator text mentioning the phrase mid-text is not the boilerplate
+    assert not watch.is_clarify_declined("I said: The user doesn't want to proceed. wants to clarify (No answer provided)")

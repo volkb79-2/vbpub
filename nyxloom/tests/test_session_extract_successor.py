@@ -423,6 +423,54 @@ def test_stop_state_normal_end(capsys):
     assert state.last_text_ts == "2026-10-06T15:46:42.000Z"
 
 
+def _denied_sleep_records(tail: list[dict]) -> list[dict]:
+    denial = "The user doesn't want to proceed with this tool use. The tool use was rejected."
+    return [
+        _brief(),
+        _call("a1", "t1", "Bash", "2026-01-01T00:00:01Z", command="sleep 100"),
+        _result("u1", "t1", "2026-01-01T00:00:02Z", denial, is_error=True),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:03Z", message={
+            "role": "user", "content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}),
+        *tail,
+    ]
+
+
+def test_stop_state_rejected_call_followed_by_operator_text_and_summary_is_not_in_flight(tmp_path):
+    """A rejection counts as the tail only while nothing follows it."""
+    fp = _write(tmp_path, _denied_sleep_records([
+        _rec(type="user", uuid="u3", timestamp="2026-01-01T00:00:04Z",
+             message={"role": "user", "content": "ok just summarise where you are"}),
+        _rec(type="assistant", uuid="a2", timestamp="2026-01-01T00:00:05Z", message={
+            "role": "assistant", "content": [{"type": "text", "text": "Summary: all done."}]}),
+    ]))
+    state = build_stop_state(fp)
+    assert state.in_flight is None and state.in_flight_outcome is None
+    assert state.cause.startswith("ended normally")
+    assert "interrupted" not in state.cause and "sleep 100" not in state.render()
+
+
+def test_stop_state_operator_text_after_the_interrupt_clears_the_stop_tail(tmp_path):
+    fp = _write(tmp_path, _denied_sleep_records([
+        _rec(type="user", uuid="u3", timestamp="2026-01-01T00:00:04Z",
+             message={"role": "user", "content": [{"type": "text", "text": "carry on please"}]}),
+    ]))
+    state = build_stop_state(fp)
+    assert state.in_flight is None
+    assert "interrupted" not in state.cause and "last record kind: user_text" in state.cause
+    # string-content operator message: same
+    fp2 = _write(tmp_path, _denied_sleep_records([
+        _rec(type="user", uuid="u3", timestamp="2026-01-01T00:00:04Z",
+             message={"role": "user", "content": "carry on please"}),
+    ]), name="agent-s.jsonl")
+    assert "interrupted" not in build_stop_state(fp2).cause
+
+
+def test_stop_state_rejected_call_as_the_tail_still_reads_interrupted(tmp_path):
+    state = build_stop_state(_write(tmp_path, _denied_sleep_records([])))
+    assert state.in_flight == "Bash: $ sleep 100"
+    assert state.cause.startswith("interrupted")
+
+
 def test_stop_state_rejects_json(capsys):
     code, _, err = _run(capsys, P5, "--stop-state", "--json")
     assert code == 2

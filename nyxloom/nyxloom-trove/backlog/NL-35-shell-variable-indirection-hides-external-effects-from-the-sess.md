@@ -21,3 +21,20 @@ filed_date: "2026-10-06"
 **Oracles.** Fixture commands `NC="python3 nc.py"; $NC snapshots delete 1` and `ssh host 'sudo $CMD'` must either resolve to an effect or print the unresolved marker; a controlled wrong implementation that drops unresolved heads silently must fail the test.
 
 **Spec owner.** `session_extract/shellcmd.py` module docstring (KNOWN RESIDUALS) and `session_extract/README.md`.
+
+**Note 2026-10-07 (SUCCESSOR round 3, effect-pattern follow-up, decision D4).** The round-2 reviewer measured the default effect patterns against 84,146 real Bash commands (about 7 of them mutating `docker compose` forms). Ruling D4: do NOT widen the defaults in the SUCCESSOR package; the measured gaps are recorded here for a later pass.
+
+Measured misses (a real effect the defaults do not report):
+- a heredoc piped or redirected to ssh (the remote body is never classified);
+- `sudo -u <user> <cmd>` (the wrapper strip handles bare `sudo` and flags without an argument, not `-u USER`);
+- `timeout -s KILL <cmd>` (a signal-name option argument defeats the wrapper strip);
+- `echo "$(git push)"` (an effect inside a command substitution in a quoted argument);
+- more than 12 leading `VAR=x` assignments before the command (reviewer-measured; the simple `cat <<<x; git push` form IS detected, so the swallow needs the reviewer's exact fixture to reproduce);
+- the herestring swallow (reviewer-measured, see the previous item for the caveat);
+- `docker compose up` / `down` (and the other mutating compose forms) and `docker exec` (the docker patterns cover rm/stop/kill/run/restart only).
+
+Measured false positives (a non-effect reported as one):
+- bare `git tag` (a listing) when no `-l`/`--list` is present, matched as a tag creation;
+- `curl -H "a -d b"` (a `-d` inside a quoted header value is read as `--data`).
+
+Each should get an oracle fixture and a controlled wrong implementation when fixed; widen defaults only after re-measuring on the same corpus.
