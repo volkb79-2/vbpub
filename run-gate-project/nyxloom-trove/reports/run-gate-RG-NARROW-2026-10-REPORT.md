@@ -90,5 +90,38 @@ Everything below is what I ran. Sections 1-5 are the round-1 text; where they di
 ### SPEC
 SPEC.md documents the dual-mount recipe (`R-15`, `R-23`), so I added normative `R-45` (a-d: linked-worktree mount set, credential-free config overlay, plain-checkout refusal/opt-in, exec out of scope) after `R-44`. `R-15`'s wording ("the repo dual-mounted") is NOT edited; `R-45` states that it supersedes it. A reviewer may prefer an in-place edit of `R-15`.
 
-### Still open
+### Still open (round 2)
 Unchanged from section 5, except revision/CHANGES/backlog-id items above. Not tested: ro common dir, an assay lane end to end in a container, Buildkite flow, `config.worktree` overlay content, uid mismatch. The `cmru.orchestration.toml`/`cmru tester-gate` env-var requirement is a usability note (the brief said `cmru tester-gate --cwd . -- ./run-gate.py selftest` "should work"; it needs the env first).
+
+## 7. Round 3 (fresh implementer, review verdict ACCEPT-conditional, 2026-10-07)
+
+Everything below is what I ran. Code+tests+docs commit `1d6d2aa47` on `78377a8b8`.
+
+### B1. Credential-key denylist
+`_DROP_GIT_CONFIG_KEY_RE` now drops whole `sendemail.*` and `imap.*` sections and any key ending (case-insensitive) in `pass|passwd|password|token|secret|apikey|api-key|api_key`; `strip_url_userinfo` treats any `<x>+http(s)` scheme (`git+https`, `svn+http`) as a web scheme. `test_no_credential_form_survives` gained `sendemail.smtppass`/`smtpuser`, `imap.pass`/`host`, `github.oauth-token`, `gh.myApi-Key`, `remote.o.url = git+https://tok@h/x`, `svn+http://u:p@...`. `test_non_credential_config_is_preserved` keeps `user.name`, `core.bare`, `core.passthrough` and the cleaned `git+https` URLs. Finding: git itself rejects `_` in variable names, so `gh.access_token` can never come out of `git config --list` (my fixture line failed to parse); the rule is covered by an entry-level test (`test_underscore_credential_suffixes_are_dropped`) instead. Known over-drop by design of the ruling: any key whose last segment merely ends in `pass` (for example `compass`) is dropped.
+
+### B2. Private-dir whole-tree test
+`test_private_dir_tree_holds_no_credential_in_any_file`, parametrized `system-temp` and `repo-run-gate-fallback` (system temp made non-host-visible, so the dir lands in `<repo>/.run-gate`): full fake-credential config appended to the repo config, then every file under the private dir is read and checked for every needle.
+
+### D1. Prune hazard
+`git_config_overlay_flags` now also (a) overlays each `<common>/modules/*/config` with a sanitized copy, (b) hides every sibling `<common>/worktrees/<name>` (all but the judged worktree's own admin dir; for a plain checkout all of them) under ONE empty 0755 directory mounted `:ro` at both mount paths. More than 256 submodule configs plus sibling dirs is an infrastructure error (`_MAX_GIT_OVERLAYS`). Tests: sibling hiding (own not hidden, one shared empty source, both paths ro), plain checkout, submodule overlay, cap. The REAL container smoke now runs inside the container: the sibling admin dir is empty and not writable, `git worktree prune -v || true`, the sibling admin dir still exists, `git status`/`log` still work, the assay-shape `worktree add`/`remove` still works; and from the host afterwards: `gitdir` of `w1` and `other` exist and `git worktree list` has 3 entries. The smoke ran for real (not skipped) from the devcontainer. The in-container script checks emptiness before running prune, so the plant below fails at that earlier check; I did not separately demonstrate the destructive prune against an unhidden dir in this round (that was the reviewer's observation).
+SPEC `R-45b` (keys, modules) and new `R-45e`, README, CONSUMERS, CHANGES (23.10.0 detailed entry) and the RG-86 backlog entry document it.
+
+### D2 / D3 / S16.4.9
+- D2: `__revision__` stays 55 (unchanged).
+- D3: `.run-gate` stays mounted read-write for assay lanes; a one-line follow-up (consider narrowing to `.run-gate/assay-state`; TMPDIR and the ceiling also point into `.run-gate`, see RG-85) is in the RG-86 backlog entry.
+- The reviewer found no `git worktree add` in `assay/src` (the snapshot uses `clone --no-local`). The S16.4.9 read-write premise should be re-checked in the ciu v8 amendment; the controller files that. The RW decision is NOT changed here.
+
+### Plants (each applied, run against `-k RgNarrow`, killed, reverted)
+| Plant | Killed by |
+|---|---|
+| no sibling hiding (`siblings` filter forced empty) | 5 failed: `test_linked_worktree_mounts_only_worktree_and_git_dir`, `test_sibling_admin_dirs_are_hidden_under_an_empty_ro_mount`, `test_plain_checkout_hides_every_registered_worktree_admin_dir`, `test_too_many_hidden_git_dirs_are_an_infrastructure_error`, the real-container smoke |
+| raw config copy written into the private dir | 2 failed: both `test_private_dir_tree_holds_no_credential_in_any_file` params (system-temp and fallback) |
+| old key regex (no suffix rule, no sendemail/imap) | 5 failed: `test_no_credential_form_survives`, `test_underscore_credential_suffixes_are_dropped`, `test_non_credential_config_is_preserved`, both private-tree params |
+| no `<x>+http(s)` scheme handling | 2 failed: `test_no_credential_form_survives`, `test_non_credential_config_is_preserved` |
+
+`-k RgNarrow` before the plants: 27 passed (real container included); after the reverts the full gate below covers the same code (the committed tree is clean).
+
+### Gate
+`cmru tester-gate --cwd . -- ./run-gate.py selftest` from `run-gate-project/`, tree clean at `1d6d2aa47`, `CMRU_TESTER_*` exported from `cmru.orchestration.toml` as in round 2, foreground under `flock ... nice -n 19 ionice -c 3`, log `narrow-selftest-r3.log` in the scratchpad. Read in a separate step: `1690 passed, 2 skipped, 1 warning`; `diff-coverage OK: 156/156 changed executable lines covered (100.0%); branches 70/70 taken`; `lane 'selftest' verdict PASS; exit_code 0`. A docker-identity profiling WARNING (no docker socket inside tester-unified) is the same coarse-rusage notice as before. The real-container smoke is among the skips inside tester-unified; I ran it from the devcontainer.
+Mutation (R2) not run.
