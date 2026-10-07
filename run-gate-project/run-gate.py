@@ -9107,8 +9107,10 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
     """The ONE mount set for an ephemeral container lane or probe.
 
     linked worktree: the judged worktree (dual, phys + namespace) + the shared
-      git dir (dual, READ-WRITE per ciu v8 SPEC S16.4.9: assay's snapshot runs
-      `git worktree add`) + a sanitized `<common>/config` overlay. The rest of
+      git dir (dual, READ-WRITE per ciu v8 SPEC S16.4.9, so in-lane commits and
+      object writes work; `worktrees/` itself is read-only, so an in-lane
+      `git worktree add` fails; assay's snapshot uses its own object seed and
+      never runs it) + a sanitized `<common>/config` overlay. The rest of
       the main checkout and every other worktree are NOT mounted; the judged
       worktree keeps ALL its own files, git-ignored ones included.
     plain checkout: refused unless opted in (flag/env); then the whole
@@ -9132,9 +9134,9 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
                   file=sys.stderr, flush=True)
         mounts = _dual(worktree, repo)
     else:
-        # ciu v8 SPEC S16.4.9: checkout + git common dir, READ-WRITE (assay's
-        # repository snapshot runs `git worktree add`). The admin dir lives
-        # inside the common dir, so it needs no mount of its own.
+        # ciu v8 SPEC S16.4.9: checkout + git common dir, READ-WRITE (in-lane
+        # commits and object writes). `worktrees/` is then re-mounted
+        # read-only below, with the judged worktree's own admin dir rw on top.
         mounts = [*_dual(worktree, repo), *_dual(plan["common"], repo)]
     # `<common>/worktrees` read-only with its real contents, own admin dir rw
     mounts += git_worktrees_mount_flags(plan, repo)
