@@ -1,4 +1,20 @@
-# B110-P3c — Liveness window lane keys with guardrails, and their v14 disclosure
+# B110-P3c — Liveness window lane keys with guardrails, and their v15 disclosure
+
+## Current contract reconciliation — 2026-10-07
+
+The disclosure target is verdict v15; v14 shipped in Assay 8.0.0. This work is
+part of the single CIU-managed `assay-b114-cold-witness` branch. The old P1
+test-move map is stale after Wave A W1/W4. B113's scanner guards shipped in
+Assay 7.2.0; W6 explicitly dropped its watchdog item after the two named
+real-child tests disappeared. B112's remaining slow-tier decision is pending
+current timing evidence and does not block P3c. See
+`../assay-B114-PLAN-2026-10-07.md`.
+
+The current P3c scope is limited to the two lane settings, their validation,
+runtime use, v15 disclosure, and deterministic tests. Do not restore the old
+P1 test moves, shorten the deleted real-child tests, or add a watchdog for
+them. The test paths and branch protocol in the historical package text below
+are not current-tree instructions.
 
 **Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).** Round 1 applied P3C-1..P3C-8, the wrong anchors, and carver decision C17. Round 2 applied P3C2-1, P3C2-2 and C30:
 - the properties return `float | None`;
@@ -10,8 +26,8 @@
 | Field | Value |
 |---|---|
 | Backlog | **B114** (B110 umbrella) |
-| Branch | `assay-b110-p3c-liveness`, off the current `assay-b110-v14` tip. The integration protocol is in `P3a-v14-schema-verify.md`. |
-| Depends on | **P3a** merged into `assay-b110-v14`: the liveness 5-key model and schema, with defaults emitted.<br>**P2 and P1** already in `assay-b110-v14`. Plan §11.6 cuts `assay-b110-v14` from the integration line after P0, P1 and P2 merge; merge order on the two real-child liveness tests is **P2 → P1 → P3c**. P2 adds the watchdog. P1 moves both tests into `tests/zz_slow/test_cli_run_real_campaigns.py`.<br>If either is missing from `assay-b110-v14`, ask the controller to merge the integration line into it first. Never rebase. |
+| Branch | CIU-managed `assay-b114-cold-witness`; the historical v14 integration-branch protocol is superseded for this serial implementation. |
+| Depends on | P3a's v15 model/schema/verify in this same worktree. B111/P0 and B113/P2 already shipped in Assay 7.2.0; the obsolete P1 test moves are not required. |
 | Contract class | **2c**: bounded integration across config → runner → liveness → verdict against fixed contracts. |
 | Implementer | Sonnet (fresh session) |
 | Decisions | **A-469** (D5), A-470 (the v14 cut), and carver decision **C17** (`REVIEW-2026-09-28-round1.md`) |
@@ -21,7 +37,7 @@
 - `judge.mutation.liveness_cpu_window` (duration);
 - `judge.mutation.liveness_idle_floor` (duration).
 
-They come with guardrails. The effective values are disclosed in v14 `judgment.r2.liveness`.
+They come with guardrails. The effective values are disclosed in v15 `judgment.r2.liveness`.
 
 **Omitting both keys reproduces today's behaviour exactly (30 s / 15 s), and the B105 lanes do not declare them.** A drift pin enforces this (O-B105 below).
 

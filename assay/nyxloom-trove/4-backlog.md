@@ -113,9 +113,9 @@ items:
   - {id: B109, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
   - {id: B110, title: "B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution", type: feature, component: gate, context_estimate: large}
   - {id: B111, title: "B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test outer-events leak, B105 report-checker partial-scope refusal, snapshot guard tests", type: bugfix, component: mutation, context_estimate: medium}
-  - {id: B112, title: "B110 P1: B105 suite scope -- ignore test_python_qualification.py, drop --override-ini, tiered tests/zz_slow layout, dataclass contract test", type: feature, component: gate, context_estimate: medium}
+  - {id: B112, title: "B110 P1 remainder: redecide a slow-test tier from current B105 timing evidence after the Wave A package split", type: research, component: gate, context_estimate: small}
   - {id: B113, title: "B110 P2: loop-progress guards so single-operator mutants cannot spin or block scanners and pipe drains", type: bugfix, component: mutation, context_estimate: small}
-  - {id: B114, title: "B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command, manifests, hook/runtime fingerprints, liveness disclosure, and B105 report binding", type: feature, component: mutation, context_estimate: large}
+  - {id: B114, title: "B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command, manifests, hook/runtime fingerprints, liveness disclosure, and B105 report binding", type: feature, component: mutation, context_estimate: large}
   - {id: B115, title: "B110 P4: bounded work-queue mutation executor with position-ordered progress", type: feature, component: mutation, context_estimate: medium}
   - {id: B116, title: "B110 P5: cheaper fresh per-candidate snapshots (index refresh, incremental child-closure bound)", type: feature, component: isolation, context_estimate: medium}
   - {id: B117, title: "B110 P6: one persisted campaign deadline and candidate process-group termination", type: feature, component: execution, context_estimate: medium}
@@ -132,7 +132,7 @@ items:
   - {id: B128, title: "Wave A: shallow snapshot for both B105 lanes once no test reads repository history", type: refactor, component: isolation, context_estimate: small}
   - {id: B129, title: "Wave A: DRY consolidation of repeated judge rules (shared record decorator + reflective contract test, guard helpers, per-rigor helpers)", type: refactor, component: core, context_estimate: medium}
   - {id: B130, title: "Wave A: component boundary map and import contracts; measure cross-component test coupling for a possible component-scoped R2", type: research, component: architecture, context_estimate: small}
-  - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v14 cold witness", type: feature, component: analysis, context_estimate: small}
+  - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v15 cold witness", type: feature, component: analysis, context_estimate: small}
   - {id: B132, title: "SQL adapter emits mutants for constructs PostgreSQL may refuse (UNIQUE DEFERRABLE / NULLS NOT DISTINCT / INCLUDE / USING INDEX; FK MATCH FULL / DEFERRABLE / SET NULL (col)) -- measure on W5's harness", type: bug, component: sql, context_estimate: small}
   - {id: B133, title: "SQL operator labels misdescribe their effect (NOT IN 'widening' narrows; drop-check also rewrites CREATE POLICY ... WITH CHECK)", type: bug, component: sql, context_estimate: small}
   - {id: B136, title: "assay analyze plan-estimate never checks that the baseline progress file belongs to the planned lane (assay plan JSON carries no lane name), so a foreign lane's baseline yields plausible budget numbers", type: bugfix, component: analysis, context_estimate: small}
@@ -195,23 +195,23 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
-- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — IMPLEMENTED on `assay-b136-b141`; critical, unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-05; contaminated post-03:11Z results must be discarded before retry)
-- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — OPEN, deferred to the next wave (non-release blocker; filed 2026-10-06)
-- B147 — hermetic Git boundary permits detached automatic maintenance — IMPLEMENTED on `assay-b136-b141`; unreleased, grouped with the planned v14/8.0.0 wave (filed 2026-10-06; folded into the B145 wave)
+- B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — SHIPPED in `assay-v8.0.0` (2026-10-07; B145/B147 wave; contaminated post-03:11Z results must be discarded before retry)
+- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — SUMMARY SHIPPED in `assay-v8.0.0`; two residuals remain open: retain the first failure in the verdict and warn when coverage is combined with `--maxfail`/`-x`
+- B147 — hermetic Git boundary permits detached automatic maintenance — SHIPPED in `assay-v8.0.0` (2026-10-07 with B145)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
-- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
+- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B114 removes pytest-cov from the R2 command; the B105 override was already removed by Wave A W4. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
 - B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
 - B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
 - B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
 - B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN, split 2026-09-28 into B111–B121 (plan `reports/assay-B110-PLAN-2026-09-28.md`; analysis `reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; decisions A-465–A-474). B110 keeps the pilot and go/no-go.
 
-**B110 split (filed 2026-09-28; briefs in `reports/b110/`; not yet dispatched)**
+**B110 split (filed 2026-09-28; briefs in `reports/b110/`; active B114 wave resumed 2026-10-07)**
 - B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — OPEN
 - B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — OPEN (after B111's leak fix)
 - B113 — P2 loop-progress guards — OPEN
-- B114 — P3 verdict v14 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (integration branch `assay-b110-v14`; after B120's anchor design)
+- B114 — P3 verdict v15 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (CIU worktree `assay-b114-cold-witness`; P10a is REVISE, using P3a's partial anchor path; P10b remains blocked)
 - B115 — P4 work-queue executor — OPEN
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
 - B117 — P6 persisted campaign deadline + process-group termination — OPEN
@@ -10808,6 +10808,16 @@ qualification evidence.
       estate's `--resume --progress` contract. B106 selective reuse may reduce
       later reruns only when current evidence proves each reused result; an
       uncertain candidate runs fully.
+- [ ] The selected commit's own timestamp drives `SOURCE_DATE_EPOCH` for the
+      B105 wheel. An existing deadline's wheel digest is checked before run
+      closure installation, planning, preflight or R2; a newly initialized
+      deadline is checked again before either lane starts. In report checking,
+      plan-independent D1-D4 refusals precede plan parsing, followed by the
+      selected ordered-plan digest check. Paired malformed-plan/deadline tests
+      pin that refusal order. Deadline and manifest reads are bounded, reject
+      symlinks and non-regular files, and remain bounded if a file grows while
+      being read. A two-clone test builds the same commit under different
+      checkout mtimes and asserts identical wheel digests.
 - [ ] B110's structural runtime work is complete, reviewed, and shown to meet
       this ceiling before B105's final qualification starts. A longer forecast
       requires a changed test/execution plan, not a longer timeout.
@@ -11201,7 +11211,11 @@ because a shard or pipeline can be described.
   to the submitted candidate inventory. Record a versioned transform plus the
   declared, transformed, and effective argv; the resolved snapshot cwd and
   pytest configuration identity; coverage-baseline and mutation-only-baseline
-  collection manifests; and a hook fingerprint for each baseline. Record one
+  collection manifests; and a hook fingerprint for each baseline. The two
+  variants must collect the same ordered node IDs, but hook and runtime proofs
+  are command-local: cold attempts match the no-coverage R2 baseline and a
+  declared fallback matches the coverage baseline. Their hook fingerprints
+  differ because pytest-cov is loaded only by the declared command. Record one
   candidate execution-evidence item for every candidate ID, with the command
   variant, runtime collection result/digest, and hook fingerprint. A
   `witness-cold` kill additionally records the ordered started-test prefix and
@@ -11219,9 +11233,10 @@ because a shard or pipeline can be described.
   ineligible unless separately proven safe. Do not change plugin hooks
   implicitly and call matching node IDs proof of runtime equivalence. The
   intentional pytest-cov removal must be represented in the versioned command
-  transform and hook allowlist; the no-cov baseline must pass, and candidate
-  hooks must match its reviewed fingerprint. Any candidate mismatch falls
-  back to the original declared command or remains incomplete.
+  transform and hook allowlist; the no-cov baseline must pass, and cold
+  candidate hooks must match its reviewed fingerprint. A declared fallback
+  must match the coverage baseline. Any candidate mismatch falls back to the
+  original declared command or remains incomplete.
 - Treat coverage-derived source/test slices as research, not as proof of a
   candidate outcome. A full-suite baseline does not prove an omitted-test
   subset has the same fixtures, globals, or ordering; a subset control still
@@ -11370,8 +11385,8 @@ The acceptance items above are now owned as follows:
 - The terminal draft's scenario "snapshot + collection ≈ 3,760 × 6.5–8 s" is corrected to ≈ 9.4–13.4 s per kill; see the analysis report §6. That phrase appears only in research record R0, not in the text above.
 - **Runtime transform-proof failures** are a whole-lane refusal (A-470 C1), not an R2-only claim.
 
-**B110 acceptance (remaining after the split; revised after the round-1 review):**
-- [ ] B111–B118, B108 phase 1, the v14 integration branch and the P7b gate modes are merged, independently reviewed, and gated. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
+**B110 acceptance (remaining after the split; revised for the current v15 wave):**
+- [ ] B111, B113, B114, B115, B117, B118, B108 phase 1 and the P7b gate modes are merged, independently reviewed, and gated. B112 is complete only if its current-tree timing redecision adopts a tier; B116 is included only if measurement shows the snapshot optimization is needed. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
 - [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest.
   - `reports/assay-B110-PILOT-REPORT.md` records:
     - the cold-kill rate with its interval;
@@ -11389,7 +11404,7 @@ The acceptance items above are now owned as follows:
 
 ## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
 
-**Status: IMPLEMENTED on branch `wave-a-w8-measurement` 2026-09-29 (Wave A package W8, brief `reports/wave-a/W8-measurement.md`; log `reports/wave-a/W8-LOG.md`); awaiting the controller's registered gate, review and merge. Filed 2026-09-28; original brief `reports/b110/P0-measurement-hygiene.md`.**
+**Status: DONE — shipped in `assay-v7.2.0` (Wave A W8, merge `5a695516`; the Wave A controller records `tester-unified` and `self-qualification-preflight` PASS on the merged revision).** W8 evidence is in `reports/wave-a/W8-LOG.md`; filed 2026-09-28, original brief `reports/b110/P0-measurement-hygiene.md`.
 
 **Observed:**
 - `assay plan` multiplies by a hard-coded 60 s (`cli.py:1786-1801`); CONSUMERS calls that an upper bound, but under `auto` it is a lower bound. The B105 plan said 62h40m against a measured ≈585 worker-hours.
@@ -11399,54 +11414,52 @@ The acceptance items above are now owned as follows:
 - Disjoint-inode isolation (O2) is pinned only by an uncollected carve asset.
 
 **Acceptance:**
-- [ ] The brief's oracles pass.
-- [ ] `--baseline-from` estimates carry provenance.
-- [ ] Resource and phase evidence appears in candidate events and state records.
-- [ ] The leak is fixed, with a regression test.
-- [ ] The report checker refuses shard fields and partial inventories.
-- [ ] Guard tests G1–G5 pass on unchanged code.
-- [ ] Docs are synced.
-- [ ] tester-unified PASS.
+- [x] The brief's oracles pass.
+- [x] `--baseline-from` estimates carry provenance.
+- [x] Resource and phase evidence appears in candidate events and state records.
+- [x] The leak is fixed, with a regression test.
+- [x] The report checker refuses shard fields and partial inventories.
+- [x] Guard tests G1–G5 pass on unchanged code.
+- [x] Docs are synced.
+- [x] tester-unified PASS.
 
 ## B112 — B110 P1: B105 suite scope
 
-**Status: OPEN (filed 2026-09-28; A-468; brief `reports/b110/P1-suite-scope.md`; after B111's leak fix).**
+**Status: PARTIAL; the original B105 scope changes were superseded or completed by Wave A W1/W4, shipped in `assay-v7.2.0`.** The only remaining question is whether a slow-test tier still reduces cost on the post-split B105 suite. No current timing artifact supports the original file-move list, so remeasure and re-carve before moving tests. This remainder is not a B114 prerequisite.
 
-**Scope:**
-- `--ignore=tests/test_python_qualification.py` and removal of `--override-ini=pythonpath=src` in both self-qualification lanes, with drift tests;
-- the `tests/zz_slow/` tier (whole-file moves and splits; pinned paths untouched);
-- `tests/test_dataclass_contract.py` with its fixture.
+**Completed by Wave A:** the cross-project qualification file was retired with W1; W4 removed the obsolete B105 `--override-ini` and added the shipped-loader drift pin; the dataclass contract test and fixture exist in the current tree. B105 collects the current `tests/` tree under `src`-relative `pythonpath`.
+
+**Remaining scope:** measure current per-test setup and execution cost, then decide whether a slow tier still helps cold-witness R2. If it does, carve against the current test tree, keep the full declared suite on survival, and bind the resulting order in the collection manifest. Otherwise close B112 as no change needed. Do not apply the pre-Wave-A `zz_slow` move map.
 
 **Acceptance:**
-- [ ] The brief's oracles pass.
-- [ ] `self-qualification-preflight` passes R0/R1 with 100% line and branch coverage on the changed suite.
-- [ ] tester-unified PASS.
+- [ ] A current-tree measurement uses B105 test events to compare setup/execution cost and evaluates whether a tier would improve cold-witness R2.
+- [ ] If the measurement supports a tier, a new carve names only current paths, keeps the full suite on survival, and binds the order through the cold collection manifest. If it does not, record and accept the no-change decision.
+- [ ] User-facing docs explain any adopted tier; otherwise record that no public behavior changed.
 
 ## B113 — B110 P2: loop-progress guards
 
-**Status: OPEN (filed 2026-09-28; A-466; brief `reports/b110/P2-loop-guards.md`).**
+**Status: DONE — shipped in `assay-v7.2.0` (Wave A W6, merge `75ceb9e9`; final Wave A tester-unified and self-qualification-preflight passed on the merged revision).** Implementation evidence is in `reports/wave-a/W6-LOG.md` (READY-FOR-GATE code commit `8bccafdf`).
 
-**Observed:** 14 source-level at-risk mutants, plus one at test level (15 in all), and 4 latent single-operator mutants can make a scanner cursor stall, move backwards, or grow memory without bound, or block a pipe drain:
+**Observed when filed:** 14 source-level at-risk mutants plus four latent single-operator mutants could stall scanner cursors or block a pipe drain. The original list also proposed a test-level watchdog for `liveness.py`; W6 later dropped it under CD3 because its two named real-child tests no longer existed in the current tree:
 - go.py 292/321/323/330;
 - javascript.py 243/245/249;
 - sql_lex.py 193×3/195 (latent 270/273);
 - go_modfile.py 393;
 - git.py 335×2;
 - isolation.py 1388/1392 (latent);
-- liveness.py 1530 at test level.
 
 The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ever pass a native R2.
 
 **Acceptance:**
-- [ ] `errors.require_advance` at the named sites.
-- [ ] A drain rewrite with the exclusions fixture updated.
-- [ ] A watchdog on the real-child liveness tests.
-- [ ] Deterministic oracles for each guarded site.
-- [ ] tester-unified and preflight PASS.
+- [x] `errors.require_advance` at the named sites.
+- [x] A drain rewrite with the exclusions fixture updated.
+- The watchdog item was dropped by W6 decision CD3 after its two named real-child tests disappeared from the current tree; it is not an outstanding requirement.
+- [x] Deterministic oracles for each guarded site.
+- [x] tester-unified and preflight PASS.
 
-## B114 — B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command
+## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
-**Status: OPEN (filed 2026-09-28; A-469/A-470/A-471; briefs `reports/b110/P3a-v14-schema-verify.md`, `P3b-r2-command-cold-witness.md`, `P3c-liveness-lane-keys.md`, `P3d-gate-report-binding.md`; integration branch `assay-b110-v14`).**
+**Status: OPEN (filed 2026-09-28; resumed 2026-10-07; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-cold-witness`; v15 replaces the already shipped v14 target).**
 
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
@@ -11456,16 +11469,59 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - per-candidate `evidence`;
 - `witness-cold` and `ledger` execution modes;
 - `judgment.r2.{cold_witness_kills, r2_command, liveness.cpu_window_s/idle_floor_s, equivalence_ledger}`;
-- judge identity `/3`;
+- judge identity `/8` (current `/7` after B145; mutation-state schema remains 1);
 - lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
-- B105 gate flag and source-bound report binding.
+- B105 gate flag and source-bound report binding;
+- B117/P6 persisted deadline and process-group termination as a direct prerequisite;
+- B115/P4 bounded work queue before P3b edits the executor loop;
+- B111/P0 and B113/P2 are already shipped in Assay 7.2.0; B112's original argv/dataclass/test-scope items were completed or superseded in Wave A, with only a measured slow-tier redecision left open.
+
+The P10a Sol xhigh review returned **REVISE**. B114 uses only P3a's documented
+partial ledger-anchor path. The ledger envelope is reserved, but ledger
+production and audit remain unavailable; the B105 checker refuses non-null
+ledger use until P10a's probes, design review, and pending operator choices are
+complete. Only an unexecuted `equivalent` outcome with `execution.mode =
+"ledger"` may omit B145's per-execution resource counters; executed native
+outcomes retain the exact B145 contract.
+
+The declared fallback is cause-sensitive. A nonzero exit alone does not prove a
+test call failed: a kill requires a trusted receipt proving call-phase failure
+and matching the relevant baseline, with a valid started prefix, consistent
+process/session exits, and no setup, collection, teardown, auxiliary, signal,
+termination, or cgroup resource cause. Uncertain attempts never count as kills.
+Under the cold-witness policy, a full declared-command kill also requires
+coverage-baseline evidence and a failed-call witness; the witness can occur
+anywhere in the verified started prefix when pytest continues after failure.
+B105 independently requires that witness node to appear in its bound R2
+manifest.
+
+The 2026-10-07 Sol xhigh reviews added acceptance corrections: pin actual
+pytest built-in, Assay-generated receipt and active liveness hook callables
+before candidate conftests; pin reviewed external hook code objects against
+in-place mutation; make same-commit B105 wheel bytes deterministic and refuse a
+persisted wheel mismatch before lane work; run D1-D4 before parsing the R2
+plan, then compare the selected ordered-plan digest; and read report, plan,
+tester receipt, deadline and manifest files through bounded no-follow
+regular-file descriptors (64 MiB, 16 MiB and 4 KiB for report, plan and
+receipt). Same-module/path hook substitution must be unsupported even when
+the resulting hook fingerprint matches the baseline. Add real active-liveness
+`assay run` candidate cases for both forged and suppressed failures, and assert
+each attack forces a declared-command fallback with the true outcome retained.
+Add full-checker reader tests for regular files, FIFOs, symlinks, and over-limit
+inputs. The 3,760-candidate positive fixture must pass `assay verify` with its
+inventory equal to the complete outcome buckets, then pass the checker with a
+matching plan and deadline.
 
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
-- [ ] One v14 hard cut, with golden fixtures, W9 frozen and W10 added.
-- [ ] The v13 → v14 cold start.
+- [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
+- [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
+- [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [ ] Docs are synced.
-- [ ] One tester-unified and one preflight PASS after the integration branch merges.
+- [ ] A cold-policy full kill requires declared coverage-baseline evidence and
+  a verified failed-call witness; B105 binds that node to the R2 manifest, and
+  a witness may precede later tests in the started prefix.
+- [ ] One tester-unified and one self-qualification-preflight PASS on the final reviewed merge commit.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
 
@@ -11532,7 +11588,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 ## B119 — B110 P9: distributed/async mutation evidence
 
-**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; depends on B108 phase 1, B112, B114 and B117. Pre-deadline records are refused by default (C8) until the operator answers plan §11.2.)**
+**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; depends on B108 phase 1, B114 and B117. B112's B105 argv scope was completed by Wave A W4; its remaining slow-tier redecision is not a P9 prerequisite. Pre-deadline records are refused by default (C8) until the operator answers plan §11.2.)**
 
 **Scope:**
 - `assay state import`: identity validation, conflict refusal, import receipt;
@@ -11713,7 +11769,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: OPEN, after the v14 wave (Wave A CD17).** The analysis package (A-478) gets an R0+R1 whole-target lane in Wave A. Add a mutation lane over its own suite once cold-witness kills make that cheap. Its ≈317 candidates then have their own evidence instead of none.
+**Status: OPEN, after B114 v15 and the B118 bounded pilot (Wave A CD17).** The analysis package (A-478) has an R0+R1 whole-target lane. Add a mutation lane over its own suite after cold-witness support and bounded pilot tooling are available. Recount candidates from the actual plan; the historical ≈317 estimate is not a current measurement.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 
@@ -11945,7 +12001,7 @@ Fix: add both names in pytest's own precedence order, and check the order agains
 
 ## B145 — fork exhaustion is classified as `killed`: a lane at its process limit cannot produce a valid R2 kill
 
-**Status: IMPLEMENTED on `assay-b136-b141`; registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`, unreleased and grouped with the planned v14 / 8.0.0 wave.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
+**Status: SHIPPED in `assay-v8.0.0` (2026-10-07); registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`.** The earlier gate at `e57b643b` passed the live B145 probes, installed-wheel suite, analysis lane, self-hosting checks, lint, SQL matrix, and expected-crash controls. Its final SQL witness was inconclusive while other gates were active, so that earlier run was not green. Sol xhigh reviews found worker-context gaps in cgroup identity, ancestor overmount binding, capability inspection, and SQL runner ownership. The fixes and regressions are in the branch; the resource-limit file passes 39 tests with 1 skip, the SQL qualification module passes 169 tests, and the docs contract test passes 52. The full identity module is not a cockpit check here: 20 integration cases stopped at the devcontainer's hidden-ancestor preflight (113 passed). Judge identity advances to `/7` so possible false `/6` state is re-executed. B145 prevents host pressure from deciding a mutation result.
 
 **Observed:** `run-gate-project`'s `assay-r2` campaign ran in CMRU tester-gate container `pedantic_antonelli` without init. Git's detached maintenance left enough zombies to reach `pids.current=19,115` of `pids.max=19,117` at 03:11:18Z. Before the limit, 18 candidates had produced 13 kills after a median of 155 tests and 5 survivors. Afterwards, it recorded 192/192 kills, a median of 2 tests, and 91 first-test kills; those post-limit outcomes and the final verdict are invalid. The affected worktree was `.worktrees/run-gate-r2-assay-venv-20261005`. This task did not inspect or delete that other session's `.assay` state. Discard its state and progress before retrying.
 
@@ -12012,9 +12068,14 @@ B145 and B147 merged to `main` as `25c3af6b`. B146 remains deferred;
 release remains grouped with the planned
 v14 / 8.0.0 wave.
 
+**Release reconciliation (2026-10-07):** Assay 8.0.0 shipped B145, B146's
+summary improvement, and B147. Older notes above that describe the release as
+pending are historical. B146's two residual expectations remain open; see its
+residual section below.
+
 ## B146 — R0 failure summary names the failure instead of reporting `NO_MEASUREMENT`
 
-**Status: IMPLEMENTED on `assay-73-B` (2026-10-06): `assay run`'s summary gains an `R0: FAIL (first failing test: NAME)` line, read from the retained output tail by `src/assay/failure_summary.py` (pytest, `go test` text and JSON, vitest, jest). The headline pair is unchanged (a failing suite that dirtied the tree still headlines `NO_MEASUREMENT/DIRTY_TREE`); output with no recognised failure adds no line. SQL R0 and `result_report` JSON files are not read; the name is the first failure inside the bounded tail.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
+**Status: SUMMARY SHIPPED in `assay-v8.0.0` (2026-10-07), implemented on `assay-73-B` (2026-10-06): `assay run`'s summary gains an `R0: FAIL (first failing test: NAME)` line, read from the retained output tail by `src/assay/failure_summary.py` (pytest, `go test` text and JSON, vitest, jest). The headline pair is unchanged (a failing suite that dirtied the tree still headlines `NO_MEASUREMENT/DIRTY_TREE`); output with no recognised failure adds no line. SQL R0 and `result_report` JSON files are not read; the name is the first failure inside the bounded tail.** When R0's test command fails, the summary should distinguish that measured failure from a run that produced no measurement and identify the first failing test.
 
 **Expected:** the concise run summary reports R0 as `FAIL` and names the first failing test when the baseline command has a test failure. Genuine preflight/no-measurement outcomes remain `NO_MEASUREMENT` with their existing reason; they are not rewritten as test failures.
 
@@ -12026,7 +12087,7 @@ v14 / 8.0.0 wave.
 
 ## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
 
-**Status: IMPLEMENTED on `assay-b136-b141`; covered by the registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`, unreleased and grouped with the planned v14 / 8.0.0 wave (2026-10-06).** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
+**Status: SHIPPED in `assay-v8.0.0` (2026-10-07); covered by the registered `tester-unified` PASS at `8ffa26b9`; merged to `main` as `25c3af6b`.** Its focused suite previously passed 161 tests. Assay replaces Git's process environment, so system configuration baked into `tester-unified` does not reach Git. The image's `gc.autoDetach=false` cannot protect Assay's own Git children.
 
 **Observed:** Assay's `_REPLACEMENT_ENV` sets `GIT_CONFIG_NOSYSTEM=1` and points `GIT_CONFIG_GLOBAL` at `/dev/null`. This is intentional for hermetic repository facts, but it also discards the image-level `gc.autoDetach=false` setting. Git 2.55 can start detached maintenance after commands; those children can outlive the bounded Git command, consume the gate's PID capacity, and modify a test repository during a campaign. B145 detects the false mutation result after resource exhaustion; B147 closes Assay's contributor to the same process leak.
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:14",
+  "$id": "urn:assay:schema:verdict:15",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
+      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v15 and the verifier refuses every other version.",
       "type": "integer",
-      "const": 14
+      "const": 15
     },
     "assay_version": {
       "type": "string",
@@ -200,6 +200,9 @@
         },
         "additionalProperties": false
       }
+    },
+    "campaign": {
+      "$ref": "#/$defs/campaign_binding"
     }
   },
   "dependentRequired": {
@@ -563,7 +566,7 @@
       }
     },
     {
-      "description": "B006(a)/A-269 §5.1: snapshot_policy is required whenever declared_rigor contains a HIGHER-RIGOR level -- R1, R2, R3 or (from schema v10, F015/A-433) R4 -- and forbidden otherwise (an R0-only verdict, or one where no lane resolved at all). The model states this as `any(level != \"R0\")`, so this enum tracks the ladder and a new rung must be added in both places.",
+      "description": "B006(a)/A-269 \u00a75.1: snapshot_policy is required whenever declared_rigor contains a HIGHER-RIGOR level -- R1, R2, R3 or (from schema v10, F015/A-433) R4 -- and forbidden otherwise (an R0-only verdict, or one where no lane resolved at all). The model states this as `any(level != \"R0\")`, so this enum tracks the ladder and a new rung must be added in both places.",
       "if": {
         "required": [
           "declared_rigor"
@@ -931,7 +934,7 @@
           }
         },
         {
-          "description": "wave-1 §6/A-257: mirrors the exclusion-capability branch above exactly. 'unavailable' carries zero branch data; the converse is deliberately NOT a rule -- 'reported' with zero arcs is a capable format that truthfully found none on the lines this claim counted.",
+          "description": "wave-1 \u00a76/A-257: mirrors the exclusion-capability branch above exactly. 'unavailable' carries zero branch data; the converse is deliberately NOT a rule -- 'reported' with zero arcs is a capable format that truthfully found none on the lines this claim counted.",
           "if": {
             "required": [
               "branch_capability"
@@ -1052,12 +1055,12 @@
           }
         },
         "branches_covered": {
-          "description": "wave-1 §6/A-257/A-263: branch arcs COVERED across every branch source line this claim's mode counted. Zero when branch_capability is 'unavailable'.",
+          "description": "wave-1 \u00a76/A-257/A-263: branch arcs COVERED across every branch source line this claim's mode counted. Zero when branch_capability is 'unavailable'.",
           "type": "integer",
           "minimum": 0
         },
         "branches_total": {
-          "description": "wave-1 §6: branch arcs this claim's mode counted in total. Zero when branch_capability is 'unavailable'.",
+          "description": "wave-1 \u00a76: branch arcs this claim's mode counted in total. Zero when branch_capability is 'unavailable'.",
           "type": "integer",
           "minimum": 0
         },
@@ -1069,7 +1072,7 @@
           ]
         },
         "missing_branch_lines": {
-          "description": "wave-1 §6: counted, branch-source lines with at least one uncovered arc, keyed by path. A file contributing none is absent, never present with an empty array.",
+          "description": "wave-1 \u00a76: counted, branch-source lines with at least one uncovered arc, keyed by path. A file contributing none is absent, never present with an empty array.",
           "type": "object",
           "additionalProperties": {
             "type": "array",
@@ -1191,10 +1194,34 @@
               "not_attempted_reason"
             ],
             "allOf": [
-              {"not": {"required": ["control_outcome"]}},
-              {"not": {"required": ["transformed_outcome"]}},
-              {"not": {"required": ["expected_reason_code"]}},
-              {"not": {"required": ["observed_reason_code"]}}
+              {
+                "not": {
+                  "required": [
+                    "control_outcome"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "transformed_outcome"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "expected_reason_code"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "observed_reason_code"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1352,37 +1379,124 @@
     "mutation_witness_receipt": {
       "description": "Bounded current-run pytest evidence. No output, traceback or arbitrary plugin data is recorded.",
       "type": "object",
-      "required": ["node_id", "when", "outcome", "session_exit_status", "process_exit_status"],
+      "required": [
+        "node_id",
+        "when",
+        "outcome",
+        "session_exit_status",
+        "process_exit_status"
+      ],
       "properties": {
-        "node_id": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "when": {"type": "string", "const": "call"},
-        "outcome": {"type": "string", "const": "failed"},
-        "session_exit_status": {"type": "integer", "const": 1},
-        "process_exit_status": {"type": "integer", "const": 1}
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "when": {
+          "type": "string",
+          "const": "call"
+        },
+        "outcome": {
+          "type": "string",
+          "const": "failed"
+        },
+        "session_exit_status": {
+          "type": "integer",
+          "const": 1
+        },
+        "process_exit_status": {
+          "type": "integer",
+          "const": 1
+        }
       },
       "additionalProperties": false
     },
     "mutation_execution": {
-      "description": "Per-candidate execution path. A witness-prefix entry must be a current killed outcome bound to its exact prior verdict and node ID.",
+      "description": "Per-candidate execution path: a full command, prior-prefix witness, current cold witness, or reserved unexecuted ledger anchor.",
       "oneOf": [
         {
           "type": "object",
-          "required": ["mode"],
+          "required": [
+            "mode"
+          ],
           "properties": {
-            "mode": {"type": "string", "const": "full"},
-            "witness": {"$ref": "#/$defs/mutation_witness_receipt"}
+            "mode": {
+              "type": "string",
+              "const": "full"
+            },
+            "witness": {
+              "$ref": "#/$defs/mutation_witness_receipt"
+            }
           },
           "additionalProperties": false
         },
         {
           "type": "object",
-          "required": ["mode", "witness", "prior_verdict_sha256", "prior_node_id", "current_node_id"],
+          "required": [
+            "mode",
+            "witness",
+            "prior_verdict_sha256",
+            "prior_node_id",
+            "current_node_id"
+          ],
           "properties": {
-            "mode": {"type": "string", "const": "witness-prefix"},
-            "witness": {"$ref": "#/$defs/mutation_witness_receipt"},
-            "prior_verdict_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "prior_node_id": {"type": "string", "minLength": 1, "maxLength": 4096},
-            "current_node_id": {"type": "string", "minLength": 1, "maxLength": 4096}
+            "mode": {
+              "type": "string",
+              "const": "witness-prefix"
+            },
+            "witness": {
+              "$ref": "#/$defs/mutation_witness_receipt"
+            },
+            "prior_verdict_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "prior_node_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "current_node_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "witness"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "witness-cold"
+            },
+            "witness": {
+              "$ref": "#/$defs/mutation_witness_receipt"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "anchor"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "ledger"
+            },
+            "anchor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
           },
           "additionalProperties": false
         }
@@ -1390,34 +1504,73 @@
     },
     "resource_counter_delta": {
       "type": "object",
-      "required": ["before", "after", "delta"],
+      "required": [
+        "before",
+        "after",
+        "delta"
+      ],
       "properties": {
-        "before": {"type": "integer", "minimum": 0},
-        "after": {"type": "integer", "minimum": 0},
-        "delta": {"type": "integer", "minimum": 0}
+        "before": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
     "resource_limit_evidence": {
       "description": "B145: cgroup v2 process-limit and memory event counter evidence for native R2 candidates. A started full candidate command has samples bracketing its execution. A candidate whose full command did not start after an early stop is budget_exceeded and shares one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive delta during a full command is classified as crashed; a positive delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each delta in a candidate outcome to equal after minus before and any positive delta to be classified as crashed.",
       "type": "object",
-      "required": ["cgroup_version", "pids_events", "memory_events"],
+      "required": [
+        "cgroup_version",
+        "pids_events",
+        "memory_events"
+      ],
       "properties": {
-        "cgroup_version": {"type": "integer", "const": 2},
+        "cgroup_version": {
+          "type": "integer",
+          "const": 2
+        },
         "pids_events": {
           "type": "object",
-          "required": ["max"],
-          "properties": {"max": {"$ref": "#/$defs/resource_counter_delta"}},
+          "required": [
+            "max"
+          ],
+          "properties": {
+            "max": {
+              "$ref": "#/$defs/resource_counter_delta"
+            }
+          },
           "additionalProperties": false
         },
         "memory_events": {
           "type": "object",
-          "required": ["max", "oom", "oom_kill", "oom_group_kill"],
+          "required": [
+            "max",
+            "oom",
+            "oom_kill",
+            "oom_group_kill"
+          ],
           "properties": {
-            "max": {"$ref": "#/$defs/resource_counter_delta"},
-            "oom": {"$ref": "#/$defs/resource_counter_delta"},
-            "oom_kill": {"$ref": "#/$defs/resource_counter_delta"},
-            "oom_group_kill": {"$ref": "#/$defs/resource_counter_delta"}
+            "max": {
+              "$ref": "#/$defs/resource_counter_delta"
+            },
+            "oom": {
+              "$ref": "#/$defs/resource_counter_delta"
+            },
+            "oom_kill": {
+              "$ref": "#/$defs/resource_counter_delta"
+            },
+            "oom_group_kill": {
+              "$ref": "#/$defs/resource_counter_delta"
+            }
           },
           "additionalProperties": false
         }
@@ -1475,23 +1628,79 @@
             "runtime_error"
           ]
         },
-        "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "mutated_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "execution": {"$ref": "#/$defs/mutation_execution"},
-        "resource_limit_evidence": {"$ref": "#/$defs/resource_limit_evidence"}
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mutated_file_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "execution": {
+          "$ref": "#/$defs/mutation_execution"
+        },
+        "resource_limit_evidence": {
+          "$ref": "#/$defs/resource_limit_evidence"
+        },
+        "evidence": {
+          "$ref": "#/$defs/mutant_evidence"
+        }
       },
       "allOf": [
         {
-          "if": {"required": ["candidate_id"]},
-          "then": {"required": ["resource_limit_evidence"]},
-          "else": {"not": {"required": ["resource_limit_evidence"]}}
+          "if": {
+            "required": [
+              "execution"
+            ],
+            "properties": {
+              "execution": {
+                "required": [
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "ledger"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "resource_limit_evidence"
+              ]
+            }
+          },
+          "else": {
+            "if": {
+              "required": [
+                "candidate_id"
+              ]
+            },
+            "then": {
+              "required": [
+                "resource_limit_evidence"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "resource_limit_evidence"
+                ]
+              }
+            }
+          }
         }
       ],
       "additionalProperties": false
     },
     "mutation": {
-          "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FIVE identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. B070/B079 (schema v12): candidate_count may now EXCEED total by the number of candidates that were observed and never attempted -- a FIFTH disposition beside the five buckets -- and the residual candidate_count - total must be accounted for one level up, by judgment.r2.discarded's own length under producer = 'ingested' and by nothing at all under 'native', where the only legal residual is the limit sentinel's. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants and judgment.r2.discarded, is cross-object and lives in the model and the raw verifier.",
+      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FIVE identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. B070/B079 (schema v12): candidate_count may now EXCEED total by the number of candidates that were observed and never attempted -- a FIFTH disposition beside the five buckets -- and the residual candidate_count - total must be accounted for one level up, by judgment.r2.discarded's own length under producer = 'ingested' and by nothing at all under 'native', where the only legal residual is the limit sentinel's. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants and judgment.r2.discarded, is cross-object and lives in the model and the raw verifier.",
       "type": "object",
       "required": [
         "candidate_count",
@@ -1517,8 +1726,16 @@
           "type": "array",
           "items": {
             "allOf": [
-              {"$ref": "#/$defs/mutant_outcome"},
-              {"not": {"required": ["discard_reason"]}}
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "discard_reason"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1529,8 +1746,20 @@
               {
                 "$ref": "#/$defs/mutant_outcome"
               },
-              {"not": {"required": ["kill_signal"]}},
-              {"not": {"required": ["discard_reason"]}}
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "discard_reason"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1541,8 +1770,20 @@
               {
                 "$ref": "#/$defs/mutant_outcome"
               },
-              {"not": {"required": ["kill_signal"]}},
-              {"not": {"required": ["discard_reason"]}}
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "discard_reason"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1553,8 +1794,20 @@
               {
                 "$ref": "#/$defs/mutant_outcome"
               },
-              {"not": {"required": ["kill_signal"]}},
-              {"not": {"required": ["discard_reason"]}}
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "discard_reason"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1566,8 +1819,20 @@
               {
                 "$ref": "#/$defs/mutant_outcome"
               },
-              {"not": {"required": ["kill_signal"]}},
-              {"not": {"required": ["discard_reason"]}}
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "discard_reason"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1579,8 +1844,20 @@
               {
                 "$ref": "#/$defs/mutant_outcome"
               },
-              {"not": {"required": ["kill_signal"]}},
-              {"not": {"required": ["discard_reason"]}}
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "discard_reason"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -1592,7 +1869,7 @@
       "additionalProperties": false
     },
     "judge_provenance": {
-      "description": "B018/A-327: WHICH build of assay emitted this verdict. assay_version names a version string and any process can print one; this records the build artifact the running process was installed FROM, and its digest, so a consumer that resolved and verified a judge download (CIU V8 proposal §11.3) can bind this evidence to that exact binary. OPTIONAL, and absent rather than partial: an invocation with no identifiable build artifact -- a source checkout, an editable install -- records nothing here and says so on its diagnostics stream, because inventing a digest for `src/` is precisely the laundering this object exists to prevent. `assay run --require-judge-provenance` turns that absence into a refusal for a consumer that needs the binding.",
+      "description": "B018/A-327: WHICH build of assay emitted this verdict. assay_version names a version string and any process can print one; this records the build artifact the running process was installed FROM, and its digest, so a consumer that resolved and verified a judge download (CIU V8 proposal \u00a711.3) can bind this evidence to that exact binary. OPTIONAL, and absent rather than partial: an invocation with no identifiable build artifact -- a source checkout, an editable install -- records nothing here and says so on its diagnostics stream, because inventing a digest for `src/` is precisely the laundering this object exists to prevent. `assay run --require-judge-provenance` turns that absence into a refusal for a consumer that needs the binding.",
       "type": "object",
       "required": [
         "name",
@@ -1634,7 +1911,7 @@
       "additionalProperties": false
     },
     "judgment_r1": {
-      "description": "The effective R1 policy (P16, sol finding 2; mode/targets/require_branch added wave-1 §6/A-260): what decided the R1 claim's PASS/FAIL, so an independent consumer can re-derive it from coverage alone. mode is REQUIRED here even though it is optional in the lane file -- the lane file records what a human declared, this records what actually judged.",
+      "description": "The effective R1 policy (P16, sol finding 2; mode/targets/require_branch added wave-1 \u00a76/A-260): what decided the R1 claim's PASS/FAIL, so an independent consumer can re-derive it from coverage alone. mode is REQUIRED here even though it is optional in the lane file -- the lane file records what a human declared, this records what actually judged.",
       "type": "object",
       "required": [
         "coverage_format",
@@ -1673,7 +1950,7 @@
           ]
         },
         "targets": {
-          "description": "wave-1 §6: required, non-empty, unique iff mode == 'whole_target'; forbidden otherwise. Sort order is cross-object/array-order and is checked independently by the model and the raw verifier, not by this schema (draft 2020-12 cannot express it).",
+          "description": "wave-1 \u00a76: required, non-empty, unique iff mode == 'whole_target'; forbidden otherwise. Sort order is cross-object/array-order and is checked independently by the model and the raw verifier, not by this schema (draft 2020-12 cannot express it).",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -1840,7 +2117,13 @@
           "description": "B091/RW-36: whether the os._exit/hung-detection mechanism ran for this lane's R2 candidates, and why not when it did not (a non-pytest argv, a non-python language, or an explicit judge.mutation.liveness = false). Optional under producer = 'native'; FORBIDDEN under 'ingested' on budget_per_candidate_derived_s's own footing -- liveness is a native-execution mechanism (RW-33: applied ONLY to native R2 lanes).",
           "type": "object",
           "additionalProperties": false,
-          "required": ["active", "reason", "plugin"],
+          "required": [
+            "active",
+            "reason",
+            "plugin",
+            "cpu_window_s",
+            "idle_floor_s"
+          ],
           "properties": {
             "active": {
               "type": "boolean"
@@ -1850,8 +2133,33 @@
               "minLength": 1
             },
             "plugin": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "minLength": 1
+            },
+            "cpu_window_s": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "idle_floor_s": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           }
         },
@@ -1894,6 +2202,29 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 10000
+        },
+        "cold_witness_kills": {
+          "type": "boolean"
+        },
+        "r2_command": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/r2_command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "equivalence_ledger": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/equivalence_ledger"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -1939,12 +2270,23 @@
           "description": "B012: shard position and cardinality are an all-or-nothing pair.",
           "if": {
             "anyOf": [
-              {"required": ["shard_index"]},
-              {"required": ["shard_count"]}
+              {
+                "required": [
+                  "shard_index"
+                ]
+              },
+              {
+                "required": [
+                  "shard_count"
+                ]
+              }
             ]
           },
           "then": {
-            "required": ["shard_index", "shard_count"]
+            "required": [
+              "shard_index",
+              "shard_count"
+            ]
           }
         },
         {
@@ -1988,14 +2330,47 @@
             "required": [
               "jobs",
               "max_mutants",
-              "operators"
+              "operators",
+              "cold_witness_kills",
+              "r2_command",
+              "equivalence_ledger"
             ],
             "allOf": [
-              {"not": {"required": ["producer_tool"]}},
-              {"not": {"required": ["survived_uncovered"]}},
-              {"not": {"required": ["discarded"]}},
-              {"not": {"required": ["lines_without_candidates"]}},
-              {"not": {"required": ["fail_under"]}}
+              {
+                "not": {
+                  "required": [
+                    "producer_tool"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "survived_uncovered"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "discarded"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "lines_without_candidates"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "fail_under"
+                  ]
+                }
+              }
             ]
           },
           "else": {
@@ -2007,13 +2382,119 @@
               "fail_under"
             ],
             "allOf": [
-              {"not": {"required": ["jobs"]}},
-              {"not": {"required": ["max_mutants"]}},
-              {"not": {"required": ["operators"]}},
-              {"not": {"required": ["equivalence_artifact"]}},
-              {"not": {"required": ["budget_per_candidate_derived_s"]}},
-              {"not": {"required": ["liveness"]}}
+              {
+                "not": {
+                  "required": [
+                    "jobs"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "max_mutants"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "operators"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "equivalence_artifact"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "budget_per_candidate_derived_s"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "liveness"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "cold_witness_kills"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "r2_command"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "equivalence_ledger"
+                  ]
+                }
+              }
             ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "liveness"
+            ],
+            "properties": {
+              "liveness": {
+                "required": [
+                  "active"
+                ],
+                "properties": {
+                  "active": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "liveness": {
+                "properties": {
+                  "cpu_window_s": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "idle_floor_s": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "liveness": {
+                "properties": {
+                  "cpu_window_s": {
+                    "type": "null"
+                  },
+                  "idle_floor_s": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
           }
         }
       ]
@@ -2495,8 +2976,20 @@
           },
           "then": {
             "allOf": [
-              {"not": {"required": ["detail"]}},
-              {"not": {"required": ["detail_dropped_bytes"]}}
+              {
+                "not": {
+                  "required": [
+                    "detail"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "detail_dropped_bytes"
+                  ]
+                }
+              }
             ]
           }
         },
@@ -2681,7 +3174,7 @@
           }
         },
         {
-          "description": "wave-1 §4/§5, A-259/A-260: BRANCH_UNAVAILABLE and TARGET_NOT_MEASURED are read off R1's own guard sequence and nowhere else -- mirrors the MUTATION_UNSUPPORTED/MUTATION_DISCOVERY_FAILED binding immediately above, one tier over. Both are already payload-free by the NO_MEASUREMENT branch elsewhere in this allOf; this binds the RIGOR.",
+          "description": "wave-1 \u00a74/\u00a75, A-259/A-260: BRANCH_UNAVAILABLE and TARGET_NOT_MEASURED are read off R1's own guard sequence and nowhere else -- mirrors the MUTATION_UNSUPPORTED/MUTATION_DISCOVERY_FAILED binding immediately above, one tier over. Both are already payload-free by the NO_MEASUREMENT branch elsewhere in this allOf; this binds the RIGOR.",
           "if": {
             "required": [
               "reason_code"
@@ -3181,7 +3674,7 @@
       "additionalProperties": false
     },
     "repo_tree_path": {
-      "description": "B006(a)/A-269 §5.3: a repository-top-relative Git tree pathname -- at least one component, none of them empty/'.'/'..'/'.git', no backslash, no NUL, at most 4096 (Unicode code point -- the UTF-8 BYTE ceiling is cross-object and checked independently by the model and the raw verifier, since maxLength counts code points).",
+      "description": "B006(a)/A-269 \u00a75.3: a repository-top-relative Git tree pathname -- at least one component, none of them empty/'.'/'..'/'.git', no backslash, no NUL, at most 4096 (Unicode code point -- the UTF-8 BYTE ceiling is cross-object and checked independently by the model and the raw verifier, since maxLength counts code points).",
       "type": "string",
       "minLength": 1,
       "maxLength": 4096,
@@ -3284,6 +3777,285 @@
           }
         }
       ]
+    },
+    "r2_coverage_baseline": {
+      "type": "object",
+      "required": [
+        "collection_count",
+        "collection_sha256",
+        "duplicates",
+        "hook_fingerprint_sha256",
+        "hook_count",
+        "runtime_fingerprint_sha256"
+      ],
+      "properties": {
+        "collection_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "collection_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "duplicates": {
+          "type": "integer",
+          "const": 0
+        },
+        "hook_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hook_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtime_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "r2_mutation_baseline": {
+      "type": "object",
+      "required": [
+        "collection_count",
+        "collection_sha256",
+        "duplicates",
+        "hook_fingerprint_sha256",
+        "hook_count",
+        "runtime_fingerprint_sha256",
+        "wall_s"
+      ],
+      "properties": {
+        "collection_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "collection_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "duplicates": {
+          "type": "integer",
+          "const": 0
+        },
+        "hook_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hook_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtime_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "wall_s": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "r2_command": {
+      "type": "object",
+      "required": [
+        "transform",
+        "argv_declared",
+        "argv_transformed",
+        "appended",
+        "cwd",
+        "config_sha256",
+        "coverage_baseline",
+        "r2_baseline"
+      ],
+      "properties": {
+        "transform": {
+          "type": "string",
+          "const": "assay-r2-pytest-nocov/1"
+        },
+        "argv_declared": {
+          "$ref": "#/$defs/argv"
+        },
+        "argv_transformed": {
+          "$ref": "#/$defs/argv"
+        },
+        "appended": {
+          "type": "array",
+          "const": [
+            "-p",
+            "no:pytest_cov"
+          ]
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config_sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coverage_baseline": {
+          "$ref": "#/$defs/r2_coverage_baseline"
+        },
+        "r2_baseline": {
+          "$ref": "#/$defs/r2_mutation_baseline"
+        }
+      },
+      "additionalProperties": false
+    },
+    "equivalence_ledger": {
+      "type": "object",
+      "required": [
+        "path",
+        "sha256",
+        "entry_count",
+        "audit_sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/wire_path"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "entry_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "audit_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mutant_evidence": {
+      "type": "object",
+      "required": [
+        "command",
+        "collection_count",
+        "collection_sha256",
+        "hook_fingerprint_sha256",
+        "started_count",
+        "failed_call_index"
+      ],
+      "properties": {
+        "command": {
+          "enum": [
+            "r2",
+            "declared"
+          ]
+        },
+        "collection_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "collection_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hook_fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "started_count": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failed_call_index": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "started_count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "started_count"
+            ]
+          },
+          "then": {
+            "required": [
+              "failed_call_index"
+            ],
+            "properties": {
+              "command": {
+                "const": "r2"
+              },
+              "failed_call_index": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "failed_call_index": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "campaign_binding": {
+      "type": "object",
+      "required": [
+        "name",
+        "deadline_sha256",
+        "created_at_utc",
+        "expires_at_utc"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "deadline_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at_utc": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "expires_at_utc": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

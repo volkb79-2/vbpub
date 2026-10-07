@@ -713,6 +713,21 @@
         "weakref_slot": false
       }
     },
+    "assay.mutation_witness.ReceiptFacts": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.mutation_witness.WitnessPluginInjection": {
       "fields": {},
       "params": {
@@ -864,7 +879,11 @@
       }
     },
     "assay.runner.LaneDeadline": {
-      "fields": {},
+      "fields": {
+        "honors_termination": {
+          "default": true
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,
@@ -909,6 +928,21 @@
       }
     },
     "assay.statement_attribution.StatementBlock": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.verdict.CampaignBinding": {
       "fields": {},
       "params": {
         "eq": true,
@@ -969,6 +1003,21 @@
       }
     },
     "assay.verdict.Coverage": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.verdict.EquivalenceLedger": {
       "fields": {},
       "params": {
         "eq": true,
@@ -1140,6 +1189,21 @@
         "weakref_slot": false
       }
     },
+    "assay.verdict.MutantEvidence": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.verdict.MutantOutcome": {
       "fields": {},
       "params": {
@@ -1201,6 +1265,36 @@
       }
     },
     "assay.verdict.MutationWitnessReceipt": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.verdict.R2BaselineFacts": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.verdict.R2Command": {
       "fields": {},
       "params": {
         "eq": true,

@@ -1,21 +1,31 @@
-# B110-P3d — B105 gate passes `--cold-witness`; source-bound report checker binds the v14 evidence and the campaign deadline
+# B110-P3d — B105 gate passes `--cold-witness`; source-bound report checker binds the v15 evidence and the campaign deadline
+
+## Current contract reconciliation — 2026-10-07
+
+This gate/report binding targets verdict v15; v14 shipped in Assay 8.0.0.
+Implement it on the CIU-managed `assay-b114-cold-witness` branch after B117/P6
+and the B114 producer are present. Keep the independent source-bound checker
+refusing all non-null ledger declarations until P10a's REVISE findings are
+resolved and P10b is separately implemented. The current release gate remains
+tester-unified; the B105 full-source self-qualification is a separately invoked
+campaign requiring its bounded pilot/go decision.
 
 **Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).** Round 1 applied P3D-1..P3D-6, the wrong anchors, and carver decision C9. Round 2 applied P3D2-1 (the `sed` extraction is mandated and the stub python prints an integer), P3D2-2 (the zz_slow test path) and P3D2-3 (C12 limited to survived and witness-cold), plus C30 (tests are found by name after P1).
 
 | Field | Value |
 |---|---|
 | Backlog | **B114** (B110 umbrella) |
-| Branch | `assay-b110-p3d-gate`, off the current `assay-b110-v14` tip. The integration protocol is in `P3a-v14-schema-verify.md`. |
-| Depends on | All of the following must be in `assay-b110-v14`. If any is missing, ask the controller to merge the integration line into `assay-b110-v14`; never rebase.<br>• **P3b**: `--cold-witness`, `--r2-manifest`, and the produced `r2_command`/`evidence`.<br>• **P3a**: the `CampaignBinding` model/schema/verify (C9).<br>• **P0**: `b105_report_check.py --plan-json` and its shard/partial-scope refusals, extended here, not duplicated.<br>• **P6**: the gate's campaign-deadline wiring, `assay campaign init`, `assay run --campaign-deadline`, and the `timeout` wrapper. Plan §11.6 merges **P6 → v14 (incl. P3d) → P7b → P10c**, so P6 is in the base. |
+| Branch | CIU-managed `assay-b114-cold-witness`; the historical v14 integration-branch protocol is superseded for this serial implementation. |
+| Depends on | The B114/P3b cold-witness producer and P3a v15 `CampaignBinding` model/schema/verify in this same worktree; B111/P0's shipped source-bound report checker and partial-scope refusals; and B117/P6's campaign-deadline command/wiring. The current implementation is serial in `assay-b114-cold-witness`; no historical `assay-b110-v14` integration branch is created. |
 | Contract class | **2c** |
 | Implementer | Sonnet (fresh session) |
-| Decisions | A-470 (D6), A-468 (the B105 lane argv after P1), A-474 (checker refusals), A-473 (deadline), carver decision **C9** (the verdict binds its deadline) |
+| Decisions | A-470 (D6), Wave A W4's current B105 lane argv, A-474 (checker refusals), A-473 (deadline), carver decision **C9** (the verdict binds its deadline) |
 | Size | M |
 
 **What this package is.**
 - The registered `self-qualification` gate invokes its R2 with the cold-witness policy and retains the ordered R2 manifest sidecar.
 - **Producer wiring (C9):** when `assay run` gets `--campaign-deadline PATH`, the verdict carries P3a's top-level `campaign` block. The block is built from the deadline file P6 already loads. Every verdict-producing path in `_run_reserved` carries it, including refusals and LANE_TIMEOUT verdicts.
-- `tools/b105_report_check.py` is B105's **source-bound** check that runs after `assay verify`. It binds the v14 facts and the deadline to the exact source revision:
+- `tools/b105_report_check.py` is B105's **source-bound** check that runs after `assay verify`. It binds the v15 facts and the deadline to the exact source revision:
   - re-derives the declared argv and the pytest config from `git show <commit>:…`;
   - re-applies the transform **independently**;
   - requires the cold policy;
@@ -115,6 +125,7 @@ Echoes and artifacts:
 **New CLI arguments:**
 - `--r2-manifest PATH`, optional in argparse, **required** when `--expected-rigor` contains `R2`. When missing, refuse with `"--r2-manifest is required for an R2 report"`. When R2 is not in the rigor, refuse with `"--r2-manifest given for a report without R2"`.
 - `--deadline PATH`, **required** (argparse `required=True`). The gate always has a deadline after P6.
+- `--deadline-wheel-check-only --deadline PATH --expected-wheel-sha256 SHA256` is the internal early retry guard. It reads only the bounded, no-follow deadline file and refuses a missing, malformed, or unequal wheel digest before B105 installs its run closure or starts either lane.
 - Argument refusals happen before the report is read.
 
 **`verify_report_document(..., r2_manifest: Path | None = None, deadline: Path)`** gains two keyword-only parameters. `deadline` is required.
@@ -123,9 +134,19 @@ Echoes and artifacts:
 
 **Refusal order.**
 1. The existing checks: exit, commit, lane, rigor, tree, PASS, claims, version and provenance.
-2. The deadline checks D1–D4.
-3. P0's `check_campaign_scope`, when R2 is expected.
-4. Then, when R2 is expected, `_check_v14_r2`: C1–C13 in table order.
+2. The plan-independent deadline checks D1–D4, including the wheel, lane, commit/tree, and campaign-window bindings.
+3. When R2 is expected, parse and validate the plan shape, then compare its ordered digest with the selected lane's persisted `plan_sha256` value. This check runs only after D1–D4, so a malformed plan cannot hide an independently broken campaign deadline.
+4. P0's `check_campaign_scope`, when R2 is expected.
+5. Then, when R2 is expected, `_check_v15_r2`: C1–C13 in table order.
+
+The B105 wheel step derives `SOURCE_DATE_EPOCH` from the captured commit before
+`pip wheel`, then hashes the validated wheel immediately. If the matching
+campaign deadline already exists, the early guard compares its stored digest
+before run-environment installation, planning, preflight, or R2. After
+`campaign init` (or reuse of an existing deadline), the driver checks the
+persisted digest again before entering either lane. This makes same-commit
+retries produce the same wheel identity and prevents a late checker rejection
+after expensive lane work.
 
 **When both `--plan-json` and `--r2-manifest` are wrong,** P0's scope refusal is reported first.
 
@@ -134,11 +155,18 @@ Echoes and artifacts:
 | # | Check | Refusal substring |
 |---|---|---|
 | D1 | `document["campaign"]` is present and is a dict with exactly the four `CampaignBinding` keys | `B105 report carries no campaign binding` |
-| D2 | `sha256(Path(deadline).read_bytes()) == campaign["deadline_sha256"]` | `campaign deadline_sha256 does not match the deadline file` |
-| D3 | parse the deadline file with a duplicate-key-refusing `object_pairs_hook`. Then `schema == "assay-campaign-deadline/1"`, `campaign == campaign["name"]`, `created_at_utc`/`expires_at_utc` equal the block's values, `commit == expected_commit`, `git_tree == expected_tree`, `expected_lane in lanes`, and `assay_version == expected_version` | `deadline file does not bind this commit/tree/lane/version` |
+| D2 | Read the deadline through a bounded no-follow regular-file descriptor (maximum `_DEADLINE_MAX_BYTES`), then compare its SHA-256 with `campaign["deadline_sha256"]` | `campaign deadline_sha256 does not match the deadline file` |
+| D3 | Parse those same bounded bytes with a duplicate-key-refusing `object_pairs_hook`. Then `schema == "assay-campaign-deadline/1"`, `campaign == campaign["name"]`, `created_at_utc`/`expires_at_utc` equal the block's values, `commit == expected_commit`, `git_tree == expected_tree`, `expected_lane in lanes`, and `assay_version == expected_version` | `deadline file does not bind this commit/tree/lane/version` |
 | D4 | `created_at_utc <= document["started"]` and `document["ended"] <= expires_at_utc`. Both are compared as timezone-aware datetimes; the verdict uses `+00:00`, the deadline uses `Z` | `report was not produced inside its campaign window` |
 
-**R2 checks (`_check_v14_r2`).** Each has its own refusal message, which tests assert as a substring. **Kind** marks whether a check is source proof:
+The ordering oracle pairs a malformed `--plan-json` with each D1–D4 defect:
+the deadline refusal must win without a traceback or plan refusal. With a valid
+deadline, the malformed plan is refused; with a well-formed but reordered plan,
+the selected ordered-plan digest refusal wins before report-inventory checking.
+A FIFO plan path paired with a D1 failure also proves the checker does not open
+or parse the plan before the plan-independent deadline checks finish.
+
+**R2 checks (`_check_v15_r2`).** Each has its own refusal message, which tests assert as a substring. **Kind** marks whether a check is source proof:
 - **SB** = source-bound. It compares against `git show <commit>:…`, a checker constant, or the retained sidecar bytes.
 - **CS** = a consistency check between producer-written fields.
 
@@ -207,7 +235,7 @@ Its digest is `sha256(b"23:tests/test_x.py::test_a,23:tests/test_x.py::test_b,23
 
 | Work | Owner | Oracle | Fixture | Controlled break |
 |---|---|---|---|---|
-| valid v14 report accepted | checker | the v14 valid-report builder (below), with a 3-line sidecar, a real plan dict and a deadline file → checker exit 0; `assay verify` also `[]` | `tests/test_b105_report_check.py` | — |
+| valid v15 report accepted | checker | the v15 valid-report builder (below), with a 3-line sidecar, a real plan dict and a deadline file → checker exit 0; `assay verify` also `[]` | `tests/test_b105_report_check.py` | — |
 | C1–C13 and D1–D4 each refuse | checker | one test per row: mutate exactly the named field of the valid report, sidecar or deadline file → exit 2 and the named substring | same | remove C3 → the "argv edited after commit" test passes → red |
 | C11 checks every cold kill | checker | a report with **two** cold kills, where only the **second** has a wrong `failed_call_index` → C11 refuses naming the second candidate | same | check only the first cold kill → red |
 | source-bound via `git show`, not the worktree (P3D-5) | checker | in a temporary repo, commit `assay.toml` with argv A, then overwrite the **working copy** with argv B, uncommitted. Build a report whose argv is B → C3 refuses. The same for `pyproject.toml` and C13 | same | read the worktree file → the B report is accepted → red |
@@ -217,12 +245,14 @@ Its digest is `sha256(b"23:tests/test_x.py::test_a,23:tests/test_x.py::test_b,23
 | source-bound, not self-reported | checker | build the report with `argv_declared` = the lane argv **plus** `--deselect=extra`; C3 refuses even though the report is internally consistent (`assay verify` returns `[]` for it) | same | — |
 | manifest position | checker | swap two sidecar lines → C10 refuses. Rewrite the witness `node_id` to line 0 while `failed_call_index` stays 1 → C11 refuses | same | — |
 | rigor gating | checker | the preflight lane (R0,R1) with `--r2-manifest` → refused; without it (but with `--deadline`) → unchanged acceptance | same | — |
+| bounded file inputs | checker | valid regular deadline/manifest files are accepted; oversized files, symlinks, FIFOs and other non-regular inputs are refused without blocking or unbounded reads | `tests/test_b105_report_check.py` | use `Path.read_bytes()` or follow symlinks → a FIFO blocks or a symlink target is accepted |
+| reproducible B105 wheel | gate | two exact-OID clones with different checkout mtimes build byte-identical wheels with the captured commit timestamp as `SOURCE_DATE_EPOCH` | `tests/test_self_lane.py` | derive wheel timestamps from checkout mtimes → wheel digests differ → red |
 | malformed report | checker | a report with no `judgment` key at all, and one where `claims` is a dict → exit **2** with `B105_REPORT_REJECTED=`, never 1 | same | narrow the exception tuple → exit 1 → red |
 | campaign producer wiring | cli / runner | `main(["run", lane, "--campaign-deadline", f, "--verdict-json", v])` on a toy R0 lane → the verdict's top-level `campaign` equals the block built from `f`'s bytes. Also an expired `f` → the LANE_TIMEOUT verdict **also** carries `campaign`. Without the flag → no `campaign` key | `tests/test_campaign_binding_wiring.py` (new) | thread it only into `run_lane` → the expired case has no block → red |
 | gate wiring, text | script | `tests/test_self_lane.py` pins, all scoped to the **body of `run_and_verify_lane`** (the text between `run_and_verify_lane() {` and its closing `}` at column 0):<br>• `--cold-witness` appears only inside that body's `self-qualification)` case arm. P7b's `b110-pilot`/`b110-screen` arms outside the function may also pass `--cold-witness`;<br>• `'--r2-manifest "$r2_manifest_path"'` occurs twice (run and checker);<br>• `"${lane_flags[@]}"` (or the bash < 4.4 spelling) occurs **on the `assay run` command** (the text between `"$assay_bin" run "$lane"` and the next line not ending in `\`);<br>• `--deadline "$deadline"` is on the checker call;<br>• `rm -f -- "$r2_manifest_path"` is present;<br>• the `B110-P10c:` marker is present;<br>• `B105_R2_MANIFEST=` is echoed.<br>The `run-gate.toml` artifacts pin is updated | `tests/test_self_lane.py` | pass `--cold-witness` for the preflight → the arm pin goes red; define `lane_flags` but never expand it → the expansion pin goes red |
 | gate wiring, executed (P3D-4, round-2 P3D2-1) | script | a **stub-binary test**, no docker. **Mandated: the `sed` extraction.** The test runs `sed -n '/^run_and_verify_lane() {/,/^}/p' tools/self-qualification-gate.sh` and evaluates only that function body in `bash`.<br>**Sourcing the script is forbidden.** `run_and_verify_lane` is defined only after the script's clone (~:53), build-venv and pip wheel/install steps (~:68-126), so sourcing would run that heavy setup in a unit test on the shared host, and no guard placed "before the lane sequencing" can skip it.<br>Run the extracted function with:<br>• `assay_bin` set to a stub script that appends its argv (NUL-separated) to a log and exits 0;<br>• `$scratch/run-venv/bin/python` set to a stub that **prints an integer** (for example `3600`) for P6's `remaining_s` computation (P6 step 12) and otherwise exits 0;<br>• a stub checker path;<br>• `timeout` resolved on PATH;<br>• every other variable the function reads set to temp paths.<br>Call it with `self-qualification`, then `self-qualification-preflight`. Assert:<br>• the recorded `run` argv for the full lane **contains** `--cold-witness`, `--r2-manifest`, `.assay/r2-manifest-self-qualification.txt` and `--campaign-deadline`;<br>• the preflight's does **not** contain `--cold-witness`;<br>• the checker argv carries `--deadline` for both | `tests/test_self_lane.py` (or `tests/test_gate_script_wiring.py`, new) | `lane_flags` never expanded → the recorded argv lacks `--cold-witness` → red |
 
-**Building the valid v14 report (normative, `tests/test_b105_report_check.py`):**
+**Building the valid v15 report (normative, `tests/test_b105_report_check.py`):**
 1. Start from P3a's `tests/fixtures/verdicts/r2_pass_cold_witness.json` as the R2 claim/judgment source, spliced into `pass.json` as `_verifier_valid_report` does today.
 2. Set the top-level `argv_declared` = `argv_effective` = the **actual** `lanes.self-qualification.argv` read from `git show HEAD:assay/assay.toml` (the test's `_git_value` already resolves HEAD), with `argv_appended = []`.
 3. Set `r2_command.argv_declared` to the same list, and `argv_transformed` to the transform of it. Set `r2_command.config_sha256` = sha256 of `git show HEAD:assay/pyproject.toml`.

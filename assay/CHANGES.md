@@ -2,6 +2,45 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs. A marked `backfilled-after-release` entry was generated after its immutable tag already existed.
 
+## [Unreleased]
+
+### BREAKING CHANGE
+- verdict schema v15 is a hard cut from v14. `assay verify` rejects v14 and
+  older verdicts; v12–v14 verdicts are cold starts for `--reuse-from`, and
+  mutation state with an older judge identity is re-executed. Consumers must
+  repin Assay before relying on v15 verdict fields.
+
+### Added
+- Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
+  command, ordered collection and hook facts; a `witness-cold` kill records its
+  failed test call and labels later tests unrun. Hook trust is pinned to
+  reviewed Hypothesis 6.156.6 and pytest-cov 7.1.0 source identities, with
+  dynamic hook changes invalidating the proof. Survivors and uncertain runs
+  execute the full declared suite.
+- Persist campaign deadlines across preflight, resume and retry, and bind B105
+  reports to the source commit, lane command, pytest configuration, manifest
+  and deadline.
+- Bound mutation worker submissions to the configured job count while keeping
+  candidate events ordered.
+
+### Fixed
+- Require cold-policy full kills to carry declared-command coverage evidence
+  and a verified failed-call witness. Accept a declared retry's witness anywhere
+  in its verified started prefix, and bind B105 full-kill witnesses to the R2
+  manifest.
+- Pin pytest built-in hook callable identities before candidate conftests load;
+  a same-module/path substitution can no longer certify a cold kill or survivor
+  with an unchanged hook fingerprint. Pin Assay's generated receipt hooks and
+  all four materialized liveness hooks before candidate conftests too, and pin
+  reviewed external hook code objects so replacements and in-place code
+  changes make the attempt unsupported.
+- Make B105's same-commit wheel reproducible from the commit timestamp, refuse
+  an existing campaign's wheel-digest mismatch before run-closure installation
+  or lane work, check plan-independent deadline refusals before parsing an R2
+  plan, and read reports, plans, tester receipts, deadlines and manifests as
+  bounded no-follow regular files (64 MiB, 16 MiB and 4 KiB for report, plan
+  and receipt).
+
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=e464cebcfc17c1929354f3ebc6bf9e3e355576a8 -->

@@ -72,6 +72,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from collections import deque
 from dataclasses import replace
@@ -91,6 +92,95 @@ from typing import (
 from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
+
+
+# B117/P6: termination is process-wide for one Assay invocation. Keep the
+# event here so the process-group registry can honor it without importing
+# runner.py (runner already imports this module).
+_TERMINATION = threading.Event()
+_LIVE_GROUPS: set[int] = set()
+_LIVE_GROUPS_LOCK = threading.RLock()
+_DEFERRED_TERMINATION_SWEEP = False
+
+
+def _killpg_group(pgid: int, sig: int) -> None:
+    """Best-effort process-group signal used by termination and runner cleanup."""
+    try:
+        os.killpg(pgid, sig)
+    except OSError:
+        pass
+
+
+def register_live_group(pgid: int) -> None:
+    """Register a process group, killing it immediately after termination."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_GROUPS.add(pgid)
+        if _TERMINATION.is_set():
+            _killpg_group(pgid, signal.SIGKILL)
+
+
+def unregister_live_group(pgid: int) -> None:
+    """Forget a group and complete a deferred signal-handler sweep if needed."""
+    global _DEFERRED_TERMINATION_SWEEP
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_GROUPS.discard(pgid)
+        if _DEFERRED_TERMINATION_SWEEP:
+            _DEFERRED_TERMINATION_SWEEP = False
+            if _TERMINATION.is_set():
+                for live_pgid in tuple(_LIVE_GROUPS):
+                    _killpg_group(live_pgid, signal.SIGKILL)
+
+
+def terminate_live_process_groups(sig: int = signal.SIGKILL) -> int:
+    """Signal registered groups without blocking a signal handler.
+
+    The RLock lets the main thread re-enter if a signal arrives while it owns
+    the registry. If another thread owns it, set iteration is atomic under the
+    GIL; kill that snapshot and defer a locked sweep until the next unregister.
+    Kill-on-register covers groups created after this snapshot.
+    """
+    global _DEFERRED_TERMINATION_SWEEP
+    acquired = _LIVE_GROUPS_LOCK.acquire(blocking=False)
+    if acquired:
+        try:
+            groups = tuple(_LIVE_GROUPS)
+            for pgid in groups:
+                _killpg_group(pgid, sig)
+            return len(groups)
+        finally:
+            _LIVE_GROUPS_LOCK.release()
+    # `set.copy()` is one C-level operation under the GIL; `tuple(set)` would
+    # walk a live iterator while the lock owner may be adding/removing groups.
+    groups = tuple(_LIVE_GROUPS.copy())
+    _DEFERRED_TERMINATION_SWEEP = True
+    for pgid in groups:
+        _killpg_group(pgid, sig)
+    return len(groups)
+
+
+def _reset_live_groups_for_tests() -> None:
+    """Reset process-global termination state for isolated tests only."""
+    global _DEFERRED_TERMINATION_SWEEP
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_GROUPS.clear()
+        _DEFERRED_TERMINATION_SWEEP = False
+        _TERMINATION.clear()
+
+
+def oom_kill_count(path: Path = Path("/sys/fs/cgroup/memory.events")) -> int | None:
+    """Read the cgroup-v2 ``oom_kill`` counter, or report it unavailable."""
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    matches = [line.split() for line in lines if line.split()[:1] == ["oom_kill"]]
+    if len(matches) != 1 or len(matches[0]) != 2:
+        return None
+    try:
+        value = int(matches[0][1])
+    except ValueError:
+        return None
+    return value if value >= 0 else None
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation-only import; importing at runtime creates a cycle
     from .runner import CommandPlan
@@ -542,6 +632,7 @@ class LivenessHungExpired(subprocess.TimeoutExpired):
 #: bare literals scattered through the monitoring loop below.
 _HUNG_CPU_WINDOW_S = 30.0
 _HUNG_CPU_GROWTH_FLOOR_S = 1.0
+_HUNG_CPU_GROWTH_FRACTION = 1.0 / 30.0
 _HUNG_SESSION_FINISH_GRACE_S = 30.0
 _LIVENESS_POLL_INTERVAL_S = 1.0
 _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES = 1024
@@ -1049,6 +1140,8 @@ class LivenessCalibration(NamedTuple):
     #: :data:`worst_gap_s`). Disclosed on the `plan` progress event because
     #: it is still the figure an operator reads as "the slowest test".
     slowest_test_s: float | None
+    #: The declared/effective idle floor passed to this calibration.
+    idle_floor_s: float
 
 
 def baseline_event_gaps(
@@ -1135,7 +1228,10 @@ def baseline_event_gaps(
 
 
 def compute_liveness_calibration(
-    baseline_events_path: "Path | None", baseline_s: float
+    baseline_events_path: "Path | None",
+    baseline_s: float,
+    *,
+    idle_floor_s: float | None = None,
 ) -> LivenessCalibration:
     """RW-33's `expect_next_event_within_s`, as re-derived by RW-49/D3
     calibration (a): ``max(3 x the baseline's worst observed inter-event
@@ -1178,6 +1274,9 @@ def compute_liveness_calibration(
     the 30s CPU window, and the elapsed budget -- documented as such in
     CONSUMERS.md so no consumer reads an all-`hung` sweep as a measurement.
     """
+    effective_idle_floor_s = (
+        LIVENESS_IDLE_FLOOR_S if idle_floor_s is None else idle_floor_s
+    )
     gaps = baseline_event_gaps(baseline_events_path)
     slowest_test_s = baseline_slowest_test_s(baseline_events_path)
     if gaps is None:
@@ -1187,16 +1286,18 @@ def compute_liveness_calibration(
             pre_first_event_within_s=fallback,
             worst_gap_s=None,
             slowest_test_s=slowest_test_s,
+            idle_floor_s=effective_idle_floor_s,
         )
     return LivenessCalibration(
         expect_next_event_within_s=max(
-            3.0 * gaps.worst_gap_s, LIVENESS_IDLE_FLOOR_S
+            3.0 * gaps.worst_gap_s, effective_idle_floor_s
         ),
         pre_first_event_within_s=max(
-            3.0 * gaps.leading_gap_s, LIVENESS_IDLE_FLOOR_S
+            3.0 * gaps.leading_gap_s, effective_idle_floor_s
         ),
         worst_gap_s=gaps.worst_gap_s,
         slowest_test_s=slowest_test_s,
+        idle_floor_s=effective_idle_floor_s,
     )
 
 
@@ -1532,6 +1633,7 @@ class LivenessRunner:
         sampler: Callable[[int], TreeSample] | None = None,
         popen: Callable[..., Any] = subprocess.Popen,
         process_group_killer: Callable[[int, int], None] | None = None,
+        cpu_window_s: float | None = None,
     ) -> None:
         self._events_dir = events_dir
         self._events_dir.mkdir(parents=True, exist_ok=True)
@@ -1541,6 +1643,8 @@ class LivenessRunner:
             if pre_first_event_within_s is None
             else pre_first_event_within_s
         )
+        self.cpu_window_s = _HUNG_CPU_WINDOW_S if cpu_window_s is None else cpu_window_s
+        self.cpu_growth_floor_s = self.cpu_window_s * _HUNG_CPU_GROWTH_FRACTION
         self._monotonic = monotonic
         self._sleep = sleep
         self._poll_interval_s = poll_interval_s
@@ -1597,6 +1701,7 @@ class LivenessRunner:
                 stderr=stderr_fh,
                 start_new_session=True,
             )
+            register_live_group(proc.pid)
         finally:
             stdout_fh.close()
             stderr_fh.close()
@@ -1621,7 +1726,10 @@ class LivenessRunner:
             # leaks descendants into the gate cgroup and eventually consumes
             # its pids.max.  Always clean the recorded group after monitoring,
             # including normal completion.
-            self._cleanup_process_group(proc)
+            try:
+                self._cleanup_process_group(proc)
+            finally:
+                unregister_live_group(proc.pid)
 
     def _cleanup_process_group(self, proc: Any) -> None:
         """Remove descendants left in this candidate's process group.
@@ -1727,7 +1835,7 @@ class LivenessRunner:
         last_stdout_size = 0
         last_stderr_size = 0
         event_reader = _EventProgressReader(proc.pid)
-        cpu_samples = _CpuSampleHistory(_HUNG_CPU_WINDOW_S)
+        cpu_samples = _CpuSampleHistory(self.cpu_window_s)
         previous_resources: Mapping[str, Any] | None = None
         resource_trace: list[dict[str, Any]] = []
         resource_trace_complete = False
@@ -1744,8 +1852,8 @@ class LivenessRunner:
                 "eligible_elapsed_s": round(liveness_clock, 3),
                 "idle_eligible_s": round(max(0.0, liveness_clock - last_progress_at), 3),
                 "required_idle_eligible_s": round(required_idle_s, 3),
-                "required_cpu_growth_window_s": _HUNG_CPU_WINDOW_S,
-                "required_cpu_growth_floor_s": _HUNG_CPU_GROWTH_FLOOR_S,
+                "required_cpu_growth_window_s": self.cpu_window_s,
+                "required_cpu_growth_floor_s": self.cpu_growth_floor_s,
                 "candidate_session_finish_seen": session_finish_at is not None,
                 "session_finish_eligible_s": (
                     round(session_finish_at, 3) if session_finish_at is not None else None
@@ -1874,7 +1982,7 @@ class LivenessRunner:
             if resource_status == "clear" and cpu_now is not None:
                 baseline_cpu = cpu_samples.add(liveness_clock, cpu_now)
                 if baseline_cpu is not None:
-                    cpu_growing = (cpu_now - baseline_cpu) >= _HUNG_CPU_GROWTH_FLOOR_S
+                    cpu_growing = (cpu_now - baseline_cpu) >= self.cpu_growth_floor_s
             else:
                 cpu_samples.reset()
 

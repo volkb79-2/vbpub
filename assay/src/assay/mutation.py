@@ -109,7 +109,7 @@ import re
 import tempfile
 import threading
 import time
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace as _dataclass_replace
 from datetime import datetime
@@ -127,8 +127,17 @@ from .mutation_parsers.model import IngestedMutationReport
 from .mutation_witness import inject_witness_plugin as _inject_witness_plugin
 from .mutation_witness import make_attempt_plan as _make_witness_attempt_plan
 from .mutation_witness import read_internal_receipt as _read_witness_receipt
-from .mutation_witness import replay_witness_from_receipt as _replay_witness_from_receipt
-from .mutation_witness import supports_sequential_pytest
+from .mutation_witness import (
+    ReceiptFacts,
+    cold_witness_from_receipt,
+    declared_failure_proof_ok,
+    inject_witness_plugin,
+    make_attempt_plan,
+    receipt_facts,
+    replay_witness_from_receipt as _replay_witness_from_receipt,
+    survivor_proof_ok,
+    supports_sequential_pytest,
+)
 from .mutation_witness import witness_from_receipt as _witness_from_receipt
 from .records import record
 from .verdict import (
@@ -139,6 +148,7 @@ from .verdict import (
     Claim,
     Mutation,
     MutationExecution,
+    MutantEvidence,
     MutationWitnessReceipt,
     MutantOutcome,
     MutationProducerTool,
@@ -176,6 +186,7 @@ __all__ = [
     "MutantJob",
     "MutationDiscoveryError",
     "InvalidRejudgeIdError",
+    "CampaignPlanMismatchError",
     "MutationSite",
     "MutationTarget",
     "PROGRESS_EVENTS",
@@ -187,6 +198,7 @@ __all__ = [
     "collect_mutation_sites",
     "candidate_id",
     "candidate_identity_fields",
+    "plan_sha256",
     # (B088) The judge half of a resume record's identity -- public for the
     # same reason `candidate_id` is: a consumer inspecting a state directory
     # must be able to re-derive what it is looking at.
@@ -236,7 +248,7 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/7"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/8"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -305,6 +317,32 @@ class MutationStateError(AssayError):
 
 class InvalidRejudgeIdError(AssayError):
     """A requested candidate id is absent from the current candidate set."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
+class R2CommandProofError(AssayError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG)
+
+
+class R2ManifestWriteError(AssayError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, outcome=Outcome.ERROR, reason_code=ReasonCode.OUTPUT_WRITE_FAILED)
+
+
+class R2BaselineTimeoutError(AssayError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message, outcome=Outcome.BUDGET_EXCEEDED, reason_code=ReasonCode.LANE_TIMEOUT)
+
+
+class CampaignPlanMismatchError(AssayError):
+    """The current full candidate plan differs from a persisted campaign."""
 
     def __init__(self, message: str) -> None:
         super().__init__(
@@ -793,6 +831,40 @@ def _default_executor_factory(jobs: int) -> Executor:
     return ThreadPoolExecutor(max_workers=jobs)
 
 
+class _CandidateEventBuffer:
+    """Emit candidate progress in index order despite concurrent completion."""
+
+    def __init__(self, total: int) -> None:
+        self._resolved = [False] * total
+        self._events: dict[int, Mapping[str, Any]] = {}
+        self._cursor = 0
+
+    def stage(self, position: int, event: Mapping[str, Any]) -> None:
+        if self._resolved[position] or position in self._events:
+            raise ValueError(f"candidate position {position} was already resolved")
+        self._events[position] = event
+        self._resolved[position] = True
+
+    def resolve_without_event(self, position: int) -> None:
+        if self._resolved[position] or position in self._events:
+            raise ValueError(f"candidate position {position} was already resolved")
+        self._resolved[position] = True
+
+    def drain_contiguous(self) -> list[Mapping[str, Any]]:
+        ready: list[Mapping[str, Any]] = []
+        while self._cursor < len(self._resolved) and self._resolved[self._cursor]:
+            event = self._events.pop(self._cursor, None)
+            if event is not None:
+                ready.append(event)
+            self._cursor += 1
+        return ready
+
+    def drain_all_ascending(self) -> list[Mapping[str, Any]]:
+        ready = [self._events[position] for position in sorted(self._events)]
+        self._events.clear()
+        return ready
+
+
 @contextmanager
 def progress_writer(path: Path) -> Iterator[ProgressWriter]:
     """Append one compact JSON object per line and flush every record.
@@ -1067,6 +1139,19 @@ def candidate_id(job: MutantJob) -> str:
     return candidate_id_from_fields(**candidate_identity_fields(job))
 
 
+def plan_sha256(candidate_ids: Sequence[str]) -> str:
+    """Hash candidate identities in their full discovery order.
+
+    Each identity is encoded as an ASCII netstring. The order is deliberately
+    significant: the digest binds a campaign to the exact plan the executor
+    will see, before shard, selection, ledger, or resume filtering.
+    """
+    digest = hashlib.sha256()
+    for identity in candidate_ids:
+        digest.update(f"{len(identity)}:{identity},".encode("ascii"))
+    return digest.hexdigest()
+
+
 def _tool_version() -> str:
     """(B088) assay's own version, for :func:`judge_sha256`.
 
@@ -1088,6 +1173,14 @@ def judge_sha256(
     plan: "CommandPlan",
     link_paths: Sequence[str] = (),
     tool_version: str | None = None,
+    cold_witness_kills: bool = False,
+    r2_transform: str | None = None,
+    r2_collection_sha256: str | None = None,
+    r2_hook_fingerprint_sha256: str | None = None,
+    runtime_fingerprint_sha256: str | None = None,
+    coverage_hook_fingerprint_sha256: str | None = None,
+    coverage_runtime_fingerprint_sha256: str | None = None,
+    equivalence_ledger_sha256: str | None = None,
 ) -> str:
     """(B088) Return the identity of what JUDGES a mutant.
 
@@ -1193,6 +1286,19 @@ def judge_sha256(
     links = sorted(link_paths)
     parts.append(str(len(links)))
     parts.extend(netstring(path) for path in links)
+    parts.append(netstring("1" if cold_witness_kills else "0"))
+    parts.extend(
+        netstring("" if value is None else value)
+        for value in (
+            r2_transform,
+            r2_collection_sha256,
+            r2_hook_fingerprint_sha256,
+            runtime_fingerprint_sha256,
+            coverage_hook_fingerprint_sha256,
+            coverage_runtime_fingerprint_sha256,
+            equivalence_ledger_sha256,
+        )
+    )
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -1566,7 +1672,12 @@ valid_hung_resource_evidence = _valid_hung_resource_evidence
 
 
 def _load_validated_state_record(
-    state_root: Path, job: MutantJob, *, judge: str
+    state_root: Path,
+    job: MutantJob,
+    *,
+    judge: str,
+    campaign_deadline_sha256: str | None = None,
+    cold_witness: bool = False,
 ) -> Mapping[str, Any] | str | None:
     """Return the persisted verdict for *job*, or why it cannot be used.
 
@@ -1672,6 +1783,23 @@ def _load_validated_state_record(
         raise MutationStateError(
             f"mutation-state record {identity} has invalid execution provenance: {exc}"
         ) from exc
+    if "evidence" in payload and payload["evidence"] is not None:
+        raw_evidence = payload["evidence"]
+        if not isinstance(raw_evidence, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} evidence must be an object or null"
+            )
+        try:
+            if set(raw_evidence) != {
+                "command", "collection_count", "collection_sha256",
+                "hook_fingerprint_sha256", "started_count", "failed_call_index",
+            }:
+                raise ValueError("evidence has missing or unknown fields")
+            MutantEvidence(**raw_evidence)
+        except (TypeError, ValueError) as exc:
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid mutant evidence: {exc}"
+            ) from exc
     # (B088) LAST, and deliberately so. Everything above asks "is this record
     # internally consistent with the identity it is filed under" -- a
     # tampered or corrupted record must still be surfaced as corruption
@@ -1710,12 +1838,27 @@ def _load_validated_state_record(
     stored = payload.get("judge_sha256")
     if not isinstance(stored, str) or stored != judge:
         return _RECORD_REJECTED
+    if (
+        campaign_deadline_sha256 is not None
+        and payload.get("campaign_deadline_sha256") != campaign_deadline_sha256
+    ):
+        return _RECORD_REJECTED
     if resource_limit_evidence is None or resource_limit_evidence.limit_hit:
         return _RECORD_REJECTED
     if payload["outcome_bucket"] == "hung" and not _valid_hung_resource_evidence(
         payload.get("liveness_resource_evidence")
     ):
         return _RECORD_REJECTED
+    if cold_witness and (
+        payload["outcome_bucket"] == "survived"
+        or (
+            isinstance(payload.get("execution"), Mapping)
+            and payload["execution"].get("mode") == "witness-cold"
+        )
+    ) and payload.get("evidence") is None:
+        raise MutationStateError(
+            f"cold-witness mutation-state record {identity} is missing required evidence"
+        )
     return payload
 
 
@@ -1801,6 +1944,11 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             source_sha256=record["source_sha256"],
             mutated_file_sha256=record["mutated_file_sha256"],
             execution=_execution_from_state_record(record),
+            evidence=(
+                MutantEvidence(**record["evidence"])
+                if isinstance(record.get("evidence"), Mapping)
+                else None
+            ),
             resource_limit_evidence=ResourceLimitEvidence.from_dict(
                 record["resource_limit_evidence"]
             ),
@@ -1824,6 +1972,8 @@ def _execution_from_state_record(record: Mapping[str, Any]) -> MutationExecution
         raise ValueError("execution must be an object")
     mode = raw.get("mode")
     if mode == "full":
+        allowed = {"mode", "witness"}
+    elif mode == "witness-cold":
         allowed = {"mode", "witness"}
     elif mode == "witness-prefix":
         allowed = {
@@ -2041,6 +2191,8 @@ class _MutantRun:
     startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
     resource_limit_evidence: ResourceLimitEvidence | None = None
+    evidence: MutantEvidence | None = None
+    forced_bucket: str | None = None
 
 
 def _read_candidate_resource_counters() -> ResourceLimitCounters:
@@ -2250,6 +2402,7 @@ def _outcome_of(
     resource_limit_evidence: ResourceLimitEvidence,
     kill_signal: str | None = None,
     execution: MutationExecution | None = None,
+    evidence: MutantEvidence | None = None,
 ) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
@@ -2286,6 +2439,7 @@ def _outcome_of(
         mutated_file_sha256=mutated_file_sha256,
         execution=execution or MutationExecution(mode="full"),
         resource_limit_evidence=resource_limit_evidence,
+        evidence=evidence,
     )
 
 
@@ -2434,6 +2588,8 @@ def run_mutation(
     #: governing a candidate that has produced no event at all yet.
     liveness_worst_gap_s: float | None = None,
     liveness_pre_first_event_within_s: float | None = None,
+    liveness_cpu_window_s: float | None = None,
+    liveness_idle_floor_s: float | None = None,
     #: (B091/D-23, P7 A4) The lane's own PERSISTENT
     #: `.assay/liveness/candidates/` directory -- `None` for every
     #: non-liveness lane. When given, each candidate's own `tests_completed`
@@ -2483,6 +2639,16 @@ def run_mutation(
     #: B106 witnesses from one verifier-accepted prior verdict. Each entry
     #: maps the canonical candidate ID to (prior verdict digest, pytest node).
     reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
+    expected_plan_sha256: str | None = None,
+    campaign_deadline_sha256: str | None = None,
+    oom_counter: Callable[[], int | None] | None = None,
+    cold_witness: bool = False,
+    declared_plan: CommandPlan | None = None,
+    r2_facts: ReceiptFacts | None = None,
+    coverage_facts: ReceiptFacts | None = None,
+    r2_baseline_s: float | None = None,
+    equivalence_ledger_sha256: str | None = None,
+    manifest_node_ids: Sequence[str] = (),
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -2518,20 +2684,19 @@ def run_mutation(
     NO_MEASUREMENT/DIRTY_TREE or HEAD_CHANGED, no partial credit, no later
     unit), never folded into ``crashed``.
 
-    Submission proceeds in WAVES of at most *jobs* concurrent mutants
-    (``executor_factory(jobs)`` called with EXACTLY *jobs*, never a derived
-    value, A-082/A-122); each wave is fully joined — every submitted future
-    closes its own snapshot context — before the next wave is considered, so
-    a deadline expiry or a fatal dirt/HEAD result observed inside one wave
-    launches no mutant in a later wave. Expiry (``deadline.remaining()``
-    raising BUDGET_EXCEEDED/LANE_TIMEOUT from inside a worker, before that
-    worker's own snapshot or process exists) marks that identity and every
-    later, unsubmitted identity ``budget_exceeded`` — completed identities
-    remain evidence, never discarded for a partial sample. Results are
-    collected POSITION-ALIGNED with the submitted job list (each future
-    awaited by its own index), and the three non-killed buckets are
-    naturally identity-ordered already (never re-sorted, matching
-    :func:`collect_mutation_sites`'s own already-ordered batches).
+    Submission uses a bounded continuous work queue with at most *jobs*
+    futures in flight (``executor_factory(jobs)`` called exactly once with
+    the declared value, never a derived value, A-082/A-122). A completed
+    future frees a slot immediately, so a slow earlier candidate does not
+    hold a whole batch at a barrier. On deadline expiry or a fatal worker
+    error, submission stops and every already-submitted future is drained so
+    its snapshot context closes. Results stay POSITION-aligned with the
+    pending job list, candidate progress is emitted in index order, and the
+    three non-killed buckets remain identity-ordered without a re-sort.
+    When several fatal worker errors are observed, the lowest candidate
+    position wins; the lane's outcome, not only its reason code, can depend
+    on that choice. An expiry marks that position and every unsubmitted
+    identity ``budget_exceeded`` while completed identities remain evidence.
 
     **P34/A-279/§3.6.** *equivalence_artifact*/*kill_signal_artifact* are
     ``None`` for every lane that does not declare them (every Python/Go
@@ -2556,6 +2721,42 @@ def run_mutation(
     if not 1 <= max_mutants <= 10_000:
         raise ValueError(
             f"run_mutation max_mutants must be in 1..10,000, got {max_mutants}"
+        )
+    if not isinstance(cold_witness, bool):
+        raise ValueError("run_mutation cold_witness must be a boolean")
+    if cold_witness:
+        if declared_plan is None or r2_facts is None or coverage_facts is None:
+            raise ValueError(
+                "run_mutation cold_witness requires declared_plan, r2_facts, "
+                "and coverage_facts"
+            )
+        if (
+            r2_facts.runtime_fingerprint_sha256 is None
+            or coverage_facts.runtime_fingerprint_sha256 is None
+        ):
+            raise ValueError("run_mutation cold_witness requires runtime fingerprints")
+        if (
+            r2_baseline_s is None
+            or not isinstance(r2_baseline_s, (int, float))
+            or not math.isfinite(r2_baseline_s)
+            or r2_baseline_s < 0
+        ):
+            raise ValueError(
+                "run_mutation cold_witness requires a finite non-negative "
+                "R2 baseline duration"
+            )
+        if any(not isinstance(node_id, str) for node_id in manifest_node_ids):
+            raise ValueError("run_mutation manifest_node_ids must contain strings")
+    elif any(
+        value is not None
+        for value in (declared_plan, r2_facts, coverage_facts, r2_baseline_s)
+    ) or manifest_node_ids:
+        raise ValueError("run_mutation cold-witness facts require cold_witness=True")
+    if equivalence_ledger_sha256 is not None and re.fullmatch(
+        r"[0-9a-f]{64}", equivalence_ledger_sha256
+    ) is None:
+        raise ValueError(
+            "run_mutation equivalence_ledger_sha256 must be a SHA-256 digest or None"
         )
     if equivalence_artifact is not None and baseline_equivalence is None:
         raise ValueError(
@@ -2620,6 +2821,10 @@ def run_mutation(
 
     if baseline.outcome is not Outcome.PASS:
         return None
+
+    oom_reader = liveness.oom_kill_count if oom_counter is None else oom_counter
+    initial_oom_count = oom_reader()
+    oom_guard_active = type(initial_oom_count) is int and initial_oom_count >= 0
 
     # (B091/D-23) Resolved HERE, once, the instant the baseline is known
     # good and before any candidate is submitted: the derived ceiling is a
@@ -2699,6 +2904,11 @@ def run_mutation(
                     "worst_gap_s": liveness_worst_gap_s,
                     "expect_next_event_within_s": liveness_expect_next_event_within_s,
                     "pre_first_event_within_s": liveness_pre_first_event_within_s,
+                    "cpu_window_s": liveness_cpu_window_s,
+                    "idle_floor_s": liveness_idle_floor_s,
+                    "oom_guard": "active" if oom_guard_active else "unavailable",
+                    "cold_witness": cold_witness,
+                    "r2_baseline_s": r2_baseline_s,
                 }
             )
             if liveness_baseline_events_path is not None:
@@ -2735,6 +2945,27 @@ def run_mutation(
         collected = collect_mutation_sites(
             targets, adapter=adapter, operators=operators, limit=max_mutants + 1
         )
+        if expected_plan_sha256 is not None:
+            if (
+                not isinstance(expected_plan_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_plan_sha256) is None
+            ):
+                raise CampaignPlanMismatchError(
+                    "campaign deadline carries an invalid plan_sha256 for this lane"
+                )
+            if collected == UNSUPPORTED:
+                raise CampaignPlanMismatchError(
+                    "campaign deadline binds an R2 plan, but the current adapter "
+                    "cannot discover that plan"
+                )
+            observed_plan_sha256 = plan_sha256(
+                [candidate_id(job) for job in collected]
+            )
+            if observed_plan_sha256 != expected_plan_sha256:
+                raise CampaignPlanMismatchError(
+                    "the full mutation plan differs from the campaign deadline: "
+                    f"expected {expected_plan_sha256}, observed {observed_plan_sha256}"
+                )
         # (Round-1 N4) Each of the three returns below ends the sweep without
         # running one candidate, and each used to emit NOTHING. Under the
         # lane path `verdict_written` still terminated the stream, but a
@@ -2814,6 +3045,28 @@ def run_mutation(
                 plan=plan,
                 link_paths=prepared.spec.snapshot_policy.link_paths,
                 tool_version=_tool_version(),
+                cold_witness_kills=cold_witness,
+                r2_transform=("assay-r2-pytest-nocov/1" if cold_witness else None),
+                r2_collection_sha256=(
+                    r2_facts.collection_sha256 if cold_witness and r2_facts else None
+                ),
+                r2_hook_fingerprint_sha256=(
+                    r2_facts.hook_fingerprint_sha256 if cold_witness and r2_facts else None
+                ),
+                runtime_fingerprint_sha256=(
+                    r2_facts.runtime_fingerprint_sha256 if cold_witness and r2_facts else None
+                ),
+                coverage_hook_fingerprint_sha256=(
+                    coverage_facts.hook_fingerprint_sha256
+                    if cold_witness and coverage_facts
+                    else None
+                ),
+                coverage_runtime_fingerprint_sha256=(
+                    coverage_facts.runtime_fingerprint_sha256
+                    if cold_witness and coverage_facts
+                    else None
+                ),
+                equivalence_ledger_sha256=equivalence_ledger_sha256,
             )
             if state_root is not None
             else None
@@ -2842,7 +3095,13 @@ def run_mutation(
                     rejudge_ids, {candidate_id(job) for job in selected_jobs}
                 )
             for job in selected_jobs:
-                record = _load_validated_state_record(state_root, job, judge=judge)
+                record = _load_validated_state_record(
+                    state_root,
+                    job,
+                    judge=judge,
+                    campaign_deadline_sha256=campaign_deadline_sha256,
+                    cold_witness=cold_witness,
+                )
                 if record is _RECORD_REJECTED:
                     rejected_total += 1
                 elif record is not None:
@@ -2949,6 +3208,14 @@ def run_mutation(
                 if candidate not in rejudge_ids
                 and candidate not in rejudged_candidate_ids
             },
+            campaign_deadline_sha256=campaign_deadline_sha256,
+            oom_counter=oom_reader,
+            oom_guard_active=oom_guard_active,
+            cold_witness=cold_witness,
+            declared_plan=declared_plan,
+            r2_facts=r2_facts,
+            coverage_facts=coverage_facts,
+            manifest_node_ids=manifest_node_ids,
         )
 
         if resumed_records:
@@ -3055,18 +3322,32 @@ def _execute_mutation_jobs(
     liveness_events_dir: Path | None = None,
     liveness_plugin_path: Path | None = None,
     reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
+    campaign_deadline_sha256: str | None = None,
+    oom_counter: Callable[[], int | None] = liveness.oom_kill_count,
+    oom_guard_active: bool = False,
+    cold_witness: bool = False,
+    declared_plan: CommandPlan | None = None,
+    r2_facts: ReceiptFacts | None = None,
+    coverage_facts: ReceiptFacts | None = None,
+    manifest_node_ids: Sequence[str] = (),
 ) -> Mutation:
 
     if job_list:
         _read_candidate_resource_counters()
 
     witness_supported = supports_sequential_pytest(
-        plan.argv_effective,
-        env=plan.env_effective,
+        plan.argv_effective, env=plan.env_effective
+    )
+    declared_supported = bool(
+        cold_witness
+        and declared_plan is not None
+        and supports_sequential_pytest(
+            declared_plan.argv_effective, env=declared_plan.env_effective
+        )
     )
     witness_temp = (
         tempfile.TemporaryDirectory(prefix="assay-mutation-witness-")
-        if witness_supported
+        if witness_supported and (not cold_witness or declared_supported)
         else None
     )
     witness_injection = (
@@ -3081,10 +3362,33 @@ def _execute_mutation_jobs(
     witness_capture_active = bool(
         witness_injection is not None and witness_injection.active
     )
+    declared_injection = (
+        _inject_witness_plugin(
+            declared_plan,
+            plugin_dir=Path(witness_temp.name),
+            liveness_plugin_path=liveness_plugin_path,
+        )
+        if cold_witness
+        and declared_plan is not None
+        and witness_temp is not None
+        else None
+    )
+    if cold_witness and (
+        not witness_capture_active
+        or declared_injection is None
+        or not declared_injection.active
+    ):
+        raise R2CommandProofError(
+            "cold witness: the candidate command could not install its trusted "
+            "receipt plugin"
+        )
     candidate_reuse = dict(reuse_witnesses or {}) if witness_capture_active else {}
+    attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
 
     def _classified_bucket(run: _MutantRun) -> str:
-        if equivalence_artifact is None:
+        if run.forced_bucket is not None:
+            bucket = run.forced_bucket
+        elif equivalence_artifact is None:
             bucket = _classify_mutant_result(run.result)
         else:
             assert baseline_equivalence is not None
@@ -3108,6 +3412,8 @@ def _execute_mutation_jobs(
         target_node_id: str | None,
         prior_verdict_sha256: str | None,
         attempt_name: str,
+        cold: bool = False,
+        variant: Literal["r2", "declared"] = "r2",
     ) -> _MutantRun | None:
         job = job_list[index]
         original_bytes = job.original_text.encode("utf-8")
@@ -3120,15 +3426,19 @@ def _execute_mutation_jobs(
             else None
         )
         attempt_plan = plan
+        active_injection = witness_injection
+        if cold_witness and variant == "declared":
+            active_injection = declared_injection
         if (
             witness_capture_active
-            and witness_injection is not None
+            and active_injection is not None
             and receipt_path is not None
         ):
             attempt_plan = _make_witness_attempt_plan(
-                witness_injection.plan,
+                active_injection.plan,
                 receipt_path=receipt_path,
                 target_node_id=target_node_id,
+                cold=cold,
             )
             try:
                 receipt_path.unlink()
@@ -3165,24 +3475,97 @@ def _execute_mutation_jobs(
                 if kill_signal_artifact is not None
                 else None
             )
-            command_deadline = deadline.remaining()
+
+            def _close_attempt_reservations() -> None:
+                if equivalence_reservation is not None:
+                    equivalence_reservation.close()
+                if kill_signal_reservation is not None:
+                    kill_signal_reservation.close()
+
+            try:
+                lane_remaining = deadline.remaining()
+                lane_bound = (
+                    budget_per_candidate_seconds is None
+                    or budget_per_candidate_seconds >= lane_remaining
+                )
+                command_deadline = lane_remaining
+                if (
+                    budget_per_candidate_seconds is not None
+                    and budget_per_candidate_seconds < command_deadline
+                ):
+                    command_deadline = budget_per_candidate_seconds
+                command_started_monotonic = time.monotonic()
+                resource_limits_before = _read_candidate_resource_counters()
+                oom_before = oom_counter() if oom_guard_active else None
+                if oom_guard_active and (
+                    type(oom_before) is not int or oom_before < 0
+                ):
+                    raise AssayError(
+                        "cgroup memory.events became unavailable before a native "
+                        "R2 attempt; refusing to classify this candidate",
+                        outcome=Outcome.BUDGET_EXCEEDED,
+                        reason_code=ReasonCode.LANE_TIMEOUT,
+                    )
+                execution_error: BaseException | None = None
+                result: CommandResult | None = None
+                try:
+                    result = execute_plan(
+                        attempt_plan,
+                        cwd=snapshot.project_root,
+                        timeout=command_deadline,
+                        process_runner=process_runner,
+                        clock=clock,
+                    )
+                except BaseException as exc:
+                    execution_error = exc
+                # This is deliberately the first observation after execute_plan
+                # on both normal and exceptional exits: an OOM kill can never
+                # be hidden by a later resource-counter read or classification.
+                oom_after = oom_counter() if oom_guard_active else None
+                if oom_guard_active and (
+                    type(oom_after) is not int
+                    or oom_after < 0
+                    or oom_after < oom_before
+                ):
+                    raise AssayError(
+                        "cgroup memory.events became unavailable or reset during a "
+                        "native R2 attempt; refusing to classify this candidate",
+                        outcome=Outcome.BUDGET_EXCEEDED,
+                        reason_code=ReasonCode.LANE_TIMEOUT,
+                    ) from execution_error
+                if (
+                    oom_guard_active
+                    and type(oom_after) is int
+                    and type(oom_before) is int
+                    and oom_after > oom_before
+                ):
+                    raise AssayError(
+                        "cgroup oom_kill increased during a native R2 attempt; "
+                        "the candidate is unclassified and will be retried on resume",
+                        outcome=Outcome.BUDGET_EXCEEDED,
+                        reason_code=ReasonCode.LANE_TIMEOUT,
+                    ) from execution_error
+                if execution_error is not None:
+                    raise execution_error
+                assert result is not None
+                resource_limit_evidence = _candidate_resource_limit_evidence(
+                    resource_limits_before, _read_candidate_resource_counters()
+                )
+            except BaseException:
+                _close_attempt_reservations()
+                raise
             if (
-                budget_per_candidate_seconds is not None
-                and budget_per_candidate_seconds < command_deadline
+                lane_bound
+                and result.outcome is Outcome.BUDGET_EXCEEDED
+                and result.reason_code is ReasonCode.LANE_TIMEOUT
             ):
-                command_deadline = budget_per_candidate_seconds
-            command_started_monotonic = time.monotonic()
-            resource_limits_before = _read_candidate_resource_counters()
-            result = execute_plan(
-                attempt_plan,
-                cwd=snapshot.project_root,
-                timeout=command_deadline,
-                process_runner=process_runner,
-                clock=clock,
-            )
-            resource_limit_evidence = _candidate_resource_limit_evidence(
-                resource_limits_before, _read_candidate_resource_counters()
-            )
+                _close_attempt_reservations()
+                raise AssayError(
+                    "native R2 candidate reached the lane or campaign deadline; "
+                    "the attempt is unclassified and will be retried on resume",
+                    outcome=Outcome.BUDGET_EXCEEDED,
+                    reason_code=ReasonCode.LANE_TIMEOUT,
+                )
             command_finished_monotonic = time.monotonic()
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
             # (B091/D-23, P7 A4) Read back HERE, while this candidate's own
@@ -3303,6 +3686,7 @@ def _execute_mutation_jobs(
             if receipt_path is not None
             else None
         )
+        attempt_receipts[(index, attempt_name)] = receipt
         if target_node_id is not None:
             # A prefix replay is only an optimization when its result can be
             # verified against the saved witness. If a cgroup limit event
@@ -3368,184 +3752,361 @@ def _execute_mutation_jobs(
                 attempt_name="replay",
             )
             if replay is not None and _classified_bucket(replay) == "killed":
+                if cold_witness:
+                    facts = receipt_facts(attempt_receipts.pop((index, "replay"), None))
+                    if facts is not None and facts.duplicates == 0:
+                        replay = _dataclass_replace(
+                            replay,
+                            evidence=MutantEvidence(
+                                command="r2",
+                                collection_count=facts.collection_count,
+                                collection_sha256=facts.collection_sha256,
+                                hook_fingerprint_sha256=facts.hook_fingerprint_sha256,
+                            ),
+                        )
                 return _dataclass_replace(
                     replay,
                     elapsed_seconds=max(0.0, time.monotonic() - started_total),
                 )
-        full = _run_attempt(
+        if not cold_witness:
+            full = _run_attempt(
+                index,
+                target_node_id=None,
+                prior_verdict_sha256=None,
+                attempt_name="full",
+            )
+            assert full is not None
+            return _dataclass_replace(
+                full,
+                elapsed_seconds=max(0.0, time.monotonic() - started_total),
+            )
+
+        assert r2_facts is not None and coverage_facts is not None
+
+        def evidence_for(
+            receipt: Mapping[str, Any] | None,
+            *,
+            command: Literal["r2", "declared"],
+            started_count: int | None = None,
+            failed_call_index: int | None = None,
+        ) -> MutantEvidence | None:
+            facts = receipt_facts(receipt)
+            if facts is None or facts.duplicates != 0:
+                return None
+            if command == "r2" and facts.collection_sha256 != r2_facts.collection_sha256:
+                return None
+            if command == "declared" and facts.collection_sha256 != coverage_facts.collection_sha256:
+                return None
+            return MutantEvidence(
+                command=command,
+                collection_count=facts.collection_count,
+                collection_sha256=facts.collection_sha256,
+                hook_fingerprint_sha256=facts.hook_fingerprint_sha256,
+                started_count=started_count,
+                failed_call_index=failed_call_index,
+            )
+
+        cold = _run_attempt(
+            index,
+            target_node_id=None,
+            prior_verdict_sha256=None,
+            attempt_name="cold",
+            cold=True,
+            variant="r2",
+        )
+        assert cold is not None
+        cold_receipt = attempt_receipts.pop((index, "cold"), None)
+        cold_evidence = evidence_for(cold_receipt, command="r2")
+        if (
+            cold.resource_limit_evidence is not None
+            and cold.resource_limit_evidence.limit_hit
+        ) or (cold.result.returncode is not None and cold.result.returncode < 0):
+            return _dataclass_replace(
+                cold,
+                evidence=cold_evidence,
+                forced_bucket="crashed",
+                elapsed_seconds=max(0.0, time.monotonic() - started_total),
+            )
+        if cold.result.outcome is Outcome.FAIL:
+            proof = cold_witness_from_receipt(
+                cold_receipt,
+                process_exit_status=cold.result.returncode,
+                expected=r2_facts,
+            )
+            if proof is not None:
+                witness, started_count, failed_call_index = proof
+                if _classified_bucket(cold) != "killed":
+                    return _dataclass_replace(
+                        cold,
+                        evidence=cold_evidence,
+                        elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                    )
+                return _dataclass_replace(
+                    cold,
+                    execution=MutationExecution(
+                        mode="witness-cold",
+                        witness=MutationWitnessReceipt(**witness),
+                    ),
+                    evidence=evidence_for(
+                        cold_receipt,
+                        command="r2",
+                        started_count=started_count,
+                        failed_call_index=failed_call_index,
+                    ),
+                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                )
+        elif cold.result.outcome is Outcome.PASS:
+            if survivor_proof_ok(
+                cold_receipt,
+                process_exit_status=cold.result.returncode,
+                expected=r2_facts,
+                command="r2",
+            ):
+                return _dataclass_replace(
+                    cold,
+                    evidence=cold_evidence,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                )
+        else:
+            return _dataclass_replace(
+                cold,
+                evidence=cold_evidence,
+                elapsed_seconds=max(0.0, time.monotonic() - started_total),
+            )
+
+        declared = _run_attempt(
             index,
             target_node_id=None,
             prior_verdict_sha256=None,
             attempt_name="full",
+            variant="declared",
         )
-        assert full is not None
-        # `_run_attempt` attaches a full witness only when the completed
-        # attempt classifies as killed, so a non-killed full attempt cannot
-        # carry one to strip here.
+        assert declared is not None
+        declared_receipt = attempt_receipts.pop((index, "full"), None)
+        declared_evidence = evidence_for(declared_receipt, command="declared")
+        if (
+            declared.resource_limit_evidence is not None
+            and declared.resource_limit_evidence.limit_hit
+        ) or (declared.result.returncode is not None and declared.result.returncode < 0):
+            declared = _dataclass_replace(
+                declared, forced_bucket="crashed", evidence=declared_evidence
+            )
+        elif declared.result.outcome is Outcome.PASS:
+            proven = survivor_proof_ok(
+                declared_receipt,
+                process_exit_status=declared.result.returncode,
+                expected=coverage_facts,
+                command="declared",
+            )
+            declared = _dataclass_replace(
+                declared,
+                evidence=declared_evidence,
+                forced_bucket=None if proven else "crashed",
+            )
+        elif declared.result.outcome is Outcome.FAIL:
+            proven = declared_failure_proof_ok(
+                declared_receipt,
+                process_exit_status=declared.result.returncode,
+                expected=coverage_facts,
+                manifest_node_ids=manifest_node_ids,
+            )
+            witness = None
+            normal_bucket = _classified_bucket(declared)
+            if (
+                proven
+                and normal_bucket == "killed"
+                and isinstance(declared_receipt, Mapping)
+            ):
+                witness = MutationWitnessReceipt(
+                    node_id=declared_receipt["witness_node_id"],
+                    when="call",
+                    outcome="failed",
+                    session_exit_status=1,
+                    process_exit_status=1,
+                )
+            declared = _dataclass_replace(
+                declared,
+                evidence=declared_evidence,
+                forced_bucket=(
+                    None if proven else "crashed"
+                ),
+                execution=(
+                    MutationExecution(mode="full", witness=witness)
+                    if witness is not None
+                    else MutationExecution(mode="full")
+                ),
+            )
+        else:
+            declared = _dataclass_replace(declared, evidence=declared_evidence)
         return _dataclass_replace(
-            full,
+            declared,
             elapsed_seconds=max(0.0, time.monotonic() - started_total),
         )
 
+    def _record_candidate(position: int, run: _MutantRun) -> Mapping[str, Any]:
+        # The same classifier decides whether a witness is reusable and which
+        # terminal bucket this complete campaign records.
+        outcome_bucket = _classified_bucket(run)
+        # B111: diagnostic evidence only (never a classification input), built
+        # once so progress and state carry the identical resources object.
+        resources = {
+            "cpu_seconds": (
+                round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
+            ),
+            "peak_rss_bytes": run.peak_rss_bytes,
+            "phase_seconds": (
+                {name: round(value, 3) for name, value in run.phase_seconds.items()}
+                if run.phase_seconds is not None
+                else None
+            ),
+            "startup_seconds": (
+                dict(run.startup_seconds) if run.startup_seconds is not None else None
+            ),
+        }
+        resource_limit_evidence = run.resource_limit_evidence
+        assert resource_limit_evidence is not None
+        if state_root is not None:
+            # A store in play without a judge identity would write records that
+            # claim to be checkable and are not. Resolve one whenever a store
+            # is passed, and fail rather than persist unverifiable evidence.
+            assert judge is not None, (
+                "a mutation state record cannot be written without "
+                "the sweep's judge identity"
+            )
+            _write_mutation_state_record(
+                Path(state_root),
+                {
+                    **_progress_event(
+                        candidate_index=position,
+                        candidate_total=total,
+                        job=job_list[position],
+                    ),
+                    "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+                    "judge_sha256": judge,
+                    "source_sha256": hashlib.sha256(
+                        job_list[position].original_text.encode("utf-8")
+                    ).hexdigest(),
+                    "replacement_sha256": job_list[position].site.replacement_sha256,
+                    "lineno": job_list[position].site.lineno,
+                    "description": job_list[position].site.description,
+                    "outcome_bucket": outcome_bucket,
+                    "execution": run.execution.to_dict(),
+                    "evidence": run.evidence.to_dict() if run.evidence is not None else None,
+                    "resources": resources,
+                    "resource_limit_evidence": resource_limit_evidence.to_dict(),
+                    **(
+                        {"liveness_resource_evidence": run.liveness_resource_evidence}
+                        if run.liveness_resource_evidence is not None
+                        else {}
+                    ),
+                    **(
+                        {"campaign_deadline_sha256": campaign_deadline_sha256}
+                        if campaign_deadline_sha256 is not None
+                        else {}
+                    ),
+                    **_crash_diagnostic_tails(outcome_bucket, run.result),
+                },
+            )
+        # State is committed as soon as the future completes. Candidate
+        # progress is staged and emitted in order by the caller below.
+        return {
+            # (B064) This explicit event name replaced the old unnamed record.
+            "event": "candidate",
+            **_progress_event(
+                candidate_index=position,
+                candidate_total=total,
+                job=job_list[position],
+            ),
+            "outcome_bucket": outcome_bucket,
+            "execution_mode": run.execution.mode,
+            "elapsed_seconds": round(run.elapsed_seconds, 3),
+            "tests_completed": run.tests_completed,
+            **resources,
+            "resource_limit_evidence": resource_limit_evidence.to_dict(),
+            **(
+                {"liveness_resource_evidence": run.liveness_resource_evidence}
+                if run.liveness_resource_evidence is not None
+                else {}
+            ),
+        }
+
+    def _emit_ready(events: Sequence[Mapping[str, Any]]) -> None:
+        if write_progress is not None:
+            for event in events:
+                write_progress(event)
+
     results: list[_MutantRun | None] = [None] * total
     budget_exceeded_mask = [False] * total
-    fatal: AssayError | None = None
+    fatals: dict[int, AssayError] = {}
+    stop_submitting = False
+    next_to_submit = 0
+    event_buffer = _CandidateEventBuffer(total)
+    in_flight: dict[Future, int] = {}
 
-    with executor_factory(jobs) as pool:
-        index = 0
-        while index < total and fatal is None:
-            wave = list(range(index, min(index + jobs, total)))
-            futures = {}
-            for position in wave:
-                try:
-                    futures[pool.submit(_run_one, position)] = position
-                except RuntimeError as exc:
-                    fatal = AssayError(
-                        "could not start a native R2 candidate worker; the "
-                        "candidate sweep stopped before all mutants were run "
-                        f"({exc})",
-                        outcome=Outcome.ERROR,
-                        reason_code=ReasonCode.EXEC_FAILED,
-                    )
-                    break
-            wave_stopped = False
-            for future, position in futures.items():
-                try:
-                    results[position] = future.result()
-                except AssayError as exc:
-                    # The handoff's own wording: "catch ONLY that exact
-                    # BUDGET_EXCEEDED/LANE_TIMEOUT from deadline.remaining()".
-                    # Reviewer repair (phase 2): matching on the OUTCOME alone
-                    # also swallowed P22's `BUDGET_EXCEEDED`/
-                    # `SNAPSHOT_LIMIT_EXCEEDED`, which is a policy REFUSAL, not
-                    # a lane that ran out of time -- it would have been
-                    # relabelled `LANE_TIMEOUT` and reported as a per-identity
-                    # budget stop with the other identities still counted as
-                    # evidence, instead of propagating unchanged as the
-                    # payload-free R2 terminal the table reserves for a P22
-                    # worker failure.
-                    if (
-                        exc.outcome is Outcome.BUDGET_EXCEEDED
-                        and exc.reason_code is ReasonCode.LANE_TIMEOUT
-                    ):
-                        budget_exceeded_mask[position] = True
-                        wave_stopped = True
-                    elif fatal is None:
-                        fatal = exc
-                run = results[position]
-                if run is None:
-                    continue
-                # The same classifier decides whether a witness is reusable
-                # and which terminal bucket this complete campaign records.
-                # Keeping one path prevents replay and verdict policy from
-                # drifting on equivalence or kill-signal rules.
-                outcome_bucket = _classified_bucket(run)
-                # B111: diagnostic evidence only (never a classification
-                # input), built once so the progress event and the state
-                # record carry the identical object.
-                resources = {
-                    "cpu_seconds": (
-                        round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
-                    ),
-                    "peak_rss_bytes": run.peak_rss_bytes,
-                    "phase_seconds": (
-                        {name: round(value, 3) for name, value in run.phase_seconds.items()}
-                        if run.phase_seconds is not None
-                        else None
-                    ),
-                    "startup_seconds": (
-                        dict(run.startup_seconds) if run.startup_seconds is not None else None
-                    ),
-                }
-                resource_limit_evidence = run.resource_limit_evidence
-                assert resource_limit_evidence is not None
-                if write_progress is not None:
-                    write_progress(
-                        {
-                            # (B064) The per-candidate record was the ONE
-                            # record with no `event` key at all, so a reader
-                            # identified it by the absence of a name --
-                            # exactly the thing a closed vocabulary exists
-                            # to remove. Added here rather than inside
-                            # `_progress_event`, which is shared with the
-                            # state record and has no business gaining a
-                            # progress-stream field.
-                            "event": "candidate",
-                            **_progress_event(
-                                candidate_index=position,
-                                candidate_total=total,
-                                job=job_list[position],
-                            ),
-                            "outcome_bucket": outcome_bucket,
-                            "elapsed_seconds": round(run.elapsed_seconds, 3),
-                            # (B091/D-23, P7 A4) `None` for every
-                            # non-liveness lane -- `run.tests_completed`
-                            # already carries that same `None` default
-                            # through from `_run_one`.
-                            "tests_completed": run.tests_completed,
-                            **resources,
-                            "resource_limit_evidence": resource_limit_evidence.to_dict(),
-                            **(
-                                {"liveness_resource_evidence": run.liveness_resource_evidence}
-                                if run.liveness_resource_evidence is not None
-                                else {}
-                            ),
-                        }
-                    )
-                if state_root is not None:
-                    # (B088) A store in play without a judge identity would
-                    # write records that claim to be checkable and are not.
-                    # The caller resolves one whenever it passes a store, so
-                    # this cannot happen -- and if a future edit made it
-                    # possible, failing here is far better than persisting a
-                    # verdict nothing can ever invalidate.
-                    assert judge is not None, (
-                        "a mutation state record cannot be written without "
-                        "the sweep's judge identity"
-                    )
-                    _write_mutation_state_record(
-                        Path(state_root),
-                        {
-                            **_progress_event(
-                                candidate_index=position,
-                                candidate_total=total,
-                                job=job_list[position],
-                            ),
-                                "schema_version": MUTATION_STATE_SCHEMA_VERSION,
-                                "judge_sha256": judge,
-                                "source_sha256": hashlib.sha256(
-                                    job_list[position].original_text.encode("utf-8")
-                                ).hexdigest(),
-                                "replacement_sha256": job_list[
-                                    position
-                                ].site.replacement_sha256,
-                                "lineno": job_list[position].site.lineno,
-                                "description": job_list[position].site.description,
-                                "outcome_bucket": outcome_bucket,
-                                "execution": run.execution.to_dict(),
-                                "resources": resources,
-                                "resource_limit_evidence": resource_limit_evidence.to_dict(),
-                                **(
-                                    {
-                                        "liveness_resource_evidence": run.liveness_resource_evidence
-                                    }
-                                    if run.liveness_resource_evidence is not None
-                                    else {}
-                                ),
-                                **_crash_diagnostic_tails(outcome_bucket, run.result),
-                            },
+    try:
+        with executor_factory(jobs) as pool:
+            while True:
+                while (
+                    not stop_submitting
+                    and next_to_submit < total
+                    and len(in_flight) < jobs
+                ):
+                    position = next_to_submit
+                    try:
+                        future = pool.submit(_run_one, position)
+                    except RuntimeError as exc:
+                        fatals[position] = AssayError(
+                            "could not start a native R2 candidate worker; the "
+                            "candidate sweep stopped before all mutants were run "
+                            f"({exc})",
+                            outcome=Outcome.ERROR,
+                            reason_code=ReasonCode.EXEC_FAILED,
                         )
-            index = wave[-1] + 1
-            if fatal is not None or wave_stopped:
-                for leftover in range(index, total):
-                    budget_exceeded_mask[leftover] = True
-                break
+                        stop_submitting = True
+                        break
+                    in_flight[future] = position
+                    next_to_submit += 1
+
+                if not in_flight:
+                    break
+                done, _ = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
+                for future in sorted(done, key=in_flight.__getitem__):
+                    position = in_flight.pop(future)
+                    try:
+                        results[position] = future.result()
+                    except AssayError as exc:
+                        if (
+                            exc.outcome is Outcome.BUDGET_EXCEEDED
+                            and exc.reason_code is ReasonCode.LANE_TIMEOUT
+                        ):
+                            budget_exceeded_mask[position] = True
+                        else:
+                            fatals[position] = exc
+                        stop_submitting = True
+                    run = results[position]
+                    if run is None:
+                        event_buffer.resolve_without_event(position)
+                    else:
+                        event_buffer.stage(position, _record_candidate(position, run))
+                _emit_ready(event_buffer.drain_contiguous())
+
+        if stop_submitting:
+            for leftover in range(next_to_submit, total):
+                budget_exceeded_mask[leftover] = True
+                event_buffer.resolve_without_event(leftover)
+        _emit_ready(event_buffer.drain_contiguous())
+    finally:
+        # A non-AssayError exit still leaves each already-written state record
+        # with its candidate event. Skipping unresolved gaps is allowed only
+        # on this abnormal path; remaining events are emitted in index order.
+        _emit_ready(event_buffer.drain_all_ascending())
 
     # A-195: a mutant that left Git-visible dirt/HEAD drift is never folded
-    # into `crashed` -- the whole R2 claim becomes the unchanged payload-free
-    # pair, exactly like a P22 structural failure elsewhere in the lane.
-    if fatal is not None:
-        raise fatal
+    # into `crashed`. After all submitted workers drain, choose the fatal at
+    # the lowest observed candidate position so completion order cannot pick
+    # the lane's terminal cause.
+    if fatals:
+        raise fatals[min(fatals)]
 
     # (B091/RW-33, P7 A3) Built generically from `MUTATION_BUCKETS`, matching
     # the ingested path's own construction a few hundred lines down --
@@ -3590,6 +4151,7 @@ def _execute_mutation_jobs(
                 kill_signal=kill_signal,
                 execution=run.execution,
                 resource_limit_evidence=run.resource_limit_evidence,
+                evidence=run.evidence,
             )
         )
 

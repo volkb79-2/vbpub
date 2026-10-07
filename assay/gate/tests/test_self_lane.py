@@ -13,11 +13,14 @@ enforces it is a fact split across two files with nothing holding it together.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -394,6 +397,261 @@ def test_the_full_qualification_driver_requires_the_same_commit_tester_unified_r
     assert '${receipt_args[@]+"${receipt_args[@]}"}' in script
 
 
+def test_b105_builds_a_commit_deterministic_wheel_and_checks_deadline_before_lane_work():
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'source_epoch="$(assay_git -C "$scratch/source" '
+        'log -1 --format=%ct "$source_commit")"'
+    ) in script
+    assert '[[ "$source_epoch" =~ ^[0-9]+$ ]]' in script
+    assert (
+        'SOURCE_DATE_EPOCH="$source_epoch" \\\n"$scratch/build-venv/bin/python" -m pip wheel'
+    ) in script
+
+    digest = script.index('wheel_digest="$(sha256sum "$wheel"')
+    existing_deadline_check = script.index('if [[ -e "$deadline" || -L "$deadline" ]]')
+    run_closure = script.index('B105_PHASE=install-wheel-and-tester-test-closure')
+    assert digest < existing_deadline_check < run_closure
+    early_check = script.index("check_campaign_wheel_digest", existing_deadline_check)
+    assert existing_deadline_check < early_check < run_closure
+    assert "--deadline-wheel-check-only" in script
+    campaign_ready = script.index('echo "B105_CAMPAIGN_DEADLINE=$deadline"')
+    persisted_check = script.index("check_campaign_wheel_digest", campaign_ready)
+    assert campaign_ready < persisted_check < script.index("run_and_verify_lane() {")
+
+
+def test_b105_builds_identical_wheels_from_same_oid_with_different_checkout_mtimes(
+    tmp_path,
+):
+    repo_root = PROJECT_ROOT.parent
+    git_prefix = [
+        "git",
+        "-c",
+        "safe.directory=*",
+        "-c",
+        "maintenance.auto=false",
+        "-c",
+        "maintenance.autoDetach=false",
+        "-c",
+        "gc.autoDetach=false",
+    ]
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            [*git_prefix, *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    source_commit = git("-C", str(repo_root), "rev-parse", "HEAD")
+    source_tree = git("-C", str(repo_root), "rev-parse", "HEAD^{tree}")
+    source_epoch = git("-C", str(repo_root), "log", "-1", "--format=%ct", source_commit)
+    assert re.fullmatch(r"[0-9]+", source_epoch)
+
+    distribution = PROJECT_ROOT / "gate" / "distribution"
+    build_venv = tmp_path / "build-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(build_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    build_python = build_venv / "bin" / "python"
+    install = subprocess.run(
+        [
+            str(build_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-index",
+            "--find-links",
+            str(distribution / "build-wheelhouse"),
+            "--require-hashes",
+            "-r",
+            str(distribution / "build-requirements.txt"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert install.returncode == 0, install.stderr
+
+    wheel_digests = []
+    checkout_timestamps = []
+    for name, timestamp in (("early", 1_600_000_000), ("late", 1_700_000_000)):
+        checkout = tmp_path / f"checkout-{name}"
+        git("clone", "--quiet", "--shared", "--no-checkout", str(repo_root), str(checkout))
+        git("-C", str(checkout), "checkout", "--quiet", "--detach", source_commit)
+        assert git("-C", str(checkout), "rev-parse", "HEAD") == source_commit
+        assert git("-C", str(checkout), "rev-parse", "HEAD^{tree}") == source_tree
+
+        package = checkout / "assay"
+        for path in sorted(
+            package.rglob("*"), key=lambda item: len(item.parts), reverse=True
+        ):
+            if not path.is_symlink():
+                os.utime(path, (timestamp, timestamp))
+        os.utime(package, (timestamp, timestamp))
+        checkout_timestamps.append((package / "README.md").stat().st_mtime)
+
+        output = tmp_path / f"dist-{name}"
+        output.mkdir()
+        built = subprocess.run(
+            [
+                str(build_python),
+                "-m",
+                "pip",
+                "wheel",
+                "--no-index",
+                "--no-build-isolation",
+                "--no-deps",
+                "--wheel-dir",
+                str(output),
+                str(package),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SOURCE_DATE_EPOCH": source_epoch},
+            timeout=120,
+        )
+        assert built.returncode == 0, built.stderr
+        wheels = sorted(output.glob("assay-*.whl"))
+        assert len(wheels) == 1, built.stdout
+        wheel_digests.append(hashlib.sha256(wheels[0].read_bytes()).hexdigest())
+
+    assert checkout_timestamps == [1_600_000_000, 1_700_000_000]
+    assert wheel_digests[0] == wheel_digests[1]
+
+
+@pytest.mark.parametrize(
+    ("stored_digest", "expected_digest", "expected_calls", "expected_status"),
+    [
+        ("a" * 64, "a" * 64, ["plan", "run"], 0),
+        ("a" * 64, "b" * 64, [], 2),
+    ],
+)
+def test_b105_wheel_mismatch_stops_before_plan_or_run(
+    tmp_path, stored_digest, expected_digest, expected_calls, expected_status
+):
+    import sys
+
+    source = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("check_campaign_wheel_digest() {")
+    end = source.index(
+        'echo "B105_PHASE=install-wheel-and-tester-test-closure"', start
+    )
+    guard = source[start:end]
+    scratch = tmp_path / "scratch"
+    checker_dir = scratch / "source" / "assay" / "tools"
+    checker_dir.mkdir(parents=True)
+    (checker_dir / "b105_report_check.py").symlink_to(
+        PROJECT_ROOT / "tools" / "b105_report_check.py"
+    )
+    deadline = tmp_path / "campaign-deadline.json"
+    deadline.write_text(
+        json.dumps({"wheel_sha256": stored_digest}), encoding="utf-8"
+    )
+    calls = tmp_path / "lane-calls.txt"
+    harness = (
+        "set -euo pipefail\n"
+        "tester_python=\"$1\"; scratch=\"$2\"; deadline=\"$3\"; "
+        "wheel_digest=\"$4\"; calls=\"$5\"\n"
+        "die() { printf 'self-qualification-gate: %s\\n' \"$*\" >&2; exit 2; }\n"
+        "assay() { printf '%s\\n' \"$*\" >> \"$calls\"; }\n"
+        f"{guard}"
+        "assay plan\nassay run\n"
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            harness,
+            "b105-wheel-guard-test",
+            sys.executable,
+            str(scratch),
+            str(deadline),
+            expected_digest,
+            str(calls),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == expected_status, result.stderr
+    observed_calls = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    assert observed_calls == expected_calls
+    if expected_status:
+        assert "does not match the deterministic source wheel" in result.stderr
+
+
+def test_b105_deadline_wheel_guard_accepts_only_the_persisted_wheel(tmp_path, capsys):
+    checker = _load_b105_checker()
+    deadline = tmp_path / "deadline.json"
+    expected = "a" * 64
+    deadline.write_text(json.dumps({"wheel_sha256": expected}), encoding="utf-8")
+
+    assert checker.verify_deadline_wheel_sha256(deadline, expected_sha256=expected) is None
+
+    result = checker.main(
+        [
+            "--deadline-wheel-check-only",
+            "--deadline",
+            str(deadline),
+            "--expected-wheel-sha256",
+            "b" * 64,
+        ]
+    )
+    output = capsys.readouterr()
+    assert result == 2
+    assert "does not match the deterministic source wheel" in output.err
+    assert output.out == ""
+
+
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ('{"other": 1}', "no wheel_sha256"),
+        ('{"wheel_sha256": null}', "invalid wheel_sha256"),
+        ('{"wheel_sha256": "' + "a" * 63 + '"}', "invalid wheel_sha256"),
+        (
+            '{"wheel_sha256": "' + "a" * 64 + '", "wheel_sha256": "' + "a" * 64 + '"}',
+            "duplicate JSON key",
+        ),
+        ("not json", "not valid unique-key JSON"),
+    ],
+)
+def test_b105_deadline_wheel_guard_refuses_missing_or_malformed_binding(
+    tmp_path, contents, message
+):
+    checker = _load_b105_checker()
+    deadline = tmp_path / "deadline.json"
+    deadline.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        checker.verify_deadline_wheel_sha256(deadline, expected_sha256="a" * 64)
+
+
+def test_b105_deadline_wheel_guard_refuses_symlinks(tmp_path):
+    checker = _load_b105_checker()
+    target = tmp_path / "outside.json"
+    target.write_text(json.dumps({"wheel_sha256": "a" * 64}), encoding="utf-8")
+    deadline = tmp_path / "deadline.json"
+    deadline.symlink_to(target)
+
+    with pytest.raises(ValueError, match="cannot read campaign deadline"):
+        checker.verify_deadline_wheel_sha256(deadline, expected_sha256="a" * 64)
+
+
 def test_o12_the_driver_plans_before_it_runs_an_r2_lane_and_hands_the_plan_to_the_checker():
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     start = script.index("run_and_verify_lane() {")
@@ -403,6 +661,12 @@ def test_o12_the_driver_plans_before_it_runs_an_r2_lane_and_hands_the_plan_to_th
     assert '"$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2' in body
     assert '--plan-json "$plan_path"' in body
     assert '${plan_args[@]+"${plan_args[@]}"}' in body
+    assert 'lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")' in body
+    assert 'r2_manifest_args=(--r2-manifest "$r2_manifest_path")' in body
+    assert 'rm -f -- "$r2_manifest_path"' in body
+    assert '--deadline "$deadline"' in body
+    assert '${r2_manifest_args[@]+"${r2_manifest_args[@]}"}' in body
+    assert 'echo "B105_R2_MANIFEST=$r2_manifest_path"' in body
     # Plan first, then run, then the checker that reads the plan.
     assert (
         body.index('"$assay_bin" plan "$lane"')
@@ -450,6 +714,7 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
         ".assay/coverage-self-qualification-preflight-snapshots",
+        ".assay/r2-manifest-self-qualification.txt",
     ]
 
     preflight = run_gate["lanes"][PREFLIGHT_ID]
@@ -468,6 +733,20 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
         encoding="utf-8"
     )
     assert "--resume" in script
+    assert "campaign init" in script
+    assert '--campaign-deadline "$deadline"' in script
+    assert 'lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")' in script
+    assert '--deadline "$deadline"' in script
+    assert "B105_CAMPAIGN_DEADLINE=$deadline" in script
+    assert "B105_CAMPAIGN_INIT_REFUSED=1" in script
+    assert "B105_TIMEOUT_FAILSAFE=1" in script
+    run_start = script.index('if timeout --verbose --signal=TERM --kill-after=30s')
+    verify_start = script.index('echo "B105_PHASE=assay-verify-$lane"', run_start)
+    wrapped_run = script[run_start:verify_start]
+    assert '"$assay_bin" run "$lane"' in wrapped_run
+    assert "run_status >= 124" in wrapped_run
+    assert wrapped_run.index("B105_TIMEOUT_FAILSAFE=1") > wrapped_run.index("run_status >= 124")
+    assert script.index("B105_TIMEOUT_FAILSAFE=1", run_start) < verify_start
     assert 'local progress_path=".assay/progress-$lane.jsonl"' in script
     assert "git clone --no-local --no-checkout" in script
     assert "--require-hashes" in script
