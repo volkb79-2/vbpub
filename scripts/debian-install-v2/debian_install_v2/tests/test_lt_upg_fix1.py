@@ -107,7 +107,10 @@ def test_full_mode_after_merge_allows_all_four_pockets(tmp_path, name):
 
 @pytest.mark.parametrize("mode", ["full", "security-only"])
 def test_the_clear_lines_come_first(tmp_path, mode):
-    ops = apt_ops(generated_51(tmp_path, mode))
+    text = generated_51(tmp_path, mode)
+    # LT-F-v1001-12 / LT-F-r1002-05: literally lines 1-2, comment block after.
+    assert text.splitlines()[:2] == [f"#clear {ORIGINS};", f"#clear {ALLOWED_ORIGINS};"]
+    ops = apt_ops(text)
     assert ops[0] == ("clear", ORIGINS) and ops[1] == ("clear", ALLOWED_ORIGINS)
     assert all(op[0] == "add" for op in ops[2:]) and len(ops) > 2
 

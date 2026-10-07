@@ -1872,6 +1872,41 @@ def install_from_payload(
         raise CliFailure(_http_failure_message(exc)) from exc
 
 
+def _customscript_key_recipe_problem(custom_script: str) -> str:
+    """Return a message when a debian-install-v2 customScript asks to retain the
+    controller key but carries neither a key nor the {{CONTROLLER_SSH_PUBKEY}}
+    marker (it could never install one; the host would be unreachable), else "".
+
+    Only a script that embeds a VBPUB_CONFIG_EXTRA_JSON config is inspected;
+    any other opaque customScript is left alone.
+    """
+    if "{{CONTROLLER_SSH_PUBKEY}}" in custom_script:
+        return ""
+    try:
+        tokens = shlex.split(custom_script)
+    except ValueError:
+        return ""
+    for token in tokens:
+        if not token.startswith("VBPUB_CONFIG_EXTRA_JSON="):
+            continue
+        try:
+            config = json.loads(token.split("=", 1)[1])
+        except ValueError:
+            return ""
+        if (
+            isinstance(config, dict)
+            and config.get("retain_controller_ssh_key") is True
+            and not str(config.get("controller_ssh_pubkey") or "").strip()
+        ):
+            return (
+                "customScript sets retain_controller_ssh_key=true but has neither a "
+                "controller_ssh_pubkey nor the {{CONTROLLER_SSH_PUBKEY}} marker, so it "
+                "could never install a key; rebuild it with "
+                "`debian-install-v2.py build-customscript --controller-ssh-placeholder`"
+            )
+    return ""
+
+
 def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Expand only the provider-neutral controller-key marker.
 
@@ -1885,6 +1920,10 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
         return expanded
 
     controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "") or CONTROLLER_SSH_PUBLIC_KEY
+
+    problem = _customscript_key_recipe_problem(cs)
+    if problem:
+        raise ValueError(problem)
 
     def shell_single_quote_contents(value: str) -> str:
         return value.replace("'", "'\"'\"'")

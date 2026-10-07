@@ -19,7 +19,7 @@ from .actions import ActionError, HostActions
 from .config import (
     Config, ConfigError, load_config, persisted_config_data, require_notify_credentials, save_config,
 )
-from .customscript import build_customscript_bundle
+from .customscript import build_customscript_bundle, describe_fetch_source
 from .installer import Installer, InstallerError
 from .notify import NotifyConfigError, validate_host_label, validate_webhook_url
 from .state import StateError, StateStore
@@ -344,6 +344,15 @@ def _build_customscript(args: Any, runtime: Any) -> int:
         )
     except (ValueError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
+    # Recipe hazard: say which branch/commit the host will run (the default is
+    # `main`, which silently ran old code on a feature-branch test).
+    info_lines, warning_lines = describe_fetch_source(
+        args.repo_url, args.repo_branch, checkout_dir=str(Path(__file__).resolve().parent),
+    )
+    for line in info_lines:
+        runtime.output.info(line)
+    for line in warning_lines:
+        runtime.output.warn(line)
     if (config.telegram_bot_token or config.mattermost_webhook_url) and not runtime.debug_raw:
         raise CliFailure(
             "the generated bundle contains a notification secret (Telegram bot token or "

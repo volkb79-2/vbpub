@@ -59,8 +59,16 @@ failures in journald. `status` shows persisted state and recent logs.
 `log_dir` (default `/var/log/debian-install`) is NOT written by the installer:
 nothing creates it or logs into it. Stage1 output goes to the provider's
 `/root/custom_script.output*` files, stage2 to `stage2_output`, failures to
-journald. `status` only lists files that happen to exist under `log_dir`, so the
-directory is normally absent on a host (live finding LT-F-v1001-08).
+journald. The directory is normally absent on a host (live finding
+LT-F-v1001-08); v1 wrote there, v2 deliberately does not, so the field is a
+legacy compatibility key (the wizard labels it so). `status` lists files under
+`log_dir` if they exist, plus `stage2_output` and `/root/custom_script.output*`.
+
+Persistent journald is configured right after the controller-key step, the
+first real work in stage1 (LT-F-v1001-13), so the rest of stage1 is in the
+persistent journal. Only the few seconds before it (bootstrap download, the
+key step) stay in the volatile journal; their output is in
+`custom_script.output`.
 
 The provider's `/root/custom_script` (and its `.output*` files) can contain the
 Mattermost webhook URL; stage1 chmods them to 0600 early (LT-F-v1001-07). The

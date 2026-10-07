@@ -191,6 +191,31 @@ class BootstrapError(SystemExit):
         super().__init__(f"bootstrap-remote: {message}")
 
 
+PROVIDER_FILE_DIR = Path("/root")
+
+
+def restrict_provider_files(root: Path | None = None) -> None:
+    """chmod 0600 every `<root>/custom_script*` file (the provider's script,
+    custom_script.output and .output2). Best effort, never raises.
+
+    Called as the VERY FIRST action of main(), before config parsing or
+    anything else that can fail (LT-F-r1002-03): the script and its output can
+    hold the webhook URL, and an early failure used to leave a 0700 script and
+    a 0644 output behind.
+    """
+    base = PROVIDER_FILE_DIR if root is None else root
+    try:
+        candidates = sorted(base.glob("custom_script*"))
+    except OSError:
+        return
+    for path in candidates:
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.chmod(0o600)
+        except OSError as exc:
+            print(f"bootstrap-remote: could not chmod 0600 {path}: {exc}", file=sys.stderr)
+
+
 def _env_bool(name: str) -> bool | None:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -263,10 +288,27 @@ def build_config() -> dict:
     return config
 
 
+def redact_url(url: str) -> str:
+    """`url` without userinfo (user[:token]@), for DISPLAY only (logs, errors,
+    stage output and notifications); the real URL is still used for the fetch."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if "@" not in parts.netloc:
+            return url
+        host = parts.hostname or ""
+        if ":" in host:  # IPv6 literal
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+    except ValueError:
+        return "<unparseable url redacted>"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool) -> None:
     tarball_url = f"{repo_url}/archive/refs/heads/{branch}.tar.gz"
+    shown_url = redact_url(tarball_url)
     if debug:
-        print(f"[bootstrap-remote] downloading {tarball_url}", file=sys.stderr)
+        print(f"[bootstrap-remote] downloading {shown_url}", file=sys.stderr)
     request = urllib.request.Request(tarball_url, headers={"User-Agent": USER_AGENT})
     written = 0
     try:
@@ -297,16 +339,16 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                         target.chmod(target.stat().st_mode | 0o111)
                     written += 1
     except urllib.error.URLError as exc:
-        raise BootstrapError(f"could not fetch {tarball_url}: {exc}") from None
+        raise BootstrapError(f"could not fetch {shown_url}: {exc}") from None
     except tarfile.TarError as exc:
         # A flaky connection on an unattended remote host can truncate the
         # gzip/tar stream mid-download -- tarfile.ReadError and friends are
         # not URLError subclasses, and would otherwise surface as a bare
         # traceback instead of this tool's own diagnostic.
-        raise BootstrapError(f"corrupt or truncated download from {tarball_url}: {exc}") from None
+        raise BootstrapError(f"corrupt or truncated download from {shown_url}: {exc}") from None
     if written == 0:
         raise BootstrapError(
-            f"downloaded {tarball_url} but required source tree was empty or missing: "
+            f"downloaded {shown_url} but required source tree was empty or missing: "
             f"{'/'.join(SUBTREE)} — wrong REPO_URL/REPO_BRANCH, or the tree moved"
         )
     if debug:
@@ -438,6 +480,7 @@ def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> P
 
 
 def main() -> int:
+    restrict_provider_files()  # LT-F-r1002-03: first action, before anything can fail
     debug = bool(_env_bool("DEBUG_MODE"))
     repo_url = os.environ.get("REPO_URL", REPO_URL_DEFAULT).rstrip("/")
     branch = os.environ.get("REPO_BRANCH", REPO_BRANCH_DEFAULT)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 import urllib.parse
 from dataclasses import asdict
 from typing import Any
@@ -28,6 +29,26 @@ def _validate_source(value: str, name: str, *, url: bool = True) -> str:
     return value
 
 
+def redact_url(url: str) -> str:
+    """Return `url` with any userinfo (user, user:token) removed, for DISPLAY only.
+
+    A repo URL such as https://user:TOKEN@host/x.git passes `_validate_source`;
+    printing it would leak the credential into logs and terminals. The real URL
+    is still used for the fetch and `git ls-remote`.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+        if "@" not in parts.netloc:
+            return url
+        if ":" in host:  # IPv6 literal
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+    except ValueError:
+        return "<unparseable url redacted>"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def _bootstrap_launcher_source(bootstrap_url: str) -> str:
     """Return a Python launcher that downloads and executes the bootstrap.
 
@@ -35,7 +56,14 @@ def _bootstrap_launcher_source(bootstrap_url: str) -> str:
     propagates the fetch failure instead of returning the last command's status.
     """
     return (
-        "import sys\n"
+        # LT-F-r1002-03: first action, before the download can fail.
+        "import glob, os, sys\n"
+        "for _p in glob.glob('/root/custom_script*'):\n"
+        "    try:\n"
+        "        if os.path.isfile(_p) and not os.path.islink(_p):\n"
+        "            os.chmod(_p, 0o600)\n"
+        "    except OSError:\n"
+        "        pass\n"
         "import urllib.request\n"
         f"url = {bootstrap_url!r}\n"
         "try:\n"
@@ -104,6 +132,17 @@ def build_customscript_bundle(
                 "--controller-ssh-placeholder"
             )
         config_data["controller_ssh_pubkey"] = CONTROLLER_SSH_PUBKEY_MARKER
+    elif config.retain_controller_ssh_key and not config.controller_ssh_pubkey.strip():
+        # LT recipe hazard: retention was requested but the script would carry no
+        # key (and no marker for the provider to fill), so it could never install
+        # one -- the host would be unreachable. There is no legitimate no-key use
+        # of retain_controller_ssh_key=true, so no opt-out flag exists.
+        raise ValueError(
+            "retain_controller_ssh_key is true but no controller key is available: "
+            "pass --controller-ssh-placeholder (the provider tool substitutes the key) "
+            "or set controller_ssh_pubkey in the config; this script could never "
+            "install a key"
+        )
 
     config_json = json.dumps(config_data, sort_keys=True, separators=(",", ":"))
     env_parts = [
@@ -124,3 +163,58 @@ def build_customscript_bundle(
         "customScript": custom_script,
         "completionMarker": f"{config.state_dir}/stage2_done",
     }
+
+
+def _git_output(argv: list[str], cwd: str | None = None) -> str:
+    """Best-effort git call: stdout stripped, or "" on any failure."""
+    try:
+        completed = subprocess.run(
+            ["git", *argv], cwd=cwd, capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def describe_fetch_source(
+    repo_url: str,
+    repo_branch: str,
+    *,
+    checkout_dir: str | None = None,
+    git=None,
+) -> tuple[list[str], list[str]]:
+    """Describe what the host will fetch, as (info lines, warning lines).
+
+    The recipe hazard (LT-05 attempt 1): the default branch is `main`, so a
+    bundle built from a feature-branch checkout silently made the host run OLD
+    code. This reports the branch and the commit that branch resolves to on the
+    remote, and warns loudly when the local checkout is on another branch.
+    It never changes the default and never fails the build (git/network
+    problems only degrade the message).
+    """
+    if git is None:
+        git = _git_output  # looked up at call time so tests can stub it
+    info: list[str] = []
+    warnings: list[str] = []
+    remote = git(["ls-remote", repo_url, f"refs/heads/{repo_branch}"])
+    remote_commit = remote.split()[0] if remote else ""
+    info.append(
+        f"the host will fetch branch '{repo_branch}' of {redact_url(repo_url)}, commit "
+        + (remote_commit if remote_commit else "(unresolved: could not query the remote)")
+    )
+    local_branch = git(["rev-parse", "--abbrev-ref", "HEAD"], checkout_dir)
+    local_commit = git(["rev-parse", "HEAD"], checkout_dir)
+    # A detached HEAD reports the literal "HEAD": it is not a branch, so only the
+    # commit comparison below applies.
+    if local_branch and local_branch != "HEAD" and local_branch != repo_branch:
+        warnings.append(
+            f"WARNING: the local checkout is on branch '{local_branch}' ({local_commit[:12]}) "
+            f"but the host will fetch '{repo_branch}'. Code on '{local_branch}' will NOT run "
+            f"on the host unless you pass --repo-branch {local_branch}."
+        )
+    elif local_commit and remote_commit and local_commit != remote_commit:
+        warnings.append(
+            f"WARNING: local HEAD {local_commit[:12]} differs from the remote '{repo_branch}' "
+            f"commit {remote_commit[:12]}: unpushed or stale; the host fetches the remote one."
+        )
+    return info, warnings

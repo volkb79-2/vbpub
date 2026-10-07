@@ -424,6 +424,9 @@ class Installer:
             _LOG.warning("could not install the controller key after failure: %s", exc)
 
     def install(self) -> None:
+        # LT-F-r1002-03: first action, before the state init / plan code that can
+        # fail early (stage1 repeats it; it is idempotent).
+        self._secure_bootstrap_files()
         with self.failure_guard("stage1"):
             self._install_guarded()
 
@@ -451,6 +454,10 @@ class Installer:
         self._stage1()
 
     def resume(self) -> None:
+        # Stage2 appends to custom_script.output2 (systemd StandardOutput=append:
+        # creates it 0644), so restrict /root/custom_script* before anything can
+        # write to or fail around it.
+        self._secure_bootstrap_files()
         # Before anything below can fail: a failure message must say stage2.
         self._notify_stage = "stage2"
         saved = self.state.load()
@@ -571,6 +578,13 @@ class Installer:
         state = self.state.load()
         log_dir = Path(self.config.log_dir)
         logs = sorted(str(path) for path in (log_dir.rglob("*") if log_dir.exists() else []) if path.is_file())
+        # LT-F-v1001-08: log_dir is a legacy, normally-absent directory; the real
+        # install logs are the provider's custom_script.output* and stage2_output,
+        # so list those when they exist (after the legacy ones: logs[-20:] keeps the tail).
+        real = [Path(self.config.stage2_output), *sorted(self._BOOTSTRAP_DIR.glob("custom_script.output*"))]
+        for path in real:
+            if path.is_file() and str(path) not in logs:
+                logs.append(str(path))
         return {
             **state,
             "logs": logs[-20:],
@@ -2593,7 +2607,12 @@ MaxFileSec=1month
             current_dump = self._current_partition_dump(root_start, root_size)
             current_entries = self._parse_partition_entries(current_dump)
             if number in current_entries:
+                self._mark_step("io_benchmark_cleanup", "warned", f"leftover partition {device} still present after removal")
                 raise InstallerError("io benchmark cleanup failed (leftover partition still present); stopping before swap placement")
+            self._mark_step(
+                "io_benchmark_cleanup", "planned" if self.actions.dry_run else "success",
+                f"leftover benchmark partition {device} from an earlier run removed",
+            )
 
         created = False
         mounted = False
@@ -2703,8 +2722,13 @@ MaxFileSec=1month
                     self._teardown_benchmark_partition(
                         number=number, mount_dir=mount_dir, mounted=mounted, pre_dump=current_dump
                     )
+                    self._mark_step(
+                        "io_benchmark_cleanup", "planned" if self.actions.dry_run else "success",
+                        f"throwaway benchmark partition {device} removed, layout verified",
+                    )
                 except InstallerError as exc:
                     detail = f"{exc}" + (f" (benchmark had also failed: {failure})" if failure else "")
+                    self._mark_step("io_benchmark_cleanup", "warned", f"cleanup of {device} failed: {exc}")
                     self._mark_step("io_benchmark", "failed", detail)
                     raise InstallerError(detail) from exc
         if unreapable is not None:
@@ -3197,7 +3221,7 @@ MaxFileSec=1month
         candidates.update(root.glob("custom_script.output*"))
         for path in sorted(candidates):
             try:
-                if path.is_file():
+                if path.is_file() and not path.is_symlink():
                     path.chmod(0o600)
             except OSError as exc:
                 _LOG.warning("could not chmod 0600 %s: %s", path, exc)
@@ -3205,6 +3229,13 @@ MaxFileSec=1month
     def _stage1(self) -> None:
         self._secure_bootstrap_files()
         self._configure_controller_ssh_key()
+        # LT-F-v1001-13: persistent journald FIRST (right after the controller
+        # key, which is what keeps a failed host reachable), so the rest of
+        # stage1 -- apt, docker, upgrade, the stage1 reboot decision -- is in
+        # the persistent journal. The step is a config-file write + a journald
+        # restart with no dependency on packages, users or apt state.
+        if self.config.run_journald_config:
+            self._configure_journald()
         # Held regardless of run_apt_auto_upgrade (Debian ships them enabled);
         # _release_apt_timers() restores them at the end of stage2.
         self._hold_apt_timers()
@@ -3214,8 +3245,6 @@ MaxFileSec=1month
         self._install_notify_helper()
         if self.config.run_user_config:
             self._configure_users()
-        if self.config.run_journald_config:
-            self._configure_journald()
         if self.config.run_docker_install:
             self._install_docker()
             self._configure_docker_daemon()

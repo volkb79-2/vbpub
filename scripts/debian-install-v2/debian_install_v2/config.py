@@ -47,6 +47,9 @@ class ConfigError(ValueError):
 class Config:
     schema_version: int = SCHEMA_VERSION
     fresh_install: bool = True
+    # LEGACY (v1 wrote its logs here). v2 never creates or writes this directory
+    # (LT-F-v1001-08): install logs are the provider's custom_script.output*,
+    # stage2_output, and journald. Kept so saved configs and LOG_DIR still load.
     log_dir: str = "/var/log/debian-install"
     state_dir: str = "/var/lib/vbpub/bootstrap"
     stage2_output: str = "/root/custom_script.output2"

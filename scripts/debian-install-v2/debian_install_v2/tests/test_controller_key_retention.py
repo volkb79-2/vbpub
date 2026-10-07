@@ -30,7 +30,11 @@ def test_retain_controller_ssh_key_field_exists_and_defaults_off():
 
 def test_retain_loads_from_json_and_bundle():
     assert load_config(raw_json='{"retain_controller_ssh_key": true}').retain_controller_ssh_key is True
-    assert build_customscript_bundle(Config(retain_controller_ssh_key=True))["config"]["retain_controller_ssh_key"] is True
+    bundle = build_customscript_bundle(Config(retain_controller_ssh_key=True), controller_ssh_placeholder=True)
+    assert bundle["config"]["retain_controller_ssh_key"] is True
+    # LT-POLISH: without the placeholder (or a key) the script could never install one.
+    with pytest.raises(ValueError, match="could never install a key"):
+        build_customscript_bundle(Config(retain_controller_ssh_key=True))
 
 
 @pytest.mark.parametrize("bad", ["yes", 1, None, "true"])
