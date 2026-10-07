@@ -198,6 +198,7 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
     portable printf, octal is)."""
     shim_dir = tmp_path / "shim"
     shim_dir.mkdir(exist_ok=True)
+    _TEST_OWNED_SHIM_DIRS.add(str(shim_dir))
     log = tmp_path / "docker-calls.log"
     log.write_text("")
     verdict_helper = tmp_path / "fake-assay-verdict.py"
@@ -423,21 +424,22 @@ def lane_execs(log: Path) -> list[list[str]]:
             if "--verdict-json" in call[-1]]
 
 
+# Shim directories THIS suite created itself (fake_docker's `tmp_path/shim`).
+# RG-87: only these may ever be written into; a pre-existing PATH directory
+# (e.g. the developer's ~/.local/bin) is never a legal shim target.
+_TEST_OWNED_SHIM_DIRS: set[str] = set()
+
+
 def shim_dir_of(monkeypatch) -> Path:
-    first = Path(os.environ["PATH"].split(":")[0])
-    try:
-        probe_fd, probe_name = tempfile.mkstemp(
-            prefix="run-gate-test-write-probe-", dir=first)
-    except OSError:
-        pass
-    else:
-        os.close(probe_fd)
-        os.unlink(probe_name)
-        return first
-    # tester-unified's estate venv bin is intentionally read-only. Tests that
-    # install a PATH shim must own a writable directory, even when they do not
-    # also install fake_docker().
+    first = os.environ["PATH"].split(":")[0]
+    if first and first in _TEST_OWNED_SHIM_DIRS:
+        return Path(first)
+    # RG-87: never write into a pre-existing PATH directory, writable or not
+    # (the old "first writable PATH entry" rule replaced the developer's real
+    # `assay` with a PASS-fabricating fake). Every shim goes to a private
+    # per-test directory that is PREPENDED to PATH.
     private = Path(tempfile.mkdtemp(prefix="run-gate-test-bin-"))
+    _TEST_OWNED_SHIM_DIRS.add(str(private))
     atexit.register(shutil.rmtree, private, ignore_errors=True)
     monkeypatch.setenv("PATH", f"{private}:{os.environ['PATH']}")
     return private
@@ -25242,3 +25244,31 @@ class TestRgNarrowRealContainer:
         # the refusal path with the same real repo: main checkout, no opt-in
         refused = run_tool(proj, "suite")
         assert refused.returncode == 2 and "refused" in refused.stderr
+
+
+def test_rg87_shims_never_land_in_a_preexisting_path_dir(tmp_path, monkeypatch):
+    """RG-87: PATH[0] is writable and pre-existing (the developer's
+    ~/.local/bin on the devcontainer). install_fake_assay must put its shim in
+    a PRIVATE dir it prepends to PATH, and leave the real dir untouched."""
+    real_bin = tmp_path / "real-user-bin"
+    real_bin.mkdir()
+    (real_bin / "assay").write_text("#!/bin/sh\necho REAL\n")
+    before = sorted((p.name, p.read_text()) for p in real_bin.iterdir())
+    monkeypatch.setenv("PATH", f"{real_bin}:{os.environ['PATH']}")
+
+    shim = install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n")
+
+    assert shim.parent != real_bin
+    assert os.environ["PATH"].split(":")[0] == str(shim.parent)
+    assert os.environ["PATH"].split(":")[1] == str(real_bin)
+    assert sorted((p.name, p.read_text()) for p in real_bin.iterdir()) == before
+    # a second shim in the same test reuses the private dir, not the real one
+    other = install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n", name="node")
+    assert other.parent == shim.parent
+    assert sorted((p.name, p.read_text()) for p in real_bin.iterdir()) == before
+
+
+def test_rg87_fake_docker_dir_is_reused_for_later_shims(tmp_path, monkeypatch):
+    fake_docker(tmp_path, monkeypatch)
+    assert install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n").parent == (
+        tmp_path / "shim")

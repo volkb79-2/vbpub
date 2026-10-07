@@ -83,7 +83,7 @@ by the full-suite run from a non-git temp dir).
    - Surviving mutants killed (all re-planted and confirmed failing): junit stale-mtime filter, junit `<error>` case,
      `dict.fromkeys` dedupe, and the standards wheel-build check ignoring the `handler` form
      (`test_standards_handler_form_without_builder_image_names_that_exact_problem`). The GIT_ strip plant was killed too.
-   - Filed ciu `CIU-129` and nyxloom `NL-31` (same `--maxfail` coverage-hiding pattern; those projects' configs unchanged).
+   - Filed ciu `CIU-129` and nyxloom `NL-31`, renumbered `NL-37` at the 2026-10-07 merge (same `--maxfail` coverage-hiding pattern; those projects' configs unchanged).
    - Gate: full suite `2 failed, 2905 passed, 10 skipped` (the two KI-54 tests only); `coverage` lane FAIL on those two;
      `canary` lane run twice, both FAIL on only those two (no flake).
 5. `CHANGES.md` not touched: record for the controller fold-in: BG-03 gate diagnosability, BG-04/REL-07 `cmru handler` in

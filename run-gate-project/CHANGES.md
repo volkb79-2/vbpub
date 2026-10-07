@@ -23,6 +23,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - feat: add estate cli version compatibility (05f373a40)
 
 ### Fixed
+- fix(run-gate-tests): RG-87 (also closes RG-83) test shims never land in a pre-existing PATH directory: `shim_dir_of` used the first writable `$PATH` entry, so a run outside tester-unified replaced the developer's real `~/.local/bin/assay` with a PASS-fabricating fake; shims now go to a private per-test dir prepended to PATH, and a `tests/conftest.py` session guard fails the session on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` (tests only, no `__revision__` change)
 - fix(run-gate): repair stdlib allowlist, guard selftest scratch mkdir, document cmru 6.0 dependency (5e19e9ac9)
 - fix(run-gate): launch release selftest in tester-unified (a496d2d4e); the `cmru.toml` release step runs `cmru tester-gate -- ./run-gate.py selftest` and requires cmru >= 6.0.0 (`--init`, cmru KI-52)
 - fix(run-gate): create selftest scratch root (623332171)

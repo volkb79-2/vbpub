@@ -1740,3 +1740,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** after the release, run `./run-gate.py gate` (full, including R2) against the `cmru-v6.0.0` tag, triage survivors, and backport fixes. Then revert `cmru.toml` `[steps.run-tests]` to `./run-gate.py gate`, delete the `gate-provisional` lane in `run-gate.toml`, and grep for `TODO(cmru-6.0 post-release)`.
 
 **Oracle:** a full `gate` verdict (with `.assay/mutation-cmru.json`) exists for the `cmru-v6.0.0` tag, every survivor is fixed or recorded, and no `TODO(cmru-6.0 post-release)` marker remains that this item owns.
+
+### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *fixed in the `cmru-hotfix-walk` branch, severity: major (release blocker)*
+
+**Observed:** `cmru release cmru --set-version 6.0.0` failed in `gate-provisional` with `cmru-release-gate: cannot inventory CMRU secret overlays: [Errno 13] Permission denied: '/workspaces/vbpub/nyxloom/mattermost/vol-postgres-data'`. `_secret_overlay_paths` in `tools/run_release_gate.py` walks the whole mount root and its `onerror` raised on any error; that directory is the live production Postgres data dir (`drwx------`, uid 70).
+
+**Fix:** a `PermissionError` on a directory whose owner is not the effective uid (or any path that vanished between listing and scanning, a bare `FileNotFoundError`; worktrees come and go on the shared tree) is skipped with a one-line stderr WARN naming it. Rationale: an overlay must be a regular file owned by the effective uid (`_read_secret`), and a foreign-owned directory we cannot list is equally unlistable for the gate container's mapped uid, so it can neither hold a usable overlay nor expose one. Every other error (own-uid PermissionError, other OSError, `filename` None, unknown owner) still fails closed.
+
+**Oracle:** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `/workspaces/vbpub` returns and WARNs for `vol-postgres-data`.

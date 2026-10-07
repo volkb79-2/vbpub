@@ -1,7 +1,7 @@
 ---
 kind: backlog-entry
 schema_version: 1
-id: NL-31
+id: NL-37
 title: "assay.toml session-extract lane runs pytest --maxfail=1 with --cov: a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test"
 status: open
 type: "bugfix"

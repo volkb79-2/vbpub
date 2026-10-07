@@ -196,13 +196,51 @@ The `all` profile removes checkpoint, word, time, and compaction stops. It
 includes short operator, Q&A, and assistant prose. API transport errors,
 thinking content, tool calls, and compaction prompts/summaries remain
 controlled by separate options. A detailed Claude Code or Codex inspection
-can include short tool labels and any explicit description/intent field the
-source provides, without printing tool
-inputs or results:
+can include tool calls, without printing tool results. `--tool-calls
+none|intent|intent-or-call|call` picks the rendering (Claude Code):
+`intent` is the call's own description/intent field, `intent-or-call` falls
+back to the one-line truncated call when no intent exists, `call` is the
+truncated call. `--tool-errors show|hide` (default `show`) renders FAILED tool
+results, truncated, independent of that choice. `--show-tool-calls` and
+`--show-tool-call-intent` remain as deprecated aliases with their exact prior
+output (name labels, optionally with intent):
 
 ```bash
 nyxloom-harness extract /path/to/session.jsonl --profile all \
-  --show-tool-calls --show-tool-call-intent > full-with-tool-labels.md
+  --tool-calls intent-or-call --tool-errors show > full-with-tool-calls.md
+```
+
+A failed call always prints its one-line cleaned call before the truncated
+error, in every `--tool-calls` mode. Compression is opt-in per option, applied
+before truncation: `--strip-cd-prefix`, `--path-aliases auto|none|NAME=/path`,
+`--edit-calls show|collapse|omit`, `--read-calls show|collapse`,
+`--effect-calls always|mode` (`always` prints an outside-effect Bash command
+even in `intent` mode) and `--timestamps all|gaps|none`
+(`--timestamp-gap-minutes`, default 5). `--successor-brief` turns on
+`--tool-calls intent-or-call --tool-errors show --ledger --strip-cd-prefix
+--path-aliases auto --edit-calls collapse --read-calls collapse --effect-calls
+always --timestamps gaps`; an explicit flag wins.
+
+`--preset` names four documented bundles of those options (exact expansions in
+`extract --help` and `docs/CLI-REFERENCE.md`; an explicit option always wins):
+`watch` follows a live session for an operator (operator messages and assistant
+prose only, timestamped, coloured on a terminal, interviews kept compactly; `--jsonl` emits
+`{v, ts, role, text, agent?}` lines, a stable versioned format for the VS Code extension), `successor` primes a
+fresh agent, `review` audits what an agent did at full fidelity, and `ledger`
+prints only external effects, touched files and stop state:
+
+```bash
+nyxloom-harness extract SESSION_LOG --preset watch --follow
+nyxloom-harness extract SESSION_LOG --preset watch --follow --jsonl
+```
+
+To prime a FRESH agent from a stopped Claude Code subagent's transcript, one
+command emits the original brief, the extract, a whole-session ledger with
+external effects, the stop state and the successor's order as one markdown
+document (see the `nyxloom-successor` skill):
+
+```bash
+nyxloom-harness extract agent-ID.jsonl --successor-brief --order @ORDER.md
 ```
 
 Codex interactive prompts and replies remain readable in the result. Every

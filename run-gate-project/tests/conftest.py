@@ -23,6 +23,10 @@ turns any such leak into an immediate, loud test failure instead of a silent
 directory nobody notices for nine days.
 """
 
+import os
+import sys
+from pathlib import Path
+
 import pytest
 
 # RUN_GATE_LOCK_DIR is production's own override knob for SHARED_LOCK_DIR
@@ -66,3 +70,93 @@ def isolate_shared_lock_dir(tmp_path_factory, monkeypatch):
         "(RW-46a — this is exactly how 493 stale run-gate-exec-*-runner."
         f"lock directories accumulated under production /tmp): {leftover_dirs}"
     )
+
+
+# RG-87: the session-level "no test writes into a real PATH directory" guard.
+# On 2026-10-06 a test helper wrote a PASS-fabricating fake `assay` into the
+# developer's real PATH[0] (~/.local/bin), replacing the user's real command.
+# Shims belong in a private per-test dir PREPENDED to PATH; this guard turns
+# any future regression into a loud, session-failing error.
+
+
+def guarded_dirs(environ=None) -> list[Path]:
+    """Every real directory a test must never write into: each PATH entry
+    plus `$HOME/.local/bin` and `$HOME/.venv/bin` (even if not on PATH)."""
+    environ = os.environ if environ is None else environ
+    entries = [p for p in environ.get("PATH", "").split(":") if p]
+    home = environ.get("HOME")
+    if home:
+        entries += [os.path.join(home, ".local", "bin"),
+                    os.path.join(home, ".venv", "bin")]
+    seen, out = set(), []
+    for entry in entries:
+        key = os.path.abspath(entry)
+        if key not in seen:
+            seen.add(key)
+            out.append(Path(key))
+    return out
+
+
+def snapshot_dirs(dirs) -> dict:
+    """{dir: None if absent else {entry name: (mode, size, mtime_ns)}}."""
+    snap: dict = {}
+    for directory in dirs:
+        if not directory.is_dir():
+            snap[str(directory)] = None
+            continue
+        listing = {}
+        try:
+            with os.scandir(directory) as it:
+                for entry in it:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    listing[entry.name] = (st.st_mode, st.st_size,
+                                           st.st_mtime_ns)
+        except OSError:
+            snap[str(directory)] = None
+            continue
+        snap[str(directory)] = listing
+    return snap
+
+
+def diff_snapshots(before: dict, after: dict) -> list[str]:
+    problems = []
+    for directory, old in before.items():
+        new = after.get(directory)
+        if old is None and new is not None:
+            problems.append(f"{directory}: directory was CREATED")
+            continue
+        if old is None or new is None:
+            continue
+        for name in sorted(new.keys() - old.keys()):
+            problems.append(f"{directory}/{name}: CREATED")
+        for name in sorted(old.keys() - new.keys()):
+            problems.append(f"{directory}/{name}: REMOVED")
+        for name in sorted(old.keys() & new.keys()):
+            if old[name] != new[name]:
+                problems.append(f"{directory}/{name}: MODIFIED")
+    return problems
+
+
+_PATH_GUARD_BEFORE: dict = {}
+
+
+def pytest_sessionstart(session):
+    _PATH_GUARD_BEFORE.clear()
+    _PATH_GUARD_BEFORE.update(snapshot_dirs(guarded_dirs()))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _PATH_GUARD_BEFORE:
+        return
+    problems = diff_snapshots(_PATH_GUARD_BEFORE,
+                              snapshot_dirs(guarded_dirs()))
+    if problems:
+        sys.stderr.write(
+            "\nRG-87 PATH-WRITE GUARD: the test session wrote into real PATH "
+            "/ HOME bin directories (tests must put shims in a private "
+            "per-test dir prepended to PATH):\n  "
+            + "\n  ".join(problems) + "\n")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED

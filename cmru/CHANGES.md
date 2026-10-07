@@ -23,7 +23,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
      The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
      generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
-     one-line pointer to the 6.0.x notes. -->
+     one-line pointer to the 6.0.x notes.
+
+     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
+     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
+     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
+     the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: release history -->
 

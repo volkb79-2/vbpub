@@ -4936,7 +4936,7 @@ Severity: Medium. Type: bugfix. Filed 2026-10-05 by the cmru program 2026-10 (pa
 
 **Fix direction.** Keep `--maxfail=1` only on the mutation-candidate runs the comment at ~:34 describes (an R2 candidate stopping at its first failure); drop it from the R0/R1/R3 lane that also produces coverage, and consider declaring `--junitxml` as an artifact.
 
-**Related.** cmru BG-03 (fixed in cmru's own lanes), assay B146 (verdict summary should name an R0 FAIL and the first failure), nyxloom NL-31 (same pattern in `nyxloom/assay.toml`).
+**Related.** cmru BG-03 (fixed in cmru's own lanes), assay B146 (verdict summary should name an R0 FAIL and the first failure), nyxloom NL-37 (filed as NL-31, renumbered 2026-10-07; same pattern in `nyxloom/assay.toml`).
 
 ## CIU-130 — `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path
 
