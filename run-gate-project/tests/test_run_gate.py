@@ -1904,7 +1904,12 @@ class TestArgvConstruction:
         overlays = [m for m in mounts if m.endswith("/config:ro")]
         assert len(overlays) == 2, mounts
         assert any(m.endswith(f":{repo / '.git'}/config:ro") for m in overlays)
-        assert len(mounts) == 6, mounts
+        # + `worktrees/` read-only (real contents) and the judged admin dir
+        # read-write on top, each at both paths (RG-86 round 4)
+        assert len(mounts) == 10, mounts
+        assert sum(m.endswith("/.git/worktrees:ro") for m in mounts) == 2
+        assert sum(m.split(":")[0].endswith(f"/.git/worktrees/{wt.name}")
+                   and not m.endswith(":ro") for m in mounts) == 2, mounts
         assert not any(m.split(":")[1] == str(repo) for m in mounts), mounts
         assert "--rm" not in run_call
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
