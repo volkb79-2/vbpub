@@ -286,3 +286,11 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - The full `test_mutation_progress_budget_plan.py` module passed (**53 passed in
   7.78s**); Ruff `E4,E7,E9,F` and `git diff --check` passed after cleanup of the
   now-unused module-level runner import.
+- Sol xhigh's second follow-up review confirmed the real `communicate` and
+  process-group checks, then found short five-second guards that could compete
+  with a slow test and an early assertion outside descendant cleanup. Raised
+  the child alarm and cleanup guards to 60s, the lane deadline to 120s, report
+  guard expiry as `HANG`, and moved descendant cleanup around the full test
+  path. The focused oracle passed (**1 passed in 0.75s**); the full module
+  passed (**53 passed in 7.67s**); Ruff `E4,E7,E9,F` and `git diff --check`
+  passed. A fresh exact-tip review remains pending.

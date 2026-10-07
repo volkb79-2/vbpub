@@ -1428,7 +1428,8 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     output before calling the real ``Popen.communicate(timeout=...)`` so the
     test proves that the derived bound reaches the actual wait. The blocked
     candidate also starts a same-group descendant; timeout cleanup must stop
-    both. The alarm and five-second waits are hang failsafes only.
+    both. The 60-second guards are hang failsafes only; the lane deadline is
+    deliberately much longer than the 0.15-second candidate bound.
     """
     repo = _repo(tmp_path)
     scratch = tmp_path / "scratch"
@@ -1445,7 +1446,7 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         "import signal, subprocess\n"
         "source = Path('pkg/flags.py').read_text(encoding='utf-8')\n"
         "if 'a = False' in source:\n"
-        "    signal.alarm(5)\n"
+        "    signal.alarm(60)\n"
         "    descendant = subprocess.Popen(['/bin/sleep', '60'], "
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "    print(f'BLOCKED {descendant.pid}', flush=True)\n"
@@ -1460,6 +1461,14 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     descendant_pids: list[int] = []
     real_communicate = subprocess.Popen.communicate
 
+    def still_running(pid: int) -> bool:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        # A zombie has exited and cannot consume CPU or block the gate.
+        return stat.rsplit(")", 1)[1].lstrip()[0] != "Z"
+
     def synchronized_communicate(proc, input=None, timeout=None):
         if tuple(proc.args) != lane.argv:
             return real_communicate(proc, input=input, timeout=timeout)
@@ -1468,12 +1477,15 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         assert proc.stdout is not None
         readable, _, _ = select.select([proc.stdout], [], [], 60.0)
         if not readable:
-            raise AssertionError("candidate child did not reach its wait state")
+            pytest.fail(
+                "HANG: candidate child did not report readiness within the "
+                "60-second wait guard"
+            )
         state = proc.stdout.readline().rstrip("\r\n")
         if state.startswith("BLOCKED "):
             descendant_pid = int(state.split()[1])
-            assert os.getpgid(descendant_pid) == proc.pid
             descendant_pids.append(descendant_pid)
+            assert os.getpgid(descendant_pid) == proc.pid
         elif state != "FAST":
             raise AssertionError(f"unexpected candidate state: {state!r}")
         try:
@@ -1490,54 +1502,54 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         candidate_timeouts.append(timeout)
         return default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
-    baseline = execute_command(lane, cwd=repo.path, process_runner=run_real_candidate)
-    assert baseline.outcome is Outcome.PASS
-    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
-        result = run_mutation(
-            baseline=baseline,
-            prepared=prepared,
-            plan=make_plan(lane),
-            deadline=make_deadline(budget_seconds=5.0),
-            targets=_TARGETS,
-            adapter=PythonAdapter(),
-            jobs=1,
-            max_mutants=10,
-            operators=("python:bool-const-flip",),
-            process_runner=run_real_candidate,
-            clock=lambda: datetime.now(timezone.utc),
-            budget_per_candidate_auto=True,
-            progress_artifact=progress_path,
-        )
-
-    assert result is not None and not isinstance(result, str)
-    assert len(result.budget_exceeded) == 1
-    assert len(result.survived) == 1
-    assert result.budget_per_candidate_derived_s == derived_timeout
-    assert candidate_timeouts == [derived_timeout, derived_timeout]
-    assert wait_timeouts == [derived_timeout, derived_timeout]
-    assert len(timed_out_children) == 1
-    assert timed_out_children[0].returncode == -signal.SIGKILL
-    assert len(descendant_pids) == 1
-
-    def still_running(pid: int) -> bool:
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-        except (FileNotFoundError, ProcessLookupError):
-            return False
-        # A zombie has exited and cannot consume CPU or block the gate.
-        return stat.rsplit(")", 1)[1].lstrip()[0] != "Z"
-
-    blocked_descendant = descendant_pids[0]
-    deadline = time.monotonic() + 5.0
     try:
+        baseline = execute_command(
+            lane, cwd=repo.path, process_runner=run_real_candidate
+        )
+        assert baseline.outcome is Outcome.PASS
+        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+            result = run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(budget_seconds=120.0),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=run_real_candidate,
+                clock=lambda: datetime.now(timezone.utc),
+                budget_per_candidate_auto=True,
+                progress_artifact=progress_path,
+            )
+
+        assert result is not None and not isinstance(result, str)
+        assert len(result.budget_exceeded) == 1
+        assert len(result.survived) == 1
+        assert result.budget_per_candidate_derived_s == derived_timeout
+        assert candidate_timeouts == [derived_timeout, derived_timeout]
+        assert wait_timeouts == [derived_timeout, derived_timeout]
+        assert len(timed_out_children) == 1
+        assert timed_out_children[0].returncode == -signal.SIGKILL
+        assert len(descendant_pids) == 1
+
+        blocked_descendant = descendant_pids[0]
+        deadline = time.monotonic() + 60.0
         while still_running(blocked_descendant) and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert not still_running(blocked_descendant), (
-            "candidate timeout left its same-group descendant running"
-        )
-    finally:
         if still_running(blocked_descendant):
-            os.kill(blocked_descendant, signal.SIGKILL)
+            pytest.fail(
+                "HANG: same-group descendant did not stop within the "
+                "60-second cleanup guard"
+            )
+    finally:
+        for descendant_pid in descendant_pids:
+            if still_running(descendant_pid):
+                try:
+                    os.kill(descendant_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
 
 def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):
