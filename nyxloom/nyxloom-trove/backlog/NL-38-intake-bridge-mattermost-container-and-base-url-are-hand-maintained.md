@@ -94,6 +94,10 @@ Method: `git grep -n 1dd3d1` over the tracked tree on 2026-10-07, excluding `CHA
 
 Excluded as history/records, left dated: `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` heading "CIU-132", `ciu/handoff/ciu-physical-root-{LOG,REPORT}.md`. The opposite direction also exists: `3oqua1` is a literal in `nyxloom/nyxloom-trove/nyxloom.toml:245,248,251,254` only (plus CHANGES and backlog prose); those four are what (d) removes. Per-file rule: runbooks and READMEs get `<instance_id>` placeholders or a `ciu resolve` one-liner; dated `docs/plan-*.md` stay as written.
 
+## Update 2026-10-07 (MM-MOVE)
+
+The Mattermost stack moved from `nyxloom/mattermost` to its own ciu root at `<vbpub>/mattermost` (`deploy.project_name = "mattermost"`, `environment_tag = "$INSTANCE_ID"`). Consequences for this entry: (1) `[intake_bridge].container`/`base_url` in `nyxloom.toml` are now commented out with a pointer here, so the bridge cannot poll until this entry's resolution lands or the keys are supplied for the live instance; (2) the design above names `ciu resolve --profile default --stack mattermost` against nyxloom's root, which no longer contains that stack: the resolution must run against the mattermost root (`ciu resolve --dir <vbpub>/mattermost ...`) and the label fallback's `working_dir` is now `<vbpub>/mattermost`, not nyxloom's root; (3) the path references above (`nyxloom/mattermost/...`) are the pre-move locations.
+
 ## Related
 
 ciu CIU-115 (schema-2 instance identity); CIU-104 (`environment_tag = "$INSTANCE_ID"`); ciu CIU-118 (`ciu resolve --json`, shipped; its 2026-10-07 follow-up is the service-discovery gap this entry needs); ciu CIU-132 (persisted webhook URLs embed the id).
