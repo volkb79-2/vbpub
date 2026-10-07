@@ -267,6 +267,7 @@ def test_voiding_r1_after_a_cleanup_failure_voids_its_helper_with_it(
     lane, result = _r0_pass_result(tmp_path)
     outcome = runner._PreparedOutcome(
         result=result,
+        command_plan=result.plan,
         claims=(runner.build_r0_claim(result), _r1_pass_claim()),
         judgment=_r1_judgment(),
         ended="2026-09-01T12:00:02+00:00",
@@ -276,6 +277,7 @@ def test_voiding_r1_after_a_cleanup_failure_voids_its_helper_with_it(
     voided = runner._replace_highest_higher_rigor_claim_with_git_failed(lane, outcome)
 
     assert voided.helpers == ()
+    assert voided.command_plan == result.plan
     r1 = next(claim for claim in voided.claims if claim.rigor == "R1")
     assert r1.status is Outcome.ERROR and r1.reason_code is ReasonCode.GIT_FAILED
     # And the verdict it produces is constructible, which is the outcome that

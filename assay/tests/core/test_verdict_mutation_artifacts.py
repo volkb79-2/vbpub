@@ -658,16 +658,16 @@ def test_o9_negative_a_sql_killed_with_no_kill_signal_under_declared_attribution
     assert failures, "raw verifier accepted a declared kill with no kill_signal"
 
 
-def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_equivalence_artifact(
+def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_proof_source(
     validator: Draft202012Validator,
 ):
     """(O9 negative b) The ``equivalent`` bucket and
-    ``judgment.r2.equivalence_artifact`` are both-present-or-both-absent
-    (P33/V5-3 invariant 2). Declaring neither is legal; a lane with the
-    bucket populated and no declared artifact would be claiming equivalence
-    was proven by nothing."""
+    A populated bucket requires exactly one proof source: either
+    ``equivalence_artifact`` or v15's reserved ``equivalence_ledger``, never
+    both. With neither source, the bucket claims equivalence was proven by
+    nothing."""
     mutation = native_mutation(candidate_count=1, total=1, equivalent=(SQL_EQUIVALENT,))
-    with pytest.raises(ValueError, match="declares no equivalence_artifact"):
+    with pytest.raises(ValueError, match="declares no proof source"):
         Verdict(
             **BASE,
             commit="7" * 39 + "3",

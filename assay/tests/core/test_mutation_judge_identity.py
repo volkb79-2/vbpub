@@ -1128,8 +1128,8 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b145_advances_the_judge_identity_label():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/7"
+def test_b114_advances_the_judge_identity_label():
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/8"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):

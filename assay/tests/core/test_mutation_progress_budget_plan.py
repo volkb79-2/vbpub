@@ -1363,10 +1363,12 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    candidate_timeouts: list[float | None] = []
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
             return subprocess.CompletedProcess(list(argv), returncode=0)
+        candidate_timeouts.append(timeout)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
             raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
@@ -1383,7 +1385,7 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
             baseline=baseline,
             prepared=prepared,
             plan=make_plan(lane),
-            deadline=make_deadline(budget_seconds=30.0),
+            deadline=make_deadline(budget_seconds=180.0),
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=1,
@@ -1405,6 +1407,7 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
     assert len(result.budget_exceeded) == 1
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == expected
+    assert candidate_timeouts == [expected, expected]
 
     events = [
         json.loads(line)

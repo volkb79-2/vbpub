@@ -734,6 +734,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     original = runner.run_lane(
@@ -858,6 +859,7 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     original = runner.run_lane(
         lane,
@@ -941,6 +943,7 @@ def test_witness_capture_works_with_the_existing_liveness_plugin(git_repo: GitRe
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     verdict = runner.run_lane(
@@ -977,6 +980,7 @@ def test_custom_sessionfinish_hook_forces_full_suite_fallback(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     original = runner.run_lane(
         lane,
@@ -1083,6 +1087,7 @@ def test_resume_preserves_witness_prefix_execution_provenance(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     state_dir = tmp_path / "state"
     original = runner.run_lane(

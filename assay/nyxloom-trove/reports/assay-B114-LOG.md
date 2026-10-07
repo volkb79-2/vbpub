@@ -159,3 +159,40 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - B114 is ready for registered `tester-unified` and
   `self-qualification-preflight`; no gate or B105 campaign has run. Hold the
   shared gate slot until B087 coordination is available, then merge serially.
+
+## Tester-unified failure diagnosis and focused recheck — 2026-10-07
+
+- The first registered `./run-gate.py tester-unified` run on
+  `5d1ff0583ecb5a41d5dc1f4aba599052de34e54a` exited 1. Its self-hosted R0
+  pytest phase reported **7,796 passed, 11 skipped, 17 failed in 480.46s**;
+  the complete registered lane took about 510 seconds. The failures were
+  stale v15/schema oracles, moved B105 exclusion lines, test fixtures that
+  treated lane-deadline timeouts as per-candidate timeouts, and four B106
+  witness/replay tests.
+- Reproduced the four B106 failures in the tester image: all returned no
+  trusted witness because the test child auto-loaded the image's unrelated
+  pytest plugins. The same tests passed locally. B106 fixtures now set
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; Assay still explicitly injects its
+  liveness plugin, and the custom-hook test still exercises the unsupported
+  project hook and full-suite fallback. The five focused B106 real-child tests
+  passed in tester-unified (**5 passed in 10.69s**).
+- Updated the exact B105 exclusion-line map, complete v15 CLI judgement shape,
+  reason-code oracle, `/8` identity oracle, frozen v15 schema digest, cleanup
+  helper's `command_plan` fixture, and the v15 proof-source diagnostic
+  expectation. Candidate-timeout fixtures now declare a per-candidate bound;
+  the auto-budget test gives the derived duration room inside the lane budget
+  and asserts both child calls receive the derived bound.
+- The focused set covering the 17 gate failures plus the resource-limited B106
+  control passed in the estate venv (**27 passed in 14.54s**) and in the
+  tester-unified image (**27 passed in 14.11s**). These are diagnostics, not a
+  replacement for the full registered lane.
+- No full gate was rerun after these repairs, and no B105 mutation campaign
+  ran. All diagnostic containers exited and were removed; `run-gate status`
+  reports no inflight gate. B087's `assay-b087-js-canary` tree is clean at
+  `3776fe09`; it has no recorded registered-gate history. The supplied
+  session ID is not addressable by this thread's collaboration tool, so I
+  could not deliver a direct coordination message. Keep the serial merge and
+  release coordinated because B087 overlaps the user-facing docs and `cli.py`.
+- Next: commit these repairs, obtain the required fresh Sol xhigh review, then
+  run `tester-unified` and `self-qualification-preflight` on the reviewed tip.
+  B118 remains the prerequisite before B131.
