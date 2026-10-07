@@ -10,6 +10,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Fixed
 - fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)
+- fix(run-gate): run tester-unified selftest and canary lanes from the selected worktree's project directory, not the image's unset/default working directory
 
 <!-- cmru: release history -->
 

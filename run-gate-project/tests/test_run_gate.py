@@ -4751,8 +4751,13 @@ class TestPointerLinkageEstate:
         commands = cmru_doc["steps"]["run-tests"]["commands"]
         assert len(commands) == 1
         assert commands[0]["argv"] == ["./run-gate.py", "selftest"]
+        selftest_argv = gate_doc["lanes"]["selftest"]["argv"]
+        assert selftest_argv[2].startswith(
+            "cd {worktree}/run-gate-project && mkdir -p .run-gate/")
         for lane_name in ("assay-r1", "assay-r3"):
             assert gate_doc["lanes"][lane_name]["environment"] == "tester-unified"
+        assert gate_doc["lanes"]["assay-r3"]["argv"][2] == (
+            "cd {worktree}/run-gate-project && exec tools/canary-run.sh")
 
     def test_cmru_toml_id_matches_orchestration_key(self):
         """cmru's config loader errors ('config declares project.id=X,

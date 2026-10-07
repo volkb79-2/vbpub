@@ -35,17 +35,17 @@
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
 # not a meaningful check). Both --source and --coverage-json are plain
 # "run-gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
-# invokes `git diff --relative ...`, which reports paths relative to CWD,
-# and run_host_lane execs argv with cwd = the effective project dir (i.e.
-# run-gate-project/ itself) — so the bare filename is what git actually
-# reports, not a repo-root-relative path.
+# invokes `git diff --relative ...`, which reports paths relative to CWD.
+# The selftest command explicitly enters the effective project dir before
+# pytest and coverage_gate.py run, so the bare filename is what git reports,
+# not a repo-root-relative path.
 # =============================================================================
 schema_version = 1
 
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "mkdir -p .run-gate/selftest-tmp && GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/selftest-tmp && GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
@@ -117,7 +117,7 @@ budget = "4h"
 [lanes.assay-r3]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "exec tools/canary-run.sh"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && exec tools/canary-run.sh"]
 budget = "15m"
 
 # The implementation/release gate for THIS project's assay lanes: proves
