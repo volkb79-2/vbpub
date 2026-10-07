@@ -1,9 +1,9 @@
 """Unit tests for the Mattermost provisioning hook (nyxloom-P107).
 
-The hook lives at `mattermost/hooks/post_compose_provision.py`. It was OUTSIDE
+The hook lives at `mattermost-server/hooks/post_compose_provision.py`. It was OUTSIDE
 `nyxloom/src/nyxloom` while the stack lived under nyxloom, so nyxloom's gate
 never measured it; since the MM-MOVE these tests run in mattermost's own lane
-(`mattermost/run-gate.toml`). They are a deliberate act, not a coverage
+(`mattermost-server/run-gate.toml`). They are a deliberate act, not a coverage
 by-product, and every one of them pins a failure that
 actually happened rather than a hypothetical:
 

@@ -28,14 +28,14 @@ own pattern (`resolve_reader` <-> `notify.resolve_backends`).
 
   * `mmctl`  -- `docker exec <app container> mmctl --local --json post list`.
     Needs NO Mattermost config change: it is the same local-mode admin socket
-    `mattermost/hooks/post_compose_provision.py` already uses, and the P107
+    `mattermost-server/hooks/post_compose_provision.py` already uses, and the P107
     argument for it (no network-exposed admin API, no new mount) applies
     verbatim. Measured bonus: `mmctl post create` is refused in local mode
     ("creating posts is not supported in local mode", 11.10.1), so this
     transport is read-only BY CONSTRUCTION, not by policy.
   * `rest`   -- `GET /api/v4/channels/{id}/posts` with a Personal Access
     Token. Needs `MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS = "true"` and a
-    minted PAT; see `mattermost/README.md` for why the PAT belongs to a
+    minted PAT; see `mattermost-server/README.md` for why the PAT belongs to a
     dedicated, non-admin, single-channel account.
 
 The two transports' wire semantics DIFFER in three ways that would each
@@ -424,7 +424,7 @@ class RestReader(MessageReader):
     Two calls: resolve the channel id by name, then read its posts. The
     token is a bearer credential that inherits its OWNING ACCOUNT's full
     permissions -- Team Edition has no per-token scoping -- so the account
-    it belongs to IS the scope. See `mattermost/README.md`.
+    it belongs to IS the scope. See `mattermost-server/README.md`.
     """
 
     name = "rest"
