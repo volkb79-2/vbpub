@@ -1477,7 +1477,9 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == derived_timeout
     assert candidate_timeouts == [derived_timeout, derived_timeout]
-    time.sleep(1.0)
+    marker_deadline = time.monotonic() + 1.5
+    while not marker.exists() and time.monotonic() < marker_deadline:
+        time.sleep(0.01)
     assert not marker.exists(), "timed-out candidate child outlived process-group cleanup"
 
 

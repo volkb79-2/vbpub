@@ -265,3 +265,7 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   cgroup ancestor hierarchy. This is an environment limitation, not a gate
   result; the dedicated `tester-unified` container remains authoritative. No
   product change was made for this cockpit refusal.
+- Increased the real-child timeout regression's bounded marker wait to 1.5s for
+  the child's 1.0s delay, polling until the marker appears or the bound expires
+  instead of checking at the edge of the delay. The auto-budget tests passed
+  (**3 passed, 50 deselected in 2.51s**); `git diff --check` passed.
