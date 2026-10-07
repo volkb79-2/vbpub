@@ -3279,10 +3279,11 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
 def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
-    assert f"source rev {run_gate.__revision__}" in changes
-    # The current-revision entry is RG-84 (rev 55); the RG-81 entry keeps its
-    # own historical rev 54, so pinning it to __revision__ broke at rev 55.
-    assert f"RG-84, filed as RG-83, rev {run_gate.__revision__}" in changes
+    # The tagged release remains source rev 55; RG-88 is the current
+    # unreleased revision. Historical release metadata must not drift when
+    # the launcher revision advances.
+    assert "This section describes released source rev 55." in changes
+    assert f"RG-88, rev {run_gate.__revision__}" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes
@@ -11075,6 +11076,20 @@ class TestFootprintDisclosureLine:
         assert "over baseline" not in out
         assert "hot-set" not in out
         assert "manifest" not in out
+
+    def test_unavailable_damon_with_null_hot_bytes_keeps_the_disclosure(
+            self, tmp_path, capsys):
+        resources = {
+            "memory": {"peak_bytes": 100 * MIB, "p90_bytes": 90 * MIB},
+            "cpu": {"cores_avg": 0.5},
+            "host": {"memory_full_stall_seconds": 0.0},
+            "damon": {"status": "unavailable:EINVAL", "hot_bytes": None},
+        }
+        run_gate.print_footprint_line("suite", tmp_path, resources)
+        out = capsys.readouterr().out
+        assert "run-gate: footprint suite: peak 100 MiB" in out
+        assert "0.50 cores avg" in out
+        assert "hot-set" not in out
 
     def test_over_baseline_and_hot_set_segments_appear_when_present(
             self, tmp_path, capsys):

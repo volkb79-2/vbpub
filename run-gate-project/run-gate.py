@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 55  # rev 55: RG-84 (filed RG-83) PID 1 and cgroup resource-event guard
+__revision__ = 56  # rev 56: RG-88 nullable DAMON footprint disclosure
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -3191,8 +3191,8 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     # in one sentence would silently describe different things.
     host = resources.get("host") or {}
     damon = resources.get("damon")
-    hot = (damon or {}).get("hot_bytes", {}).get("p90") \
-        if isinstance(damon, dict) else None
+    hot_bytes = damon.get("hot_bytes") if isinstance(damon, dict) else None
+    hot = hot_bytes.get("p90") if isinstance(hot_bytes, dict) else None
     over = mem.get("peak_over_baseline_bytes")
     over_seg = f" (+{_fmt_mib(over)} over baseline)" \
         if isinstance(over, (int, float)) and not isinstance(over, bool) else ""

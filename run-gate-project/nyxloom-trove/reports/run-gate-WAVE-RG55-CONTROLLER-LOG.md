@@ -7307,3 +7307,19 @@ approved; this work must test the narrower host-PID/private-cgroup deployment
 and must not claim success unless a real DAMON context starts and stops. If it
 still returns `EINVAL`, report the exact result as a separate kernel/config
 acceptance gap and preserve profiling's verdict-neutral fallback.
+
+### RW-469 — 2026-10-07 08:15:22 UTC — preserve profile disclosure after unavailable DAMON
+
+The first registered cgprofile `r0-r1` run on `50372b71` ended FAIL after
+2,373 passed and 8 failed. The eight failures were one stale documentation
+assertion and seven direct `cgprofile serve` tests that did not set the newly
+required host-PID mode. They are corrected with deployment-contract and CLI
+fixture assertions. Separately, Run-Gate emitted
+`profiling cleanup crashed unexpectedly: 'NoneType' object has no attribute
+'get'` because a valid unavailable-DAMON summary may contain
+`damon.hot_bytes: null`; the formatter discarded profile resources although
+this formatter failure does not change the test verdict. Filed as RG-88 and
+fixed in the same worktree with a null-safe formatter and regression test;
+Run-Gate revision 56 and package gates are pending. The failed first result
+is retained, not overwritten. The daemon-only host-PID change still requires
+an actual deployed DAMON start/stop probe before acceptance.

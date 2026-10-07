@@ -9,6 +9,9 @@ PROJECT_ROOT = COMPOSE_TEMPLATE.parent
 
 def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
     compose = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
+    defaults = (COMPOSE_TEMPLATE.parent / "ciu.defaults.toml.j2").read_text(
+        encoding="utf-8"
+    )
     gate_script = (COMPOSE_TEMPLATE.parent / "tools" / "gate.sh").read_text(
         encoding="utf-8"
     )
@@ -17,6 +20,8 @@ def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
     assert 'network_mode: "none"' in compose
     assert compose.count('pid: "host"') == 1
     assert "CGPROFILE_PID_NAMESPACE_MODE: host" in compose
+    assert "daemon alone" in defaults
+    assert "uses the host PID namespace" in defaults
     assert 'cgroup: "host"' not in compose
     assert 'network_mode: "host"' not in compose
     assert "source: /proc\n        target: /hostproc\n        read_only: true" in compose
@@ -50,7 +55,7 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "host PID namespace" in design
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
-    assert "one-shot helper also keeps its host cgroup bind read-only" in design
+    assert "helper keeps its host cgroup bind read-only" in design
     assert (
         "daemon's host cgroup-v2 bind is therefore writable"
         in " ".join(design.split())
