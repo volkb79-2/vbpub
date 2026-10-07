@@ -11,10 +11,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
-## [23.10.0] - 2026-10-06
+## [23.10.0] - 2026-10-07
 <!-- cmru: generated -->
-<!-- cmru: source-end=5e19e9ac91fe35902ad8ed4c71b7b9e332aa4162 -->
-<!-- This section describes source rev 55. The release generator keeps it verbatim, so the entries below were extended by hand through source-end; tests/test_run_gate.py asserts this marker matches run_gate.__revision__. -->
+<!-- cmru: source-end=433393cb88fed967e716fc8fb05556162b786a99 -->
+<!-- This section describes source rev 55. The release generator keeps it verbatim ONLY while no run-gate-project commit lands after source-end (cmru REL-02 regenerates a stale generated section from commit subjects, dropping hand edits), so the entries below were extended by hand and source-end was advanced with them; tests/test_run_gate.py asserts this marker matches run_gate.__revision__. -->
 
 ### Added
 - feat(run-gate): integrate occupancy and source recovery (6c1563b53)
