@@ -3292,11 +3292,13 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
 
 
 def test_selftest_lane_creates_scratch_root_before_pytest_and_ceiling():
-    """The selftest lane's argv must create `.run-gate/selftest-tmp` first.
+    """The selftest lane enters the project and creates its scratch root.
 
     pytest `--basetemp` makes only the leaf directory (no parents), and in a
     fresh checkout `.run-gate/` does not exist, so without the leading
-    `mkdir -p` pytest dies before collecting anything. The same path anchors
+    `mkdir -p` pytest dies before collecting anything. Tester images need not
+    define a working directory, so the command must first enter this project's
+    directory in the selected worktree. The same scratch path anchors
     GIT_CEILING_DIRECTORIES, so the mkdir must run before both.
     """
     config = tomllib.loads((RUN_GATE_DIR / "run-gate.toml").read_text())
@@ -3304,8 +3306,10 @@ def test_selftest_lane_creates_scratch_root_before_pytest_and_ceiling():
 
     assert argv[:2] == ["bash", "-c"] and len(argv) == 3
     script = argv[2]
+    cwd = script.index("cd {worktree}/run-gate-project && ")
     mkdir = script.index("mkdir -p .run-gate/selftest-tmp && ")
-    assert mkdir == 0
+    assert cwd == 0
+    assert cwd < mkdir
     assert mkdir < script.index("GIT_CEILING_DIRECTORIES=")
     assert mkdir < script.index("-m pytest")
     assert "--basetemp .run-gate/selftest-tmp" in script
@@ -7599,14 +7603,15 @@ class TestShippedGateFullDeclaration:
         assert gate_full["clean_tree"] is False
 
         assert lanes["selftest"]["kind"] == "command"
-        assert lanes["selftest"]["environment"] == "bare-host"
+        assert lanes["selftest"]["environment"] == "tester-unified"
         assert "./run-gate.py --base" not in lanes["selftest"]["argv"][-1]
         assert lanes["assay-r1"]["kind"] == "assay"
         assert lanes["assay-r1"]["assay_lane"] == "r1"
         assert lanes["assay-r3"] == {
             "kind": "command",
-            "environment": "bare-host",
-            "argv": ["bash", "-c", "exec tools/canary-run.sh"],
+            "environment": "tester-unified",
+            "argv": ["bash", "-c", "cd {worktree}/run-gate-project && "
+                     "exec tools/canary-run.sh"],
             "budget": "15m",
         }
         assert lanes["assay-r2"]["assay_lane"] == "r2"
