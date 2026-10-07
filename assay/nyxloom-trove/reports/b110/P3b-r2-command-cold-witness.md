@@ -4,10 +4,12 @@
 
 This package now targets verdict v15 (v14 is already shipped in Assay 8.0.0)
 and judge identity `/8` (the current label is `/7`). The active implementation
-is in the CIU-managed `assay-b114-cold-witness` worktree. B112/P1, B117/P6 and
-B115/P4 are included in the same serial wave before this package changes the
-executor; B113/P2's already merged code must be checked against its remaining
-acceptance oracle.
+is in the CIU-managed `assay-b114-cold-witness` worktree. B117/P6 and B115/P4
+are included in this serial wave before this package changes the executor.
+B111/P0 and B113/P2 shipped in Wave A / Assay 7.2.0. Wave A W1/W4 superseded
+or completed B112's original argv, dataclass, and test-scope work; only its
+slow-tier redecision remains, pending current timing evidence, and is not a
+precondition for this package.
 
 **Cause-sensitive kill rule, superseding the fallback table below:** a positive
 exit status does not prove a test call failed. A cold attempt can be `killed`
@@ -35,14 +37,14 @@ failure.
 | Field | Value |
 |---|---|
 | Backlog | **B114** (B110 umbrella) |
-| Branch | `assay-b110-p3b-cold` off the current `assay-b110-v14` tip. The v14 integration-branch protocol is in `P3a-v14-schema-verify.md`. |
-| Depends on | **P3a** merged into `assay-b110-v14` (the model, schema, verify and `r2_command.py`). **P1** in the base: the B105 lanes no longer carry `--override-ini=pythonpath=src`. **P6** merged into the integration line and then into `assay-b110-v14` (plan §11.6 order P6 → v14): C3's unclassified-attempt path (`termination_requested()`, lane-remainder timeouts → `LANE_TIMEOUT`, no record) is P6's, and this package routes through it. **P4 in the v14 base (C30, round-2 P3B2-6).** P4 rewrites the executor loop in `_execute_mutation_jobs` (waves → work queue), which is where this package adds `evidence` to results, state records and `candidate` events. `assay-b110-v14` is never rebased, so "whichever merges second rebases" is impossible. The order is fixed instead: P4 merges into the integration line, and the controller merges the integration line into `assay-b110-v14` **before** this package touches `_execute_mutation_jobs`. Work step 1 checks this and stops with BLOCKED otherwise. The `evidence`/`execution_mode` additions go through P4's reorder buffer unchanged. |
+| Branch | CIU-managed `assay-b114-cold-witness`; the historical v14 integration-branch protocol is superseded for this serial implementation. |
+| Depends on | **P3a**'s v15 model, schema, verifier and `r2_command.py`; **P6/B117**'s persisted deadline and termination path; **P4/B115**'s bounded work queue in the same executor before cold evidence is added to results, state records and ordered `candidate` events. This is one serial implementation in `assay-b114-cold-witness`; no historical `assay-b110-v14` integration branch is created. P1's argv removal is already present in the current tree after Wave A W4. |
 | Contract class | **2b**. The public behaviour and all shapes are fixed; the private construction is yours. |
 | Implementer | Opus (fresh session) |
 | Decisions | A-470 (D6: A1–A9), A-471 (runtime fingerprint in the judge identity), A-468 (override dropped) |
 | Size | L |
 
-**What this package is.** It is the producer side of v14.
+**What this package is.** It is the producer side of v15.
 - With the explicit `assay run --cold-witness` opt-in, a native Python R2 lane gets an R2-only command. That command is the declared argv minus the three recognized pytest-cov forms, plus `-p no:pytest_cov`.
 - Two runtime-proven baselines come first: the coverage baseline and a new no-cov R2 baseline, each with an ordered collection manifest, a hook fingerprint and a runtime fingerprint.
 - Then per-candidate cold attempts run. They stop at the first verified call failure (`witness-cold`), or a completed pass is the survivor's full run. On any uncertainty, one declared-command full attempt is authoritative.

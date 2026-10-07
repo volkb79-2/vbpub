@@ -29,16 +29,19 @@ tester-unified gate discovers the test suite directly; do not invent an
 obsolete `verdict-v14-successors` marker sequence.
 
 The v15 implementation carries B145 intact, including judge identity `/8` and
-per-attempt resource sampling. B112/P1 and B113/P2 must precede the P3c test
-moves; B117/P6 and B115/P4 are included before P3b edits the executor. See the
-current sequence in `../assay-B114-PLAN-2026-10-07.md`.
+per-attempt resource sampling. B117/P6 and B115/P4 are included before P3b
+edits the executor. Wave A W1/W4 superseded or completed B112's old argv,
+dataclass, and test-scope changes; its slow-tier redecision is not a prerequisite
+and the old test-move map is stale. B113/P2 shipped in Assay 7.2.0; W6 dropped
+the watchdog after its two named real-child tests disappeared. See the current
+sequence in `../assay-B114-PLAN-2026-10-07.md`.
 
 *Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md). Round 1: P3A-1..P3A-13 and carver decisions C1, C9, C10 (the X8 split), C15. Round 2: P3A2-1..P3A2-4, the P3A-13 residual, and C23/C30 (pinned `run_mutation` order; tests are found by name after P1's `tests/zz_slow/` moves).*
 
 | Field | Value |
 |---|---|
 | Backlog | **B114** (B110 umbrella) |
-| Branch | `assay-b110-p3a-schema`, off `assay-b110-v14`. `assay-b110-v14` is cut from the integration line after the plan §11.1 reconciliation (C18: the new canonical branch `assay-b110-integration`) and after P0, P1 and P2 merge (plan §11.6). This package may start earlier on its own branch off the integration line. It is then rebased **once** onto the `assay-b110-v14` tip before review (see protocol item 3). |
+| Branch | CIU-managed `assay-b114-cold-witness`, based on the latest Assay-specific main and used for the serial B117 → B115 → B114 package. The historical `assay-b110-v14` integration protocol below is superseded by this current reconciliation. |
 | Depends on | P10a's ledger wire shape. Either P10a is accepted, or you finish under the documented **BLOCKED-PARTIAL** escape: anchor validated by length only, with P10b adding the grammar later. Either way the rest of this package is dispatchable. |
 | Contract class | **2b**. Public shapes are fixed below; the private construction is yours. |
 | Implementer | Opus (fresh session) |
@@ -51,7 +54,7 @@ current sequence in `../assay-B114-PLAN-2026-10-07.md`.
 
 P3b produces cold evidence, P3c produces the liveness values, and P10b produces the ledger.
 
-**v14 integration-branch protocol (binding on P3a–P3d and P10b):**
+**Historical v14 integration-branch protocol (superseded for the current B114 worktree; retained for its audit trail):**
 1. `assay-b110-v14` is cut once from the integration-line tip.
 2. Each sub-branch (`-p3a-`, `-p3b-`, `-p3c-`, `-p3d-`, P10b) branches from the **current** `assay-b110-v14` tip. After its own review and gate, it merges back `--no-ff`, **serially**, in the order P3a → P3b → P3c → P3d → P10b. P3c may merge before P3b if it is ready first.
 3. If the integration line moves (for example P6 lands), the controller merges it into `assay-b110-v14` (`--no-ff`). **The shared `assay-b110-v14` branch is never rebased.** A sub-branch started before `assay-b110-v14` existed is rebased exactly once onto the v14 tip before its review (plan §11.6); after review, no sub-branch is rebased.

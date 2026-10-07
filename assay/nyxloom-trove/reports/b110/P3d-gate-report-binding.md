@@ -15,11 +15,11 @@ campaign requiring its bounded pilot/go decision.
 | Field | Value |
 |---|---|
 | Backlog | **B114** (B110 umbrella) |
-| Branch | `assay-b110-p3d-gate`, off the current `assay-b110-v14` tip. The integration protocol is in `P3a-v14-schema-verify.md`. |
-| Depends on | All of the following must be in `assay-b110-v14`. If any is missing, ask the controller to merge the integration line into `assay-b110-v14`; never rebase.<br>• **P3b**: `--cold-witness`, `--r2-manifest`, and the produced `r2_command`/`evidence`.<br>• **P3a**: the `CampaignBinding` model/schema/verify (C9).<br>• **P0**: `b105_report_check.py --plan-json` and its shard/partial-scope refusals, extended here, not duplicated.<br>• **P6**: the gate's campaign-deadline wiring, `assay campaign init`, `assay run --campaign-deadline`, and the `timeout` wrapper. Plan §11.6 merges **P6 → v14 (incl. P3d) → P7b → P10c**, so P6 is in the base. |
+| Branch | CIU-managed `assay-b114-cold-witness`; the historical v14 integration-branch protocol is superseded for this serial implementation. |
+| Depends on | The B114/P3b cold-witness producer and P3a v15 `CampaignBinding` model/schema/verify in this same worktree; B111/P0's shipped source-bound report checker and partial-scope refusals; and B117/P6's campaign-deadline command/wiring. The current implementation is serial in `assay-b114-cold-witness`; no historical `assay-b110-v14` integration branch is created. |
 | Contract class | **2c** |
 | Implementer | Sonnet (fresh session) |
-| Decisions | A-470 (D6), A-468 (the B105 lane argv after P1), A-474 (checker refusals), A-473 (deadline), carver decision **C9** (the verdict binds its deadline) |
+| Decisions | A-470 (D6), Wave A W4's current B105 lane argv, A-474 (checker refusals), A-473 (deadline), carver decision **C9** (the verdict binds its deadline) |
 | Size | M |
 
 **What this package is.**

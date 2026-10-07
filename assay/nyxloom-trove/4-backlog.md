@@ -113,9 +113,9 @@ items:
   - {id: B109, title: "B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes", type: feature, component: mutation, context_estimate: large}
   - {id: B110, title: "B105 R2 exceeds the operator runtime ceiling; reduce repeated test work and qualify bounded execution", type: feature, component: gate, context_estimate: large}
   - {id: B111, title: "B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test outer-events leak, B105 report-checker partial-scope refusal, snapshot guard tests", type: bugfix, component: mutation, context_estimate: medium}
-  - {id: B112, title: "B110 P1: B105 suite scope -- ignore test_python_qualification.py, drop --override-ini, tiered tests/zz_slow layout, dataclass contract test", type: feature, component: gate, context_estimate: medium}
+  - {id: B112, title: "B110 P1 remainder: redecide a slow-test tier from current B105 timing evidence after the Wave A package split", type: research, component: gate, context_estimate: small}
   - {id: B113, title: "B110 P2: loop-progress guards so single-operator mutants cannot spin or block scanners and pipe drains", type: bugfix, component: mutation, context_estimate: small}
-  - {id: B114, title: "B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command, manifests, hook/runtime fingerprints, liveness disclosure, and B105 report binding", type: feature, component: mutation, context_estimate: large}
+  - {id: B114, title: "B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command, manifests, hook/runtime fingerprints, liveness disclosure, and B105 report binding", type: feature, component: mutation, context_estimate: large}
   - {id: B115, title: "B110 P4: bounded work-queue mutation executor with position-ordered progress", type: feature, component: mutation, context_estimate: medium}
   - {id: B116, title: "B110 P5: cheaper fresh per-candidate snapshots (index refresh, incremental child-closure bound)", type: feature, component: isolation, context_estimate: medium}
   - {id: B117, title: "B110 P6: one persisted campaign deadline and candidate process-group termination", type: feature, component: execution, context_estimate: medium}
@@ -201,7 +201,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
 **Filed after the 2026-09-23 triage**
-- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B112 drops `--override-ini` and B114 removes pytest-cov from the R2 command. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
+- B106 — provenance-safe selective mutation reruns across source/test changes — DONE (`assay-v7.1.0`, merge `e5e9b95c`, A-461; registered tester-unified PASS). Inert for B105 until B114 removes pytest-cov from the R2 command; the B105 override was already removed by Wave A W4. It is listed here for one cycle only, since this section otherwise lists non-DONE items. Its acceptance boxes were not individually re-audited; the evidence is the Wave C P5 report.
 - B107 — time-aligned candidate liveness evidence to distinguish hangs from resource stalls — OPEN (filed 2026-09-26 from RG-55 P6 exact-tree R2 campaigns)
 - B108 — deterministic campaign summaries and automatic post-lane closeout — OPEN (filed 2026-09-26 from repeated manual analyses across Assay consumer campaigns)
 - B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
@@ -11370,8 +11370,8 @@ The acceptance items above are now owned as follows:
 - The terminal draft's scenario "snapshot + collection ≈ 3,760 × 6.5–8 s" is corrected to ≈ 9.4–13.4 s per kill; see the analysis report §6. That phrase appears only in research record R0, not in the text above.
 - **Runtime transform-proof failures** are a whole-lane refusal (A-470 C1), not an R2-only claim.
 
-**B110 acceptance (remaining after the split; revised after the round-1 review):**
-- [ ] B111–B118, B108 phase 1, the v14 integration branch and the P7b gate modes are merged, independently reviewed, and gated. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
+**B110 acceptance (remaining after the split; revised for the current v15 wave):**
+- [ ] B111, B113, B114, B115, B117, B118, B108 phase 1 and the P7b gate modes are merged, independently reviewed, and gated. B112 is complete only if its current-tree timing redecision adopts a tier; B116 is included only if measurement shows the snapshot optimization is needed. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
 - [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest.
   - `reports/assay-B110-PILOT-REPORT.md` records:
     - the cold-kill rate with its interval;
@@ -11389,7 +11389,7 @@ The acceptance items above are now owned as follows:
 
 ## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
 
-**Status: IMPLEMENTED on branch `wave-a-w8-measurement` 2026-09-29 (Wave A package W8, brief `reports/wave-a/W8-measurement.md`; log `reports/wave-a/W8-LOG.md`); awaiting the controller's registered gate, review and merge. Filed 2026-09-28; original brief `reports/b110/P0-measurement-hygiene.md`.**
+**Status: DONE — shipped in `assay-v7.2.0` (Wave A W8, merge `5a695516`; the Wave A controller records `tester-unified` and `self-qualification-preflight` PASS on the merged revision).** W8 evidence is in `reports/wave-a/W8-LOG.md`; filed 2026-09-28, original brief `reports/b110/P0-measurement-hygiene.md`.
 
 **Observed:**
 - `assay plan` multiplies by a hard-coded 60 s (`cli.py:1786-1801`); CONSUMERS calls that an upper bound, but under `auto` it is a lower bound. The B105 plan said 62h40m against a measured ≈585 worker-hours.
@@ -11399,50 +11399,48 @@ The acceptance items above are now owned as follows:
 - Disjoint-inode isolation (O2) is pinned only by an uncollected carve asset.
 
 **Acceptance:**
-- [ ] The brief's oracles pass.
-- [ ] `--baseline-from` estimates carry provenance.
-- [ ] Resource and phase evidence appears in candidate events and state records.
-- [ ] The leak is fixed, with a regression test.
-- [ ] The report checker refuses shard fields and partial inventories.
-- [ ] Guard tests G1–G5 pass on unchanged code.
-- [ ] Docs are synced.
-- [ ] tester-unified PASS.
+- [x] The brief's oracles pass.
+- [x] `--baseline-from` estimates carry provenance.
+- [x] Resource and phase evidence appears in candidate events and state records.
+- [x] The leak is fixed, with a regression test.
+- [x] The report checker refuses shard fields and partial inventories.
+- [x] Guard tests G1–G5 pass on unchanged code.
+- [x] Docs are synced.
+- [x] tester-unified PASS.
 
 ## B112 — B110 P1: B105 suite scope
 
-**Status: OPEN (filed 2026-09-28; A-468; brief `reports/b110/P1-suite-scope.md`; after B111's leak fix).**
+**Status: PARTIAL; the original B105 scope changes were superseded or completed by Wave A W1/W4, shipped in `assay-v7.2.0`.** The only remaining question is whether a slow-test tier still reduces cost on the post-split B105 suite. No current timing artifact supports the original file-move list, so remeasure and re-carve before moving tests. This remainder is not a B114 prerequisite.
 
-**Scope:**
-- `--ignore=tests/test_python_qualification.py` and removal of `--override-ini=pythonpath=src` in both self-qualification lanes, with drift tests;
-- the `tests/zz_slow/` tier (whole-file moves and splits; pinned paths untouched);
-- `tests/test_dataclass_contract.py` with its fixture.
+**Completed by Wave A:** the cross-project qualification file was retired with W1; W4 removed the obsolete B105 `--override-ini` and added the shipped-loader drift pin; the dataclass contract test and fixture exist in the current tree. B105 collects the current `tests/` tree under `src`-relative `pythonpath`.
+
+**Remaining scope:** measure current per-test setup and execution cost, then decide whether a slow tier still helps cold-witness R2. If it does, carve against the current test tree, keep the full declared suite on survival, and bind the resulting order in the collection manifest. Otherwise close B112 as no change needed. Do not apply the pre-Wave-A `zz_slow` move map.
 
 **Acceptance:**
-- [ ] The brief's oracles pass.
-- [ ] `self-qualification-preflight` passes R0/R1 with 100% line and branch coverage on the changed suite.
-- [ ] tester-unified PASS.
+- [ ] A current-tree measurement uses B105 test events to compare setup/execution cost and evaluates whether a tier would improve cold-witness R2.
+- [ ] If the measurement supports a tier, a new carve names only current paths, keeps the full suite on survival, and binds the order through the cold collection manifest. If it does not, record and accept the no-change decision.
+- [ ] User-facing docs explain any adopted tier; otherwise record that no public behavior changed.
 
 ## B113 — B110 P2: loop-progress guards
 
-**Status: OPEN (filed 2026-09-28; A-466; brief `reports/b110/P2-loop-guards.md`).**
+**Status: DONE — shipped in `assay-v7.2.0` (Wave A W6, merge `75ceb9e9`; final Wave A tester-unified and self-qualification-preflight passed on the merged revision).** Implementation evidence is in `reports/wave-a/W6-LOG.md` (READY-FOR-GATE code commit `8bccafdf`).
 
-**Observed:** 14 source-level at-risk mutants, plus one at test level (15 in all), and 4 latent single-operator mutants can make a scanner cursor stall, move backwards, or grow memory without bound, or block a pipe drain:
+**Observed when filed:** 14 source-level at-risk mutants plus four latent single-operator mutants could stall scanner cursors or block a pipe drain. The original list also proposed a test-level watchdog for `liveness.py`; W6 later dropped it under CD3 because its two named real-child tests no longer existed in the current tree:
 - go.py 292/321/323/330;
 - javascript.py 243/245/249;
 - sql_lex.py 193×3/195 (latent 270/273);
 - go_modfile.py 393;
 - git.py 335×2;
 - isolation.py 1388/1392 (latent);
-- liveness.py 1530 at test level.
 
 The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ever pass a native R2.
 
 **Acceptance:**
-- [ ] `errors.require_advance` at the named sites.
-- [ ] A drain rewrite with the exclusions fixture updated.
-- [ ] A watchdog on the real-child liveness tests.
-- [ ] Deterministic oracles for each guarded site.
-- [ ] tester-unified and preflight PASS.
+- [x] `errors.require_advance` at the named sites.
+- [x] A drain rewrite with the exclusions fixture updated.
+- The watchdog item was dropped by W6 decision CD3 after its two named real-child tests disappeared from the current tree; it is not an outstanding requirement.
+- [x] Deterministic oracles for each guarded site.
+- [x] tester-unified and preflight PASS.
 
 ## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
@@ -11459,9 +11457,9 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - judge identity `/8` (current `/7` after B145; mutation-state schema remains 1);
 - lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
 - B105 gate flag and source-bound report binding;
-- B112/P1 suite scope and B117/P6 persisted deadline as direct prerequisites;
+- B117/P6 persisted deadline and process-group termination as a direct prerequisite;
 - B115/P4 bounded work queue before P3b edits the executor loop;
-- audit the merged B111/P0 and B113/P2 implementations against their remaining acceptance oracles before closing those entries.
+- B111/P0 and B113/P2 are already shipped in Assay 7.2.0; B112's original argv/dataclass/test-scope items were completed or superseded in Wave A, with only a measured slow-tier redecision left open.
 
 The P10a Sol xhigh review returned **REVISE**. B114 uses only P3a's documented
 partial ledger-anchor path. The ledger envelope is reserved, but ledger
@@ -11481,7 +11479,7 @@ termination, or cgroup resource cause. Uncertain attempts never count as kills.
 - [ ] All four briefs' oracles pass.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
 - [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
-- [ ] Direct prerequisite acceptance for B112, B115, and B117; B111/P0 and B113/P2 closed only on exact gate evidence.
+- [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [ ] Docs are synced.
 - [ ] One tester-unified and one self-qualification-preflight PASS on the final reviewed merge commit.
 
@@ -11550,7 +11548,7 @@ termination, or cgroup resource cause. Uncertain attempts never count as kills.
 
 ## B119 — B110 P9: distributed/async mutation evidence
 
-**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; depends on B108 phase 1, B112, B114 and B117. Pre-deadline records are refused by default (C8) until the operator answers plan §11.2.)**
+**Status: OPEN (filed 2026-09-28; A-471; brief `reports/b110/P9-distributed-evidence.md`; depends on B108 phase 1, B114 and B117. B112's B105 argv scope was completed by Wave A W4; its remaining slow-tier redecision is not a P9 prerequisite. Pre-deadline records are refused by default (C8) until the operator answers plan §11.2.)**
 
 **Scope:**
 - `assay state import`: identity validation, conflict refusal, import receipt;
