@@ -72,7 +72,7 @@ read or rewrite them.
 
 Mattermost is intentionally integrated through its post-only incoming webhook,
 not through a PAT or a REST client. The public consumer contract in
-`nyxloom/mattermost/CONSUMER.md` gives the external hostname, producer
+`mattermost/CONSUMER.md` gives the external hostname, producer
 identity, channel binding, and secret-file location. A Netcup VM must use that
 public URL. The remote bootstrap is a dependency-free `curl | python3 -`
 entrypoint, so importing nyxloom's tightly coupled notification module would

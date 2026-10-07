@@ -130,22 +130,11 @@ constraint = ">=2.14.0"
 image = "docker.io/binwiederhier/ntfy"
 tag = "v{version}"
 
-[versions.targets."oci.postgres"]
-mode = "single"
-constraint = "*"
-
-[versions.targets."oci.postgres".oci]
-image = "docker.io/library/postgres"
-tag = "16-alpine"
-selection = "rolling"
-
-[versions.targets."oci.mattermost"]
-mode = "single"
-constraint = ">=11.10.1"
-
-[versions.targets."oci.mattermost".oci]
-image = "docker.io/mattermost/mattermost-team-edition"
-tag = "{version}"
+# The `oci.postgres` (16-alpine, rolling) and `oci.mattermost` (>=11.10.1)
+# version targets lived here while the Mattermost stack was nyxloom/mattermost.
+# The stack moved to its own project at <vbpub>/mattermost (MM-MOVE), which
+# owns both image pins (mattermost/ciu.defaults.toml.j2); re-declare the two
+# targets in that project's cmru.toml when it gets one (later package).
 
 [versions.targets."oci.pwmcp"]
 mode = "single"

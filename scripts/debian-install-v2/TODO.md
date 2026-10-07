@@ -80,7 +80,7 @@ Operator asked (2026-09-08, netcup live-test session) whether the scp-api/
 debian-install-v2 tooling could adopt nyxloom's Telegram/Mattermost
 notification adapter (`nyxloom/src/nyxloom/notify.py`) instead of
 maintaining its own separate Telegram-only sender, since nyxloom now has a
-running Mattermost stack on main (`nyxloom/mattermost/`).
+running Mattermost stack on main (`mattermost/`).
 
 **Investigated. Findings:**
 

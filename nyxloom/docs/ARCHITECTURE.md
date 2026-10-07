@@ -237,7 +237,7 @@ Deterministic events → notification hooks. Every channel is a
 `NotifyBackend` (notify.py) that owns translating the typed note into its own
 payload shape; `[notify] backend` names the active one explicitly. Shipping
 today: **mattermost** (the live channel since 2026-09-08, self-hosted — see
-`nyxloom/mattermost/`), **ntfy** (the original reference adapter, retired but
+`mattermost/` at the vbpub root, moved out of nyxloom by MM-MOVE), **ntfy** (the original reference adapter, retired but
 kept selectable — `nyxloom/ntfy/`), and a raw **webhook** passthrough for
 receivers built against nyxloom's own note schema. Telegram/Discord are
 future backends, not built. Delivery failure never mutates workflow truth

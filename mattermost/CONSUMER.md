@@ -123,8 +123,8 @@ Both live in this repo's checkout, gitignored, 0440
 (`vscode:docker`), readable only by whoever can already read this checkout:
 
 ```
-nyxloom/mattermost/.ciu/secrets/installer_webhook_url
-nyxloom/mattermost/.ciu/secrets/installer_pat
+mattermost/.ciu/secrets/installer_webhook_url
+mattermost/.ciu/secrets/installer_pat
 ```
 
 They have to reach your process out-of-band — an environment variable

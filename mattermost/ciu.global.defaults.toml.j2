@@ -1,0 +1,51 @@
+# ==========================================================================
+# mattermost — CIU ROOT global (standalone, single stack)
+# ==========================================================================
+# Mattermost used to be a sub-stack of nyxloom's ciu root (nyxloom/mattermost)
+# and inherited nyxloom's `deploy.*`/`[governance]`. It now lives at the vbpub
+# root as its own ciu root (the pwmcp pattern: the stack files sit in the root
+# directory itself), so this file carries what it used to inherit. The values
+# are copied from nyxloom/ciu.global.defaults.toml.j2 as of the move; ciu v7
+# roots are islands (nothing inherits between roots), so they are declared
+# here until ciu v8's `[ciu] inherit` retires the per-root copies.
+#
+# Container and compose-project names are DERIVED, never hard-coded anywhere
+# else: ciu composes `{deploy.project_name}-{deploy.environment_tag}` from
+# this file and the instance id (see container_prefix in ciu.defaults.toml.j2).
+# Consumers must discover the container/base_url rather than copy them
+# (nyxloom backlog NL-38).
+
+[deploy]
+project_name = "mattermost"
+# $INSTANCE_ID (S3.2 $VAR expansion), not a fixed literal: a fixed tag
+# collides with the primary checkout's live containers from any
+# `ciu worktree` (CIU-104). Same convention as nyxloom, pwmcp, topos, dstdns.
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+# Hostdir ownership values (ciu S6/S7), expanded from ciu.env.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+# Resource governance (ciu S15.10), copied from nyxloom's root (see the
+# header). cgroup_parent and device are EXPLICIT for the fail-open reasons
+# documented in nyxloom/ciu.global.defaults.toml.j2: "" falls back to an
+# ambient variable absent on other hosts, and ciu's device autodetect returns
+# nothing under docker-outside-of-docker. The stack's own
+# [mattermost.governance] table (ciu.defaults.toml.j2) narrows per service.
+[governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+mem_limit = "2g"
+device = "/dev/vda"
+
+[ciu]
+# S1.2 — independent root: refuse to run if $REPO_ROOT points elsewhere.
+standalone_root = true
+# Public TLS is terminated by tls-edge (ingress_public), not by this root.
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

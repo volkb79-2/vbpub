@@ -1,7 +1,7 @@
 # mattermost — nyxloom notification channel
 
 Self-hosted [Mattermost](https://mattermost.com/) Team Edition + a **dedicated**
-PostgreSQL, as one ciu-managed stack. Replaces [ntfy](../ntfy/) as nyxloom's
+PostgreSQL, as one ciu-managed stack. Replaces [ntfy](../nyxloom/ntfy/) as nyxloom's
 live notification channel (backlog NL-17, package nyxloom-P106). ntfy is kept —
 stopped, and still selectable as a `notify.py` backend — not deleted.
 
@@ -22,16 +22,23 @@ renders.
 ## Deploy (ciu-managed — the ONLY supported path)
 
 ```bash
-cd /workspaces/vbpub && ciu up --dir nyxloom/mattermost -y
+cd /workspaces/vbpub && ciu up --dir mattermost -y
 ```
 
-Containers: `nyxloom-1dd3d1-mattermost`, `nyxloom-1dd3d1-mattermost-db` — the
-middle segment is `deploy.environment_tag`, which this root resolves to
-`$INSTANCE_ID` (`../ciu.global.defaults.toml.j2`, since 2026-09-10; was a
-fixed `"prod"` before CIU-104). `1dd3d1` is this checkout's own instance id
-(`../ciu.instance.generated.toml`) — it will differ on a different checkout,
-by design (that is the fix: no two checkouts can ever collide on the same
-container name).
+**Location (MM-MOVE, 2026-10-07).** This directory used to be `nyxloom/mattermost`,
+a sub-stack of nyxloom's ciu root. It is now its OWN standalone ciu root at the
+vbpub root (the pwmcp layout: stack files in the root directory, plus
+`ciu.global.defaults.toml.j2`). Nothing was migrated: the instance is recreated
+by ciu with fresh users.
+
+Containers: `{container_prefix}-mattermost` and `{container_prefix}-mattermost-db`,
+where `container_prefix` is `{deploy.project_name}-{deploy.environment_tag}`
+(`deploy.project_name = "mattermost"` and `environment_tag = "$INSTANCE_ID"` in
+`./ciu.global.defaults.toml.j2`; the fixed `"prod"` was retired by CIU-104).
+The instance id comes from this checkout's own `ciu.instance.generated.toml`
+and differs per checkout, by design (no two checkouts can collide on a
+container name). Do NOT copy a literal container name into any consumer config:
+read it from `ciu resolve` / `docker ps` (nyxloom backlog NL-38).
 
 > **Do not start this stack from `docker-compose.yml` and believe it is
 > governed.** The plain-compose path receives no ciu overlay: that is exactly
@@ -117,7 +124,7 @@ is a third party's credential, and `nyxloom-admin` is the untouched bootstrap
 account.
 
 The token is provisioned by the hook through S9.4a into
-`nyxloom/mattermost/.ciu/secrets/intake_pat`, alongside the webhook URLs and on
+`mattermost/.ciu/secrets/intake_pat`, alongside the webhook URLs and on
 the same terms. It is minted only while
 `[mattermost].enable_user_access_tokens = true`; while that is false the hook
 prints the token names it is **not** minting and moves on, so the account, the
@@ -145,13 +152,13 @@ local-mode design exists to avoid. That was tested, not assumed.
 *passwords* are S4 `GEN_LOCAL` directives and land in the **project** store,
 `<ciu-root>/.ciu/secrets/mattermost/`. The *webhook URLs* are persisted by the
 hook through S9.4a and land in the **stack** store,
-`nyxloom/mattermost/.ciu/secrets/`. Both are gitignored by `**/.ciu/`, both are
+`mattermost/.ciu/secrets/`. Both are gitignored by `**/.ciu/`, both are
 0440 `vscode:docker`. The split is ciu's, not a choice: a webhook id does not
 exist until Mattermost mints it, so no directive can express it, and S9.4a is
 the channel for exactly that case.
 
 ```bash
-export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/daemon_webhook_url)"
+export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/mattermost/.ciu/secrets/daemon_webhook_url)"
 ```
 
 **Rotating a webhook**: `mmctl --local webhook delete <id>`, then `ciu up`. The
@@ -177,7 +184,7 @@ in `installs` only. Verified live: a REST GET against `installs` returns 200;
 the same lookup against the private `alerts` channel returns 404 (Mattermost
 hides a private channel's existence from a non-member's name lookup, unlike
 the 403 a *known-id* posts-read gets — both refuse the read, this is just a
-different endpoint). Lands in `nyxloom/mattermost/.ciu/secrets/installer_pat`,
+different endpoint). Lands in `mattermost/.ciu/secrets/installer_pat`,
 0440, same store as the webhook URLs.
 
 This PAT exists because the webhook is POST-only and Mattermost's
@@ -212,7 +219,7 @@ password in shell history and an exported variable.
 Read messages back from the host (useful as a delivery oracle):
 
 ```bash
-docker exec nyxloom-1dd3d1-mattermost mmctl --local post list nyxloom:alerts --number 5
+docker exec <container_prefix>-mattermost mmctl --local post list nyxloom:alerts --number 5
 ```
 
 ## nyxloom wiring (consumer project.toml)
@@ -231,7 +238,7 @@ mattermost_channel = "alerts"   # optional; the webhook already targets a channe
 ```
 
 ```bash
-export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/daemon_webhook_url)"
+export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/mattermost/.ciu/secrets/daemon_webhook_url)"
 ```
 
 The feature-intake bridge is wired in the same file's `[intake_bridge]` table
@@ -240,28 +247,28 @@ change. Its two credentials are exported the same way, and the ingress stays
 closed until an operator is named:
 
 ```bash
-export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/intake_webhook_url)"
-export NYXLOOM_INTAKE_MM_TOKEN="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/intake_pat)"   # `rest` only
+export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat /workspaces/vbpub/mattermost/.ciu/secrets/intake_webhook_url)"
+export NYXLOOM_INTAKE_MM_TOKEN="$(cat /workspaces/vbpub/mattermost/.ciu/secrets/intake_pat)"   # `rest` only
 export NYXLOOM_CHANNEL_OPERATOR_ID="<operator identity>"
 nyxloom intake-bridge poll nyxloom
 ```
 
 That default runs anywhere the docker socket does. `--transport rest` does
 NOT: it dials `base_url` over the network below, so it only works from inside
-`nyxloom-1dd3d1-mattermost_internal` — which is why the transport is a config
+`<container_prefix>-mattermost_internal` — which is why the transport is a config
 selector and not a fallback chain. See step 5b of the P109 recipe.
 
 `/workspaces/dstdns`'s own config is a **separate repo and out of scope** —
 it still points at its previous channel and is left for a dstdns-side session.
 
 Anything that must reach Mattermost has to share a network with it. The stack
-owns a private bridge (`nyxloom-1dd3d1-mattermost_internal`); attach a consumer
+owns a private bridge (`<container_prefix>-mattermost_internal`); attach a consumer
 (or, for a one-off check from the devcontainer) with:
 
 ```bash
-docker network connect nyxloom-1dd3d1-mattermost_internal <container>
+docker network connect <container_prefix>-mattermost_internal <container>
 # ... and afterwards:
-docker network disconnect nyxloom-1dd3d1-mattermost_internal <container>
+docker network disconnect <container_prefix>-mattermost_internal <container>
 ```
 
 ## Network exposure — DECIDED "internal-only", OPERATOR TO CONFIRM
@@ -415,7 +422,7 @@ greyed out, and *verifying* hardening means reading the running config
 ## Going public — the post-merge recipe
 
 Run **after** this package is merged, against the live
-`nyxloom-1dd3d1-mattermost` stack, from the deployment checkout
+`<container_prefix>-mattermost` stack, from the deployment checkout
 (`/workspaces/vbpub`). The package itself does **not** flip exposure:
 `expose_public` stays `false` in `ciu.defaults.toml.j2` and the controller
 changes it here, live, in step 3 — deliberately, so that landing the hardening
@@ -426,7 +433,7 @@ of the hardening is conditional on being public.
 
 ```bash
 cd /workspaces/vbpub
-R="--define-root /workspaces/vbpub/nyxloom"
+R="--define-root /workspaces/vbpub/mattermost"
 ```
 
 ### 0. Pre-flight — READ-ONLY, and it gates everything after it
@@ -441,7 +448,7 @@ first `ciu up` after this merge creates a *brand-new* `nyxloom-admin` from the
 which is not wrong so much as **silent**, and only visible afterwards.
 
 ```bash
-C=nyxloom-1dd3d1-mattermost
+C=<container_prefix>-mattermost
 docker exec $C /mattermost/bin/mmctl --local --json user search nyxloom-admin \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["username"], "|", d["roles"])'
 # expect: nyxloom-admin | system_admin system_user   (order of roles may vary)
@@ -470,8 +477,8 @@ Everything the pre-flight can find is cheaper to find here than after a
 ### 1. Apply the hardening (no exposure change yet)
 
 ```bash
-ciu up --dir nyxloom/mattermost --dry-run -y $R          # read the rendered env diff
-ciu up --dir nyxloom/mattermost -y $R
+ciu up --dir mattermost --dry-run -y $R          # read the rendered env diff
+ciu up --dir mattermost -y $R
 ```
 
 The env block changed, so **the app container is RECREATED** — and a recreate
@@ -480,12 +487,12 @@ the reason the P107 migration recipe below ends the same way). Re-verify caps
 against the *new* container, do not assume they carried:
 
 ```bash
-docker inspect nyxloom-1dd3d1-mattermost nyxloom-1dd3d1-mattermost-db \
+docker inspect <container_prefix>-mattermost <container_prefix>-mattermost-db \
   --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
 # expect (name / cgroup / memory / nanocpus):
-#   /nyxloom-1dd3d1-mattermost     dev-background.slice 2147483648 1500000000
-#   /nyxloom-1dd3d1-mattermost-db  dev-background.slice  536870912  500000000
-docker exec nyxloom-1dd3d1-mattermost-db cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max
+#   /<container_prefix>-mattermost     dev-background.slice 2147483648 1500000000
+#   /<container_prefix>-mattermost-db  dev-background.slice  536870912  500000000
+docker exec <container_prefix>-mattermost-db cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max
 ```
 
 Postgres is **not** recreated by this change (its env is untouched), so its
@@ -516,7 +523,7 @@ for k in TeamSettings.EnableUserCreation TeamSettings.EnableOpenServer \
          PrivacySettings.ShowEmailAddress RateLimitSettings.Enable \
          ServiceSettings.MaximumLoginAttempts ServiceSettings.EnableSecurityFixAlert; do
   printf '%-50s ' "$k"
-  docker exec nyxloom-1dd3d1-mattermost /mattermost/bin/mmctl --local config get "$k"
+  docker exec <container_prefix>-mattermost /mattermost/bin/mmctl --local config get "$k"
 done
 # expect: false false false 168 false true 10 false
 ```
@@ -530,16 +537,16 @@ before this package. From the devcontainer, joined to the stack's private
 bridge:
 
 ```bash
-docker network connect nyxloom-1dd3d1-mattermost_internal <this-container>
-B=http://nyxloom-1dd3d1-mattermost:8065
-IID=$(docker exec nyxloom-1dd3d1-mattermost /mattermost/bin/mmctl --local --json team search nyxloom \
+docker network connect <container_prefix>-mattermost_internal <this-container>
+B=http://<container_prefix>-mattermost:8065
+IID=$(docker exec <container_prefix>-mattermost /mattermost/bin/mmctl --local --json team search nyxloom \
       | python3 -c 'import sys,json; print(json.load(sys.stdin)[0]["invite_id"])')
 curl -s -X POST "$B/api/v4/users?iid=$IID" \
   -H 'Content-Type: application/json' \
   -d '{"email":"probe@invalid.example","username":"p110probe","password":"Pr0be-Pw!2026"}'
 # BEFORE this package: 201, and a real account exists afterwards.
 # AFTER (measured):    501  api.user.create_user.signup_email_disabled
-docker network disconnect nyxloom-1dd3d1-mattermost_internal <this-container>
+docker network disconnect <container_prefix>-mattermost_internal <this-container>
 ```
 
 **If that returns 201, stop — do not proceed to step 3.** (501 rather than
@@ -553,7 +560,7 @@ being written down:
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/api/v4/users/login" \
   -H 'Content-Type: application/json' \
-  -d "{\"login_id\":\"nyxloom-operator\",\"password\":\"$(cat /workspaces/vbpub/nyxloom/.ciu/secrets/mattermost/operator_password)\"}"
+  -d "{\"login_id\":\"nyxloom-operator\",\"password\":\"$(cat /workspaces/vbpub/mattermost/.ciu/secrets/mattermost/operator_password)\"}"
 # expect 200
 ```
 
@@ -579,7 +586,7 @@ signup probe as covering this.
 See it for yourself:
 
 ```bash
-PW=$(cat /workspaces/vbpub/nyxloom/.ciu/secrets/mattermost/installer_password)
+PW=$(cat /workspaces/vbpub/mattermost/.ciu/secrets/mattermost/installer_password)
 TOK=$(curl -s -D- -o /dev/null -X POST "$B/api/v4/users/login" \
       -H 'Content-Type: application/json' \
       -d "{\"login_id\":\"nyxloom-installer\",\"password\":\"$PW\"}" \
@@ -627,15 +634,15 @@ server" into a thing an outsider might eventually get hold of.
 ### 3. Flip exposure
 
 ```bash
-$EDITOR nyxloom/mattermost/ciu.defaults.toml.j2     # expose_public = false -> true
-ciu up --dir nyxloom/mattermost --dry-run -y $R
+$EDITOR mattermost/ciu.defaults.toml.j2     # expose_public = false -> true
+ciu up --dir mattermost --dry-run -y $R
 ```
 
 Before the real `ciu up`, confirm the render actually carries exposure — a
 silent no-op here is the failure mode that wastes the most time:
 
 ```bash
-grep -E 'traefik|ingress|SITEURL|VARYBYHEADER' nyxloom/mattermost/ciu.compose.yml
+grep -E 'traefik|ingress|SITEURL|VARYBYHEADER' mattermost/ciu.compose.yml
 # expect: traefik.enable=true, router rule Host(`mattermost.gstammtisch.dchive.de`),
 #         traefik.docker.network=ingress_public, an `ingress` network on the app
 #         service, MM_SERVICESETTINGS_SITEURL=https://mattermost.gstammtisch.dchive.de,
@@ -647,7 +654,7 @@ Traefik container's address, so if the keying did not switch the rate limiter
 would put the whole internet in one bucket.
 
 ```bash
-ciu up --dir nyxloom/mattermost -y $R
+ciu up --dir mattermost -y $R
 ```
 
 Container recreates again → **re-run the governance check from step 1**.
@@ -679,10 +686,10 @@ The hook re-persists it on the step-3 `ciu up`; prove it end to end from
 outside the private network:
 
 ```bash
-cat nyxloom/mattermost/.ciu/secrets/installer_webhook_url   # now https://mattermost...
-curl -sS -X POST "$(cat nyxloom/mattermost/.ciu/secrets/installer_webhook_url)" \
+cat mattermost/.ciu/secrets/installer_webhook_url   # now https://mattermost...
+curl -sS -X POST "$(cat mattermost/.ciu/secrets/installer_webhook_url)" \
   -H 'Content-Type: application/json' -d '{"text":"P110 external delivery check"}'
-docker exec nyxloom-1dd3d1-mattermost /mattermost/bin/mmctl --local post list nyxloom:installs --number 3
+docker exec <container_prefix>-mattermost /mattermost/bin/mmctl --local post list nyxloom:installs --number 3
 ```
 
 Also confirm the rate limiter is keyed on the real client, not on Traefik:
@@ -695,8 +702,8 @@ operator's browser is unaffected.
 Exposure is reversible on its own:
 
 ```bash
-$EDITOR nyxloom/mattermost/ciu.defaults.toml.j2     # expose_public = true -> false
-ciu up --dir nyxloom/mattermost -y $R               # recreates: re-check governance
+$EDITOR mattermost/ciu.defaults.toml.j2     # expose_public = true -> false
+ciu up --dir mattermost -y $R               # recreates: re-check governance
 ```
 
 That removes the Traefik labels and the `ingress_public` join, and re-points
@@ -741,7 +748,8 @@ demand. `ciu down` preserves them.
 > * `ciu up --dir mattermost --reset` →
 >   `[ERROR] deploy.labels.prefix is required for reset`.
 >   `engine.reset_service` raises that **before its Step 1**, because
->   `nyxloom/ciu.global.defaults.toml.j2` does not set the key.
+>   `ciu.global.defaults.toml.j2` (this root's own, copied from nyxloom's at
+>   the MM-MOVE; neither sets the key) does not set the key.
 > * `ciu clean` calls **the same `engine.reset_service`**, and
 >   `deploy.action_clean` wraps it in `except Exception` — it prints
 >   `reset failed for <stack>`, sets `rc=1`, and **carries on**. Its own
@@ -760,22 +768,23 @@ demand. `ciu down` preserves them.
 > directly. This is the block this package's own throwaway teardown used:
 >
 > ```bash
-> P=/home/vb/volkb79-2/vbpub/nyxloom/mattermost
+> P=/home/vb/volkb79-2/vbpub/mattermost
 > docker run --rm -v "$P":/t alpine:3.20 sh -c \
 >   'rm -rf /t/vol-postgres-data /t/vol-mattermost-config /t/vol-mattermost-logs'
 > ```
 >
 > Remove the containers and named volumes alongside it (`docker rm -f
-> nyxloom-1dd3d1-mattermost nyxloom-1dd3d1-mattermost-db`, then
-> `docker volume rm $(docker volume ls -q --filter name=nyxloom-1dd3d1-mattermost)`).
+> <container_prefix>-mattermost <container_prefix>-mattermost-db`, then
+> `docker volume rm $(docker volume ls -q --filter name=<container_prefix>-mattermost)`).
 >
 > **Fixing it at the source** is one line — `labels.prefix` under `[deploy]`
-> in `../ciu.global.defaults.toml.j2` — and it unblocks both commands for
+> in `./ciu.global.defaults.toml.j2` — and it unblocks both commands for
 > every stack on this root. nyxloom-P110 deliberately did **not** make that
-> change: it is a root-level file shared with `ntfy`, `nyxloomd` and
-> `pwmcp-instance`, and it converts `ciu clean` from partly-inert into
-> genuinely destructive for all of them, which is a decision for whoever owns
-> the root rather than a side effect of a Mattermost package. One fact for
+> change: at the time the root file was nyxloom's, shared with `ntfy`,
+> `nyxloomd` and `pwmcp-instance`, and it would have converted `ciu clean`
+> from partly-inert into genuinely destructive for all of them. Since the
+> MM-MOVE this root holds only the Mattermost stack, so the constraint no
+> longer applies; the key is still unset (a follow-up, not part of the move). One fact for
 > whoever does it, since it is the thing that looks scary and is not: ciu uses
 > the prefix in exactly one place, Step 4's orphan-sweep filter
 > `label=<prefix>.component=<service>`, and **ciu never writes that label** —
@@ -811,7 +820,7 @@ fail S6.3's ownership check on the next `ciu up`. Backups still go through
 `pg_dump` in the container:
 
 ```bash
-docker exec nyxloom-1dd3d1-mattermost-db sh -c \
+docker exec <container_prefix>-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) pg_dump -U mmuser mattermost' > mattermost.sql
 ```
 
@@ -822,24 +831,24 @@ rehearsal (P107) on a copy of the live data.
 
 ```bash
 # 0. dump first, and keep it OUT of the repo
-docker exec nyxloom-1dd3d1-mattermost-db sh -c \
+docker exec <container_prefix>-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) pg_dump -U mmuser mattermost' > ~/mattermost.sql
 
 # 1. STOP first — a live copy would need crash recovery
-ciu down --define-root /workspaces/vbpub/nyxloom
-docker rm nyxloom-1dd3d1-mattermost nyxloom-1dd3d1-mattermost-db   # no -v: named volumes survive
+ciu down --define-root /workspaces/vbpub/mattermost
+docker rm <container_prefix>-mattermost <container_prefix>-mattermost-db   # no -v: named volumes survive
 
 # 2. let ciu create the hostdirs with the right ownership
-ciu up --dir nyxloom/mattermost -y --dry-run --define-root /workspaces/vbpub/nyxloom
+ciu up --dir mattermost -y --dry-run --define-root /workspaces/vbpub/mattermost
 
 # 3. copy the data in, then RE-ASSERT the ownership `cp -a` clobbers.
 #    `cp -a /from/. /to/` copies the SOURCE directory's own owner/mode onto
 #    the target, which leaves 70:70 / 2000:2000 — and S6.3 then REFUSES the
 #    hostdir on the next `ciu up` as incompatible. This step is not optional.
-P=/home/vb/volkb79-2/vbpub/nyxloom/mattermost
-docker run --rm -v nyxloom-1dd3d1-mattermost_postgres-data:/from:ro \
+P=/home/vb/volkb79-2/vbpub/mattermost
+docker run --rm -v <container_prefix>-mattermost_postgres-data:/from:ro \
   -v "$P/vol-postgres-data":/to alpine:3.20 sh -c 'cp -a /from/. /to/'
-docker run --rm -v nyxloom-1dd3d1-mattermost_mattermost-config:/from:ro \
+docker run --rm -v <container_prefix>-mattermost_mattermost-config:/from:ro \
   -v "$P/vol-mattermost-config":/to alpine:3.20 sh -c 'cp -a /from/. /to/'
 docker run --rm -v "$P":/t alpine:3.20 sh -c '
   chown 70:994   /t/vol-postgres-data     && chmod 0700 /t/vol-postgres-data
@@ -847,19 +856,19 @@ docker run --rm -v "$P":/t alpine:3.20 sh -c '
 
 # 4. real up, then verify BOTH data and governance — a recreate is exactly
 #    where governance silently drops (P106's own lesson).
-ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
-docker exec nyxloom-1dd3d1-mattermost-db sh -c \
+ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost
+docker exec <container_prefix>-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) psql -U mmuser -d mattermost -tAc \
    "select (select count(*) from users), (select count(*) from teams), (select count(*) from channels), (select count(*) from posts)"'
-docker inspect nyxloom-1dd3d1-mattermost nyxloom-1dd3d1-mattermost-db \
+docker inspect <container_prefix>-mattermost <container_prefix>-mattermost-db \
   --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
-docker exec nyxloom-1dd3d1-mattermost-db cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max
+docker exec <container_prefix>-mattermost-db cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max
 ```
 
 The old named volumes are left in place after step 4 as a rollback point;
-delete them (`docker volume rm nyxloom-1dd3d1-mattermost_postgres-data
-nyxloom-1dd3d1-mattermost_mattermost-config
-nyxloom-1dd3d1-mattermost_mattermost-logs`) only once the bind-mounted stack has
+delete them (`docker volume rm <container_prefix>-mattermost_postgres-data
+<container_prefix>-mattermost_mattermost-config
+<container_prefix>-mattermost_mattermost-logs`) only once the bind-mounted stack has
 been healthy for a while.
 
 ### Enabling personal access tokens + minting the intake PAT (nyxloom-P109)
@@ -877,9 +886,9 @@ own first.
 #    and a line naming intake_pat as NOT minted. This is also the first live
 #    exercise of the ` (private)` channel-name parse -- if `channel list`
 #    drifted, the hook refuses here, before anything is widened.
-ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
-docker exec nyxloom-1dd3d1-mattermost mmctl --local channel list nyxloom   # expect `intake (private)`
-docker exec nyxloom-1dd3d1-mattermost mmctl --local channel users list nyxloom:intake --all
+ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost
+docker exec <container_prefix>-mattermost mmctl --local channel list nyxloom   # expect `intake (private)`
+docker exec <container_prefix>-mattermost mmctl --local channel users list nyxloom:intake --all
 
 # 1. THE WIDENING. Set it in ciu.defaults.toml.j2 ([mattermost] table):
 #      enable_user_access_tokens = true
@@ -891,16 +900,16 @@ docker exec nyxloom-1dd3d1-mattermost mmctl --local channel users list nyxloom:i
 # doesn't have the feature enabled yet and this command exits rc=1. That is
 # expected -- no token or secret file is written on this refusal -- and the
 # very next (real) `ciu up` proceeds normally once the container recreates.
-ciu up --dir nyxloom/mattermost -y --dry-run --define-root /workspaces/vbpub/nyxloom
+ciu up --dir mattermost -y --dry-run --define-root /workspaces/vbpub/mattermost
 # ciu's rendered compose output is `ciu.compose.yml` at the stack root (S8.5)
 # -- NOT the hand-maintained `docker-compose.yml` fallback beside it, which
 # receives no ciu overlay and is not what `ciu up` deploys.
-grep ENABLEUSERACCESSTOKENS nyxloom/mattermost/ciu.compose.yml   # expect "true"
+grep ENABLEUSERACCESSTOKENS mattermost/ciu.compose.yml   # expect "true"
 
 # 2. Real up. The container RECREATES (an env change), so re-verify governance
 #    in the same breath -- a recreate is exactly where it silently drops.
-ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
-docker inspect nyxloom-1dd3d1-mattermost \
+ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost
+docker inspect <container_prefix>-mattermost \
   --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
 
 # 3. Verify the PAT was minted ONCE and is idempotent. The second `ciu up`
@@ -909,17 +918,17 @@ docker inspect nyxloom-1dd3d1-mattermost \
 #    with grep's, so a `ciu up` that failed outright would still look fine as
 #    long as the word appeared somewhere (LESSONS L4, the same reason gate
 #    verdicts are never read from a pipe tail).
-docker exec nyxloom-1dd3d1-mattermost mmctl --local token list nyxloom-intake
-ls -l nyxloom/mattermost/.ciu/secrets/intake_pat          # 0440, non-empty
-ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom \
+docker exec <container_prefix>-mattermost mmctl --local token list nyxloom-intake
+ls -l mattermost/.ciu/secrets/intake_pat          # 0440, non-empty
+ciu up --dir mattermost -y --define-root /workspaces/vbpub/mattermost \
   >/tmp/p109-reup.log 2>&1; echo "ciu up rc=$?"           # rc MUST be 0
 grep tokens_minted /tmp/p109-reup.log                     # expect tokens_minted=[]
-docker exec nyxloom-1dd3d1-mattermost mmctl --local token list nyxloom-intake   # still exactly ONE
+docker exec <container_prefix>-mattermost mmctl --local token list nyxloom-intake   # still exactly ONE
 
 # 4. Point the bridge at it. Both credentials come from the stack store and
 #    neither is committed; NYXLOOM_INTAKE_MM_TOKEN wins over any toml value.
-export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat nyxloom/mattermost/.ciu/secrets/intake_webhook_url)"
-export NYXLOOM_INTAKE_MM_TOKEN="$(cat nyxloom/mattermost/.ciu/secrets/intake_pat)"
+export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat mattermost/.ciu/secrets/intake_webhook_url)"
+export NYXLOOM_INTAKE_MM_TOKEN="$(cat mattermost/.ciu/secrets/intake_pat)"
 export NYXLOOM_CHANNEL_OPERATOR_ID="<the operator identity this channel belongs to>"
 
 # 5. The `mmctl` transport, against the real channel. This one runs from the
@@ -936,8 +945,8 @@ nyxloom intake-bridge poll nyxloom --transport mmctl
 
 Do not add `nyxloom intake-bridge poll nyxloom --transport rest` to the block
 above; it fails with a connection error and proves nothing.
-`[intake_bridge].base_url` is `http://nyxloom-1dd3d1-mattermost:8065`, and that
-name exists only inside the `nyxloom-1dd3d1-mattermost_internal` docker network —
+`[intake_bridge].base_url` is `http://<container_prefix>-mattermost:8065`, and that
+name exists only inside the `<container_prefix>-mattermost_internal` docker network —
 the stack publishes no host port (see "Network exposure" above, which is the
 point, not an oversight).
 
@@ -957,12 +966,12 @@ throwaway container on the private network that makes exactly the two GETs
 # Uses python:3-slim (already on this host) and stdlib urllib only -- no pip,
 # no image build, nothing persistent. Prints the two HTTP statuses and the
 # resolved channel id. Expect: 200, 200, a 26-char id.
-docker run --rm --network nyxloom-1dd3d1-mattermost_internal \
+docker run --rm --network <container_prefix>-mattermost_internal \
   --cpus=1 --memory=256m \
   -e MM_TOKEN="$NYXLOOM_INTAKE_MM_TOKEN" \
   python:3-slim python3 -c '
 import json, os, urllib.request
-BASE = "http://nyxloom-1dd3d1-mattermost:8065"
+BASE = "http://<container_prefix>-mattermost:8065"
 H = {"Authorization": "Bearer " + os.environ["MM_TOKEN"]}
 def get(path):
     req = urllib.request.Request(BASE + path, headers=H, method="GET")

@@ -1,9 +1,10 @@
 """Unit tests for the Mattermost provisioning hook (nyxloom-P107).
 
-The hook lives at `nyxloom/mattermost/hooks/post_compose_provision.py`, OUTSIDE
-`src/nyxloom`, so assay's changed-line judge never considers it — the gate's
-coverage scope is `--cov=src/nyxloom`. These tests are therefore a deliberate
-act, not a coverage by-product, and every one of them pins a failure that
+The hook lives at `mattermost/hooks/post_compose_provision.py`. It was OUTSIDE
+`nyxloom/src/nyxloom` while the stack lived under nyxloom, so nyxloom's gate
+never measured it; since the MM-MOVE these tests run in mattermost's own lane
+(`mattermost/run-gate.toml`). They are a deliberate act, not a coverage
+by-product, and every one of them pins a failure that
 actually happened rather than a hypothetical:
 
 * `_channel_members` collected whole output lines instead of usernames, so the
@@ -36,7 +37,6 @@ import pytest
 
 _HOOK_PATH = (
     Path(__file__).resolve().parents[1]
-    / "mattermost"
     / "hooks"
     / "post_compose_provision.py"
 )
