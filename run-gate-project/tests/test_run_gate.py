@@ -3421,11 +3421,11 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
 def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
-    # The tagged release remains source rev 55; RG-88 is the current
+    # The tagged release remains source rev 55; RG-89 is the current
     # unreleased revision. Historical release metadata must not drift when
     # the launcher revision advances.
     assert "This section describes released source rev 55." in changes
-    assert f"RG-88, rev {run_gate.__revision__}" in changes
+    assert f"RG-89, rev {run_gate.__revision__}" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes

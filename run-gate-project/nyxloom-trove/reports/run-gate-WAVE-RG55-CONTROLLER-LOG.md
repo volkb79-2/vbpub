@@ -7758,3 +7758,13 @@ lane exited 0. Run-Gate's profile record identified the existing daemon as
 DAMON-overhead evidence. No daemon state was changed. The three cgprofile
 registered lanes are green on the dirty candidate; they must be rerun on the
 committed exact tree before release review.
+
+### RW-492 — 2026-10-07 18:58:06 UTC — update Run-Gate's active changelog oracle
+
+The first exact-tree Run-Gate `selftest` on commit `219997c93` exited 1 after
+159.70 seconds: 1,736 passed, 2 skipped, and one changelog test failed. The
+test still named RG-88 as the active unreleased revision after this candidate
+advanced the release entry to RG-89/rev57; the historical RG-88 entry itself
+is correct and remains unchanged. Updated only the active-entry comment and
+assertion to RG-89. The correction is committed separately and requires a
+fresh exact-tree selftest; no other Run-Gate gate is accepted from this run.
