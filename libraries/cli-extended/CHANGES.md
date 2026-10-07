@@ -47,7 +47,7 @@ exports its manifest and doctor JSON, byte-for-byte as before.
   verb now include `default verb` in the bracketed behavior labels; the route's
   `behavior` list is unchanged (the fallback marker is its own key).
 
-### Unreleased — library backlog fixes (CX-BACKLOG, 2026-10-06)
+### 0.3.0 — library backlog fixes (CX-BACKLOG, 2026-10-06)
 
 Library contract version is unchanged (1). Behaviour changes a consumer can see:
 
