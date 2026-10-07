@@ -1,4 +1,4 @@
-"""Tests for nyxloom/mattermost/tools/mm_reachability.py.
+"""Tests for mattermost/tools/mm_reachability.py.
 
 A fake stack dir (fake ciu.toml + fake secrets) and a fake Docker/HTTP world:
 no network, no docker. All secret values below are fake.
@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "mattermost" / "tools" / "mm_reachability.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "mm_reachability.py"
 _spec = importlib.util.spec_from_file_location("mm_reachability", _SCRIPT)
 mr = importlib.util.module_from_spec(_spec)
 sys.modules["mm_reachability"] = mr

@@ -4,7 +4,7 @@ Stdlib only (the target host has nothing else). The webhook URL is a SECRET:
 it is never logged, never put in an exception message, and anything that may
 quote it goes through ``redact_text`` first. Only the host part may appear.
 
-The Mattermost wire contract is ``nyxloom/mattermost/CONSUMER.md``: a plain
+The Mattermost wire contract is ``mattermost/CONSUMER.md``: a plain
 ``POST {"text": markdown}`` with no ``channel`` override; a failed POST never
 fails the install.
 """

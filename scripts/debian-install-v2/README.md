@@ -302,7 +302,7 @@ only, 2 attempts / 10 s timeout, 4xx other than 429 is not retried, after 3 fail
 look like `✅ **netcup-1** (`vmi123`) | run `ab12cd34` | stage1 | done`; a
 failure carries a short redacted log tail as a fenced block. Telegram
 (`telegram_bot_token`/`telegram_chat_id`, `telegram_verbose_progress`) keeps
-working. Both include host facts. See `nyxloom/mattermost/CONSUMER.md` for the
+working. Both include host facts. See `mattermost/CONSUMER.md` for the
 producer contract. The webhook URL is never printed (only its host), is
 redacted in `--debug`/`--debug-raw`, and is not written to `state.json`. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring

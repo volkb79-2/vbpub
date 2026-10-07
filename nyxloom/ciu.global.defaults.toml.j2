@@ -30,14 +30,16 @@ CONTAINER_GID = "$DOCKER_GID"
 DOCKER_GID = "$DOCKER_GID"
 
 # The stacks under this root. `ciu up` (default profile) brings these up.
-# nyxloom-P106 / NL-17: `mattermost` is the notification channel now; `ntfy`
-# moved to the `legacy` profile below rather than being deleted, so a bare
-# `ciu up` no longer restarts the container the operator deliberately stopped.
+# Mattermost (the notification channel since nyxloom-P106 / NL-17) moved out
+# of this root to its own ciu root at `<vbpub>/mattermost` (MM-MOVE); bring it
+# up there. `ntfy` moved to the `legacy` profile below rather than being
+# deleted, so a bare `ciu up` no longer restarts the container the operator
+# deliberately stopped.
 # Registration here is not just cosmetic: a single-stack `ciu up --dir` runs
 # NEITHER the producer preflight NOR the S15.12 named-slice existence check —
 # and a slice systemd does not know fails OPEN to an unbounded cgroup (NL-6).
 [deploy.profiles.default]
-stacks = ["mattermost", "nyxloomd"]
+stacks = ["nyxloomd"]
 
 # Retired but intact (operator: "deactivate paths to it, do not delete it").
 # Bring it back with `ciu up --profile legacy` or `ciu up --dir nyxloom/ntfy`.

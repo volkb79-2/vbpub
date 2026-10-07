@@ -167,7 +167,8 @@ depends_on = ["cmru"]
 
 [orchestration.project.nyxloom]
 config = "nyxloom/cmru.toml"
-depends_on = ["cmru"]
+# cli-extended: nyxloom's wheel requires it (NYX-CLIX, CX-D1), so the release preflight demands the declaration.
+depends_on = ["cli-extended", "cmru"]
 
 [orchestration.project.modern-debian-tools-python-debug]
 config = "modern-debian-tools-python-debug/cmru.toml"

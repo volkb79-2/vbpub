@@ -4,7 +4,7 @@ schema_version = 1
 kind = "none"
 
 [env]
-NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\n\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
+NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\n\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development.\n\n**Install**\n\nnyxloom depends on the `cli-extended` wheel (`cli-extended>=0.3.0`), published to GitHub Releases only, never PyPI. Download it beside this wheel and install it first:\n```bash\npipx install --preinstall ./cli_extended-*.whl nyxloom-*.whl\n```"
 
 [project]
 id = "nyxloom"
@@ -130,22 +130,11 @@ constraint = ">=2.14.0"
 image = "docker.io/binwiederhier/ntfy"
 tag = "v{version}"
 
-[versions.targets."oci.postgres"]
-mode = "single"
-constraint = "*"
-
-[versions.targets."oci.postgres".oci]
-image = "docker.io/library/postgres"
-tag = "16-alpine"
-selection = "rolling"
-
-[versions.targets."oci.mattermost"]
-mode = "single"
-constraint = ">=11.10.1"
-
-[versions.targets."oci.mattermost".oci]
-image = "docker.io/mattermost/mattermost-team-edition"
-tag = "{version}"
+# The `oci.postgres` (16-alpine, rolling) and `oci.mattermost` (>=11.10.1)
+# version targets lived here while the Mattermost stack was nyxloom/mattermost.
+# The stack moved to its own project at <vbpub>/mattermost (MM-MOVE), which
+# owns both image pins (mattermost/ciu.defaults.toml.j2); re-declare the two
+# targets in that project's cmru.toml when it gets one (later package).
 
 [versions.targets."oci.pwmcp"]
 mode = "single"

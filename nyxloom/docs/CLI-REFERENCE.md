@@ -827,6 +827,11 @@ dispositions:
 
 ## cli-extended boundary and package plan
 
+> **Superseded (2026-10-07, NYX-CLIX).** The "bundle the import package into the
+> Nyxloom wheel" target below was overturned by the unified-adoption decision
+> CX-D1: nyxloom now declares `cli-extended>=0.3.0` as a real wheel dependency
+> and vendors nothing. The text below is the dated audit, kept as written.
+
 The root repository marks libraries/cli-extended independently packageable.
 Nyxloom pyproject discovers packages under src/ and currently does not include
 or depend on cli_extended; nyxloom/cmru.toml releases only the Nyxloom wheel.

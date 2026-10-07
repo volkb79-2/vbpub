@@ -1,7 +1,7 @@
 # ntfy — nyxloom notification channel
 
 > **RETIRED as the active channel (2026-09-08, backlog NL-17 / nyxloom-P106),
-> kept intact and selectable.** [mattermost/](../mattermost/) is the live
+> kept intact and selectable.** [mattermost/](../../mattermost/) is the live
 > channel now; the `nyxloom-ntfy` container was STOPPED (not removed) and this
 > stack moved out of the root's default `ciu up` profile into
 > `[deploy.profiles.legacy]`. `notify.py` still carries a full ntfy backend,

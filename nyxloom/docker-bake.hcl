@@ -24,7 +24,8 @@ variable "OPENCODE_VERSION" { default = "1.18.1" }
 
 # The daemon: mdt base + a self-contained /opt venv with the nyxloom wheel. The
 # build context is the vbpub monorepo root so the Dockerfile's stage-1 can copy
-# both nyxloom/ and libraries/cli-extended/ before building the wheel.
+# nyxloom/ and libraries/cli-extended/ and build both wheels (cli-extended is a
+# dependency installed first, not bundled into the nyxloom wheel; NYX-CLIX).
 target "nyxloomd" {
   context    = ".."
   dockerfile = "nyxloom/nyxloomd/Dockerfile"

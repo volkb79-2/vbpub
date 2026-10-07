@@ -15,7 +15,7 @@
 
 [mattermost]
 name = "mattermost"
-container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}nyxloom{% endif %}"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}mattermost{% endif %}"
 
 # ── Network exposure — DELIBERATELY OFF BY DEFAULT ──────────────────────
 # false: no tls-edge router labels, no ingress_public join, no host ports —
@@ -459,7 +459,7 @@ url_base = "internal"
 # The `rest` read transport's credential. Minted by the hook through S9.4a
 # for the same reason as the webhook URLs: it does not exist until Mattermost
 # mints it, so no S4 directive can express it. Lands in the STACK store at
-# `nyxloom/mattermost/.ciu/secrets/intake_pat`, 0440, gitignored by `**/.ciu/`.
+# `mattermost/.ciu/secrets/intake_pat`, 0440, gitignored by `**/.ciu/`.
 #
 # REQUIRES `[mattermost].enable_user_access_tokens = true` (which drives
 # MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS). While that is false this entry
@@ -523,7 +523,7 @@ max_file = "3"
 
 # ── Resource governance (ciu S15) ───────────────────────────────────────
 # S15.10: this table is SHALLOW-MERGED over the root's top-level
-# [governance] (../ciu.global.defaults.toml.j2), last-wins — `enabled`,
+# [governance] (./ciu.global.defaults.toml.j2), last-wins — `enabled`,
 # `cgroup_parent` (dev-background.slice) and `device` (/dev/vda) inherit and
 # MUST NOT be restated here. (Restating one key no longer drops the rest:
 # CIU-13, fixed 2026-08-03.)

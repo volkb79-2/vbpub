@@ -37,7 +37,7 @@ scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage.json"]
-env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 # PATH: xdist worker spawn (subprocess). HOME: config/cache dirs some tests
 # touch. TERM/LANG: parity with ciu's lane. No CGROUP_PARENT_DEV_BACKGROUND
 # passthrough -- nyxloom's suite (unlike ciu's cgroup-governance tests) never
@@ -151,7 +151,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
   "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
-env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # The current-main diff had 43 eligible candidates (cap 45); the SUCCESSOR
 # package (2026-10) adds toolresult/stopstate/successor and brought the plan to

@@ -12,12 +12,15 @@
 !nyxloom
 !wheel-builder
 # Nyxloom's image now builds with the repository root as context. Expose only
-# the cli-extended package source that its wheel build copies; keep the rest of
-# libraries/ out of unrelated root-context builds.
+# what its cli-extended WHEEL build copies (pyproject.toml + README.md + src;
+# NYX-CLIX: the wheel is built and installed first, not vendored into nyxloom's);
+# keep the rest of libraries/ out of unrelated root-context builds.
 !libraries
 libraries/*
 !libraries/cli-extended
 libraries/cli-extended/*
+!libraries/cli-extended/pyproject.toml
+!libraries/cli-extended/README.md
 !libraries/cli-extended/src
 libraries/cli-extended/src/*
 !libraries/cli-extended/src/cli_extended
