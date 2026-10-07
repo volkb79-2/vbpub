@@ -134,10 +134,17 @@ and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-w
 Every assay lane receives `--resume`, a worktree-local progress file, and a
 durable `--state-dir` under the checkout that owns the shared Git directory.
 The default state root is `<checkout>/.run-gate`; container environments can
-declare `state_root` for a different durable mount. Before Assay starts,
-run-gate checks that root and the deepest existing directory on the keyed
-state path are writable as the lane user, and `doctor` reports the result
-per environment. An unavailable or unwritable state area is
+declare `state_root` for a different durable mount. For a fresh ephemeral
+container or bare-host lane, Run-Gate creates its default root when absent
+and refuses a symlink or other object in its
+place, then checks that root and the deepest existing directory on the keyed
+state path as the lane user. An explicitly configured `state_root` must
+already be mounted and writable. For an ephemeral or bare-host lane, `doctor`
+reports an uncreated default root as unverified until the lane creates and
+probes it; an exec runner is probed directly. Run-Gate also derives the
+Assay test command's `TMPDIR` and `GIT_CEILING_DIRECTORIES` from the verified
+state path, so a guessed container path cannot move tests into an unmapped private
+`/tmp`. An unavailable or unwritable state area is
 NOT_RUN/`state-mount`, not a test failure. The durable-state option requires
 Assay 5.2.0. Read the
 [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
@@ -203,16 +210,19 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
 "Built deltas" above):
 
 1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
-   points at it; a release cannot be tagged unless it passes). Zero
-   install: `python3 -m pytest tests -q --cov=. --cov-branch` followed by
+   points at it; a release cannot be tagged unless it passes). It owns a
+   capped `tester-unified` container and runs from the selected worktree's
+   project directory. Zero install: `python3 -m pytest tests -q --cov=. --cov-branch`
+   followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run-gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
    since `main`. The release contract deliberately does not claim a
    whole-project 100% floor; the separate `assay-r1` lane is the broader
    line-and-branch judge.
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
-   judge: the selected worktree's assay source running the same
-   test command, `assay.toml [lanes.r1]` judging `source_roots = ["."]`
+   judge in its own `tester-unified` container: the selected worktree's
+   assay source running the same test command, `assay.toml [lanes.r1]`
+   judging `source_roots = ["."]`
    — the whole project, not just `run-gate.py`. `tools/coverage_gate.py`
    itself is IN SCOPE here (a controller ruling, RW-8: "100% on every
    changed line" means every changed line in this project, and the
@@ -221,15 +231,16 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    delegated to the invoking gate request (`judge.base_source =
    "request"`), never hardcoded.
 3. **`assay-r2`** — mutation testing (R2) over the same scope, bare-host
-   and serial (`jobs = 1`, HOST LOAD §6), budget 4h with a 20-minute
-   `stall_timeout` on silence in its progress file. Run separately,
+   and serial (`jobs = 1`, HOST LOAD §6), budget 4h. Bare-host lanes do not
+   have a live stall watcher, so this lane declares no `stall_timeout`. Run separately,
    pre-merge — never a member of `gate-full` (below), so a routine "does
    this gate clean" check never has to pay for a lane that can take
    hours.
 4. **`assay-r3`** — the canary: `tools/canary-run.sh` breaks one
    provably-covered invariant (today: `duration_stats`'s median, flipped
    to a mean) in a disposable copy and asserts the exact test that
-   encodes it goes red. Proves the suite is a real oracle, not a green
+   encodes it goes red in its own `tester-unified` container. Proves the
+   suite is a real oracle, not a green
    checkmark that would pass on broken code too.
 5. **`gate-full`** — the conjunction: `selftest` + `assay-r1` + `assay-r3`
    (r2 excluded for the reason above). Its `{base}` token forwards an

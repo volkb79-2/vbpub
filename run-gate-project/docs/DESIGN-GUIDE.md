@@ -267,15 +267,25 @@ lane user then cannot create `.run-gate` under it. Creating that directory
 inside the runner would make the immediate run pass but keep state in the
 container's writable layer, which is lost when the runner is recreated.
 
-run-gate now probes the state root in the lane's own environment before
-starting Assay. The root must already exist and be writable by the lane user;
-when keyed state directories already exist, the deepest existing directory
-on that path must also be writable.
+Run-Gate creates its default checkout-owned `.run-gate` directory before a
+live ephemeral container or bare-host Assay lane probes it. A symlink or another object
+at that path is refused. An explicitly configured `state_root` is an
+environment-owned mount and must already exist; Run-Gate does not invent it.
+The root is then probed in the lane's own environment and must be writable by
+the lane user. When keyed state directories already exist, the deepest
+existing directory on that path must also be writable. `doctor` cannot
+certify a missing default root's in-container permissions before creation,
+so it reports that state as unverified for an ephemeral lane. An exec runner
+owns its mount; `doctor` probes that runner instead of inferring its state
+from the checkout path.
 When the default `<checkout>/.run-gate` path is not mounted there, the result
 is NOT_RUN/`state-mount` with the required read-write mount named. A container
 environment can set `state_root` when its durable mount uses another path;
-`doctor` checks that path once per assay environment. run-gate creates only
-the keyed per-project descendants beneath the checked root. See the
+`doctor` checks that path once per assay environment. The Assay command's
+`TMPDIR` and `GIT_CEILING_DIRECTORIES` are derived from this same selected
+state path and passed through to pytest; a fixed `/worktree` path would be
+wrong in a differently mounted checkout. Run-Gate creates keyed per-project
+descendants only beneath the checked root. See the
 [consumer contract](../CONSUMERS.md#resume-progress-and-durable-assay-state)
 for the config and mount requirement.
 

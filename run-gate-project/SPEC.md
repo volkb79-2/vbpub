@@ -1544,10 +1544,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     its durable mount uses another in-container path. An unavailable state
     area refuses before Assay with NOT_RUN/`state-mount` and names the mount
     remedy. `doctor` checks once per assay environment. `--dry-run` prints
-    the planned probe. run-gate never creates or chowns the root inside an
-    exec runner: CIU (or the environment owner) must mount the durable host
-    directory read-write. The inner command creates only per-project
-    descendants beneath this checked root. An unknown probe result is ERROR,
+    the planned probe. A live lane creates the default checkout-owned
+    `.run-gate` directory when absent and refuses a symlink or other object
+    there; `doctor` reports the not-yet-created state of an ephemeral or
+    bare-host lane as unverified rather than certifying or failing the live
+    lane. An exec runner is probed directly. Run-Gate never creates or
+    chowns an explicitly configured root inside an exec runner: CIU (or the
+    environment owner) must mount the durable host directory read-write.
+    The inner command creates only per-project descendants beneath this
+    checked root. An unknown probe result is ERROR,
     never a writable-root certification. For `doctor`, a confirmed missing
     or unwritable root is FAIL and an indeterminate probe is SKIP.
 

@@ -65,10 +65,8 @@ evidence_paths = ["coverage.json"]
 # privileged host-PID systemd probe which this package gate does not need.
 # The lane's container bind-mounts this checkout so mountinfo tests exercise
 # a real mapping, and the release step runs with project_root as cwd.
-# DEPENDENCY: this step requires cmru >= 6.0.0. cmru 5.5's `tester-gate`
-# starts the container without `--init`, so run-gate (RG-84) refuses to run as
-# PID 1 (cmru KI-52). cmru 6.0 passes `--init` (cmru/src/cmru/tester_gate.py).
-# Release run-gate only after cmru 6.0 is landed and installed.
+# The installed CMRU 6.1.0 executes this argv as a project step; Run-Gate
+# itself now supplies `--init` for the tester container (RG-84).
 # First standalone bootstrap before cmru is installed anywhere fresh:
 # python3 run-gate.py selftest works with zero installs (stdlib-only).
 #

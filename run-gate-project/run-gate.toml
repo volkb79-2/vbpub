@@ -109,8 +109,8 @@ environment = "bare-host"
 clean_tree = true
 budget = "4h"
 
-# R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, one
-# canary today — median-not-mean on `duration_stats`, the RG-27 trap). A
+# R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, including
+# the median-not-mean `duration_stats` RG-27 trap). A
 # plain `kind = "command"` lane, not `kind = "assay"`: the canary script
 # runs its own disposable tar copy and pytest invocation directly (see the
 # script's own header for why it does not go through `assay run` itself).
