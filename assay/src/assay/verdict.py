@@ -5629,11 +5629,63 @@ class Verdict:
                         raise ValueError(
                             "witness-cold kill requires started-prefix evidence"
                         )
+                    if bucket == "killed" and cold_enabled:
+                        raise ValueError(
+                            "cold-witness kill requires collection evidence"
+                        )
                     if bucket == "survived" and cold_enabled:
                         raise ValueError("cold-witness survivor requires collection evidence")
                     continue
 
-                if cold_execution:
+                if bucket == "killed" and cold_enabled:
+                    if execution is None:
+                        raise ValueError("cold-witness kill requires an execution witness")
+                    if execution.mode == "full":
+                        if execution.witness is None:
+                            raise ValueError(
+                                "cold-policy full kill requires a failed-call witness"
+                            )
+                        if evidence.started_count is not None:
+                            raise ValueError(
+                                "full kill evidence cannot carry started-prefix facts"
+                            )
+                        if coverage_baseline is None:
+                            raise ValueError(
+                                "full kill requires a coverage command baseline"
+                            )
+                        self._check_evidence_matches_baseline(
+                            evidence, coverage_baseline, "declared"
+                        )
+                    elif execution.mode == "witness-prefix":
+                        if evidence.started_count is not None:
+                            raise ValueError(
+                                "witness-prefix kill evidence cannot carry started-prefix facts"
+                            )
+                        if cold_baseline is None:
+                            raise ValueError(
+                                "witness-prefix kill requires an R2 command baseline"
+                            )
+                        self._check_evidence_matches_baseline(
+                            evidence, cold_baseline, "r2"
+                        )
+                    elif cold_execution:
+                        if evidence.started_count is None:
+                            raise ValueError(
+                                "witness-cold kill requires started-prefix evidence"
+                            )
+                        if cold_baseline is None:
+                            raise ValueError(
+                                "witness-cold kill requires an R2 command baseline"
+                            )
+                        self._check_evidence_matches_baseline(
+                            evidence, cold_baseline, "r2"
+                        )
+                    else:
+                        raise ValueError(
+                            "cold-policy killed outcome has unsupported execution mode "
+                            f"{execution.mode!r}"
+                        )
+                elif cold_execution:
                     if evidence.started_count is None:
                         raise ValueError(
                             "witness-cold kill requires started-prefix evidence"

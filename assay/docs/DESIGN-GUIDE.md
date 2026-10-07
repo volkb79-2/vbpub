@@ -712,7 +712,10 @@ prefix. A passing cold attempt is a survivor only after the complete
 transformed no-coverage R2 command and its proof finish. An uncertain cold
 attempt gets one fresh full declared-command attempt. A declared fallback
 supplies a result only when its
-call failure or full pass is proven against the coverage baseline. With
+call failure or full pass is proven against the coverage baseline. A fallback
+kill requires a verified failed-call witness and declared-command evidence that
+matches that baseline. The witness may be any node in the attempt's started
+prefix because a full pytest retry can continue after the failing call. With
 pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
 and must match that baseline. The ordinary full-suite behavior remains the
 default when the option is absent.

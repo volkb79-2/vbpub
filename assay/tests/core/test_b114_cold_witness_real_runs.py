@@ -189,6 +189,13 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
     plan = json.loads(plan_stdout.getvalue())
     assert plan["status"] == "ok"
     assert plan["candidate_count"] == 3
+    candidate_id_by_line = {
+        row["lineno"]: row["id"] for row in plan["candidates"]
+    }
+    assert set(candidate_id_by_line) == {2, 5, 8}
+    early_id = candidate_id_by_line[2]
+    survivor_id = candidate_id_by_line[5]
+    fallback_id = candidate_id_by_line[8]
     assert len(plan["candidates"]) == 3
 
     code, stdout, stderr, progress_path, manifest_path, verdict_path, state_dir = (
@@ -207,6 +214,13 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
     )
     assert len(mutation["killed"]) == 2
     assert len(mutation["survived"]) == 1
+    assert {outcome["candidate_id"] for outcome in mutation["killed"]} == {
+        early_id,
+        fallback_id,
+    }
+    assert {outcome["candidate_id"] for outcome in mutation["survived"]} == {
+        survivor_id
+    }
 
     cold_kills = [
         outcome
@@ -342,6 +356,13 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
     plan = json.loads(plan_stdout.getvalue())
     assert plan["status"] == "ok"
     assert plan["candidate_count"] == 3
+    candidate_id_by_line = {
+        row["lineno"]: row["id"] for row in plan["candidates"]
+    }
+    assert set(candidate_id_by_line) == {2, 5, 8}
+    early_id = candidate_id_by_line[2]
+    survivor_id = candidate_id_by_line[5]
+    fallback_id = candidate_id_by_line[8]
 
     code, stdout, stderr, _, _, verdict_path, _ = _run_cold_campaign(
         repo, config, tmp_path=tmp_path, attempt_log=attempt_log
@@ -358,11 +379,29 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
     ]
     assert len(mutation["killed"]) == 2
     assert len(mutation["survived"]) == 1
+    assert {outcome["candidate_id"] for outcome in mutation["killed"]} == {
+        early_id,
+        fallback_id,
+    }
+    assert {outcome["candidate_id"] for outcome in mutation["survived"]} == {
+        survivor_id
+    }
     assert all(outcome["execution"]["mode"] == "full" for outcome in outcomes)
     assert all(outcome["evidence"]["command"] == "declared" for outcome in outcomes)
     assert cli.main(
         ["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()
     ) == 0
+
+    rows = [line.split("|") for line in attempt_log.read_text(encoding="utf-8").splitlines()]
+    rows_by_attempt = {
+        (mode, flags): [
+            name for row_mode, name, row_flags in rows
+            if (row_mode, row_flags) == (mode, flags)
+        ]
+        for mode, flags in {(row[0], row[2]) for row in rows}
+    }
+    for flags in ("100", "010", "001"):
+        assert rows_by_attempt[("full", flags)] == ["early", "survivor", "fallback"]
 
     attacks = [
         json.loads(line)

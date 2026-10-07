@@ -1805,6 +1805,8 @@ def _check_b106_execution(
             failures.append(
                 f"mutation.{bucket} full execution carries witness-prefix fields"
             )
+        if cold_policy is True and bucket == "killed" and "witness" not in execution:
+            failures.append("cold-policy full kill requires a failed-call witness")
         if bucket != "killed" and "witness" in execution:
             failures.append(
                 f"mutation.{bucket} full execution carries a kill witness"
@@ -1878,13 +1880,7 @@ def _check_v15_evidence(
 ) -> None:
     """Validate v15 per-attempt collection facts without model reconstruction."""
     if "evidence" not in entry:
-        execution = entry.get("execution")
-        mode = execution.get("mode") if isinstance(execution, dict) else None
-        if (
-            policy.get("cold_witness_kills") is True
-            and bucket == "killed"
-            and mode == "witness-cold"
-        ):
+        if policy.get("cold_witness_kills") is True and bucket == "killed":
             failures.append("cold-witness kill requires collection evidence")
         elif policy.get("cold_witness_kills") is True and bucket == "survived":
             failures.append("cold-witness survivor requires collection evidence")
@@ -1931,15 +1927,42 @@ def _check_v15_evidence(
     execution = entry.get("execution")
     mode = execution.get("mode") if isinstance(execution, dict) else None
     cold = mode == "witness-cold"
-    if cold:
-        if bucket != "killed":
-            failures.append("only a killed outcome may carry witness-cold evidence")
+    if bucket == "killed":
+        if mode == "witness-cold":
+            if not has_started:
+                failures.append("witness-cold kill requires started-prefix evidence")
+            baseline_name = "r2_baseline"
+            expected_command = "r2"
+        elif mode == "witness-prefix":
+            if has_started:
+                failures.append("witness-prefix kill cannot carry started-prefix facts")
+            baseline_name = "r2_baseline"
+            expected_command = "r2"
+        elif mode == "full":
+            if has_started:
+                failures.append("full kill evidence cannot carry started-prefix facts")
+            baseline_name = "coverage_baseline"
+            expected_command = "declared"
+        else:
+            failures.append(
+                f"cold-policy killed outcome has unsupported execution mode {mode!r}"
+            )
+            return
+        if raw.get("command") != expected_command:
+            failures.append(
+                f"{mode} kill evidence must use the {expected_command!r} command"
+            )
+    elif cold:
+        failures.append("only a killed outcome may carry witness-cold evidence")
         if not has_started:
             failures.append("witness-cold kill requires started-prefix evidence")
         baseline_name = "r2_baseline"
     elif bucket == "survived":
         if has_started:
             failures.append("survivor evidence cannot carry started-prefix facts")
+        if raw.get("command") not in ("r2", "declared"):
+            failures.append("survivor evidence command must match an R2 or coverage baseline")
+            return
         baseline_name = "r2_baseline" if raw.get("command") == "r2" else "coverage_baseline"
     else:
         if has_started:

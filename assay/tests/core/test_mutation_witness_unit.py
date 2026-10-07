@@ -1288,6 +1288,43 @@ def test_declared_failure_proof_only_allows_reviewed_pytest_cov_unsupported_hook
     )
 
 
+def test_declared_failure_proof_accepts_a_failure_inside_the_started_prefix():
+    failed_node = "tests/test_example.py::test_first"
+    later_node = "tests/test_example.py::test_later"
+    baseline = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=True,
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+        started_count=0,
+        collection_count=2,
+    )
+    expected = receipt_facts(baseline)
+    assert expected is not None
+    continued_failure = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=True,
+        witness_node_id=failed_node,
+        started_count=2,
+        collection_count=2,
+    )
+
+    assert declared_failure_proof_ok(
+        continued_failure,
+        process_exit_status=1,
+        expected=expected,
+        manifest_node_ids=(failed_node, later_node),
+    )
+    assert not declared_failure_proof_ok(
+        {**continued_failure, "started_count": 1},
+        process_exit_status=1,
+        expected=expected,
+        manifest_node_ids=(later_node, failed_node),
+    )
+
+
 def test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exception(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
@@ -1299,6 +1336,8 @@ def test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exceptio
         "        assert False\n",
         encoding="utf-8",
     )
+    with (project / "tests" / "test_ok.py").open("a", encoding="utf-8") as stream:
+        stream.write("\ndef test_z_after_failure():\n    assert True\n")
     plugin_dir = tmp_path / "plugins"
     receipt_path = tmp_path / "declared-receipt.json"
     result, receipt = _run_child_pytest(
@@ -1328,11 +1367,15 @@ def test_installed_pytest_cov_hooks_are_classified_as_the_only_declared_exceptio
     assert failure_receipt is not None
     assert failure_receipt["unsupported"] is True
     assert failure_receipt["unsupported_pytest_cov_only"] is True
+    assert failure_receipt["started_count"] == 2
     assert declared_failure_proof_ok(
         failure_receipt,
         process_exit_status=failure_result.returncode,
         expected=facts,
-        manifest_node_ids=("tests/test_ok.py::test_ok",),
+        manifest_node_ids=(
+            "tests/test_ok.py::test_ok",
+            "tests/test_ok.py::test_z_after_failure",
+        ),
     )
 
 

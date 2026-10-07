@@ -1132,9 +1132,12 @@ you're changing assay itself:
   unrun and could independently fail, hang, or crash. A proven passing cold
   attempt completes the full transformed no-coverage command. An uncertain cold
   attempt gets one full declared-command attempt. Only a proven result from
-  that attempt supplies the candidate outcome. The coverage and no-coverage
-  baselines must collect the same ordered node IDs. That collection equality
-  crosses command variants; hook and runtime proofs are command-local. A cold
+  that attempt supplies the candidate outcome. A fallback kill needs both
+  coverage-baseline evidence and a verified failed-call witness; the witnessed
+  test may be followed by other started tests in that full retry. The coverage
+  and no-coverage baselines must collect the same ordered node IDs. That
+  collection equality crosses command variants; hook and runtime proofs are
+  command-local. A cold
   candidate matches the no-coverage R2 baseline, and a declared fallback
   matches the coverage baseline. The two baseline hook fingerprints
   intentionally differ because pytest-cov is loaded only by the declared

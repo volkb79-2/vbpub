@@ -24,6 +24,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   candidate events ordered.
 
 ### Fixed
+- Require cold-policy full kills to carry declared-command coverage evidence
+  and a verified failed-call witness. Accept a declared retry's witness anywhere
+  in its verified started prefix, and bind B105 full-kill witnesses to the R2
+  manifest.
 - Pin pytest built-in hook callable identities before candidate conftests load;
   a same-module/path substitution can no longer certify a cold kill or survivor
   with an unchanged hook fingerprint. Pin Assay's generated receipt hooks and

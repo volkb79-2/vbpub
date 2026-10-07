@@ -11489,6 +11489,11 @@ test call failed: a kill requires a trusted receipt proving call-phase failure
 and matching the relevant baseline, with a valid started prefix, consistent
 process/session exits, and no setup, collection, teardown, auxiliary, signal,
 termination, or cgroup resource cause. Uncertain attempts never count as kills.
+Under the cold-witness policy, a full declared-command kill also requires
+coverage-baseline evidence and a failed-call witness; the witness can occur
+anywhere in the verified started prefix when pytest continues after failure.
+B105 independently requires that witness node to appear in its bound R2
+manifest.
 
 The 2026-10-07 Sol xhigh reviews added acceptance corrections: pin actual
 pytest built-in, Assay-generated receipt and active liveness hook callables
@@ -11513,6 +11518,9 @@ matching plan and deadline.
 - [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
 - [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [ ] Docs are synced.
+- [ ] A cold-policy full kill requires declared coverage-baseline evidence and
+  a verified failed-call witness; B105 binds that node to the R2 manifest, and
+  a witness may precede later tests in the started prefix.
 - [ ] One tester-unified and one self-qualification-preflight PASS on the final reviewed merge commit.
 
 ## B115 — B110 P4: bounded work-queue mutation executor

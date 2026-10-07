@@ -250,7 +250,7 @@ def declared_failure_proof_ok(
     started = facts.started_count
     if started < 1 or started > len(manifest_node_ids):
         return False
-    return manifest_node_ids[started - 1] == node_id
+    return node_id in manifest_node_ids[:started]
 
 
 @record

@@ -690,6 +690,14 @@ def _check_v15_r2(
         for key in ("collection_sha256", "collection_count")
     ):
         raise ValueError("R2 and coverage baseline collections differ")
+    for name, baseline in (("coverage_baseline", coverage), ("r2_baseline", r2)):
+        count = baseline.get("collection_count")
+        if type(count) is not int or count < 0:
+            raise ValueError(f"{name} collection_count must be an integer >= 0")
+        for field in ("collection_sha256", "hook_fingerprint_sha256"):
+            value = baseline.get(field)
+            if not isinstance(value, str) or _CANDIDATE_ID.fullmatch(value) is None:
+                raise ValueError(f"{name} {field} must be a SHA-256 digest")
 
     if source_lane.get("env") != {} or source_lane.get("env_passthrough") != ["PATH"]:
         raise ValueError("committed qualification lane environment policy differs")
@@ -707,54 +715,165 @@ def _check_v15_r2(
     killed = mutation.get("killed")
     if not isinstance(killed, list):
         raise ValueError("cold kill manifest binding could not inspect killed outcomes")
+    manifest_nodes = [line.decode("utf-8") for line in lines]
+    evidence_fields = {
+        "command",
+        "collection_count",
+        "collection_sha256",
+        "hook_fingerprint_sha256",
+        "started_count",
+        "failed_call_index",
+    }
+
+    def is_failed_call_witness(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and set(value)
+            == {
+                "node_id",
+                "when",
+                "outcome",
+                "session_exit_status",
+                "process_exit_status",
+            }
+            and isinstance(value.get("node_id"), str)
+            and value.get("when") == "call"
+            and value.get("outcome") == "failed"
+            and type(value.get("session_exit_status")) is int
+            and value.get("session_exit_status") == 1
+            and type(value.get("process_exit_status")) is int
+            and value.get("process_exit_status") == 1
+        )
+
     for outcome in killed:
         if not isinstance(outcome, dict):
-            continue
-        execution = outcome.get("execution")
-        if not isinstance(execution, dict) or execution.get("mode") != "witness-cold":
-            continue
+            raise ValueError("cold kill manifest binding found a non-object outcome")
         candidate_id = outcome.get("candidate_id", "<unknown>")
+        execution = outcome.get("execution")
+        if not isinstance(execution, dict):
+            raise ValueError(f"cold kill {candidate_id} has no execution object")
+        mode = execution.get("mode")
         evidence = outcome.get("evidence")
         witness = execution.get("witness")
-        failed_index = evidence.get("failed_call_index") if isinstance(evidence, dict) else None
-        started_count = evidence.get("started_count") if isinstance(evidence, dict) else None
         node_id = witness.get("node_id") if isinstance(witness, dict) else None
-        if (
-            type(failed_index) is not int
-            or type(started_count) is not int
-            or failed_index + 1 != started_count
-            or failed_index < 0
-            or failed_index >= len(lines)
-            or not isinstance(node_id, str)
-            or lines[failed_index].decode("utf-8") != node_id
-        ):
+        if mode == "witness-cold":
+            failed_index = evidence.get("failed_call_index") if isinstance(evidence, dict) else None
+            started_count = evidence.get("started_count") if isinstance(evidence, dict) else None
+            if (
+                type(failed_index) is not int
+                or type(started_count) is not int
+                or failed_index + 1 != started_count
+                or failed_index < 0
+                or failed_index >= len(lines)
+                or not is_failed_call_witness(witness)
+                or lines[failed_index].decode("utf-8") != node_id
+            ):
+                raise ValueError(
+                    f"cold kill {candidate_id} is not the manifest's node at its failed index"
+                )
+        elif mode == "full":
+            if not isinstance(evidence, dict) or evidence.get("command") != "declared":
+                raise ValueError(
+                    f"cold full kill {candidate_id} requires declared-command evidence"
+                )
+            if set(evidence) != evidence_fields:
+                raise ValueError(
+                    f"cold full kill {candidate_id} must carry the six v15 evidence fields"
+                )
+            if evidence.get("started_count") is not None or evidence.get("failed_call_index") is not None:
+                raise ValueError(
+                    f"cold full kill {candidate_id} cannot carry started-prefix evidence"
+                )
+            if not is_failed_call_witness(witness):
+                raise ValueError(
+                    f"cold full kill {candidate_id} requires a valid failed-call witness"
+                )
+            if node_id not in manifest_nodes:
+                raise ValueError(
+                    f"cold full kill {candidate_id} witness node is not in the R2 manifest"
+                )
+        elif mode == "witness-prefix":
+            if not isinstance(evidence, dict) or evidence.get("command") != "r2":
+                raise ValueError(
+                    f"cold prefix kill {candidate_id} requires R2 evidence"
+                )
+            if evidence.get("started_count") is not None or evidence.get("failed_call_index") is not None:
+                raise ValueError(
+                    f"cold prefix kill {candidate_id} cannot carry started-prefix evidence"
+                )
+            if (
+                not is_failed_call_witness(witness)
+                or node_id not in manifest_nodes
+                or execution.get("prior_node_id") != node_id
+                or execution.get("current_node_id") != node_id
+            ):
+                raise ValueError(
+                    f"cold prefix kill {candidate_id} witness is not bound to the R2 manifest"
+                )
+        else:
             raise ValueError(
-                f"cold kill {candidate_id} is not the manifest's node at its failed index"
+                f"cold kill {candidate_id} has unsupported execution mode {mode!r}"
             )
 
-    coverage_sha = coverage.get("collection_sha256")
-    r2_sha = r2.get("collection_sha256")
     survived = mutation.get("survived")
     for bucket, outcomes in (("survived", survived), ("killed", killed)):
         if not isinstance(outcomes, list):
-            continue
+            raise ValueError(f"cold-witness {bucket} outcomes are not an array")
         for outcome in outcomes:
             if not isinstance(outcome, dict):
-                continue
+                raise ValueError(f"cold-witness {bucket} outcome is not an object")
             execution = outcome.get("execution")
-            if bucket == "killed" and not (
-                isinstance(execution, dict) and execution.get("mode") == "witness-cold"
-            ):
-                continue
             evidence = outcome.get("evidence")
             if not isinstance(evidence, dict):
-                continue
+                raise ValueError(f"cold-witness {bucket} outcome has no collection evidence")
+            if set(evidence) != evidence_fields:
+                raise ValueError(
+                    f"cold-witness {bucket} evidence must carry the six v15 fields"
+                )
+            count = evidence.get("collection_count")
+            if type(count) is not int or count < 0:
+                raise ValueError("candidate evidence collection_count must be an integer >= 0")
+            for field in ("collection_sha256", "hook_fingerprint_sha256"):
+                digest = evidence.get(field)
+                if not isinstance(digest, str) or _CANDIDATE_ID.fullmatch(digest) is None:
+                    raise ValueError(f"candidate evidence {field} must be a SHA-256 digest")
+            started = evidence.get("started_count")
+            failed_index = evidence.get("failed_call_index")
+            if (started is None) != (failed_index is None):
+                raise ValueError(
+                    "candidate evidence started_count and failed_call_index must appear together"
+                )
+            if started is not None and (
+                type(started) is not int
+                or type(failed_index) is not int
+                or started < 1
+                or failed_index != started - 1
+                or started > count
+            ):
+                raise ValueError("candidate evidence has invalid started-prefix facts")
             command = evidence.get("command")
-            expected_sha = (
-                r2_sha if command == "r2" else coverage_sha if command == "declared" else None
-            )
-            if expected_sha is not None and evidence.get("collection_sha256") != expected_sha:
-                raise ValueError("candidate evidence collection differs from r2_baseline")
+            if bucket == "killed":
+                mode = execution.get("mode") if isinstance(execution, dict) else None
+                expected_command = "declared" if mode == "full" else "r2"
+                if command != expected_command:
+                    raise ValueError(
+                        f"cold kill evidence command differs from execution mode {mode!r}"
+                    )
+            elif command not in ("r2", "declared"):
+                raise ValueError("survivor evidence command must be 'r2' or 'declared'")
+            elif evidence.get("started_count") is not None:
+                raise ValueError("survivor evidence cannot carry started-prefix facts")
+            baseline_name = "r2_baseline" if command == "r2" else "coverage_baseline"
+            baseline = r2 if command == "r2" else coverage
+            if evidence.get("collection_sha256") != baseline.get("collection_sha256"):
+                raise ValueError(
+                    f"candidate evidence collection differs from {baseline_name}"
+                )
+            for field in ("collection_count", "hook_fingerprint_sha256"):
+                if evidence.get(field) != baseline.get(field):
+                    raise ValueError(
+                        f"candidate evidence {field} differs from {baseline_name}"
+                    )
 
     try:
         committed_config = _read_committed_file(

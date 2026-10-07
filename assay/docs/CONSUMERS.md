@@ -165,8 +165,11 @@ no-coverage command. An uncertain cold attempt gets one fresh full declared
 command; only its proven result supplies the outcome. If pytest-cov is present
 on that declared command, its reviewed hooks must be the only unsupported hooks
 and must match the coverage baseline. This is an existential kill witness, not
-a claim that the whole suite ran. The default R2 behavior is unchanged when the
-flag is absent.
+a claim that the whole suite ran. A fallback kill requires both a failed-call
+witness and declared-command evidence matching the coverage baseline. The
+witness may occur before the end of the started prefix when pytest continues
+running later tests. The default R2 behavior is unchanged when the flag is
+absent.
 
 For a native Python pytest lane, inspect the plan, persist a deadline for the
 campaign, then pass both the resume/progress paths and the deadline into the

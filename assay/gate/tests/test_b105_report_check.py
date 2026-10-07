@@ -154,6 +154,30 @@ def _verifier_valid_report(lane: str, rigor: tuple[str, ...]) -> dict:
                 "wall_s": 1.25,
             },
         }
+        r2_mutation = next(
+            claim["mutation"]
+            for claim in document["claims"]
+            if claim["rigor"] == "R2"
+        )
+        for outcome in r2_mutation["killed"]:
+            outcome["execution"] = {
+                "mode": "full",
+                "witness": {
+                    "node_id": "tests/test_a.py::test_a",
+                    "when": "call",
+                    "outcome": "failed",
+                    "session_exit_status": 1,
+                    "process_exit_status": 1,
+                },
+            }
+            outcome["evidence"] = {
+                "command": "declared",
+                "collection_count": common["collection_count"],
+                "collection_sha256": common["collection_sha256"],
+                "hook_fingerprint_sha256": common["hook_fingerprint_sha256"],
+                "started_count": None,
+                "failed_call_index": None,
+            }
 
     started = datetime.fromisoformat(document["started"])
     ended = datetime.fromisoformat(document["ended"])
@@ -1744,6 +1768,41 @@ def test_p3d_c11_every_cold_kill_must_name_the_manifest_entry_at_its_failed_inde
     assert f"cold kill {outcome['candidate_id']} is not the manifest's node at its failed index" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("missing-evidence", "requires declared-command evidence"),
+        ("wrong-command", "requires declared-command evidence"),
+        ("missing-field", "must carry the six v15 evidence fields"),
+        ("missing-witness", "requires a valid failed-call witness"),
+        ("outside-manifest", "witness node is not in the R2 manifest"),
+        ("wrong-baseline", "candidate evidence hook_fingerprint_sha256 differs from coverage_baseline"),
+    ],
+)
+def test_p3d_full_kill_requires_declared_evidence_and_manifest_witness(
+    tmp_path, change, message
+):
+    document, plan = _r2_case()
+    outcome = _r2_mutation(document)["killed"][0]
+    if change == "missing-evidence":
+        outcome.pop("evidence")
+    elif change == "wrong-command":
+        outcome["evidence"]["command"] = "r2"
+    elif change == "missing-field":
+        outcome["evidence"].pop("started_count")
+    elif change == "missing-witness":
+        outcome["execution"].pop("witness")
+    elif change == "wrong-baseline":
+        outcome["evidence"]["hook_fingerprint_sha256"] = "e" * 64
+    else:
+        outcome["execution"]["witness"]["node_id"] = "tests/test_wrong.py::test_wrong"
+
+    refusal = message
+    if change != "wrong-baseline":
+        refusal = f"cold full kill {outcome['candidate_id']} {message}"
+    _refused_by_scope(tmp_path, document, plan, refusal)
+
+
 def test_p3d_c12_survivor_evidence_must_match_its_selected_baseline(tmp_path):
     document, plan = _r2_case()
     mutation = _r2_mutation(document)
@@ -1752,7 +1811,11 @@ def test_p3d_c12_survivor_evidence_must_match_its_selected_baseline(tmp_path):
     outcome["execution"] = {"mode": "full"}
     outcome["evidence"] = {
         "command": "r2",
+        "collection_count": 2,
         "collection_sha256": "f" * 64,
+        "hook_fingerprint_sha256": "c" * 64,
+        "started_count": None,
+        "failed_call_index": None,
     }
     result = _run_checker(
         tmp_path,
