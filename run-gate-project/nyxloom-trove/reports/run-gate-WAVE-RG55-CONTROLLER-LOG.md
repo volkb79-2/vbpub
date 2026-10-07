@@ -7333,3 +7333,22 @@ with Run-Gate `profile_error: null` and preserved the valid footprint record
 (`damon.status=unavailable`, `hot_bytes=null`), confirming the RG-88 formatter
 fix. Correct the test oracle to the exact documented wording, then rerun the
 registered gate; no product-code failure was indicated by this assertion.
+
+### RW-471 — 2026-10-07 08:37:26 UTC — CIU protects the host-singleton checkout identity
+
+On candidate tree `b9d41a141`, cgprofile `r0-r1` passed 2,381 tests with
+100% line and branch coverage, and Run-Gate's selftest passed through its
+declared `cmru tester-gate` wrapper (1,700 passed, 2 skipped; 3/3 changed
+executable lines covered). A direct `./run-gate.py selftest` attempt was not
+a valid run: it omitted the required outer tester-unified wrapper and stopped
+before pytest because `/opt/tester-venv/bin/python` is absent on the cockpit.
+After building the candidate `cgprofile:local` image, `ciu up --dir .` from
+this candidate worktree was refused by CIU-104 because the existing
+`cgprofile-host-daemon` singleton is identity-bound to
+`/workspaces/vbpub/scripts/cgroup-profiler` on main. This is intentional
+cross-checkout protection, not a new CIU defect; do not rename the singleton
+or bypass CIU. Verified afterward: the existing daemon remained on its old
+image with private PID/cgroup namespaces and `network=none`, and
+`/run/cgprofile/ctl.sock` remained present. After review and merge, rebuild
+from main and deploy through `ciu up` from that checkout before live DAMON
+acceptance.
