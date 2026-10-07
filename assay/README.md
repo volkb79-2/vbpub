@@ -359,9 +359,10 @@ Three genuinely different states, worth keeping distinct:
   this.
 - **Not implemented** — nothing prevents it; nobody has built it yet (Go
   mutation testing, SQL line coverage, Go/SQL canary).
-- **Implemented but unregistered** — code may exist without being
+  - **Implemented but unregistered** — code may exist without being
   callable through the CLI until it is wired and proven. JavaScript R3
-  used to be this state; B087 closes it with real-consumer qualification.
+  used to be this state; B087 closes it with real-consumer qualification
+  ([report](nyxloom-trove/reports/B087-js-r3-qualification.md)).
 
 Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
 (the single authority for what's registered — its own docstring notes this
