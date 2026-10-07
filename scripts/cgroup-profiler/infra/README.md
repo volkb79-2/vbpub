@@ -80,15 +80,22 @@ for that side.
 
 ## Host system bus
 
-The daemon's private PID namespace cannot write a host-visible PID directly to
-`cgroup.procs`. The compose stack therefore bind-mounts the host system bus
-socket read-only and uses only systemd's `AttachProcessesToUnit` method for
-that one placement bridge. Before `ciu up`, verify the host prerequisite:
+The daemon uses the host PID namespace so DAMON sysfs can resolve host
+`pid_target` values; its cgroup namespace remains private. The system-bus
+mount is retained because systemd owns delegated-scope lifecycle and exact
+unit attachment, not because a private PID namespace cannot address the
+processes. The compose stack bind-mounts the host system-bus socket read-only
+and uses systemd's `AttachProcessesToUnit` for placement and restoration.
+This is a daemon deployment setting (`pid: "host"`), not a new host-setup
+unit or devcontainer mount. Before `ciu up`, verify the existing host
+prerequisite:
 
 ```sh
 test -S /run/dbus/system_bus_socket
 ```
 
 The bind declares `create_host_path: false`; a missing socket refuses the
-daemon deployment instead of silently turning into an empty directory. The
-daemon remains in private PID, cgroup, and network namespaces.
+daemon deployment instead of silently turning into an empty directory. Only
+the managed daemon uses the host PID namespace; its cgroup namespace remains
+private and it has no network. Helper, workload, gate, and test containers
+remain private.

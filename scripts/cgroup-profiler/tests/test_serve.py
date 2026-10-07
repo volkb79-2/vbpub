@@ -998,6 +998,7 @@ def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
+    monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
     rc = cg.main(["serve", "--gates-slice", "dev-gates-from-cli.slice"])
     assert rc == 0
@@ -1016,6 +1017,7 @@ def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
+    monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
     rc = cg.main(["serve"])
     assert rc == 0

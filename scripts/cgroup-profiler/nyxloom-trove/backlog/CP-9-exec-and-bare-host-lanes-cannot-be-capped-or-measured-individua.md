@@ -94,3 +94,17 @@ Consumer side (run-gate, P5) is contract §8.9 obligation 3: placement is
 requested only when the existing resource plan requests it; ephemeral lanes
 remain Docker-capped. Placement refusal is disclosed without changing the
 test verdict (R-36h).
+
+### PID-namespace amendment — RW-467 (2026-10-07)
+
+The earlier private-PID daemon deployment is superseded for DAMON operation.
+The managed daemon alone now uses the host PID namespace because DAMON sysfs
+resolves `pid_target` in the writer's active PID namespace; the `/hostproc`
+bind does not alter that namespace. Its cgroup namespace stays private,
+network remains disabled, and no Docker socket is added. Helpers, workloads,
+gates, and test containers remain private. systemd's D-Bus bridge remains for
+scope ownership and exact-unit placement/restoration, not PID-namespace
+translation. This adds host process-table and PID-operation authority; it is
+not a containment boundary against compromise, and numeric PID signalling
+remains prohibited. The live DAMON and placement acceptance probes are still
+required before this amendment can be reported as operationally verified.

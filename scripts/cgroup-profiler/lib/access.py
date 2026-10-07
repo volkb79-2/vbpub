@@ -6,8 +6,9 @@ Two modes, auto-detected:
 **direct** — the process has an explicit view of the host's cgroup v2 root
 (running on the host, or with the host cgroup tree bind-mounted at
 ``/sys/fs/cgroup``). Host process files are read through
-``CGPROFILE_PROC_ROOT`` when configured; the process's own identity still
-comes from its private ``/proc``.
+``CGPROFILE_PROC_ROOT`` when configured; the process's own identity comes
+from local ``/proc``, whose PID namespace is determined by deployment (host
+for the managed daemon, private for the helper).
 
 **helper** — the common devcontainer case. Rather than shuttle individual file
 reads across a container boundary (which cannot sustain a 250 ms cadence), the
@@ -65,6 +66,8 @@ def _configured_proc_root() -> str:
 
 
 PROC_ROOT = _configured_proc_root()
+PID_NAMESPACE_MODE_ENV = "CGPROFILE_PID_NAMESPACE_MODE"
+PID_NAMESPACE_MODES = frozenset(("private", "host"))
 
 # Root-level cgroups that only exist in the host's own view. If none of these
 # are visible we are looking at a namespaced subtree, whatever the mount says.
@@ -104,19 +107,29 @@ def have_host_cgroup_view(root: str = CGROUP_ROOT) -> bool:
 
 
 def have_host_proc_view(proc_root: str = PROC_ROOT) -> bool:
-    """Require *proc_root* to expose a broader PID namespace than this one.
+    """Require the configured proc view to match this process's PID namespace.
 
     A bind-mounted procfs still reports cgroup paths relative to the reader's
     cgroup namespace, so PID 1's ``/proc/<pid>/cgroup`` is not a sound host
-    view check. Its PID-namespace identity is: in a container, host PID 1 is
-    in a different namespace from this container's PID 1; on the host, both
-    paths name the same namespace.
+    view check. This PID-namespace comparison is a consistency guard, not an
+    independent proof that the selected procfs is the host's. The managed
+    daemon's CIU Compose service supplies that deployment fact with
+    ``pid: "host"`` and an explicit host-``/proc`` bind. The daemon explicitly
+    uses ``CGPROFILE_PID_NAMESPACE_MODE=host`` so DAMON sysfs can resolve host
+    ``pid_target`` values; the one-shot helper defaults to ``private`` and
+    needs a broader proc view.
+    Unknown modes fail closed.
     """
     try:
         selected_pid_ns = os.stat(os.path.join(proc_root, "1", "ns", "pid")).st_ino
         local_pid_ns = os.stat("/proc/1/ns/pid").st_ino
     except OSError:
         return False
+    mode = os.environ.get(PID_NAMESPACE_MODE_ENV, "private")
+    if mode not in PID_NAMESPACE_MODES:
+        return False
+    if mode == "host":
+        return selected_pid_ns == local_pid_ns
     if in_container():
         return selected_pid_ns != local_pid_ns
     return selected_pid_ns == local_pid_ns
@@ -225,10 +238,9 @@ def verify_systemd_slice(
         return False
     if any(part in ("", ".", "..") for part in expected_cgroup.split("/")[1:]):
         return False
-    # The daemon keeps a private PID namespace.  Even with the host system
-    # bus mounted, systemctl refuses to run when PID 1 is not systemd.  The
-    # same busctl transport used for AttachProcessesToUnit can read the
-    # authoritative unit properties without joining a host namespace.
+    # Query the host manager over its explicit system-bus socket.  busctl's
+    # exact typed replies let this check verify manager-owned facts without
+    # relying on local unit-file or cgroup-path views.
     busctl = shutil.which("busctl")
     if not busctl:
         return False

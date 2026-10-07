@@ -104,13 +104,24 @@ ciu up --dir .
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
 
-The shipped stack supplies host observation with private PID/cgroup
-namespaces: host `/proc` is bind-mounted read-only at `/hostproc`, host
+The shipped daemon alone uses the host PID namespace so DAMON sysfs can
+resolve host `pid_target` values. It keeps a private cgroup namespace and
+network disabled; workload, helper, gate, and test containers remain private.
+The Compose service sets `pid: "host"` and
+`CGPROFILE_PID_NAMESPACE_MODE=host`. Host `/proc` is still bind-mounted
+read-only at `/hostproc`, selected by `CGPROFILE_PROC_ROOT=/hostproc`; host
 cgroup v2 is mounted read-write at `/sys/fs/cgroup` for observation and
-opt-in placement, and `CGPROFILE_PROC_ROOT=/hostproc` selects the host proc
-view. The privileged daemon also mounts the host system bus at
+opt-in placement. The privileged daemon also mounts the host system bus at
 `/run/dbus/system_bus_socket`; a read-only bind of that socket would not make
-its RPCs read-only. The cgroup mount is writable at the mount boundary so the
+its RPCs read-only.
+
+Host PID mode makes host PIDs addressable to DAMON, but does not guarantee the
+kernel will accept every DAMON context. A prior probe on this host, using
+host PID and host cgroup namespaces together, still returned `EINVAL` at
+`kdamond_commit`; the current host-PID/private-cgroup configuration needs its
+own live start/stop probe. Unsupported DAMON remains `unavailable:<reason>`
+and must not fail or alter the workload verdict.
+The cgroup mount is writable at the mount boundary so the
 daemon can perform placement, while D-25's whitelist is an application-level
 guard for ordinary code paths, not containment against arbitrary code
 execution in the daemon. It asks systemd to create a transient delegated
@@ -128,13 +139,23 @@ If that happens, keep the sessions volume and inspect the returned
 restoration. `ctl gc` preserves an incomplete journal, including when the
 normal count or age limit has been reached. Do not delete that session record
 to make the retention count look clean.
-Do not set host namespace modes. On startup `serve` verifies that PID 1 in
-that proc view
-belongs to a PID namespace distinct from the daemon's and refuses if either
-view is missing. Container targets arrive as full Docker IDs; token-scoped
+On startup `serve` requires the daemon-only host-PID mode and verifies that
+PID 1 in the configured proc view belongs to the daemon's PID namespace; a
+missing or mismatched view is refused. This is a consistency check, not an
+independent proof that the procfs bind is the host's: the managed CIU Compose
+service supplies the deployment authority by selecting `pid: "host"` and
+binding host `/proc` at `/hostproc`. `private` remains the default mode for the
+one-shot helper and normal callers; do not enable `host` mode for helpers,
+workloads, gates, or tests. The host-PID mode is a deployment choice in this
+daemon's Compose service, not a new host-setup unit or cockpit bind mount, so
+it does not require rebuilding the devcontainer. Container targets arrive as
+full Docker IDs; token-scoped
 sessions resolve direct PIDs in that target cgroup, match the exact token in
 host `/proc`, then walk those owners' process trees.
-The daemon has no Docker socket and does not accept `--cap`; it writes session
+Host-PID mode exposes host process identities and adds process-table/PID
+operation authority. The privileged daemon's validation and write guards are
+not a containment boundary against arbitrary code execution. The daemon has
+no Docker socket and does not accept `--cap`; it writes session
 data under `/var/lib/cgprofile/sessions` and its own DAMON kdamonds under
 sysfs during normal operation. Grant daemon control only to operators already
 trusted with host-administrator Docker access. The privileged container's

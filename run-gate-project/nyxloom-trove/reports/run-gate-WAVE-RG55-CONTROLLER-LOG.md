@@ -7277,3 +7277,319 @@ policy needs all participating Run-Gate projects/launchers to join one
 Docker-daemon ticket cap of two, plus a read of current slice capacity and
 timeout/liveness behavior under that cap; no host or admission setting was
 changed here.
+
+### RW-467 — 2026-10-07 07:55:45 UTC — authorize host PID namespace for cgprofile daemon
+
+The operator authorizes `cgprofile-host-daemon` alone to use the host PID
+namespace so DAMON sysfs `pid_target` values resolve in the writer's active
+PID namespace. This is a deployment change, not permission for workload,
+helper, gate, or test containers to join the host PID namespace. Keep the
+daemon's cgroup namespace private, network disabled, and Docker socket absent;
+retain the identity-checked systemd placement/lifecycle bridge and the
+invariant that no stall path signals a numeric PID. Update both RG-55 contract
+mirrors and the daemon's README, design, and consumer guidance with the
+security tradeoff: host PID visibility increases the daemon's process-table
+and PID-operation authority, and application checks are not containment
+against daemon compromise. The change is accepted only after the deployed
+daemon proves live DAMON start/stop against a real host PID plus existing
+socket and placement flows; do not claim those probes passed before evidence
+exists.
+
+### RW-468 — 2026-10-07 08:01:17 UTC — retain the DAMON EINVAL caveat
+
+The existing P1 live-acceptance report records `pid: "host"` together with
+`cgroup: "host"`, but DAMON `kdamond_commit` still returned `EINVAL`
+(`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REPORT.md`,
+§ Live acceptance and § DAMON availability). Therefore host PID visibility is
+the namespace needed to make host `pid_target` IDs addressable, but is not
+evidence that the kernel will accept the full DAMON context. RW-467 remains
+approved; this work must test the narrower host-PID/private-cgroup deployment
+and must not claim success unless a real DAMON context starts and stops. If it
+still returns `EINVAL`, report the exact result as a separate kernel/config
+acceptance gap and preserve profiling's verdict-neutral fallback.
+
+### RW-469 — 2026-10-07 08:15:22 UTC — preserve profile disclosure after unavailable DAMON
+
+The first registered cgprofile `r0-r1` run on `50372b71` ended FAIL after
+2,373 passed and 8 failed. The eight failures were one stale documentation
+assertion and seven direct `cgprofile serve` tests that did not set the newly
+required host-PID mode. They are corrected with deployment-contract and CLI
+fixture assertions. Separately, Run-Gate emitted
+`profiling cleanup crashed unexpectedly: 'NoneType' object has no attribute
+'get'` because a valid unavailable-DAMON summary may contain
+`damon.hot_bytes: null`; the formatter discarded profile resources although
+this formatter failure does not change the test verdict. Filed as RG-88 and
+fixed in the same worktree with a null-safe formatter and regression test;
+Run-Gate revision 56 and package gates are pending. The failed first result
+is retained, not overwritten. The daemon-only host-PID change still requires
+an actual deployed DAMON start/stop probe before acceptance.
+
+### RW-470 — 2026-10-07 08:18:49 UTC — correct the placement-doc assertion
+
+The second cgprofile `r0-r1` run on `3c77a931` passed 2,380 tests and failed
+only the updated helper-read-only assertion: it expected a paraphrase rather
+than the current design guide's exact contract wording. The gate completed
+with Run-Gate `profile_error: null` and preserved the valid footprint record
+(`damon.status=unavailable`, `hot_bytes=null`), confirming the RG-88 formatter
+fix. Correct the test oracle to the exact documented wording, then rerun the
+registered gate; no product-code failure was indicated by this assertion.
+
+### RW-471 — 2026-10-07 08:37:26 UTC — CIU protects the host-singleton checkout identity
+
+On candidate tree `b9d41a141`, cgprofile `r0-r1` passed 2,381 tests with
+100% line and branch coverage, and Run-Gate's selftest passed through its
+declared `cmru tester-gate` wrapper (1,700 passed, 2 skipped; 3/3 changed
+executable lines covered). A direct `./run-gate.py selftest` attempt was not
+a valid run: it omitted the required outer tester-unified wrapper and stopped
+before pytest because `/opt/tester-venv/bin/python` is absent on the cockpit.
+After building the candidate `cgprofile:local` image, `ciu up --dir .` from
+this candidate worktree was refused by CIU-104 because the existing
+`cgprofile-host-daemon` singleton is identity-bound to
+`/workspaces/vbpub/scripts/cgroup-profiler` on main. This is intentional
+cross-checkout protection, not a new CIU defect; do not rename the singleton
+or bypass CIU. Verified afterward: the existing daemon remained on its old
+image with private PID/cgroup namespaces and `network=none`, and
+`/run/cgprofile/ctl.sock` remained present. After review and merge, rebuild
+from main and deploy through `ciu up` from that checkout before live DAMON
+acceptance.
+
+### RW-472 — 2026-10-07 08:40:31 UTC — canary gate passes; old daemon DAMON remains unavailable
+
+The registered cgroup-profiler `r3` gate passed on `ddfd693a`: all seven
+canaries were rejected, zero survived. Its profile recorded DAMON as
+`unavailable` with `OSError: [Errno 22] Invalid argument`. This run used the
+still-active pre-change daemon, whose `HostConfig.PidMode` is private; it is
+not a probe of the approved host-PID/private-cgroup candidate. Preserve the
+result as baseline context and repeat a live DAMON start/stop after the
+candidate is deployed from main.
+
+### RW-473 — 2026-10-07 09:33:26 UTC — tool-version/base audit and Sol review round 7
+
+Installed tools are Assay 8.0.0, CMRU 6.1.0, and CIU 7.16.0. The installed
+Run-Gate entrypoint reports rev 55; the candidate's `run-gate.py` is rev 56
+because it includes RG-88. Local `main`, local `origin/main`, and the remote
+`origin/main` all remain `4670f53a67038a8a19b27ffe33e8308ec6f93fde`, the
+candidate's recorded base. No rebase is needed solely because the installed
+CLI versions changed. CMRU reports no cgprofile release tag and derives
+`0.1.0` from the current project metadata, while the settled RG-55 release
+plan says the combined first release is `1.0.0`; do not accept the implicit
+`0.1.0` as a changed product decision. Use the settled explicit release
+target when release gates are complete.
+
+A fresh caller-routed `gpt-6-sol`/xhigh review returned CONDITIONAL on
+candidate `2ecb3b9a`; the full artifact is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round7.md`.
+It found no demonstrated code blocker, but identified current docs/comments
+that still described a private-PID daemon and clarified that the runtime
+namespace check proves proc-view agreement, not independently that a procfs
+bind is host procfs. Those corrections are now in the candidate worktree,
+including the active placement-flow design and source comments. They remain
+untested and unreviewed at the corrected tree; do not merge on round 7 alone.
+
+The exact Assay 8.0.0 R2 attempt on tree `2ecb3b9a` returned
+`ERROR/EXEC_FAILED` before any mutant ran: native-R2 event-counter preflight
+refused because the private cgroup namespace hides the process's parent
+cgroups. `.assay/verdict-r2.json` and `.assay/r2-progress.jsonl` are the
+evidence; all three selected candidates remain unjudged. Assay currently
+reads `/proc/thread-self/cgroup` and `/proc/self/mountinfo` directly and has
+no supported environment override for an external host-ancestor view. Keep
+the daemon's cgroup namespace private and do not bypass with
+`--cgroupns=host`. Coordinate a supported read-only ancestor-observation
+interface with the Assay workstream before restarting R2. The old daemon's
+DAMON `EINVAL` and the host-PID/private-cgroup live acceptance, including
+placement/socket probes, remain unresolved.
+
+### RW-474 — 2026-10-07 09:35:40 UTC — complete round-7 documentation corrections
+
+The round-7 findings are corrected in the current worktree: the daemon's host
+PID/private-cgroup deployment is stated consistently in README, consumer and
+design guidance, the current placement-flow design, the D-32 trust discussion,
+Compose defaults, the image comment, and the `access.py`/`placement.py` source
+comments. Historical descriptions of the earlier private-PID probes remain
+historical and are not rewritten. `have_host_proc_view` is now explicitly
+described as a proc-view/daemon agreement check; Compose's `pid: "host"` plus
+host `/proc` bind is the managed deployment fact, not an independent runtime
+host-identity proof. A structural test guards these user-facing statements.
+The contract mirror comparison and `git diff --check` pass. The new review
+artifact is retained as P1 round 7. No gate or test has run on this corrected
+tree yet; it needs a fresh registered gate set and fix-verification review.
+
+The outstanding R2 refusal is an Assay/runner visibility incompatibility, not
+a reason to grant host cgroup namespace to the daemon or gate. Do not relaunch
+until a supported read-only way to observe the candidate's real cgroup
+ancestor event counters is agreed with the Assay workstream.
+
+### RW-475 — 2026-10-07 09:45:05 UTC — file the Assay 8 / Run-Gate R2 integration gap
+
+Assay backlog B145 explicitly requires visible ancestor event counters and
+refuses native R2 when a private cgroup namespace hides them. The candidate's
+Assay 8.0.0 attempt matched that contract: it passed the R0 baseline, then
+returned `ERROR/EXEC_FAILED` before any candidate ran. This is not a mutant
+result and not a reason to use `--cgroupns=host`. Filed Run-Gate RG-89 as an
+open cross-tool integration issue: define a trustworthy exact-candidate
+ancestor-event observer while preserving the gate's private cgroup namespace,
+fail-closed behavior, and candidate attribution. RG-88 now has a detailed
+backlog section alongside its summary row. No code or gate result is implied
+by filing these entries; RG-89 and R2 remain open.
+
+### RW-476 — 2026-10-07 09:50:21 UTC — reconcile releases against current CMRU state
+
+CMRU 6.1.0 `status` on this candidate reports: CIU unchanged at 7.16.0,
+Assay unchanged at 8.0.0, Run-Gate changed from the `run-gate-v23.10.0` tag
+and due for patch release `23.10.1`, and cgroup-profiler untagged with
+metadata-derived `0.1.0`. The old 23.7/23.8/23.9 targets are superseded by
+the current main release baseline; do not recreate those versions. Preserve
+RW-434's settled combined first cgprofile `1.0.0` release plan rather than
+accepting CMRU's metadata-derived `0.1.0`; when acceptance is complete use
+the supported CMRU release flow with explicit `--set-version 1.0.0`. Release
+Run-Gate as 23.10.1 after its gates/review. No release was performed here.
+
+### RW-477 — 2026-10-07 10:57:32 UTC — diagnose R1 environment failure and repair RG-85
+
+The `gate-full` attempt on `3dad739281c4a33bbcf471093ac38f3dd5c39592`
+completed its selftest, then `assay-r1` failed after 285.7 seconds: 1,585
+passed, 116 failed, 2 skipped, and one error. The failures exercised real
+`/proc/self/mountinfo` translation from pytest fixture repositories. The
+configured `TMPDIR` and Git ceiling were the guessed `/worktree/.run-gate`,
+so pytest actually fell back to private `/tmp/pytest-of-tester`; those fixture
+paths had no host bind mapping. This is an environment/contract failure, not
+evidence that the 116 assertions found product regressions. The exact verdict,
+progress, and failed-run evidence are preserved under `.assay/` and
+`.run-gate/failed/`.
+
+The candidate now closes RG-85 at the shared Run-Gate/Assay boundary: derive
+both variables from the verified state mount, pass them explicitly through
+the Run-Gate assay declaration, create the default state directory for a
+fresh container or bare-host Assay lane, and refuse a symlink in its place.
+Regression tests cover derived paths, fresh-root creation, non-directory
+refusal, and the R1/R2 passthrough contract. `assay-r1` must be rerun on the
+committed candidate; RG-85 is not treated as accepted until that live lane
+passes.
+
+### RW-479 — 2026-10-07 11:07:29 UTC — cover the configured-state-root branch
+
+The second selftest on `812a588f933e7342b7410025bb7b3e63b245089d` passed all
+1,705 tests (2 skipped), but the release diff judge found 17/18 changed
+executable lines and 7/8 branches: the preservation branch for an explicitly
+configured host `state_root` had no oracle. Added a regression test proving
+that this configured path is neither replaced with `<repo>/.run-gate` nor
+created by the default-root helper. This is test-only. The selftest remains
+unaccepted until its exact-tree diff judge passes; no R1/R3 run is claimed.
+
+### RW-478 — 2026-10-07 11:03:47 UTC — correct invalid state-root preflight fixtures
+
+The first post-RG-85 selftest on `9fa81a04c17c408a43caf20cbf826674648aa740`
+finished in 160.62 seconds with 1,702 passed, 3 failed, and 2 skipped. The
+three failures were fixture setup: state-preflight tests supplied a
+nonexistent synthetic `repo/` while stubbing later probe results. The new
+default-root creation correctly refused to invent missing parent
+directories. Those tests now create the repository directory they claim to
+probe; the separate missing-parent error test remains. This is a test-only
+follow-up, not a change to the RG-85 behavior. Selftest and R1 are still not
+accepted; rerun on the corrected committed tip.
+
+### RW-480 — 2026-10-07 12:04:00 UTC — Sol round-8 conditional acceptance and Run-Gate repair
+
+The caller launched a fresh `gpt-6-sol` xhigh Codex session
+`01a11622-d0dc-7f83-bc0e-027acb7c5e08` against candidate
+`4eb4d4c786a9514b4ae22191795fa5a6009f202e`, based on current `main` and
+`origin/main` `840a9791c544326a0a63aa3ec4dcefb55e3b2aeb`. The first runner
+attempt failed before repository work because its inner bwrap could not mount
+`/proc`; it made no changes. The same Sol session resumed under the outer
+danger-full-access runner and completed the review. Route evidence is the
+caller's invocation and saved session metadata, not reviewer self-attestation.
+
+Round 8 recorded two initial Run-Gate blockers. B1: RG-85's user-facing
+CONSUMERS/DESIGN guidance still said consumers must pre-create the default
+`.run-gate` root. B2: `doctor` could report a fresh default root as FAIL or a
+symlink as OK, while the live lane created/rejected those paths differently;
+dry-run also omitted the future state-root mount from its planned argv. The
+reviewer corrected Run-Gate code, tests, README, SPEC, DESIGN-GUIDE, CONSUMERS,
+and the stale CMRU comment in `10d57876f313eb26302efe990eb006b369c33f3b`.
+Its targeted cockpit test selection passed 14 tests; this is not registered
+gate evidence. The reviewer then committed the report as
+`eb909889f31e879b14d01e6dcd2dfbd23e497983`; the final checkout was clean.
+The complete record is
+`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REVIEW-round8.md`.
+
+Disposition: **ACCEPT-CONDITIONAL for provisional integration after fresh
+short gates on the final report-bearing tree**. The review found no remaining
+code blocker in the combined P1/RG-85/RG-88 diff. It does not approve release
+or shipment. The final report-bearing HEAD `eb909889` invalidates all earlier
+exact-tree gates; rerun Run-Gate selftest/R1/R3 and cgprofile r0-r1/r3 and
+read each result separately. Run-Gate rev 56 is the candidate; installed
+Run-Gate is rev 55. Installed Assay is 8.0.0; the registered Run-Gate R1
+used source-backed Assay `8.0.1.dev59+g4eb4d4c78`. CMRU 6.1.0 parses the
+candidate release metadata and reports Run-Gate 23.10.1 and cgprofile's
+metadata-derived 0.1.0; preserve the settled explicit first cgprofile release
+1.0.0. CIU 7.16.0's config check passed but rendered zero stack configs; it
+is not live deployment evidence. Main and origin/main were equal at the
+candidate base, so no rebase was needed for the announced tool versions.
+
+R2 has no exact-tree mutation result. Assay B145 refuses before candidate
+execution when the test container's private cgroup namespace hides ancestor
+event counters; do not use `--cgroupns=host` and do not call the refusal a
+mutation result. RG-89 remains open for a supported read-only observer.
+Existing `cgprofile-host-daemon` was not touched. Candidate daemon live
+host-PID/private-cgroup DAMON start/stop, socket and docker-exec probes,
+placement/restore acceptance, measured DAMON overhead, footprint refresh,
+and both full gates remain release/closeout work. The reviewer could not
+prove a loaded parent or safe isolated daemon probe from this cockpit and
+launched none. These are not product-code review blockers for the authorized
+provisional merge, but remain explicit release blockers.
+
+### RW-481 — 2026-10-07 12:23:47 UTC — Correct the doctor state-root cost oracle
+
+The exact-tree Run-Gate selftest on `819cbda18ec68288409efb8473b389fb5c7a3389`
+failed only at
+`TestAssayToolchainFitness.test_doctor_probe_cost_is_inventory_tools_and_state_root_per_environment`:
+1,711 passed, 2 skipped, 1 failed. The fixture used an ephemeral environment
+with no default `.run-gate` directory, while the reviewed B2 behavior
+intentionally reports an absent default root as `[SKIP]` without creating it
+or probing lane-user access. The first live lane creates the root and checks
+access. The assertion nevertheless counted a third Docker probe as if the
+root already existed. This is a stale test setup, not a reason to weaken the
+non-mutating doctor behavior.
+
+Binding resolution: preserve the B2 behavior. Parameterize the oracle over
+missing and existing roots: the missing-root case asserts inventory+tool
+probes only, `[SKIP]`, and no root creation; the existing-root case asserts
+one additional read-only state-root probe. Align README, DESIGN-GUIDE,
+CONSUMERS, and SPEC with that distinction, including that a configured
+`state_root` or an `exec` environment is checked through its declared runner,
+not by host-statting a container path. No production code changed in this
+correction. `git diff --check` passes; all short gates and final review must
+run on the committed correction tip. No merge or release was made.
+
+### RW-482 — 2026-10-07 12:29:48 UTC — Normalize Markdown in the docs oracle
+
+The next exact-tree Run-Gate selftest, on
+`ac737e21a93f354b18127b35b78cad8ff894a0cd`, exited 1 in
+`run-gate-vbpub-selftest-283754-1791375899`: 1,712 passed, 2 skipped, 1
+failed. Both missing-root and existing-root behavioral cases passed. The sole
+failure was the cross-document phrase assertion: `CONSUMERS.md` is a Markdown
+blockquote whose line-prefix markers split “absent default” across source
+lines, so a raw substring comparison falsely rejected correct wording.
+
+Resolution: normalize Markdown blockquote line markers and whitespace before
+asserting the docs contract. This is a test-only correction; product behavior
+and documentation are unchanged. The corrected exact tree still needs a
+fresh selftest and the remaining short gates; this failure is not accepted as
+gate evidence. No merge or release was made.
+
+### RW-483 — 2026-10-07 12:37:16 UTC — Add behavioral oracles for B2 changed lines
+
+The corrected Run-Gate selftest on
+`37bcfe3d66913c046da0d89af78776edd99141e8` ran in
+`run-gate-vbpub-selftest-288669-1791376204` and exited 1 after pytest passed
+(1,713 passed, 2 skipped). The changed-line judge reported 47/66 executable
+lines and 26/36 branches, below the mandatory 100% floor. The uncovered paths
+are in Sol round-8's B2 state-root handling: doctor handling of unknown root
+status, parent/root inspection failures, the configured-host refusal remedy,
+dry-run refusal/unknown/ready/configured cases, and mount planning when root
+status cannot be determined.
+
+Resolution: add tests for those actual behavioral states; do not weaken the
+floor or add coverage exclusions. No product code is changing in this repair.
+The exact-tree selftest must be rerun after these oracles are committed before
+any other gate or merge. No merge or release was made.

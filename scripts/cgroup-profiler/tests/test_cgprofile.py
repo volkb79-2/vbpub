@@ -2710,6 +2710,7 @@ class TestCmdServe:
 
     def test_refuses_without_a_host_proc_view(self, monkeypatch, capsys):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
         monkeypatch.setattr(access, "have_host_proc_view", lambda proc: False)
         args = cg.build_parser().parse_args(["serve"])
         with pytest.raises(SystemExit) as exc_info:
@@ -2717,10 +2718,26 @@ class TestCmdServe:
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "host /proc tree explicitly bind-mounted read-only" in err
-        assert "Keep the PID namespace private" in err
+        assert "PID 1 in that view must resolve to the daemon's PID namespace" in err
+
+    def test_refuses_unless_host_pid_mode_is_explicit(self, monkeypatch, capsys):
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.delenv(access.PID_NAMESPACE_MODE_ENV, raising=False)
+        monkeypatch.setattr(
+            access, "have_host_proc_view",
+            lambda proc: pytest.fail("proc view must not be checked before mode"),
+        )
+        args = cg.build_parser().parse_args(["serve"])
+        with pytest.raises(SystemExit) as exc_info:
+            cg.cmd_serve(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert f"{access.PID_NAMESPACE_MODE_ENV}=host" in err
+        assert "workload, helper, gate, and test containers must remain private" in err
 
     def test_constructs_the_server_and_serves_forever(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
         monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
         captured: Dict[str, Any] = {}
 
@@ -2752,6 +2769,7 @@ class TestCmdServe:
 
     def test_empty_observe_slices_is_the_empty_tuple(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
         monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
         captured: Dict[str, Any] = {}
 

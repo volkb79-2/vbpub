@@ -1733,10 +1733,10 @@ class SessionServer:
     def _kill_targets(sess: _Session, pids: List[int]) -> Tuple[List[int], Optional[str]]:
         """Whether the daemon has an exact cgroup boundary it may kill.
 
-        Private PID namespaces make host PIDs read through ``proc_root``
-        unsuitable as signal targets. A shared-scope token is killable only
-        after successful placement into its dedicated leaf; an unplaced
-        token never falls back to numeric PID signalling.
+        Numeric PID signalling is never an enforcement boundary, even though
+        the daemon uses the host PID namespace for DAMON target resolution. A
+        shared-scope token is killable only after successful placement into
+        its dedicated leaf; an unplaced token never falls back to PID signals.
         """
         if sess.scope == "container":
             return list(pids), None

@@ -7,14 +7,18 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- New changes go here; release detail is folded into the tagged section below. -->
+
+### Fixed
+- fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)
+- fix(run-gate): run tester-unified selftest and canary lanes from the selected worktree's project directory, not the image's unset/default working directory
+- fix(run-gate): derive assay pytest temp and Git ceiling paths from the verified state mount, and create the default state root for fresh bare-host lanes (RG-85)
 
 <!-- cmru: release history -->
 
 ## [23.10.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=433393cb88fed967e716fc8fb05556162b786a99 -->
-<!-- This section describes source rev 55. The release generator keeps it verbatim ONLY while no run-gate-project commit lands after source-end (cmru REL-02 regenerates a stale generated section from commit subjects, dropping hand edits), so the entries below were extended by hand and source-end was advanced with them; tests/test_run_gate.py asserts this marker matches run_gate.__revision__. -->
+<!-- This section describes released source rev 55. The release generator keeps it verbatim ONLY while no run-gate-project commit lands after source-end (cmru REL-02 regenerates a stale generated section from commit subjects, dropping hand edits), so the entries below were extended by hand and source-end was advanced with them; tests/test_run_gate.py asserts this historical marker remains truthful. -->
 
 ### Added
 - feat(run-gate): integrate occupancy and source recovery (6c1563b53)

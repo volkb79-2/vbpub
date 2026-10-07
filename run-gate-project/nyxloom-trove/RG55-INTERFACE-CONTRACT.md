@@ -334,32 +334,40 @@ leaf and migrate lane processes; the program-level whitelist, not a
 read-only mount, is the boundary for those writes. `--network none`; no
 docker socket inside the daemon (that is why targets are `containerid:` and
 the consumer resolves ids). run-gate never passes `--cgroupns=host` or
-`--pid=host` to anything.
+`--pid=host` to lane, gate, workload, helper, or test containers. The
+managed daemon's Compose service is the sole explicit host-PID exception.
 
-The daemon's PID and cgroup namespaces remain private. Host observation is
-provided by explicit binds: host `/proc` is read-only at `/hostproc`, selected
-by `CGPROFILE_PROC_ROOT`, and host cgroup v2 is mounted at `/sys/fs/cgroup`
-for observation and the guarded §8.3 placement operations. `serve` refuses
-unless PID 1 in the configured proc view belongs to a PID namespace distinct
-from the daemon's. `/proc/<pid>/cgroup`
-paths are relative to the reader's cgroup-namespace root. The daemon derives
-that root by locating its own namespace-local PID in the mounted host cgroup
-tree (host tasks outside its private PID namespace appear as PID 0 in
-`cgroup.procs`), then resolves and verifies each observed path. In helper
-mode, `self` is resolved by the caller to its full Docker ID; `pid:N` is
-carried as a validated cgroup-namespace-relative subpath under that ID only
-when the caller and target share a cgroup namespace. An unverifiable mapping
-is refused. No RG-55 container uses a host PID, cgroup, or network namespace.
-A private-PID daemon uses the read-only host system bus only as a namespace-
-safe placement bridge: when a direct `cgroup.procs` write returns `ESRCH`, it
-requires a verified host-proc view and calls systemd's
-`AttachProcessesToUnit` for the verified gates slice and its `rg-<token>`
-subcgroup on placement, or the nearest systemd unit and relative subgroup of
-the original scope on stop. It verifies the PID's resulting host-proc cgroup
-path and records each successful move in `events.jsonl`. If it cannot
-enumerate or restore a survivor, it retains the leaf and reports the original
-scope's `cgroup.procs` path. The bridge does not join a host namespace and is
-not a general systemd control surface.
+The daemon uses the host PID namespace and a private cgroup namespace. This
+is required because DAMON sysfs resolves `pid_target` in the writer's active
+PID namespace; binding host `/proc` at `/hostproc` does not change that
+namespace. `serve` requires `CGPROFILE_PID_NAMESPACE_MODE=host` and verifies
+that PID 1 in the configured proc view belongs to the daemon's PID namespace.
+The read-only host `/proc` bind remains selected by `CGPROFILE_PROC_ROOT`,
+and host cgroup v2 is mounted at `/sys/fs/cgroup` for observation and guarded
+§8.3 placement operations. `/proc/<pid>/cgroup` paths remain relative to the
+reader's cgroup-namespace root. The daemon locates its own host-visible PID
+in the mounted cgroup tree, then resolves and verifies each observed path.
+In helper mode, `self` is resolved by the caller to its full Docker ID;
+`pid:N` is carried as a validated cgroup-namespace-relative subpath under
+that ID only when the caller and target share a cgroup namespace. The helper
+and all lane/gate/test containers stay private in all namespaces. An
+unverifiable mapping is refused.
+
+The daemon's host PID mode exposes host process identities and adds
+process-table/PID-operation authority. It does not grant the daemon a host
+cgroup or network namespace, nor does it make the daemon a sandbox: the
+privileged process already has DAMON sysfs, writable cgroupfs, and systemd
+manager access. Application guards are not containment against arbitrary
+daemon compromise. Numeric PID signalling is never used for enforcement.
+The systemd bus bridge remains because systemd owns delegated-scope lifecycle
+and exact-unit attachment, not because the daemon is in a private PID
+namespace. It calls `AttachProcessesToUnit` for the verified gates slice and
+`rg-<token>` subcgroup on placement, or the nearest systemd unit and relative
+subgroup of the original scope on stop. Each move requires a verified
+host-proc view, is checked against resulting host-proc cgroup membership, and
+is recorded in `events.jsonl`. If it cannot enumerate or restore a survivor,
+it retains the leaf and reports the original scope's `cgroup.procs` path.
+This is not a general systemd control surface.
 
 ## 6. Test fixtures shared by both packages
 

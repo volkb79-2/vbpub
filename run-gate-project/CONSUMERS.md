@@ -536,9 +536,12 @@ state_root = "/workspace/project/.run-gate"
 
 For a host environment, run-gate uses the default checkout path directly;
 `state_root` is only meaningful for container environments. For a bare-host
-lane, create `<checkout>/.run-gate` on the host and make it writable by the
-lane user before the first assay run; run-gate does not synthesize this root
-as a preflight side effect. Before Assay runs, run-gate checks that the
+lane, Run-Gate creates `<checkout>/.run-gate` if absent and refuses a symlink
+or other non-directory there. Its default root is also created before a fresh
+ephemeral container lane mounts it. An explicitly configured container
+`state_root` still needs a real, writable durable mount from the runner
+owner; Run-Gate does not create that configured path. Before Assay runs,
+Run-Gate checks that the
 selected root exists and is writable by the lane user, then checks the
 deepest existing directory along that lane's keyed state path. This catches
 an old state directory owned by a different user before Assay starts. A
@@ -546,13 +549,19 @@ missing or unwritable root or ancestor is refused
 before the assay command with NOT_RUN/`state-mount`, naming the path and
 applicable remedy; it is never reported as an assay FAIL. The `doctor`
 command checks once per assay environment, and `--dry-run` prints the planned
-probe. `state_root` is a container path, so
+probe. For an ephemeral or bare-host lane, a fresh default root is reported
+as unverified by `doctor` until the live lane creates and probes it; an exec
+runner is probed directly. `--dry-run` shows the mount that the live
+lane will add without creating the directory. Run-Gate derives the Assay
+test command's `TMPDIR` and `GIT_CEILING_DIRECTORIES` from this selected
+state path. For the shipped R1 and R2 lane declarations, both names are
+explicitly passed through to pytest. `state_root` is a container path, so
 run-gate does not stat it in the host namespace. Pin versions below **5.2.0**
 are refused before the lane starts because that is the first Assay release
 with `--state-dir` (the other two flags require only 2.4.1). The run header
 names the resolved state directory. See the
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
-for why run-gate does not create this root inside a runner.
+for why Run-Gate does not create a configured root inside an exec runner.
 
 ### Shared assay lane imports
 
@@ -686,17 +695,22 @@ treated as "nothing needed".
 > **`doctor` and `--check-env` START CONTAINERS for this check.** Fitness
 > cannot be read, only observed, so the inventory question and the
 > `command -v` checks execute inside the lane's own environment. `doctor`
-> also probes Assay's durable state root once per assay environment, as the
-> lane user; a live assay invocation probes it once per lane. `--check-env`
-> does not run the state-root check. These probes are
+> also checks Assay's durable state root at most once per assay environment;
+> a live assay invocation checks it once per lane. A creatable but absent
+> default `.run-gate` root is `[SKIP]` in `ephemeral` and `host` environments;
+> a known invalid parent fails. Doctor does not create the root or launch a
+> lane-user probe, because the first live lane in those environments creates
+> it before checking access. A configured `state_root` or an `exec` environment
+> is checked through its declared runner, never by host-statting a container
+> path. `--check-env` does not run the state-root check. These checks are
 > short-lived and read-only (`assay lanes` runs nothing; `command -v` is a
 > shell builtin), they judge nothing and write nothing into your tree, and
 > ephemeral ones carry `--cgroup-parent` like every container run-gate
 > starts. The cost is bounded: `doctor` runs **one inventory probe per
 > (environment, judge identity), one batched `command -v` probe per
-> environment, and one state-root probe per assay environment**;
+> environment, and at most one state-root check per assay environment**;
 > `--check-env` runs only the first two; a live assay invocation adds one
-> state-root probe for its lane. A project with no `kind = "assay"` lane
+> state-root check for its lane. A project with no `kind = "assay"` lane
 > starts none of these probes, and neither verb ever starts your judged
 > lane. If you run `doctor` in a context where starting a container is
 > unacceptable, that is the check to know about.

@@ -1023,6 +1023,10 @@ class TestPeerCredentials:
 
 
 class TestServeCliAllowUids:
+    @pytest.fixture(autouse=True)
+    def _daemon_pid_namespace_mode(self, monkeypatch):
+        monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
+
     def _serve_argv(self, tmp_path):
         return ["serve", "--sessions", str(tmp_path / "sessions"),
                 "--socket", str(tmp_path / "ctl.sock")]
