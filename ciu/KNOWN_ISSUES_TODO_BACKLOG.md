@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-05 — **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-07 — **CIU-118 follow-up OPEN** (service discovery: attached networks, aliases, URLs, exit status; filed from nyxloom NL-38, no new id; the shipped `ciu resolve`/`ciu exec` stay FIXED). Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -4700,6 +4700,8 @@ Severity: Medium. Type: feature. Spec owner: S16.6, S16.7 (v8: S4.4, S14.6.3). R
 
 ### Follow-up 2026-10-07 — service-discovery gaps (OPEN; filed from nyxloom NL-38; the verb itself stays FIXED)
 
+**Status: OPEN.** This follow-up is open even though the CIU-118 row in the index above and the Disposition of this entry say FIXED: those describe the shipped v7 `ciu resolve`/`ciu exec` API, not the gaps below. No new CIU id is allocated for it (ids above CIU-131 may collide with an unmerged branch); if it is split out later, take the next free id at that time.
+
 A "service discovery query" was proposed as a new verb (`ciu resolve <stack>[.<service>]` printing container, compose project, networks, aliases and URLs, with `--json`, non-zero when not running). `ciu resolve` already exists (this entry, ciu 7.15.3; SPEC-V8 S18 / `SPEC-V8.md:744`, S4.4.3 at `:200`), so this is an extension of it, not a new item. Checked 2026-10-07 on the live nyxloom checkout (`eval "$(ciu env print)"` first; without it `ciu resolve` stops with "Missing required environment values"):
 
 - **What the output has today** (`ciu/src/ciu/deploy.py` `resolve_identities`, row built at `:612-635`): `compose_key`, `compose_project`, `container_name`, `hostname`, `image`, `network`, `internal_host`, `port`, and `live` with `--live` (`:636`). For `mattermost`: `compose_project = nyxloom-3oqua1-mattermost`, `container_name = nyxloom-3oqua1-mattermost` (correct).
@@ -4710,10 +4712,12 @@ A "service discovery query" was proposed as a new verb (`ciu resolve <stack>[.<s
 
 **Proposed extension (v7, then S18 in v8).**
 - Each service row gains `networks` (every network the rendered compose attaches the service to, with the aliases compose will give it; with `--live`, what `docker inspect` reports) and `urls` (`internal`: `http://<service alias>:<port>` on the stack's private network; `published`: only when the service publishes a port or a routed host). `network` stays for compatibility.
-- A flag (for example `--require-running`) makes `--live` exit non-zero, with a distinct code, when no container of the selected service is running, and prints nothing but the error naming the compose project.
+  - **Port source.** ciu derives the port from the rendered service's own `expose:` and `ports:` entries (for mattermost, the single `expose:` entry at the mattermost stack's `ciu.compose.yml.j2:332-333`, which the template fills from `mattermost.app.port`; that template declares no `ports:`). It never reads the port from `topology` (null today) and never guesses.
+  - **Ambiguity rule.** With zero or several exposed ports for the service, `urls` is omitted for that row (and the row says why), rather than picking one.
+- A flag `--require-running` makes `--live` exit with a dedicated non-zero code when no container of the selected service is running, and prints nothing but an error naming the compose project. Proposed code: 3 (only exit 0 was measured here; the implementer confirms 3 is free against ciu's exit-code list before fixing it).
 - v8: `SPEC-V8.md:464` already injects the service `compose_key` and `container_name` as aliases on the instance network, and S4.3.1 (`:189`) requires them unique there; the follow-up should state the alias list in the S18 row so consumers need not know that rule.
 
-**Oracles.** (1) For nyxloom/mattermost, `networks` lists `nyxloom-<id>-mattermost_internal` with aliases containing `mattermost`, and `urls.internal` is `http://mattermost:8065`, with no consumer edit after an identity change. (2) `--live --require-running` on the stopped `nyxloomd` stack exits non-zero. (3) Controlled wrong implementation: reporting only the instance network must fail (1).
+**Oracles.** (1) For nyxloom/mattermost, `networks` lists `nyxloom-<id>-mattermost_internal` with aliases containing `mattermost`, and `urls.internal` is `http://mattermost:8065` (port taken from the service's single `expose:` entry), with no consumer edit after an identity change. (2) A service with zero exposed ports, and one with two, each yield a row with no `urls` and a stated reason; neither gets a guessed port. (3) `--live --require-running` on the stopped `nyxloomd` stack exits with the dedicated code. (4) Controlled wrong implementation: reporting only the instance network must fail (1); reading the port from `topology` (null) or defaulting to 80 must fail (1) and (2).
 
 **Consumers (cross-reference).**
 - nyxloom `NL-38` (`nyxloom/nyxloom-trove/backlog/NL-38-*.md`, "Design (controller ruling 2026-10-07)"): the intake bridge must resolve the mattermost container and base URL at runtime instead of reading literals from `nyxloom.toml`.
