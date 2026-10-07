@@ -13,11 +13,14 @@ enforces it is a fact split across two files with nothing holding it together.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -418,6 +421,114 @@ def test_b105_builds_a_commit_deterministic_wheel_and_checks_deadline_before_lan
     campaign_ready = script.index('echo "B105_CAMPAIGN_DEADLINE=$deadline"')
     persisted_check = script.index("check_campaign_wheel_digest", campaign_ready)
     assert campaign_ready < persisted_check < script.index("run_and_verify_lane() {")
+
+
+def test_b105_builds_identical_wheels_from_same_oid_with_different_checkout_mtimes(
+    tmp_path,
+):
+    repo_root = PROJECT_ROOT.parent
+    git_prefix = [
+        "git",
+        "-c",
+        "safe.directory=*",
+        "-c",
+        "maintenance.auto=false",
+        "-c",
+        "maintenance.autoDetach=false",
+        "-c",
+        "gc.autoDetach=false",
+    ]
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            [*git_prefix, *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    source_commit = git("-C", str(repo_root), "rev-parse", "HEAD")
+    source_tree = git("-C", str(repo_root), "rev-parse", "HEAD^{tree}")
+    source_epoch = git("-C", str(repo_root), "log", "-1", "--format=%ct", source_commit)
+    assert re.fullmatch(r"[0-9]+", source_epoch)
+
+    distribution = PROJECT_ROOT / "gate" / "distribution"
+    build_venv = tmp_path / "build-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(build_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    build_python = build_venv / "bin" / "python"
+    install = subprocess.run(
+        [
+            str(build_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-index",
+            "--find-links",
+            str(distribution / "build-wheelhouse"),
+            "--require-hashes",
+            "-r",
+            str(distribution / "build-requirements.txt"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert install.returncode == 0, install.stderr
+
+    wheel_digests = []
+    checkout_timestamps = []
+    for name, timestamp in (("early", 1_600_000_000), ("late", 1_700_000_000)):
+        checkout = tmp_path / f"checkout-{name}"
+        git("clone", "--quiet", "--shared", "--no-checkout", str(repo_root), str(checkout))
+        git("-C", str(checkout), "checkout", "--quiet", "--detach", source_commit)
+        assert git("-C", str(checkout), "rev-parse", "HEAD") == source_commit
+        assert git("-C", str(checkout), "rev-parse", "HEAD^{tree}") == source_tree
+
+        package = checkout / "assay"
+        for path in sorted(
+            package.rglob("*"), key=lambda item: len(item.parts), reverse=True
+        ):
+            if not path.is_symlink():
+                os.utime(path, (timestamp, timestamp))
+        os.utime(package, (timestamp, timestamp))
+        checkout_timestamps.append((package / "README.md").stat().st_mtime)
+
+        output = tmp_path / f"dist-{name}"
+        output.mkdir()
+        built = subprocess.run(
+            [
+                str(build_python),
+                "-m",
+                "pip",
+                "wheel",
+                "--no-index",
+                "--no-build-isolation",
+                "--no-deps",
+                "--wheel-dir",
+                str(output),
+                str(package),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "SOURCE_DATE_EPOCH": source_epoch},
+            timeout=120,
+        )
+        assert built.returncode == 0, built.stderr
+        wheels = sorted(output.glob("assay-*.whl"))
+        assert len(wheels) == 1, built.stdout
+        wheel_digests.append(hashlib.sha256(wheels[0].read_bytes()).hexdigest())
+
+    assert checkout_timestamps == [1_600_000_000, 1_700_000_000]
+    assert wheel_digests[0] == wheel_digests[1]
 
 
 @pytest.mark.parametrize(

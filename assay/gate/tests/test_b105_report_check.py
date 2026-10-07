@@ -341,6 +341,7 @@ def _run_checker(
     plan: object = _AUTO_PLAN,
     manifest: object = _AUTO_MANIFEST,
     deadline_raw: bytes | None = None,
+    deadline_file: Path | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the checker in full mode.
@@ -386,12 +387,13 @@ def _run_checker(
         manifest_flags = ["--r2-manifest", str(manifest_path)]
     elif manifest is not None:
         raise TypeError("manifest must be bytes, Path or None")
-    deadline_path = tmp_path / "campaign-deadline.json"
-    deadline_path.write_bytes(
-        deadline_raw
-        if deadline_raw is not None
-        else _deadline_bytes(document, commit, tree, repo_root=repo_root)
-    )
+    if deadline_file is None:
+        deadline_file = tmp_path / "campaign-deadline.json"
+        deadline_file.write_bytes(
+            deadline_raw
+            if deadline_raw is not None
+            else _deadline_bytes(document, commit, tree, repo_root=repo_root)
+        )
     return subprocess.run(
         [
             sys.executable,
@@ -405,7 +407,7 @@ def _run_checker(
             "--expected-tree",
             checked_tree,
             "--deadline",
-            str(deadline_path),
+            str(deadline_file),
             *receipt_flags,
             *plan_flags,
             *manifest_flags,
@@ -1104,6 +1106,126 @@ def test_deadline_refusal_does_not_open_the_plan_file(tmp_path):
     assert result.returncode == 2
     assert "B105 report carries no campaign binding" in result.stderr
     assert "plan" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink"])
+def test_full_report_checker_refuses_non_regular_or_symlink_deadlines(
+    tmp_path, kind
+):
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    raw = _deadline_bytes(document, commit, tree)
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw).hexdigest()
+    deadline = tmp_path / "deadline-input"
+    if kind == "fifo":
+        os.mkfifo(deadline)
+    else:
+        target = tmp_path / "regular-deadline.json"
+        target.write_bytes(raw)
+        deadline.symlink_to(target)
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_file=deadline,
+        timeout=3,
+    )
+    assert result.returncode == 2
+    assert "campaign deadline_sha256 does not match the deadline file" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink"])
+def test_full_report_checker_refuses_non_regular_or_symlink_manifests(
+    tmp_path, kind
+):
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    raw_deadline = _deadline_bytes(document, commit, tree)
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+    manifest = tmp_path / "manifest-input"
+    if kind == "fifo":
+        os.mkfifo(manifest)
+    else:
+        target = tmp_path / "regular-manifest.txt"
+        target.write_bytes(_manifest_bytes())
+        manifest.symlink_to(target)
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        manifest=manifest,
+        deadline_raw=raw_deadline,
+        timeout=3,
+    )
+    assert result.returncode == 2
+    assert "R2 manifest sidecar does not match r2_baseline" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["deadline", "manifest"])
+def test_full_report_checker_refuses_oversized_binding_files(tmp_path, kind):
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    raw_deadline = _deadline_bytes(document, commit, tree)
+    if kind == "deadline":
+        raw_deadline += b" " * (64 * 1024 + 1)
+        document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+        manifest: object = _AUTO_MANIFEST
+    else:
+        document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+        manifest = tmp_path / "oversized-manifest.txt"
+        manifest.write_bytes(b"x" * (16 * 1024 * 1024 + 1))
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        manifest=manifest,
+        deadline_raw=raw_deadline,
+        timeout=5,
+    )
+    assert result.returncode == 2
+    expected = (
+        "campaign deadline_sha256 does not match the deadline file"
+        if kind == "deadline"
+        else "R2 manifest sidecar does not match r2_baseline"
+    )
+    assert expected in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_bounded_reader_rejects_file_growth_after_open(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("b105_report_check_growth_test", CHECKER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    path = tmp_path / "deadline.json"
+    path.write_bytes(b"{}")
+    real_read = os.read
+    grew = False
+
+    def grow_then_read(descriptor, size):
+        nonlocal grew
+        if not grew:
+            grew = True
+            with path.open("ab") as stream:
+                stream.write(b"x" * 32)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(module.os, "read", grow_then_read)
+    with pytest.raises(ValueError, match="exceeds 8 bytes"):
+        module._read_bounded_regular_nofollow(path, max_bytes=8)
+    assert grew is True
 
 
 def test_malformed_plan_is_refused_after_a_valid_deadline(tmp_path):

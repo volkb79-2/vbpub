@@ -724,6 +724,14 @@ Assay checks the live HookImpl against that exact registration before
 collection, so replacing a callable while keeping its module, path, qualname
 and fingerprint text unchanged makes the attempt unsupported.
 
+The same rule covers Assay's generated receipt hooks: their HookImpls,
+functions, code objects and globals are captured before candidate conftests
+load. Reviewed Hypothesis and pytest-cov callables are also pinned by code
+object, so changing `function.__code__` in place cannot retain trust through an
+unchanged function identity or fingerprint. A candidate-only `pytest_configure`
+replacement of the receipt hook is therefore unsupported before a cold result
+can be classified.
+
 The root `tests/conftest.py::pytest_sessionfinish` hook has one compatibility
 exception because Assay's B105 archive hook is inert when
 `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
@@ -748,7 +756,11 @@ For B105, the selected commit timestamp normalizes wheel archive mtimes through
 installing the run closure or starting lane work, then checks the persisted
 deadline again after campaign initialization. In report checking, D1-D4 run
 before R2 plan parsing; only after those bindings pass does the checker parse
-the plan and compare its ordered digest.
+the plan and compare its ordered digest. Deadline and manifest inputs are read
+through bounded, no-follow regular-file descriptors: symlinks and special
+files are refused, and concurrent file growth cannot make a checker read
+unbounded input. A two-clone artifact test also rebuilds the exact same commit
+with different checkout mtimes and requires identical wheel digests.
 
 #### Liveness process-group cleanup
 

@@ -10814,7 +10814,10 @@ qualification evidence.
       deadline is checked again before either lane starts. In report checking,
       plan-independent D1-D4 refusals precede plan parsing, followed by the
       selected ordered-plan digest check. Paired malformed-plan/deadline tests
-      pin that refusal order.
+      pin that refusal order. Deadline and manifest reads are bounded, reject
+      symlinks and non-regular files, and remain bounded if a file grows while
+      being read. A two-clone test builds the same commit under different
+      checkout mtimes and asserts identical wheel digests.
 - [ ] B110's structural runtime work is complete, reviewed, and shown to meet
       this ceiling before B105's final qualification starts. A longer forecast
       requires a changed test/execution plan, not a longer timeout.
@@ -11487,13 +11490,15 @@ and matching the relevant baseline, with a valid started prefix, consistent
 process/session exits, and no setup, collection, teardown, auxiliary, signal,
 termination, or cgroup resource cause. Uncertain attempts never count as kills.
 
-The 2026-10-07 Sol xhigh review added three acceptance corrections: pin actual
-pytest built-in hook callables before initial conftests and bind late built-in
-HookImpls only from their pre-pinned source functions; make same-commit B105
-wheel bytes deterministic and refuse a persisted wheel mismatch before lane
-work; and run D1-D4 before parsing the R2 plan, then compare the selected
-ordered-plan digest. Same-module/path hook substitution must be unsupported
-even when the resulting hook fingerprint matches the baseline.
+The 2026-10-07 Sol xhigh reviews added acceptance corrections: pin actual
+pytest built-in and Assay-generated receipt hook callables before candidate
+conftests; pin reviewed external hook code objects against in-place mutation;
+make same-commit B105 wheel bytes deterministic and refuse a persisted wheel
+mismatch before lane work; run D1-D4 before parsing the R2 plan, then compare
+the selected ordered-plan digest; and read deadline/manifest files through
+bounded no-follow regular-file descriptors. Same-module/path hook substitution
+must be unsupported even when the resulting hook fingerprint matches the
+baseline.
 
 **Acceptance:**
 - [ ] All four briefs' oracles pass.

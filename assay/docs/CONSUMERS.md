@@ -138,6 +138,10 @@ Pytest's built-in HookImpl callables are captured before initial conftests
 load; built-ins created later are accepted only when their class and source
 callable match that early snapshot. A callable replacement is unsupported even
 if it preserves the prior hook fingerprint.
+Assay's own generated receipt hooks and their code objects are captured before
+candidate conftests load as well. The reviewed Hypothesis and pytest-cov code
+objects are pinned too; replacing one in place makes the attempt unsupported,
+even when its visible fingerprint stays the same.
 
 There is one compatibility exception for
 `tests/conftest.py::pytest_sessionfinish`: Assay accepts that hook only when
@@ -178,19 +182,23 @@ assay run "$lane" --resume \
   --cold-witness --r2-manifest "$manifest"
 ```
 
-The campaign deadline binds the exact commit, tree, tool version, selected
-wheel digest, lane and ordered candidate plan. Keep it with the resume state
-for every retry; a retry does not receive a new clock. Assay writes the ordered manifest under the requested
-path. The independent verifier checks the receipt fields, and B105's report
-checker additionally binds the transform, committed lane/config and manifest
-to the exact source revision. See the
+The example omits optional `--wheel-sha256`, so its deadline does not bind a
+wheel digest. Supply that flag when the campaign requires an artifact binding;
+B105 supplies it. The deadline binds the exact commit, tree, tool version, lane
+and ordered candidate plan, plus the wheel digest when supplied. Keep it with
+the resume state for every retry; a retry does not receive a new clock. Assay
+writes the ordered manifest under the requested path. The independent verifier
+checks the receipt fields, and B105's report checker additionally binds the
+transform, committed lane/config and manifest to the exact source revision. See the
 [cold-witness design](DESIGN-GUIDE.md#cold-witness-r2-b114).
 For B105, the wheel uses the captured commit timestamp as
 `SOURCE_DATE_EPOCH`. Before retry work begins, its driver compares the
 persisted wheel digest and refuses a mismatch before installing the run
 closure, planning, preflight or R2. After campaign initialization or reuse, it
-checks the persisted digest again. The report checker validates D1-D4 before
-parsing the R2 plan, then checks the selected ordered-plan digest.
+checks the persisted digest again. The checker reads deadline files and
+manifests with fixed size limits, without following symlinks or blocking on
+non-regular files. It validates D1-D4 before parsing the R2 plan, then checks
+the selected ordered-plan digest.
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing

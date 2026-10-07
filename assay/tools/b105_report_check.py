@@ -232,6 +232,34 @@ def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]
     return result
 
 
+def _read_bounded_regular_nofollow(path: Path, *, max_bytes: int) -> bytes:
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValueError("maximum file size must be a non-negative integer")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise ValueError("this platform cannot safely open no-follow regular files")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        if info.st_size > max_bytes:
+            raise ValueError(f"{path} exceeds {max_bytes} bytes")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(8192, max_bytes + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{path} exceeds {max_bytes} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
 def verify_deadline_wheel_sha256(deadline_path: Path, *, expected_sha256: str) -> None:
     """Refuse a B105 retry whose persisted campaign names another wheel.
 
@@ -241,35 +269,12 @@ def verify_deadline_wheel_sha256(deadline_path: Path, *, expected_sha256: str) -
     """
     if not isinstance(expected_sha256, str) or _CANDIDATE_ID.fullmatch(expected_sha256) is None:
         raise ValueError("expected wheel SHA-256 must be 64 lowercase hexadecimal characters")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
     try:
-        descriptor = os.open(deadline_path, flags)
+        deadline_bytes = _read_bounded_regular_nofollow(
+            deadline_path, max_bytes=_DEADLINE_MAX_BYTES
+        )
     except OSError as exc:
         raise ValueError(f"cannot read campaign deadline {deadline_path}: {exc}") from exc
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"campaign deadline {deadline_path} is not a regular file")
-        if info.st_size > _DEADLINE_MAX_BYTES:
-            raise ValueError(f"campaign deadline {deadline_path} exceeds {_DEADLINE_MAX_BYTES} bytes")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(descriptor, min(8192, _DEADLINE_MAX_BYTES + 1 - total))
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > _DEADLINE_MAX_BYTES:
-                raise ValueError(f"campaign deadline {deadline_path} exceeds {_DEADLINE_MAX_BYTES} bytes")
-            chunks.append(chunk)
-        deadline_bytes = b"".join(chunks)
-    finally:
-        os.close(descriptor)
     try:
         deadline = json.loads(
             deadline_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_pairs
@@ -445,8 +450,10 @@ def _check_deadline_binding(
     if not isinstance(campaign, dict) or set(campaign) != _CAMPAIGN_BINDING_KEYS:
         raise ValueError("B105 report carries no campaign binding")
     try:
-        deadline_bytes = deadline_path.read_bytes()
-    except OSError as exc:
+        deadline_bytes = _read_bounded_regular_nofollow(
+            deadline_path, max_bytes=_DEADLINE_MAX_BYTES
+        )
+    except (OSError, ValueError) as exc:
         raise ValueError(
             "campaign deadline_sha256 does not match the deadline file"
         ) from exc
@@ -570,10 +577,7 @@ def _independent_r2_transform(argv: list[str]) -> list[str]:
 
 def _manifest_lines(path: Path) -> list[bytes]:
     try:
-        size = path.stat().st_size
-        if size > _MANIFEST_MAX_BYTES:
-            raise ValueError("size limit")
-        raw = path.read_bytes()
+        raw = _read_bounded_regular_nofollow(path, max_bytes=_MANIFEST_MAX_BYTES)
     except (OSError, ValueError) as exc:
         raise ValueError("R2 manifest sidecar does not match r2_baseline") from exc
     if len(raw) > _MANIFEST_MAX_BYTES or (raw and not raw.endswith(b"\n")):

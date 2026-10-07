@@ -729,6 +729,16 @@ _HOOKS = (
     "pytest_runtest_teardown", "pytest_collectreport",
     "pytest_collection_modifyitems", "pytest_sessionfinish",
 )
+_ASSAY_PLUGIN_NAME = "assay_mutation_witness_plugin"
+_ASSAY_PLUGIN_HOOKS = (
+    "pytest_load_initial_conftests",
+    "pytest_plugin_registered",
+    "pytest_collection_finish",
+    "pytest_collectreport",
+    "pytest_runtest_logstart",
+    "pytest_runtest_logreport",
+    "pytest_sessionfinish",
+)
 _SESSION = None
 _ITEMS = ()
 _TARGET = None
@@ -761,6 +771,8 @@ _PINNED_BUILTIN_HOOKS = {}
 _PINNED_BUILTIN_SOURCE_CODES = {}
 _PINNED_LATE_BUILTIN_PLUGIN_TYPES = {}
 _BUILTIN_HOOKS_PINNED = False
+_PINNED_ASSAY_HOOKS = {}
+_ASSAY_HOOKS_PINNED = False
 _EXPECTED_TEST_REPORT_CONSTRUCTOR = vars(_TestReport).get("from_item_and_call")
 
 
@@ -862,6 +874,42 @@ def _pin_builtin_hook_callables(config):
     return True
 
 
+def _pin_assay_hook_callables(config):
+    global _PINNED_ASSAY_HOOKS, _ASSAY_HOOKS_PINNED
+    _PINNED_ASSAY_HOOKS = {}
+    _ASSAY_HOOKS_PINNED = False
+    pinned = {}
+    try:
+        plugin = sys.modules.get(__name__)
+        if plugin is None or config.pluginmanager.get_name(plugin) != _ASSAY_PLUGIN_NAME:
+            return False
+        for hook_name in _ASSAY_PLUGIN_HOOKS:
+            implementations = [
+                impl
+                for impl in getattr(config.hook, hook_name).get_hookimpls()
+                if getattr(impl, "plugin_name", None) == _ASSAY_PLUGIN_NAME
+            ]
+            if len(implementations) != 1:
+                return False
+            impl = implementations[0]
+            function = getattr(impl, "function", None)
+            code = getattr(function, "__code__", None)
+            if (
+                code is None
+                or getattr(function, "__module__", None) != _ASSAY_PLUGIN_NAME
+                or getattr(function, "__globals__", None) is not vars(plugin)
+            ):
+                return False
+            pinned[hook_name] = (impl, function, code, function.__globals__)
+    except Exception:
+        return False
+    if set(pinned) != set(_ASSAY_PLUGIN_HOOKS):
+        return False
+    _PINNED_ASSAY_HOOKS = pinned
+    _ASSAY_HOOKS_PINNED = True
+    return True
+
+
 def _pin_registered_builtin_plugin(plugin, plugin_name, manager):
     if not _BUILTIN_HOOKS_PINNED:
         return
@@ -896,6 +944,7 @@ def pytest_load_initial_conftests(early_config):
     # registered builtin callables so a candidate conftest cannot substitute
     # a same-module/same-path function before the collection-time checks.
     _pin_builtin_hook_callables(early_config)
+    _pin_assay_hook_callables(early_config)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -942,6 +991,10 @@ _REVIEWED_EXTERNAL_CALLABLES = {
     key: _resolve_reviewed_external_callable(expected[1], expected[2])
     for key, expected in _REVIEWED_EXTERNAL_HOOKS.items()
 }
+_REVIEWED_EXTERNAL_CALLABLE_CODES = {
+    key: getattr(function, "__code__", None)
+    for key, function in _REVIEWED_EXTERNAL_CALLABLES.items()
+}
 
 _REVIEWED_EXTERNAL_DISTRIBUTIONS = {
     "hypothesis": (
@@ -969,6 +1022,8 @@ def _reviewed_external_hook(impl, hook_name, distribution_name):
         or function is not _REVIEWED_EXTERNAL_CALLABLES.get(
             (distribution_name, hook_name)
         )
+        or getattr(function, "__code__", None)
+        is not _REVIEWED_EXTERNAL_CALLABLE_CODES.get((distribution_name, hook_name))
     ):
         return False
     flags = tuple(sorted(
@@ -1031,6 +1086,54 @@ def _is_pinned_builtin_hook(hook_name, impl):
     return False
 
 
+def _is_pinned_assay_hook(hook_name, impl):
+    if not _ASSAY_HOOKS_PINNED:
+        return False
+    pinned = _PINNED_ASSAY_HOOKS.get(hook_name)
+    if pinned is None:
+        return False
+    pinned_impl, pinned_function, pinned_code, pinned_globals = pinned
+    function = getattr(impl, "function", None)
+    return (
+        impl is pinned_impl
+        and function is pinned_function
+        and getattr(function, "__code__", None) is pinned_code
+        and getattr(function, "__globals__", None) is pinned_globals
+    )
+
+
+def _assay_hook_registry_matches(config):
+    if not _ASSAY_HOOKS_PINNED:
+        return False
+    try:
+        for hook_name, expected in _PINNED_ASSAY_HOOKS.items():
+            (
+                expected_impl,
+                expected_function,
+                expected_code,
+                expected_globals,
+            ) = expected
+            implementations = [
+                impl
+                for impl in getattr(config.hook, hook_name).get_hookimpls()
+                if getattr(impl, "plugin_name", None) == _ASSAY_PLUGIN_NAME
+            ]
+            if len(implementations) != 1:
+                return False
+            impl = implementations[0]
+            function = getattr(impl, "function", None)
+            if (
+                impl is not expected_impl
+                or function is not expected_function
+                or getattr(function, "__code__", None) is not expected_code
+                or getattr(function, "__globals__", None) is not expected_globals
+            ):
+                return False
+    except Exception:
+        return False
+    return True
+
+
 def _trusted_hook_impl(config, hook_name, impl):
     global _ARCHIVE_EXCEPTION_USED
     module_name = getattr(impl.function, "__module__", None)
@@ -1047,6 +1150,8 @@ def _trusted_hook_impl(config, hook_name, impl):
     if resolved_module_file != resolved_code_file:
         return False
     if module_name == "assay_mutation_witness_plugin":
+        if not _is_pinned_assay_hook(hook_name, impl):
+            return False
         expected = os.environ.get("ASSAY_MUTATION_WITNESS_PLUGIN_PATH")
         return bool(expected) and resolved_module_file == Path(expected).resolve()
     if module_name == "assay_liveness_plugin":
@@ -1417,6 +1522,7 @@ def pytest_collection_finish(session):
     global _UNSUPPORTED_PYTEST_COV_ONLY
     global _HOOK_IMPL_REGISTRY
     _SESSION = session
+    assay_hooks_trusted = _assay_hook_registry_matches(session.config)
     _ITEMS = tuple(item.nodeid for item in session.items)
     _TARGET = os.environ.get("ASSAY_MUTATION_WITNESS_TARGET")
     _COLD = os.environ.get("ASSAY_MUTATION_WITNESS_COLD") == "1"
@@ -1446,6 +1552,7 @@ def pytest_collection_finish(session):
             standard_loop
             and standard_protocol
             and all(required_hooks)
+            and assay_hooks_trusted
             and _test_report_constructor_is_trusted()
             and not xdist_active
         )
@@ -1473,6 +1580,7 @@ def pytest_collection_finish(session):
             and replay_protocol
             and replay_reports
             and replay_session_finish
+            and assay_hooks_trusted
             and not xdist_active
         )
     except Exception:
@@ -1480,6 +1588,7 @@ def pytest_collection_finish(session):
     try:
         _UNSUPPORTED_PYTEST_COV_ONLY = bool(
             not _STANDARD_LOOP
+            and assay_hooks_trusted
             and _coverage_hook_set_is_only_reviewed(config, xdist_active=xdist_active)
         )
     except Exception:

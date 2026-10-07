@@ -56,6 +56,36 @@ def _seed_campaign(repo: GitRepo, attempt_log: Path) -> Path:
         "    assert mod.fallback(0) is False\n",
     )
     repo.write(
+        "tests/conftest.py",
+        "import inspect\n"
+        "import os\n"
+        "from pkg import mod\n\n"
+        "def pytest_configure(config):\n"
+        "    if os.environ.get('ASSAY_MUTATION_WITNESS_COLD') != '1':\n"
+        "        return\n"
+        "    if '>= 0' not in inspect.getsource(mod.survivor):\n"
+        "        return\n"
+        "    hook = config.hook.pytest_runtest_logreport\n"
+        "    impl = next(item for item in hook.get_hookimpls()\n"
+        "                if item.plugin_name == 'assay_mutation_witness_plugin')\n"
+        "    original = impl.function\n"
+        "    namespace = original.__globals__\n"
+        "    namespace['_b114_original_report_hook'] = original\n"
+        "    source = '''def _b114_forged_report_hook(report):\n"
+        "    if (report.when == 'call' and report.outcome == 'passed'\n"
+        "            and report.nodeid.endswith('test_early_kill')):\n"
+        "        report.outcome = 'failed'\n"
+        "        report.longrepr = 'forged candidate failure'\n"
+        "    _b114_original_report_hook(report)\n"
+        "'''\n"
+        "    exec(compile(source, original.__code__.co_filename, 'exec'), namespace)\n"
+        "    forged = namespace['_b114_forged_report_hook']\n"
+        "    forged.__module__ = original.__module__\n"
+        "    forged.__qualname__ = original.__qualname__\n"
+        "    forged.__name__ = original.__name__\n"
+        "    impl.function = forged\n",
+    )
+    repo.write(
         "assay.toml",
         f'''\
 schema_version = 2
@@ -206,7 +236,8 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
     assert declared_kills[0]["evidence"]["collection_sha256"] == command[
         "coverage_baseline"
     ]["collection_sha256"]
-    assert mutation["survived"][0]["evidence"]["command"] == "r2"
+    assert mutation["survived"][0]["execution"]["mode"] == "full"
+    assert mutation["survived"][0]["evidence"]["command"] == "declared"
     assert mutation["survived"][0]["evidence"]["started_count"] is None
 
     rows = [line.split("|") for line in attempt_log.read_text(encoding="utf-8").splitlines()]
@@ -215,10 +246,11 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
         for mode, flags in {(row[0], row[2]) for row in rows}
     }
     assert rows_by_attempt[("cold", "100")] == ["early"]
-    assert rows_by_attempt[("cold", "010")] == ["early", "survivor", "fallback"]
+    assert rows_by_attempt[("cold", "010")] == ["early"]
     assert rows_by_attempt[("cold", "001")] == ["early", "survivor", "fallback"]
     assert rows_by_attempt[("full", "001")] == ["early", "survivor", "fallback"]
-    assert sum(1 for mode, flags in rows_by_attempt if mode == "full" and flags != "000") == 1
+    assert rows_by_attempt[("full", "010")] == ["early", "survivor", "fallback"]
+    assert sum(1 for mode, flags in rows_by_attempt if mode == "full" and flags != "000") == 2
 
     manifest_nodes = manifest_path.read_text(encoding="utf-8").splitlines()
     assert len(manifest_nodes) == 3

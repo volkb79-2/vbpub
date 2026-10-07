@@ -1107,8 +1107,9 @@ you're changing assay itself:
   derives the wheel's `SOURCE_DATE_EPOCH` from that commit; on retry it checks
   the existing campaign's wheel digest before installing the run closure or
   starting plan, preflight or R2 work. A mismatch stops before lane work. The
-  report checker checks plan-independent campaign deadlines before parsing an
-  R2 plan, then binds the selected ordered-plan digest. The full lane judges
+  report checker reads deadlines and manifests as bounded no-follow regular
+  files. It checks plan-independent campaign deadlines before parsing an R2
+  plan, then binds the selected ordered-plan digest. The full lane judges
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
@@ -1140,10 +1141,12 @@ you're changing assay itself:
   failure. Hook trust is pinned to
   Hypothesis 6.156.6 and, for the declared
   fallback, pytest-cov 7.1.0 by version, source digest, exact callable identity,
-  and hook flags. Pytest's built-in HookImpl callables are captured before
+  and hook flags. Their code objects are pinned too. Pytest's built-in
+  HookImpl callables and Assay's generated receipt hooks are captured before
   initial conftests load; later built-ins must match their preloaded class and
-  source functions, and a callable replacement makes the attempt unsupported
-  even if its hook fingerprint is unchanged. A compatibility exception accepts the root
+  source functions. A replacement or in-place code change makes the attempt
+  unsupported even if its hook fingerprint is unchanged. A compatibility
+  exception accepts the root
   `tests/conftest.py::pytest_sessionfinish` hook only when
   `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
   `ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent; that

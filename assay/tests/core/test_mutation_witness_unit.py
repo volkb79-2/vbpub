@@ -859,6 +859,151 @@ def test_precollection_pytest_builtin_hook_substitution_cannot_prove_cold_result
     )
 
 
+@pytest.mark.parametrize(
+    ("forged_mode", "fail_call"), [("fail", False), ("suppress", True)]
+)
+def test_precollection_assay_report_hook_substitution_cannot_prove_cold_result(
+    tmp_path, forged_mode, fail_call
+):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_assay_hook.py").write_text(
+        "import os\n\n"
+        "def test_behavior():\n"
+        "    if os.environ.get('FAIL_CALL'):\n"
+        "        assert False, 'real test failure'\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    baseline_result, baseline = _run_child_pytest(
+        project, plugin_dir, tmp_path / "baseline.json", cold=True
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported"] is False
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    (tests / "conftest.py").write_text(
+        "import os\n\n"
+        "def pytest_configure(config):\n"
+        "    if not os.environ.get('INSTALL_FORGER'):\n"
+        "        return\n"
+        "    hook = config.hook.pytest_runtest_logreport\n"
+        "    impl = next(item for item in hook.get_hookimpls()\n"
+        "                if item.plugin_name == 'assay_mutation_witness_plugin')\n"
+        "    original = impl.function\n"
+        "    namespace = original.__globals__\n"
+        "    namespace['_assay_test_original_report_hook'] = original\n"
+        "    source = '''def _assay_test_forged_report_hook(report):\n"
+        "    import os\n"
+        "    mode = os.environ.get('FORGER_MODE')\n"
+        "    if mode == 'fail' and report.when == 'call' and report.outcome == 'passed':\n"
+        "        report.outcome = 'failed'\n"
+        "        report.longrepr = 'forged failure'\n"
+        "    if mode == 'suppress' and report.when == 'call' and report.outcome == 'failed':\n"
+        "        return None\n"
+        "    return _assay_test_original_report_hook(report)\n"
+        "'''\n"
+        "    exec(compile(source, original.__code__.co_filename, 'exec'), namespace)\n"
+        "    forged = namespace['_assay_test_forged_report_hook']\n"
+        "    forged.__module__ = original.__module__\n"
+        "    forged.__qualname__ = original.__qualname__\n"
+        "    forged.__name__ = original.__name__\n"
+        "    impl.function = forged\n",
+        encoding="utf-8",
+    )
+
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "forged.json",
+        env_overrides={
+            "INSTALL_FORGER": "1",
+            "FORGER_MODE": forged_mode,
+            **({"FAIL_CALL": "1"} if fail_call else {}),
+        },
+        cold=True,
+    )
+
+    assert result.returncode == 1
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    assert receipt["hook_fingerprint_sha256"] == baseline["hook_fingerprint_sha256"]
+    assert cold_witness_from_receipt(
+        receipt, process_exit_status=result.returncode, expected=expected
+    ) is None
+    assert not survivor_proof_ok(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=expected,
+        command="declared",
+    )
+
+
+def test_pytest_cov_in_place_code_change_is_not_a_reviewed_exception(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_coverage_hook.py").write_text(
+        "def test_ok():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    pytest_args = ("-p", "pytest_cov.plugin", "--cov=tests")
+    baseline_result, baseline = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "baseline.json",
+        pytest_args=pytest_args,
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported_pytest_cov_only"] is True
+    expected = receipt_facts(baseline)
+    assert expected is not None
+    assert survivor_proof_ok(
+        baseline,
+        process_exit_status=baseline_result.returncode,
+        expected=expected,
+        command="declared",
+    )
+
+    (tests / "conftest.py").write_text(
+        "import os\n\n"
+        "def pytest_configure(config):\n"
+        "    if not os.environ.get('MUTATE_COV_CODE'):\n"
+        "        return\n"
+        "    from pytest_cov.plugin import CovPlugin\n"
+        "    function = CovPlugin.pytest_runtest_call\n"
+        "    namespace = {}\n"
+        "    source = 'def replacement(self, item):\\n    yield\\n'\n"
+        "    exec(compile(source, function.__code__.co_filename, 'exec'), namespace)\n"
+        "    function.__code__ = namespace['replacement'].__code__\n",
+        encoding="utf-8",
+    )
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "mutated-cov.json",
+        pytest_args=pytest_args,
+        env_overrides={"MUTATE_COV_CODE": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    assert not survivor_proof_ok(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=expected,
+        command="declared",
+    )
+
+
 @pytest.mark.parametrize(("strict", "exit_status"), [(False, 0), (True, 1)])
 def test_builtin_xfail_rewrites_remain_supported_for_cold_proof(
     tmp_path, strict, exit_status

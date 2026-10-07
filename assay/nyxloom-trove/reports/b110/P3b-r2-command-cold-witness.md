@@ -36,12 +36,23 @@ a kill or survivor. The receipt has 27 keys (the existing 10 plus 17 new
 fields); `replay_supported` and `unsupported_pytest_cov_only` are internal and
 never copied to verdicts.
 
+**Follow-up Sol xhigh review correction — 2026-10-07.** The early capture also
+pins Assay's generated receipt HookImpls, function objects, code objects and
+module-globals bindings before candidate conftests load. A candidate-only
+`pytest_configure` hook that replaces `pytest_runtest_logreport` while
+preserving its visible fingerprint is unsupported. Reviewed Hypothesis and
+pytest-cov functions are pinned by code object as well as identity, so an
+in-place `function.__code__` change cannot retain the reviewed exception.
+Adversarial tests cover both cases, and the candidate-run oracle confirms a
+substituted receipt hook cannot classify the mutant as a cold kill or survivor.
+
 **Current test-layout reconciliation — 2026-10-07.** The original placement
 instructions below refer to the pre-Wave-A `tests/zz_slow` split. That directory
 is absent from the current tree; B112's slow-tier decision remains open pending
 current timing evidence. Do not recreate the retired layout as part of B114.
 The current B114 regression oracles are in `tests/core/test_mutation_witness_unit.py`
-(including child-pytest hook and pytest-cov cases),
+(including child-pytest hook and pytest-cov cases, generated receipt-hook
+substitution, and in-place external hook code mutation),
 `tests/core/test_b106_reuse_and_witness.py` (targeted-replay tampering),
 `tests/core/test_verify_raw_b105.py` (raw cold-kill evidence),
 `tests/core/test_w10_characterization_i4_clusters.py` (receipt schema), and
@@ -608,6 +619,8 @@ _execute_mutation_jobs plugin dir     (its own, 2609-2613; receipts named f"{ind
 | `pytest_runtest_makereport` wrapper | plugin + proof predicate | a pre-collection wrapper changes a passing call report to failed; `unsupported` is true and cold proof refuses | `tests/core/test_mutation_witness_unit.py::test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill` | omit makereport from either hook list or trust arbitrary wrappers → red |
 | hook registered during a call | hook-call monitor + proof predicates | child pytest registers a makereport wrapper during the test call, changes pass to fail or fail to pass, then unregisters itself; the receipt is unsupported and proves neither cold kill nor survivor | `tests/core/test_mutation_witness_unit.py::test_hook_registered_during_call_cannot_forge_a_result` | cache trust at collection only → false kill/survivor → red |
 | external hook code identity | hook allowlist | exact Hypothesis 6.156.6 and pytest-cov 7.1.0 module digests are accepted; wrong source digest or version with unchanged hook metadata is refused | `tests/core/test_mutation_witness_unit.py::test_external_hook_allowlist_pins_distribution_version_and_source_digest` | trust only module/function names and flags → unreviewed package implementation accepted → red |
+| generated receipt-hook identity | early plugin pin + proof predicates | candidate `pytest_configure` replaces Assay's `pytest_runtest_logreport` hook with a same-module/path/qualname/code-filename lookalike; the hook registry is unsupported and neither a fabricated failed report nor a suppressed real failure proves a cold result | `tests/core/test_mutation_witness_unit.py::test_precollection_assay_report_hook_substitution_cannot_prove_cold_result`; candidate path: `tests/core/test_b114_cold_witness_real_runs.py` | pin at collection or trust only fingerprint text → forged report certifies a false cold kill/survivor → red |
+| reviewed external hook in-place code | external hook allowlist | candidate conftest changes a reviewed pytest-cov callable's `__code__` while retaining its function identity and module path; the pytest-cov-only exception is false | `tests/core/test_mutation_witness_unit.py::test_pytest_cov_in_place_code_change_is_not_a_reviewed_exception` | check identity and source file only → modified function retains trust → red |
 | archive hook changes exit status | survivor and failure proofs | the accepted root `tests/conftest.py` hook changes a failed run's session exit to 0; its call witness cannot prove a survivor or declared kill | `tests/core/test_mutation_witness_unit.py::test_archive_sessionfinish_status_change_cannot_prove_a_survivor` | accept status without requiring a complete non-failing witness → false survivor → red |
 | deadline's other lane plan | B105 checker | a full R2 report carries a valid ordered R2 digest but a non-null preflight digest; the checker refuses it | `gate/tests/test_b105_report_check.py::test_full_report_rejects_a_non_null_plan_digest_for_its_preflight_lane` | validate only the lane currently checked → contradictory campaign accepted → red |
 | liveness-active cold run (round-2 P3B2-4) | runner + plugin | a lane with `liveness = true` (plugin active) and `--cold-witness`: both baselines prove (no whole-lane refusal), and a killable candidate records `witness-cold` | same | omit `liveness_plugin_path=` on the R2-baseline injection → the liveness hooks are untrusted → `unsupported` → whole-lane refusal → red |
