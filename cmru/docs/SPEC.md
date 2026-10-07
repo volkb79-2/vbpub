@@ -54,7 +54,8 @@ cmru abandon PATH --yes           # discard one exact inspected failed build wor
 cmru version                      # print the CMRU version
 
 cmru resolve P    # consumer: highest-semver published version  (read-only)
-cmru get-py P    # consumer: emit a standalone installer
+cmru installer render P   # consumer: emit a standalone installer (get-py is a deprecated alias)
+cmru installer check P --installer FILE   # exit 1 unless FILE is byte-identical to a fresh render
 cmru run     [--step NAME ...] [--dry-run]
                                   # named steps (repeatable), or configured default_steps when omitted
                                   # --dry-run previews resolved projects/commands; nothing runs
@@ -513,8 +514,8 @@ their registries. Long options require their exact spelling: registry parsers
 disable argparse prefix abbreviation, so a removed option cannot be accepted
 accidentally as a prefix of another option.
 CMRU's generated standalone `get.py` remains an intentional exception: it is a
-separate installer artifact with its own `argparse` parser; `cmru get-py`
-itself uses the registered CMRU grammar below.
+separate installer artifact with its own `argparse` parser; `cmru installer render`
+(and the deprecated alias `cmru get-py`) use the registered CMRU grammar below.
 
 #### Grammar inventory
 
@@ -667,6 +668,15 @@ The manifest records registered syntax. The review catalog owns expected behavio
 | option:route:entrypoint:cmru/init/--release-tags | option | --release-tags | single layout: whether CMRU creates release tags | {"metavar": "yes\|no", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": ["yes", "no"], "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["init"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": true}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
 | option:route:entrypoint:cmru/init/--build-command | option | --build-command | single layout: build command as shell words (needed for generic projects or non-wheel artifacts) | {"metavar": "COMMAND", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["init"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": true}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
 | option:route:entrypoint:cmru/init/--publish-command | option | --publish-command | single layout: publish command as shell words (needed for generic projects or non-wheel artifacts) | {"metavar": "COMMAND", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["init"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": true}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
+| option:route:entrypoint:cmru/installer/check/--log-prefix-time-short | option | --log-prefix-time-short | prefix severity lines with local HH:MM:SS timestamps | {"metavar": null, "minimum_values": 0, "nargs": 0} | {"action": "cmru.cli_support._ShortTimePrefixAction", "const": null, "type": null} | false | {"choices": null, "declared_default": {"kind": "suppressed"}, "default": false, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "check"], "placement": {"after_verb": true, "before_verb": true, "single_command_invocation": false}, "scope": "global"} | {"help_group": "OUTPUT CONTROL", "hidden": false} |
+| argument:route:entrypoint:cmru/installer/check/target | argument | target | project target; omitted: the current project, or every orchestrated project at the estate root | {"metavar": "[all\|PROJECT[,PROJECT...]]", "minimum_values": 0, "nargs": "?"} | {"action": "argparse._StoreAction", "const": null, "type": {"all_token": "all", "callable": "cli_extended.SelectorList", "choices": null, "separator": ","}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "check"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
+| option:route:entrypoint:cmru/installer/check/--config | option | --config | path to cmru.toml or cmru.orchestration.toml | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "check"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
+| option:route:entrypoint:cmru/installer/check/--installer | option | --installer | the committed installer file to compare | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | true | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "check"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
+| option:route:entrypoint:cmru/installer/render/--log-prefix-time-short | option | --log-prefix-time-short | prefix severity lines with local HH:MM:SS timestamps | {"metavar": null, "minimum_values": 0, "nargs": 0} | {"action": "cmru.cli_support._ShortTimePrefixAction", "const": null, "type": null} | false | {"choices": null, "declared_default": {"kind": "suppressed"}, "default": false, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "render"], "placement": {"after_verb": true, "before_verb": true, "single_command_invocation": false}, "scope": "global"} | {"help_group": "OUTPUT CONTROL", "hidden": false} |
+| argument:route:entrypoint:cmru/installer/render/target | argument | target | project target; omitted: the current project, or every orchestrated project at the estate root | {"metavar": "[all\|PROJECT[,PROJECT...]]", "minimum_values": 0, "nargs": "?"} | {"action": "argparse._StoreAction", "const": null, "type": {"all_token": "all", "callable": "cli_extended.SelectorList", "choices": null, "separator": ","}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "render"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
+| option:route:entrypoint:cmru/installer/render/--config | option | --config | path to cmru.toml or cmru.orchestration.toml | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["installer", "render"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
+| option:route:entrypoint:cmru/installer/render/--output | option | --output | write one selected installer to this file | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": "destination", "exclusive_required": false} | {"parser_path": ["installer", "render"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
+| option:route:entrypoint:cmru/installer/render/--output-dir | option | --output-dir | write one named installer per selected project | {"metavar": "DIR", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": null} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": "destination", "exclusive_required": false} | {"parser_path": ["installer", "render"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
 | option:route:entrypoint:cmru/publish/--log-prefix-time-short | option | --log-prefix-time-short | prefix severity lines with local HH:MM:SS timestamps | {"metavar": null, "minimum_values": 0, "nargs": 0} | {"action": "cmru.cli_support._ShortTimePrefixAction", "const": null, "type": null} | false | {"choices": null, "declared_default": {"kind": "suppressed"}, "default": false, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["publish"], "placement": {"after_verb": true, "before_verb": true, "single_command_invocation": false}, "scope": "global"} | {"help_group": "OUTPUT CONTROL", "hidden": false} |
 | argument:route:entrypoint:cmru/publish/target | argument | target | project target; omitted: the current project, or every orchestrated project at the estate root | {"metavar": "[all\|PROJECT[,PROJECT...]]", "minimum_values": 0, "nargs": "?"} | {"action": "argparse._StoreAction", "const": null, "type": {"all_token": "all", "callable": "cli_extended.SelectorList", "choices": null, "separator": ","}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["publish"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
 | option:route:entrypoint:cmru/publish/--build-output | option | --build-output | publish the verified retained build ID printed by cmru build | {"metavar": "ID", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "cmru.cli._non_empty"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": "publish-source", "exclusive_required": true} | {"parser_path": ["publish"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OPTIONS", "hidden": false} |
@@ -793,6 +803,9 @@ The manifest records registered syntax. The review catalog owns expected behavio
 - `route:entrypoint:cmru/handler/wheel-publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/handler/wheel-validate`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/init`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version, --yes
+- `route:entrypoint:cmru/installer`: Common controls: none
+- `route:entrypoint:cmru/installer/check`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --traceback, --version
+- `route:entrypoint:cmru/installer/render`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/publish`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/release`: Common controls: --color, --debug, --debug-raw, --dry-run, --help, --log-level, --no-color, --quiet, --traceback, --version
 - `route:entrypoint:cmru/resolve`: Common controls: --color, --debug, --debug-raw, --help, --log-level, --no-color, --quiet, --traceback, --version
@@ -1325,7 +1338,9 @@ Module-adapter rows share the registered implementation named beside them.
 | cmru handler oci-image-release; python -m cmru.handlers oci-image-release | Required `--prefix`, `--image` and `--cwd` select the release namespace, the image repository (no tag or digest; `:<version>` comes from the protected `CMRU_RELEASE_TAG`) and the source tree holding the changelog. It publishes only the GitHub Release body (the exact versioned pull coordinate, then the tagged changelog section read from `CMRU_RELEASE_COMMIT`; S4.7, KI-78): it never builds or pushes the image and never touches an asset. Absent or malformed release identity, or a bad `--image`, refuses (exit 4) before any GitHub request; a remote tag at another commit or an existing release targeting another commit exits 1 before any mutation. `--dry-run` shows the accepted inputs and performs no publication (`cmru release --dry-run` previews the full body). | ACCEPTED; the project places it after its own image push, and it cannot share a push step with another body handler. |
 | cmru tester-gate | Required `--cwd DIR` selects the in-container checkout path and positional `command...` is the command after `--`. `--image` selects the pinned tester image; `--cgroup-parent` overrides the required gates slice; `--forward-background-slice` and `--forward-gates-slice` control nested slice fact forwarding (renamed from `--forward-cgroup-parent-var` / `--forward-cgroup-parent-gates-var`, redesign B11); EVERY environment fallback is resolved at run time as explicit option, then the variable named as "(default: $VAR)" in the option's help, and a missing required value exits 3 (CLI-17); `--memory`, `--memory-swap`, and `--cpus` set container resource bounds. CPU must be a finite decimal of at least `0.00001` that Docker can represent; CMRU uses `--cpus` without `--cpu-period` because Docker rejects NanoCPUs and CPU Period together; it refuses zero/smaller, non-finite, or unrepresentable values before host probes because those values can remove the per-container CPU limit. `--pids-limit` (required, `CMRU_TESTER_PIDS_LIMIT`, positive integer, no default) caps the workload's process count. `--cgroup-probe-image` and `--dind-image` select helper images that run privileged, so both MUST be digest-pinned (`<repo>@sha256:<64 hex>`) and are started with `--pull=never`; `--dind-memory`, `--dind-cpus` and `--dind-pids-limit` (required with `--enable-docker`, `CMRU_TESTER_DIND_*`) bound the sidecar; `--device-read-iops`, `--device-write-iops`, `--device-read-bps`, and `--device-write-bps` set device I/O limits; `--enable-docker` requests DinD and requires its image and limits. `--dry-run` prints the workload argv and, when enabled, the DinD startup argv; it starts no container and skips privileged host slice/IO probes. Every helper and workload container receives the required `--cgroup-parent`. The workload and the DinD sidecar run under `--init` (a reaper as PID 1; the gate command is one cmru does not control and git's detached auto-maintenance orphans one process per commit). Every container has an exact name (`cmru-tester-<uuid8>`, `cmru-probe-<uuid8>`, `cmru-tester-dind-<12 hex>`); SIGTERM/SIGHUP raise `SystemExit` and `finally` runs `docker stop` then `docker rm -f` by exact name for each; a timed-out probe is removed by name. After the gate command exits, a wrapper inside the container copies the container's own `pids.events` and `memory.events` into `.cmru/tester-gate-events-<uuid>.txt` on the mounted worktree; a missing, malformed or incomplete file, a non-zero `pids.events max`, or a non-zero `memory.events oom_kill` makes the run an infrastructure failure (exit 3, naming the counter) even when the command exited 0. Otherwise the command's own exit status is preserved. Image references are validated and one starting with `-` is refused. | ACCEPTED; the DinD sizing decision is DECIDED (2026-10-05): the sidecar has separate, explicit, required memory/CPU/pids inputs, so the nested envelope is never silently shared with or doubled on top of the workload's. Live Docker refused `--memory 1g --memory-swap 512m` with status 125 before workload creation. A live `docker create` plus inspect showed `--cpus 0` left `NanoCpus`, `CpuQuota`, and `CpuPeriod` all zero; live runs showed values below `0.00001` produce `cpu.max = max 100000`, whereas `0.00001` produces a bounded quota. CMRU rejects zero, smaller, non-finite, and unrepresentable limits before privileged probes. `--dry-run` still intentionally skips host slice/IO capability checks. |
 | cmru resolve | Optional target and `--config` select a project; `--format` is `json` by default or `env`/`url`. It reads the latest published artifact facts, including the selected digest, and performs no write; no `--dry-run` is offered. Config-free mode: `--repo OWNER/REPO --prefix PREFIX` resolves without reading any configuration (token from `$GITHUB_PUSH_PAT`/`$GITHUB_TOKEN`, optional for public repositories); it conflicts with `--config` and with a target (CLI-D2). | ACCEPTED; supported output formats are closed, and `--format` is an accepted exception to the library `--json` (shell consumers need `env` and `url`). The JSON shape follows the selector syntax (CLI-13): one explicit name, or the omitted current project, prints one object; `all` or a list prints a keyed map, even for one project. |
-| cmru get-py | Optional target and `--config` select installer templates; `--output` writes exactly one selected installer, `--output-dir` writes one per project, and those destination options are mutually exclusive. Omission of both prints ONE project's installer to stdout; several selected projects without `--output-dir` are refused with exit 2 (CLI-12). `--dry-run` renders/validates selected templates and destinations but writes no file, and requires `--output` or `--output-dir` (stdout mode writes nothing). Generated installers intentionally keep standalone `argparse`. | ACCEPTED; the installed-wheel fix for KI-26 is in scope, and the `get` alias was removed. |
+| cmru installer render | Optional target and `--config` select installer templates; `--output` writes exactly one selected installer, `--output-dir` writes one per project, and those destination options are mutually exclusive. Omission of both prints ONE project's installer to stdout; several selected projects without `--output-dir` are refused with exit 2 (CLI-12). `--dry-run` renders/validates selected templates and destinations but writes no file, and requires `--output` or `--output-dir` (stdout mode writes nothing). Generated installers intentionally keep standalone `argparse`. | ACCEPTED (CMRU-INST62): the primary verb; the behaviour of the former `get-py`. |
+| cmru installer check | Optional target (exactly one project) and `--config` select the installer; required `--installer FILE` is the committed file. The installer is rendered in memory and compared byte-for-byte: exit 0 when identical, otherwise exit 1 with one `[ERROR]` line naming the file and a unified-diff summary capped at 40 lines (the `[ERROR]` line says when it was truncated); an unreadable file is exit 1, a render error or several projects exit 2. Read-only. | ACCEPTED (CMRU-INST62): the drift guard consumers run instead of hand-rolled comparisons. |
+| cmru get-py | Optional target and `--config` select installer templates; `--output` writes exactly one selected installer, `--output-dir` writes one per project, and those destination options are mutually exclusive. Omission of both prints ONE project's installer to stdout; several selected projects without `--output-dir` are refused with exit 2 (CLI-12). `--dry-run` renders/validates selected templates and destinations but writes no file, and requires `--output` or `--output-dir` (stdout mode writes nothing). Generated installers intentionally keep standalone `argparse`. Deprecated alias of `cmru installer render` (CMRU-INST62): same behaviour, plus exactly one `[WARN] 'cmru get-py' is deprecated; use 'cmru installer render' (removal in cmru 7.0)` line on stderr. | DEPRECATED; removal in cmru 7.0. The installed-wheel fix for KI-26 is in scope, and the `get` alias was removed. |
 | cmru standards | Optional target and `--config` choose projects; default mode checks conformance. `--update` writes only CMRU-owned template revision markers; `--dry-run` requires `--update` and prints diffs without writing. `--json` prints one document `{schema_version, conforms, projects[{name, conforms, messages, problems}]}` on stdout (human lines move to stderr). Exit 4 means issues were found (refused by policy, nothing changed). | ACCEPTED; mixed read/write verb is `mutating` with the library `--dry-run` (D4) and a declared `Requires` of `--update`. |
 | cmru tool-deps | Optional target and `--config` select declarations; `--timeout SECONDS` defaults to 10 for each network request; `--json` renders verification results; `--allow-stale-tool-deps` relaxes freshness only during verification. `--refresh PROJECT` replaces selected pins and hashes; it refuses `--json` and `--allow-stale-tool-deps` because those have no refresh meaning. `--dry-run` requires `--refresh`, fetches/verifies the proposed artifact, and prints planned file/config changes without writing. A blocking (stale or mismatched) dependency exits 4 (refused by verification policy; redesign E). | ACCEPTED; invalid combinations are declared constraints (`Requires`/`Conflicts`) that fail with status 2 rather than silently ignoring options. |
 <!-- cmru-cli-semantic-audit:end -->
@@ -1650,6 +1665,14 @@ signature_name     = "manifest.json.minisig"  # minisign signature for manifest
 #                                           # set => signed releases are REQUIRED (S6.15). Absent => unsigned.
 # launchers        = ["ciu", "cmru"]      # optional: <root>/bin/<cmd> -> ../current/venv/bin/<cmd> (S6.17)
 # extensions       = ["installer/extra.py"]   # project-owned get.py command fragments (S6.14)
+# stable_dir       = "stack"              # optional: <root>/stack/ mirrors the ACTIVE release's files (S6.18)
+# stub_launchers   = ["ciu"]              # optional, needs stable_dir: <root>/stack/ciu shell stubs (S6.19)
+# [[project.installer.questions]]        # optional install/update wizard (S6.21)
+# id = "public_host"                     # [a-z][a-z0-9_]*, unique
+# prompt = "Public host name"
+# type = "string"                        # string | bool | choice | int
+# default = "localhost"                  # optional; choices = [...] required for type "choice"
+# required = true                        # default true
 
 [[project.installer.wheels]]         # bundled wheels to install into private venv
 path         = "vendor/cmru-*.whl"  # glob inside the release bundle
@@ -2349,14 +2372,16 @@ update, rollback, and status. Unlike a curl-only bootstrap, `get.py` ships **ins
 release artifact, so `<project> update` works out of the box. Configuration lives in
 `[project.installer]` (see S2).
 
-**S6.1** `cmru get-py <name> --config cmru.toml` emits a standalone Python 3
-installer to stdout. The output is a rendering of the packaged
+**S6.1** `cmru installer render <name> --config cmru.toml` (formerly `cmru get-py`, kept as a
+deprecated alias until cmru 7.0) emits a standalone Python 3 installer to stdout;
+`cmru installer check <name> --installer FILE` renders it in memory and compares it
+byte-for-byte with the committed `FILE` (exit 0 identical, 1 otherwise). The output is a rendering of the packaged
 `cmru/templates/get.py.tmpl` resource (resolved with `importlib.resources`) with
 `[[VARNAME]]` placeholders replaced from the `[installer]` config. The rendering is
 deterministic (byte-identical for identical config) from both a source checkout and an
 installed wheel. The CMRU wheel MUST include the template resource and `cli-extended` runtime
 package. The gate MUST build/install that wheel into an isolated environment, invoke its
-`cmru get-py` console script from outside the source checkout, and compile the emitted
+`cmru installer render` console script from outside the source checkout, and compile the emitted
 installer. Any unreplaced `[[...]]` placeholder is a render error (exit 2), never a warning.
 Rendering is a single `[[NAME]]` pass; every value that lands in code goes through
 `json.dumps` (a bad value, such as a `"` in the GitHub owner, is refused with exit 2), values
@@ -2370,10 +2395,15 @@ plain command names for `required_commands`/`launchers`, and a 56-character base
 
 ```
 get.py install  [--config HOST.toml] [--version TAG] [--scope system|user] [--variant NAME]
+                [--unattended [--answers FILE]] [--overwrite-local]
 get.py update   [--version TAG] [--scope system|user] [--variant NAME]
+                [--unattended [--answers FILE]] [--overwrite-local]
 get.py status   [--scope system|user]
-get.py rollback [--version TAG] [--scope system|user]
+get.py rollback [--version TAG] [--scope system|user] [--overwrite-local]
 ```
+
+`--unattended`, `--answers` and `--overwrite-local` belong to the wizard questions (S6.21) and
+the stable stack folder (S6.18); they are inert for a project that configures neither.
 
 `--config FILE` is installed as `<root>/shared/host.toml` (mode 0600, written atomically) once
 the release is live, and is handed to the adapter as `--config` during the transaction;
@@ -2634,6 +2664,72 @@ the install. The wheel version that goes into the lock must be a plain version s
 **S6.17** Launchers. `launchers = ["a", "b"]` (plain command names) makes the installer create
 `<root>/bin/<cmd>` symlinks to `../current/venv/bin/<cmd>`, rewritten atomically after every
 install, update and rollback so they follow `current`. Add `<root>/bin` to `PATH`.
+
+**S6.18** Stable stack folder (CMRU-INST62). A tool that derives its identity from its PHYSICAL
+path (ciu hashes the stack's path into its INSTANCE_ID) must not run from
+`releases/<ver>/`: every update would be a new instance. `stable_dir = "<name>"` (one relative
+path component, not `releases`, `shared`, `bin`, `current`, `venv` or `state.json`) makes the
+installer sync the ACTIVE release's file set into `<root>/<name>/` after every install, update
+and rollback (and when an update finds `current` already at the tag but the record missing, at
+another tag, or the stub set changed).
+- File set: the bundle manifest's `files` map, minus wheels and minus `preserve` paths (the
+  operator's), plus the stubs (S6.19). Files are written atomically (temp + `os.replace`) with
+  the manifest `mode` masked to `0755`, verified against the manifest sha256 while copied.
+- Bookkeeping: `<root>/<name>/.cmru-installer-sync.json` =
+  `{"schema_version":1,"tag":...,"files":{relpath:{"sha256":...,"mode":...[,"stub":true]}}}`,
+  written atomically. Files in the previous record but not the new set are deleted and
+  directories that deletion leaves empty are removed. NO other path is ever written or deleted:
+  `.ciu/`, `vol-*`, rendered `ciu.*` files and `ciu.env` survive. A target that is a symlink,
+  a directory, or reached through a symlinked parent is refused (exit 2).
+- Local-modification guard: a file whose sha256 differs from the recorded one (or, on a first
+  sync with no record, from the new content) is "modified". Unless `--overwrite-local` is
+  given, the run is refused with exit 2 listing up to 20 paths, BEFORE the adapter runs and
+  before `current` moves (nothing changed). With `--overwrite-local`, each modified file is
+  first copied to `<root>/shared/overwritten/<UTC yyyymmddThhmmssZ>/<relpath>`, then replaced.
+- Transaction: the sync runs inside the exclusive lock after the `current` swap and before
+  state/success. Every new file is first staged as a hidden temp file, then swapped in with
+  a hard-linked backup; any failure undoes every step, restores the previous `current` (a fresh
+  install removes it and the new release), and exits non-zero with the original error. `rollback`
+  syncs the target release the same way.
+- `status` prints the stable dir path, the synced tag and the number of locally modified files
+  (changed or missing since the sync).
+
+**S6.19** Stub launchers. `stub_launchers = ["ciu"]` (needs `stable_dir`; each entry must be in
+`launchers`, or a console script of a configured wheel, which is checked at install time
+against the release venv, exit 1) writes `<root>/<stable_dir>/<name>`, mode 0755, atomically:
+
+```
+#!/bin/sh
+# cmru installer stub: runs the <name> pinned by this installation (<root>/current); do not edit
+exec "<ABS root>/current/venv/bin/<name>" "$@"
+```
+
+Stubs are part of the synced set with `"stub": true` in the record, so the local-modification
+guard covers them and removing a stub from the config deletes it on the next sync. A stub name
+that collides with a bundle file is refused (exit 1).
+
+**S6.20** Installer self-copy. After a successful install or update the installer copies its own
+source (`__file__`; it must compile and carry this project's `PROJECT_NAME`) to
+`<root>/bin/<project>-installer` (0755, atomic), so `<root>/bin/<project>-installer
+update|status|rollback` is the in-place maintenance path. Without a `__file__` (piped into
+`python3 -`) the copy is skipped with a warning that names the reason and how to get the
+installer; any other failure is a warning too, never a failed install.
+
+**S6.21** Wizard questions. Each `[[project.installer.questions]]` has `id`
+(`[a-z][a-z0-9_]*`, unique), `prompt`, `type` (`string|bool|choice|int`), optional `default`
+(of the type), `choices` (required for and only valid with `choice`) and `required` (default
+true). Answers are collected on `install` and `update` (update asks only questions without a
+stored answer; an optional question the operator skipped is remembered in a `# skipped:`
+comment and not asked again) and stored in `<root>/shared/answers.toml` (0600, atomic; flat
+`key = value` TOML of strings, booleans and integers written by a stdlib-only minimal writer).
+The path is exported as the environment variable `CMRU_INSTALLER_ANSWERS` to the adapter and to
+extensions; it is not an `EXTENSION_API` name. Modes:
+- terminal without `--unattended`: prompt (default shown; empty takes it), validate, re-prompt;
+- `--unattended [--answers FILE]`: values from FILE, then stored answers, then defaults. A
+  required question with none of them exits 2 listing every missing id; unknown or ill-typed
+  ids in FILE exit 2; `--answers` without `--unattended` exits 2;
+- no terminal and no `--unattended`: exit 2 naming `--unattended`, before any change. There
+  are no silent defaults.
 
 ---
 
