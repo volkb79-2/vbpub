@@ -100,8 +100,9 @@ SPEC §9.
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49; operability rev 51): ticket/publish and owner/reaping packages; read-only status view and enabled-policy doctor checks |
 | RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending) |
 | RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
-| RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | OPEN (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36, not deleted) |
+| RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | FIXED by RG-87 (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36; recurred 2026-10-06 22:51) |
 | RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
+| RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5740,7 +5741,7 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-83 — `install_fake_assay` writes its fake `assay` and `assay.real` into the first entry of the real `$PATH` (the operator's `~/.local/bin`) in tests that have not isolated PATH
 
-**Status: OPEN (filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host).**
+**Status: FIXED by RG-87 (2026-10-07): the leak mechanism (shims written into the real `PATH[0]`) recurred on 2026-10-06 and is closed there, with a session guard; see the RG-87 section below. The other asks here (repoint HOME/XDG at tmp, the `invoke_script(home=...)` route) are NOT done and stay tracked under RG-82 AC-23. Originally filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host.**
 
 **Observed (source and filesystem; line numbers at filing time).**
 
@@ -5782,3 +5783,16 @@ return a closed recovery refusal before inventory or admission.
 **Fix direction.** Either give the assay lanes the same `mkdir -p .run-gate` prelude that the selftest lane got in 23.10.0 (`623332171`), or have run-gate create the lane scratch root before it launches any lane.
 
 **Oracles.** From a fresh `git worktree add` of main, with no `.run-gate/` present, `assay-r1 --base main` reaches PASS with no manual setup. A plant that drops the prelude, or the pre-launch creation, fails a test.
+
+## RG-87 — `shim_dir_of` wrote test shims into the first writable real `$PATH` directory and replaced the operator's real `assay` with a fabricating fake
+
+**Status:** FIXED by package `run-gate-shimleak` (2026-10-07), shipped in the same untagged 23.10.0 release; `__revision__` unchanged because only tests changed. Severity Major (damaged the developer host). Recurrence of RG-83, which is closed by the same fix.
+
+**Incident (2026-10-06 22:51).** `tests/test_run_gate.py` `shim_dir_of(monkeypatch)` returned the FIRST entry of `$PATH` whenever that directory was writable. `install_fake_assay` then wrote `<dir>/assay` (a wrapper that fabricates PASS verdict JSON with a fake digest) and `<dir>/assay.real` there. On the devcontainer `PATH[0]` is `/home/vscode/.local/bin`, so a test run outside tester-unified replaced the user's real `assay`. Every later `assay` call on the host ran the fake, and `assay run --verdict-json` wrote fabricated verdicts. The controller removed the files and kept copies in its scratchpad.
+
+**Root cause.** The helper's writability probe was meant only to detect tester-unified's read-only venv bin and fall back to a private dir. It treated "writable" as "safe", so any writable pre-existing `PATH` directory (the common case outside tester-unified) was written into. Shims were only isolated by accident, when `fake_docker` had already prepended its own `tmp_path/shim`.
+
+**Fix.**
+- `shim_dir_of` returns `PATH[0]` only when that directory is one this suite created (`fake_docker` registers its `tmp_path/shim`). Otherwise it makes a private `run-gate-test-bin-*` dir and PREPENDS it via `monkeypatch.setenv`. No pre-existing `PATH` directory is ever written to.
+- `tests/conftest.py` gains a session guard (`pytest_sessionstart`/`pytest_sessionfinish`): it snapshots every `PATH` directory plus `$HOME/.local/bin` and `$HOME/.venv/bin` (entry name, mode, size, mtime_ns) and fails the session with exit code 1 if anything was created, modified or removed there.
+- Oracles: `test_rg87_shims_never_land_in_a_preexisting_path_dir` and `test_rg87_fake_docker_dir_is_reused_for_later_shims` in `tests/test_run_gate.py`; `tests/test_path_write_guard.py` plants a write into a PATH dir and into `$HOME/.local/bin` in a real inner pytest session and requires the session to fail. Plants: restoring the `PATH[0]` behaviour fails the first oracle; disabling the guard hook fails the two planted-write tests.
