@@ -433,8 +433,11 @@ def test_receipt_capture_closes_pipe_if_reader_descriptor_dup_fails(monkeypatch)
 
     monkeypatch.setattr(os, "dup", fail_dup)
     try:
-        with pytest.raises(OSError, match="injected descriptor exhaustion"):
+        with pytest.raises(AssayError, match="receipt reader") as raised:
             ReceiptCapture()
+        assert raised.value.outcome is Outcome.ERROR
+        assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+        assert isinstance(raised.value.__cause__, OSError)
         for descriptor in (read_fd, write_fd):
             with pytest.raises(OSError):
                 os.fstat(descriptor)
@@ -444,6 +447,51 @@ def test_receipt_capture_closes_pipe_if_reader_descriptor_dup_fails(monkeypatch)
                 os.close(descriptor)
             except OSError:
                 pass
+
+
+def test_receipt_capture_raises_typed_error_if_pipe_creation_fails(monkeypatch):
+    def fail_pipe():
+        raise OSError("injected pipe descriptor exhaustion")
+
+    monkeypatch.setattr(os, "pipe", fail_pipe)
+    with pytest.raises(AssayError, match="receipt reader") as raised:
+        ReceiptCapture()
+    assert raised.value.outcome is Outcome.ERROR
+    assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_receipt_capture_closes_pipe_if_nonblocking_setup_fails(monkeypatch):
+    original_pipe = os.pipe
+    original_dup = os.dup
+    descriptors: list[int] = []
+
+    def record_pipe() -> tuple[int, int]:
+        pair = original_pipe()
+        descriptors.extend(pair)
+        return pair
+
+    def record_dup(fd: int) -> int:
+        duplicate = original_dup(fd)
+        descriptors.append(duplicate)
+        return duplicate
+
+    def fail_set_blocking(_fd: int, _blocking: bool) -> None:
+        raise OSError("injected nonblocking descriptor setup failure")
+
+    monkeypatch.setattr(os, "pipe", record_pipe)
+    monkeypatch.setattr(os, "dup", record_dup)
+    monkeypatch.setattr(os, "set_blocking", fail_set_blocking)
+
+    with pytest.raises(AssayError, match="receipt reader") as raised:
+        ReceiptCapture()
+
+    assert raised.value.outcome is Outcome.ERROR
+    assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+    assert isinstance(raised.value.__cause__, OSError)
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
 
 
 def test_receipt_capture_closes_descriptors_and_raises_typed_error_if_reader_thread_cannot_start(
@@ -479,6 +527,44 @@ def test_receipt_capture_closes_descriptors_and_raises_typed_error_if_reader_thr
     for descriptor in descriptors:
         with pytest.raises(OSError):
             os.fstat(descriptor)
+
+
+def test_started_receipt_reader_retains_drain_descriptor_ownership_on_start_error(
+    monkeypatch,
+):
+    original_dup = os.dup
+    original_start = threading.Thread.start
+    original_close = os.close
+    drain_descriptors: list[int] = []
+    drain_close_calls: list[int] = []
+
+    def record_dup(fd: int) -> int:
+        duplicate = original_dup(fd)
+        drain_descriptors.append(duplicate)
+        return duplicate
+
+    def start_then_fail(thread: threading.Thread) -> None:
+        original_start(thread)
+        if thread.name == "assay-witness-receipt":
+            raise RuntimeError("injected post-start failure")
+
+    def record_close(fd: int) -> None:
+        if fd in drain_descriptors:
+            drain_close_calls.append(fd)
+        original_close(fd)
+
+    monkeypatch.setattr(os, "dup", record_dup)
+    monkeypatch.setattr(os, "close", record_close)
+    monkeypatch.setattr(threading.Thread, "start", start_then_fail)
+
+    with pytest.raises(AssayError, match="receipt reader") as raised:
+        ReceiptCapture()
+
+    assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+    assert len(drain_descriptors) == 1
+    assert drain_close_calls == drain_descriptors
+    with pytest.raises(OSError):
+        os.fstat(drain_descriptors[0])
 
 
 def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):

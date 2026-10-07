@@ -87,67 +87,68 @@ class ReceiptCapture:
     _JOIN_TIMEOUT_SECONDS = 2.0
 
     def __init__(self) -> None:
-        read_fd, write_fd = os.pipe()
+        try:
+            read_fd, write_fd = os.pipe()
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                raise self._startup_error(exc) from exc
+            raise
         drain_fd: int | None = None
         try:
             drain_fd = os.dup(read_fd)
             os.set_blocking(read_fd, False)
             os.set_blocking(drain_fd, False)
-        except BaseException:
-            for descriptor in (drain_fd, read_fd, write_fd):
-                if descriptor is not None:
-                    try:
-                        os.close(descriptor)
-                    except OSError:
-                        pass
-            raise
-        self._read_fd = read_fd
-        self.write_fd = write_fd
-        # The reader thread owns a distinct descriptor. If it does not stop
-        # before finish()'s join timeout, the parent may close and reuse its
-        # descriptor without letting that stale thread read another capture.
-        self._drain_fd = drain_fd
-        self._stop = threading.Event()
-        self._data = bytearray()
-        self._overflow = False
-        self._read_failed = False
-        self._finished = False
-        self._thread = threading.Thread(
-            target=self._drain,
-            name="assay-witness-receipt",
-            daemon=True,
-        )
-        try:
+            self._read_fd = read_fd
+            self.write_fd = write_fd
+            # The reader thread owns a distinct descriptor. If it does not
+            # stop before finish()'s join timeout, the parent may close and
+            # reuse its descriptor without letting that stale thread read
+            # another capture.
+            self._drain_fd = drain_fd
+            self._stop = threading.Event()
+            self._data = bytearray()
+            self._overflow = False
+            self._read_failed = False
+            self._finished = False
+            self._thread = threading.Thread(
+                target=self._drain,
+                name="assay-witness-receipt",
+                daemon=True,
+            )
             self._thread.start()
         except BaseException as exc:
-            # Thread creation can fail at the host's process limit. The
-            # constructor has not returned a capture for its caller to finish,
-            # so close every descriptor here and surface the failure through
-            # Assay's typed execution-error path. A raw RuntimeError would
-            # escape candidate accounting and could leave a mutation campaign
-            # without its infrastructure verdict.
-            self._stop.set()
-            if self._thread.ident is not None:
+            thread = getattr(self, "_thread", None)
+            thread_started = thread is not None and thread.ident is not None
+            if thread_started:
+                self._stop.set()
                 try:
-                    self._thread.join(self._JOIN_TIMEOUT_SECONDS)
-                except RuntimeError:
+                    thread.join(self._JOIN_TIMEOUT_SECONDS)
+                except BaseException:
                     pass
-            descriptors = [self.write_fd, self._read_fd]
-            if not self._thread.is_alive():
-                descriptors.append(self._drain_fd)
+            descriptors = [write_fd, read_fd]
+            # Once started, the reader owns and closes drain_fd in _drain's
+            # finally block. Closing it again here could close a descriptor
+            # another worker opened after the reader exited.
+            if drain_fd is not None and not thread_started:
+                descriptors.append(drain_fd)
             for descriptor in descriptors:
                 try:
                     os.close(descriptor)
                 except OSError:
                     pass
             if isinstance(exc, Exception):
-                raise AssayError(
-                    "could not start the mutation-witness receipt reader; "
-                    "refusing to classify the candidate",
-                    outcome=Outcome.ERROR,
-                    reason_code=ReasonCode.EXEC_FAILED,
-                ) from exc
+                raise self._startup_error(exc) from exc
             raise
+
+    @staticmethod
+    def _startup_error(cause: Exception) -> AssayError:
+        """Turn any receipt-capture setup failure into a typed lane error."""
+        return AssayError(
+            "could not initialize the mutation-witness receipt reader; "
+            f"refusing to classify this attempt ({cause})",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        )
 
     def _drain(self) -> None:
         try:

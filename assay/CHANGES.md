@@ -33,9 +33,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   and a verified failed-call witness. Accept a declared retry's witness anywhere
   in its verified started prefix, and bind B105 full-kill witnesses to the R2
   manifest.
-- Close receipt pipe descriptors and return a typed execution refusal if the
-  mutation-witness reader thread cannot start; a process-limit failure cannot
-  escape candidate accounting as an unhandled exception (B114).
+- Close caller-owned receipt descriptors and return `ERROR/EXEC_FAILED` when
+  receipt-pipe or reader initialization fails; the candidate stays unclassified
+  and cannot escape accounting as an unhandled exception (B114).
 - Pin pytest built-in hook callable identities before candidate conftests load;
   a same-module/path substitution can no longer certify a cold kill or survivor
   with an unchanged hook fingerprint. Pin Assay's generated receipt hooks and
