@@ -540,6 +540,7 @@ def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch)
     original_poll = mutation_witness.select.poll
     reader_waiting = threading.Event()
     release_reader = threading.Event()
+    abort_reader = threading.Event()
     descriptor_reused = threading.Event()
     drain_descriptors: list[int] = []
     drain_close_calls: list[int] = []
@@ -555,6 +556,8 @@ def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch)
     def wait_before_drain(capture: ReceiptCapture) -> None:
         reader_waiting.set()
         assert release_reader.wait(10.0)
+        if abort_reader.is_set():
+            return
         original_drain(capture)
 
     def start_then_fail(thread: threading.Thread) -> None:
@@ -638,18 +641,31 @@ def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch)
         assert raised.value.reason_code is ReasonCode.EXEC_FAILED
         assert len(started_threads) == 1
         assert len(drain_descriptors) == 1
+        monkeypatch.setattr(threading.Thread, "ident", original_ident)
+        for thread in started_threads:
+            thread.join(10.0)
+        assert all(not thread.is_alive() for thread in started_threads)
         assert reused_descriptor == drain_descriptors[0]
         assert drain_close_calls == drain_descriptors
         assert descriptor_accesses == []
         os.fstat(drain_descriptors[0])
     finally:
+        abort_reader.set()
         release_reader.set()
         monkeypatch.setattr(threading.Thread, "ident", original_ident)
         for thread in started_threads:
-            thread.join(1.0)
-            assert not thread.is_alive()
-        if reused_descriptor is not None:
-            original_close(reused_descriptor)
+            try:
+                thread.join(10.0)
+            except BaseException:
+                pass
+        descriptor_to_close = reused_descriptor
+        if descriptor_to_close is None and drain_descriptors:
+            descriptor_to_close = drain_descriptors[0]
+        if descriptor_to_close is not None:
+            try:
+                original_close(descriptor_to_close)
+            except OSError:
+                pass
 
 
 def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):

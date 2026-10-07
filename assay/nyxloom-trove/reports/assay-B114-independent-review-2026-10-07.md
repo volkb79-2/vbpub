@@ -77,3 +77,21 @@ After the barrier oracle was added, the full unit module passed again
 (**98 passed in 12.74s**), Ruff `E4,E7,E9,F` and `git diff --check` passed.
 The exact-tip review of the strengthened oracle and registered gates remain
 pending.
+
+## Follow-up review of `9ffec7644`
+
+The independent review found two **P3** cleanup gaps in the barrier oracle:
+
+- It checked for late descriptor access before a final reader join, so an
+  unusually late reader might access the reused FD after the assertion.
+- A failed thread-exit assertion occurred before the reused FD was closed,
+  which could leave both a daemon reader and descriptor behind as monkeypatches
+  were restored.
+
+The correction joins and confirms reader exit before inspecting access records.
+Its `finally` always releases the barrier, joins the reader again, and closes
+the reused descriptor even when an assertion fails. The targeted late-reader
+case passed. A follow-up abort signal prevents a delayed reader from entering
+the drain path during failure cleanup. The full unit module passed (**98
+passed in 12.89s**), Ruff `E4,E7,E9,F` and `git diff --check` passed. The
+corrected exact-tip review and registered gates remain pending.
