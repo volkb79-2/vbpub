@@ -7466,6 +7466,16 @@ refusal, and the R1/R2 passthrough contract. `assay-r1` must be rerun on the
 committed candidate; RG-85 is not treated as accepted until that live lane
 passes.
 
+### RW-479 — 2026-10-07 11:07:29 UTC — cover the configured-state-root branch
+
+The second selftest on `812a588f933e7342b7410025bb7b3e63b245089d` passed all
+1,705 tests (2 skipped), but the release diff judge found 17/18 changed
+executable lines and 7/8 branches: the preservation branch for an explicitly
+configured host `state_root` had no oracle. Added a regression test proving
+that this configured path is neither replaced with `<repo>/.run-gate` nor
+created by the default-root helper. This is test-only. The selftest remains
+unaccepted until its exact-tree diff judge passes; no R1/R3 run is claimed.
+
 ### RW-478 — 2026-10-07 11:03:47 UTC — correct invalid state-root preflight fixtures
 
 The first post-RG-85 selftest on `9fa81a04c17c408a43caf20cbf826674648aa740`

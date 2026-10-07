@@ -3273,6 +3273,21 @@ def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(tmp_path)
     assert state_root.is_dir()
 
 
+def test_configured_host_state_root_is_not_replaced_or_created(
+        tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, SIMPLE_LANE)
+    configured_root = tmp_path / "operator-state"
+    monkeypatch.setattr(run_gate, "probe_assay_state_root",
+                        lambda *_args, **_kwargs: (True, None))
+    run_gate.assure_assay_state_root(
+        None, {"kind": "assay", "assay_lane": "r1"},
+        {"mode": "host", "state_root": str(configured_root)},
+        "host", "configured host", repo, project, repo, "")
+    assert not (repo / ".run-gate").exists()
+    assert not configured_root.exists()
+
+
 def test_default_assay_state_root_refuses_symlink(tmp_path):
     repo = make_repo(tmp_path)
     project = make_project(repo, SIMPLE_LANE)
