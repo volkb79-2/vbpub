@@ -7323,3 +7323,13 @@ fixed in the same worktree with a null-safe formatter and regression test;
 Run-Gate revision 56 and package gates are pending. The failed first result
 is retained, not overwritten. The daemon-only host-PID change still requires
 an actual deployed DAMON start/stop probe before acceptance.
+
+### RW-470 — 2026-10-07 08:18:49 UTC — correct the placement-doc assertion
+
+The second cgprofile `r0-r1` run on `3c77a931` passed 2,380 tests and failed
+only the updated helper-read-only assertion: it expected a paraphrase rather
+than the current design guide's exact contract wording. The gate completed
+with Run-Gate `profile_error: null` and preserved the valid footprint record
+(`damon.status=unavailable`, `hot_bytes=null`), confirming the RG-88 formatter
+fix. Correct the test oracle to the exact documented wording, then rerun the
+registered gate; no product-code failure was indicated by this assertion.

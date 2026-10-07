@@ -55,7 +55,10 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "host PID namespace" in design
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
-    assert "helper keeps its host cgroup bind read-only" in design
+    assert (
+        "host cgroup bind is read-only because it does not perform daemon placement"
+        in " ".join(design.split())
+    )
     assert (
         "daemon's host cgroup-v2 bind is therefore writable"
         in " ".join(design.split())
