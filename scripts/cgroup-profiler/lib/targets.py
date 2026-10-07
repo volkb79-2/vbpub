@@ -203,11 +203,11 @@ def pids_in_cgroup(
 ) -> List[int]:
     """List process IDs in one cgroup, preserving the selected PID view.
 
-    In a private PID namespace, host tasks are rendered as PID 0 in
-    ``cgroup.procs``. When an explicit broader proc view is available, resolve
-    each host PID's namespace-relative ``/proc/<pid>/cgroup`` path against the
-    local PID's cgroup-derived namespace root instead. Otherwise use the
-    cgroup's visible ``cgroup.procs`` entries, discarding zero placeholders.
+    When the current PID namespace cannot represent host tasks, they may be
+    rendered as PID 0 in ``cgroup.procs``. With an explicit host-proc view,
+    resolve process membership through ``/proc/<pid>/cgroup`` against the
+    reader's cgroup-derived namespace root instead. Otherwise use visible
+    ``cgroup.procs`` entries, discarding zero placeholders.
     """
     if not cgroup.startswith("/"):
         return []

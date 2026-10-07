@@ -4636,8 +4636,8 @@ class TestPlacedKill:
     def test_an_unplaced_session_is_reported_without_signalling_a_pid(
         self, tmp_path, monkeypatch,
     ):
-        """A private PID namespace makes a numeric host PID an unsafe
-        enforcement target; an unplaced shared lane must remain reported."""
+        """The host PID namespace does not make numeric PID signalling an
+        enforcement boundary; an unplaced shared lane must remain reported."""
         root = _fake_cgroup_root(tmp_path, procs="101\n")
         server = _server(tmp_path, root)
         started = server._dispatch({

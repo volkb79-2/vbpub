@@ -7277,3 +7277,33 @@ policy needs all participating Run-Gate projects/launchers to join one
 Docker-daemon ticket cap of two, plus a read of current slice capacity and
 timeout/liveness behavior under that cap; no host or admission setting was
 changed here.
+
+### RW-467 — 2026-10-07 07:55:45 UTC — authorize host PID namespace for cgprofile daemon
+
+The operator authorizes `cgprofile-host-daemon` alone to use the host PID
+namespace so DAMON sysfs `pid_target` values resolve in the writer's active
+PID namespace. This is a deployment change, not permission for workload,
+helper, gate, or test containers to join the host PID namespace. Keep the
+daemon's cgroup namespace private, network disabled, and Docker socket absent;
+retain the identity-checked systemd placement/lifecycle bridge and the
+invariant that no stall path signals a numeric PID. Update both RG-55 contract
+mirrors and the daemon's README, design, and consumer guidance with the
+security tradeoff: host PID visibility increases the daemon's process-table
+and PID-operation authority, and application checks are not containment
+against daemon compromise. The change is accepted only after the deployed
+daemon proves live DAMON start/stop against a real host PID plus existing
+socket and placement flows; do not claim those probes passed before evidence
+exists.
+
+### RW-468 — 2026-10-07 08:01:17 UTC — retain the DAMON EINVAL caveat
+
+The existing P1 live-acceptance report records `pid: "host"` together with
+`cgroup: "host"`, but DAMON `kdamond_commit` still returned `EINVAL`
+(`scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-REPORT.md`,
+§ Live acceptance and § DAMON availability). Therefore host PID visibility is
+the namespace needed to make host `pid_target` IDs addressable, but is not
+evidence that the kernel will accept the full DAMON context. RW-467 remains
+approved; this work must test the narrower host-PID/private-cgroup deployment
+and must not claim success unless a real DAMON context starts and stops. If it
+still returns `EINVAL`, report the exact result as a separate kernel/config
+acceptance gap and preserve profiling's verdict-neutral fallback.

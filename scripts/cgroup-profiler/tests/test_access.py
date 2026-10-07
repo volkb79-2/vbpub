@@ -264,6 +264,9 @@ class TestConfiguredProcRoot:
 
 class TestHaveHostProcView:
     def _stat_pair(self, monkeypatch, proc_root: Path, selected: int, local: int):
+        # Keep the legacy/private mode explicit unless a case opts into the
+        # daemon-only host-PID deployment mode.
+        monkeypatch.delenv(access.PID_NAMESPACE_MODE_ENV, raising=False)
         inodes = {
             str(proc_root / "1" / "ns" / "pid"): selected,
             "/proc/1/ns/pid": local,
@@ -302,6 +305,24 @@ class TestHaveHostProcView:
         proc = tmp_path / "other-proc"
         self._stat_pair(monkeypatch, proc, selected=202, local=101)
         monkeypatch.setattr(access, "in_container", lambda: False)
+        assert access.have_host_proc_view(str(proc)) is False
+
+    @pytest.mark.parametrize(("selected", "local", "expected"), [
+        (101, 101, True),
+        (202, 101, False),
+    ])
+    def test_host_pid_mode_requires_same_namespace_as_selected_proc_view(
+        self, monkeypatch, tmp_path: Path, selected: int, local: int, expected: bool,
+    ):
+        proc = tmp_path / "hostproc"
+        self._stat_pair(monkeypatch, proc, selected=selected, local=local)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
+        assert access.have_host_proc_view(str(proc)) is expected
+
+    def test_unknown_pid_namespace_mode_fails_closed(self, monkeypatch, tmp_path: Path):
+        proc = tmp_path / "hostproc"
+        self._stat_pair(monkeypatch, proc, selected=101, local=101)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "surprise")
         assert access.have_host_proc_view(str(proc)) is False
 
     def test_missing_namespace_metadata_is_false(self, monkeypatch, tmp_path: Path):

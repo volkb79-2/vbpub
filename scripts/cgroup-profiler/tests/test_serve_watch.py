@@ -285,8 +285,8 @@ class TestRealSubtreeEnforcement:
     def test_unreachable_pid_is_reported_and_the_lane_remains_live(
         self, tmp_path, monkeypatch
     ):
-        """Host PIDs are observation-only in the private PID namespace;
-        without placement the daemon must report, never signal."""
+        """The daemon's host PID namespace does not authorize PID signals;
+        without placement it must report, never signal."""
         ready_read, ready_write = os.pipe()
         try:
             release_read, release_write = os.pipe()
@@ -374,7 +374,7 @@ class TestRealSubtreeEnforcement:
         # The lane's stream path is read as `/proc/<pid>/root/<path>`; in
         # this test the lane shares the daemon's mount namespace, so that
         # resolves back to the real file. Production uses the same explicit
-        # process-root view while keeping the daemon's PID namespace private.
+        # process-root view while the daemon uses its configured PID mode.
         stream = tmp_path / "progress.ndjson"
         stream.write_text(
             json.dumps({"event": "plan", "expect_next_event_within_s": 45}) + "\n"

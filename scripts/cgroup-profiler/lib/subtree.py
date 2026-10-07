@@ -221,9 +221,9 @@ class SubtreeResolver:
 
     def _token_owners(self) -> Set[int]:
         needle = f"RUN_GATE_PROFILE_SESSION={self.token}"
-        # In a private PID namespace, host PIDs in cgroup.procs appear as 0.
-        # Resolve the selected cgroup's real PIDs through host proc first;
-        # token identity is scoped to that target, not the whole host.
+        # If this process's PID namespace cannot represent host PIDs, they
+        # appear as zero in cgroup.procs. Resolve the selected cgroup's real
+        # PIDs through host proc; token identity stays scoped to that target.
         pids = targets_mod.pids_in_cgroup(
             self.cgroup, self.cgroup_root, self.proc_root,
         )

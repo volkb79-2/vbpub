@@ -6,8 +6,32 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 
 ## Daemon safety and placement
 
-The daemon never joins host PID, cgroup, or network namespaces and has no
-Docker socket. D-15's no-hidden-mutation boundary remains: cap and migration
+The managed `cgprofile-host-daemon` is the one deliberate host-PID-namespace
+exception: DAMON sysfs resolves `pid_target` in the writer's active PID
+namespace, and a read-only `/hostproc` bind alone does not change that
+namespace. The daemon still keeps a private cgroup namespace, has no network,
+and receives no Docker socket. Workload, helper, gate, and test containers
+remain private in every namespace. `serve` requires the explicit
+`CGPROFILE_PID_NAMESPACE_MODE=host` setting and verifies that the selected
+host-proc PID namespace is the one it runs in; the helper's default remains
+`private`.
+
+Host PID mode makes host PID numbers addressable to DAMON sysfs; it is
+necessary for this `pid_target` path but not sufficient for a valid DAMON
+context. The prior P1 live probe on this host used both host PID and host
+cgroup namespaces and still received `EINVAL` at `kdamond_commit`; that did
+not isolate the current host-PID/private-cgroup configuration. The new live
+probe must demonstrate an actual context start/stop, or retain the exact
+kernel refusal as an unresolved availability gap. See the historical
+[`P1 acceptance report`](../nyxloom-trove/reports/cgprofile-P1-DAEMON-REPORT.md).
+
+This grants the daemon visibility of host PID identities and additional
+process-table/PID-operation authority. It is an incremental exposure, not a
+claim that the daemon was otherwise sandboxed: it is already privileged and
+has DAMON sysfs, host cgroup, and systemd-manager access. The D-25 write guard
+and request validation constrain ordinary code paths, not arbitrary execution
+after daemon compromise. No enforcement path signals a numeric PID; stall
+enforcement acts only through a verified cgroup boundary. D-15's no-hidden-mutation boundary remains: cap and migration
 writes exist only through the explicit, opt-in D-20/D-25 placement request.
 Under D-31, that feature asks systemd to create a transient delegated scope
 under the verified gates slice, then creates a token-named `rg-*` leaf below
@@ -112,9 +136,8 @@ compromise point. The detailed no-broker decision and future broker tradeoffs
 are recorded in the
 [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
-Stall enforcement never signals a numeric PID: the daemon keeps a private PID
-namespace, so host PIDs from its read-only proc view are observations, not
-signal handles. For `scope=container`, enforcement also requires
+Stall enforcement never signals a numeric PID, despite the daemon's host PID
+namespace. For `scope=container`, enforcement also requires
 `cgroup.events` to report `populated 1` for the exact target container
 cgroup; missing, malformed, or empty state is a refusal, not a successful
 kill. A shared-scope kill requires the caller's explicit placement request
@@ -125,17 +148,15 @@ rather than claiming success. For consumers such as run-gate that do not
 already plan placement, the client requests `report` and its own watchdog
 remains the verdict authority (RW-379/RW-380).
 
-PID movement has one namespace-specific seam. A PID read from `/hostproc` is
-not necessarily addressable by a writer in the daemon's private PID namespace;
-the kernel returns `ESRCH` when that PID is written to `cgroup.procs`. The
-daemon uses the host systemd manager to create the delegated scope, place PIDs
-into its leaf, and restore survivors to each recorded original unit/subgroup.
-Both move directions require a verified host-proc view and post-move identity
-and cgroup membership. A successful systemd-mediated move is recorded as a
+PID movement continues through the host systemd manager. Host PID mode means
+the daemon can address those PIDs, but does not change ownership of the
+systemd-created delegated scope: systemd attaches each identity-checked PID
+to the verified unit/subgroup on placement and restoration. Both move
+directions require a verified host-proc view and post-move identity and
+cgroup membership. A successful systemd-mediated move is recorded as a
 `cgroup_write` event. If a survivor cannot be enumerated or restored, the
 daemon reports the precise scope path and retains the lane leaf rather than
-concealing a stranded task. This preserves private PID/cgroup/network
-namespaces while making placement and cleanup real.
+concealing a stranded task.
 
 The progress stream is a lane-controlled path reached through its process
 root. The watcher opens it nonblocking and reads only a regular file; a FIFO
@@ -153,16 +174,15 @@ monopolize every control verb or grow request memory without limit. After a
 `watch` request is accepted, its stream has no server-side timeout; silence
 between readings is normal.
 
-Host visibility does not require joining host namespaces. The daemon and
-one-shot helper keep private PID/cgroup namespaces; host `/proc` is explicitly
-bound read-only at `/hostproc` and selected through `CGPROFILE_PROC_ROOT`. The
-one-shot helper also keeps its host cgroup bind read-only because it does not
-perform daemon placement. The daemon checks that PID 1 in its host-proc view
-belongs to a PID namespace distinct from its own before serving. Host-visible
-PIDs from `/hostproc` are useful for reading process details, but they cannot
-be matched against `cgroup.procs` from the private PID namespace: the kernel
-translates host tasks to PID 0 there. Accordingly, container names, labels,
-and helper-mode `self` are resolved on the Docker-aware caller to full
+The daemon and one-shot helper use different PID modes. The daemon joins only
+the host PID namespace; its cgroup namespace stays private. The helper keeps
+private PID/cgroup namespaces and binds host `/proc` read-only at `/hostproc`,
+selected through `CGPROFILE_PROC_ROOT`; its host cgroup bind is read-only
+because it does not perform daemon placement. In daemon mode, the selected
+host-proc PID-namespace identity must equal the daemon's. In helper mode, the
+existing broader-proc-view check remains: PID 1 in the selected proc view
+must belong to a namespace distinct from the helper's. Container names,
+labels, and helper-mode `self` are resolved on the Docker-aware caller to full
 container IDs; the daemon locates those IDs in its explicit host cgroup view.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its

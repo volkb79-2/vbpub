@@ -7,7 +7,7 @@ COMPOSE_TEMPLATE = Path(__file__).resolve().parents[1] / "ciu.compose.yml.j2"
 PROJECT_ROOT = COMPOSE_TEMPLATE.parent
 
 
-def test_daemon_keeps_namespaces_private_and_mount_modes_explicit():
+def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
     compose = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
     gate_script = (COMPOSE_TEMPLATE.parent / "tools" / "gate.sh").read_text(
         encoding="utf-8"
@@ -15,7 +15,8 @@ def test_daemon_keeps_namespaces_private_and_mount_modes_explicit():
 
     assert 'cgroup: "private"' in compose
     assert 'network_mode: "none"' in compose
-    assert 'pid: "host"' not in compose
+    assert compose.count('pid: "host"') == 1
+    assert "CGPROFILE_PID_NAMESPACE_MODE: host" in compose
     assert 'cgroup: "host"' not in compose
     assert 'network_mode: "host"' not in compose
     assert "source: /proc\n        target: /hostproc\n        read_only: true" in compose
@@ -46,6 +47,9 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert target in readme
     assert target in consumers
     assert "## Daemon safety and placement" in design
+    assert "host PID namespace" in design
+    assert "process-table/PID-operation authority" in " ".join(design.split())
+    assert "host-PID mode" in consumers
     assert "one-shot helper also keeps its host cgroup bind read-only" in design
     assert (
         "daemon's host cgroup-v2 bind is therefore writable"

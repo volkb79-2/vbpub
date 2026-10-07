@@ -151,20 +151,25 @@ profiling — that would add exactly the load the tool exists to measure.
 
 RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
 else) talks to over a Unix socket instead of spawning a collector per lane.
-It keeps PID/cgroup namespaces private and receives a read-only host `/proc`
-view plus an explicitly writable host cgroup-v2 view for opt-in P6 placement.
-The daemon also mounts the host system-bus socket read-only; that mount does
-not make systemd RPCs read-only. It uses the manager's
-`AttachProcessesToUnit` operation for identity-checked placement and survivor
-restoration because host PIDs cannot be written directly from its private PID
-namespace. `CgroupWriteGuard` limits intended cgroupfs writes to the placement
-whitelist, and each move is verified through `/hostproc`. If survivors cannot
-be enumerated or restored, the daemon reports the exact cgroup path and leaves
+The daemon alone uses the host PID namespace, allowing DAMON sysfs to resolve
+host `pid_target` values; it keeps a private cgroup namespace, has no network,
+and receives no Docker socket. Workload, helper, gate, and test containers
+remain private. It also receives a read-only host `/proc` bind and an
+explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
+system-bus socket is mounted only into the daemon; the read-only bind does not
+make systemd RPCs read-only. The daemon uses systemd's `AttachProcessesToUnit`
+for identity-checked placement and survivor restoration because systemd owns
+the delegated scope lifecycle, not because the daemon lacks host PID access.
+`CgroupWriteGuard` limits intended cgroupfs writes to the placement whitelist,
+and each move is verified through `/hostproc`. If survivors cannot be
+enumerated or restored, the daemon reports the exact cgroup path and leaves
 the lane leaf in place rather than hiding stranded processes. The one-shot
-helper keeps its cgroup view read-only. The daemon also writes session storage
-and DAMON sysfs during normal operation. These application checks and private
-namespaces do not contain arbitrary code execution in this privileged daemon;
-see the [trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
+helper keeps private namespaces and its cgroup view read-only. The daemon also
+writes session storage and DAMON sysfs during normal operation. Host PID mode
+adds process-table visibility and PID-operation authority; the application
+checks and write guard do not contain arbitrary code execution in this
+privileged daemon. Stall policy never signals numeric PIDs. See the
+[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). It is
 `scripts/cgroup-profiler/`'s own **standalone ciu root** —
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
 The default stack uses the local development image; to deploy a versioned GHCR
@@ -373,9 +378,9 @@ mean the kernel accepted a configured monitoring context. Check each session's
   their combined tree as the first 1.0.0 release; there is no planned separate
   1.1.0 release for these already-merged capabilities. Any future version
   increment requires genuine post-1.0.0 changes. These are operational
-  authority paths, not kernel-enforced containment. The daemon and helper
-  keep private PID/cgroup namespaces, and `ciu up` remains the managed
-  lifecycle with no host-namespace fallback.
+  authority paths, not kernel-enforced containment. Only the daemon uses the
+  host PID namespace; the helper keeps private PID/cgroup namespaces. `ciu up`
+  remains the managed lifecycle, with no alternate host-namespace launcher.
 
 ## Relationship to the neighbours
 

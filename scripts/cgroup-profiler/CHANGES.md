@@ -9,6 +9,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ## [Unreleased]
 
 ### Changed
+- deploy(cgprofile): run only the managed daemon in the host PID namespace so
+  DAMON sysfs can resolve host `pid_target` values; keep cgroup/network modes
+  private, require explicit mode verification at startup, and document the
+  added process-table/PID-operation authority and no-numeric-signal invariant
 - refactor(cgprofile): express insertion-only AVL rotation choices at
   reachable child-balance boundaries and reduce peak values with `max`;
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
