@@ -1125,7 +1125,14 @@ you're changing assay itself:
   unrun and could independently fail, hang, or crash. A proven passing cold
   attempt completes the full transformed no-coverage command. An uncertain cold
   attempt gets one full declared-command attempt. Only a proven result from
-  that attempt supplies the candidate outcome. The exact command transform,
+  that attempt supplies the candidate outcome. Hook trust is pinned to
+  Hypothesis 6.156.6 and, for the declared fallback, pytest-cov 7.1.0 by
+  version and source digest. A compatibility exception accepts the root
+  `tests/conftest.py::pytest_sessionfinish` hook only when
+  `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
+  `ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent; that
+  hook must preserve the session exit status or its receipt cannot prove a
+  result. The exact command transform,
   collection and hook checks, and persisted campaign deadline are documented
   in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
   [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does

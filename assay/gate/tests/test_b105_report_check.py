@@ -529,6 +529,12 @@ def _hermetic_repo(
     """A throwaway repository holding a copy of the checker at ``assay/tools/``."""
     repo = tmp_path / "hermetic"
     files = {
+        "assay/assay.toml": (
+            "[lanes.self-qualification]\n"
+            "rigor = [\"R0\", \"R1\", \"R2\", \"R3\"]\n\n"
+            "[lanes.self-qualification-preflight]\n"
+            "rigor = [\"R0\", \"R1\"]\n"
+        ),
         "assay/src/assay/__init__.py": "",
         "assay/src/assay/mod.py": "",
         **{name: "" for name in tracked},
@@ -1251,6 +1257,27 @@ def test_p3d_deadline_checks_bind_the_report_and_fail_closed(tmp_path):
     )
     assert result.returncode == 2
     assert "deadline plan_sha256 for lane 'self-qualification-preflight' must be null" in result.stderr
+
+
+def test_full_report_rejects_a_non_null_plan_digest_for_its_preflight_lane(tmp_path):
+    document, plan = _r2_case()
+    commit, tree = _own_commit_and_tree()
+    deadline = json.loads(_deadline_bytes(document, commit, tree))
+    deadline["plan_sha256"][PREFLIGHT] = "a" * 64
+    raw_deadline = json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(raw_deadline).hexdigest()
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+        plan=plan,
+        deadline_raw=raw_deadline,
+    )
+
+    assert result.returncode == 2
+    assert "deadline plan_sha256 for non-R2 lane 'self-qualification-preflight' must be null" in result.stderr
 
 
 def test_p3d_manifest_and_campaign_arguments_are_checked_before_reading_report(tmp_path):

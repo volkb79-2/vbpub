@@ -123,8 +123,20 @@ mutation command by removing only its recognized coverage options and adding
 coverage baseline and no-coverage R2 baseline must collect the same ordered
 node IDs, and the candidate's runtime hook and collection fingerprints must
 match the proof. Cold proof accepts pytest's built-in hooks and the reviewed
-Hypothesis hooks from the installed Hypothesis distribution. Other hooks make
-the attempt uncertain and cannot produce a cold kill.
+Hypothesis 6.156.6 hooks only when their module source digest, distribution
+ownership, plugin identity, function and wrapper flags match. The declared
+fallback may also use the exact reviewed pytest-cov 7.1.0 hooks. These versions
+and module digests are the current reviewed implementations; another version
+or changed source cannot establish a cold kill or survivor.
+
+There is one compatibility exception for
+`tests/conftest.py::pytest_sessionfinish`: Assay accepts that hook only when
+the path is the root `tests/conftest.py` and
+`ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
+`ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent. This
+exception also applies to consumer projects. The hook must preserve pytest's
+session exit status; if it changes that status, the receipt cannot prove a kill
+or survivor. Any other unreviewed hook makes the proof unavailable.
 
 A `witness-cold` kill means one test-call failure was verified and the ordered
 manifest confirms the failing node was reached. Tests after that call are

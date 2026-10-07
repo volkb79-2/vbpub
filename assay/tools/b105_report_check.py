@@ -281,6 +281,7 @@ def _parse_utc(value: Any) -> datetime:
 def _check_deadline_binding(
     document: dict[str, Any],
     *,
+    repo_root: Path,
     deadline_path: Path,
     expected_commit: str,
     expected_tree: str,
@@ -341,6 +342,19 @@ def _check_deadline_binding(
         raise ValueError(
             f"deadline plan_sha256 for lane {expected_lane!r} does not match the ordered plan"
         )
+    for lane_name in lanes:
+        lane_config, _ = _committed_lane(repo_root, expected_commit, lane_name)
+        lane_rigor = lane_config.get("rigor")
+        if (
+            not isinstance(lane_rigor, list)
+            or any(not isinstance(item, str) for item in lane_rigor)
+        ):
+            raise ValueError(f"committed lane {lane_name!r} has no valid rigor list")
+        lane_plan_sha256 = deadline["plan_sha256"][lane_name]
+        if "R2" not in lane_rigor and lane_plan_sha256 is not None:
+            raise ValueError(
+                f"deadline plan_sha256 for non-R2 lane {lane_name!r} must be null"
+            )
 
     try:
         created = _parse_utc(campaign["created_at_utc"])
@@ -677,6 +691,7 @@ def verify_report_document(
         )
     _check_deadline_binding(
         document,
+        repo_root=repo_root,
         deadline_path=deadline,
         expected_commit=expected_commit,
         expected_tree=expected_tree,

@@ -695,19 +695,31 @@ removing only recognized coverage options and appending
 baseline and a passing uninstrumented baseline must collect the same ordered
 node IDs, including duplicates and count, and their reviewed hook fingerprints
 must match. The lifecycle check accepts pytest's built-in hooks and the exact
-reviewed Hypothesis hooks only when their module file belongs to the installed
-Hypothesis distribution and their plugin identity, function and wrapper flags
-match. The runtime fingerprint binds the installed plugin version. Other hooks
-make cold proof unavailable. Every candidate records its command variant and
-runtime collection/hook evidence. A cold kill also binds the failed node to its
-index in the ordered manifest and to the actual started-test prefix. A passing
-cold attempt is a survivor only after the complete transformed no-coverage R2
-command and its proof finish. An uncertain cold attempt gets one fresh full
-declared-command attempt. A declared fallback supplies a result only when its
+reviewed Hypothesis 6.156.6 hooks only when their source digest, distribution
+ownership, plugin identity, function and wrapper flags match. The declared
+fallback also recognizes only pytest-cov 7.1.0 with its reviewed module source
+digest. These are code identities, not just names: another version or changed
+module source cannot establish a cold kill or survivor. The runtime fingerprint
+also binds installed plugin versions. Every candidate records its command
+variant and runtime collection/hook evidence. A cold kill also binds the failed
+node to its index in the ordered manifest and to the actual started-test
+prefix. A passing cold attempt is a survivor only after the complete
+transformed no-coverage R2 command and its proof finish. An uncertain cold
+attempt gets one fresh full declared-command attempt. A declared fallback
+supplies a result only when its
 call failure or full pass is proven against the coverage baseline. With
 pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
 and must match that baseline. The ordinary full-suite behavior remains the
 default when the option is absent.
+
+The root `tests/conftest.py::pytest_sessionfinish` hook has one compatibility
+exception because Assay's B105 archive hook is inert when
+`ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
+`ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent. The
+exception is path-based and therefore also applies to consumer projects with
+that root hook. It must preserve pytest's session exit status; if it changes
+the status, Assay refuses to use the receipt to prove a kill or survivor.
+Every other unreviewed hook keeps the proof unavailable.
 
 These proofs live in the v15 verdict and are checked independently by
 `assay verify`. B105 adds a separate source-bound check: it reads the lane

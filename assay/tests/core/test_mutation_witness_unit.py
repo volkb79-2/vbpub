@@ -96,6 +96,8 @@ def _run_child_pytest(
     env = os.environ.copy()
     env.pop("PYTEST_PLUGINS", None)
     env.pop("PYTEST_ADDOPTS", None)
+    env.pop("INSTALL_FORGER", None)
+    env.pop("FAIL_CALL", None)
     if env_overrides:
         env.update(env_overrides)
     plan = _plan(
@@ -350,7 +352,12 @@ def test_plugin_source_and_hook_fingerprint_contract_are_current():
 def test_cold_and_survivor_proofs_require_complete_matching_receipts():
     expected = receipt_facts(_receipt())
     assert expected is not None
-    survivor = _receipt(session_exit_status=0)
+    survivor = _receipt(
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+    )
     assert survivor_proof_ok(survivor, process_exit_status=0, expected=expected, command="r2")
     assert survivor_proof_ok(
         {**survivor, "unsupported": True, "unsupported_pytest_cov_only": True},
@@ -378,6 +385,12 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
     )
     assert not survivor_proof_ok(
         {**survivor, "started_prefix_ok": False},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    )
+    assert not survivor_proof_ok(
+        _receipt(session_exit_status=0),
         process_exit_status=0,
         expected=expected,
         command="declared",
@@ -437,6 +450,165 @@ def test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill(tmp
     assert cold_witness_from_receipt(
         forged, process_exit_status=forged_result.returncode, expected=baseline_facts
     ) is None
+
+
+@pytest.mark.parametrize(
+    ("fail_call", "forged_outcome", "cold", "exit_status"),
+    [
+        (False, "failed", True, 1),
+        (True, "passed", False, 0),
+    ],
+)
+def test_hook_registered_during_call_cannot_forge_a_result(
+    tmp_path, fail_call, forged_outcome, cold, exit_status
+):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_dynamic.py").write_text(
+        "import pytest\n\n"
+        "import os\n\n"
+        "class ReportForger:\n"
+        "    @pytest.hookimpl(hookwrapper=True, tryfirst=True)\n"
+        "    def pytest_runtest_makereport(self, item, call):\n"
+        "        outcome = yield\n"
+        "        report = outcome.get_result()\n"
+        "        if report.when == 'call':\n"
+        f"            report.outcome = {forged_outcome!r}\n"
+        "        item.config.pluginmanager.unregister(self)\n\n"
+        "def test_behavior(pytestconfig):\n"
+        "    if os.environ.get('INSTALL_FORGER'):\n"
+        "        pytestconfig.pluginmanager.register(ReportForger(), 'dynamic-report-forger')\n"
+        "    if os.environ.get('FAIL_CALL'):\n"
+        "        assert False\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    baseline_result, baseline = _run_child_pytest(
+        project, plugin_dir, tmp_path / "baseline.json"
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported"] is False
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "dynamic.json",
+        env_overrides={
+            **{"INSTALL_FORGER": "1"},
+            **({"FAIL_CALL": "1"} if fail_call else {}),
+        },
+        cold=cold,
+    )
+
+    assert result.returncode == exit_status
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    if cold:
+        assert cold_witness_from_receipt(
+            receipt, process_exit_status=result.returncode, expected=expected
+        ) is None
+    else:
+        assert not survivor_proof_ok(
+            receipt,
+            process_exit_status=result.returncode,
+            expected=expected,
+            command="declared",
+        )
+
+
+def test_archive_sessionfinish_status_change_cannot_prove_a_survivor(tmp_path, monkeypatch):
+    for name in (
+        "ASSAY_B105_COVERAGE_SOURCE",
+        "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
+        "ASSAY_B105_SOURCE_COMMIT",
+        "ASSAY_B105_SOURCE_TREE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_failure.py").write_text(
+        "def test_failure():\n    assert False\n", encoding="utf-8"
+    )
+    (tests / "conftest.py").write_text(
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    session.exitstatus = 0\n",
+        encoding="utf-8",
+    )
+    result, receipt = _run_child_pytest(
+        project, tmp_path / "plugins", tmp_path / "receipt.json"
+    )
+
+    assert result.returncode == 0
+    assert receipt is not None
+    assert receipt["archive_hook_exception_used"] is True
+    assert receipt["unsupported"] is False
+    assert receipt["session_exit_status"] == 1
+    assert receipt["witness_node_id"] == "tests/test_failure.py::test_failure"
+    facts = receipt_facts(receipt)
+    assert facts is not None
+    assert not survivor_proof_ok(
+        receipt, process_exit_status=result.returncode, expected=facts, command="declared"
+    )
+    assert not declared_failure_proof_ok(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=facts,
+        manifest_node_ids=("tests/test_failure.py::test_failure",),
+    )
+
+
+def test_external_hook_allowlist_pins_distribution_version_and_source_digest():
+    from types import SimpleNamespace
+
+    import _hypothesis_pytestplugin
+    from pytest_cov.plugin import CovPlugin
+
+    namespace = {}
+    exec(compile(_PLUGIN_SOURCE, "assay_mutation_witness_plugin.py", "exec"), namespace)
+    cases = (
+        (
+            "hypothesis",
+            "pytest_runtest_call",
+            _hypothesis_pytestplugin.pytest_runtest_call,
+            "hypothesispytest",
+            {"hookwrapper": True},
+        ),
+        (
+            "pytest-cov",
+            "pytest_runtestloop",
+            CovPlugin.pytest_runtestloop,
+            "_cov",
+            {"wrapper": True},
+        ),
+    )
+    for distribution, hook_name, function, plugin_name, flags in cases:
+        impl = SimpleNamespace(
+            function=function,
+            plugin_name=plugin_name,
+            hookwrapper=flags.get("hookwrapper", False),
+            wrapper=flags.get("wrapper", False),
+            tryfirst=False,
+            trylast=False,
+        )
+        assert namespace["_reviewed_external_hook"](impl, hook_name, distribution)
+
+        version, source_sha256 = namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution]
+        namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
+            version,
+            "0" * 64,
+        )
+        assert not namespace["_reviewed_external_hook"](impl, hook_name, distribution)
+        namespace["_REVIEWED_EXTERNAL_DISTRIBUTIONS"][distribution] = (
+            version + ".unreviewed",
+            source_sha256,
+        )
+        assert not namespace["_reviewed_external_hook"](impl, hook_name, distribution)
 
 
 def test_declared_failure_proof_only_allows_reviewed_pytest_cov_unsupported_hooks():

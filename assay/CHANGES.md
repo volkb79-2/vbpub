@@ -13,7 +13,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
   command, ordered collection and hook facts; a `witness-cold` kill records its
-  failed test call and labels later tests unrun. Survivors and uncertain runs
+  failed test call and labels later tests unrun. Hook trust is pinned to
+  reviewed Hypothesis 6.156.6 and pytest-cov 7.1.0 source identities, with
+  dynamic hook changes invalidating the proof. Survivors and uncertain runs
   execute the full declared suite.
 - Persist campaign deadlines across preflight, resume and retry, and bind B105
   reports to the source commit, lane command, pytest configuration, manifest

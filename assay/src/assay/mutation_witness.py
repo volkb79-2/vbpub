@@ -141,6 +141,13 @@ def survivor_proof_ok(
         return False
     if receipt.get("collection_error") is not False or receipt.get("started_prefix_ok") is not True:
         return False
+    if any(
+        receipt.get(name) is not None
+        for name in ("witness_node_id", "witness_when", "witness_outcome", "failed_call_index")
+    ):
+        return False
+    if receipt.get("stopped_at_target") is not False or receipt.get("stopped_cold") is not False:
+        return False
     unsupported = receipt.get("unsupported")
     coverage_only = receipt.get("unsupported_pytest_cov_only")
     if type(unsupported) is not bool or type(coverage_only) is not bool:
@@ -746,6 +753,7 @@ _HOOK_COUNT = None
 _RUNTIME_FINGERPRINT_SHA256 = None
 _CONFIG_SHA256 = None
 _ARCHIVE_EXCEPTION_USED = False
+_HOOK_IMPL_REGISTRY = {}
 
 
 def _bounded(value):
@@ -777,6 +785,17 @@ _REVIEWED_EXTERNAL_HOOKS = {
     ),
 }
 
+_REVIEWED_EXTERNAL_DISTRIBUTIONS = {
+    "hypothesis": (
+        "6.156.6",
+        "c0b8c0b39b3eed02eea3591c642d652f2e127acb8b22027058cefe3416b64c35",
+    ),
+    "pytest-cov": (
+        "7.1.0",
+        "7cc8a14b8cc8effa886c40fdfa058459d89686d62c53fea6721750e722a60f40",
+    ),
+}
+
 
 def _reviewed_external_hook(impl, hook_name, distribution_name):
     expected = _REVIEWED_EXTERNAL_HOOKS.get((distribution_name, hook_name))
@@ -805,16 +824,26 @@ def _reviewed_external_hook(impl, hook_name, distribution_name):
         resolved_module_file = Path(module_file).resolve()
         if resolved_module_file != Path(code_file).resolve():
             return False
+        reviewed_version, reviewed_source_sha256 = _REVIEWED_EXTERNAL_DISTRIBUTIONS[
+            distribution_name
+        ]
         distribution = metadata.distribution(distribution_name)
         declared_files = distribution.files
         normalized_name = (distribution.metadata.get("Name") or "").casefold().replace("_", "-")
         wanted_name = distribution_name.casefold().replace("_", "-")
-        if normalized_name != wanted_name or declared_files is None:
+        if (
+            normalized_name != wanted_name
+            or distribution.version != reviewed_version
+            or declared_files is None
+        ):
             return False
-        return any(
+        owned = any(
             Path(distribution.locate_file(item)).resolve() == resolved_module_file
             for item in declared_files
         )
+        if not owned:
+            return False
+        return hashlib.sha256(resolved_module_file.read_bytes()).hexdigest() == reviewed_source_sha256
     except (ImportError, OSError, RuntimeError, ValueError, metadata.PackageNotFoundError):
         return False
 
@@ -912,6 +941,48 @@ def _coverage_hook_set_is_only_reviewed(config, *, xdist_active):
             elif not _trusted_hook_impl(config, hook_name, impl):
                 return False
     return coverage_seen
+
+
+def _hook_impl_signature(impl):
+    function = getattr(impl, "function", None)
+    code = getattr(function, "__code__", None)
+    flags = tuple(sorted(
+        name for name in ("hookwrapper", "tryfirst", "trylast", "wrapper")
+        if getattr(impl, name, False)
+    ))
+    return (
+        id(impl), id(function), id(code), getattr(impl, "plugin_name", None),
+        getattr(function, "__module__", None), getattr(function, "__qualname__", None), flags,
+    )
+
+
+def _mark_hook_registry_changed():
+    global _STANDARD_LOOP, _REPLAY_SUPPORTED, _UNSUPPORTED_PYTEST_COV_ONLY
+    _STANDARD_LOOP = False
+    _REPLAY_SUPPORTED = False
+    _UNSUPPORTED_PYTEST_COV_ONLY = False
+
+
+def _check_hook_registry(hook_name):
+    if hook_name not in _HOOKS or _SESSION is None:
+        return
+    try:
+        expected = _HOOK_IMPL_REGISTRY.get(hook_name)
+        impls = getattr(_SESSION.config.hook, hook_name).get_hookimpls()
+        observed = tuple(_hook_impl_signature(impl) for impl in impls)
+    except Exception:
+        _mark_hook_registry_changed()
+        return
+    if expected is None or observed != expected:
+        _mark_hook_registry_changed()
+
+
+def _before_hook_call(hook_name, methods, kwargs):
+    _check_hook_registry(hook_name)
+
+
+def _after_hook_call(outcome, hook_name, methods, kwargs):
+    _check_hook_registry(hook_name)
 
 
 def _hook_fingerprint(config):
@@ -1097,6 +1168,7 @@ def pytest_collection_finish(session):
     global _SESSION, _ITEMS, _TARGET, _TARGET_COUNT, _STANDARD_LOOP, _REPLAY_SUPPORTED
     global _COLD, _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT, _RUNTIME_FINGERPRINT_SHA256, _CONFIG_SHA256
     global _UNSUPPORTED_PYTEST_COV_ONLY
+    global _HOOK_IMPL_REGISTRY
     _SESSION = session
     _ITEMS = tuple(item.nodeid for item in session.items)
     _TARGET = os.environ.get("ASSAY_MUTATION_WITNESS_TARGET")
@@ -1164,6 +1236,20 @@ def pytest_collection_finish(session):
     _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT = _hook_fingerprint(config)
     _RUNTIME_FINGERPRINT_SHA256 = _runtime_fingerprint(config)
     _CONFIG_SHA256 = _config_fingerprint(config)
+    try:
+        _HOOK_IMPL_REGISTRY = {
+            name: tuple(
+                _hook_impl_signature(impl)
+                for impl in getattr(config.hook, name).get_hookimpls()
+            )
+            for name in _HOOKS
+        }
+        config.pluginmanager.add_hookcall_monitoring(
+            _before_hook_call, _after_hook_call
+        )
+    except Exception:
+        _HOOK_IMPL_REGISTRY = {}
+        _mark_hook_registry_changed()
 
 
 def pytest_collectreport(report):
