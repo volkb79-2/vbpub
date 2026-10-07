@@ -354,6 +354,35 @@ def _secret_overlay_paths(
     }
 
     def traversal_failed(error: OSError) -> None:
+        # A credential overlay must be a regular file owned by the effective
+        # uid (`_read_secret` refuses anything else). A directory owned by
+        # another uid that we cannot list is equally unlistable for the gate
+        # container's mapped uid, so it can neither hold an overlay we would
+        # use nor expose one to the container: skip it (e.g. a live service
+        # data dir such as a postgres volume). Everything else fails closed,
+        # including PermissionError on a directory we own and an unknown path.
+        # A path that vanished between listing and scanning (worktrees come
+        # and go on the shared tree) cannot expose an overlay either: skip it.
+        if (
+            isinstance(error, (PermissionError, FileNotFoundError))
+            and error.filename is not None
+        ):
+            if isinstance(error, FileNotFoundError):
+                foreign = True
+            else:
+                try:
+                    foreign = os.lstat(error.filename).st_uid != os.geteuid()
+                except FileNotFoundError:
+                    foreign = True  # vanished mid-walk: nothing left to inventory
+                except OSError:
+                    foreign = False
+            if foreign:
+                print(
+                    "cmru-release-gate: WARN: skipping vanished or other-uid "
+                    f"unreadable directory during secret-overlay inventory: {error.filename}",
+                    file=sys.stderr,
+                )
+                return
         raise RuntimeError(f"cannot inventory CMRU secret overlays: {error}") from error
 
     pruned = {
