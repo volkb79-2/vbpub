@@ -241,3 +241,17 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - Next: commit this correction, rerun `tester-unified`, obtain the fresh exact-tip
   Sol xhigh review when the route is available, then run
   `self-qualification-preflight`. No B105 R2 campaign ran.
+
+## Analysis schema-oracle correction — 2026-10-07
+
+- Registered `./run-gate.py tester-unified` on `40f93c0d9c141968b49d5506dadd5e8f21ff22d7`
+  passed the self-hosted Assay R0 lane, then failed the analysis R0 lane:
+  **514 passed, 1 failed**. The failure was the schema-refusal case in
+  `analysis/tests/test_analysis.py`; its fixture is v15 but the test still
+  attempted to replace v14, leaving the valid artifact unchanged.
+- Changed the oracle to derive the fixture's current schema from
+  `VERDICT_SCHEMA_VERSION` and mutate it to the previous unsupported version.
+  The focused schema case passed; the full `test_analysis.py` file passed
+  (**162 passed in 6.56s**), and `git diff --check` passed.
+- A fresh registered gate is still required on the reviewed repair commit,
+  followed by `self-qualification-preflight`; no B105 R2 campaign ran.
