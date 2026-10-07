@@ -38,6 +38,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from cli_extended import OptionSpec, RegisteredCli
+
+# Shared script registration (pwmcp/scripts/_vars.py), importing the INSTALLED
+# cli_extended (CX-D3). The explicit insert keeps a bare `import _vars` working when
+# this hyphenated file is loaded by path rather than run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _vars import run_script, script_cli  # noqa: E402
+
 NPM_PLAYWRIGHT_URL = "https://registry.npmjs.org/playwright"
 PYPI_PLAYWRIGHT_URL = "https://pypi.org/pypi/playwright/json"
 MCR_PLAYWRIGHT_TAGS_URL = "https://mcr.microsoft.com/v2/playwright/tags/list?n=10000"
@@ -654,32 +662,62 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     log(f"Git tag to create after push: pwmcp-v{pwmcp_version}")
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Validate the committed PWMCP version projection or explicitly refresh it"
-    )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--check",
-        action="store_true",
-        help="validate committed versions and write cmru.vars without contacting upstreams (default)",
-    )
-    mode.add_argument(
-        "--refresh",
-        action="store_true",
-        help="select the newest common upstream version at least 14 days old and rewrite the projection",
-    )
-    parser.add_argument(
-        "--age-window-days",
-        type=int,
-        default=TEMPORARY_AGE_WINDOW_DAYS,
-        help="temporary refresh age window until CMRU FEAT-03 owns version selection (default: 14)",
-    )
-    args = parser.parse_args(argv)
+def _handle(args: argparse.Namespace) -> None:
     if args.refresh:
         refresh_upstream_projection(args.age_window_days)
     else:
         check_committed_inputs()
+
+
+def _preview(args: argparse.Namespace) -> str:
+    if args.refresh:
+        return (
+            f"would select the newest common upstream version at least {args.age_window_days} "
+            "days old and rewrite the committed projection and cmru.vars"
+        )
+    return "would validate the committed version projection and write cmru.vars"
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration of the script's grammar (``--check`` | ``--refresh``)."""
+    return script_cli(
+        "resolve-playwright-version.py",
+        long_name="version projection",
+        description="Validate the committed PWMCP version projection or explicitly refresh it.",
+        handler=_handle,
+        preview=_preview,
+        options=(
+            OptionSpec(
+                ("--check",),
+                "validate committed versions and write cmru.vars without contacting upstreams (default)",
+                group="MODE",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="mode",
+            ),
+            OptionSpec(
+                ("--refresh",),
+                "select the newest common upstream version at least 14 days old and rewrite the projection",
+                group="MODE",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="mode",
+            ),
+            OptionSpec(
+                ("--age-window-days",),
+                "temporary refresh age window until CMRU FEAT-03 owns version selection",
+                group="MODE",
+                metavar="DAYS",
+                parser_kwargs={"type": int, "default": TEMPORARY_AGE_WINDOW_DAYS},
+            ),
+        ),
+        examples=(
+            "python3 scripts/resolve-playwright-version.py --check",
+            "python3 scripts/resolve-playwright-version.py --refresh",
+        ),
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":
