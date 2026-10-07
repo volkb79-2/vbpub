@@ -178,7 +178,9 @@ depends_on = ["cli-extended", "ciu", "cmru", "topos", "nyxloom"]
 
 [orchestration.project.pwmcp]
 config = "pwmcp/cmru.toml"
-depends_on = ["cmru"]
+# cli-extended: the pwmcp-client wheel requires it (PWMCP-02, CX-D1) and the release scripts
+# import it, so the release preflight demands the declaration.
+depends_on = ["cli-extended", "cmru"]
 
 [orchestration.project.tls-edge]
 config = "tls-edge/cmru.toml"

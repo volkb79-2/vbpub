@@ -1,0 +1,769 @@
+schema_version = 1
+cli_id = "pwmcp"
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5d8a6a4b5e215a7df4a9716e4d31e76196dccdd4613e0979c9cde0770148408d"
+rationale = "The only required input is the contract source, which defaults to the in-network server URL."
+invocation = ["contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"release\": \"1.63.0-r2\""
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7facdf40ef2ab2f27816aaa36dbd33826b32f2eda81ee55b672715712b22551b"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "contract"]
+expected_exit_status = 0
+expected_stdout_contains = "\"ws_url\": \"ws://pwmcp:3000/\""
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-contract]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bae1d28c1ce174c4772bef5304e4d9dfb6a974dc452bd40804988fbc1c9ad6eb"
+rationale = "The shared control is accepted by a read-only verb; it only lifts redaction and warns."
+invocation = ["contract", "--debug-raw", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"release\""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---debug-raw---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a4d4ffab5970ee4f162ddc263aaba2d74676e451027e11770dd818f7509aea50"
+rationale = "--json prints the same object on one line for machines."
+invocation = ["contract", "--json", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"max_clients\": 2"
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted JSON; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---json---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bc091694a931e1833afd409949bba5151d88e26de07380dd391f418f8e04889d"
+rationale = "All checks run by default; the shared skills check only warns when skills are not installed."
+invocation = ["doctor", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "[OK] playwright: playwright=1.63.4"
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--check/--check"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0cb77b885e1f91b5e3ee0120b6a8eab4d0a10fdfc1ac1f7f6cf8b86a9b8b5c33"
+rationale = "A named check can be run alone; an unknown name is a usage error."
+invocation = ["doctor", "--check", "contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "doctor: 1 ok, 0 warn, 0 fail, 0 skip"
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---check-contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e2d7f48f051dc0e603988fa6d0c86a6e9e93fcaf97586d610fb4495a0537ebe"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "doctor", "--check", "playwright"]
+expected_exit_status = 0
+expected_stdout_contains = "[OK] playwright"
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-doctor---check-playwright]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:807ba53bc2a658268086e5f1f53161395cf519423feb2311da16669275bb6bf1"
+rationale = "The shared control is accepted by a read-only verb; it only lifts redaction and warns."
+invocation = ["doctor", "--debug-raw", "--check", "contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "[OK] contract"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---debug-raw---check-contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c3b7da443f20feb7c1e00e5ecfddf4616eb7ea17e30a027810a30fb5ed32a4f4"
+rationale = "--json is the machine-readable doctor report."
+invocation = ["doctor", "--json", "--check", "contract", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"tool\": \"pwmcp\""
+expected_stderr_contains = ""
+effects = ["Reads the contract and installed package metadata; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[doctor---json---check-contract---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/check/--dest/option:route:entrypoint:pwmcp/skills/check/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:17d19bd3fff8858c62f9aec308412496e840689b24f0df61775e2a5f85db80bb"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "check", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/exclusive-member/target/option:route:entrypoint:pwmcp/skills/check/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8d58a741d21384e03351cfd58edbada89253e089c10450875fe5519613f355b7"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "check", "--dest", "skills-out"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/exclusive-member/target/option:route:entrypoint:pwmcp/skills/check/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:89c04ee747e47b51f82bd50409c2d73c39fe933cdabb0ca0c83620a1c9f1a51d"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "check", "--harness=claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:76d3782510d5dccf5b6a06214ee6978f9146762a58995015841e48c33f0697c1"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "check"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ae3ef4a2588b2dfda7e58744275145bee34bcea673ca4d518e4709543e3dd54b"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "check", "--harness", "claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0578d7c828e4148dd569888a1254f0ccea4cea480027ff5520873c4e2d7ec968"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "check", "--harness", "all"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:50559fbf013686a6914de17104a9f48fff58ea11d29cd7430d4ba345d5ed2464"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "check", "--harness", "agents"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a7302f5599e8b264797698e0ff528a49d0e77507137a1ced32711f2986a55691"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "check", "--contract", "contract.json"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6b7ac1dc68e5dec64e6aa26b7a3c5811039727d609fbaab8a56b2b68d4564423"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "check", "--debug-raw"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5478497de04aa9948497ccfa0c1bfba989a9a515a91b8a686f88d9f190d3300f"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "check", "--dest=skills-out"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:05e7e09e6811bd26d506e4e78479fe7528df9cf5e39dbb2c6635ceab623f5b81"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "check", "--harness=all"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:81afe11cebfe2836355adf11b8a91c8dfc02a525d9107a353eb02dfd2140112c"
+rationale = "--json is the machine-readable state."
+invocation = ["skills", "check", "--json"]
+expected_exit_status = 1
+expected_stdout_contains = "\"skills\""
+expected_stderr_contains = "not current"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-check---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/install/--dest/option:route:entrypoint:pwmcp/skills/install/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:c14380ddd27b434d8457a709802004164979108b04e230447149d4bcf35c4aeb"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "install", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/exclusive-member/target/option:route:entrypoint:pwmcp/skills/install/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9accadb266e6764e877b9320f0c0c31fcfe1d5caba398a19aedd482457699ae8"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "install", "--dest", "skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/exclusive-member/target/option:route:entrypoint:pwmcp/skills/install/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:00364712f2bf9ea9b0684a9c60bb0e549a5d1bb39b000bb8bfe27e2a8f46a46d"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "install", "--harness=claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9452006f3360fcb50f36be3da36e8d7b9dd68c2bb3f0ba9af96440f3dd345108"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "install"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:303d0f6e2faebd2b1de930a017e3faeeb3057a51b165263b8e3b2f5c482f006e"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "install", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aec0c38fd8b97b897cfbc59dacd10fffcba323136e22152fca9cd40f4d9f5f42"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "install", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d444e9b2be65ebf1a9965e872d1a0109e2e5f27798d1c9241ad259e74d5bc4e6"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "install", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e2e51b52bb38b22c8178c3620c2826711a99685979a87aebd96b4ea261710418"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "install", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6131e808ef18c7e39dc95cc5a46f81cd04ca6a0bfc861970b629508d7918f1dd"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "install", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bb116df421e1fa5906c734b9e5b9a451da369a7806ae74afcf47e57b20557af8"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "install", "--dest=skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:00365891d1260c745afa8823ae93bee90ee219775b31a02fae118b53870dc41a"
+rationale = "--dry-run previews the plan and writes nothing."
+invocation = ["skills", "install", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "would install pwmcp-fetch"
+expected_stderr_contains = "Dry run: no changes made."
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b16a9360efcda57bafbc414a651430d84e67ad1c8bc9e683bc2ca4cbd8fd30b4"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "install", "--harness=all"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--overwrite-modified/--overwrite-modified"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:325699fddf6a74d61da69a0df500f08befe3bd555bb61f19c3cc312ec953dad4"
+rationale = "--overwrite-modified only matters for a locally edited skill; on a clean target it changes nothing."
+invocation = ["skills", "install", "--overwrite-modified"]
+expected_exit_status = 0
+expected_stdout_contains = "installed pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Writes the packaged pwmcp-fetch skill under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-install---overwrite-modified]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/list/--dest/option:route:entrypoint:pwmcp/skills/list/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:80c08831f42d8bfacf77596ed72b943e6cbf8a5cbb8917e89d27ca60642b9cc6"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "list", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/exclusive-member/target/option:route:entrypoint:pwmcp/skills/list/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9106388706022e9fb44b5622a222380817a14ed1d0fb968eade5d592ffc84864"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "list", "--dest", "skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skills-out"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/exclusive-member/target/option:route:entrypoint:pwmcp/skills/list/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef766212762f54528d8fdb8e8fbbf5b440de89a0023d86ea2092ed5665c12806"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "list", "--harness=claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9c8997a23b7850a31d48b8a887b5145d15f6beb875a592b2178d2b90a130ed7f"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "list"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6040b424eb92bcc00d7fa075802f010bbbbe7f040c8f788c8ee6fbb5ce2cbb86"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "list", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6c5282e88d620e5e5eda87c9aa18b0c3058fdf67c7ce8194fbdf9ddc7c3a9d0c"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "list", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0635a42c5df66288dc8f2e072262f4dc29c1fc74fcc610dc608eb0004feae448"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "list", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d710565b8f18d78d5969c05f56cec3af7c10b7de3927c510fa9c560b963b063a"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "list", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:50066428332c0e01c872076cdabc5df7fba9f3e5528587500b3b0e7f8b314a58"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "list", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9db3d894e3148b7b2f08d0b76558adb0d4f3c12a2a96b7f20c7791a51d7fea93"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "list", "--dest=skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skills-out"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fbf931a13b7ffee741631d774021fc200f2a31eb879d587fd0235caf0a210a09"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "list", "--harness=all"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2e17b719e9322ca8663c2728f7251538a3d962b4fe9f51605c1a99faf745b44f"
+rationale = "--json is the machine-readable state."
+invocation = ["skills", "list", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"skills\""
+expected_stderr_contains = ""
+effects = ["Reads installed skill state; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-list---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/uninstall/--dest/option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:15b2a36d5157eff953d6ea4f6967941ce3c5c44af607ae3b955c3c3c9b0fc56f"
+rationale = "A harness and an explicit destination are two different targets; exactly one is allowed."
+invocation = ["skills", "uninstall", "--dest", "skills-out", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["None: refused by the parser before anything is read or written"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dest-skills-out---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-member/target/option:route:entrypoint:pwmcp/skills/uninstall/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:23cf0289dc2d5d943040e18aadd7e9a4ff3c0533dab68a96e36862f51c6b0e40"
+rationale = "--dest names exactly one directory, the project-level install form."
+invocation = ["skills", "uninstall", "--dest", "skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dest-skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-member/target/option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e2b215476d6f275bb6df131d92bd7108f34daf4aad8e8771a5a4bf1775763350"
+rationale = "--harness limits the group to one harness directory."
+invocation = ["skills", "uninstall", "--harness=claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness=claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7456a2a344341a14ae29fdd83387683b1035cffbdc7e9da89875ab4ece695cdd"
+rationale = "With no target the group covers every harness directory under HOME."
+invocation = ["skills", "uninstall"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:24b9757c4336490375b8e87e49c017f423f5041433377673ae224cb6b0d2a3d9"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "uninstall", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness-claude]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:728af97a82f1a7dc1a93f332d1e84978c6f2f48523958b43917e923ff7152c31"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "uninstall", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness-all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:64c455077ec14f6ddb6886f058151c0e78667dde19c621b9734ba706a88f34ec"
+rationale = "Each harness choice is a supported target."
+invocation = ["skills", "uninstall", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness-agents]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9978e2924966e0fc7eb7f29ce8c5b5c3ed21ed2147683d338fbfb85a659df1a2"
+rationale = "The consumer's invocation-wide --contract is forwarded to the skills group (cli-extended 0.3.0 floor, CLI-EXT-26) and ignored by it."
+invocation = ["skills", "uninstall", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef8abbadda061d2be2dc67ae2e3db5f72a3e01073f15dd61dfdb0622cefc3dd7"
+rationale = "The shared control only lifts redaction and warns."
+invocation = ["skills", "uninstall", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9bfd251bebb9da6410c51b6fc4e7cde2669e74658a8b34c4790d38dd1423eafc"
+rationale = "The = spelling of --dest is accepted like the spaced one."
+invocation = ["skills", "uninstall", "--dest=skills-out"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dest=skills-out]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:53a07a276e9a1baa4fc2e4e52d379d62a74115422946cab43ba874e99691e51d"
+rationale = "--dry-run previews the plan and writes nothing."
+invocation = ["skills", "uninstall", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "would skip pwmcp-fetch"
+expected_stderr_contains = "Dry run: no changes made."
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8f8f402d60f2e33c424d376a2f772e754f1fb734977df8b697fc417700cd15c8"
+rationale = "The = spelling of --harness is accepted like the spaced one."
+invocation = ["skills", "uninstall", "--harness=all"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---harness=all]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified/--overwrite-modified"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:33fc6feb12425836f38ab7b8139c903da88012768c73634f8c467bf49b701244"
+rationale = "--overwrite-modified only matters for a locally edited skill; on a clean target it changes nothing."
+invocation = ["skills", "uninstall", "--overwrite-modified"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped pwmcp-fetch"
+expected_stderr_contains = ""
+effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---overwrite-modified]"]
