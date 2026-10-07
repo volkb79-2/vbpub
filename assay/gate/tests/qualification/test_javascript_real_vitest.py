@@ -36,6 +36,7 @@ from pathlib import Path
 
 import pytest
 
+from assay.adapters.javascript import JavaScriptAdapter
 from assay.cli import main
 from gate.tests.support import PROJECT_ROOT, GitRepo
 
@@ -225,6 +226,35 @@ def _advance(repo: GitRepo, *, app_ts: str, app_test_ts: str) -> None:
     repo.commit_all("advance")
 
 
+def _seed_commonjs_project(
+    repo: GitRepo,
+    *,
+    app_js: str,
+    app_test_ts: str,
+) -> str:
+    """Commit a real CommonJS package plus Vitest/Istanbul scaffolding."""
+    package = json.loads((_PROBE_JS / "package.json").read_text(encoding="utf-8"))
+    package["type"] = "commonjs"
+    repo.write("package.json", json.dumps(package, indent=2) + "\n")
+    shutil.copy(_PROBE_JS / "package-lock.json", repo.path / "package-lock.json")
+    repo.write("vitest.config.ts", _VITEST_CONFIG)
+    repo.write(".gitignore", _GITIGNORE)
+    repo.write("src/app.js", app_js)
+    repo.write("src/app.test.ts", app_test_ts)
+    return repo.commit_all("commonjs base")
+
+
+def _advance_commonjs_project(
+    repo: GitRepo,
+    *,
+    app_js: str,
+    app_test_ts: str,
+) -> None:
+    repo.write("src/app.js", app_js)
+    repo.write("src/app.test.ts", app_test_ts)
+    repo.commit_all("commonjs advance")
+
+
 def _write_lane(
     repo: GitRepo,
     *,
@@ -376,6 +406,124 @@ def test_real_vitest_uncovered_line_canary_is_caught_by_coverage(
     assert attempt["transformed_outcome"] == "FAIL"
     assert attempt["expected_reason_code"] == "UNCOVERED_LINES"
     assert attempt["observed_reason_code"] == "UNCOVERED_LINES"
+
+
+def test_real_vitest_uncovered_line_canary_works_for_commonjs_javascript(
+    git_repo: GitRepo, npm_cache: Path
+):
+    """A `.js` target in a CommonJS package must reach the coverage failure,
+    not fail to parse the injected canary's module syntax."""
+    add_only = """\
+function add(a, b) {
+  return a + b
+}
+module.exports = { add }
+"""
+    add_only_test = """\
+import { expect, test } from 'vitest'
+import app from './app.js'
+test('add', () => {
+  expect(app.add(1, 2)).toBe(3)
+})
+"""
+    add_and_multiply = add_only.replace(
+        "module.exports = { add }",
+        "function multiply(a, b) {\n  return a * b\n}\n"
+        "module.exports = { add, multiply }",
+    )
+    add_and_multiply_test = """\
+import { expect, test } from 'vitest'
+import app from './app.js'
+test('add', () => {
+  expect(app.add(1, 2)).toBe(3)
+})
+test('multiply', () => {
+  expect(app.multiply(2, 3)).toBe(6)
+})
+"""
+    base = _seed_commonjs_project(
+        git_repo, app_js=add_only, app_test_ts=add_only_test
+    )
+    _advance_commonjs_project(
+        git_repo, app_js=add_and_multiply, app_test_ts=add_and_multiply_test
+    )
+    path = _write_lane(
+        git_repo,
+        cache=npm_cache,
+        base=base,
+        canary_mechanism="uncovered-line",
+        canary_target="src/app.js",
+    )
+
+    code, verdict = _run_assay(path)
+
+    assert code == 0, verdict
+    assert verdict["outcome"] == "PASS"
+    claims = _claims_by_rigor(verdict)
+    assert claims["R0"]["status"] == "PASS"
+    assert claims["R1"]["status"] == "PASS"
+    assert claims["R3"]["status"] == "PASS"
+    attempt = claims["R3"]["canary"]["attempts"][0]
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["transformed_outcome"] == "FAIL"
+    assert attempt["expected_reason_code"] == "UNCOVERED_LINES"
+    assert attempt["observed_reason_code"] == "UNCOVERED_LINES"
+
+
+def test_uncovered_line_canary_typechecks_with_no_unused_locals(
+    tmp_path: Path, npm_cache: Path
+):
+    """The portable function expression remains valid TypeScript without an
+    export or an unused top-level binding."""
+    shutil.copy(_PROBE_JS / "package.json", tmp_path / "package.json")
+    shutil.copy(_PROBE_JS / "package-lock.json", tmp_path / "package-lock.json")
+    subprocess.run(
+        [
+            "npm",
+            "ci",
+            "--offline",
+            "--cache",
+            str(npm_cache),
+            "--no-audit",
+            "--no-fund",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    source = "export const original = 42\n"
+    transformed, _description = JavaScriptAdapter().inject_uncovered_line(source)
+    target = tmp_path / "uncovered-canary.ts"
+    target.write_text(transformed, encoding="utf-8")
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(
+        json.dumps(
+            {
+                "compilerOptions": {
+                    "noEmit": True,
+                    "strict": True,
+                    "noUnusedLocals": True,
+                    "skipLibCheck": True,
+                    "target": "ES2022",
+                    "types": [],
+                },
+                "files": [target.name],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["npx", "--no-install", "tsc", "--project", str(tsconfig)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_an_import_break_not_reached_by_the_tests_is_reported_as_survived(

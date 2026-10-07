@@ -1,8 +1,15 @@
 # B087 — JavaScript R3 real-consumer qualification
 
-**Date:** 2026-10-07  
-**Assay implementation commit:** `cac4a92f86537a22bf86ae1c39a0f3523ffb4b7d`  
-**Qualification:** PASS for both registered JavaScript R3 mechanisms.
+**Date:** 2026-10-07
+
+**Original Assay implementation commit:** `cac4a92f86537a22bf86ae1c39a0f3523ffb4b7d`
+
+**Historical qualification:** operator-reported PASS for both JavaScript R3 mechanisms; the detailed verdicts and verifier results were not retained.
+
+**Current status:** this report describes the pre-review implementation. The
+CommonJS-compatible follow-up has not yet been requalified against dstdns; do
+not treat B087 as real-consumer-qualified until both lanes are rerun and their
+verdicts and `assay verify` transcripts are retained.
 
 ## Source and judge identity
 
@@ -37,17 +44,29 @@ Each temporary command lane invoked the built zipapp directly with its
 and a gitignored `.assay/progress-<lane>.jsonl` stream and verdict destination.
 The verdict's provenance matched the zipapp version and SHA-256 above.
 
-## Observed results
+## Original run observations (not independently retained)
+
+An independent Sol xhigh review on 2026-10-07 found that the records retained
+after cleanup do not substantiate the detailed verdict fields or the separate
+`assay verify` results below. The surviving run-gate logs
+(`/tmp/run-gate/lanes/b087-import-break/4f817878e455c660ad721e6677021c7a.log`
+and
+`/tmp/run-gate/lanes/b087-uncovered-line/8a3b11e4477d0a2f3c7128e2825b0358.log`)
+record only the command-lane PASS, judged commit, and argv. The disposable
+checkout's verdict JSON files were removed, and no verifier invocation or
+transcript survives. The rows below preserve the original operator's run
+observations; they are not independently auditable evidence. Requalification
+with retained verdicts and verifier transcripts is required before using
+these details as B087 acceptance evidence.
 
 | Lane | R0 | R1 | R3 control | Transformed run | R3 claim | Assay `verify` |
 |---|---|---|---|---|---|---|
-| `b087_import_break` | PASS | PASS, 29/29 changed executable lines and 16/16 branches | PASS | FAIL, expected and observed `COMMAND_FAILED` | PASS | exit 0 |
-| `b087_uncovered_line` | PASS | PASS, 29/29 changed executable lines and 16/16 branches | PASS | FAIL, expected and observed `UNCOVERED_LINES` | PASS | exit 0 |
+| `b087_import_break` | operator-reported PASS | operator-reported PASS, 29/29 changed executable lines and 16/16 branches | operator-reported PASS | operator-reported FAIL, expected and observed `COMMAND_FAILED` | operator-reported PASS | operator-reported exit 0; transcript not retained |
+| `b087_uncovered_line` | operator-reported PASS | operator-reported PASS, 29/29 changed executable lines and 16/16 branches | operator-reported PASS | operator-reported FAIL, expected and observed `UNCOVERED_LINES` | operator-reported PASS | operator-reported exit 0; transcript not retained |
 
-Both schema-v14 verdicts recorded the same judged commit and judge provenance,
-and both run-gate command lanes returned PASS (exit 0). The Assay verdicts
-record one attempted canary each, with `control_outcome = PASS`, the expected
-transformed failure, and an R3 PASS claim.
+Both run-gate command lanes returned PASS (exit 0), as the retained outer logs
+show. The schema-v14 verdict contents, canary attempt counts, and provenance
+fields in the table are operator-reported and were not preserved for review.
 
 ## Cleanup and limits
 

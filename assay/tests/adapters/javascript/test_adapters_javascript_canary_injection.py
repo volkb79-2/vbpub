@@ -8,7 +8,8 @@ Why appending is faithful here even though JS/TS *does* have an executable
 module top level: an ES module's ``import`` declarations are HOISTED and its
 imported modules evaluated first, so a ``throw`` at the very end of the file
 still fires during module evaluation -- before any test can touch a single
-export. That satisfies ``inject_import_break``'s own contract ("reliably
+export. CommonJS also evaluates the appended throw when ``require`` loads the
+file. That satisfies ``inject_import_break``'s own contract ("reliably
 tripped by merely importing/loading the module") with none of Python's
 docstring/``__future__`` insertion-point machinery.
 
@@ -17,9 +18,11 @@ one of the four extensions this adapter claims, breaks the "minimal, valid,
 additive" contract the protocol states. These methods receive only *text* and
 never a path, so a type annotation -- legal in ``.ts``, a syntax error in
 ``.js`` -- would be a real defect that only a ``.js`` consumer would ever
-hit. Negative (uncovered-line): a canary function that is not exported is
-what ``noUnusedLocals`` flags, breaking the "lint-clean" half of the
-contract.
+hit. Negative (uncovered-line): an unreferenced module-level declaration is
+what TypeScript's ``noUnusedLocals`` flags. The canary therefore places an
+anonymous function in the value of a property on a fresh, unreachable object:
+the function is referenced, its body is never called, and no module syntax is
+needed.
 """
 
 from __future__ import annotations
@@ -96,15 +99,16 @@ def test_import_break_appends_a_top_level_throw():
     assert "\n  throw" not in added
 
 
-def test_uncovered_line_appends_a_never_called_exported_function():
+def test_uncovered_line_appends_a_never_called_portable_function_value():
     transformed, description = ADAPTER.inject_uncovered_line(MODULE)
     added = transformed[len(MODULE) :]
 
-    assert "export function _assayCanaryUnreached(value = 0) {" in added
-    assert "_assayCanaryUnreached" in description
-    assert "2 uncovered lines" in description
-    # Its own two BODY lines are what no test can execute; the declaration
-    # line itself is reached merely by the module loading.
+    assert "Object.defineProperty({}, Symbol(), {" in added
+    assert "value: function (value = 0) {" in added
+    assert "anonymous function value" in description
+    assert "2 uncovered body lines" in description
+    # The property setup runs during module loading, but its function body is
+    # never called; the two body lines are the canary's uncovered evidence.
     assert "const doubled = value * 2" in added
     assert "return doubled" in added
 
@@ -119,17 +123,19 @@ def test_neither_snippet_uses_syntax_that_is_typescript_only():
         added = inject(MODULE)[0][len(MODULE) :]
         assert ": number" not in added
         assert ": string" not in added
-        assert "value:" not in added
+        assert "function (value:" not in added
 
 
-def test_the_canary_function_is_exported_so_no_unused_local_rule_fires():
+def test_the_canary_function_is_referenced_without_module_syntax():
     """The "lint-clean" half of ``inject_uncovered_line``'s contract:
-    TypeScript's ``noUnusedLocals`` flags an unreferenced module-level
-    declaration, which a canary is by construction. Exporting it removes the
-    finding without making the body reachable."""
+    the function is the value of a property on a fresh object, so TypeScript
+    sees a reference without requiring an ESM export or CommonJS binding."""
     added = ADAPTER.inject_uncovered_line(MODULE)[0][len(MODULE) :]
 
-    assert added.lstrip().startswith("export function ")
+    assert added.lstrip().startswith("Object.defineProperty({}, Symbol(), {")
+    assert "value: function (value = 0) {" in added
+    assert "export " not in added
+    assert "module.exports" not in added
 
 
 def test_the_two_transforms_are_different_and_independent():
@@ -140,7 +146,7 @@ def test_the_two_transforms_are_different_and_independent():
 
     assert broken != uncovered
     assert "throw" not in uncovered[len(MODULE) :]
-    assert "_assayCanaryUnreached" not in broken
+    assert "const doubled" not in broken
 
 
 # --- the R1 half, proven by a REAL committed coverage artifact ---------------
@@ -186,8 +192,8 @@ def test_the_committed_injected_file_is_byte_for_byte_what_this_adapter_produces
 @pytest.mark.parametrize("artifact", CANARY_ARTIFACTS)
 def test_a_real_coverage_run_reports_the_canary_body_as_uncovered(artifact: str):
     """A-345's R1 claim, as committed evidence instead of a transcript: the
-    injected function's DECLARATION line is reached merely by the module
-    loading, and its two BODY lines are executed by no test -- so a gate
+    injected property setup runs during module loading, but its two function
+    body lines are executed by no test -- so a gate
     enforcing a changed-line-coverage floor rejects the transform while a
     tests-only gate sails past it. True under both providers (the defect
     A-346 rules on does not touch this shape: there is no conditional
@@ -228,4 +234,3 @@ def test_the_suite_that_produced_the_canary_artifacts_still_passed():
     why THAT half has no artifact here and cannot have one)."""
     for artifact in CANARY_ARTIFACTS:
         assert (CANARY_FIXTURES / artifact).is_file()
-
