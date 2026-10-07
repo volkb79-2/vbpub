@@ -8,6 +8,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: generated -->
 <!-- cmru: source-end=9444bd1d87f08ce0e51c71bb8cc69c4b90b2504a -->
 
+### Highlights (hand-written, curated after release)
+- **`nyxloom-harness extract` presets and option groups.** `--help` groups every option (Source & range, Content selection, Rendering & compression, Derived sections, Output). Four presets bundle them: `--preset watch|successor|review|ledger`, and an explicit option always overrides the preset. `watch` is a prose-only follower (operator plus assistant prose, timestamped, interviews compact, `--jsonl` a stable versioned line format `{"v":1,"ts","role","text","agent"?}` for the VS Code extension).
+- **`--successor-brief [--order TEXT|@FILE]`** primes a FRESH agent from a stopped subagent's transcript: the original brief, later turns, timeline, whole-session ledger with detected external effects, and stop state. The `nyxloom-successor` skill wraps it. Claude Code adapter only (NL-31).
+- **`Intent:` pairing.** An `Intent:` line is shown on its Edit/Write call and kept in the prose everywhere else. Failed tool results are shown by default. A harness interrupt is a STOP marker, not an operator message.
+- **Mattermost:** `mattermost/tools/mm_reachability.py`, a read-only, config-driven reachability check (pings from every vantage, webhooks with a stale-host check, PATs, accounts; secrets redacted; `--post` opt-in). `[intake_bridge]` now targets the current instance (`nyxloom-3oqua1`); NL-38 tracks deriving it.
+- Docs: E-020, the subagent resume matrix (who stopped an agent decides resumability).
+
 ### Added
 - feat(nyxloom/mattermost): mm_reachability.py dynamic reachability diagnostic (92dca9078)
 - feat(nyxloom): SUCCESSOR-2 round 3 - watch keeps interviews compactly, versioned --jsonl, real-corpus fixture, gap-closure tests, docs/skills/E-020 (a04cb6167)
@@ -117,10 +124,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(nyxloom): complete extraction lane scope (d3d5a5d02)
 - test(nyxloom): correct session extraction R2 scope (025b6366a)
 - test(nyxloom): cover discuss traceback path (751575054)
-
-## [Unreleased]
-
-<!-- The hand-written 0.10.0 draft (SUCCESSOR package) moved to docs/release-notes-0.10.0-draft.md on 2026-10-07 so cmru can generate the 0.10.0 section (KI-30); it is folded back into [0.10.0] after the release. -->
 
 ## [0.9.0] - 2026-09-26
 <!-- cmru: generated -->
@@ -281,12 +284,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(nyxloom-P123): pin --highlight's scope at the render layer too (5a70b25a)
 - test(nyxloom-P123): cover --notify-project's unknown-project error path (d6888ec9)
 
-## [Unreleased] - UNRELEASED
+### Highlights (hand-written notes for the session_extract wave, shipped in 0.6.0)
 
-Hand-authored draft section for the session_extract wave below; fold into the
-generated section at release time (cmru KI-23: `cmru release` does not merge a
-hand-authored draft, it refuses when the heading collides and otherwise leaves
-it in place).
+Formerly a stale `## [Unreleased] - UNRELEASED` draft heading; demoted into the
+0.6.0 section on 2026-10-07 during the 0.10.0 changelog curation.
 
 ### Added
 - feat(nyxloom): Reasonix session extraction -- content-based primary JSONL
