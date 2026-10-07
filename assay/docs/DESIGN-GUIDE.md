@@ -732,6 +732,16 @@ unchanged function identity or fingerprint. A candidate-only `pytest_configure`
 replacement of the receipt hook is therefore unsupported before a cold result
 can be classified.
 
+When liveness is active, Assay also captures the exact materialized
+`assay_liveness_plugin` registrations for `pytest_configure`,
+`pytest_runtest_logreport`, `pytest_sessionfinish` and `pytest_unconfigure`.
+They must come from the selected plugin path and retain the same HookImpl,
+function, code object and globals. This closes a same-module/path substitution
+that could otherwise alter a test report before the witness hook sees it while
+leaving the displayed hook fingerprint unchanged. Collection compares all
+four registrations; the registry monitor then checks each hook as pytest calls
+it. A mismatch disables both cold and replay proof.
+
 The root `tests/conftest.py::pytest_sessionfinish` hook has one compatibility
 exception because Assay's B105 archive hook is inert when
 `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
@@ -756,11 +766,14 @@ For B105, the selected commit timestamp normalizes wheel archive mtimes through
 installing the run closure or starting lane work, then checks the persisted
 deadline again after campaign initialization. In report checking, D1-D4 run
 before R2 plan parsing; only after those bindings pass does the checker parse
-the plan and compare its ordered digest. Deadline and manifest inputs are read
-through bounded, no-follow regular-file descriptors: symlinks and special
-files are refused, and concurrent file growth cannot make a checker read
-unbounded input. A two-clone artifact test also rebuilds the exact same commit
-with different checkout mtimes and requires identical wheel digests.
+the plan and compare its ordered digest. The report, plan, tester-unified
+receipt, deadline and manifest are read through bounded, no-follow regular-file
+descriptors: final-component symlinks and special files are refused, and
+concurrent file growth cannot make a checker read unbounded input. Report, plan
+and receipt limits are 64 MiB, 16 MiB and 4 KiB. Receipt validation remains
+first, followed by report validation and the plan-independent deadline checks
+before plan parsing. A two-clone artifact test also rebuilds the exact same
+commit with different checkout mtimes and requires identical wheel digests.
 
 #### Liveness process-group cleanup
 

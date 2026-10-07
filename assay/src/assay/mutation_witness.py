@@ -739,6 +739,14 @@ _ASSAY_PLUGIN_HOOKS = (
     "pytest_runtest_logreport",
     "pytest_sessionfinish",
 )
+_LIVENESS_PLUGIN_NAME = "assay_liveness_plugin"
+_LIVENESS_PLUGIN_HOOKS = (
+    "pytest_configure",
+    "pytest_runtest_logreport",
+    "pytest_sessionfinish",
+    "pytest_unconfigure",
+)
+_HOOK_REGISTRY_HOOKS = tuple(dict.fromkeys((*_HOOKS, *_LIVENESS_PLUGIN_HOOKS)))
 _SESSION = None
 _ITEMS = ()
 _TARGET = None
@@ -773,6 +781,8 @@ _PINNED_LATE_BUILTIN_PLUGIN_TYPES = {}
 _BUILTIN_HOOKS_PINNED = False
 _PINNED_ASSAY_HOOKS = {}
 _ASSAY_HOOKS_PINNED = False
+_PINNED_LIVENESS_HOOKS = {}
+_LIVENESS_HOOKS_PINNED = False
 _EXPECTED_TEST_REPORT_CONSTRUCTOR = vars(_TestReport).get("from_item_and_call")
 
 
@@ -910,6 +920,61 @@ def _pin_assay_hook_callables(config):
     return True
 
 
+def _pin_liveness_hook_callables(config):
+    global _PINNED_LIVENESS_HOOKS, _LIVENESS_HOOKS_PINNED
+    _PINNED_LIVENESS_HOOKS = {}
+    _LIVENESS_HOOKS_PINNED = False
+    pinned = {}
+    try:
+        plugin = config.pluginmanager.get_plugin(_LIVENESS_PLUGIN_NAME)
+        expected_path = os.environ.get("ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH")
+        if expected_path is None:
+            if plugin is not None:
+                return False
+            if any(
+                getattr(impl, "plugin_name", None) == _LIVENESS_PLUGIN_NAME
+                for hook_name in _LIVENESS_PLUGIN_HOOKS
+                for impl in getattr(config.hook, hook_name).get_hookimpls()
+            ):
+                return False
+            _LIVENESS_HOOKS_PINNED = True
+            return True
+        if plugin is None or config.pluginmanager.get_name(plugin) != _LIVENESS_PLUGIN_NAME:
+            return False
+        module_path = getattr(plugin, "__file__", None)
+        if (
+            not isinstance(module_path, str)
+            or Path(module_path).resolve() != Path(expected_path).resolve()
+        ):
+            return False
+        for hook_name in _LIVENESS_PLUGIN_HOOKS:
+            implementations = [
+                impl
+                for impl in getattr(config.hook, hook_name).get_hookimpls()
+                if getattr(impl, "plugin_name", None) == _LIVENESS_PLUGIN_NAME
+            ]
+            if len(implementations) != 1:
+                return False
+            impl = implementations[0]
+            function = getattr(impl, "function", None)
+            code = getattr(function, "__code__", None)
+            if (
+                function is not getattr(plugin, hook_name, None)
+                or code is None
+                or getattr(function, "__module__", None) != _LIVENESS_PLUGIN_NAME
+                or getattr(function, "__globals__", None) is not vars(plugin)
+            ):
+                return False
+            pinned[hook_name] = (impl, function, code, function.__globals__)
+    except Exception:
+        return False
+    if set(pinned) != set(_LIVENESS_PLUGIN_HOOKS):
+        return False
+    _PINNED_LIVENESS_HOOKS = pinned
+    _LIVENESS_HOOKS_PINNED = True
+    return True
+
+
 def _pin_registered_builtin_plugin(plugin, plugin_name, manager):
     if not _BUILTIN_HOOKS_PINNED:
         return
@@ -945,6 +1010,7 @@ def pytest_load_initial_conftests(early_config):
     # a same-module/same-path function before the collection-time checks.
     _pin_builtin_hook_callables(early_config)
     _pin_assay_hook_callables(early_config)
+    _pin_liveness_hook_callables(early_config)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -1131,6 +1197,60 @@ def _assay_hook_registry_matches(config):
                 return False
     except Exception:
         return False
+    return _liveness_hook_registry_matches(config)
+
+
+def _is_pinned_liveness_hook(hook_name, impl):
+    if not _LIVENESS_HOOKS_PINNED:
+        return False
+    pinned = _PINNED_LIVENESS_HOOKS.get(hook_name)
+    if pinned is None:
+        return False
+    pinned_impl, pinned_function, pinned_code, pinned_globals = pinned
+    function = getattr(impl, "function", None)
+    return (
+        impl is pinned_impl
+        and function is pinned_function
+        and getattr(function, "__code__", None) is pinned_code
+        and getattr(function, "__globals__", None) is pinned_globals
+    )
+
+
+def _liveness_hook_registry_matches(config):
+    if not _LIVENESS_HOOKS_PINNED:
+        return False
+    try:
+        plugin = config.pluginmanager.get_plugin(_LIVENESS_PLUGIN_NAME)
+        expected_path = os.environ.get("ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH")
+        if expected_path is None:
+            return plugin is None and not _PINNED_LIVENESS_HOOKS
+        if (
+            plugin is None
+            or config.pluginmanager.get_name(plugin) != _LIVENESS_PLUGIN_NAME
+            or Path(getattr(plugin, "__file__", "")).resolve() != Path(expected_path).resolve()
+            or set(_PINNED_LIVENESS_HOOKS) != set(_LIVENESS_PLUGIN_HOOKS)
+        ):
+            return False
+        for hook_name, expected in _PINNED_LIVENESS_HOOKS.items():
+            expected_impl, expected_function, expected_code, expected_globals = expected
+            implementations = [
+                impl
+                for impl in getattr(config.hook, hook_name).get_hookimpls()
+                if getattr(impl, "plugin_name", None) == _LIVENESS_PLUGIN_NAME
+            ]
+            if len(implementations) != 1:
+                return False
+            impl = implementations[0]
+            function = getattr(impl, "function", None)
+            if (
+                impl is not expected_impl
+                or function is not expected_function
+                or getattr(function, "__code__", None) is not expected_code
+                or getattr(function, "__globals__", None) is not expected_globals
+            ):
+                return False
+    except Exception:
+        return False
     return True
 
 
@@ -1156,7 +1276,11 @@ def _trusted_hook_impl(config, hook_name, impl):
         return bool(expected) and resolved_module_file == Path(expected).resolve()
     if module_name == "assay_liveness_plugin":
         expected = os.environ.get("ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH")
-        return bool(expected) and resolved_module_file == Path(expected).resolve()
+        return (
+            bool(expected)
+            and _is_pinned_liveness_hook(hook_name, impl)
+            and resolved_module_file == Path(expected).resolve()
+        )
     if (
         hook_name == "pytest_sessionfinish"
         and module_name == "conftest"
@@ -1284,7 +1408,7 @@ def _is_builtin_strict_xpass(report, item):
 
 
 def _check_hook_registry(hook_name):
-    if hook_name not in _HOOKS or _SESSION is None:
+    if hook_name not in _HOOK_REGISTRY_HOOKS or _SESSION is None:
         return
     try:
         expected = _HOOK_IMPL_REGISTRY.get(hook_name)
@@ -1602,7 +1726,7 @@ def pytest_collection_finish(session):
                 _hook_impl_signature(impl)
                 for impl in getattr(config.hook, name).get_hookimpls()
             )
-            for name in _HOOKS
+            for name in _HOOK_REGISTRY_HOOKS
         }
         config.pluginmanager.add_hookcall_monitoring(
             _before_hook_call, _after_hook_call

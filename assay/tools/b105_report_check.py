@@ -221,6 +221,9 @@ _R2_APPENDED = ["-p", "no:pytest_cov"]
 _MANIFEST_MAX_BYTES = 16 * 1024 * 1024
 _MANIFEST_MAX_NODE_ID_BYTES = 4096
 _DEADLINE_MAX_BYTES = 64 * 1024
+_PLAN_MAX_BYTES = 16 * 1024 * 1024
+_REPORT_MAX_BYTES = 64 * 1024 * 1024
+_RECEIPT_MAX_BYTES = 4 * 1024
 
 
 def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -258,6 +261,16 @@ def _read_bounded_regular_nofollow(path: Path, *, max_bytes: int) -> bytes:
         return b"".join(chunks)
     finally:
         os.close(descriptor)
+
+
+def _read_bounded_json(path: Path, *, max_bytes: int) -> Any:
+    raw = _read_bounded_regular_nofollow(path, max_bytes=max_bytes)
+    try:
+        return json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_pairs
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"{path} is not valid unique-key JSON: {exc}") from exc
 
 
 def verify_deadline_wheel_sha256(deadline_path: Path, *, expected_sha256: str) -> None:
@@ -878,8 +891,8 @@ def verify_report_document(
         if isinstance(plan, Path):
             plan_path = plan
             try:
-                plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                plan = _read_bounded_json(plan_path, max_bytes=_PLAN_MAX_BYTES)
+            except (OSError, ValueError) as exc:
                 raise ValueError(f"cannot read plan {plan_path}: {exc}") from exc
         deadline_plan = _plan_structure(
             plan, expected_commit=expected_commit, expected_tree=expected_tree
@@ -960,7 +973,7 @@ def verify_tester_unified_receipt(document: Any, *, expected_commit: str, expect
 
 def _read_receipt(path: Path, *, expected_commit: str, expected_tree: str) -> None:
     verify_tester_unified_receipt(
-        json.loads(path.read_text(encoding="utf-8")),
+        _read_bounded_json(path, max_bytes=_RECEIPT_MAX_BYTES),
         expected_commit=expected_commit,
         expected_tree=expected_tree,
     )
@@ -1069,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.tester_unified_receipt is not None:
             raise ValueError(f"lane {args.expected_lane} takes no --tester-unified-receipt")
-        document = json.loads(args.report.read_text(encoding="utf-8"))
+        document = _read_bounded_json(args.report, max_bytes=_REPORT_MAX_BYTES)
         rigor = tuple(args.expected_rigor.split(","))
         if not rigor or any(not item for item in rigor):
             raise ValueError("expected rigor must be a non-empty comma-separated list")

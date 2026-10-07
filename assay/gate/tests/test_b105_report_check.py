@@ -218,7 +218,12 @@ def _committed_self_qualification_plan_sha256(
 ) -> str:
     repo_root = Path(repo_root_text)
     environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
+    # The command can run against a temporary hermetic repo, so its CLI import
+    # must come from this checked-out Assay source while its config and Git
+    # reads still come from `repo_root`. Do not inherit another worktree's path.
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(PROJECT_ROOT / "src"), str(PROJECT_ROOT / "analysis" / "src"))
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -340,6 +345,7 @@ def _run_checker(
     receipt: object = _AUTO_RECEIPT,
     plan: object = _AUTO_PLAN,
     manifest: object = _AUTO_MANIFEST,
+    report_file: Path | None = None,
     deadline_raw: bytes | None = None,
     deadline_file: Path | None = None,
     timeout: float | None = None,
@@ -355,6 +361,7 @@ def _run_checker(
     """
     report_path = tmp_path / "verdict.json"
     report_path.write_text(json.dumps(document), encoding="utf-8")
+    checked_report = report_file or report_path
     commit = _git_value("-C", str(repo_root), "rev-parse", "HEAD")
     tree = _git_value("-C", str(repo_root), "rev-parse", "HEAD^{tree}")
     checked_tree = expected_tree or tree
@@ -399,7 +406,7 @@ def _run_checker(
             sys.executable,
             str(checker),
             "--report",
-            str(report_path),
+            str(checked_report),
             "--repo-root",
             str(repo_root),
             "--expected-commit",
@@ -428,6 +435,36 @@ def _run_checker(
         text=True,
         timeout=timeout,
     )
+
+
+def _run_receipt_only_checker(
+    tmp_path: Path, receipt: Path
+) -> subprocess.CompletedProcess[str]:
+    commit = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD")
+    tree = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD^{tree}")
+    return subprocess.run(
+        [
+            sys.executable,
+            str(CHECKER),
+            "--receipt-only",
+            "--tester-unified-receipt",
+            str(receipt),
+            "--expected-commit",
+            commit,
+            "--expected-tree",
+            tree,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
+def _write_oversized_regular(path: Path, size: int) -> None:
+    with path.open("wb") as stream:
+        stream.truncate(size)
 
 
 @pytest.mark.parametrize(
@@ -522,6 +559,144 @@ def test_rejects_nonzero_producer_exit_even_with_a_pass_report(tmp_path):
 
     assert result.returncode == 2
     assert "producer exit" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["receipt-only", "full"])
+@pytest.mark.parametrize("kind", ["regular", "fifo", "symlink", "oversized"])
+def test_receipt_reader_is_bounded_regular_and_nofollow(tmp_path, mode, kind):
+    commit = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD")
+    tree = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD^{tree}")
+    receipt_path = tmp_path / f"receipt-{mode}-{kind}.json"
+    valid = json.dumps(_receipt(commit, tree)).encode("utf-8")
+    if kind == "regular":
+        receipt_path.write_bytes(valid)
+    elif kind == "fifo":
+        os.mkfifo(receipt_path)
+    elif kind == "symlink":
+        target = tmp_path / f"receipt-target-{mode}.json"
+        target.write_bytes(valid)
+        receipt_path.symlink_to(target)
+    else:
+        _write_oversized_regular(receipt_path, 4 * 1024 + 1)
+
+    if mode == "receipt-only":
+        result = _run_receipt_only_checker(tmp_path, receipt_path)
+    else:
+        document = _verifier_valid_report("self-qualification", ("R0", "R1", "R2", "R3"))
+        result = _run_checker(
+            tmp_path,
+            document,
+            lane="self-qualification",
+            rigor=("R0", "R1", "R2", "R3"),
+            receipt=receipt_path,
+        )
+
+    if kind == "regular":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 2
+        assert "B105_REPORT_REJECTED=" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["regular", "fifo", "symlink", "oversized"])
+def test_plan_reader_is_bounded_regular_and_nofollow(tmp_path, kind):
+    lane, rigor = "self-qualification", ("R0", "R1", "R2", "R3")
+    document = _verifier_valid_report(lane, rigor)
+    commit = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD")
+    tree = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD^{tree}")
+    plan = _plan_for(document, commit, tree)
+    plan_path = tmp_path / f"plan-{kind}.json"
+    valid = json.dumps(plan).encode("utf-8")
+    if kind == "regular":
+        plan_path.write_bytes(valid)
+    elif kind == "fifo":
+        os.mkfifo(plan_path)
+    elif kind == "symlink":
+        target = tmp_path / "plan-target.json"
+        target.write_bytes(valid)
+        plan_path.symlink_to(target)
+    else:
+        _write_oversized_regular(plan_path, 16 * 1024 * 1024 + 1)
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=lane,
+        rigor=rigor,
+        plan=plan_path,
+        timeout=5,
+    )
+    if kind == "regular":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 2
+        assert "cannot read plan" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["regular", "fifo", "symlink", "oversized"])
+def test_report_reader_is_bounded_regular_and_nofollow(tmp_path, kind):
+    lane, rigor = "self-qualification", ("R0", "R1", "R2", "R3")
+    document = _verifier_valid_report(lane, rigor)
+    report_path = tmp_path / f"report-{kind}.json"
+    valid = json.dumps(document).encode("utf-8")
+    if kind == "regular":
+        report_path.write_bytes(valid)
+    elif kind == "fifo":
+        os.mkfifo(report_path)
+    elif kind == "symlink":
+        target = tmp_path / "report-target.json"
+        target.write_bytes(valid)
+        report_path.symlink_to(target)
+    else:
+        _write_oversized_regular(report_path, 64 * 1024 * 1024 + 1)
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=lane,
+        rigor=rigor,
+        report_file=report_path,
+        timeout=5,
+    )
+    if kind == "regular":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 2
+        assert "B105_REPORT_REJECTED=" in result.stderr
+        assert "Traceback" not in result.stderr
+
+
+def test_accepts_full_3760_candidate_plan_report_and_deadline(tmp_path):
+    lane, rigor = "self-qualification", ("R0", "R1", "R2", "R3")
+    document = _verifier_valid_report(lane, rigor)
+    mutation = next(claim["mutation"] for claim in document["claims"] if claim["rigor"] == "R2")
+    candidate_ids = [
+        hashlib.sha256(f"b105-candidate-{index}".encode("ascii")).hexdigest()
+        for index in range(3760)
+    ]
+    mutation["candidate_ids"] = candidate_ids
+    commit = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD")
+    tree = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD^{tree}")
+    deadline_raw = _deadline_bytes(document, commit, tree)
+    document["campaign"]["deadline_sha256"] = hashlib.sha256(deadline_raw).hexdigest()
+    plan_path = tmp_path / "plan-3760.json"
+    plan_path.write_text(
+        json.dumps(_plan_for(document, commit, tree)), encoding="utf-8"
+    )
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=lane,
+        rigor=rigor,
+        plan=plan_path,
+        deadline_raw=deadline_raw,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"B105_REPORT_ACCEPTED={lane}" in result.stdout
 
 
 # --- scope: B105 measures exactly the tracked src/assay (A-478) -----------------

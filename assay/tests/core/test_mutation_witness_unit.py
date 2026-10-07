@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from _pytest.config import get_config
 
+from assay import liveness, mutation_witness
 from assay.mutation_witness import (
     COLD_PYTEST_FLAG_OPTIONS,
     COLD_PYTEST_VALUE_OPTIONS,
@@ -92,6 +96,7 @@ def _run_child_pytest(
     pytest_args: tuple[str, ...] = (),
     env_overrides: dict[str, str] | None = None,
     cold: bool = False,
+    liveness_plugin_path: Path | None = None,
 ):
     env = os.environ.copy()
     env.pop("PYTEST_PLUGINS", None)
@@ -103,11 +108,21 @@ def _run_child_pytest(
     env.pop("FAIL_CALL", None)
     if env_overrides:
         env.update(env_overrides)
+    liveness_args = (
+        ("-p", "assay_liveness_plugin")
+        if liveness_plugin_path is not None
+        else ()
+    )
     plan = _plan(
-        (sys.executable, "-m", "pytest", "-q", *pytest_args, "tests"),
+        (sys.executable, "-m", "pytest", "-q", *liveness_args, *pytest_args, "tests"),
         env=env,
     )
-    injected = inject_witness_plugin(plan, plugin_dir=plugin_dir, cwd=project)
+    injected = inject_witness_plugin(
+        plan,
+        plugin_dir=plugin_dir,
+        cwd=project,
+        liveness_plugin_path=liveness_plugin_path,
+    )
     assert injected.active
     attempt = make_attempt_plan(
         injected.plan,
@@ -273,6 +288,77 @@ def test_plugin_injection_refuses_wrappers_and_prepends_a_new_pythonpath(tmp_pat
         str(tmp_path / "plugins"),
         "existing",
     ]
+
+
+def test_liveness_hook_pin_rejects_same_fingerprint_callable_substitution(
+    tmp_path, monkeypatch
+):
+    plugin_dir = tmp_path / "plugins"
+    plugin_path = liveness.materialize_liveness_plugin(plugin_dir)
+    spec = importlib.util.spec_from_file_location("assay_liveness_plugin", plugin_path)
+    assert spec is not None and spec.loader is not None
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    implementations = {
+        name: SimpleNamespace(
+            plugin_name="assay_liveness_plugin",
+            function=getattr(plugin, name),
+        )
+        for name in (
+            "pytest_configure",
+            "pytest_runtest_logreport",
+            "pytest_sessionfinish",
+            "pytest_unconfigure",
+        )
+    }
+
+    class Hook:
+        def __init__(self, impl):
+            self.impl = impl
+
+        def get_hookimpls(self):
+            return [self.impl]
+
+    manager = SimpleNamespace(
+        get_plugin=lambda name: plugin if name == "assay_liveness_plugin" else None,
+        get_name=lambda value: "assay_liveness_plugin" if value is plugin else None,
+    )
+    config = SimpleNamespace(
+        pluginmanager=manager,
+        hook=SimpleNamespace(
+            **{name: Hook(impl) for name, impl in implementations.items()}
+        ),
+    )
+    monkeypatch.setenv("ASSAY_MUTATION_WITNESS_LIVENESS_PLUGIN_PATH", str(plugin_path))
+    injected = mutation_witness.inject_witness_plugin(
+        _plan((sys.executable, "-m", "pytest", "tests")),
+        plugin_dir=plugin_dir,
+        liveness_plugin_path=plugin_path,
+    )
+    assert injected.active
+    witness_path = plugin_dir / "assay_mutation_witness_plugin.py"
+    witness_spec = importlib.util.spec_from_file_location(
+        "assay_mutation_witness_plugin", witness_path
+    )
+    assert witness_spec is not None and witness_spec.loader is not None
+    witness = importlib.util.module_from_spec(witness_spec)
+    witness_spec.loader.exec_module(witness)
+
+    assert witness._pin_liveness_hook_callables(config)
+    assert witness._liveness_hook_registry_matches(config)
+    original_impl = implementations["pytest_runtest_logreport"]
+    original = original_impl.function
+    substitute = types.FunctionType(
+        original.__code__, original.__globals__, original.__name__
+    )
+    substitute.__module__ = original.__module__
+    substitute.__qualname__ = original.__qualname__
+    original_impl.function = substitute
+
+    assert not witness._is_pinned_liveness_hook(
+        "pytest_runtest_logreport", original_impl
+    )
+    assert not witness._liveness_hook_registry_matches(config)
 
 
 def test_attempt_plan_adds_or_clears_target_node_id(tmp_path):
@@ -940,6 +1026,109 @@ def test_precollection_assay_report_hook_substitution_cannot_prove_cold_result(
         process_exit_status=result.returncode,
         expected=expected,
         command="declared",
+    )
+
+
+@pytest.mark.parametrize(
+    ("forged_mode", "fail_call", "cold"),
+    [
+        ("fail", False, True),
+        ("suppress", True, True),
+        ("fail", False, False),
+        ("suppress", True, False),
+    ],
+)
+def test_candidate_cannot_replace_liveness_report_hook_to_change_mutation_outcome(
+    tmp_path, forged_mode, fail_call, cold
+):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_liveness_hook.py").write_text(
+        "import os\n\n"
+        "def test_behavior():\n"
+        "    if os.environ.get('FAIL_CALL'):\n"
+        "        assert False, 'real candidate failure'\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    plugin_dir = tmp_path / "plugins"
+    liveness_plugin_path = liveness.materialize_liveness_plugin(plugin_dir)
+    baseline_result, baseline = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / "baseline.json",
+        cold=cold,
+        liveness_plugin_path=liveness_plugin_path,
+    )
+    assert baseline_result.returncode == 0, baseline_result.stderr
+    assert baseline is not None and baseline["unsupported"] is False
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    (tests / "conftest.py").write_text(
+        "import os\n\n"
+        "def pytest_configure(config):\n"
+        "    if not os.environ.get('INSTALL_FORGER'):\n"
+        "        return\n"
+        "    hook = config.hook.pytest_runtest_logreport\n"
+        "    impl = next(item for item in hook.get_hookimpls()\n"
+        "                if item.plugin_name == 'assay_liveness_plugin')\n"
+        "    original = impl.function\n"
+        "    namespace = original.__globals__\n"
+        "    namespace['_liveness_test_original_hook'] = original\n"
+        "    source = '''def _liveness_test_forged_hook(report):\n"
+        "    import os\n"
+        "    mode = os.environ.get('FORGER_MODE')\n"
+        "    if mode == 'fail' and report.when == 'call' and report.outcome == 'passed':\n"
+        "        report.outcome = 'failed'\n"
+        "        report.longrepr = 'forged candidate failure'\n"
+        "    elif mode == 'suppress' and report.when == 'call' and report.outcome == 'failed':\n"
+        "        report.outcome = 'passed'\n"
+        "        report.longrepr = None\n"
+        "    return _liveness_test_original_hook(report)\n"
+        "'''\n"
+        "    exec(compile(source, original.__code__.co_filename, 'exec'), namespace)\n"
+        "    forged = namespace['_liveness_test_forged_hook']\n"
+        "    forged.__module__ = original.__module__\n"
+        "    forged.__qualname__ = original.__qualname__\n"
+        "    forged.__name__ = original.__name__\n"
+        "    impl.function = forged\n",
+        encoding="utf-8",
+    )
+    overrides = {
+        "INSTALL_FORGER": "1",
+        "FORGER_MODE": forged_mode,
+        **({"FAIL_CALL": "1"} if fail_call else {}),
+    }
+    result, receipt = _run_child_pytest(
+        project,
+        plugin_dir,
+        tmp_path / f"candidate-{forged_mode}-{cold}.json",
+        env_overrides=overrides,
+        cold=cold,
+        liveness_plugin_path=liveness_plugin_path,
+    )
+
+    assert result.returncode in (0, 1)
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    assert receipt["hook_fingerprint_sha256"] == baseline["hook_fingerprint_sha256"]
+    assert cold_witness_from_receipt(
+        receipt, process_exit_status=result.returncode, expected=expected
+    ) is None
+    assert not survivor_proof_ok(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=expected,
+        command="declared",
+    )
+    assert not declared_failure_proof_ok(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=expected,
+        manifest_node_ids=("tests/test_liveness_hook.py::test_behavior",),
     )
 
 

@@ -26,13 +26,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - Pin pytest built-in hook callable identities before candidate conftests load;
   a same-module/path substitution can no longer certify a cold kill or survivor
-  with an unchanged hook fingerprint. Pin Assay's generated receipt hooks
-  before candidate conftests too, and pin reviewed external hook code objects so
-  replacements and in-place code changes make the attempt unsupported.
+  with an unchanged hook fingerprint. Pin Assay's generated receipt hooks and
+  all four materialized liveness hooks before candidate conftests too, and pin
+  reviewed external hook code objects so replacements and in-place code
+  changes make the attempt unsupported.
 - Make B105's same-commit wheel reproducible from the commit timestamp, refuse
   an existing campaign's wheel-digest mismatch before run-closure installation
   or lane work, check plan-independent deadline refusals before parsing an R2
-  plan, and read report deadlines/manifests as bounded no-follow regular files.
+  plan, and read reports, plans, tester receipts, deadlines and manifests as
+  bounded no-follow regular files (64 MiB, 16 MiB and 4 KiB for report, plan
+  and receipt).
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->

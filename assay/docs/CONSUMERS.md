@@ -142,6 +142,11 @@ Assay's own generated receipt hooks and their code objects are captured before
 candidate conftests load as well. The reviewed Hypothesis and pytest-cov code
 objects are pinned too; replacing one in place makes the attempt unsupported,
 even when its visible fingerprint stays the same.
+When liveness is active, the materialized liveness plugin's
+`pytest_configure`, `pytest_runtest_logreport`, `pytest_sessionfinish` and
+`pytest_unconfigure` HookImpls, functions, code objects and globals are pinned
+to the selected plugin path too. A candidate that replaces one while
+preserving its visible fingerprint cannot certify a cold kill or survivor.
 
 There is one compatibility exception for
 `tests/conftest.py::pytest_sessionfinish`: Assay accepts that hook only when
@@ -195,10 +200,11 @@ For B105, the wheel uses the captured commit timestamp as
 `SOURCE_DATE_EPOCH`. Before retry work begins, its driver compares the
 persisted wheel digest and refuses a mismatch before installing the run
 closure, planning, preflight or R2. After campaign initialization or reuse, it
-checks the persisted digest again. The checker reads deadline files and
-manifests with fixed size limits, without following symlinks or blocking on
-non-regular files. It validates D1-D4 before parsing the R2 plan, then checks
-the selected ordered-plan digest.
+checks the persisted digest again. The checker reads the report, plan,
+tester-unified receipt, deadline and manifest through bounded no-follow
+regular-file descriptors. Report, plan and receipt limits are 64 MiB, 16 MiB
+and 4 KiB; final-component symlinks and special files are refused. It validates
+D1-D4 before parsing the R2 plan, then checks the selected ordered-plan digest.
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing

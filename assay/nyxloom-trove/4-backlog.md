@@ -11491,14 +11491,18 @@ process/session exits, and no setup, collection, teardown, auxiliary, signal,
 termination, or cgroup resource cause. Uncertain attempts never count as kills.
 
 The 2026-10-07 Sol xhigh reviews added acceptance corrections: pin actual
-pytest built-in and Assay-generated receipt hook callables before candidate
-conftests; pin reviewed external hook code objects against in-place mutation;
-make same-commit B105 wheel bytes deterministic and refuse a persisted wheel
-mismatch before lane work; run D1-D4 before parsing the R2 plan, then compare
-the selected ordered-plan digest; and read deadline/manifest files through
-bounded no-follow regular-file descriptors. Same-module/path hook substitution
-must be unsupported even when the resulting hook fingerprint matches the
-baseline.
+pytest built-in, Assay-generated receipt and active liveness hook callables
+before candidate conftests; pin reviewed external hook code objects against
+in-place mutation; make same-commit B105 wheel bytes deterministic and refuse a
+persisted wheel mismatch before lane work; run D1-D4 before parsing the R2
+plan, then compare the selected ordered-plan digest; and read report, plan,
+tester receipt, deadline and manifest files through bounded no-follow
+regular-file descriptors (64 MiB, 16 MiB and 4 KiB for report, plan and
+receipt). Same-module/path hook substitution must be unsupported even when
+the resulting hook fingerprint matches the baseline. Add real active-liveness
+candidate cases for forged and suppressed failures, plus full-checker reader
+tests for regular files, FIFOs, symlinks, and over-limit inputs; the 3,760
+candidate plan/report shape must remain accepted.
 
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
