@@ -7,6 +7,46 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### 0.4.0 — fallback verb and doctor exit code/detail lines (LCR-1, LCR-2)
+
+Library contract version is unchanged (1) and the surface manifest schema is
+unchanged (7). Both additions are opt-in: a tool that uses neither behaves, and
+exports its manifest and doctor JSON, byte-for-byte as before.
+
+- **Fallback ("default") verb (LCR-1).** `VerbSpec(fallback=True)` marks one verb
+  that runs when the first token is not a verb: `tool LANE ...` is `tool run LANE ...`.
+  A registry may have at most one; it must declare at least one `ArgumentSpec`,
+  cannot use `delegate=`, and is refused in a `single_command` registry (`ValueError`).
+  `run_cli` and the new `RegisteredCli.parse_args(argv)` (which runs no handler)
+  share one normalisation: leading options are scanned using the root parser's
+  options **plus** the fallback verb's own, and the fallback name is put
+  **first** (`tool --worktree X LANE` becomes `tool run --worktree X LANE`). A
+  `--` or an unknown leading option, a leading `--help`/`--version`, and an
+  empty argv are never rewritten (empty argv still prints help, exit 0).
+  Registered verbs, delegates, `help` and `version` always win, so a lane named
+  like a verb needs the explicit `tool run NAME` spelling. Errors are never
+  swallowed: `tool docter` becomes `tool run docter` and fails in the handler.
+  `RegisteredCli.fallback_verb` names the verb (`None` when absent).
+- **Help.** The catalog marks the verb `[default verb]`, adds the usage line
+  `tool [options] ARG ...`, and the verb's help shows `Behavior: default verb.`;
+  `help <verb>` works as for any verb.
+- **Surface export.** The route record carries `"fallback": true` only for that
+  verb (the key is absent for every other route), the review text says "a first
+  token that is not a verb selects this verb", and the key is part of the route's
+  review-signature context. A tool without a fallback verb exports an identical
+  manifest, so no `surface sync` is needed on upgrade. `surface check`, `audit`
+  and `assert_cli_contract` work unchanged with a fallback verb present.
+- **`register_doctor(..., fail_exit_code=1)` (LCR-2).** The exit status when any
+  check fails; an integer 1..255 (`ValueError` otherwise, including bools).
+  Clean and warn-only runs still exit 0. The default keeps today's exit 1.
+- **`CheckResult(lines=())` (LCR-2).** Single-line strings printed in human output,
+  indented four spaces under the check line and before `remedy:`. JSON adds a
+  `"lines"` array to a check only when it is non-empty, so the doctor JSON of
+  every existing tool is unchanged. A non-tuple or a multi-line entry is a `ValueError`.
+- **Notes.** `VerbSpec.summary` and the route record's `summary` for the fallback
+  verb now include `default verb` in the bracketed behavior labels; the route's
+  `behavior` list is unchanged (the fallback marker is its own key).
+
 ### Unreleased — library backlog fixes (CX-BACKLOG, 2026-10-06)
 
 Library contract version is unchanged (1). Behaviour changes a consumer can see:
