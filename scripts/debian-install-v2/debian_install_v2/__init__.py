@@ -1,1 +1,1 @@
-__version__ = "2"
+"""debian-install-v2: the version lives in ../VERSION (see bootstrap.IDENTITY)."""

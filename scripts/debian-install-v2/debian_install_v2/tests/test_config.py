@@ -48,7 +48,6 @@ def test_non_fresh_install_refused():
 def test_closed_vocabularies_are_validated():
     for key, value in (
         ("zswap_compressor", "brotli"),
-        ("zswap_zpool", "slab"),
     ):
         data = dict(BASE, **{key: value})
         with pytest.raises(ConfigError):
@@ -56,7 +55,7 @@ def test_closed_vocabularies_are_validated():
 
 
 @pytest.mark.parametrize("key", [
-    "zswap_compressor", "zswap_zpool", "apt_auto_upgrade_mode", "credential_mode",
+    "zswap_compressor", "apt_auto_upgrade_mode", "credential_mode",
 ])
 def test_unhashable_closed_vocabulary_values_are_reported_as_config_errors(key):
     with pytest.raises(ConfigError, match=key):

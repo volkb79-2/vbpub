@@ -6,6 +6,9 @@
   "zswap_compressor": "zstd",
   "telegram_bot_token": "",
   "telegram_chat_id": "",
+  "notify_backend": "",
+  "mattermost_webhook_url": "",
+  "notify_host_label": "",
   "auto_reboot_after_stage1": true,
   "never_reboot": false
 }

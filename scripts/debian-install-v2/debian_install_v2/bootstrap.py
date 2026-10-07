@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from cli_extended import (
@@ -14,19 +15,33 @@ from cli_extended import (
     VerbSpec,
 )
 
-from . import __version__
 from .actions import ActionError, HostActions
-from .config import Config, ConfigError, load_config, save_config
-from .customscript import build_customscript_bundle
+from .config import (
+    Config, ConfigError, load_config, persisted_config_data, require_notify_credentials, save_config,
+)
+from .customscript import build_customscript_bundle, describe_fetch_source
 from .installer import Installer, InstallerError
+from .notify import NotifyConfigError, validate_host_label, validate_webhook_url
 from .state import StateError, StateStore
 
 PROG = "debian-install-v2"
-IDENTITY = CliIdentity(
+VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
+IDENTITY = CliIdentity.resolve(
     name="DEBIAN-INSTALL-V2",
     command=PROG,
-    version=__version__,
     long_name="Debian host installer",
+    version_file=VERSION_FILE,
+)
+# Domain failures that become one `[ERROR]` line. Anything else is an
+# unexpected exception: the registry's "report" policy prints it as one
+# `[ERROR]` line too, with --traceback for the stack.
+DOMAIN_ERRORS = (
+    ActionError,
+    ConfigError,
+    InstallerError,
+    OSError,
+    StateError,
+    json.JSONDecodeError,
 )
 
 
@@ -51,18 +66,61 @@ def _config_options() -> tuple[OptionSpec, ...]:
     )
 
 
-def _dry_run_option() -> OptionSpec:
-    return OptionSpec(
-        ("--dry-run",),
-        "record intended host operations without executing them",
-        group="EXECUTION",
-        parser_kwargs={"action": "store_true", "default": False},
-    )
+_NOTIFY_FIELDS = (
+    "notify_backend", "mattermost_webhook_url", "notify_host_label",
+    "telegram_bot_token", "telegram_chat_id",
+)
 
 
-def _load_config(args: Any, runtime: Any) -> Config:
-    config_path = getattr(args, "config", None)
-    config_json = getattr(args, "config_json", None)
+def _post_config_failure(args: Any, runtime: Any, cause: str) -> None:
+    """Best-effort ONE failure post for a configuration that could not be loaded (LT-EARLY).
+
+    No Installer, state or config exists yet, so read only the notify settings
+    leniently from the raw JSON, keep them only when they are usable on their
+    own (string-typed, valid webhook URL / host label), and post through the
+    same Installer._notify path. Never raises; a configuration that carries no
+    usable notify settings simply posts nothing.
+    """
+    try:
+        if runtime.dry_run:
+            return
+        if args.config:
+            raw = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        else:
+            raw = json.loads(args.config_json or "")
+        if not isinstance(raw, dict):
+            return
+        values = {
+            name: raw[name] for name in _NOTIFY_FIELDS
+            if isinstance(raw.get(name), str) and raw[name]
+        }
+        if "mattermost_webhook_url" in values:
+            try:
+                validate_webhook_url(values["mattermost_webhook_url"])
+            except NotifyConfigError:
+                del values["mattermost_webhook_url"]
+        if "notify_host_label" in values:
+            try:
+                validate_host_label(values["notify_host_label"])
+            except NotifyConfigError:
+                del values["notify_host_label"]
+        if bool(values.get("telegram_bot_token")) != bool(values.get("telegram_chat_id")):
+            values.pop("telegram_bot_token", None)
+            values.pop("telegram_chat_id", None)
+        partial = Config(**values)
+        notifier = Installer(partial, HostActions(dry_run=False), inspect_host=False)
+        notifier._notify(
+            f"<b>Install FAILED</b> during stage1: invalid installation configuration: {cause}",
+            event="install FAILED", status="fail",
+            excerpt=f"invalid installation configuration: {cause}",
+        )
+    except Exception:
+        return
+
+
+def _load_config(args: Any, runtime: Any, *, report_failure: bool = False) -> Config:
+    config_path = args.config
+    config_json = args.config_json
     if not config_path and not config_json:
         raise CliFailure(
             "this verb requires --config FILE or --config-json JSON",
@@ -71,10 +129,15 @@ def _load_config(args: Any, runtime: Any) -> Config:
         )
     try:
         config = load_config(config_path, config_json)
+        require_notify_credentials(config)
     except ConfigError as exc:
+        if report_failure:
+            _post_config_failure(args, runtime, str(exc))
         raise CliFailure(f"invalid installation configuration: {exc}", exit_code=2) from exc
     if config.telegram_bot_token:
         runtime.output.secrets = (*runtime.output.secrets, config.telegram_bot_token)
+    if config.mattermost_webhook_url:
+        runtime.output.secrets = (*runtime.output.secrets, config.mattermost_webhook_url)
     return config
 
 
@@ -87,11 +150,7 @@ def _stage2_config(state_dir: str) -> Config:
     # Credentials are delivered separately through systemd credentials or the
     # root-only credentials directory. Older v2 manifests persisted only the
     # Telegram chat id, so discard both halves before strict config validation.
-    config_data = {
-        key: value
-        for key, value in saved.items()
-        if key not in {"telegram_bot_token", "telegram_chat_id"}
-    }
+    config_data = persisted_config_data(saved)
     try:
         config = load_config(raw_json=json.dumps(config_data))
     except ConfigError as exc:
@@ -109,12 +168,12 @@ def _make_installer(
     config = _load_config(args, runtime)
     return Installer(
         config,
-        HostActions(dry_run=bool(getattr(args, "dry_run", False))),
+        HostActions(dry_run=runtime.dry_run),
         inspect_host=inspect_host,
     )
 
 
-def _make_resume_installer(args: Any) -> Installer:
+def _make_resume_installer(runtime: Any) -> Installer:
     state_dir = os.environ.get("VBPUB_STATE_DIR", "")
     if not state_dir.startswith("/"):
         raise CliFailure(
@@ -126,7 +185,7 @@ def _make_resume_installer(args: Any) -> Installer:
         config = _stage2_config(state_dir)
     except StateError as exc:
         raise CliFailure(str(exc), exit_code=2) from exc
-    return Installer(config, HostActions(dry_run=bool(getattr(args, "dry_run", False))))
+    return Installer(config, HostActions(dry_run=runtime.dry_run))
 
 
 def _render_status(status: dict[str, Any]) -> str:
@@ -182,16 +241,23 @@ def _wizard(args: Any, runtime: Any) -> int:
 
     return run_configuration_wizard(
         output_path=args.output,
-        from_config=getattr(args, "from_config", None),
+        from_config=args.from_config,
         runtime=runtime,
         save=save_config,
     )
 
 
 def _install(args: Any, runtime: Any) -> int:
-    installer = _make_installer(args, runtime)
+    config = _load_config(args, runtime, report_failure=True)
+    installer = Installer(config, HostActions(dry_run=runtime.dry_run), inspect_host=False)
     actions = installer.actions
-    plan = installer.show_plan()
+    # LT-EARLY: everything after config parsing runs under the installer's
+    # failure handling (failed state.json, controller key, ONE post), not
+    # just stage one. Host inspection and the plan preview used to sit
+    # outside it, so an invalid-but-parseable config died silently.
+    with installer.failure_guard("stage1"):
+        installer.inspect()
+        plan = installer.show_plan()
     if not actions.dry_run:
         runtime.output.emit(
             "info",
@@ -211,7 +277,7 @@ def _install(args: Any, runtime: Any) -> int:
 
 
 def _resume(args: Any, runtime: Any) -> int:
-    installer = _make_resume_installer(args)
+    installer = _make_resume_installer(runtime)
     if not installer.actions.dry_run and not runtime.confirm(
         "Resume stage two and apply the remaining host changes?"
     ):
@@ -248,7 +314,12 @@ def _disable_stage2(args: Any, runtime: Any) -> int:
     ):
         return 0
     installer.disable_stage2()
-    runtime.output.info("Stage-two service disabled and completion marker recorded.")
+    if installer.actions.dry_run:
+        runtime.output.primary_json(
+            {"result": "planned", "actions": _planned_actions(installer.actions)}
+        )
+    else:
+        runtime.output.info("Stage-two service disabled and completion marker recorded.")
     return 0
 
 
@@ -266,18 +337,26 @@ def _build_customscript(args: Any, runtime: Any) -> int:
     try:
         bundle = build_customscript_bundle(
             config,
-            repo_url=getattr(args, "repo_url", None),
-            repo_branch=getattr(args, "repo_branch", None),
-            bootstrap_url=getattr(args, "bootstrap_url", None),
-            controller_ssh_placeholder=getattr(
-                args, "controller_ssh_placeholder", False
-            ),
+            repo_url=args.repo_url,
+            repo_branch=args.repo_branch,
+            bootstrap_url=args.bootstrap_url,
+            controller_ssh_placeholder=args.controller_ssh_placeholder,
         )
     except (ValueError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
-    if config.telegram_bot_token and not runtime.debug_raw:
+    # Recipe hazard: say which branch/commit the host will run (the default is
+    # `main`, which silently ran old code on a feature-branch test).
+    info_lines, warning_lines = describe_fetch_source(
+        args.repo_url, args.repo_branch, checkout_dir=str(Path(__file__).resolve().parent),
+    )
+    for line in info_lines:
+        runtime.output.info(line)
+    for line in warning_lines:
+        runtime.output.warn(line)
+    if (config.telegram_bot_token or config.mattermost_webhook_url) and not runtime.debug_raw:
         raise CliFailure(
-            "the generated bundle contains the Telegram bot token and must not be redacted",
+            "the generated bundle contains a notification secret (Telegram bot token or "
+            "Mattermost webhook URL) and must not be redacted",
             exit_code=2,
             hint=(
                 "write it to a protected file with umask 077, or explicitly use "
@@ -302,6 +381,8 @@ def build_cli():
             f"{PROG}.py install --config install.json",
         ),
         logging_logger="debian_install_v2",
+        expected_exceptions=DOMAIN_ERRORS,
+        unexpected_exceptions="report",
     )
 
     configuration = _config_options()
@@ -340,17 +421,22 @@ def build_cli():
     registry.register(
         VerbSpec(
             name="install",
-            description="run stage one of a fresh Debian host installation",
+            description=(
+                "run stage one of a fresh Debian host installation: partition and "
+                "configure the host, then schedule the reboot that starts stage two"
+            ),
+            summary_description="run stage one of a fresh Debian host installation",
             group=VerbGroup.MODIFICATION.value,
             examples=(
                 f"{PROG}.py install --config install.json --dry-run",
                 f"{PROG}.py install --config install.json --yes",
             ),
             mutating=True,
+            dry_run=True,
             expensive=True,
             include_json=False,
             include_progress=False,
-            options=(*configuration, _dry_run_option()),
+            options=configuration,
             handler=_install,
         )
     )
@@ -359,12 +445,15 @@ def build_cli():
             name="resume",
             description="continue stage two after reboot from state under VBPUB_STATE_DIR (normally systemd-invoked)",
             group=VerbGroup.MODIFICATION.value,
-            examples=(f"{PROG}.py resume --yes",),
+            examples=(
+                f"{PROG}.py resume --dry-run",
+                f"{PROG}.py resume --yes",
+            ),
             mutating=True,
+            dry_run=True,
             expensive=True,
             include_json=False,
             include_progress=False,
-            options=(_dry_run_option(),),
             handler=_resume,
         )
     )
@@ -377,7 +466,10 @@ def build_cli():
             ),
             summary_description="show installation status",
             group=VerbGroup.EXPLORATION.value,
-            examples=(f"{PROG}.py status --config install.json",),
+            examples=(
+                f"{PROG}.py status --config install.json",
+                f"{PROG}.py status --config install.json --json",
+            ),
             include_json=True,
             include_progress=False,
             options=configuration,
@@ -421,9 +513,10 @@ def build_cli():
                 f"{PROG}.py disable-stage2 --config install.json --yes",
             ),
             mutating=True,
+            dry_run=True,
             include_json=False,
             include_progress=False,
-            options=(*configuration, _dry_run_option()),
+            options=configuration,
             handler=_disable_stage2,
         )
     )
@@ -464,7 +557,7 @@ def build_cli():
                     ("--controller-ssh-placeholder",),
                     "emit {{CONTROLLER_SSH_PUBKEY}} for a provider to replace at install time",
                     group="SSH KEY INTEGRATION",
-                    parser_kwargs={"action": "store_true", "default": False},
+                    parser_kwargs={"action": "store_true"},
                 ),
             ),
             handler=_build_customscript,
@@ -474,17 +567,7 @@ def build_cli():
 
 
 def main(argv: list[str] | None = None) -> int:
-    return build_cli().run(
-        argv=argv,
-        expected_exceptions=(
-            ActionError,
-            ConfigError,
-            InstallerError,
-            OSError,
-            StateError,
-            json.JSONDecodeError,
-        ),
-    )
+    return build_cli().run(argv=argv)
 
 
 if __name__ == "__main__":

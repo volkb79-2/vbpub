@@ -19,6 +19,50 @@ from conftest import FakeHTTPResponse
 
 # --- pure helpers --------------------------------------------------------
 
+HOOK = "https://mm.example.test/hooks/abcDEF123xyz"
+
+
+def test_redact_secrets_masks_mattermost_webhook_url(install_host_mod):
+    out = install_host_mod._redact_secrets(f"POST failed for {HOOK} (retrying)")
+    assert "abcDEF123xyz" not in out
+    assert "REDACTED_MATTERMOST_WEBHOOK_URL" in out
+
+
+SUB = "https://mm.example.test/chat/sub/hooks/SUBSECRET99"
+
+
+@pytest.mark.parametrize("wrapped", [
+    SUB, SUB + ".", SUB + "?x=1", SUB + "#frag", f"'{SUB}'", f'"{SUB}"', f"see {SUB}, ok",
+])
+def test_redact_secrets_masks_subpath_and_wrapped_webhook_urls(install_host_mod, wrapped):
+    out = install_host_mod._redact_secrets(wrapped)
+    assert "SUBSECRET99" not in out and "sub/hooks" not in out
+
+
+def test_log_redaction_masks_subpath_url_and_the_exact_configured_value(install_host_mod, monkeypatch):
+    import netcup_scp_client as client
+    monkeypatch.setenv("MATTERMOST_WEBHOOK_URL", "https://odd.example.test/not-a-hook-path/TOKEN777")
+    out = client._redact_for_log({"a": f"x {SUB} y", "b": "z https://odd.example.test/not-a-hook-path/TOKEN777"})
+    assert "SUBSECRET99" not in json.dumps(out) and "TOKEN777" not in json.dumps(out)
+    assert "TOKEN777" not in install_host_mod._redact_secrets("curl https://odd.example.test/not-a-hook-path/TOKEN777")
+
+
+def test_dict_with_webhook_key_registers_the_value_for_later_masking(install_host_mod):
+    import netcup_scp_client as client
+    client._KNOWN_WEBHOOK_URLS.clear()
+    client._redact_for_log({"mattermost_webhook_url": "https://x.test/odd/ZZTOP55"})
+    assert "ZZTOP55" not in install_host_mod._redact_secrets("err at https://x.test/odd/ZZTOP55 failed")
+    client._KNOWN_WEBHOOK_URLS.clear()
+
+
+def test_log_redaction_masks_webhook_key_and_embedded_url(install_host_mod):
+    import netcup_scp_client as client
+    red = client._redact_for_log(
+        {"MATTERMOST_WEBHOOK_URL": HOOK, "note": f"see {HOOK}", "list": [HOOK]}
+    )
+    assert "abcDEF123xyz" not in json.dumps(red)
+
+
 def test_strip_jsonc_comments_line_and_block(install_host_mod):
     text = '{\n  "a": 1, // comment\n  "b": /* block */ 2\n}'
     parsed = json.loads(install_host_mod._strip_jsonc_comments(text))
@@ -67,6 +111,31 @@ def test_expand_payload_placeholders_warns_when_controller_ssh_pubkey_missing(in
 
 def test_expand_payload_placeholders_leaves_opaque_script_unchanged(install_host_mod):
     payload = {"customScript": "echo hello | python3 -"}
+    assert install_host_mod._expand_payload_placeholders(payload) == payload
+
+
+def _v2_script(config):
+    import shlex
+    return "REPO_BRANCH=main VBPUB_CONFIG_EXTRA_JSON=" + shlex.quote(json.dumps(config)) + " python3 -c pass"
+
+
+def test_expand_refuses_retain_key_script_without_key_or_marker(install_host_mod):
+    # LT-05 attempt 2: right branch, no placeholder -> the script could never install a key.
+    payload = {"customScript": _v2_script({"retain_controller_ssh_key": True, "controller_ssh_pubkey": ""})}
+    with pytest.raises(ValueError, match="could never install a key"):
+        install_host_mod._expand_payload_placeholders(payload)
+
+
+def test_expand_accepts_retain_key_script_with_marker_or_explicit_key(install_host_mod, monkeypatch):
+    monkeypatch.setenv("CONTROLLER_SSH_PUBKEY", "ssh-ed25519 AAAAtest vbpub-controller-ephemeral")
+    marker = {"customScript": _v2_script({"retain_controller_ssh_key": True, "controller_ssh_pubkey": "{{CONTROLLER_SSH_PUBKEY}}"})}
+    assert "AAAAtest" in install_host_mod._expand_payload_placeholders(marker)["customScript"]
+    explicit = {"customScript": _v2_script({"retain_controller_ssh_key": True, "controller_ssh_pubkey": "ssh-ed25519 AAAAx c"})}
+    assert install_host_mod._expand_payload_placeholders(explicit) == explicit
+
+
+def test_expand_ignores_scripts_that_do_not_retain_a_key(install_host_mod):
+    payload = {"customScript": _v2_script({"retain_controller_ssh_key": False, "controller_ssh_pubkey": ""})}
     assert install_host_mod._expand_payload_placeholders(payload) == payload
 
 

@@ -27,8 +27,12 @@ enforcement = "gate"
 # container); this devcontainer itself has no /opt/tester-venv, so `assay
 # run r2` cannot be run locally outside that container as a side effect.
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests", "-q"]
-env = { PYTHONPATH = ".", PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = ["PATH"]
+# PYTHONPATH is passed through, not declared: the cli-extended library path
+# lives only in run-gate.toml's [lanes.r2] (the one file the cli-extended
+# audit exempts from its no-path-hacks check). pytest adds the working
+# directory (the project) to sys.path itself.
+env = { PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH", "PYTHONPATH"]
 budget = "50m"
 allow_argv_append = false
 

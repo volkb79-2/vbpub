@@ -732,6 +732,10 @@ def _print_dry_run_ssh_plan(args: argparse.Namespace, ip_address: Optional[str])
         "[dry-run] Local controller key after the completion marker: "
         f"{getattr(args, 'local_controller_key', None)}"
     )
+    print(
+        "[dry-run] On-host controller key after the completion marker: "
+        f"{getattr(args, 'host_controller_key', None) or 'not declared by the customScript'}"
+    )
 
 
 def _fmt_ts(ts: Optional[str]) -> str:
@@ -744,8 +748,10 @@ _RE_TELEGRAM_BOT_TOKEN = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}\b")
 
 
 def _redact_secrets(text: str) -> str:
-    # Telegram bot tokens are secrets; avoid printing or persisting them.
-    return _RE_TELEGRAM_BOT_TOKEN.sub("***REDACTED_TELEGRAM_BOT_TOKEN***", text)
+    # Telegram bot tokens and Mattermost webhook URLs are secrets; avoid
+    # printing or persisting them.
+    text = _RE_TELEGRAM_BOT_TOKEN.sub("***REDACTED_TELEGRAM_BOT_TOKEN***", text)
+    return netcup_scp_client._mask_webhook_urls(text)
 
 
 def _extract_primary_ipv4(server_details: Dict[str, Any]) -> Optional[str]:
@@ -1337,6 +1343,95 @@ def _payload_needs_controller_key(payload: Optional[Dict[str, Any]]) -> bool:
     return isinstance(custom_script, str) and "{{CONTROLLER_SSH_PUBKEY}}" in custom_script
 
 
+_RETAIN_TRUE = {"yes", "true", "1", "on"}
+_RETAIN_FALSE = {"no", "false", "0", "off"}
+_RETAIN_ENV_RE = re.compile(
+    r"(?<![A-Za-z0-9_])RETAIN_CONTROLLER_SSH_KEY=(?P<value>'[^']*'|\"[^\"]*\"|[^\s;&|'\"]*)"
+)
+
+
+def _custom_script_host_key_retention(custom_script: Optional[str]) -> Optional[bool]:
+    """Whether the customScript says the host keeps the controller key.
+
+    Detects the two producer markers debian-install-v2 defines: the
+    ``"retain_controller_ssh_key"`` boolean inside the quoted
+    ``VBPUB_CONFIG_EXTRA_JSON=`` assignment (wins, like the bootstrap's own
+    merge order) and a ``RETAIN_CONTROLLER_SSH_KEY=<value>`` assignment found
+    by scanning the raw text (so ``export X=yes; run`` and ``X=yes;cmd`` are
+    seen too; last assignment wins).  Values are normalised exactly like
+    bootstrap-remote.py (yes/true/1/on, no/false/0/off, case-insensitive).
+    An env assignment with any other non-empty value is "declared but
+    invalid" and raises CliFailure (exit 2): the bootstrap would reject it
+    too, and guessing "not declared" could leave a retained host key behind
+    a deleted local private key.
+    Limitation: a script whose JSON cannot be shell-split or parsed, or that
+    sets the policy by any other mechanism (nested ``sh -c '...'`` with
+    inner quoting, computed values), yields None ("not declared") -- never
+    a guess; the operator must then pass ``--local-controller-key`` knowingly.
+    """
+    if not isinstance(custom_script, str):
+        return None
+    from_json: Optional[bool] = None
+    try:
+        tokens = shlex.split(custom_script)
+    except ValueError:
+        tokens = []
+    for token in tokens:
+        name, sep, value = token.partition("=")
+        if sep and name == "VBPUB_CONFIG_EXTRA_JSON":
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and isinstance(parsed.get("retain_controller_ssh_key"), bool):
+                from_json = parsed["retain_controller_ssh_key"]
+    from_env: Optional[bool] = None
+    for match in _RETAIN_ENV_RE.finditer(custom_script):
+        raw = match.group("value").strip("'\"").strip().lower()
+        if raw == "":
+            continue  # empty == unset, as in the bootstrap
+        if raw in _RETAIN_TRUE:
+            from_env = True
+        elif raw in _RETAIN_FALSE:
+            from_env = False
+        else:
+            raise CliFailure(
+                f"RETAIN_CONTROLLER_SSH_KEY={match.group('value')} in the customScript is not "
+                "yes/no/true/false/1/0/on/off; the bootstrap would reject it and the host "
+                "key policy cannot be reconciled with --local-controller-key",
+                exit_code=2,
+                hint="set RETAIN_CONTROLLER_SSH_KEY to yes or no",
+            )
+    return from_json if from_json is not None else from_env
+
+
+def _reconcile_local_key_with_host(args: argparse.Namespace, custom_script: Optional[str]) -> None:
+    """Enforce the 2x2 policy: host retain + local remove is rejected.
+
+    A host that keeps the controller's authorized_keys line is useless if the
+    private half was deleted.  Host retain therefore makes the LOCAL default
+    ``retain`` and refuses an explicit local ``remove``.
+    """
+    host_retains = _custom_script_host_key_retention(custom_script)
+    args.host_controller_key = (
+        None if host_retains is None else ("retain" if host_retains else "remove")
+    )
+    if not host_retains:
+        return
+    if getattr(args, "local_controller_key", None) != "remove":
+        return
+    if getattr(args, "local_controller_key_explicit", False):
+        raise CliFailure(
+            "host retain / local remove is not a valid controller-key policy: the customScript "
+            "retains the controller key on the host (retain_controller_ssh_key), but "
+            "--local-controller-key remove would delete its private half",
+            exit_code=2,
+            hint="use --local-controller-key retain, or make the customScript remove the host key",
+        )
+    args.local_controller_key = "retain"
+    _set_controller_retention_environment(args)
+
+
 def _load_custom_script_file(path: str) -> tuple[str, Optional[str]]:
     """Read an opaque customScript command or a generator JSON bundle."""
     try:
@@ -1777,6 +1872,41 @@ def install_from_payload(
         raise CliFailure(_http_failure_message(exc)) from exc
 
 
+def _customscript_key_recipe_problem(custom_script: str) -> str:
+    """Return a message when a debian-install-v2 customScript asks to retain the
+    controller key but carries neither a key nor the {{CONTROLLER_SSH_PUBKEY}}
+    marker (it could never install one; the host would be unreachable), else "".
+
+    Only a script that embeds a VBPUB_CONFIG_EXTRA_JSON config is inspected;
+    any other opaque customScript is left alone.
+    """
+    if "{{CONTROLLER_SSH_PUBKEY}}" in custom_script:
+        return ""
+    try:
+        tokens = shlex.split(custom_script)
+    except ValueError:
+        return ""
+    for token in tokens:
+        if not token.startswith("VBPUB_CONFIG_EXTRA_JSON="):
+            continue
+        try:
+            config = json.loads(token.split("=", 1)[1])
+        except ValueError:
+            return ""
+        if (
+            isinstance(config, dict)
+            and config.get("retain_controller_ssh_key") is True
+            and not str(config.get("controller_ssh_pubkey") or "").strip()
+        ):
+            return (
+                "customScript sets retain_controller_ssh_key=true but has neither a "
+                "controller_ssh_pubkey nor the {{CONTROLLER_SSH_PUBKEY}} marker, so it "
+                "could never install a key; rebuild it with "
+                "`debian-install-v2.py build-customscript --controller-ssh-placeholder`"
+            )
+    return ""
+
+
 def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Expand only the provider-neutral controller-key marker.
 
@@ -1790,6 +1920,10 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
         return expanded
 
     controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "") or CONTROLLER_SSH_PUBLIC_KEY
+
+    problem = _customscript_key_recipe_problem(cs)
+    if problem:
+        raise ValueError(problem)
 
     def shell_single_quote_contents(value: str) -> str:
         return value.replace("'", "'\"'\"'")
@@ -2114,6 +2248,10 @@ def _prepare_runtime_arguments(cli_args, runtime):
         cli_args.simulate_disconnect_seconds = None
     if getattr(cli_args, "attach_task_uuid", None) is None:
         cli_args.attach_task_uuid = None
+    cli_args.local_controller_key_explicit = (
+        getattr(cli_args, "local_controller_key", None) is not None
+        or os.environ.get("NETCUP_SCP_API_CONTROLLER_KEY_LOCAL_RETENTION") is not None
+    )
     if getattr(cli_args, "local_controller_key", None) is None:
         cli_args.local_controller_key = os.environ.get(
             "NETCUP_SCP_API_CONTROLLER_KEY_LOCAL_RETENTION",
@@ -2240,6 +2378,11 @@ def _run_install_workflow_body(args, runtime):
     wizard_custom_script_text, wizard_completion_marker = wizard_custom_script
     if wizard_completion_marker and not getattr(args, "completion_marker", None):
         args.completion_marker = wizard_completion_marker
+    # Before authentication and any key work: refuse host retain + local remove.
+    _reconcile_local_key_with_host(
+        args,
+        wizard_custom_script_text or (payload_for_target or {}).get("customScript"),
+    )
 
     # Authentication and target/protection checks deliberately precede every
     # controller-key read or generation.

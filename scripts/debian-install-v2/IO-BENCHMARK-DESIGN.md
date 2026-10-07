@@ -1,15 +1,90 @@
-# io.cost benchmark — design note (not yet implemented)
+# io.cost benchmark — design note (implemented 2026-10-06, LT-IOB; live validation pending)
 
-Status: `Config.run_io_benchmark`/`io_benchmark_duration_s`/
-`io_benchmark_max_size_gb` exist (`debian_install_v2/config.py`) and the
-kernel's own `iocost_coef_gen.py` is vendored (`debian_install_v2/vendor/`).
-MDT host setup and `iocost-calibrate.sh` consume the shared generated
-artifact from `tools/`; nothing in `installer.py` invokes it yet. This note captures the design
-worked out 2026-09-09 so the actual partition-surgery integration can be
-built as its own careful, reviewed pass — the same way
-`CASE-B-ROOT-SHRINK-DESIGN.md` preceded that feature's implementation,
-rather than folding brand-new live-disk-mutation code into an already large
-batch of unrelated changes.
+Status: IMPLEMENTED as `Installer._run_io_benchmark()` in
+`debian_install_v2/installer.py`, called from `_stage2()` between
+`_verify_and_apply_root_shrink()` and the swap shape. It has run only against
+a simulated disk (`tests/test_io_benchmark.py`); the first real run is a
+controller-driven netcup test. The design below was worked out 2026-09-09;
+`LT-IOB-REPORT.md` has the as-built action sequence.
+
+## As built, and deviations from the design below
+
+- **One write path.** The forward sfdisk/partx/settle/readback-verify block and
+  the rollback block of `_apply_known_swap_shape()` were extracted unchanged
+  into `_write_and_verify_partition_plan()` and `_restore_partition_table()`;
+  swap placement and the benchmark both call them. `_validate_plan_geometry()`
+  is untouched. The benchmark has its own small
+  `_validate_benchmark_plan()` (adds exactly one partition, changes nothing,
+  stays clear of the swap region).
+- **Placement:** the throwaway partition sits at the TAIL of the disk, number
+  `root_number + swap_file_count + 1` (above every swap number), named
+  `vbpub-iobench`, so it cannot overlap swap and a leftover is identifiable.
+- **Sizing:** `min(io_benchmark_max_size_gb, tail free - swap requirement -
+  1 GiB margin)`, 2048-sector aligned; under 2 GiB the step is `skipped`
+  (not a failure).
+- **Cleanup is the same primitive as the rollback:** restore the pre-benchmark
+  table with `sfdisk --force`, `partx -d --nr N:N`, `partx -u`,
+  `udevadm settle`, then read the table back and require it to equal the
+  pre-benchmark layout and the device node to be gone. (`sfdisk --delete` is
+  not on the action allowlist and was not added.) Cleanup runs on success and
+  on every failure after the partition write was attempted. Cleanup failure
+  raises and stops stage 2 before swap placement; a failed `io_benchmark`
+  marker is not terminal, so a resumed stage 2 re-checks.
+- **Resume:** a terminal step status (`success`/`skipped`/`warned`) skips the
+  step; otherwise a leftover `vbpub-iobench` partition is unmounted and
+  deleted (via the live table minus that one line) before anything else. A
+  partition at that number that is NOT ours is left alone and the step is
+  skipped.
+- **Case B (decision 2026-10-06, kept for both cases):** the benchmark always
+  uses the throwaway TAIL partition, never a raw swap partition. In Case B it
+  runs after the hook has written the swap partitions into the table but
+  BEFORE `mkswap` and activation, and only when at least 2 GiB remain after
+  the last existing partition (and the 1 GiB margin); otherwise the step is
+  `skipped`. It uses the same sizing with the existing partitions' end as the
+  "requirement". How often that skips depends on the disk (free tail =
+  disk - root target - swap, which can be several GiB), so "usually skips" is
+  NOT claimed. The swap partitions are untouched and unformatted at that
+  point, so the tail partition is safe.
+- **Resume safety:** `_stage2()` derives "swap partitions already written" from
+  the LIVE table (all planned swap partitions present with the exact start, size
+  and type), not only from `_verify_and_apply_root_shrink()`'s first-pass return
+  value; a re-run after the deliberate cleanup-failure stop therefore skips the
+  swap write instead of tripping `_validate_plan_geometry()`. Partial or
+  mismatching presence still refuses.
+- **Timeouts and the scheduler (fix round 1):** `HostActions.run(timeout=)`
+  runs the command in its own session; on expiry the process GROUP gets
+  SIGTERM, then SIGKILL after a grace period; a child that cannot be reaped
+  (`ActionUnreapable`) is a cleanup failure and stops the install without
+  touching the device. Tool timeout `6 x duration x 3 + testfile_gb x 30 + 120`
+  s (the test-file fill is not covered by `--duration`); `sync`/`umount` 120 s,
+  `mkfs` 300 s, `dd` 120 s. The disk's scheduler and `nomerges` are snapshotted
+  before the tool and restored afterwards (success or failure) with `tee`,
+  because the tool's atexit restore does not run on SIGTERM/SIGKILL.
+- **Cleanup robustness:** `udevadm settle` before the restore; `sfdisk --force
+  --no-reread` for the restore (a deliberate change to the shared rollback
+  path: the `partx -d`/`-u` that follow sync the kernel); `partx -d`/`-u`
+  retried up to 5 times with a 1 s backoff; the first MiB of the throwaway
+  partition is zeroed (`dd`) before deletion so no phantom ext4 signature
+  survives; the post-restore readback also compares uuid and name of the
+  preserved partitions and the disk label-id.
+- **Tool integrity:** besides the header hashes, the sha256 of the whole
+  generated body must equal the committed `tools/iocost_coef_gen.py.sha256`
+  (written by `build-iocost-generator.py`, verified by its `--check`). A
+  mismatch marks the step `warned` ("tool integrity check failed"), skips the
+  benchmark and the install continues.
+- **Tool check:** the artifact's header hashes are compared with the vendored
+  source and patches (same formula as `build-iocost-generator.py`); the file is
+  not regenerated (that needs `patch` and the repo layout). The tool is run by
+  absolute path from the bootstrap checkout; `fio` and `pv` are installed only
+  when the benchmark runs. The test file is 75% of the partition, at most 16 GiB.
+- **Advisory:** any failure before cleanup is recorded as step `warned`, the
+  partition is removed and the install continues. No `io.cost.model` /
+  `io.cost.qos` is written on a failed benchmark. (Update, LT-MEM 2026-10-06:
+  on a VALID result a boot-time unit now writes both; see README "io.cost".)
+- **Residual risks:** `HostActions.run` has no timeout (a hung `fio` would hang
+  stage 2); the tool switches the whole disk's scheduler to `none` for the run.
+
+## Original design (2026-09-09), kept for rationale
 
 ## What changed from the original idea
 
@@ -122,8 +197,7 @@ already proven in `_apply_known_swap_shape()`'s own mismatch-handling path
    exactly the same disk state it already knows how to handle; no changes
    to it or to `_validate_plan_geometry()` should be needed.
 
-This has not been implemented or reviewed yet. Do not build it without a
-dedicated pass (design review of the exact reused-primitive plan above,
-plus the standard fresh adversarial review before it's considered shipped)
-— this is live disk partition surgery, the single highest-bug-density area
-of this whole project.
+This is now implemented (see the top of this note) but NOT yet reviewed or
+live-validated: it needs the standard fresh adversarial review before it is
+considered shipped — this is live disk partition surgery, the single
+highest-bug-density area of this whole project.

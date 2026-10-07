@@ -1,43 +1,36 @@
 from __future__ import annotations
 
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-from cli_extended import CliIdentity, assert_cli_contract
+from cli_extended import assert_cli_contract, make_invoker
 
-from debian_install_v2.bootstrap import build_cli, main
+from debian_install_v2.bootstrap import IDENTITY, build_cli, main
 
 PROJECT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = PROJECT / "debian-install-v2.py"
-IDENTITY = CliIdentity(
-    name="DEBIAN-INSTALL-V2",
-    command="debian-install-v2",
-    version="2",
-    long_name="Debian host installer",
-)
+
+
+def test_identity_version_comes_from_the_version_file_not_a_literal():
+    assert (PROJECT / "VERSION").read_text(encoding="utf-8") == "2.0.0\n"
+    assert (IDENTITY.name, IDENTITY.command, IDENTITY.long_name, IDENTITY.version) == (
+        "DEBIAN-INSTALL-V2",
+        "debian-install-v2",
+        "Debian host installer",
+        "2.0.0",
+    )
+    assert IDENTITY.version_line == "debian-install-v2 2.0.0"
+    import debian_install_v2
+
+    assert not hasattr(debian_install_v2, "__version__")
 
 
 def test_executable_obeys_shared_cli_contract_without_touching_host_or_home(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-
-    def invoke(argv):
-        environment = os.environ.copy()
-        environment["HOME"] = str(home)
-        environment["NO_COLOR"] = "1"
-        environment.pop("VBPUB_STATE_DIR", None)
-        return subprocess.run(
-            [sys.executable, str(ENTRYPOINT), *argv],
-            cwd=tmp_path,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    invoke = make_invoker(ENTRYPOINT, home=home, cwd=tmp_path, env={"VBPUB_STATE_DIR": None})
 
     assert_cli_contract(
         invoke,
@@ -74,7 +67,7 @@ def test_bare_invocation_prints_help_without_running_an_action(capsys):
     assert main([]) == 0
     result = capsys.readouterr()
     assert result.err == ""
-    assert result.out.startswith("DEBIAN-INSTALL-V2 2 — Debian host installer\n")
+    assert result.out.startswith("DEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n")
     assert "Prepare settings, review the host plan" in result.out
     assert "status (--config FILE | --config-json JSON)" not in result.out
     assert "show installation status" in result.out
@@ -109,7 +102,7 @@ def test_config_source_grammar_and_verb_description_are_library_rendered(capsys)
     refusal = capsys.readouterr().err
     assert "one of the arguments --config --config-json is required" in refusal
     assert refusal.startswith("[ERROR]")
-    assert "\n\nDEBIAN-INSTALL-V2 2 — Debian host installer\n\nusage:" in refusal
+    assert "\n\nDEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n\nusage:" in refusal
     assert "\n\nusage:" in refusal
 
     assert main(["status", "--help"]) == 0

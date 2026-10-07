@@ -52,8 +52,8 @@ of the raw stock image (see "Skipping repeated first-boot cost" below):
 ./run-vm-harness.sh prepare-ready-base case-b   # one-time: base-prep + cloud-init once + disable it
 ./run-vm-harness.sh start iter1 --case case-b-ready
 ./run-vm-harness.sh wait iter1     # boots straight past cloud-init entirely
-./run-vm-harness.sh copy iter1 ../../debian_install_v2 /home/tester/debian_install_v2
-./run-vm-harness.sh ssh iter1 -- 'cd debian_install_v2 && sudo python3 -m debian_install_v2 ...'
+./run-vm-harness.sh copy iter1 ../.. /home/tester/debian-install-v2   # the whole project dir: entrypoint + package + wheel
+./run-vm-harness.sh ssh iter1 -- 'cd debian-install-v2 && sudo python3 debian-install-v2.py ...'   # never `python3 -m debian_install_v2...` (bypasses the wheel path)
 ./run-vm-harness.sh destroy iter1   # the case-b-ready base itself is untouched -- next iter starts identical
 ```
 
