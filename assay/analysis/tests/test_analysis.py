@@ -827,8 +827,10 @@ def test_verdict_inspection_reuses_real_verifier_and_refuses_false_certification
     elif problem == "duplicate":
         text = text.replace('"exit_code": 0', '"exit_code": 0, "exit_code": 0')
     elif problem == "schema":
+        current_schema = f'"schema_version": {VERDICT_SCHEMA_VERSION}'
+        assert current_schema in text
         text = text.replace(
-            f'"schema_version": {VERDICT_SCHEMA_VERSION}',
+            current_schema,
             f'"schema_version": {VERDICT_SCHEMA_VERSION - 1}',
             1,
         )

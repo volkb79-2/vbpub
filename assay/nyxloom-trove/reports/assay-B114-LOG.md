@@ -255,3 +255,7 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   (**162 passed in 6.56s**), and `git diff --check` passed.
 - A fresh registered gate is still required on the reviewed repair commit,
   followed by `self-qualification-preflight`; no B105 R2 campaign ran.
+- Strengthened the schema mutation oracle to assert the fixture actually carries
+  the imported current schema before replacing it. This makes fixture/schema
+  drift fail loudly instead of leaving an unchanged valid verdict. The analysis
+  test file passed again (**162 passed in 6.65s**); `git diff --check` passed.
