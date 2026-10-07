@@ -141,17 +141,30 @@ def _docker(args: list[str], stdin: str | None = None, timeout: float = 60) -> t
     return p.returncode, p.stdout, p.stderr
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        return None  # surfaces the 3xx as an HTTPError instead of following it
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _http(req: Request, timeout: float) -> Response:
     r = urllib.request.Request(req.url, method=req.method, headers=dict(req.headers),
                                data=req.body.encode() if req.body is not None else None)
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:  # noqa: S310
+        # never follow redirects: urllib would forward Authorization to the target
+        with _OPENER.open(r, timeout=timeout) as resp:
             body = resp.read(1 << 20).decode("utf-8", "replace")
             return Response(resp.status, body, (time.monotonic() - t0) * 1000)
     except urllib.error.HTTPError as exc:
         body = exc.read(1 << 20).decode("utf-8", "replace")
-        return Response(exc.code, body, (time.monotonic() - t0) * 1000)
+        err = ""
+        if 300 <= exc.code < 400:
+            loc = urlsplit(exc.headers.get("Location", "") or "")
+            err = f"redirect to host {loc.hostname or '(relative)'} not followed"
+        return Response(exc.code, body, (time.monotonic() - t0) * 1000, err)
     except Exception as exc:  # noqa: BLE001 - network errors of every kind
         reason = getattr(exc, "reason", exc)
         return Response(0, "", (time.monotonic() - t0) * 1000,
@@ -199,11 +212,12 @@ def read_secret(stack_dir: Path, name: str) -> str | None:
 def describe_hook(url: str) -> dict[str, Any]:
     """Anatomy of a webhook URL; the display form never carries more than the
     first four characters of the hook id."""
-    p = urlsplit(url)
     try:
+        p = urlsplit(url)
         port = p.port
     except ValueError:
-        port = None
+        return {"scheme": "", "host": "", "port": None, "id": None, "base": "",
+                "display": "<unparseable URL>"}
     port = port or {"http": 80, "https": 443}.get(p.scheme)
     host = p.hostname or ""
     m = re.fullmatch(r"/hooks/([A-Za-z0-9]+)", p.path)
@@ -293,7 +307,7 @@ def eval_ping(resp: Response) -> tuple[bool, str]:
     if resp.status == 0:
         return False, f"no response: {resp.error}"
     if resp.status != 200:
-        return False, f"HTTP {resp.status}"
+        return False, f"HTTP {resp.status}" + (f" ({resp.error})" if resp.error else "")
     data = resp.json()
     if not isinstance(data, dict) or data.get("status") != "OK":
         return False, f"HTTP 200 but body is not status OK ({len(resp.body)} bytes)"
@@ -519,10 +533,15 @@ def run(args: argparse.Namespace, env: Env, red: Redactor) -> tuple[list[Result]
                 add(f"pat {t['name']}", v.label, FAIL, f"users/me HTTP {resp.status}: token rejected")
             else:
                 add(f"pat {t['name']}", v.label, FAIL,
-                    f"users/me {'HTTP ' + str(resp.status) if resp.status else 'no response: ' + resp.error}")
+                    f"users/me {'HTTP ' + str(resp.status) + (' (' + resp.error + ')' if resp.error else '') if resp.status else 'no response: ' + resp.error}")
 
     # ---- accounts ----
-    accounts = prov.get("accounts", []) or []
+    accounts = []
+    for i, a in enumerate(prov.get("accounts", []) or []):
+        if isinstance(a, dict) and isinstance(a.get("username"), str) and a["username"]:
+            accounts.append(a)
+        else:
+            add(f"account #{i + 1}", "config", FAIL, "account entry has no username")
     data_v = local if external_base and res["local"][("ping", "external")].status == 200 else (
         net_vantages[0] if net_vantages else None)
     if accounts:

@@ -243,6 +243,7 @@ def test_discovery_from_ciu_toml_and_docker(tmp_path, capsys):
     assert len(runs) == len(NETS)
     for c in runs:
         assert c[c.index("--name") + 1].startswith("mmreach-")
+        assert "--rm" in c[: c.index(mr.DEFAULT_IMAGE)]  # throwaway: auto-removed
         assert not any(f in c for f in ("--net=host", "--pid=host", "--cgroupns=host"))
     assert {c[c.index("--network") + 1] for c in runs} == set(NETS)
     # no secret value or url on any docker argv
@@ -476,6 +477,70 @@ def test_exit_1_when_container_missing(tmp_path, capsys):
     world.docker = docker
     rc, data = results(world, stack, capsys)
     assert find(data, "container")[0]["result"] == "FAIL"
+    assert rc == 1
+
+
+def test_local_http_never_follows_redirects_or_leaks_token():
+    import http.server
+    import threading
+
+    seen: list[dict] = []
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append(dict(self.headers))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+
+    class Redirector(Target):
+        def do_GET(self):  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{target.server_port}/steal?x=secretpath")
+            self.end_headers()
+
+    redir = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+    for s in (target, redir):
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        req = mr.Request("k", "GET", f"http://127.0.0.1:{redir.server_port}/x",
+                         {"Authorization": f"Bearer {TOK_BOT}"})
+        resp = mr._http(req, 5)
+    finally:
+        for s in (target, redir):
+            s.shutdown()
+            s.server_close()
+    assert resp.status == 302
+    assert "redirect to host localhost" in resp.error and "secretpath" not in resp.error
+    assert seen == [], "redirect target was contacted (token would have been forwarded)"
+    ok, detail = mr.eval_ping(resp)
+    assert not ok and "302" in detail
+
+
+def test_malformed_hook_url_is_one_fail_row_and_run_continues(tmp_path, capsys):
+    world, stack = FakeWorld(), make_stack(tmp_path)
+    (stack / ".ciu" / "secrets" / "wh_int").write_text(f"http://[bad/hooks/{HOOK_INT}\n")
+    rc, out, err = run_main(world, stack, capsys, "--json", "--post")
+    data = json.loads(out)
+    rows = find(data, "webhook wh_int", "config")
+    assert len(rows) == 1 and rows[0]["result"] == "FAIL" and "malformed URL" in rows[0]["detail"]
+    assert find(data, "webhook wh_int2", "config")[0]["result"] == "PASS"  # run continued
+    assert rc == 1
+    _assert_clean(out, err)
+
+
+def test_account_without_username_is_config_fail_and_run_continues(tmp_path, capsys):
+    world, stack = FakeWorld(), make_stack(tmp_path)
+    with open(stack / "ciu.toml", "a", encoding="utf-8") as fh:
+        fh.write('\n[[mattermost.provision.accounts]]\npassword_secret = "x"\n')
+    rc, data = results(world, stack, capsys)
+    bad = [r for r in data["results"] if r["vantage"] == "config" and r["check"].startswith("account #")]
+    assert len(bad) == 1 and bad[0]["result"] == "FAIL" and "no username" in bad[0]["detail"]
+    assert find(data, "account svc-admin")[0]["result"] == "PASS"  # others still verified
     assert rc == 1
 
 

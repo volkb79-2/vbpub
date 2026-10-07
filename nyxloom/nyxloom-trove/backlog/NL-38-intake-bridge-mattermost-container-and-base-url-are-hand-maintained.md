@@ -19,6 +19,8 @@ On 2026-10-06 04:23 the nyxloom checkout's ciu instance identity was regenerated
 The values were corrected by hand on 2026-10-07. The same hand-maintained pattern remains in:
 - `nyxloom/pwmcp-instance/README.md` (`nyxloom-1dd3d1-nyxloomd-net`, `nyxloom-1dd3d1-pwmcp`);
 - `nyxloom/mattermost/README.md` examples;
+- `nyxloom/mattermost/docker-compose.yml` line 25 comment (`nyxloom-1dd3d1-mattermost` as an example; `ciu.compose.yml.j2` itself carries no `1dd3d1`);
+- `nyxloom/docs/plan-benchmark-ingest.md`, `plan-logging.md` and `plan-next-batches.md` (`nyxloom-1dd3d1-pwmcp` / `nyxloom-1dd3d1-nyxloomd` in operational steps; historical plans, so decide per file whether to rewrite or leave dated);
 - `nyxloomd/ciu.toml` `container_prefix`, not examined.
 
 ## Expected
