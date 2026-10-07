@@ -534,9 +534,11 @@ def test_started_receipt_reader_retains_drain_descriptor_ownership_on_start_erro
 ):
     original_dup = os.dup
     original_start = threading.Thread.start
+    original_ident = threading.Thread.ident
     original_close = os.close
     drain_descriptors: list[int] = []
     drain_close_calls: list[int] = []
+    started_threads: list[threading.Thread] = []
 
     def record_dup(fd: int) -> int:
         duplicate = original_dup(fd)
@@ -546,7 +548,15 @@ def test_started_receipt_reader_retains_drain_descriptor_ownership_on_start_erro
     def start_then_fail(thread: threading.Thread) -> None:
         original_start(thread)
         if thread.name == "assay-witness-receipt":
+            assert thread.is_alive()
+            started_threads.append(thread)
             raise RuntimeError("injected post-start failure")
+
+    def unpublished_ident(thread: threading.Thread) -> int | None:
+        if thread.name == "assay-witness-receipt":
+            return None
+        assert original_ident.fget is not None
+        return original_ident.fget(thread)
 
     def record_close(fd: int) -> None:
         if fd in drain_descriptors:
@@ -556,11 +566,16 @@ def test_started_receipt_reader_retains_drain_descriptor_ownership_on_start_erro
     monkeypatch.setattr(os, "dup", record_dup)
     monkeypatch.setattr(os, "close", record_close)
     monkeypatch.setattr(threading.Thread, "start", start_then_fail)
+    monkeypatch.setattr(threading.Thread, "ident", property(unpublished_ident))
 
     with pytest.raises(AssayError, match="receipt reader") as raised:
         ReceiptCapture()
 
     assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+    assert len(started_threads) == 1
+    monkeypatch.setattr(threading.Thread, "ident", original_ident)
+    started_threads[0].join(1.0)
+    assert not started_threads[0].is_alive()
     assert len(drain_descriptors) == 1
     assert drain_close_calls == drain_descriptors
     with pytest.raises(OSError):

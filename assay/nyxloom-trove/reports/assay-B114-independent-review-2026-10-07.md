@@ -36,8 +36,25 @@ The independent review found three actionable gaps:
 - **P3:** this report said the follow-up test, review, and gate evidence “are
   recorded” while they were still pending.
 
-The corrections are in progress. The constructor now maps the whole pipe and
-reader setup boundary to `ERROR/EXEC_FAILED`, leaves a started reader's drain
-descriptor under reader ownership, and has focused failure-path oracles. The
-report now states that subsequent evidence is pending. The corrected commit's
-exact-tip review and registered gates are not complete yet.
+The follow-up now maps the whole pipe and reader setup boundary to
+`ERROR/EXEC_FAILED` and coordinates reader use and startup cleanup through a
+shared lock and closed flag. The report states that subsequent evidence is
+pending. The corrected commit's exact-tip review and registered gates are not
+complete yet.
+
+## Follow-up review of `b0d97239c`
+
+The independent review found one remaining **P3** ambiguity. If the OS thread
+has started but `Thread.start()` raises before publishing `ident`, the parent
+cannot infer descriptor ownership from `thread.ident`; closing the descriptor
+can race with the reader's `finally` close. The started-then-raised oracle in
+that commit forced the exception only after `start()` returned and did not
+cover the unpublished-ident state.
+
+The current correction uses one lock and closed flag shared by the reader and
+startup cleanup. The reader holds the lock while using the descriptor; either
+the reader or startup cleanup closes it once, and a late reader exits without
+touching it. The regression masks `ident` while a real reader thread starts
+and asserts exactly one close and a joined thread. The full unit module passed
+after this change (**98 passed in 12.80s**); exact-tip review and registered
+gates for the corrected commit remain pending.
