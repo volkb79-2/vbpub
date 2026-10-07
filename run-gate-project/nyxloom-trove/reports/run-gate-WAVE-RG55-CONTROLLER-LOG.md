@@ -7465,3 +7465,15 @@ Regression tests cover derived paths, fresh-root creation, non-directory
 refusal, and the R1/R2 passthrough contract. `assay-r1` must be rerun on the
 committed candidate; RG-85 is not treated as accepted until that live lane
 passes.
+
+### RW-478 — 2026-10-07 11:03:47 UTC — correct invalid state-root preflight fixtures
+
+The first post-RG-85 selftest on `9fa81a04c17c408a43caf20cbf826674648aa740`
+finished in 160.62 seconds with 1,702 passed, 3 failed, and 2 skipped. The
+three failures were fixture setup: state-preflight tests supplied a
+nonexistent synthetic `repo/` while stubbing later probe results. The new
+default-root creation correctly refused to invent missing parent
+directories. Those tests now create the repository directory they claim to
+probe; the separate missing-parent error test remains. This is a test-only
+follow-up, not a change to the RG-85 behavior. Selftest and R1 are still not
+accepted; rerun on the corrected committed tip.

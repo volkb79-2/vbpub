@@ -12804,6 +12804,8 @@ class TestResumeAndProgressAlways:
     ])
     def test_state_mount_refusal_names_ephemeral_or_host_runner(
             self, monkeypatch, tmp_path, env, runner):
+        repo = tmp_path / "repo"
+        repo.mkdir()
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (False, None))
         monkeypatch.setattr(run_gate, "build_env_probe_argv",
@@ -12811,8 +12813,8 @@ class TestResumeAndProgressAlways:
         with pytest.raises(run_gate.GateNotRunError) as exc:
             run_gate.assure_assay_state_root(
                 "/bin/docker", {"kind": "assay", "assay_lane": "unit"},
-                env, "runner", "fixture", tmp_path / "repo",
-                tmp_path / "repo" / "project", tmp_path / "repo", "slice")
+                env, "runner", "fixture", repo,
+                repo / "project", repo, "slice")
         assert exc.value.reason == "state-mount"
         assert runner in str(exc.value)
         if env:
@@ -12835,6 +12837,7 @@ class TestResumeAndProgressAlways:
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (True, None))
         repo = tmp_path / "repo"
+        repo.mkdir()
         project = repo / "project"
         run_gate.assure_assay_state_root(
             None, {"kind": "assay", "assay_lane": "unit"}, {},
@@ -12845,11 +12848,13 @@ class TestResumeAndProgressAlways:
             self, monkeypatch, tmp_path):
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (None, "daemon unavailable"))
+        repo = tmp_path / "repo"
+        repo.mkdir()
         with pytest.raises(run_gate.GateError, match="could not determine"):
             run_gate.assure_assay_state_root(
                 None, {"kind": "assay", "assay_lane": "unit"}, {},
-                "bare-host", "fixture", tmp_path / "repo",
-                tmp_path / "repo" / "project", tmp_path / "repo", "")
+                "bare-host", "fixture", repo,
+                repo / "project", repo, "")
 
     def test_state_mount_precondition_uses_the_closed_not_run_exit(
             self, monkeypatch, tmp_path, capsys):
