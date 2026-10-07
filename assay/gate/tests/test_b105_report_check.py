@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import functools
+import hashlib
 import importlib.util
 import json
 import os
@@ -12,13 +12,15 @@ import subprocess
 import sys
 import tomllib
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
 
-from gate.tests.support import PROJECT_ROOT, REPO_ROOT
+from assay.candidate_identity import candidate_id_from_fields
 from assay.verify import verify_document
+from gate.tests.support import PROJECT_ROOT, REPO_ROOT
 
 CHECKER = PROJECT_ROOT / "tools" / "b105_report_check.py"
 VERSION = "7.1.1.dev-b105"
@@ -31,7 +33,7 @@ def test_checker_git_argv_disables_automatic_maintenance():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     argv = module._git_argv("rev-parse", "HEAD")
-    pairs = tuple(zip(argv, argv[1:]))
+    pairs = tuple(pairwise(argv))
 
     assert ("-c", "maintenance.auto=false") in pairs
     assert ("-c", "maintenance.autoDetach=false") in pairs
@@ -155,10 +157,10 @@ def _verifier_valid_report(lane: str, rigor: tuple[str, ...]) -> dict:
 
     started = datetime.fromisoformat(document["started"])
     ended = datetime.fromisoformat(document["ended"])
-    created = (started - timedelta(minutes=1)).astimezone(timezone.utc).isoformat().replace(
+    created = (started - timedelta(minutes=1)).astimezone(UTC).isoformat().replace(
         "+00:00", "Z"
     )
-    expires = (ended + timedelta(minutes=1)).astimezone(timezone.utc).isoformat().replace(
+    expires = (ended + timedelta(minutes=1)).astimezone(UTC).isoformat().replace(
         "+00:00", "Z"
     )
     tree = _git_value("rev-parse", "HEAD^{tree}")
@@ -672,11 +674,36 @@ def test_accepts_full_3760_candidate_plan_report_and_deadline(tmp_path):
     lane, rigor = "self-qualification", ("R0", "R1", "R2", "R3")
     document = _verifier_valid_report(lane, rigor)
     mutation = next(claim["mutation"] for claim in document["claims"] if claim["rigor"] == "R2")
-    candidate_ids = [
-        hashlib.sha256(f"b105-candidate-{index}".encode("ascii")).hexdigest()
-        for index in range(3760)
-    ]
+    template = deepcopy(mutation["killed"][0])
+    source_sha256 = template["source_sha256"]
+    candidate_ids = []
+    outcomes = []
+    for index in range(3760):
+        outcome = deepcopy(template)
+        outcome["start_byte"] = 100 + index * 2
+        outcome["end_byte"] = outcome["start_byte"] + 1
+        outcome["replacement_sha256"] = hashlib.sha256(
+            f"b105-replacement-{index}".encode("ascii")
+        ).hexdigest()
+        outcome["mutated_file_sha256"] = hashlib.sha256(
+            f"b105-mutated-file-{index}".encode("ascii")
+        ).hexdigest()
+        outcome["candidate_id"] = candidate_id_from_fields(
+            path=outcome["path"],
+            source_sha256=source_sha256,
+            start_byte=outcome["start_byte"],
+            end_byte=outcome["end_byte"],
+            mutated_file_sha256=outcome["mutated_file_sha256"],
+            operator=outcome["operator"],
+        )
+        candidate_ids.append(outcome["candidate_id"])
+        outcomes.append(outcome)
+    mutation["candidate_count"] = len(candidate_ids)
+    mutation["total"] = len(candidate_ids)
+    mutation["killed"] = outcomes
     mutation["candidate_ids"] = candidate_ids
+    document["judgment"]["r2"]["max_mutants"] = len(candidate_ids)
+    assert verify_document(document) == []
     commit = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD")
     tree = _git_value("-C", str(REPO_ROOT), "rev-parse", "HEAD^{tree}")
     deadline_raw = _deadline_bytes(document, commit, tree)
@@ -1245,9 +1272,7 @@ def test_deadline_checks_precede_malformed_plan_refusal(
         deadline_raw = json.dumps(deadline, sort_keys=True, indent=2).encode("utf-8")
         document["campaign"]["deadline_sha256"] = hashlib.sha256(deadline_raw).hexdigest()
     else:
-        created = datetime.fromisoformat(
-            document["campaign"]["created_at_utc"].replace("Z", "+00:00")
-        )
+        created = datetime.fromisoformat(document["campaign"]["created_at_utc"])
         document["started"] = (created - timedelta(seconds=1)).isoformat()
 
     result = _run_checker(

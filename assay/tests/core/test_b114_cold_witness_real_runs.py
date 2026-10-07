@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import GitRepo
 
 from assay import cli
-from conftest import GitRepo
 
 
 def _seed_campaign(repo: GitRepo, attempt_log: Path) -> Path:
@@ -100,7 +99,10 @@ argv = [
   "-p", "pytest_cov.plugin",
 ]
 env = {{ PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1" }}
-env_passthrough = ["PATH", "HOME", "TMPDIR", "ASSAY_TEST_ATTEMPT_LOG"]
+env_passthrough = [
+  "PATH", "HOME", "TMPDIR", "ASSAY_TEST_ATTEMPT_LOG",
+  "ASSAY_B114_LIVENESS_ATTACK_LOG",
+]
 budget = "10m"
 allow_argv_append = false
 
@@ -263,6 +265,126 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
     assert sum(event.get("event") == "candidate" for event in events) == 3
     assert len(list(state_dir.glob("*.json"))) == 3
     assert cli.main(["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()) == 0
+
+
+def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    attempt_log = tmp_path / "attempts.log"
+    attack_log = tmp_path / "liveness-attacks.jsonl"
+    config = _seed_campaign(git_repo, attempt_log)
+    repo = git_repo
+    config_text = config.read_text(encoding="utf-8").replace(
+        "liveness = false", "liveness = true"
+    )
+    repo.write("assay.toml", config_text)
+    repo.write(
+        "tests/conftest.py",
+        "import inspect\n"
+        "import os\n"
+        "from pkg import mod\n\n"
+        "def pytest_configure(config):\n"
+        "    if os.environ.get('ASSAY_MUTATION_WITNESS_COLD') != '1':\n"
+        "        return\n"
+        "    flags = ''.join('1' if '>= 0' in inspect.getsource(fn) else '0'\n"
+        "                   for fn in (mod.early, mod.survivor, mod.fallback))\n"
+        "    if flags not in ('100', '010'):\n"
+        "        return\n"
+        "    hook = config.hook.pytest_runtest_logreport\n"
+        "    impl = next(item for item in hook.get_hookimpls()\n"
+        "                if item.plugin_name == 'assay_liveness_plugin')\n"
+        "    original = impl.function\n"
+        "    namespace = original.__globals__\n"
+        "    namespace['_b114_original_liveness_hook'] = original\n"
+        "    namespace['_b114_attack_flags'] = flags\n"
+        "    source = '''def _b114_forged_liveness_hook(report):\n"
+        "    import json\n"
+        "    import os\n"
+        "    from pathlib import Path\n"
+        "    flags = _b114_attack_flags\n"
+        "    attack = {'100': 'suppress', '010': 'forge'}.get(flags)\n"
+        "    before = report.outcome\n"
+        "    if (os.environ.get('ASSAY_MUTATION_WITNESS_COLD') == '1'\n"
+        "            and report.when == 'call'\n"
+        "            and report.nodeid.endswith('test_early_kill')):\n"
+        "        if attack == 'suppress' and before == 'failed':\n"
+        "            report.outcome = 'passed'\n"
+        "            report.longrepr = None\n"
+        "        elif attack == 'forge' and before == 'passed':\n"
+        "            report.outcome = 'failed'\n"
+        "            report.longrepr = 'forged liveness failure'\n"
+        "        if report.outcome != before:\n"
+        "            record = {'flags': flags, 'attack': attack, 'nodeid': report.nodeid,\n"
+        "                      'before': before, 'after': report.outcome}\n"
+        "            attack_log = Path(os.environ['ASSAY_B114_LIVENESS_ATTACK_LOG'])\n"
+        "            with attack_log.open('a', encoding='utf-8') as stream:\n"
+        "                stream.write(json.dumps(record, sort_keys=True) + '\\n')\n"
+        "    return _b114_original_liveness_hook(report)\n"
+        "'''\n"
+        "    exec(compile(source, original.__code__.co_filename, 'exec'), namespace)\n"
+        "    forged = namespace['_b114_forged_liveness_hook']\n"
+        "    forged.__module__ = original.__module__\n"
+        "    forged.__qualname__ = original.__qualname__\n"
+        "    forged.__name__ = original.__name__\n"
+        "    impl.function = forged\n",
+    )
+    repo.commit_all("seed B114 active-liveness hook replacement attack")
+    monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+    monkeypatch.setenv("ASSAY_B114_LIVENESS_ATTACK_LOG", str(attack_log))
+
+    plan_stdout, plan_stderr = io.StringIO(), io.StringIO()
+    plan_code = cli.main(
+        ["plan", "package", "--file", str(config)],
+        stdout=plan_stdout,
+        stderr=plan_stderr,
+    )
+    assert plan_code == 0, plan_stderr.getvalue()
+    plan = json.loads(plan_stdout.getvalue())
+    assert plan["status"] == "ok"
+    assert plan["candidate_count"] == 3
+
+    code, stdout, stderr, _, _, verdict_path, _ = _run_cold_campaign(
+        repo, config, tmp_path=tmp_path, attempt_log=attempt_log
+    )
+    assert code == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    mutation = next(
+        claim["mutation"] for claim in document["claims"] if claim["rigor"] == "R2"
+    )
+    outcomes = [
+        outcome
+        for bucket in ("killed", "survived")
+        for outcome in mutation[bucket]
+    ]
+    assert len(mutation["killed"]) == 2
+    assert len(mutation["survived"]) == 1
+    assert all(outcome["execution"]["mode"] == "full" for outcome in outcomes)
+    assert all(outcome["evidence"]["command"] == "declared" for outcome in outcomes)
+    assert cli.main(
+        ["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()
+    ) == 0
+
+    attacks = [
+        json.loads(line)
+        for line in attack_log.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert attacks == [
+        {
+            "flags": "100",
+            "attack": "suppress",
+            "nodeid": "tests/test_campaign.py::test_early_kill",
+            "before": "failed",
+            "after": "passed",
+        },
+        {
+            "flags": "010",
+            "attack": "forge",
+            "nodeid": "tests/test_campaign.py::test_early_kill",
+            "before": "passed",
+            "after": "failed",
+        },
+    ]
 
 
 @pytest.mark.parametrize("failed_baseline", ["coverage", "r2"])

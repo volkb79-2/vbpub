@@ -11500,9 +11500,12 @@ tester receipt, deadline and manifest files through bounded no-follow
 regular-file descriptors (64 MiB, 16 MiB and 4 KiB for report, plan and
 receipt). Same-module/path hook substitution must be unsupported even when
 the resulting hook fingerprint matches the baseline. Add real active-liveness
-candidate cases for forged and suppressed failures, plus full-checker reader
-tests for regular files, FIFOs, symlinks, and over-limit inputs; the 3,760
-candidate plan/report shape must remain accepted.
+`assay run` candidate cases for both forged and suppressed failures, and assert
+each attack forces a declared-command fallback with the true outcome retained.
+Add full-checker reader tests for regular files, FIFOs, symlinks, and over-limit
+inputs. The 3,760-candidate positive fixture must pass `assay verify` with its
+inventory equal to the complete outcome buckets, then pass the checker with a
+matching plan and deadline.
 
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
