@@ -277,10 +277,46 @@ where systemd is reachable, require `LoadState=loaded` and a non-empty
 `FragmentPath`. An auto-created typo slice can report loaded without an
 installed unit file, so LoadState alone is insufficient. Container lanes
 rely on the outer gate launcher for host-side placement verification and
-dual-mount the repo (physical + namespace views) for worktree gitfiles;
-outside the devcontainer namespace — where no second view is derivable — the
-lane refuses rather than silently mounting once; declare the alias with
-`$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'` (host side must equal the repo root).
+dual-mount (physical + namespace views) the judged worktree and the git
+common dir for worktree gitfiles; outside the devcontainer namespace — where
+no second view is derivable — the lane refuses rather than silently mounting
+once; declare the alias with `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`
+(host side must equal the repo root).
+
+**What an ephemeral container sees (RG-86).** Only the worktree under test
+and the git metadata it needs — never the main checkout or any other
+worktree, so another checkout's git-ignored files (secrets, local configs)
+are not visible. Concretely, for a linked worktree: the worktree itself
+(ALL of its own files, git-ignored overlays and rendered files such as
+`ciu.rendered/`, `ciu.secret-copy.*`, `ciu.env` included — ciu worktree
+instances rely on this), the git common dir read-write (assay's repository
+snapshot runs `git worktree add`; ciu v8 SPEC S16.4.9), `<repo>/.run-gate`
+for assay lanes without a declared `state_root`, and whatever the operator
+adds through `RUN_GATE_EXTRA_MOUNTS`. `<common>/config` inside the container
+is a per-run copy with credentials removed (URL userinfo, `credential.*`,
+`*.extraheader`, the `sendemail.*`/`imap.*` sections, keys ending in
+pass/password/token/secret/apikey, `git+https://` style userinfo,
+credential-bearing `url.*.insteadOf`; every `config`/`config.worktree` at any
+depth under `modules/`, nested submodules included),
+so a remote URL that embeds a token on the host reads without it in the
+container; `git status`, `log`, `diff` and `rev-parse` work as usual.
+Because the common dir is read-write, `<common>/worktrees` is mounted
+READ-ONLY with its real contents and your worktree's own admin dir
+read-write on top: a `git worktree prune` inside the container fails
+(EROFS) instead of deleting other worktrees' admin dirs on the host, `git
+gc` still sees every other worktree's HEAD and index, and `git branch -D` of
+a branch checked out elsewhere is refused. `git worktree add` inside the
+container cannot create a new admin dir (assay's snapshot uses `clone
+--no-local` and is unaffected).
+
+**Main checkout.** An ephemeral lane or probe whose judged tree is a plain
+checkout (not a linked worktree) is REFUSED: the whole checkout, including
+every git-ignored file, would be visible. Judge a worktree (`--worktree`), or
+opt in explicitly with `--allow-main-checkout` / `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`;
+the opt-in WARNs, and still sanitizes the git config. `mode = "exec"` lanes
+are never refused and not changed: their containers are owned by ciu or the
+project's stack. Disposable CI clones (Buildkite agents) are plain checkouts:
+set the opt-in in the agent environment.
 
 > **BREAKING CHANGE — migrate if you use `mode = "exec"` (RG-23).** Early
 > revisions hardcoded `MOCK_MODE` and `RUN_LIVE_TESTS` into the exec-mode
@@ -1158,7 +1194,8 @@ fatal: not a git repository: /workspaces/vbpub/.git/worktrees/run-gate-rg-sweep
 ```
 run-gate: doctor: [WARN] host-lane git view (RG-21): /repo/.worktrees/w1 is a
   LINKED worktree; its gitdir is /repo/.git/worktrees/w1, OUTSIDE the tree.
-  run-gate's own container lanes are fine (they dual-mount the repo root), but
+  run-gate's own container lanes are fine (they dual-mount the worktree and
+  the git common dir), but
   a host lane delegating to a harness that bind-mounts only the judged tree by
   host path will fail with 'not a git repository: …'. Mount the common gitdir
   into that container too, or pass it as GIT_DIR, or run the lane from the
@@ -1181,7 +1218,8 @@ docker run … -e GIT_DIR="$common" …
 ```
 
 Note that `run-gate`'s OWN container/exec lanes never hit this: `R-23`
-dual-mounts the REPO root, so the gitdir is inside the mount by construction.
+dual-mounts the judged worktree AND the git common dir (RG-86), so the gitdir
+is inside the mounts by construction.
 Related: an auto-derived host path for a worktree (e.g. `SRDM_HOST_REPO_ROOT`)
 cannot be inferred from `docker inspect`, which maps only the devcontainer's
 own `/workspaces/<repo>` — export it explicitly.

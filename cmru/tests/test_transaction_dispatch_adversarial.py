@@ -10,7 +10,8 @@ def test_run_child_builds_isolated_launcher_command_and_propagates_status(monkey
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "base-sha")
     seen = {}
 
-    monkeypatch.setenv("CMRU_BIN", "/opt/cmru")
+    monkeypatch.setenv("CMRU_INTERNAL_BIN", "/opt/cmru")
+    monkeypatch.setattr(transaction, "is_transaction_child", lambda _root: True)
     def run(argv, **kwargs):
         seen.update(argv=argv, kwargs=kwargs)
         return SimpleNamespace(returncode=17)

@@ -36,15 +36,6 @@ def test_cleanup_prefixed_project_with_no_deletions_skips_commit(monkeypatch, tm
     cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], cli.CleanupConfig([], [], [], []), github, cli.ReleaseEnvConfig({}, None), None, False)
 
 
-def test_source_tree_invalid_exact_tag_falls_back_to_no_version(monkeypatch):
-    results = iter([
-        SimpleNamespace(returncode=0, stdout="not-a-cmru-tag\n"),
-        SimpleNamespace(returncode=1, stdout=""),
-    ])
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: next(results))
-    assert cli._source_tree_version() is None
-
-
 def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp_path):
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=True)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)

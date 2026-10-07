@@ -72,5 +72,5 @@ def test_abandon_reports_malformed_scope_before_remote_inspection(
         SimpleNamespace(confirm=lambda _prompt: pytest.fail("dry-run prompted")),
     )
 
-    assert result == 2
+    assert result == 4  # exit_codes.REFUSED: blocked by verification, nothing changed
     assert "reason: release scope metadata is missing, malformed, or ambiguous" in capsys.readouterr().out

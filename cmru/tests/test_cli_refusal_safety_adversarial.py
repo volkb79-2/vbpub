@@ -40,10 +40,6 @@ def test_cleanup_previews_then_requires_confirmation_unless_yes(monkeypatch, tmp
     assert actions == [True, False]
     capsys.readouterr()
 
-    exc = cli.main(["cleanup", "--discard-build-worktree", str(tmp_path / "failed"), "demo", "--dry-run"])
-    assert exc == 2
-    assert "already exactly scoped" in capsys.readouterr().err
-
 
 def test_release_child_rejects_non_orchestrated_project_before_release_work(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")

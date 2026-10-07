@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import bundle, changelog, handlers, release, tester_gate
-from cmru.agent import protocol, reconciler
 
 
 def _bundle_config(root: Path, **overrides):
@@ -140,7 +139,7 @@ def test_tester_gate_mountinfo_decoding_and_resource_flags(monkeypatch, tmp_path
     monkeypatch.setattr(tester_gate, "_git_common_dir", lambda p: None)
     argv = tester_gate.build_docker_command(
         tmp_path, ".", ["true"], image="tester", cgroup_parent="dev.slice",
-        memory="1g", memory_swap="2g", cpus="1", device_read_iops="/dev/vda:10",
+        memory="1g", memory_swap="2g", cpus="1", pids_limit="64", device_read_iops="/dev/vda:10",
         device_write_iops="/dev/vda:20", device_read_bps="/dev/vda:30",
         device_write_bps="/dev/vda:40",
     )
@@ -168,32 +167,3 @@ def test_release_validation_rejects_missing_primary_asset():
     with pytest.raises(SystemExit) as missing:
         release.validate_latest_release(gh, "demo", retries=1, delay=0)
     assert missing.value.code == 1
-
-
-def test_reconciler_signature_and_install_failures_are_explicit(monkeypatch, tmp_path):
-    with pytest.raises(protocol.DesiredStateError, match="no minisign public key"):
-        reconciler._verify_sig_if_present(b"{}", b"sig", "")
-    backend = SimpleNamespace()
-    rec = reconciler.Reconciler(backend, "node", "land", "user", tmp_path)
-    desired = protocol.DesiredState(
-        schema_version=1, generation=1, action="apply",
-        release=protocol.ReleaseRef("tag", "url", "a" * 64), profiles=[],
-        config_hash="h", plan_id="p", step_id="s",
-    )
-    monkeypatch.setattr(reconciler.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
-    assert rec._ensure_release(desired) is None
-    (tmp_path / "releases" / "tag").mkdir(parents=True)
-    assert rec._ensure_release(desired) == tmp_path / "releases" / "tag"
-
-
-def test_reconciler_noop_rejects_older_and_accepts_matching_generation(tmp_path):
-    rec = reconciler.Reconciler(SimpleNamespace(), "n", "l", release_root=tmp_path)
-    desired = protocol.DesiredState(
-        schema_version=1, generation=2, action="apply",
-        release=protocol.ReleaseRef("tag", "url", "digest"), profiles=[],
-        config_hash="h", plan_id="p", step_id="s",
-    )
-    assert rec._is_noop(desired, protocol.ObservedState(applied_generation=3)) is True
-    assert rec._is_noop(desired, protocol.ObservedState(applied_generation=1)) is False
-    assert rec._is_noop(desired, protocol.ObservedState(
-        applied_generation=2, release_digest="digest", adapter_phase="s")) is True

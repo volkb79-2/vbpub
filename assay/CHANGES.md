@@ -2,7 +2,18 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs. A marked `backfilled-after-release` entry was generated after its immutable tag already existed.
 
-## [Unreleased]
+## [8.0.0] - 2026-10-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=e464cebcfc17c1929354f3ebc6bf9e3e355576a8 -->
+<!-- Hand-folded from [Unreleased] before release; source-end advanced with it so cmru (REL-02) keeps this section verbatim. -->
+
+### BREAKING CHANGE
+- Verdict schema v14 is a hard cut from v13: `assay verify` rejects v13 and
+  earlier verdicts on the schema version alone, and a v12/v13 mutation state
+  is a cold start under v14. Consumers repin their gate to 8.0.0 (wheel or
+  `.pyz`) and re-run in one commit; see `docs/CONSUMERS.md`, "Migration notes
+  (v13 to v14)". v14 records the effective `env_passthrough` allowlist and
+  per-name SHA-256 fingerprints of passthrough values (B140-B142).
 
 ### Added
 - feat(assay): explicit project-level `[defaults].env_passthrough`, ordered
@@ -37,6 +48,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   progress or plan key changes meaning; no schema version changes
 
 ### Fixed
+- fix(assay): the `assay run` summary now adds an `R0: FAIL (first failing
+  test: NAME)` line when the retained R0 output names a failing test (pytest,
+  `go test` text/JSON, vitest, jest) and the headline is not PASS, so a failing
+  suite that also dirtied the tree is not summarised as a bare
+  `NO_MEASUREMENT`; the headline pair is unchanged and output with no
+  recognised failure adds nothing (B146)
 - fix(assay): prevent cgroup process-limit or OOM events from becoming native
   R2 kills or survivors; sample candidate and visible-ancestor event counters,
   bind them to the executing worker's cgroup, capabilities, and selected mount,
@@ -45,6 +62,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): disable automatic Git maintenance and detached maintenance for
   every Assay Git child, independent of image, system, or consumer config
   (B147)
+- fix(assay): release-gate blockers found by the registered self-hosted gate:
+  `src/assay/failure_summary.py` joins the self-qualification and preflight R1
+  targets so the B105 report check matches the tracked sources, the shipped
+  tests are pyflakes-clean again, and the CONSUMERS schema-cut test reads the
+  topmost CHANGES section instead of requiring an `[Unreleased]` heading
 
 ### Changed
 - refactor(assay): repeated judge rules now live once: `assay.records` (the

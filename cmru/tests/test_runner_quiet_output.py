@@ -69,6 +69,24 @@ def test_quiet_failure_falls_back_to_tail_when_nothing_looks_like_an_error():
     assert "plain progress line" in err
 
 
+def test_quiet_failure_surfaces_pytest_failed_and_error_summary_lines():
+    # BG-03: pytest's short-summary lines must reach the quiet console.
+    script = (
+        'echo "FAILED tests/test_a.py::test_boom - assert 1 == 2"; '
+        'echo "ERROR tests/test_b.py::test_setup"; '
+        'echo "this FAILED mid-line is not a summary"; '
+        + "; ".join(f"echo filler {i}" for i in range(30))
+        + "; exit 1"
+    )
+    _out, err, _log, exc = _run_quiet(script)
+    assert exc is not None
+    assert "2 error-looking line(s)" in err
+    block = err.split("(context)")[0]
+    assert "FAILED tests/test_a.py::test_boom - assert 1 == 2" in block
+    assert "ERROR tests/test_b.py::test_setup" in block
+    assert "mid-line" not in block
+
+
 def test_quiet_failure_shows_both_error_lines_and_tail_as_context():
     script = 'echo "[ERROR] the real problem"; echo trailing context line; exit 1'
     out, err, _log, exc = _run_quiet(script)
@@ -114,9 +132,9 @@ def test_execute_step_overwrites_stable_log_mirrors_quiet_detail_and_summarizes(
     step_log.parent.mkdir(parents=True)
     step_log.write_text("old output\n", encoding="utf-8")
     full_log = tmp_path / "cmru.release.log"
-    monkeypatch.setenv("CMRU_RUN_LOG", str(full_log))
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(full_log))
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -133,9 +151,9 @@ def test_execute_step_overwrites_stable_log_mirrors_quiet_detail_and_summarizes(
 def test_execute_step_show_details_streams_without_duplicate_aggregate(tmp_path, monkeypatch):
     full_log = tmp_path / "cmru.release.log"
     full_log.write_text("outer tee owns this stream\n", encoding="utf-8")
-    monkeypatch.setenv("CMRU_RUN_LOG", str(full_log))
-    monkeypatch.setenv("CMRU_SHOW_RUN_DETAILS", "1")
-    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_RUN_LOG", str(full_log))
+    monkeypatch.setenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", "1")
+    monkeypatch.delenv("CMRU_INTERNAL_LOG_APPEND", raising=False)
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -150,9 +168,9 @@ def test_execute_step_log_append_inserts_exact_divider(tmp_path, monkeypatch):
     log_file = log_dir / "run-tests.log"
     log_file.parent.mkdir(parents=True)
     log_file.write_text("previous\n", encoding="utf-8")
-    monkeypatch.setenv("CMRU_LOG_APPEND", "1")
-    monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
-    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.setenv("CMRU_INTERNAL_LOG_APPEND", "1")
+    monkeypatch.delenv("CMRU_INTERNAL_RUN_LOG", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_SHOW_RUN_DETAILS", raising=False)
 
     runner.execute_step(_step(), tmp_path, log_dir)
 
@@ -272,6 +290,14 @@ commands = [{ label = "push", argv = ["true"], cwd = "." }]
 def test_raw_runner_uses_project_local_log_root(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()
+    # BG-11: config resolution requires a git repository. Without this the test
+    # only passed when TMPDIR happened to sit inside a worktree (the gate).
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
     project_config = project / "cmru.toml"
     project_config.write_text(
         """schema_version = 1
@@ -307,7 +333,7 @@ commands = [{ label = "push", argv = ["true"], cwd = "." }]
 """,
         encoding="utf-8",
     )
-    monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
+    monkeypatch.delenv("CMRU_INTERNAL_RUN_LOG", raising=False)
 
     runner.run_step(project_config, "build")
 

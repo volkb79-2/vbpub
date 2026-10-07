@@ -79,6 +79,8 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("pygments>=2.21.0", requirements)
         wheels = (ROOT / "pip/wheels.list").read_text()
         self.assertRegex(wheels, r"(?m)^nyxloom\s+#")
+        # cmru's wheel declares cli-extended; the install is --no-index, so it must be staged too.
+        self.assertRegex(wheels, r"(?m)^cli-extended\s+#")
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertIn("rich/pygments", dockerfile)
         self.assertIn("--no-index", dockerfile)

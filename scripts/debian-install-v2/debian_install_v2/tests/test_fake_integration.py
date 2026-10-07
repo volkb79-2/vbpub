@@ -194,10 +194,13 @@ def test_mismatched_readback_rolls_back(tmp_path):
     # the backup file.
     rollback = [
         action for action in actions.planned
-        if action.argv == ("/usr/sbin/sfdisk", "--force", "/dev/vda")
+        # LT-IOB fix round 1: the rollback now passes --no-reread (the partx -d/-u
+        # that follow sync the kernel); the forward write is the same argv, so
+        # the rollback is the SECOND such call (its input is the backup dump).
+        if action.argv == ("/usr/sbin/sfdisk", "--force", "--no-reread", "/dev/vda")
     ]
-    assert rollback
-    rollback_inputs = [input_text for argv, input_text in actions.inputs if argv == rollback[0].argv]
+    assert len(rollback) == 2
+    rollback_inputs = [input_text for argv, input_text in actions.inputs if argv == rollback[0].argv][1:]
     # +"\n": _run() strips command output (current_dump loses its trailing
     # newline reading the backup back), so the rollback call restores it
     # before feeding sfdisk -- otherwise this input would end mid-line
@@ -223,7 +226,8 @@ def test_mismatched_readback_rolls_back(tmp_path):
     assert argvs.count(("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda")) == 1
     assert argvs.count(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) == 1
     assert argvs.count(("/usr/bin/partx", "-u", "/dev/vda")) == 1
-    assert argvs.count(("/usr/bin/udevadm", "settle")) == 2  # once per partx-refresh round
+    # forward apply settle + (since LT-IOB fix round 1) a settle BEFORE the restore + the post-refresh settle
+    assert argvs.count(("/usr/bin/udevadm", "settle")) == 3
     # -d must run BEFORE -u in the rollback (retract stale numbers, then
     # resync geometry for what remains) -- order matters for correctness.
     assert argvs.index(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) < argvs.index(("/usr/bin/partx", "-u", "/dev/vda"))

@@ -4,10 +4,9 @@ import json
 import hashlib
 import os
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
+from cli_extended import invoke_module, invoke_script
 
 from debian_install_v2.actions import ActionError, HostActions
 from debian_install_v2.bootstrap import build_cli, main
@@ -44,17 +43,14 @@ def write_config(tmp_path, **overrides):
 def test_cli_top_level_version_is_clean(capsys):
     assert main(["--version"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == "debian-install-v2 2\n"
+    assert captured.out == "debian-install-v2 2.0.0\n"
     assert captured.err == ""
 
-def test_documented_wrapper_top_level_version_is_clean():
+def test_documented_wrapper_top_level_version_is_clean(tmp_path):
     wrapper = Path(__file__).resolve().parents[2] / "debian-install-v2.py"
-    proc = subprocess.run(
-        [sys.executable, str(wrapper), "--version"],
-        capture_output=True, text=True, check=False,
-    )
+    proc = invoke_script(wrapper, ["--version"], home=tmp_path / "home", cwd=tmp_path)
     assert proc.returncode == 0
-    assert proc.stdout == "debian-install-v2 2\n"
+    assert proc.stdout == "debian-install-v2 2.0.0\n"
     assert proc.stderr == ""
 
 
@@ -64,7 +60,7 @@ def test_cli_parser_diagnostics_are_separated_from_help(capsys):
     assert captured.out == ""
     assert captured.err.startswith(
         "[ERROR] debian-install-v2.py: the following arguments are required: VERB"
-        "\n\nDEBIAN-INSTALL-V2 2 — Debian host installer\n\nUsage:"
+        "\n\nDEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n\nUsage:"
     )
 
 
@@ -206,12 +202,12 @@ def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
     assert main(["plan", "--config", cfg]) == 0
 
 
-def test_module_invocation_help():
-    import subprocess, sys
-    result = subprocess.run(
-        [sys.executable, "-m", "debian_install_v2.bootstrap", "--help"],
-        cwd=str(Path(__file__).resolve().parents[2]),
-        capture_output=True, text=True,
+def test_module_invocation_help(tmp_path):
+    result = invoke_module(
+        "debian_install_v2.bootstrap",
+        ["--help"],
+        home=tmp_path / "home",
+        cwd=Path(__file__).resolve().parents[2],
     )
     assert result.returncode == 0
     assert "<verb>" in result.stdout

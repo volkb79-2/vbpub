@@ -7,8 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import bundle, changelog, resolve, tester_gate
-from cmru.agent import cli as agent_cli
-from cmru.agent.consul_backend import ConsulBackend
 
 
 def test_changelog_subject_groups_classifies_conventional_types(monkeypatch, tmp_path):
@@ -39,28 +37,11 @@ def test_bundle_parse_config_requires_archive_and_copy_tables(tmp_path):
         bundle.parse_config(path)
 
 
-def test_agent_cli_parser_requires_known_agent_verb_and_preserves_options():
-    args = agent_cli._build_parser().parse_args(["--scope", "system", "once", "--release-root", "/srv/cmru"])
-    assert args.verb == "once" and args.scope == "system" and args.release_root == "/srv/cmru"
-    from cli_extended import UsageError
-    with pytest.raises(UsageError):
-        agent_cli._build_parser().parse_args(["unknown"])
-    with pytest.raises(UsageError):
-        agent_cli._build_parser().parse_args([])
-
-
 def test_resolve_format_env_omits_absent_digest_and_url_is_empty():
     result = {"version": "1.0.0", "tag": "demo-v1.0.0", "url": None}
     formatted = resolve.format_result(result, "env")
     assert "DEMO_VERSION=1.0.0" in formatted and "SHA256" not in formatted
     assert resolve.format_result({}, "url") == ""
-
-
-def test_consul_observed_and_signature_fail_closed_on_invalid_base64():
-    backend = ConsulBackend()
-    backend._get = lambda *args, **kwargs: (200, b'[{"Value":"!!!"}]', {})
-    assert backend.read_observed("n", "l") is None
-    assert backend.read_desired_sig("n", "l") is None
 
 
 def test_tester_gate_required_resource_resolution_prefers_explicit(monkeypatch):

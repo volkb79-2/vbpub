@@ -4,66 +4,125 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- cleared 2026-09-09 after the 5.2.0 release, per this project's own
-     KI-23-adjacent housekeeping convention (see [5.0.0]'s cleared block
-     below for the prior occurrence): the retain-by-default change +
-     KI-19/20/21/23/25 write-up that was here is now [5.2.0] below. -->
+<!-- Empty on purpose: KI-30 refuses a tagged release while this body is non-empty, and KI-23
+     refuses one while a hand-authored `## [6.0.0] - UNRELEASED` heading exists, so this file
+     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
+     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
 
-### Added
-- Add explicit multi-source `cmru versions init`, `resolve`, and read-only `check` with a configurable supply-chain age window, registry evidence, and native artifacts.
-- Add configurable shipped/all dependency discovery, explicitly selected Python extras, and project-local requirements manifests.
-- Add opt-in rolling OCI tag checks that record manifest digests and detect moved tags.
+     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
+     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
+     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
+     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
+     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
+     nothing from them is lost by leaving this body empty. The breaking changes (command
+     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
+     dependency) are in `docs/UPGRADING-6.0.md`.
 
-### Changed
-- Extend strict root/project config with `[versions]`; project overlays resolve and store state project-side, while root targets retain root policy/state.
+     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
+     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
+     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
+     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
+     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
+     one-line pointer to the 6.0.x notes.
 
-### Fixed
-- Mount the git worktree root in the wheel-builder container (not just the project's parent) so projects nested below the top level resolve their git version, and forward `SOURCE_DATE_EPOCH` / `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*` by name into the build (KI-53).
-- Add the monorepo's sibling `cli-extended` and `worktree` source roots to
-  bound CMRU subprocesses, so system-Python release scripts can import the
-  matching runtime dependencies.
-- Keep the release-time mutation campaign based on the previous CMRU tag instead of Assay's main-based candidate set, which is empty after merge.
-- Include the Topos and nyxloom manifests required by the estate adoption test in disposable mutation and canary controls.
-- Resolve project configs already loaded from an isolated release worktree without prefixing the child path twice.
-- Resolve Go pseudo-version constraints through module proxy metadata and roll back Go workspace files if a later native writer fails.
-- Scope registry authorization to its HTTPS origin while preserving safe redirects to signed registry storage URLs.
-- Query rolling OCI tags by exact manifest reference, and exclude explicitly marked Docker attestations from runnable-platform timestamp checks.
-- Time-box CMRU mutation candidates, preserve progress, and resume completed mutation evidence.
-- Keep a skipped cleanup Release's tag and derive the clean-step version from applied cleanup results.
-- Recheck whole-package GHCR identity before confirmed deletion and report the clean-step version as a preview estimate.
-- Scope abandonment tag checks to the recorded projects and remove only local tags proven to come from that candidate's push attempt.
-- Preserve credential rotation when restoring secret overlays after the gate.
-- Prevent publishing an older retained build from moving the `-latest` pointer backward.
-- Bind retained publication to the captured Release ID and tag commit, rechecking them before metadata and asset mutations.
-- Treat GHCR 404 responses as absent-or-inaccessible and skip cleanup without certifying absence.
-- Install gate secret overlays without replacing a credential rotated at the masking boundary.
-- Copy resume credentials through no-follow paths and atomic mode-0600 destination files.
-- Verify staged retained artifact bytes against the build manifest before remote publication.
-- Require the registered real-enrollment lane to fail when prerequisites or fixture-image construction fail.
-- Verify the gates slice on the Docker host before starting enrollment fixtures.
-- Reject malformed, invalid, or out-of-pattern remote tag records before cleanup planning.
-
-### Testing
-- Add registry, age-policy, project/root ownership, output transaction, mutation-runner, and adopter-doc contract tests.
-- Cover inclusive rolling-OCI age cutoffs, rolling-result override metadata, and the no-warning return contract.
-- Cover discovery-scope choices, rolling-tag digest changes, Docker attestation indexes, and loadable `.go` consumer examples.
-- Cover package replacement during cleanup confirmation, scoped tag abandonment, exact local tag recovery, credential rotation, and mutation resume evidence.
-- Cover retained-release identity changes, GHCR 404 ambiguity, and credential rotation during overlay installation.
-- Cover symlinked credential destinations, altered retained upload staging, and required enrollment-lane prerequisites.
-- Cover Docker-host slice verification and malformed, invalid, duplicate, orphaned, or out-of-pattern remote tag records.
+     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
+     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
+     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
+     the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: release history -->
 
-## [5.6.0] - 2026-10-03
+## [6.0.0] - 2026-10-07
 <!-- cmru: generated -->
-<!-- cmru: source-end=4a46ee439a6418bff539460ebfbaf9169f21fcd2 -->
+<!-- cmru: source-end=e5fed335bb8984369204805f47f682a8416e5349 -->
+
+**Summary (hand-written post-release curation).** cmru 6.0.0 is a breaking release built
+around a redesigned command line (hard renames, a fifth exit code, `cmru-agent` and
+`cmru-controller` retired). It adds the installer and host-enrollment mechanism (W1:
+project-owned `get.py` extensions), makes `cli-extended` a real wheel dependency instead of a
+vendored copy, gives `tester-gate` an `--init` PID 1 plus pids limits and hardened signals, and
+hardens the release gate (secret-overlay inventory, hermetic tests, provisional gate with the
+R2 mutation campaign postponed under KI-62). Upgrade steps and the old-to-new command table are
+in [docs/UPGRADING-6.0.md](docs/UPGRADING-6.0.md); the list below is generated from commit
+subjects only.
 
 ### Added
+- feat(cmru): LANDPREP provisional gate: --postpone-mutation, gate-provisional lane, KI-62 (208c60ba5)
+- feat(cmru): CMRU-FLOOR: cli-extended floor 0.3.0, remove KI-61 tolerance, surface sync (e09438f4a)
+- feat(cmru): W3-ZERO build/release from zero releases, multi-level dependency graph + pyproject guard (2b842b3ca)
+- feat(cmru): W3-PREP - retire origin-only release candidates (KI-35), env-leak fix, standards r5, 6.0.0 changes draft, sweep plan (bce3ab8af)
+- feat(cmru): W2-PKG5 item 4 + T5: policy flip to "report", findings, exploration-verb tree-unchanged tests (1ea4b49c1)
+- feat(cmru): W2-PKG5 item 3: surface lifecycle, reviewed catalog, S-CLI.9 generated region, pytest plugin (7e99b63eb)
+- feat(cmru): W2-PKG5 items 1-2: skills verbs, SKILL rewrite, doctor (AC-19/AC-20) (e361069d1)
+- feat(cmru): W2-INTEG cross-package seams (CMRU_INTERNAL_* env, run-step delegate removed, REFUSED alias dropped, SPEC S8, rename sweep, interactive extra, estate contract guard) (f20cfcf74)
+- feat(cmru): W2-PKG1 status lists every selected project, transaction exception narrowing (906291cbe)
+- feat(cmru): W2-PKG1 root CLI adoption and redesign (checkpoint) (e4b8d0017)
+- feat(cmru): W2-PKG2 delegate registries on the shared factory, redesign B8-B12, exit-code taxonomy (d1318694b)
+- feat(cmru): W2-PKG4 packaging: cli-extended as a real wheel dependency (fd2a60a79)
+- feat(cmru): W2-PKG0 registry factory and library-selector target adapter (a7272ace5)
+- feat(cmru): W1-INSTALLER finish: INS-18, rollback message, signature docs, authoring guide, plant table, report (c664861b3)
+- feat(cmru,ciu): installer extensions mechanism; move get.py enroll into ciu (W1-CIU-ENROLL, O4) (3aada2d08)
+- feat(cmru): W0-TESTER tests, tester-unified image hardening, docs, backlog (76432bb35)
+- feat(cmru)!: retire cmru-agent/controller; CLI-04/05/14/18 + CLI-T1, doc drift (W0-RETIRE) (f6fef1d6b)
+- feat(cmru): tester-gate hardening core (--init, pids limit, events wrapper, names, signals, DinD limits, digest pins) (577053efc)
 - feat(cmru): authenticate transactional Git operations (7c2d7a8be)
-- feat: resume mutations with an unchanged test suite and fixture closure (2dca79d55)
+- feat: resume mutations with additive test suites (2dca79d55)
 - feat: adopt cli-extended and resolve CMRU CLI decisions (f6b577f41)
 
 ### Fixed
+- fix(cmru): installed-wheel smoke removes the egg-info/build its in-tree wheel build created (5f6d855ba)
+- fix(cmru): set the fake gates cgroup parent inside the env-restore fixture (15cbfba33)
+- fix(cmru): hermetic release-gate tests; changelog finds its generated section by heading line (496d2f38e)
+- fix(cmru): release-gate overlay inventory also skips vanished paths (KI-63) (bd9304a43)
+- fix(cmru): release-gate overlay inventory skips foreign-owned unreadable directories (KI-63) (2e02c95c4)
+- fix(cmru): W2-PKG5 round 1 - cover the multi-family preflight refusal, drop the dead ReleaseLockHeld branch in abandon (ReleaseLockHeld is now a CliFailure) (7e12b7780)
+- fix(cmru): W2-PKG5 review round 1 - retained-record validators raise UnsafeRecord, findings re-synced, REPORT fix-round section (4335f5751)
+- fix(cmru): W2-PKG5 review round 1 - sweep of user-reachable refusals into the domain-error family, T5 runs the validators and non-empty tool-deps/versions, SKILL/SPEC wording, staleness guards, DNS sandbox, doctor timeout pin (6dd3a5627)
+- fix(cmru): W2-PKG5 review round 1 B1 - one domain-error family (CmruError), exit codes per taxonomy, StepFailed; cli-extended backlog CLI-EXT-27..29 (2245651f2)
+- fix(cmru): restore cmru.runner.run_step (MDT build-push.py consumes it); estate import guard (2bb245f64)
+- fix(cmru): W2-INTEG review round 1 (C1-C7, run_step removal) (508bc83d6)
+- fix(cmru): W2-PKG1 review round 1: forward parsed globals to transaction children, fail closed on empty mode values, pin run --step (6aa9964e1)
+- fix(cmru): W2-PKG2 review round 1 (resolve installer loader, HTTPException, template render catch, get-py no-installer exit 2, tests) (7a54514ce)
+- fix(cmru): W2-PKG4 review fix round 1 (bootstrap dist-info, https redirects, pinned image, skill symlink) (eedf2f164)
+- fix(cmru,ciu): review fixes for W1-CIU-ENROLL (checker gaps, hard-fail drift guard, CIU-131) (2ac2fe2ea)
+- fix(cmru): review fixes - file: strategy resume, doc corrections, survivor tests, backlog KI-55..58 (6288ecbe6)
+- fix(cmru): W0-GATE review fixes - deterministic gate-report tests, sample/template handler argv, git probe env, mutant-killing tests, CIU-129/NL-31 filed (35b7f2968)
+- fix(cmru): review fixes for W0-RETIRE (warn once, estate config, docs) (531e48659)
+- fix(cmru): status never configures release logging; candidate trailer; promotion/recovery docs (CLI-01, REL-08, REL-04/05 docs) (53584bb0a)
+- fix(cmru): W0-GATE - skip the tls-edge test when the gate fixture lacks that tree (14466be48)
+- fix(cmru): W0-GATE - canary fixture closure (tls-edge) and self-contained bootstrap test (31f6be6cf)
+- fix(cmru): W0-GATE - gate diagnosability, bound handler launcher, git scope, bootstrap (14e5f013f)
+- fix(cmru): merge-promote on rejected fast-forward, tag rollback after failed build, resilient local-main sync (REL-04, REL-05, REL-06, REL-13) (f1228d288)
+- fix(cmru): legacy abandon ignores tags below the base; one commit-id pattern (REL-03, REL-14) (2b7ea2ae5)
+- fix(cmru): regenerate stale generated changelog section; refuse non-empty [Unreleased] (REL-02, REL-10, KI-30) (68a03b4fe)
+- fix(cmru): internal-handoff guards exit 1 instead of escaping RuntimeError (REL-01, KI-54) (06791b345)
+- fix(cmru): KI-53 nits - forward only SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*, spy mount_root (a536dc9fd)
+- fix(cmru): KI-53 wheel-build mounts the worktree root and forwards build env (890fda002)
+- fix(cmru): reject malformed release snapshot output (fccd44be3)
+- fix(cmru): handle multi-family preflight errors (536b83dca)
+- fix(cmru): make run-gate mode explicit (759444fc1)
+- fix(cmru): classify resolved config aliases consistently (5b162b385)
+- fix(cmru): harden config aliases and tag retries (036d27da9)
+- fix(cmru): guard retained release retries (c2102f828)
+- fix(cmru): pin preflighted family release snapshots (3d584ae9f)
+- fix(cmru): preflight release policy from origin snapshots (95ee25d73)
+- fix(cmru): preflight all families before release dispatch (042639460)
+- fix(cmru): preflight local tag inspection support (ea4c2ec37)
+- fix(cmru): require explicit local tag lookup status (f96245fc1)
+- fix(cmru): complete retained release branch coverage (55dcc5e14)
+- fix(cmru): preflight retained publication targets (05095c5f5)
+- fix(cmru): preserve tag lookup diagnostics (e30172722)
+- fix(cmru): confirm ambiguous local tag absence (c17970954)
+- fix(cmru): use explicit ref existence status (5131f7e67)
+- fix(cmru): distinguish absent tags from ref lookup errors (f9a87d54d)
+- fix(cmru): verify host slice and tag ref records (aa5c87a69)
+- fix(cmru): reject unverified cleanup inventories (a26c0bd87)
+- fix(cmru): harden retained release paths (e6f63ca33)
+- fix(cmru): close release review findings (849f29f78)
+- fix(cmru): refresh legacy worktree before resuming (0eaf74d8a)
+- fix(cmru): select published ancestor baseline across merges (ddbb11171)
+- fix(cmru): protect release gate credentials and baselines (5f5f19d08)
+- fix(cmru): strip publisher credentials from abandon probes (59618778e)
 - fix(cmru): correct generated askpass quoting (04c5f4901)
 - fix(cmru): authenticate Git and freeze cleanup plans (aba42a3a9)
 - fix(cmru): preserve tester CPU parse diagnostics (489ce8849)
@@ -78,6 +137,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix: make empty CMRU runs true no-ops (a6ed9457c)
 
 ### Changed
+- Merge cmru-relgate-fix: hermetic release-gate tests, changelog finds its own generated section, wheel smoke cleans its build artifacts (e5fed335b)
+- Merge nyxloom-successor-2026-10: extract presets (watch/successor/review/ledger), option groups, intent pairing, stop state, effects (9d162f711)
+- chore(cmru): LANDPREP image/lane revert - REQUIRES RETAG of tester-unified:cmru6-integ to tester-unified:local (e9fd37c53)
+- Merge cmru-w3-prep: KI-35 sweep plan + origin-only abandon, env-leak fixture, standards r5, UPGRADING-6.0, compat audit (8e04e5545)
+- chore(cmru): gate lanes on tester-unified:cmru6-integ (temporary), exact module-entry dispatch assertion (5150de172)
+- merge(cmru-w2-pkg1): root cmru CLI on cmru_registry, D2 metadata version, redesign B1-7 (run --step, status --json, release --ahead-check-ref, explicit publish/cleanup modes, abandon BRANCH|PATH), exit 4, globals forwarded from the parsed namespace; reviewed ACCEPT after REJECT round (d8ac6b66d)
+- merge(cmru-w2-pkg2): nine delegate registries on cmru_registry, redesign B8-12 (resolve --repo/--prefix, --bake-target, forward-*-slice, init prompt driver), exit 3/4, narrowed exceptions; reviewed ACCEPT (5baa68888)
+- W1-INSTALLER round2: symlink-clause tests, manifest key grammar, install_dir shape, bundle-manifest errors, M49b, docs (abb6840cd)
+- W1-INSTALLER round1: close coverage gaps (bundle_files, variant pass-through), skip tls-edge script test when absent (d1aed127f)
+- W1-INSTALLER round1: bundle-manifest verb (--name), SPEC inventory, REPORT section (9c519aded)
+- W1-INSTALLER round1: strengthen survivor tests (M05 M24 M59, setuid observable) (056219e0b)
+- W1-INSTALLER round1: tests, docs (CONSUMERS authoring guide, SPEC S6), INS-18 leftovers (b25d57d09)
+- W1-INSTALLER round1: template/producer fixes (WIP, tests next) (7193017cf)
+- wip(cmru-w1-installer): generic get.py installer rewrite (fail-closed, per-release dirs, rollback, offline hash-locked wheels, signature policy); checkpoint (c15d5d873)
+- Merge branch 'cmru-wave-2026-10' into cmru-w1-enroll (b311cd3b4)
+- Merge cmru-wave-2026-10 into cmru-w0-tester; W0-TESTER review fixes (e582c7461)
+- Merge cmru-wave-2026-10 (b9ed0cc01) into cmru-w0-rel (c542a082b)
+- merge(cmru-w0-gate): BG-03 no-maxfail + named failures; BG-04/REL-07 bound cmru handler; REL-11, BG-09/10/11 (b9ed0cc01)
+- x (26ada0687)
+- refactor(cmru): split release/status branch into _release_launcher/_release_child/_status (REL-12) (58bc7c0c3)
+- Merge main into cli-extended-unified before release (ce1696562)
+- Merge CMRU snapshot safety fixes (d4b17b93b)
+- Merge reviewed CMRU release fixes (2ca59036d)
+- Follow config symlinks in release snapshots (a54350344)
+- Verify release snapshots and follow moved configs (8d64c8fa9)
+- Fix CMRU release snapshot policy checks (071046398)
+- Preserve adopted metadata in resume migration test (4a1c3e83a)
+- Exercise malformed local tag output in regression test (cf2d35378)
+- Validate build output ID before path inspection (c8542a5c9)
+- Assert resume scope refusal through CLI contract (6369a8457)
+- Fix release cleanup and resume edge cases (54f297dac)
+- backlog(ciu,cmru): file the shipped CIU-93/KI-24 enrollment defects from v8 round 4 — CIU-122, CIU-123, KI-49, KI-50 (dstdns D-658) (6ccfffb98)
 - Merge branch 'cmru-cli-decisions' into integration/cmru-local-cleanup-20260930 (7e639e1dc)
 - merge: nyxloom testability doctrine + cmru KI-35 (docs/testability-cleanup-20260928) (5248b345d)
 - merge: sync CMRU CLI work with current main (b14643995)
@@ -92,6 +183,50 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Adopt cli-extended across CMRU command surfaces (c54e90581)
 
 ### Documentation
+- docs(cmru): CMRU-LANDPREP report (122ca13ca)
+- docs(cmru): CMRU-FLOOR C1 - cli-extended floor text 0.2.0 -> 0.3.0 (UPGRADING, tester-unified README, findings remedy, SPEC) (6bc3f860c)
+- docs(cmru): 6.0.0 release notes: R2 mutation postponed (KI-62), provisional release, see UPGRADING-6.0 (58247078b)
+- docs(cmru): CMRU-FLOOR report (d243dd770)
+- docs(cmru): move 6.0 narrative to UPGRADING-6.0.md, unblock release changelog preflight (525b43376)
+- docs(cmru): W3-ZERO report gate results (c690eca9a)
+- docs(cmru): W3-PREP report - gate verdicts and plants (1be285b09)
+- docs(cmru): W2-PKG5 REPORT - fix round 1 lane verdicts (4789f962a)
+- docs(cmru): W2-PKG5 REPORT (06d296a41)
+- docs(cmru): W2-INTEG REPORT round-2 lane verdict (947e588d7)
+- docs(cmru): W2-INTEG REPORT round-1 lane verdicts (308be74b8)
+- docs(cmru): W2-INTEG REPORT part C (dcc4d19ae)
+- docs(cmru): W2-PKG1 REPORT review fix round 1 (ae4959bbf)
+- docs(cmru): W2-PKG2 REPORT review fix round 1, D-A handoff (3d0220fcd)
+- docs(cmru): W2-PKG1 REPORT (plant table, coverage, handoff to W2-INTEG); drop continuation (ee8228814)
+- docs(cmru): W2-PKG2 REPORT (supersedes the continuation), handoff to W2-INTEG (d446e68dd)
+- docs(cmru): W2-PKG4 review fix round 1 report (8d4ca29fd)
+- docs(cmru): W2-PKG4 report (825d6660c)
+- docs(cmru): W1-INSTALLER round 2 report (3a8064552)
+- docs(cmru): W1-INSTALLER round 1 report results (1054fde5a)
+- docs(cmru): W1-INSTALLER report gate results (2fc5e7dca)
+- docs(cmru): W1-CIU-ENROLL report, release-gate env fix (87e54f967)
+- docs(cmru): W1-CIU-ENROLL report (46a29514e)
+- docs(cmru): program plan — Wave 0 merged, Wave 1 sequential order, CLI-01 under W0-REL (fa402bd39)
+- docs(cmru): file KI-59 (file: resume bump-commit subject match too loose) (53687365e)
+- docs(cmru): W0-REL report - review fixes, merge, gate verdicts (3da4aa7e0)
+- docs(cmru): W0-GATE report addendum (de87545f3)
+- docs(cmru): W0-RETIRE report, review fixes (44c583c74)
+- docs(cmru): W0-REL report - gate verdicts, coverage findings, deviations (4ba5c90fb)
+- docs(cmru): W0-TESTER report gate verdicts (50de2b7d0)
+- docs(cmru): W0-REL report; remove the continuation file (4fdc3ae90)
+- docs(cmru): W0-RETIRE report (final) (c4d17b36b)
+- docs(cmru): W0-GATE report (b60dbe1c4)
+- docs(cmru): W0-RETIRE report (draft) (059241d83)
+- docs(cmru): program 2026-10 plan (fix-up, retirement, adoption, 6.0.0) (baf0ea295)
+- docs: discard contaminated Assay R2 outcomes (6882167d0)
+- docs(cmru): file KI-54 (pre-existing red handoff dry-run test on main) (40f044ad8)
+- docs(cmru): KI-53 report (4455cb6c3)
+- docs(backlogs): file host zombie incident — cmru KI-52, assay B145, run-gate RG-83 (2d1db004f)
+- docs(backlogs): W10 review nits (assay A-005 offline install, cmru KI-51 install order) (0c4b265e5)
+- docs(cli-extended): file planned adoptions in each tool's backlog (W10) (c8a56ad8f)
+- docs(ciu): SPEC-V8 draft.10 — T4-07 trust root in the controller's wheel; one grouped [admission] switch, default off; the ticket count mode and published count subset move into 8.0; enrollment proposal rev 4 (dstdns D-661) (1fe6e7564)
+- docs(ciu): coverage memo §8 round-3 note; correct line cites in CIU-122/KI-49 (dstdns D-658) (fe0fb5364)
+- docs(cmru): clarify tagged head baseline exclusion (2f3b64a62)
 - docs(cmru): reconcile FEAT-03 release status (4efd5f334)
 - docs: add tester-gate contract anchor (898447dc5)
 - docs: apply fresh review to the testability doctrine and cmru KI-35 (851d1648e)
@@ -100,6 +235,103 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs: specify nested CLI group help behavior (7358159d2)
 
 ### Testing
+- test(cmru): LANDPREP skip the ciu enroll render test while the extensions shim is active (959bd4019)
+- test(cmru): CMRU-FLOOR: interactive extra floor assertion to 0.3.0 (cdf54a91d)
+- test(cmru): skip estate-wide W3-ZERO tests in the isolated canary tree (aad6e70ac)
+- test(cmru): W2-PKG5 doctor error-path coverage; black-box probe uses the suite interpreter path, not the image's installed cmru (e2387889b)
+- test(cmru): W2-INTEG estate guards skip dangling symlinks in the canary sparse snapshot (review B2) (74505c9d0)
+- test(cmru): estate guard minimum contract count applies to a full checkout only (2f03c240d)
+- test(cmru): estate guard requires a sibling's contract only when it exists on disk (sparse canary snapshot) (dc71f9dd6)
+- test(cmru): estate-scan sanity check tolerates the canary lane's sparse snapshot (fae4cf516)
+- test(cmru): remaining resolve fakes supply the forge config (review B1 fallout) (a22ca4daa)
+- test(cmru): resolve fakes load the forge config the way the real path does (e54742120)
+- test(cmru): CLI-19 asymmetric option-value case (5f4869dfb)
+- test(cmru): stop the registry test leaking the time-prefix env into later tests (d92c96ce1)
+- test(cmru): the handler entry assertion follows the child's own distribution view (b3a929329)
+- test(cmru): source-module handler entry is exit 3 without an installed distribution (D2) (b5abb94d7)
+- test(cmru): cover the legacy parse_target_names None branch (W2-PKG0 coverage gate) (630669a9e)
+- test(cmru): cover the unrenderable-value branch of _py_literal (60a18093e)
+- test(cmru): cover extension scope analysis branches (9f777fccb)
+- test(cmru): restore standards DinD tests lost in merge, cover blank events lines, widen canary skip guard (457e2628f)
+- test(cmru): close coverage to 100% (REL-05/08/12 branches, seven arcs already missing on the integration branch) (969e9ee59)
+- test(cmru): end-to-end suite sets its own git identity for in-process promotion (found by the coverage lane) (bd91df968)
+- test(cmru): skip repository-root image/config tests in the isolated canary tree (aad0ecda4)
+- test(cmru): cover signal-handler scoping and shared .cmru directory; docker standards pass case (f3ba542bf)
+- test(cmru): keep the non-agent tests from the retired dedicated files (68884bb5c)
+- test(cmru): real-git end-to-end release suite (REL-15, m24; plant/revert for REL-04/05/06/13) (9eaafed42)
+- test(cmru): select explicit targets in handoff tests (0f96d124f)
+- test(cmru): initialize unpromoted candidate fixture repo (5a8b636f5)
+- test(cmru): initialize promotion failure fixture repo (ca663b6dd)
+- test(cmru): initialize resume source repository (9aded85d2)
+- test(cmru): isolate resume policy ordering (beb122cae)
+- test(cmru): complete candidate tag fixture (e91b01fdc)
+- test(cmru): avoid recreating candidate repo root (afefb38fa)
+- test(cmru): initialize snapshot config fixture repo (d6dc05e74)
+- test(cmru): unmask origin tag policy checks (119572c90)
+- test(cmru): complete origin policy fixture (8dc9bf0c5)
+- test(cmru): complete family snapshot config fixtures (7b30e65f7)
+- test(cmru): stabilize merge tag tie timestamps (ee1ca832e)
+- test(cmru): restore snapshot handoff environment (99956795f)
+- test(cmru): stub snapshot handoff marker cleanup (d07fb4e7c)
+- test(cmru): allow snapshot fetch before git preflight (2345fab36)
+- test(cmru): match local tag listing row order (b4cda901c)
+- test(cmru): stub parent release preflight (e0429b17b)
+- test(cmru): normalize doc assertion whitespace (2aec743a9)
+- test(cmru): stub cleanup in synthetic release (08e926129)
+- test(cmru): scope release policy stub to synthetic resumes (f913fba7f)
+- test(cmru): stub sidecar cleanup in fake release cases (48899a6ec)
+- test(cmru): stub release refusal marker cleanup (18d11ff6d)
+- test(cmru): assert full origin tag advertisement (d45ad82a2)
+- test(cmru): use canonical release tag in refusal case (0e1986bcb)
+- test(cmru): assert release diagnostics on stderr (945d4f1c5)
+- test(cmru): assert release refusal on stderr (8d882526c)
+- test(cmru): assert publish race diagnostic on stderr (3ea2baf20)
+- test(cmru): cover concurrent release identity changes (406030bfc)
+- test(cmru): supply abandon tag inspection facts (2ef45bb06)
+- test(cmru): intercept leased abandon deletion (82edf2aef)
+- test(cmru): intercept leased candidate deletion (5b52ace34)
+- test(cmru): model local tag presence checks (8cd2452b8)
+- test(cmru): avoid pinning retained scan count (0f7c5e39f)
+- test(cmru): update abandon remote push fixture (280601f3d)
+- test(cmru): isolate release snapshot writer (28e1e700b)
+- test(cmru): stub origin tags in release harnesses (eb759fcfa)
+- test(cmru): declare unmanaged release assets (203a1e944)
+- test(cmru): stub origin tags in launcher failure (463f77471)
+- test(cmru): include cleanup release asset inventory (2d69cf933)
+- test(cmru): include release tag format preflight (f742cbacd)
+- test(cmru): model tag preflight in push warning (663778e83)
+- test(cmru): include strict tag ref checks (7a0e6d545)
+- test(cmru): assert ambiguous package 404 wording (8d96f9a2b)
+- test(cmru): fail closed on malformed tag refs (05cbc37d4)
+- test(cmru): match malformed ref diagnostic (a42623899)
+- test(cmru): allow safe recheck short circuit (7649f9d9a)
+- test(cmru): match cleanup preview version (ad2762e38)
+- test(cmru): request captured cleanup output fixture (c7689c79a)
+- test(cmru): expect local tag outcome recheck (c8760ec14)
+- test(cmru): accept cleanup dry-run keyword (3997195b7)
+- test(cmru): isolate abandon remote boundary fixtures (efa7d4e94)
+- test(cmru): assert legacy workspace record purpose (5311ba1c8)
+- test(cmru): supply release github config fixtures (a9bf5b58d)
+- test(cmru): remove secret backup ordering assumption (1ffb26925)
+- test(cmru): align release gate loader mock (0a7f20469)
+- test(cmru): checkpoint legacy release resume fixture (cae5f9e3a)
+- test(cmru): create candidate source root fixtures (d5adfcd15)
+- test(cmru): initialize release tag fixture head (6a02f2d60)
+- test(cmru): inspect hook directory within git call (9c381ccee)
+- test(cmru): check release changes in a git repo (e88a5df83)
+- test(cmru): include token in release config fixture (3eeb95316)
+- test(cmru): match Assay first-parent diagnostic (fcaaac728)
+- test(cmru): prepare origin facts before moving local tag (14f650fdc)
+- test(cmru): pass explicit argv to baseline checker (4bbdb5e26)
+- test(cmru): assert cleanup plan is applied (caece5b17)
+- test(cmru): provide saved scope to resume fixture (05e0549e9)
+- test(cmru): match tag push transport invocation (308987ba4)
+- test(cmru): isolate malformed scope remote guard (c1a62ee02)
+- test(cmru): validate legacy transaction child fixture (d537f6feb)
+- test(cmru): account for cleanup plan dispatch (5177e6a49)
+- test(cmru): assert cleanup preview identity handoff (ca5126809)
+- test(cmru): match successful tag deletion calls (ea8dc1e36)
+- test(cmru): align abandon fixtures with remote preflight (7b799b776)
 - test(cmru): align cleanup fake with clean-step contract (700f0f936)
 - test(cmru): cover overflowing tester CPU exponents (53757b2a2)
 - test(cmru): use valid tester CPU resolver values (4324e57c1)

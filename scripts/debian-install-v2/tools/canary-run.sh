@@ -52,7 +52,13 @@ PY
 
   local out rc
   set +e
-  out="$(cd "$work" && PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m pytest "$selector" \
+  # The disposable copy carries the project's conftest, which enables the
+  # cli-extended pytest plugin; the library comes from the lane's own
+  # PYTHONPATH (the gate lanes point it at the worktree revision under test).
+  # A single selected test cannot satisfy the strict reviewed-case check, so
+  # the focused-run switch is used.
+  out="$(cd "$work" && PYTHONPATH=".${PYTHONPATH:+:$PYTHONPATH}" PYTHONDONTWRITEBYTECODE=1 \
+          "$python_bin" -m pytest "$selector" --cli-case-partial \
           -q -x -p no:cacheprovider --basetemp="$work/.pt" 2>&1)"
   rc=$?
   set -e

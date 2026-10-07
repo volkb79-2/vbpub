@@ -83,7 +83,7 @@ ciu host enroll <name> --ssh-host ADDR [--port N] [--user USER] --fingerprint SH
 | key location | `.ciu/secrets/hosts/<name>/ssh_key[.pub]` (S14.3a namespace) | `<state root>/ciu-ssh/<name>[.pub]` (S2.6) |
 | inventory row | `[deploy.hosts.<name>]` in `.ciu.hosts.toml` | `[hosts.<name>]` in `ciu.hosts.toml` |
 | pinning | `known_host`, S14.4a fail-closed, S14.4c port form | `known_host`, S7.2 |
-| installer | ciu's `get.py` (new: `cmru get-py --project ciu`, committed + released) | the same, pinned to the control's ciu 8.x |
+| installer | ciu's `get.py` (new: `cmru get-py ciu`, committed + released; its `enroll` code is the ciu-owned fragment `ciu/installer/enroll.py`, inlined by cmru's installer extensions) | the same, pinned to the control's ciu 8.x |
 | what the target needs ciu for | `ciu up --host` render-on-target (S14.2); `--thin` hosts may use the installed `get.py` as their `activate` entrypoint (S14.6) | `prepare`/`apply` (S17.4.1); `docker_optional` hosts alike |
 
 ## 7. Security posture
@@ -101,7 +101,7 @@ ciu host enroll <name> --ssh-host ADDR [--port N] [--user USER] --fingerprint SH
 - **O3** `get.py enroll` in a fixture without an SSH server exits `EXIT_PREREQ` naming `openssh-server` and performs no network I/O (assert no download happened).
 - **O4** Step 2 with a wrong `--fingerprint` refuses and writes nothing; with the right one it writes exactly the specified row (round-trip: the operator's other tables and comments survive byte-for-byte) and `ciu ssh <name> -- ciu version` then succeeds.
 - **O5** Controlled wrong implementations that must fail: one that writes the row before the fingerprint check (O4); one that prints or logs private-key material (a grep oracle over stdout/stderr/logs for the private key's first line); one that rewrites the inventory file whole (O4's byte-for-byte comparison).
-- **O6** The cmru template: `cmru get-py --project ciu` renders a `get.py` whose `enroll --help` lists exactly the §4 flags, and the rendered script is byte-identical to the committed `ciu/get.py` at release.
+- **O6** The cmru template plus ciu's `installer/enroll.py` extension: `cmru get-py ciu` renders a `get.py` whose `enroll --help` lists exactly the §4 flags, and the rendered script is byte-identical to the committed `ciu/get.py` at release.
 
 ## 9. Operator direction 2026-09-03 (what revision 2 changed and why)
 

@@ -71,7 +71,10 @@ def test_sequential_publishes_before_promoting_exact_candidate(monkeypatch, tmp_
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append("tag"))
     monkeypatch.setattr(cli, "_tag_on_head", lambda *args, **kwargs: "demo-v1.2.3")
     monkeypatch.setattr(cli, "_push_tags", lambda *args, **kwargs: calls.append("push-tag"))
-    monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: calls.append("publish"))
+    monkeypatch.setattr(
+        cli, "_run_project_steps",
+        lambda _root, _configs, _names, steps, **kwargs: calls.append(("steps", tuple(steps))),
+    )
     monkeypatch.setattr(cli, "_assert_release_candidate_unchanged", lambda *args: calls.append("verify"))
     monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: calls.append("promote"))
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "b" * 40)
@@ -83,6 +86,9 @@ def test_sequential_publishes_before_promoting_exact_candidate(monkeypatch, tmp_
     ) == ["demo (demo-v1.2.3)"]
     assert calls == [
         ("progress", "a" * 40), "prepare", "backup", "gate", "tag", "backup",
-        "push-tag", "publish", "verify", ("result", "demo-v1.2.3"), "promote",
+        # REL-05: the non-publishing build and the publishing push are separate
+        # calls, so a build failure can roll the tag back.
+        "push-tag", ("steps", (project.build_step,)), ("steps", ("push",)),
+        "verify", ("result", "demo-v1.2.3"), "promote",
         ("progress", "b" * 40),
     ]

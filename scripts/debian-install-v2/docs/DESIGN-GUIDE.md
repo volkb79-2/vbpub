@@ -77,9 +77,23 @@ does not speak a hosting provider’s API. `install-host.py` and other provider
 clients can consume the generated JSON without learning Debian installer
 internals.
 
-The remote bootstrap download includes the installer and the same
-stdlib-only `cli_extended` runtime in one archive. The target needs no pip
-installation and no live checkout of the controller’s repository. Questionary
+The remote bootstrap downloads the installer tree from one repository archive
+and the **released** `cli_extended` wheel separately. The wheel is resolved from
+the `cli-extended-latest/latest.json` release pointer (or pinned with
+`CLI_EXTENDED_WHEEL_URL` plus `CLI_EXTENDED_WHEEL_SHA256`), verified by sha256
+before anything is written, and kept beside the entrypoint as the only
+`cli_extended-*.whl`. The wheel is pure Python, so `debian-install-v2.py` puts it
+on `sys.path` and imports it by zipimport: the target needs no pip installation
+and no live checkout of the controller’s repository. This replaced copying the
+library’s source subtree out of the same archive (decision CX-D3 of the unified
+cli-extended program): the library that runs on a host is now a released,
+checksummed artifact, never whatever the repository branch held at download
+time. The two-fetch design was chosen over bundling the library into the archive
+because the archive is a branch snapshot with no integrity manifest, while the
+release pointer carries the digest. Without a wheel beside the script the
+entrypoint falls back to an installed `cli_extended`, and otherwise refuses with
+exit status 2 and a pointer to the bootstrap; it never searches the repository
+source tree. Questionary
 is not bundled because remote installation does not run the wizard. The
 generated custom-script launcher fetches the first bootstrap file through
 Python’s standard-library HTTPS client and reports download failure with a

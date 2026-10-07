@@ -72,14 +72,6 @@ visible in a project step argv), not inferred handler policy. This needs a
 small handler-contract migration; it is deliberately not folded into the
 tester resource change.
 
-### Separate control-plane configuration (high, separate product surface)
-
-`cmru-agent` and `cmru-controller` default Consul to
-`http://127.0.0.1:8500` and default state/log settings. These are not CMRU
-release-orchestration inputs and do not belong in project `cmru.toml`. They
-need their own explicit node/controller config document (or required CLI
-arguments) before those binaries are promoted as a production control plane.
-
 ## CIU: remaining candidates
 
 ### Deployment-affecting fallbacks requiring a schema migration (high)

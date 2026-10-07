@@ -303,10 +303,10 @@ python3 qa_validate_tokens.py \
 
 # 6) Build release artifact (run from repository root)
 cd /workspaces/vbpub
-cmru build --project empyrion-translation
+cmru build empyrion-translation
 
 # 7) Push release
-cmru publish --project empyrion-translation
+cmru publish empyrion-translation --from-checkout
 ```
 
 ### Is previous “basic translation” required?

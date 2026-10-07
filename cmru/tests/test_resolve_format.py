@@ -88,7 +88,7 @@ class TestFormatResultEnv(unittest.TestCase):
 
 
 def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(monkeypatch):
-    project = SimpleNamespace(prefix="alpha-v", github_token="project-token")
+    project = SimpleNamespace(prefix="alpha-v", github_token="project-token", installer=None)
     loaded = (
         Path("/repo"), {"alpha": project}, ["alpha"], [], [], "project-first", {},
         SimpleNamespace(), cli.GitHubConfig("owner", "repo", "root-token", "user"),
@@ -102,6 +102,7 @@ def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(
 
     monkeypatch.setattr(cli, "_resolve_config", lambda _path: Path("/repo/cmru.toml"))
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr("cmru.config.load_forge_config", lambda _path: SimpleNamespace(projects={"alpha": project}))
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", FakeHost)
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: _RESULT)
 

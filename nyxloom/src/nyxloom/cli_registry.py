@@ -23,6 +23,7 @@ from cli_extended import (
 )
 
 from . import __version__, backlog_entries, cli, findings
+from .session_extract import presets as presets_mod
 
 
 def _identity(command: str) -> CliIdentity:
@@ -61,6 +62,16 @@ def _arg(
     **parser_kwargs: Any,
 ) -> ArgumentSpec:
     return ArgumentSpec(name, description, metavar=metavar, parser_kwargs=parser_kwargs)
+
+
+# The `extract` option groups, in help order. Every extract option belongs to
+# exactly one of them (pinned by tests/test_cli_extract_groups.py).
+_G_SOURCE = "Source & range"
+_G_CONTENT = "Content selection"
+_G_RENDER = "Rendering & compression"
+_G_DERIVED = "Derived sections"
+_G_OUTPUT = "Output"
+EXTRACT_GROUPS = (_G_SOURCE, _G_CONTENT, _G_RENDER, _G_DERIVED, _G_OUTPUT)
 
 
 def _opt(
@@ -283,6 +294,145 @@ def _extract_guard(args: Any) -> None:
             exit_code=2,
             show_help=True,
         )
+    if getattr(args, "tool_calls", None) is not None and (
+        getattr(args, "show_tool_calls", False) or getattr(args, "show_tool_call_intent", False)
+    ):
+        raise CliFailure(
+            "--tool-calls replaces the deprecated --show-tool-calls/--show-tool-call-intent; "
+            "pass only one spelling",
+            exit_code=2,
+            show_help=True,
+        )
+    brief = getattr(args, "successor_brief", False)
+    from .session_extract import presets as presets_mod
+
+    if brief and getattr(args, "preset", None) not in (None, "successor"):
+        raise CliFailure("--successor-brief implies --preset successor and cannot be combined "
+                         f"with --preset {args.preset}", exit_code=2, show_help=True)
+    pname = presets_mod.preset_name(args)
+    eff = lambda attr, default=None: presets_mod.effective(args, attr, default)  # noqa: E731
+    # `successor` here means "one finished document with the whole-session
+    # ledger"; the fixed-span presets (successor, review, ledger) all are.
+    successor = brief or pname == "successor"
+    fixed_preset = pname is not None and presets_mod.PRESETS[pname].fixed_span
+    for on, off, flag in (("ledger", "no_ledger", "--ledger/--no-ledger"),
+                          ("stop_state", "no_stop_state", "--stop-state/--no-stop-state"),
+                          ("strip_cd_prefix", "no_strip_cd_prefix",
+                           "--strip-cd-prefix/--no-strip-cd-prefix"),
+                          ("prose_only", "no_prose", "--prose-only/--no-prose")):
+        if getattr(args, on, False) and getattr(args, off, False):
+            raise CliFailure(f"{flag} are contradictory", exit_code=2, show_help=True)
+    prose_only = bool(eff("prose_only", False))
+    no_prose = bool(eff("no_prose", False))
+    calls_on = (
+        eff("tool_calls") not in (None, "none")
+        or getattr(args, "show_tool_calls", False)
+    )
+    if not calls_on:
+        for attr, flag in (("edit_calls", "--edit-calls"), ("read_calls", "--read-calls"),
+                           ("effect_calls", "--effect-calls")):
+            if getattr(args, attr, None) is not None:
+                raise CliFailure(f"{flag} needs --tool-calls (or a preset that sets it)",
+                                 exit_code=2, show_help=True)
+    if getattr(args, "no_strip_cd_prefix", False) and not successor:
+        raise CliFailure("--no-strip-cd-prefix only applies with --preset successor "
+                         "(or --successor-brief, which implies it)",
+                         exit_code=2, show_help=True)
+    if getattr(args, "jsonl", False) and not prose_only:
+        raise CliFailure("--jsonl needs --prose-only (or --preset watch)", exit_code=2, show_help=True)
+    if getattr(args, "jsonl", False) and getattr(args, "json", False):
+        raise CliFailure("--jsonl and --json are different outputs; pick one",
+                         exit_code=2, show_help=True)
+    if getattr(args, "json", False) and pname is not None:
+        raise CliFailure(
+            f"--preset {pname} emits {'JSON lines via --jsonl' if prose_only else 'one text document'}"
+            f" and cannot be combined with --json", exit_code=2, show_help=True)
+    if prose_only:
+        for conflict, flag in (
+            (no_prose, "--no-prose"),
+            (brief, "--successor-brief"),
+            (eff("ledger", False), "--ledger"),
+            (eff("stop_state", False), "--stop-state"),
+            (eff("tool_calls") not in (None, "none") or getattr(args, "show_tool_calls", False),
+             "--tool-calls/--show-tool-calls"),
+            (any(getattr(args, a, None) is not None
+                 for a in ("edit_calls", "read_calls", "effect_calls", "path_aliases")),
+             "--edit-calls/--read-calls/--effect-calls/--path-aliases"),
+            (getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None,
+             "--task/--task-file"),
+        ):
+            if conflict:
+                raise CliFailure(f"--prose-only (--preset watch) keeps only operator and assistant "
+                                 f"prose and cannot be combined with {flag}",
+                                 exit_code=2, show_help=True)
+    if no_prose:
+        for conflict, flag in (
+            (getattr(args, "follow", False), "--follow"),
+            (brief, "--successor-brief"),
+            (getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None,
+             "--task/--task-file"),
+        ):
+            if conflict:
+                raise CliFailure(f"--no-prose (--preset ledger) emits only the derived sections "
+                                 f"and cannot be combined with {flag}",
+                                 exit_code=2, show_help=True)
+        if not (eff("ledger", False) or eff("stop_state", False)):
+            raise CliFailure("--no-prose with neither --ledger nor --stop-state would print nothing",
+                             exit_code=2, show_help=True)
+    if getattr(args, "timestamp_gap_minutes", None) is not None:
+        if eff("timestamps") != "gaps":
+            raise CliFailure("--timestamp-gap-minutes only applies with --timestamps gaps",
+                             exit_code=2, show_help=True)
+        if args.timestamp_gap_minutes < 0:
+            raise CliFailure("--timestamp-gap-minutes must be non-negative",
+                             exit_code=2, show_help=True)
+    if getattr(args, "follow", False):
+        for attr, bad, flag in (("edit_calls", "collapse", "--edit-calls collapse"),
+                                ("read_calls", "collapse", "--read-calls collapse"),
+                                ("timestamps", "gaps", "--timestamps gaps")):
+            if getattr(args, attr, None) == bad:
+                raise CliFailure(f"{flag} needs a fixed span and cannot be combined with --follow",
+                                 exit_code=2, show_help=True)
+    if not brief:
+        for attr, flag in (("order", "--order"), ("brief_max_chars", "--brief-max-chars")):
+            if getattr(args, attr, None) is not None:
+                raise CliFailure(f"{flag} only applies with --successor-brief", exit_code=2, show_help=True)
+    else:
+        for conflict, flag in (
+            (getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None,
+             "--task/--task-file (use --order)"),
+            (getattr(args, "stop_state", False), "--stop-state (always included)"),
+        ):
+            if conflict:
+                raise CliFailure(
+                    f"--successor-brief emits one markdown document and cannot be combined "
+                    f"with {flag}",
+                    exit_code=2,
+                    show_help=True,
+                )
+    if successor or fixed_preset:
+        for conflict, flag in (
+            (getattr(args, "follow", False), "--follow"),
+            (getattr(args, "json", False), "--json"),
+        ):
+            if conflict:
+                raise CliFailure(
+                    f"--successor-brief/--preset {pname or 'successor'} emit one fixed-span "
+                    f"document (collapse and ledger need the whole span) and cannot be "
+                    f"combined with {flag}",
+                    exit_code=2,
+                    show_help=True,
+                )
+    if getattr(args, "brief_max_chars", None) is not None and args.brief_max_chars < 0:
+        raise CliFailure("--brief-max-chars must be non-negative", exit_code=2, show_help=True)
+    if (getattr(args, "effect_pattern", None) or getattr(args, "no_default_effect_patterns", False)) \
+            and not (eff("ledger", False) or successor):
+        raise CliFailure(
+            "--effect-pattern/--no-default-effect-patterns only apply with --ledger "
+            "or --successor-brief",
+            exit_code=2,
+            show_help=True,
+        )
     if getattr(args, "follow", False) and getattr(args, "strip_stale_wakeups", False):
         raise CliFailure(
             "extract --follow cannot be combined with --strip-stale-wakeups: "
@@ -302,12 +452,14 @@ def _extract_guard(args: Any) -> None:
             "--gap-marker" if getattr(args, "gap_marker", None) is not None else None,
             "--min-gap-records" if getattr(args, "min_gap_records", None) is not None else None,
             "--ledger" if getattr(args, "ledger", False) else None,
+            "--stop-state" if getattr(args, "stop_state", False) else None,
             "--show-gap-source" if getattr(args, "show_gap_source", False) else None,
             "--task" if getattr(args, "task", None) is not None else None,
             "--task-file" if getattr(args, "task_file", None) is not None else None,
             "--render-markdown" if getattr(args, "render_markdown", False) else None,
             "--highlight" if getattr(args, "highlight", False) else None,
             "--show-timestamps" if getattr(args, "show_timestamps", None) is not None else None,
+            "--timestamps" if getattr(args, "timestamps", None) is not None else None,
             "--timestamp-format" if getattr(args, "timestamp_format", None) is not None else None,
             "--extract-metadata" if getattr(args, "extract_metadata", None) is not None else None,
             "--color/--no-color" if getattr(args, "color", None) is not None else None,
@@ -451,110 +603,259 @@ def harness_cli():
     common_follow = (
         _opt(
             ("--follow", "-f"), "Follow new session records",
-            group="FOLLOWING", action="store_true",
+            group=_G_SOURCE, action="store_true",
         ),
         _opt(
             "--interval", "Follow polling interval in seconds",
-            group="FOLLOWING", type=float, default=None,
+            group=_G_SOURCE, type=float, default=None,
         ),
-        _opt("--bell", "Ring when attention is needed", group="FOLLOWING", action="store_true"),
-        _opt("--on-attention", "Attention notification behavior", group="FOLLOWING", default=None),
-        _opt("--notify-project", "Nyxloom project for attention notifications", group="FOLLOWING", default=None),
+        _opt("--bell", "Ring when attention is needed", group=_G_SOURCE, action="store_true"),
+        _opt("--on-attention", "Attention notification behavior", group=_G_SOURCE, default=None),
+        _opt("--notify-project", "Nyxloom project for attention notifications", group=_G_SOURCE, default=None),
         _opt(
             "--attention-min-chars", "Minimum attention message size",
-            group="FOLLOWING", type=int, default=None,
+            group=_G_SOURCE, type=int, default=None,
         ),
     )
     registry.register(_leaf("nyxloom-harness", "extract", """Create a structured, resumable session extract. The default operator-review profile selects the newest epoch and applies its checkpoint and word limits; --profile all includes ordinary prose across the available epochs. Explicit selection controls override profile defaults.
 
-With --follow, Nyxloom prints a one-shot prefix and then reads only appended payload plus bounded prefix/tail fingerprints for rewrite detection. Unchanged polls read no content; there is no whole-file rescan. Follow-only controls require --follow, fixed-span and task-banner controls cannot be combined with it, and JSON output is unsupported while following.""", cli.cmd_extract,
+With --follow, Nyxloom prints a one-shot prefix and then reads only appended payload plus bounded prefix/tail fingerprints for rewrite detection. Unchanged polls read no content; there is no whole-file rescan. Follow-only controls require --follow, fixed-span and task-banner controls cannot be combined with it, and JSON output is unsupported while following.
+
+""" + presets_mod.help_paragraph(), cli.cmd_extract,
         arguments=(extraction_path,),
         options=(
+            # (a) Source & range: where the transcript comes from and which span of it.
             _opt(
                 "--opencode-session", "Select an OpenCode session id",
-                group="SESSION SOURCE", default=None,
+                group=_G_SOURCE, default=None,
             ),
             _opt(
-                "--format", "Session source format", group="SESSION SOURCE",
+                "--format", "Session source format", group=_G_SOURCE,
                 choices=("claude-code", "codex", "opencode", "reasonix"), default=None,
             ),
             _opt(
-                "--profile", "Extraction profile", group="WINDOW SELECTION",
+                "--epochs", "Select epochs: N, A:B, or all",
+                group=_G_SOURCE, default=None,
+            ),
+            _opt("--since", "Start after this source marker", group=_G_SOURCE, default=None),
+            _opt(
+                "--since-file", "Read the last marker from a prior extract",
+                group=_G_SOURCE, default=None,
+            ),
+            _opt("--until", "Stop at this source marker", group=_G_SOURCE, default=None),
+            _opt(
+                ("--max-compactions", "--max-lifecycle-markers"), "Maximum lifecycle markers",
+                group=_G_SOURCE, type=int, default=None,
+            ),
+            _opt(
+                "--max-time-minutes", "Maximum source time span",
+                group=_G_SOURCE, type=int, default=None,
+            ),
+            *common_follow,
+            # (b) Content selection: which events are kept at all.
+            _opt(
+                "--profile", "Extraction profile", group=_G_CONTENT,
                 choices=("all", "operator-review"), default=None,
             ),
             _opt(
                 ("--answer-length", "--long-threshold"), "Long answer threshold",
-                group="WINDOW SELECTION", type=int, default=None,
+                group=_G_CONTENT, type=int, default=None,
             ),
             _opt(
                 ("--max-checkpoints", "--checkpoints"), "Maximum checkpoints",
-                group="WINDOW SELECTION", type=int, default=None,
+                group=_G_CONTENT, type=int, default=None,
             ),
             _opt(
                 "--max-words", "Maximum output words",
-                group="WINDOW SELECTION", type=int, default=None,
+                group=_G_CONTENT, type=int, default=None,
             ),
-            _opt(
-                ("--max-compactions", "--max-lifecycle-markers"), "Maximum lifecycle markers",
-                group="WINDOW SELECTION", type=int, default=None,
-            ),
-            _opt(
-                "--max-time-minutes", "Maximum source time span",
-                group="WINDOW SELECTION", type=int, default=None,
-            ),
-            _opt(
-                "--epochs", "Select epochs: N, A:B, or all",
-                group="WINDOW SELECTION", default=None,
-            ),
-            _opt("--since", "Start after this source marker", group="WINDOW SELECTION", default=None),
-            _opt(
-                "--since-file", "Read the last marker from a prior extract",
-                group="WINDOW SELECTION", default=None,
-            ),
-            _opt("--until", "Stop at this source marker", group="WINDOW SELECTION", default=None),
-            _opt("--include-thinking", "Include model thinking", group="CONTENT", action="store_true"),
-            _opt("--show-api-errors", "Show API error records", group="CONTENT", action="store_true"),
+            _opt("--include-thinking", "Include model thinking", group=_G_CONTENT, action="store_true"),
+            _opt("--show-api-errors", "Show API error records", group=_G_CONTENT, action="store_true"),
             _opt(
                 "--show-compaction-content", "Show compaction content",
-                group="CONTENT", action="store_true",
+                group=_G_CONTENT, action="store_true",
             ),
-            _opt("--show-tool-calls", "Show tool call details", group="CONTENT", action="store_true"),
-            _opt("--show-tool-call-intent", "Show tool call intent", group="CONTENT", action="store_true"),
-            _opt("--strip-stale-wakeups", "Remove stale wakeup events", group="CONTENT", action="store_true"),
-            _opt("--json", "Emit structured JSON output", group="OUTPUT", action="store_true"),
-            _opt("--ledger", "Include source event ledger", group="OUTPUT", action="store_true"),
+            _opt(
+                "--tool-calls",
+                "Tool-call rendering (Claude Code): none (default), intent (the call's own "
+                "description), intent-or-call (intent, else the one-line truncated call), "
+                "call (one-line truncated call); results are never shown",
+                group=_G_CONTENT, choices=("none", "intent", "intent-or-call", "call"), default=None,
+            ),
+            _opt(
+                "--tool-errors",
+                "Render FAILED tool results truncated, independent of --tool-calls "
+                "(Claude Code): show (default) or hide",
+                group=_G_CONTENT, choices=("show", "hide"), default=None,
+            ),
+            _opt(
+                "--show-tool-calls",
+                "Deprecated alias: tool-name labels (use --tool-calls)",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt(
+                "--show-tool-call-intent",
+                "Deprecated alias: add intent to the --show-tool-calls labels (use --tool-calls)",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt(
+                "--prose-only",
+                "Keep ONLY operator messages and assistant prose, one timestamped block each "
+                "(interviews kept compactly: question line, then the operator's answer; "
+                "no tool calls/results, compaction or interrupt markers, gap notes or "
+                "cursor comments); coloured per --color/--no-color; works with --follow",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt(
+                "--no-prose",
+                "Drop every event and keep only the derived sections (--ledger, --stop-state) "
+                "(Claude Code)",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt("--strip-stale-wakeups", "Remove stale wakeup events", group=_G_CONTENT, action="store_true"),
+            _opt(
+                "--redact-pattern", "Additional redaction regular expression; repeatable",
+                group=_G_CONTENT, action="append", default=None,
+            ),
+            # (c) Rendering & compression: how the kept events are written.
+            _opt(
+                "--strip-cd-prefix",
+                "Drop a leading `cd X &&` / `cd X;` from rendered calls, before truncation "
+                "(Claude Code)",
+                group=_G_RENDER, action="store_true",
+            ),
+            _opt(
+                "--no-strip-cd-prefix",
+                "With --preset successor: keep the leading `cd X &&` (turns its default off)",
+                group=_G_RENDER, action="store_true",
+            ),
+            _opt(
+                "--path-aliases",
+                "Shorten known roots in rendered calls/errors/paths, before truncation: "
+                "comma list of `auto` (worktree -> $WT, scratchpad session dir -> $SCRATCH, "
+                "repo -> $REPO, detected from the transcript), `none`, `NAME=/path` "
+                "(later entries override) (Claude Code)",
+                group=_G_RENDER, metavar="SPEC", default=None,
+            ),
+            _opt(
+                "--edit-calls",
+                "Edit/Write calls (needs --tool-calls): show (default), collapse (one line per "
+                "consecutive same-file run, `edited F xN: intents`), omit (Claude Code)",
+                group=_G_RENDER, choices=("show", "collapse", "omit"), default=None,
+            ),
+            _opt(
+                "--read-calls",
+                "Read-only tools/Bash (needs --tool-calls): show (default) or collapse into "
+                "`oriented: N reads` (Claude Code)",
+                group=_G_RENDER, choices=("show", "collapse"), default=None,
+            ),
+            _opt(
+                "--effect-calls",
+                "Outside-effect Bash commands (needs --tool-calls): mode (default, rendered "
+                "like any call) or always (print the call even in intent mode) (Claude Code)",
+                group=_G_RENDER, choices=("always", "mode"), default=None,
+            ),
+            _opt(
+                "--timestamps",
+                "Timestamp policy: all (default, per --show-timestamps), gaps (only first "
+                "event, boundaries and after a gap), none",
+                group=_G_RENDER, choices=("all", "gaps", "none"), default=None,
+            ),
+            _opt(
+                "--timestamp-gap-minutes",
+                "With --timestamps gaps: the gap, in minutes, that earns a timestamp "
+                "(default 5)",
+                group=_G_RENDER, type=int, default=None,
+            ),
             _opt(
                 ("--blank-lines", "--insert-blank-lines"), "Blank lines between extract sections",
-                group="OUTPUT", type=int, default=None,
+                group=_G_RENDER, type=int, default=None,
             ),
             _opt(
-                "--gap-marker", "Gap marker style", group="OUTPUT",
+                "--gap-marker", "Gap marker style", group=_G_RENDER,
                 choices=("full", "inline", "inline2", "inline-short", "none"), default=None,
             ),
             _opt(
                 "--min-gap-records", "Minimum records represented by a gap marker",
-                group="OUTPUT", type=int, default=None,
+                group=_G_RENDER, type=int, default=None,
             ),
-            _opt("--show-gap-source", "Show source range for gaps", group="OUTPUT", action="store_true"),
-            _opt("--render-markdown", "Render Markdown", group="OUTPUT", action="store_true"),
-            _opt("--highlight", "Highlight terminal output", group="OUTPUT", action="store_true"),
+            _opt("--show-gap-source", "Show source range for gaps", group=_G_RENDER, action="store_true"),
             _opt(
-                "--show-timestamps", "Timestamp placement", group="OUTPUT",
+                "--show-timestamps", "Timestamp placement", group=_G_RENDER,
                 choices=("pre", "post", "both", "none"), default=None,
             ),
-            _opt("--timestamp-format", "Timestamp display format", group="OUTPUT", default=None),
+            _opt("--timestamp-format", "Timestamp display format", group=_G_RENDER, default=None),
             _opt(
-                "--extract-metadata", "Metadata placement", group="OUTPUT",
+                "--extract-metadata", "Metadata placement", group=_G_RENDER,
                 choices=("pre", "post", "both"), default=None,
             ),
+            # (d) Derived sections: blocks computed from the whole session.
             _opt(
-                "--redact-pattern", "Additional redaction regular expression; repeatable",
-                group="REDACTION AND TASK", action="append", default=None,
+                "--ledger",
+                "Include source event ledger: per-boundary lines plus a whole-session ledger "
+                "with external effects and agent-control calls (Claude Code)",
+                group=_G_DERIVED, action="store_true",
             ),
-            _opt("--task", "Task context text", group="REDACTION AND TASK", default=None),
-            _opt("--task-file", "Read task context from a file", group="REDACTION AND TASK", default=None),
-            *common_follow,
-        ), fields={"cmd": "extract"}, validate=_extract_guard))
+            _opt(
+                "--effect-pattern",
+                "Extra regex marking a Bash command as an external effect; repeatable",
+                group=_G_DERIVED, action="append", default=None,
+            ),
+            _opt(
+                "--no-default-effect-patterns",
+                "Use only --effect-pattern regexes for the external-effects ledger bucket",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--stop-state",
+                "Append a Stop state section: cause, last assistant text, in-flight call "
+                "(Claude Code)",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--no-ledger", "Turn off the ledger a preset enables",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--no-stop-state", "Turn off the Stop state section a preset enables",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--preset", presets_mod.option_help(),
+                group=_G_DERIVED, choices=tuple(presets_mod.PRESETS), default=None,
+            ),
+            _opt(
+                "--successor-brief",
+                "Emit ONE markdown document to prime a fresh agent: original brief, extract "
+                "(implies --preset successor), whole-session ledger, stop state, then --order "
+                "(Claude Code)",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--order", "With --successor-brief: the successor's order, TEXT or @FILE",
+                group=_G_DERIVED, default=None,
+            ),
+            _opt(
+                "--brief-max-chars",
+                "With --successor-brief: inline the original brief up to this many chars "
+                "(default 6000), else its path + sha256",
+                group=_G_DERIVED, type=int, default=None,
+            ),
+            _opt("--task", "Task context text", group=_G_DERIVED, default=None),
+            _opt("--task-file", "Read task context from a file", group=_G_DERIVED, default=None),
+            # (e) Output: the form of the whole document.
+            _opt("--json", "Emit structured JSON output", group=_G_OUTPUT, action="store_true"),
+            _opt(
+                "--jsonl",
+                "With --prose-only (--preset watch): one JSON object per line, "
+                '{"v": 1, "ts", "role": "operator"|"assistant", "text", "agent"?}, a stable '
+                "versioned format for the VS Code extension; works with --follow",
+                group=_G_OUTPUT, action="store_true",
+            ),
+            _opt("--render-markdown", "Render Markdown", group=_G_OUTPUT, action="store_true"),
+            _opt("--highlight", "Highlight terminal output", group=_G_OUTPUT, action="store_true"),
+        ), fields={"cmd": "extract"}, validate=_extract_guard,
+        examples=presets_mod.example_lines()))
 
     registry.register(_leaf(
         "nyxloom-harness",

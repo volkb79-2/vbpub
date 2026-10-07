@@ -2,9 +2,10 @@
 """
 vbpub debian-install v2 — remote bootstrap.
 
-Fetches scripts/debian-install-v2/ and the stdlib-only cli-extended runtime
-from the public volkb79-2/vbpub repo (one codeload tarball — no git, no `tar`
-binary, stdlib only: urllib + tarfile), translates a small set of env vars
+Fetches scripts/debian-install-v2/ from the public volkb79-2/vbpub repo (one
+codeload tarball — no git, no `tar` binary, stdlib only: urllib + tarfile) and
+the RELEASED cli-extended wheel (sha256-verified, from the release manifest
+`cli-extended-latest/latest.json` or pinned by env), translates a small set of env vars
 into v2's strict-JSON config, and runs the installer. This is the v2 equivalent of v1's
 scripts/debian-install/bootstrap.sh one-liner, not a continuation of it:
 v2's own CLI is strict-JSON only (see debian_install_v2/config.py) and
@@ -18,8 +19,10 @@ installs git/curl/docker for itself, once it starts).
 This file is an intentional cli-extended exception: it must be fetched and
 executed before the target has downloaded cli-extended, so importing that
 shared library here would create a bootstrap cycle. Keep this first-stage
-adapter stdlib-only; after it fetches the installer tree, the actual
-debian-install-v2.py entrypoint uses the shared CLI contract.
+adapter stdlib-only; after it fetches the installer tree and the cli-extended
+wheel (written beside the entrypoint under its release filename, the only
+cli_extended-*.whl kept there), the actual debian-install-v2.py entrypoint
+imports the wheel directly (zipimport; no pip) and uses the shared CLI contract.
 
 Usage (root):
   BOOTSTRAP_URL=https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py \\
@@ -53,7 +56,9 @@ merged in last (wins over the named vars above):
              /opt/vbpub-debian-install-v2)
   Swap:      SWAP_DISK_TOTAL_GB, SWAP_FILE_COUNT, SWAP_PRIORITY,
              SWAP_DISCARD, PRESERVE_ROOT_SIZE_GB
-  zswap:     ZSWAP_COMPRESSOR, ZSWAP_ZPOOL, ZSWAP_POOL_PERCENT, VM_SWAPPINESS
+  zswap:     ZSWAP_COMPRESSOR, ZSWAP_POOL_PERCENT, ZSWAP_ACCEPT_THRESHOLD_PERCENT,
+             ZSWAP_SHRINKER_ENABLED (yes/no), VM_SWAPPINESS (0-200), IOCOST_ENABLED
+             (yes/no). ZSWAP_ZPOOL is removed: ignored with a warning.
   Docker:    DOCKER_LIVE_RESTORE, DOCKER_LOG_DRIVER, DOCKER_LOG_MAX_SIZE,
              DOCKER_LOG_MAX_FILE, DOCKER_CLEANUP_MAX_AGE_HOURS
   Updates:   APT_AUTO_UPGRADE_MODE (full|security-only|notify-only),
@@ -63,6 +68,10 @@ merged in last (wins over the named vars above):
              RUN_OOMD_CONFIG, RUN_FSTRIM, RUN_DOCKER_CLEANUP,
              RUN_APT_AUTO_UPGRADE, RUN_AUTO_REBOOT
   Reboot:    AUTO_REBOOT_AFTER_STAGE1, NEVER_REBOOT
+  Notify:    NOTIFY_BACKEND (mattermost|telegram|none; unset = infer from the
+             credential present, refuse when both are), MATTERMOST_WEBHOOK_URL
+             (secret incoming-webhook URL, post-only), NOTIFY_HOST_LABEL
+             (free-text label shown first in every Mattermost message)
   Telegram:  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CREDENTIAL_MODE
              (root-storage|systemd), TELEGRAM_VERBOSE_PROGRESS (yes/no -
              also notify on every internal step, not just the stage-boundary
@@ -71,11 +80,18 @@ merged in last (wins over the named vars above):
              controller's own ephemeral, per-host bootstrap key. Installed as
              the very first stage1 step (before this key's own registration
              with the provider is even guaranteed to have taken effect) and
-             removed again as the last stage2 step - no further controller
-             access is needed once the install is done. Leave unset to skip
-             entirely; the operator's own persistent access key is never
-             touched by this either way.
+             removed again after the install COMPLETES (stage2_done) unless
+             RETAIN_CONTROLLER_SSH_KEY=yes (yes|no, default no) keeps it for
+             post-reboot controller access. Never removed on a failed install. Leave unset to skip entirely; the
+             operator's own persistent access key is never touched by this
+             either way.
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
+  Library:   CLI_EXTENDED_WHEEL_URL + CLI_EXTENDED_WHEEL_SHA256 pin one exact
+             cli-extended wheel (set both or neither; the URL's last path
+             segment must be a cli_extended-*.whl filename). With neither,
+             the release manifest at CLI_EXTENDED_LATEST_URL (default
+             https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json)
+             supplies the wheel's `url` and `sha256`.
 
   DRY_RUN=yes    — pass --dry-run through to the installer
   DEBUG_MODE=yes — verbose fetch/translate logging from this wrapper itself
@@ -87,30 +103,40 @@ no.
 """
 from __future__ import annotations
 
+import hashlib
+import http.client
+import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
+import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 REPO_URL_DEFAULT = "https://github.com/volkb79-2/vbpub"
 REPO_BRANCH_DEFAULT = "main"
 INSTALL_DIR_DEFAULT = "/opt/vbpub-debian-install-v2"
 SUBTREE = ("scripts", "debian-install-v2")
-CLI_LIBRARY_SUBTREE = ("libraries", "cli-extended", "src", "cli_extended")
-SUBTREES = (
-    (SUBTREE, ()),
-    (CLI_LIBRARY_SUBTREE, ("cli_extended",)),
+LATEST_URL_DEFAULT = (
+    "https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json"
 )
+WHEEL_GLOB = "cli_extended-*.whl"
+WHEEL_MARKER = "cli_extended/__init__.py"
+USER_AGENT = "vbpub-bootstrap-remote"
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+WHEEL_MAX_BYTES = 16 * 1024 * 1024
+MANIFEST_MAX_BYTES = 1024 * 1024
 
 _TRUE = {"yes", "true", "1", "on"}
 _FALSE = {"no", "false", "0", "off"}
 
 _STRING_FIELDS = {
     "ZSWAP_COMPRESSOR": "zswap_compressor",
-    "ZSWAP_ZPOOL": "zswap_zpool",
     "DOCKER_LOG_DRIVER": "docker_log_driver",
     "DOCKER_LOG_MAX_SIZE": "docker_log_max_size",
     "DOCKER_LOG_MAX_FILE": "docker_log_max_file",
@@ -119,6 +145,9 @@ _STRING_FIELDS = {
     "CREDENTIAL_MODE": "credential_mode",
     "TELEGRAM_BOT_TOKEN": "telegram_bot_token",
     "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "NOTIFY_BACKEND": "notify_backend",
+    "MATTERMOST_WEBHOOK_URL": "mattermost_webhook_url",
+    "NOTIFY_HOST_LABEL": "notify_host_label",
     "STATE_DIR": "state_dir",
     "LOG_DIR": "log_dir",
     "STAGE2_OUTPUT": "stage2_output",
@@ -130,6 +159,7 @@ _INT_FIELDS = {
     "SWAP_PRIORITY": "swap_priority",
     "PRESERVE_ROOT_SIZE_GB": "preserve_root_size_gb",
     "ZSWAP_POOL_PERCENT": "zswap_pool_percent",
+    "ZSWAP_ACCEPT_THRESHOLD_PERCENT": "zswap_accept_threshold_percent",
     "VM_SWAPPINESS": "vm_swappiness",
     "DOCKER_CLEANUP_MAX_AGE_HOURS": "docker_cleanup_max_age_hours",
 }
@@ -143,18 +173,47 @@ _BOOL_FIELDS = {
     "RUN_JOURNALD_CONFIG": "run_journald_config",
     "RUN_DOCKER_INSTALL": "run_docker_install",
     "RUN_KSM": "run_ksm",
+    "ZSWAP_SHRINKER_ENABLED": "zswap_shrinker_enabled",
+    "IOCOST_ENABLED": "iocost_enabled",
     "RUN_OOMD_CONFIG": "run_oomd_config",
     "RUN_FSTRIM": "run_fstrim",
     "RUN_DOCKER_CLEANUP": "run_docker_cleanup",
     "RUN_APT_AUTO_UPGRADE": "run_apt_auto_upgrade",
+    "APT_UPGRADE_AT_INSTALL": "apt_upgrade_at_install",
     "RUN_AUTO_REBOOT": "run_auto_reboot",
     "TELEGRAM_VERBOSE_PROGRESS": "telegram_verbose_progress",
+    "RETAIN_CONTROLLER_SSH_KEY": "retain_controller_ssh_key",
 }
 
 
 class BootstrapError(SystemExit):
     def __init__(self, message: str) -> None:
         super().__init__(f"bootstrap-remote: {message}")
+
+
+PROVIDER_FILE_DIR = Path("/root")
+
+
+def restrict_provider_files(root: Path | None = None) -> None:
+    """chmod 0600 every `<root>/custom_script*` file (the provider's script,
+    custom_script.output and .output2). Best effort, never raises.
+
+    Called as the VERY FIRST action of main(), before config parsing or
+    anything else that can fail (LT-F-r1002-03): the script and its output can
+    hold the webhook URL, and an early failure used to leave a 0700 script and
+    a 0644 output behind.
+    """
+    base = PROVIDER_FILE_DIR if root is None else root
+    try:
+        candidates = sorted(base.glob("custom_script*"))
+    except OSError:
+        return
+    for path in candidates:
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.chmod(0o600)
+        except OSError as exc:
+            print(f"bootstrap-remote: could not chmod 0600 {path}: {exc}", file=sys.stderr)
 
 
 def _env_bool(name: str) -> bool | None:
@@ -201,6 +260,9 @@ def build_config() -> dict:
             f"{', '.join(present_obsolete)} {'is' if len(present_obsolete) == 1 else 'are'} v1 env var name(s) "
             f"with no v2 equivalent -- see this file's docstring for the current names"
         )
+    if os.environ.get("ZSWAP_ZPOOL"):
+        # Removed knob (absent on 7.x kernels): ignored, never an error.
+        print("bootstrap-remote: ZSWAP_ZPOOL is removed and ignored", file=sys.stderr)
     config: dict = {}
     for env_name, field in _STRING_FIELDS.items():
         value = os.environ.get(env_name)
@@ -226,12 +288,28 @@ def build_config() -> dict:
     return config
 
 
+def redact_url(url: str) -> str:
+    """`url` without userinfo (user[:token]@), for DISPLAY only (logs, errors,
+    stage output and notifications); the real URL is still used for the fetch."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if "@" not in parts.netloc:
+            return url
+        host = parts.hostname or ""
+        if ":" in host:  # IPv6 literal
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+    except ValueError:
+        return "<unparseable url redacted>"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool) -> None:
     tarball_url = f"{repo_url}/archive/refs/heads/{branch}.tar.gz"
+    shown_url = redact_url(tarball_url)
     if debug:
-        print(f"[bootstrap-remote] downloading {tarball_url}", file=sys.stderr)
-    request = urllib.request.Request(tarball_url, headers={"User-Agent": "vbpub-bootstrap-remote"})
-    counts = {source: 0 for source, _ in SUBTREES}
+        print(f"[bootstrap-remote] downloading {shown_url}", file=sys.stderr)
+    request = urllib.request.Request(tarball_url, headers={"User-Agent": USER_AGENT})
     written = 0
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -239,21 +317,9 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
             with tarfile.open(fileobj=response, mode="r|gz") as archive:
                 for member in archive:
                     parts = Path(member.name).parts
-                    matched = next(
-                        (
-                            (source, destination)
-                            for source, destination in SUBTREES
-                            if len(parts) >= 1 + len(source)
-                            and parts[1:1 + len(source)] == source
-                        ),
-                        None,
-                    )
-                    if matched is None:
+                    if parts[1:1 + len(SUBTREE)] != SUBTREE or not member.isfile():
                         continue
-                    if not member.isfile():
-                        continue
-                    source, destination_parts = matched
-                    relative_parts = parts[1 + len(source):]
+                    relative_parts = parts[1 + len(SUBTREE):]
                     if not relative_parts or ".." in relative_parts or any(
                         Path(part).is_absolute() for part in relative_parts
                     ):
@@ -263,8 +329,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                         # touches the real filesystem -- this process runs as
                         # root (enforced in main()).
                         raise BootstrapError(f"refusing archive member with an unsafe path: {member.name!r}")
-                    relative = Path(*destination_parts, *relative_parts)
-                    target = install_dir / relative
+                    target = install_dir.joinpath(*relative_parts)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     extracted = archive.extractfile(member)
                     if extracted is None:
@@ -273,29 +338,149 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                     if member.mode & 0o111:
                         target.chmod(target.stat().st_mode | 0o111)
                     written += 1
-                    counts[source] += 1
     except urllib.error.URLError as exc:
-        raise BootstrapError(f"could not fetch {tarball_url}: {exc}") from None
+        raise BootstrapError(f"could not fetch {shown_url}: {exc}") from None
     except tarfile.TarError as exc:
         # A flaky connection on an unattended remote host can truncate the
         # gzip/tar stream mid-download -- tarfile.ReadError and friends are
         # not URLError subclasses, and would otherwise surface as a bare
         # traceback instead of this tool's own diagnostic.
-        raise BootstrapError(f"corrupt or truncated download from {tarball_url}: {exc}") from None
-    missing = ["/".join(source) for source, count in counts.items() if count == 0]
-    if missing:
+        raise BootstrapError(f"corrupt or truncated download from {shown_url}: {exc}") from None
+    if written == 0:
         raise BootstrapError(
-            f"downloaded {tarball_url} but required source tree(s) were empty or missing: "
-            f"{', '.join(missing)} — wrong REPO_URL/REPO_BRANCH, or a required tree moved"
+            f"downloaded {shown_url} but required source tree was empty or missing: "
+            f"{'/'.join(SUBTREE)} — wrong REPO_URL/REPO_BRANCH, or the tree moved"
         )
     if debug:
         print(
-            f"[bootstrap-remote] wrote {written} installer/runtime files under {install_dir}",
+            f"[bootstrap-remote] wrote {written} installer files under {install_dir}",
             file=sys.stderr,
         )
 
 
+def _require_https(url: str, what: str) -> str:
+    """Refuse every scheme but https (http, file, ftp, ...): no exceptions."""
+    if urllib.parse.urlparse(url).scheme != "https":
+        raise BootstrapError(f"{what} {url!r} must be an https:// URL")
+    return url
+
+
+def _download(url: str, what: str, max_bytes: int) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read(max_bytes + 1)
+    except (OSError, http.client.HTTPException) as exc:
+        # URLError and HTTPError are OSError subclasses, and so is a socket
+        # timeout; IncompleteRead is an HTTPException -- all are "could not
+        # fetch", one diagnostic.
+        raise BootstrapError(f"could not fetch {what} {url}: {exc!r}") from None
+    if len(data) > max_bytes:
+        raise BootstrapError(f"{what} {url} is larger than the {max_bytes}-byte cap")
+    return data
+
+
+def _manifest_field(manifest: dict, name: str, url: str) -> str:
+    value = manifest.get(name)
+    if not isinstance(value, str) or not value:
+        raise BootstrapError(f"release manifest {url} has no usable {name!r} field")
+    return value
+
+
+def resolve_wheel(*, debug: bool = False) -> tuple[str, str]:
+    """Return (wheel url, lowercase sha256) for the cli-extended wheel to install.
+
+    Both CLI_EXTENDED_WHEEL_URL and CLI_EXTENDED_WHEEL_SHA256 pin a wheel;
+    with neither, the release manifest's `url` and `sha256` are used.
+    """
+    pinned_url = os.environ.get("CLI_EXTENDED_WHEEL_URL")
+    pinned_sha = os.environ.get("CLI_EXTENDED_WHEEL_SHA256")
+    if bool(pinned_url) != bool(pinned_sha):
+        raise BootstrapError(
+            "CLI_EXTENDED_WHEEL_URL and CLI_EXTENDED_WHEEL_SHA256 must be set together "
+            "(or both unset to use the latest release)"
+        )
+    if pinned_url:
+        url, sha256 = _require_https(pinned_url, "CLI_EXTENDED_WHEEL_URL"), pinned_sha
+    else:
+        latest_url = _require_https(
+            os.environ.get("CLI_EXTENDED_LATEST_URL") or LATEST_URL_DEFAULT,
+            "CLI_EXTENDED_LATEST_URL",
+        )
+        if debug:
+            print(f"[bootstrap-remote] reading release manifest {latest_url}", file=sys.stderr)
+        raw = _download(latest_url, "the cli-extended release manifest", MANIFEST_MAX_BYTES)
+        try:
+            manifest = json.loads(raw)
+        except ValueError as exc:
+            raise BootstrapError(f"release manifest {latest_url} is not valid JSON: {exc}") from None
+        if not isinstance(manifest, dict):
+            raise BootstrapError(f"release manifest {latest_url} must be a JSON object")
+        url = _require_https(
+            _manifest_field(manifest, "url", latest_url),
+            f"the 'url' field of release manifest {latest_url}",
+        )
+        sha256 = _manifest_field(manifest, "sha256", latest_url)
+    sha256 = sha256.strip().lower()
+    if not _SHA256.fullmatch(sha256):
+        raise BootstrapError(f"cli-extended wheel sha256 {sha256!r} is not 64 hexadecimal digits")
+    return url, sha256
+
+
+def download_wheel(url: str, sha256: str, *, debug: bool) -> tuple[str, bytes]:
+    """Download and fully verify the wheel in memory; writes nothing."""
+    name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1])
+    if not (name.startswith("cli_extended-") and name.endswith(".whl")) or "/" in name:
+        raise BootstrapError(
+            f"cli-extended wheel URL {url} must end in a cli_extended-*.whl filename, got {name!r}"
+        )
+    if debug:
+        print(f"[bootstrap-remote] downloading {url}", file=sys.stderr)
+    data = _download(url, "the cli-extended wheel", WHEEL_MAX_BYTES)
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != sha256:
+        raise BootstrapError(
+            f"cli-extended wheel sha256 mismatch for {url}: expected {sha256}, got {actual}"
+        )
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = set(archive.namelist())
+    except zipfile.BadZipFile:
+        raise BootstrapError(f"cli-extended wheel {url} is not a zip archive") from None
+    if WHEEL_MARKER not in members:
+        raise BootstrapError(f"cli-extended wheel {url} does not contain {WHEEL_MARKER}")
+    return name, data
+
+
+def write_wheel(name: str, data: bytes, install_dir: Path, *, debug: bool) -> Path:
+    """Write the verified wheel atomically, then drop every other cli_extended wheel."""
+    install_dir.mkdir(parents=True, exist_ok=True)
+    matches = sorted(install_dir.glob(WHEEL_GLOB))
+    directories = [str(path) for path in matches if path.is_dir()]
+    if directories:
+        raise BootstrapError(
+            f"refusing to replace cli-extended wheel(s) that are directories: {', '.join(directories)}"
+        )
+    target = install_dir / name
+    temporary = install_dir / f"{name}.tmp"
+    temporary.write_bytes(data)
+    os.replace(temporary, target)
+    for other in matches:
+        if other != target:
+            other.unlink()
+    if debug:
+        print(f"[bootstrap-remote] wrote {target}", file=sys.stderr)
+    return target
+
+
+def install_wheel(url: str, sha256: str, install_dir: Path, *, debug: bool) -> Path:
+    """Download, verify and write the wheel; keep it as the only cli_extended wheel."""
+    name, data = download_wheel(url, sha256, debug=debug)
+    return write_wheel(name, data, install_dir, debug=debug)
+
+
 def main() -> int:
+    restrict_provider_files()  # LT-F-r1002-03: first action, before anything can fail
     debug = bool(_env_bool("DEBUG_MODE"))
     repo_url = os.environ.get("REPO_URL", REPO_URL_DEFAULT).rstrip("/")
     branch = os.environ.get("REPO_BRANCH", REPO_BRANCH_DEFAULT)
@@ -304,7 +489,12 @@ def main() -> int:
     if os.geteuid() != 0:
         raise BootstrapError("must run as root")
 
+    wheel_url, wheel_sha256 = resolve_wheel(debug=debug)
+    # The wheel is resolved, downloaded and verified before anything is
+    # written to the install dir; a bad pin or digest leaves it untouched.
+    wheel_name, wheel_data = download_wheel(wheel_url, wheel_sha256, debug=debug)
     fetch_subtree(repo_url, branch, install_dir, debug=debug)
+    write_wheel(wheel_name, wheel_data, install_dir, debug=debug)
 
     entrypoint = install_dir / "debian-install-v2.py"
     if not entrypoint.is_file():
@@ -312,10 +502,22 @@ def main() -> int:
 
     config = build_config()
     config_path = install_dir / "remote-install-config.json"
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    os.chmod(config_path, 0o600)
+    # The file holds the webhook URL / Telegram token: create it 0600 from the
+    # first byte (never write_text-then-chmod, which exposes it at the umask).
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)  # a pre-existing file keeps its old mode otherwise
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json.dumps(config, indent=2) + "\n")
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if debug:
-        redacted = {key: ("<redacted>" if "token" in key else value) for key, value in config.items()}
+        redacted = {
+            key: ("<redacted>" if "token" in key or "webhook" in key else value)
+            for key, value in config.items()
+        }
         print(f"[bootstrap-remote] config: {json.dumps(redacted)}", file=sys.stderr)
 
     argv = [sys.executable, str(entrypoint), "install", "--config", str(config_path), "--yes"]

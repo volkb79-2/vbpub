@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import dependencies, resolve, runner
-from cmru.agent import cli as agent_cli
 
 
 def test_dependency_wheel_parser_strips_comments_extras_and_blank_lines(tmp_path):
@@ -34,15 +33,6 @@ def test_resolve_prefers_valid_latest_json_before_host_scan(monkeypatch):
     monkeypatch.setattr(resolve, "resolve_via_latest_json", lambda *args: latest)
     host = SimpleNamespace(resolve_latest=lambda prefix: {"version": "1"})
     assert resolve.resolve(host, "demo-v", gh_releases_url="https://github") == latest
-
-
-def test_agent_run_and_once_refuse_identity_without_landscape(monkeypatch, capsys):
-    monkeypatch.setattr(agent_cli, "_load_identity", lambda scope: ("node", {"public_key": "pub"}))
-    args = SimpleNamespace(scope="user", release_root=None)
-    assert agent_cli.cmd_run(args) == 2
-    assert "landscape not found" in capsys.readouterr().err
-    assert agent_cli.cmd_once(args) == 2
-    assert "landscape not found" in capsys.readouterr().err
 
 
 def test_runner_login_required_token_refuses_before_docker(monkeypatch):

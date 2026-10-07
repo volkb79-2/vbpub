@@ -35,11 +35,11 @@ from cmru.config import (
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.cli_support import (
     TargetSelectionError,
-    cmru_identity,
-    cmru_presentation_options,
+    cmru_registry,
     select_target_names,
+    target_argument,
 )
-from cli_extended import ArgumentSpec, CliRegistry, OptionSpec, VerbGroup, VerbSpec
+from cli_extended import CliFailure, OptionSpec, VerbGroup, VerbSpec
 from cmru.version_config import deep_merge_versions, parse_versions_section
 from cmru.version_registry import (
     Candidate,
@@ -448,7 +448,8 @@ def _resolve_targets(
     return results
 
 
-def _selected_projects(forge: ForgeConfig, context: InvocationContext, target: str | None) -> list[str]:
+def _selected_projects(forge: ForgeConfig, context: InvocationContext, target: object) -> list[str]:
+    """``target`` is a parsed ``target_argument()`` value (or a legacy string)."""
     if context.config_kind == "project":
         order = list(forge.projects)
     elif forge.orchestration:
@@ -461,7 +462,6 @@ def _selected_projects(forge: ForgeConfig, context: InvocationContext, target: s
             forge.projects,
             order,
             context_project=context.project_name,
-            estate_scope=context.scope == "estate",
         )
     except TargetSelectionError as exc:
         raise VersionsError(str(exc)) from exc
@@ -703,8 +703,16 @@ def _template_artifacts(
         if not template_path.is_file():
             raise VersionsError(f"configured version template does not exist: {template_path}")
         try:
-            rendered = environment.from_string(template_path.read_text(encoding="utf-8")).render(**context)
-        except Exception as exc:
+            source = template_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise VersionsError(f"could not read version template {output_id!r}: {exc}") from exc
+        try:
+            rendered = environment.from_string(source).render(**context)
+        except Exception as exc:  # noqa: BLE001
+            # The one justified broad catch (CMRU-C): the render evaluates
+            # user-authored template expressions, which may raise anything
+            # ({{ 1/0 }}, {{ 'a' + 1 }}). That is bad user data (exit 2), not a
+            # programmer error; every other site keeps a narrow tuple.
             raise VersionsError(f"could not render version output {output_id!r}: {exc}") from exc
         stable_path = _safe_relative_path(project_root, config["path"], label=f"versions.outputs.{output_id}.path")
         dated_name = config["dated_path"].replace("{date}", date_string)
@@ -2050,12 +2058,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def versions_cli():
-    registry = CliRegistry(
-        cmru_identity(command="cmru", long_name="Configurable Multi Release Utility"),
-        prog="cmru versions",
-        description="Resolve declared package versions under a supply-chain age window.",
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
+    # Exit 1 (operation failed) is the library's rendering of an expected
+    # exception; exits 2 and 3 are translated explicitly in ``_run_versions``.
+    registry = cmru_registry(
+        "cmru versions",
+        "Resolve declared package versions under a supply-chain age window.",
+        expected_exceptions=(VersionsOperationError, OSError),
     )
     for action in ("init", "resolve", "check"):
         options = [OptionSpec(
@@ -2063,11 +2071,6 @@ def versions_cli():
             f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
             metavar="FILE", parser_kwargs={"default": None},
         )]
-        if action in {"init", "resolve"}:
-            options.append(OptionSpec(
-                ("--dry-run",), "show results without writing files",
-                parser_kwargs={"action": "store_true", "default": False},
-            ))
         registry.register(VerbSpec(
             action,
             description={
@@ -2077,11 +2080,9 @@ def versions_cli():
             }[action],
             group=VerbGroup.EXPLORATION.value if action == "check" else VerbGroup.MODIFICATION.value,
             mutating=action != "check",
+            dry_run=action != "check",
             include_confirmation=False,
-            arguments=(ArgumentSpec(
-                "target", "all or one/more comma-separated project ids",
-                parser_kwargs={"nargs": "?", "default": None},
-            ),),
+            arguments=(target_argument(),),
             options=tuple(options),
             include_json=action == "check",
             include_progress=False,
@@ -2091,48 +2092,50 @@ def versions_cli():
 
 
 def _run_versions(args, _runtime) -> int | None:
-    action = args.verb
+    """Run one verb; domain failures keep their documented exit codes.
+
+    3 = a prerequisite or registry is unavailable, 2 = invalid configuration or
+    selection, 1 = the operation failed (rendered by the library from
+    ``expected_exceptions``: :class:`VersionsOperationError`, ``OSError``).
+    """
     try:
-        context_path = Path(args.config).expanduser() if args.config else None
-        context = resolve_invocation_context(context_path)
-        forge = load_forge_config(context.config_path)
-        projects = _selected_projects(forge, context, args.target)
-        if action == "init":
-            for line in _versions_init(forge, projects, dry_run=args.dry_run):
-                print(line)
-            return
-        if action == "check":
-            now = datetime.now(timezone.utc).replace(microsecond=0)
-            root_results, project_results, declarations = _resolve_all_for_command(
-                forge, projects, resolved_at=now,
-            )
-            _emit_age_evidence_warnings(root_results, project_results)
-            records = _recorded_versions(forge, root_results, project_results, declarations)
-            if args.json:
-                print(json.dumps({"schema_version": 1, "targets": records}, indent=2, sort_keys=True))
-            else:
-                print(_render_report(records))
-            return
-        for line in _run_resolve(forge, context, projects, dry_run=args.dry_run):
+        return _dispatch_versions(args)
+    except (VersionsPrerequisiteError, RegistryError) as exc:
+        raise CliFailure(
+            f"CMRU versions: {exc}", exit_code=exit_codes.PREREQ_MISSING,
+        ) from exc
+    except VersionsOperationError:
+        raise
+    except (VersionsError, ValueError) as exc:
+        raise CliFailure(
+            f"CMRU versions: {exc}", exit_code=exit_codes.CONFIG_ERROR,
+        ) from exc
+
+
+def _dispatch_versions(args) -> int | None:
+    action = args.verb
+    context_path = Path(args.config).expanduser() if args.config else None
+    context = resolve_invocation_context(context_path)
+    forge = load_forge_config(context.config_path)
+    projects = _selected_projects(forge, context, args.target)
+    if action == "init":
+        for line in _versions_init(forge, projects, dry_run=args.dry_run):
             print(line)
-        return
-    except VersionsPrerequisiteError as exc:
-        print(f"CMRU versions: {exc}", file=sys.stderr)
-        return exit_codes.PREREQ_MISSING
-    except VersionsOperationError as exc:
-        print(f"CMRU versions: {exc}", file=sys.stderr)
-        return exit_codes.FAILURE
-    except RegistryError as exc:
-        print(f"CMRU versions: {exc}", file=sys.stderr)
-        return exit_codes.PREREQ_MISSING
-    except VersionsError as exc:
-        print(f"CMRU versions: {exc}", file=sys.stderr)
-        return exit_codes.CONFIG_ERROR
-    except OSError as exc:
-        print(f"CMRU versions: file operation failed: {exc}", file=sys.stderr)
-        return exit_codes.FAILURE
-    except (SystemExit, ValueError) as exc:
-        if isinstance(exc, SystemExit):
-            return exc.code if isinstance(exc.code, int) else 2
-        print(f"CMRU versions: {exc}", file=sys.stderr)
-        return exit_codes.CONFIG_ERROR
+        return None
+    if action == "check":
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        root_results, project_results, declarations = _resolve_all_for_command(
+            forge, projects, resolved_at=now,
+        )
+        _emit_age_evidence_warnings(root_results, project_results)
+        records = _recorded_versions(forge, root_results, project_results, declarations)
+        if args.json:
+            # Deliberately not ``runtime.output.primary``: the report keeps its
+            # sorted, indented form (a stable-order contract for consumers).
+            print(json.dumps({"schema_version": 1, "targets": records}, indent=2, sort_keys=True))
+        else:
+            print(_render_report(records))
+        return None
+    for line in _run_resolve(forge, context, projects, dry_run=args.dry_run):
+        print(line)
+    return None

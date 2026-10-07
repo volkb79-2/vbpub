@@ -111,7 +111,7 @@ def test_notify_skips_entirely_without_credentials(tmp_path, monkeypatch):
 def test_install_and_resume_send_expected_stage_boundary_messages(tmp_path, monkeypatch):
     installer = make_installer(tmp_path)
     sent: list[str] = []
-    monkeypatch.setattr(installer, "_notify", lambda message: sent.append(message))
+    monkeypatch.setattr(installer, "_notify", lambda message, **_kw: sent.append(message))
     monkeypatch.setattr(Installer, "_notifications_enabled", property(lambda self: True))
 
     installer.install()
@@ -128,7 +128,7 @@ def test_install_and_resume_send_expected_stage_boundary_messages(tmp_path, monk
 def test_install_failure_sends_exactly_one_failure_notification(tmp_path, monkeypatch):
     installer = make_installer(tmp_path)
     sent: list[str] = []
-    monkeypatch.setattr(installer, "_notify", lambda message: sent.append(message))
+    monkeypatch.setattr(installer, "_notify", lambda message, **_kw: sent.append(message))
     monkeypatch.setattr(Installer, "_notifications_enabled", property(lambda self: True))
     monkeypatch.setattr(installer, "_stage1", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
 
@@ -171,7 +171,7 @@ def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, ca
 def test_verbose_progress_notifies_every_mark_step(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, telegram_verbose_progress=True)
     sent: list[str] = []
-    monkeypatch.setattr(installer, "_notify", lambda message: sent.append(message))
+    monkeypatch.setattr(installer, "_notify", lambda message, **_kw: sent.append(message))
     installer._mark_step("some_step", "success", "detail here")
     assert any("some_step" in message for message in sent)
 
@@ -179,6 +179,6 @@ def test_verbose_progress_notifies_every_mark_step(tmp_path, monkeypatch):
 def test_non_verbose_mark_step_does_not_notify(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, telegram_verbose_progress=False)
     sent: list[str] = []
-    monkeypatch.setattr(installer, "_notify", lambda message: sent.append(message))
+    monkeypatch.setattr(installer, "_notify", lambda message, **_kw: sent.append(message))
     installer._mark_step("some_step", "success", "detail here")
     assert sent == []

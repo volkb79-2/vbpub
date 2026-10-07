@@ -151,7 +151,7 @@ def test_runner_git_boundary_returns_none_on_missing_git_and_env_command_rejects
     with patch.object(runner.subprocess, "run", return_value=SimpleNamespace(stdout="not-an-assignment\n")):
         with pytest.raises(ValueError, match="KEY=VALUE"):
             runner.apply_env_command(["fake"], tmp_path)
-    monkeypatch.setenv("CMRU_LOG_APPEND", "0")
+    monkeypatch.setenv("CMRU_INTERNAL_LOG_APPEND", "0")
 
 
 def test_transaction_source_and_workspace_refusals_are_explicit(tmp_path):

@@ -71,7 +71,29 @@ CALLS = {
     ],
     "attach-iso 42 --iso-id 1234": [],
     "attach-iso 42 --iso-id 1234 --change-boot-device-to-cdrom --yes": [
-        ("post", "servers/42/iso", {"isoId": 1234, "changeBootDeviceToCdrom": True})
+        ("get", "servers/42", None),
+        ("post", "servers/42/iso", {"isoId": 1234, "changeBootDeviceToCdrom": True}),
+    ],
+    "boot-order 42": [("get", "servers/42", None)],
+    "boot-order 42 --debug-raw": [("get", "servers/42", None)],
+    "boot-order 42 --json": [("get", "servers/42", None)],
+    "boot-order 42 set HDD,CDROM,NETWORK --yes": [
+        ("get", "servers/42", None),
+        ("patch", "servers/42", ({"bootorder": ["HDD", "CDROM", "NETWORK"]}, None)),
+    ],
+    "snapshots 42 create --disk-name vda --yes": [
+        ("post", "servers/42/snapshots", {"name": "vbpub-<utc>", "diskName": "vda"})
+    ],
+    "snapshots 42 create --online --yes": [
+        ("post", "servers/42/snapshots", {"name": "vbpub-<utc>", "onlineSnapshot": True})
+    ],
+    "snapshots 42 create --description pre-upgrade --yes": [
+        ("get", "servers/42/disks", None),
+        (
+            "post",
+            "servers/42/snapshots",
+            {"name": "vbpub-<utc>", "description": "pre-upgrade", "diskName": "vda"},
+        ),
     ],
     "disks 42 supported-drivers": [("get", "servers/42/disks/supported-drivers", None)],
     "disks 42": [("get", "servers/42/disks", None)],
@@ -122,7 +144,13 @@ CALLS = {
     "imageflavours 42": [("get", "servers/42/imageflavours", None)],
     "imageflavours": [("get", "servers", None), ("get", "servers/42/imageflavours", None)],
     "imageflavours 42 --filter debian": [("get", "servers/42/imageflavours", None)],
-    "iso-attached 42 detach --yes": [("delete", "servers/42/iso", None)],
+    "iso-attached 42 detach --yes": [
+        ("get", "tasks", {"serverId": 42, "state": "PENDING"}),
+        ("get", "tasks", {"serverId": 42, "state": "RUNNING"}),
+        ("get", "tasks", {"serverId": 42, "state": "WAITING_FOR_CANCEL"}),
+        ("delete", "servers/42/iso", None),
+    ],
+    "iso-attached 42 detach --yes --ignore-active-tasks": [("delete", "servers/42/iso", None)],
     "iso-attached 42": [("get", "servers/42/iso", None)],
     "iso-attached": [("get", "servers", None), ("get", "servers/42/iso", None)],
     "iso-bootable 42": [("get", "servers/42/isoimages", None)],
@@ -146,11 +174,23 @@ CALLS = {
     "rescuesystem": [("get", "servers", None), ("get", "servers/42/rescuesystem", None)],
     "server-details 42": [("get", "servers/42", None)],
     "servers": [("get", "servers", None)],
-    "snapshots 42 dryrun": [("post", "servers/42/snapshots:dryrun", {})],
-    "snapshots 42 create --yes": [("post", "servers/42/snapshots", {"name": "vbpub-<utc>"})],
+    "snapshots 42 dryrun": [
+        ("get", "servers/42/disks", None),
+        ("post", "servers/42/snapshots:dryrun", {"diskName": "vda"}),
+    ],
+    "snapshots 42 create --yes": [
+        ("get", "servers/42/disks", None),
+        ("post", "servers/42/snapshots", {"name": "vbpub-<utc>", "diskName": "vda"}),
+    ],
     "snapshots": [("get", "servers", None), ("get", "servers/42/snapshots", None)],
+    "snapshots 42 delete before --yes": [
+        ("get", "servers/42/snapshots", None),
+        ("delete", "servers/42/snapshots/before", None),
+    ],
+    "snapshots 42 delete before --dry-run": [("get", "servers/42/snapshots", None)],
     "snapshots 42 create --name before-upgrade --yes": [
-        ("post", "servers/42/snapshots", {"name": "before-upgrade"})
+        ("get", "servers/42/disks", None),
+        ("post", "servers/42/snapshots", {"name": "before-upgrade", "diskName": "vda"}),
     ],
     "status 42": [("get", "servers/42", None)],
     "status": [("get", "servers", None), ("get", "servers/42", None)],
@@ -201,6 +241,9 @@ INT = "must be an integer"
 CHOICE = "invalid choice"
 INVALID = {
     "attach-iso-server-id": ("attach-iso not-an-id --iso-id 1234", INT),
+    "boot-order-action": ("boot-order 42 bogus", CHOICE),
+    "boot-order-order": ("boot-order 42 set HDD,FLOPPY --yes", "unknown boot device"),
+    "boot-order-server-id": ("boot-order abc", INT),
     "disks-action": ("disks 42 bogus", CHOICE),
     "disks-server-id": ("disks abc", INT),
     "firewall-policies-action": ("firewall-policies bogus", CHOICE),
@@ -223,6 +266,7 @@ INVALID = {
     "server-details-server-id": ("server-details abc", INT),
     "snapshots-action": ("snapshots 42 bogus", CHOICE),
     "snapshots-server-id": ("snapshots abc", INT),
+    "snapshots-snapshot-name": ("snapshots 42 delete --yes", "requires a SNAPSHOT_NAME"),
     "status-server-id": ("status abc", INT),
     "tasks-action": (f"tasks {TASK_UUID} bogus", CHOICE),
     "tasks-state": ("tasks --state BOGUS", CHOICE),
@@ -241,7 +285,7 @@ def _normalised(calls):
             and endpoint == "servers/42/snapshots"
             and re.fullmatch(r"vbpub-\d{8}T\d{6}Z", detail["name"])
         ):
-            detail = {"name": "vbpub-<utc>"}
+            detail = {**detail, "name": "vbpub-<utc>"}
         result.append((method, endpoint, detail))
     return result
 
@@ -374,9 +418,9 @@ def test_json_output_is_machine_readable(case_id, node, explore_mod, tmp_path, m
     assert plain.status == 0
     assert plain.calls == run.calls
     if node == "metrics":
-        # metrics prints the same JSON document either way; --json is the compact form.
-        assert json.loads(plain.out) == payload == {"metrics": [{"cpu": 1}]}
-        assert run.out == '{"metrics": [{"cpu": 1}]}\n'
+        # --json is the raw timestamp -> series map; the plain form is the compact table.
+        assert payload == SCP_ROUTES["/api/v1/servers/42/metrics/cpu"]
+        assert "series" in plain.out and "CPU0" in plain.out and "raw" in plain.out
         assert plain.out != run.out
     else:
         assert plain.out != run.out

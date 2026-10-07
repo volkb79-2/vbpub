@@ -627,51 +627,92 @@ def status_cmd(
     ``"origin/main"`` to preview against something other than this
     invocation's own checkout state.
     """
-    changed = detect_changed_projects(repo_root, projects, end_ref=ref)
-    if not changed:
+    records = [
+        record for record in status_records(
+            repo_root, projects, minor=minor, major=major,
+            set_version=set_version, ref=ref,
+        )
+        if record["changed"]
+    ]
+    if not records:
         print("[INFO] No projects with changes since last release.")
         return
 
-    bump_override = "major" if major else "minor" if minor else None
     print(f"\n{'Project':<40} {'Last Tag':<30} {'Bump':<8} {'Next Version'}")
     print("-" * 100)
-    for name, proj, last_tag, bump in changed:
+    for record in records:
+        last_tag = record["last_tag"] or "(none)"
+        name = record["project"]
+        if record["bump"] in ("prepare", "no-tag"):
+            print(f"  {name:<38} {last_tag:<30} {record['bump']:<8} {record['note']}")
+            continue
+        print(f"  {name:<38} {last_tag:<30} {record['bump']:<8} {record['next_version']}")
+    print()
+
+
+def status_records(
+    repo_root: Path,
+    projects: Dict[str, Any],
+    *,
+    minor: bool = False,
+    major: bool = False,
+    set_version: Optional[str] = None,
+    ref: str = "HEAD",
+) -> List[Dict[str, Any]]:
+    """One record per SELECTED project (changed or not), in the given order.
+
+    ``status --json`` is a stable per-project record (redesign B2), so an
+    unchanged project is listed with ``changed: false`` rather than omitted.
+    Keys: ``project``, ``changed``, ``last_tag`` (``None`` before the first
+    release), ``bump`` (``patch|minor|major`` or ``prepare``/``no-tag`` for
+    projects CMRU does not version; ``None`` when unchanged), ``next_version``
+    (the full next tag, or ``None`` when CMRU does not derive one or the project
+    is unchanged) and ``note`` (a human explanation, or ``None``).
+    """
+    changed = detect_changed_projects(repo_root, projects, end_ref=ref)
+    changed_by_name = {entry[0]: entry for entry in changed}
+    bump_override = "major" if major else "minor" if minor else None
+    records: List[Dict[str, Any]] = []
+    for name, unchanged_proj in projects.items():
+        if name not in changed_by_name:
+            prefix = getattr(unchanged_proj, "prefix", None) or f"{name}-v"
+            records.append({
+                "project": name, "changed": False,
+                "last_tag": _latest_tag_for_prefix(repo_root, prefix) or None,
+                "bump": None, "next_version": None, "note": None,
+            })
+            continue
+        _, proj, last_tag, bump = changed_by_name[name]
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         version_cfg = getattr(proj, "version", None)
         strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"
-
+        record: Dict[str, Any] = {
+            "project": name, "changed": True, "last_tag": last_tag or None,
+            "bump": bump, "next_version": None, "note": None,
+        }
         if strategy.startswith("external:"):
             variable = strategy.split(":", 1)[1] or "VERSION"
-            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'prepare':<8} (derived by {variable})")
-            continue
-
-        if not getattr(proj, "git_tag", True):
+            record.update(bump="prepare", note=f"(derived by {variable})")
+        elif not getattr(proj, "git_tag", True):
             # The project owns its no-tag publication convention through explicit
             # build/push commands; CMRU only reports the tag policy.
-            note = "(project-owned publication, no git tag)"
-            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'no-tag':<8} {note}")
-            continue
-
-        if set_version:
-            next_ver = set_version
-        elif bump_override:
-            bump = bump_override
-            if last_tag:
-                current_ver = last_tag[len(prefix):]
-                next_ver = bump_version(current_ver, bump)
+            record.update(bump="no-tag", note="(project-owned publication, no git tag)")
+        else:
+            if set_version:
+                next_ver = set_version
+            elif bump_override:
+                record["bump"] = bump_override
+                next_ver = bump_version(last_tag[len(prefix):], bump_override) if last_tag else "0.1.0"
+            elif strategy == "counter":
+                base_ver = getattr(version_cfg, "base_version", "1.0.0") if version_cfg else "1.0.0"
+                next_ver = _next_counter_version(repo_root, prefix, base_ver)
+            elif last_tag:
+                next_ver = bump_version(last_tag[len(prefix):], bump)
             else:
                 next_ver = "0.1.0"
-        elif strategy == "counter":
-            base_ver = getattr(version_cfg, "base_version", "1.0.0") if version_cfg else "1.0.0"
-            next_ver = _next_counter_version(repo_root, prefix, base_ver)
-        elif last_tag:
-            current_ver = last_tag[len(prefix):]
-            next_ver = bump_version(current_ver, bump)
-        else:
-            next_ver = "0.1.0"
-
-        print(f"  {name:<38} {(last_tag or '(none)'):<30} {bump:<8} {prefix}{next_ver}")
-    print()
+            record["next_version"] = f"{prefix}{next_ver}"
+        records.append(record)
+    return records
 
 
 def release_cmd(

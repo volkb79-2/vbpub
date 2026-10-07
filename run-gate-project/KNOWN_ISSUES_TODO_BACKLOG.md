@@ -100,8 +100,11 @@ SPEC §9.
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49; operability rev 51): ticket/publish and owner/reaping packages; read-only status view and enabled-policy doctor checks |
 | RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending) |
 | RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
-| RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | OPEN (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36, not deleted) |
+| RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | FIXED by RG-87 (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36; recurred 2026-10-06 22:51) |
 | RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
+| RG-85 | assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it) | Minor | OPEN |
+| RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
+| RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5740,7 +5743,7 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-83 — `install_fake_assay` writes its fake `assay` and `assay.real` into the first entry of the real `$PATH` (the operator's `~/.local/bin`) in tests that have not isolated PATH
 
-**Status: OPEN (filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host).**
+**Status: FIXED by RG-87 (2026-10-07): the leak mechanism (shims written into the real `PATH[0]`) recurred on 2026-10-06 and is closed there, with a session guard; see the RG-87 section below. The other asks here (repoint HOME/XDG at tmp, the `invoke_script(home=...)` route) are NOT done and stay tracked under RG-82 AC-23. Originally filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-82; renumbered RG-83 at the merge with main; severity Major: a test run replaces or shadows the operator's real tool on the host.**
 
 **Observed (source and filesystem; line numbers at filing time).**
 
@@ -5769,3 +5772,49 @@ return a closed recovery refusal before inventory or admission.
 **Oracles.** The live PID 1 refusal and low-`--pids-limit` checks passed in a detached `tester-unified` container; the latter's command returned zero while `pids.events:max` increased, and run-gate returned ERROR with raw `exit_code: 0` retained. Tests cover a changed `memory.events:oom_kill` counter, unchanged counters, unreadable files, moved cgroups, and raw-status preservation. The registered `selftest` lane with 100% changed-line coverage remains pending.
 
 **Related:** cmru KI-52 (launcher without `--init`; git `maintenance.autoDetach` mechanism and image hardening), assay B145, dstdns D-670 TEST-RUNNER-INIT (same mechanism under a `sleep infinity` runner).
+
+## RG-86 — every ephemeral gate container sees the whole main checkout (all ignored files, all worktrees) and the git remote credential
+
+**Status:** IN PROGRESS (filed 2026-10-06, package RG-NARROW; implementation and tests landed on branch `run-gate-narrow-mount`, awaiting independent review; no revision bump yet, the release owner bumps it).
+
+**Observed.** `resolve_repo_and_worktree` returns the common-dir owner as `repo`, and `dual_mount_flags(repo, ...)` bind-mounted that whole checkout read-write at both its physical and namespace paths for every ephemeral lane and probe. Every gate container of every project therefore saw the main checkout, every other worktree and every git-ignored file in them (including `cmru.secret.toml`), and could read `.git/config`, whose `remote.origin.url` embeds a credential. Only cmru's own gate wrapper hid one named file.
+
+**Operator decisions (2026-10-06).** run-gate operates only on the worktree it is started for, and has NO knowledge of any project's secret files: isolation comes from mounting less, not from masking named files.
+
+**Fix (`container_mount_flags`, one mount set for lanes and probes).**
+- Linked worktree: the judged worktree plus the git common dir, each dual-mounted (physical + namespace path), read-write (ciu v8 SPEC S16.4.9; assay's snapshot runs `git worktree add`), plus `<repo>/.run-gate` for assay lanes that declare no `state_root`. The rest of the main checkout and every other worktree are not mounted. The judged worktree keeps all its own files, git-ignored overlays and rendered files included.
+- `<common>/config` (and `config.worktree` files) are overlaid read-only with a per-run sanitized copy kept in a private temp dir: userinfo stripped from every URL value, `credential.*`, `*.extraheader`, `include*`, `core.askpass`/`sshCommand`, password/token-like keys and credential-bearing `url.*.insteadOf` rewrites dropped. Generic git hygiene; no project knowledge.
+- Plain (main) checkout: ephemeral lanes and probes are REFUSED unless `--allow-main-checkout` or `RUN_GATE_ALLOW_MAIN_CHECKOUT=1`; the opt-in WARNs that every ignored file is visible and still sanitizes the config.
+- `mode = "exec"` lanes are not affected: those containers belong to ciu or the project's stack.
+- Round 3 (review fixes): the credential key denylist drops whole `sendemail.*`/`imap.*` sections, any key ending in pass/passwd/password/token/secret/apikey/api-key/api_key, and treats `<x>+http(s)://` as a web scheme; `<common>/modules/*/config` is sanitized too. Prune hazard: `git worktree prune` inside the container deleted sibling worktrees' admin dirs on the HOST because the common dir is read-write, so every sibling `<common>/worktrees/<name>` is hidden under an empty read-only mount (prune fails EBUSY on the mountpoint).
+- Follow-up to consider (D3, not done): the `<repo>/.run-gate` read-write mount for assay lanes could be narrowed to `.run-gate/assay-state`; TMPDIR and `GIT_CEILING_DIRECTORIES` also point into `.run-gate` (see RG-85), so that needs care.
+
+**Consequence.** cmru's gate-side masking of its secret file (`cmru/tools/run_release_gate.py`) becomes removable once this ships; cmru tracks that. Callers that ran ephemeral lanes from a main checkout (nyxloom-merge-p post-merge gates, Buildkite agents) must use a worktree or opt in; listed in the RG-NARROW report.
+
+**Oracles.** Mount-set unit tests for both checkout kinds, sanitizer tests for every credential form, refusal and opt-in tests, an exec-lane-on-main test, and a real-container smoke test asserting that a planted ignored secret, the main checkout's files and a sibling worktree are absent, the worktree's own ignored file is present, no credential is visible, and `git log`/`status`/`diff`/`rev-parse` work. Planted regressions (whole repo mounted, sanitizer skipped, main checkout allowed without opt-in) are each killed.
+
+## RG-85 — assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it)
+
+**Status:** OPEN. Filed 2026-10-06 during the 23.10.0 release-prep review (`run-gate-2310-adopt`). Severity Minor: the release gate (`selftest`) is unaffected, because it creates its own scratch root.
+
+**Observed.**
+- `assay.toml:43` and `:84` set `TMPDIR` and `GIT_CEILING_DIRECTORIES` to `/worktree/.run-gate`.
+- In a fresh checkout that directory does not exist. Python silently ignores a nonexistent `TMPDIR`, so tests fall back to `/tmp`.
+- Result: `assay-r1 --base main` failed with 116 tests, and it returned NOT_RUN when no writable `.run-gate` state mount existed. Both passed once `.run-gate/` was created by hand.
+
+**Fix direction.** Either give the assay lanes the same `mkdir -p .run-gate` prelude that the selftest lane got in 23.10.0 (`623332171`), or have run-gate create the lane scratch root before it launches any lane.
+
+**Oracles.** From a fresh `git worktree add` of main, with no `.run-gate/` present, `assay-r1 --base main` reaches PASS with no manual setup. A plant that drops the prelude, or the pre-launch creation, fails a test.
+
+## RG-87 — `shim_dir_of` wrote test shims into the first writable real `$PATH` directory and replaced the operator's real `assay` with a fabricating fake
+
+**Status:** FIXED by package `run-gate-shimleak` (2026-10-07), shipped in the same untagged 23.10.0 release; `__revision__` unchanged because only tests changed. Severity Major (damaged the developer host). Recurrence of RG-83, which is closed by the same fix.
+
+**Incident (2026-10-06 22:51).** `tests/test_run_gate.py` `shim_dir_of(monkeypatch)` returned the FIRST entry of `$PATH` whenever that directory was writable. `install_fake_assay` then wrote `<dir>/assay` (a wrapper that fabricates PASS verdict JSON with a fake digest) and `<dir>/assay.real` there. On the devcontainer `PATH[0]` is `/home/vscode/.local/bin`, so a test run outside tester-unified replaced the user's real `assay`. Every later `assay` call on the host ran the fake, and `assay run --verdict-json` wrote fabricated verdicts. The controller removed the files and kept copies in its scratchpad.
+
+**Root cause.** The helper's writability probe was meant only to detect tester-unified's read-only venv bin and fall back to a private dir. It treated "writable" as "safe", so any writable pre-existing `PATH` directory (the common case outside tester-unified) was written into. Shims were only isolated by accident, when `fake_docker` had already prepended its own `tmp_path/shim`.
+
+**Fix.**
+- `shim_dir_of` returns `PATH[0]` only when that directory is one this suite created (`fake_docker` registers its `tmp_path/shim`). Otherwise it makes a private `run-gate-test-bin-*` dir and PREPENDS it via `monkeypatch.setenv`. No pre-existing `PATH` directory is ever written to.
+- `tests/conftest.py` gains a session guard (`pytest_sessionstart`/`pytest_sessionfinish`): it snapshots every `PATH` directory plus `$HOME/.local/bin` and `$HOME/.venv/bin` (entry name, mode, size, mtime_ns) and fails the session with exit code 1 if anything was created, modified or removed there.
+- Oracles: `test_rg87_shims_never_land_in_a_preexisting_path_dir` and `test_rg87_fake_docker_dir_is_reused_for_later_shims` in `tests/test_run_gate.py`; `tests/test_path_write_guard.py` plants a write into a PATH dir and into `$HOME/.local/bin` in a real inner pytest session and requires the session to fail. Plants: restoring the `PATH[0]` behaviour fails the first oracle; disabling the guard hook fails the two planted-write tests.

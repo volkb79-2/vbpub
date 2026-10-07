@@ -13,8 +13,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from xml.etree import ElementTree
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Mapping
 
@@ -46,7 +49,7 @@ def _load_components():
     for source in (
         PROJECT_ROOT / "src",
         REPOSITORY_ROOT / "assay" / "src",
-        REPOSITORY_ROOT / "libraries" / "cli-extended" / "src",
+        # cli_extended is the INSTALLED released wheel (CX-D1), never a source root.
         REPOSITORY_ROOT / "libraries" / "worktree" / "src",
     ):
         sys.path.insert(0, str(source))
@@ -351,6 +354,35 @@ def _secret_overlay_paths(
     }
 
     def traversal_failed(error: OSError) -> None:
+        # A credential overlay must be a regular file owned by the effective
+        # uid (`_read_secret` refuses anything else). A directory owned by
+        # another uid that we cannot list is equally unlistable for the gate
+        # container's mapped uid, so it can neither hold an overlay we would
+        # use nor expose one to the container: skip it (e.g. a live service
+        # data dir such as a postgres volume). Everything else fails closed,
+        # including PermissionError on a directory we own and an unknown path.
+        # A path that vanished between listing and scanning (worktrees come
+        # and go on the shared tree) cannot expose an overlay either: skip it.
+        if (
+            isinstance(error, (PermissionError, FileNotFoundError))
+            and error.filename is not None
+        ):
+            if isinstance(error, FileNotFoundError):
+                foreign = True
+            else:
+                try:
+                    foreign = os.lstat(error.filename).st_uid != os.geteuid()
+                except FileNotFoundError:
+                    foreign = True  # vanished mid-walk: nothing left to inventory
+                except OSError:
+                    foreign = False
+            if foreign:
+                print(
+                    "cmru-release-gate: WARN: skipping vanished or other-uid "
+                    f"unreadable directory during secret-overlay inventory: {error.filename}",
+                    file=sys.stderr,
+                )
+                return
         raise RuntimeError(f"cannot inventory CMRU secret overlays: {error}") from error
 
     pruned = {
@@ -370,13 +402,92 @@ def _secret_overlay_paths(
     return sorted(candidates)
 
 
+def _is_failure_line(line: str) -> bool:
+    return line.startswith(("FAILED ", "ERROR "))
+
+
+def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
+    """Name the failing tests of a failed lane (BG-03).
+
+    A lane's own console output can hide pytest's short-summary lines (assay
+    keeps them only in the verdict's ``result_stdout_tail``). Print every
+    ``FAILED``/``ERROR`` line from verdicts and junit files written by this
+    lane run so the release log always names the test.
+    """
+    lines: list[str] = []
+    for verdict in sorted((project_root / ".assay").glob("verdict-*.json")):
+        try:
+            if verdict.stat().st_mtime_ns < since_ns:
+                continue
+            tail = json.loads(verdict.read_text(encoding="utf-8")).get("result_stdout_tail")
+        except (OSError, ValueError):
+            continue
+        if isinstance(tail, str):
+            lines.extend(line for line in tail.splitlines() if _is_failure_line(line))
+    junit = project_root / "junit-coverage.xml"
+    try:
+        if junit.stat().st_mtime_ns >= since_ns:
+            for case in ElementTree.parse(junit).iter("testcase"):
+                if case.find("failure") is not None or case.find("error") is not None:
+                    lines.append(f"FAILED {case.get('classname')}::{case.get('name')} (junit)")
+    except (OSError, ElementTree.ParseError):
+        pass
+    if lines:
+        print(f"cmru-release-gate: lane {lane!r} failed; failing tests:", file=sys.stderr)
+        for line in dict.fromkeys(lines):
+            print(f"  {line}", file=sys.stderr)
+
+
+POSTPONED_MARKER = Path(".assay") / "mutation-postponed-cmru.json"
+POSTPONE_REASON = (
+    "operator-approved provisional release: the R2 mutation lane was skipped and "
+    "must be run afterwards against the released tag"
+)
+
+
+def _tracking_id(value: str) -> str:
+    """Return a stripped, non-empty postponement tracking id or refuse."""
+    tracking_id = value.strip()
+    if not tracking_id:
+        raise argparse.ArgumentTypeError("the postponement tracking id must be non-empty")
+    return tracking_id
+
+
+def _record_postponement(project_root: Path, tracking_id: str) -> Path:
+    """Write the retained marker saying the mutation lane was skipped, and WARN.
+
+    The marker lives under ``.assay`` so cmru's ``evidence_paths`` retain it
+    with the rest of the gate evidence; it is never written by a full gate.
+    """
+    marker = project_root / POSTPONED_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema_version": 1,
+        "lane": "mutation",
+        "status": "postponed",
+        "tracking_id": tracking_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "reason": POSTPONE_REASON,
+    }
+    marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"cmru-release-gate: WARN: mutation lane POSTPONED ({tracking_id}); "
+        f"this gate is PROVISIONAL; marker {marker}",
+        file=sys.stderr,
+    )
+    return marker
+
+
 def _invoke_lane(repo_root: Path, lane: str, environment: Mapping[str, str]) -> int:
+    started = time.time_ns()
     result = subprocess.run(
         ["./run-gate.py", "--worktree", str(repo_root), lane],
         cwd=repo_root / "cmru",
         env=dict(environment),
         check=False,
     )
+    if result.returncode:
+        _report_lane_failure(repo_root / "cmru", lane, started)
     return result.returncode
 
 
@@ -384,7 +495,10 @@ def run_release_gate(
     repo_root: Path,
     *,
     temp_parent: Path = Path("/tmp"),
+    postpone_mutation: str | None = None,
 ) -> int:
+    if postpone_mutation is not None:
+        postpone_mutation = _tracking_id(postpone_mutation)
     repo_root = repo_root.resolve(strict=True)
     project_root = repo_root / "cmru"
     if not project_root.is_dir() or project_root.is_symlink():
@@ -409,6 +523,7 @@ def run_release_gate(
             baseline,
             assay_git,
             temp_parent,
+            postpone_mutation,
         )
 
 
@@ -419,6 +534,7 @@ def _run_locked_gate(
     baseline,
     assay_git,
     temp_parent: Path,
+    postpone_mutation: str | None = None,
 ) -> int:
     auth = baseline._repository_git_auth(repo_root)
     lane_environment = _lane_environment()
@@ -434,34 +550,50 @@ def _run_locked_gate(
             if result:
                 return result
 
-        facts = baseline.build_facts(
-            repo_root,
-            project_root,
-            git_auth=auth,
-            assay_git=assay_git,
-        )
-        facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
-        if auth.token and auth.token in facts_json:
-            raise RuntimeError("remote baseline facts unexpectedly contain publisher credentials")
-        mutation_environment = dict(lane_environment)
-        mutation_environment[FACTS_ENV_KEY] = facts_json
-        result = _invoke_lane(repo_root, "mutation", mutation_environment)
-        if result:
-            return result
-
-        for lane in ("canary", "enroll"):
-            result = _invoke_lane(repo_root, lane, lane_environment)
+        if postpone_mutation is not None:
+            # Provisional gate: ONLY the mutation lane (and its remote-facts
+            # preparation) is skipped; the postponement is recorded as evidence.
+            _record_postponement(project_root, postpone_mutation)
+        else:
+            # A full gate never leaves an earlier provisional marker behind.
+            (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+            facts = baseline.build_facts(
+                repo_root,
+                project_root,
+                git_auth=auth,
+                assay_git=assay_git,
+            )
+            facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
+            if auth.token and auth.token in facts_json:
+                raise RuntimeError("remote baseline facts unexpectedly contain publisher credentials")
+            mutation_environment = dict(lane_environment)
+            mutation_environment[FACTS_ENV_KEY] = facts_json
+            result = _invoke_lane(repo_root, "mutation", mutation_environment)
             if result:
                 return result
+
+        result = _invoke_lane(repo_root, "canary", lane_environment)
+        if result:
+            return result
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worktree", type=Path, required=True)
+    parser.add_argument(
+        "--postpone-mutation",
+        metavar="TRACKING-ID",
+        type=_tracking_id,
+        default=None,
+        help=(
+            "skip ONLY the mutation lane (PROVISIONAL gate) and record the "
+            "postponement under TRACKING-ID in .assay/mutation-postponed-cmru.json"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
-        return run_release_gate(args.worktree)
+        return run_release_gate(args.worktree, postpone_mutation=args.postpone_mutation)
     except Exception as exc:
         print(f"cmru-release-gate: {exc}", file=sys.stderr)
         return 1

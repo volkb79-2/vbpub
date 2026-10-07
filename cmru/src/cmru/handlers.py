@@ -256,7 +256,9 @@ def _host_bind_source(container_path: Path) -> str:
             continue
         mount_root, mount_point = fields[3], fields[4]
         if path_str == mount_point or path_str.startswith(mount_point.rstrip("/") + "/"):
-            if best is None or len(mount_point) > len(best[1]):
+            # ``>=``: on equal-length mount points the LAST mountinfo entry is
+            # the visible one (an earlier entry at the same point is shadowed).
+            if best is None or len(mount_point) >= len(best[1]):
                 best = (mount_root, mount_point)
     if best is None:
         raise RuntimeError(
@@ -516,6 +518,39 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     print(result)
 
 
+def cmd_bundle_manifest(args: argparse.Namespace) -> None:
+    """Write the installer manifest (`files` = sha256/size/mode of every regular file) into
+    a staged bundle directory, before it is tarred. The hardened get.py refuses bundles
+    whose members the manifest does not list, so every tarball project needs this step."""
+    from cmru import exit_codes
+    from cmru.manifest import (
+        bundle_tag_problem, build_bundle_manifest, manifest_sha256, write_manifest,
+    )
+
+    problem = bundle_tag_problem(args.tag)
+    if problem:
+        print(f"[ERROR] {problem}", file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    root = Path(args.root).resolve()
+    name = args.manifest_name  # the file name inside `root` (not the project --name)
+    try:
+        manifest = build_bundle_manifest(
+            project=args.name, tag=args.tag, bundle_root=root,
+            exclude=(name, name + ".minisig"),
+        )
+    except ValueError as exc:
+        print(f"[ERROR] bundle-manifest: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.FAILURE) from None
+    except RuntimeError as exc:
+        # SOURCE_DATE_EPOCH unset: a missing prerequisite, not a crash (found by the
+        # W2-PKG5 surface review: it used to escape as a traceback).
+        print(f"[ERROR] bundle-manifest: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.PREREQ_MISSING) from None
+    out = write_manifest(manifest, root / name)
+    print(f"[INFO] Wrote {out} ({len(manifest['files'])} files, "
+          f"sha256 {manifest_sha256(out)})")
+
+
 def cmd_tarball_validate(args: argparse.Namespace) -> None:
     """Assert the resolved latest <prefix>-v* release carries a tarball + .sha256."""
     owner = _require_env("GITHUB_USERNAME")
@@ -537,21 +572,8 @@ def cmd_tarball_validate(args: argparse.Namespace) -> None:
 
 # ─── OCI image commands ───────────────────────────────────────────────────────
 
-_OCI_REPACK_DISABLED = (
-    "cmru OCI repack is experimental and not production-ready; "
-    "the path is disabled until its production-equivalence requirements are met"
-)
-
-
-def _reject_experimental_repack(repack: bool) -> None:
-    """Fail closed before auth, Docker, or filesystem state can be mutated."""
-    if not repack:
-        return
-    from cmru import exit_codes
-
-    print(f"[ERROR] {_OCI_REPACK_DISABLED}", file=sys.stderr)
-    raise SystemExit(exit_codes.CONFIG_ERROR)
-
+# OCI repack (`--repack`) was removed from the handler grammar: it always
+# failed closed while KI-02 is open. The option returns when KI-02 is fixed.
 
 def _check_prerequisites() -> None:
     """Check that required CLI tools are available. Exit 3 (PREREQ_MISSING) if not."""
@@ -586,16 +608,13 @@ def _docker_login() -> None:
 
 
 def cmd_oci_image_build(args: argparse.Namespace) -> None:
-    """Build an OCI image using docker buildx bake; repack fails closed."""
+    """Build an OCI image using docker buildx bake."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
-    target = args.target
-    repack = args.repack
-
-    _reject_experimental_repack(repack)
+    target = args.bake_target
 
     print(f"[INFO] cmru handler: building OCI image in {cwd}")
-    print(f"[INFO]   bake_file={bake_file}  target={target}  repack={repack}")
+    print(f"[INFO]   bake_file={bake_file}  target={target}")
 
     _check_prerequisites()
     _docker_login()
@@ -612,9 +631,7 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     """Push an OCI image with ``docker buildx bake --push``."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
-    target = args.target
-
-    _reject_experimental_repack(args.repack)
+    target = args.bake_target
 
     print(f"[INFO] cmru handler: pushing OCI image in {cwd}")
     _docker_login()
@@ -627,17 +644,10 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
 
 
 def handlers_cli():
-    from cli_extended import CliRegistry, OptionSpec, VerbGroup, VerbSpec
-    from cmru.cli_support import cmru_identity, cmru_presentation_options
+    from cli_extended import OptionSpec, VerbGroup, VerbSpec
+    from cmru.cli_support import cmru_registry
 
-    identity = cmru_identity(command="cmru", long_name="Configurable Multi Release Utility")
-    registry = CliRegistry(
-        identity,
-        prog="cmru handler",
-        description="Explicit project-step command library.",
-        logging_logger="cmru",
-        global_options=cmru_presentation_options(),
-    )
+    registry = cmru_registry("cmru handler", "Explicit project-step command library.")
     required_path = lambda flag, desc: OptionSpec(
         (flag,), desc, metavar="PATH", parser_kwargs={"required": True},
     )
@@ -666,6 +676,12 @@ def handlers_cli():
             OptionSpec(("--version-env",), "environment variable containing the version", metavar="NAME", parser_kwargs={"dest": "version_env", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
             OptionSpec(("--notes-env",), "environment variable holding optional release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
         )),
+        ("bundle-manifest", "Write the installer manifest (files + sha256) into a staged bundle dir.", cmd_bundle_manifest, (
+            required_name("--name", "project name (as in cmru.toml)", "NAME"),
+            required_name("--tag", "full release tag, e.g. tls-edge-v1.2.3", "TAG"),
+            required_path("--root", "the staged bundle directory (the tarball's top-level dir)"),
+            OptionSpec(("--manifest-name",), "manifest file name (default manifest.json)", metavar="NAME", parser_kwargs={"dest": "manifest_name", "default": "manifest.json"}),
+        )),
         ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
             required_name("--prefix", "release prefix without -v", "PREFIX"),
             OptionSpec(("--artifact-suffix",), "expected artifact file extension", metavar="SUFFIX", parser_kwargs={"dest": "artifact_suffix", "default": ".tar.xz"}),
@@ -673,28 +689,19 @@ def handlers_cli():
         ("oci-image-build", "Build an OCI image with docker buildx bake.", cmd_oci_image_build, (
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
-            required_name("--target", "bake target name", "NAME"),
-            OptionSpec(("--repack",), "enable OCI repack", parser_kwargs={"action": "store_true", "default": False}),
+            required_name("--bake-target", "bake target name (not a project target)", "NAME"),
         )),
         ("oci-image-push", "Push an OCI image to its registry.", cmd_oci_image_push, (
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
-            required_name("--target", "bake target name", "NAME"),
-            OptionSpec(("--repack",), "repack mode (push already happened during build)", parser_kwargs={"action": "store_true", "default": False}),
+            required_name("--bake-target", "bake target name (not a project target)", "NAME"),
         )),
     )
     for name, description, handler, options in commands:
         mutating = name not in {"wheel-validate", "tarball-validate"}
-        if mutating:
-            options = options + (OptionSpec(
-                ("--dry-run",), "show this handler's inputs without running it",
-                parser_kwargs={"action": "store_true", "default": False},
-            ),)
 
-        def dispatch(args, _runtime, fn=handler, command=name):
-            if getattr(args, "dry_run", False):
-                if getattr(args, "repack", False):
-                    _reject_experimental_repack(True)
+        def dispatch(args, runtime, fn=handler, command=name):
+            if runtime.dry_run:
                 details = {
                     key: value for key, value in vars(args).items()
                     if key != "dry_run" and "token" not in key.lower()
@@ -711,6 +718,7 @@ def handlers_cli():
                 if mutating else VerbGroup.EXPLORATION.value
             ),
             mutating=mutating,
+            dry_run=mutating,
             include_confirmation=False,
             options=options,
             include_json=False,
@@ -721,7 +729,20 @@ def handlers_cli():
 
 
 def main(argv: list | None = None) -> int:
-    return handlers_cli().run(argv=argv)
+    """``python -m cmru.handlers`` entry; the SAME builder as ``cmru handler``."""
+    from cli_extended import VersionLookupError
+
+    from cmru import exit_codes
+
+    try:
+        cli = handlers_cli()
+    except VersionLookupError:
+        print(
+            "cmru is not installed as a distribution; install the wheel (see README)",
+            file=sys.stderr,
+        )
+        return exit_codes.PREREQ_MISSING
+    return cli.run(argv=argv)
 
 
 if __name__ == "__main__":

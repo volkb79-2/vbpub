@@ -32,5 +32,5 @@ def test_publish_dispatch_runs_only_declared_push_step(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     ran = []
     monkeypatch.setattr(cli, "run_project_step", lambda project, step, root, logs: ran.append((project.name, step)))
-    cli.main(["publish", "demo", "--config", str(tmp_path / "cmru.toml")])
+    cli.main(["publish", "demo", "--from-checkout", "--config", str(tmp_path / "cmru.toml")])
     assert ran == [("demo", "push")]

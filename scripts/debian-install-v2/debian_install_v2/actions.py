@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shlex
+import signal
 import shutil
 import subprocess
 import hashlib
@@ -15,9 +17,31 @@ class ActionError(RuntimeError):
     pass
 
 
+class ActionTimeout(ActionError):
+    """The command exceeded its timeout; its whole process group was killed and reaped."""
+
+
+class ActionUnreapable(ActionError):
+    """The command timed out and its child could not be reaped even after SIGKILL
+    (e.g. uninterruptible D-state I/O). Whatever it held (a mount, a device) is
+    still in use: callers treat this as a cleanup failure and stop."""
+
+
+# Seconds between SIGTERM and SIGKILL, and how long to wait for the reap after SIGKILL.
+TERM_GRACE_SECONDS = 10.0
+KILL_REAP_SECONDS = 10.0
+
+
+# The ONLY `-o` value apt-get accepts: a bounded-digits dpkg lock timeout.
+# Anything else (e.g. -o APT::Update::Pre-Invoke::=...) is arbitrary command
+# execution via apt config and is refused.
+_APT_LOCK_TIMEOUT_RE = re.compile(r"DPkg::Lock::Timeout=[0-9]{1,5}")
+
+
 _SAFE_COMMANDS = {
     "apt-cache": {"policy"},
-    "apt-get": {"update", "install", "upgrade"},
+    # full-upgrade/-s: the notify-only install-time pending count (simulation).
+    "apt-get": {"update", "install", "upgrade", "full-upgrade"},
     "bash": {"-c"},
     "blkid": set(),
     "blockdev": {"--getsize64", "--rereadpt"},
@@ -34,11 +58,17 @@ _SAFE_COMMANDS = {
     "git": {"clone", "fetch", "reset"},
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
+    # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
+    "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
+    # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
+    "lsinitramfs": set(),
     "lspci": set(),
     "mkdir": {"-p"},
+    "mkfs.ext4": {"-F", "-q", "-O", "-L"},
     "mkswap": set(),
     "modprobe": {"zstd"},
+    "mount": {"-t", "-o"},
     "partx": {"-a", "-d", "-u", "--nr"},
     "pip3": {"install"},
     "resize2fs": set(),
@@ -59,6 +89,9 @@ _SAFE_COMMANDS = {
         "start",
     },
     "systemd-detect-virt": set(),
+    # THP/KSM tmpfiles.d entries are applied immediately with --create --boot
+    # (`w!` lines are skipped without --boot).
+    "systemd-tmpfiles": {"--create", "--boot"},
     # Used only to schedule the delayed, detached stage1->stage2 reboot
     # (see installer.py's _reboot()) -- "--" is required so systemd-run's
     # own option parsing doesn't try to interpret the target command as
@@ -66,6 +99,9 @@ _SAFE_COMMANDS = {
     "systemd-run": {"--on-active", "--"},
     "tee": {"-a"},
     "udevadm": {"settle", "trigger"},
+    "umount": {"-v"},  # non-empty: any other option (-f, -l) is refused
+    # LT-UPG: the single install-time upgrade run (lock wait comes from apt config).
+    "unattended-upgrade": {"-v"},
     "update-grub": set(),
     "update-initramfs": {"-u", "-k"},
     "wget": {"-q"},
@@ -87,6 +123,7 @@ class HostActions:
         self.dry_run = dry_run
         self.planned: list[PlannedAction] = []
         self.dry_run_writes: dict[str, str] = {}
+        self.dry_run_removals: list[str] = []
 
     @staticmethod
     def _validate(argv: list[str], allow_shell: bool = False) -> None:
@@ -100,6 +137,15 @@ class HostActions:
             raise ActionError(f"executable is not on the action allowlist: {command}")
         allowed = _SAFE_COMMANDS[command]
         if allowed:
+            if command == "apt-get":
+                args = argv[1:]
+                for index, arg in enumerate(args):
+                    if arg == "-o":
+                        value = args[index + 1] if index + 1 < len(args) else ""
+                        if not _APT_LOCK_TIMEOUT_RE.fullmatch(value):
+                            raise ActionError(f"apt-get -o value is not allowlisted: {value!r}")
+                    elif arg.startswith("-o") or arg.startswith("--option"):
+                        raise ActionError(f"apt-get option form is not allowlisted: {arg!r}")
             if command in {"apt-get", "git", "systemctl"}:
                 if not any(arg in allowed for arg in argv[1:]):
                     raise ActionError(f"{command} operation is not allowlisted")
@@ -111,26 +157,96 @@ class HostActions:
             raise ActionError("shell commands are only accepted through write_file templates")
 
     def run(
-        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+        self,
+        argv: list[str],
+        description: str = "",
+        dangerous: bool = False,
+        input: str | None = None,
+        timeout: float | None = None,
     ) -> str | None:
         self._validate(list(argv))
         planned = PlannedAction(tuple(argv), description or shlex.join(argv), dangerous)
         self.planned.append(planned)
         if self.dry_run:
             return None
-        result = subprocess.run(
+        if timeout is None:
+            # apt-get never prompts (dpkg conffile / debconf / needrestart).
+            extra = {"env": {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}} if Path(argv[0]).name in {"apt-get", "unattended-upgrade"} else {}
+            result = subprocess.run(
+                argv,
+                **extra,
+                check=False,
+                text=True,
+                input=input,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            returncode, stdout = result.returncode, result.stdout
+        else:
+            returncode, stdout = self._run_bounded(argv, input, timeout, planned.description)
+        if returncode != 0:
+            raise ActionError(
+                f"action failed ({returncode}): {planned.description}\n{stdout}"
+            )
+        return stdout
+
+    @staticmethod
+    def _run_bounded(
+        argv: list[str],
+        input: str | None,
+        timeout: float,
+        description: str,
+        term_grace: float | None = None,
+        reap_wait: float | None = None,
+    ) -> tuple[int, str]:
+        """Run ``argv`` in its own session with a hard time limit.
+
+        Deliberately NOT subprocess.run(timeout=): its post-kill wait() blocks
+        forever on an uninterruptible (D-state) child. On expiry the whole
+        process GROUP gets SIGTERM, then SIGKILL after a grace period (so an
+        orphaned grandchild such as fio dies too); a child still not reaped
+        afterwards raises ActionUnreapable.
+        """
+        term_grace = TERM_GRACE_SECONDS if term_grace is None else term_grace
+        reap_wait = KILL_REAP_SECONDS if reap_wait is None else reap_wait
+        proc = subprocess.Popen(
             argv,
-            check=False,
             text=True,
-            input=input,
+            stdin=subprocess.PIPE if input is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
-        if result.returncode != 0:
-            raise ActionError(
-                f"action failed ({result.returncode}): {planned.description}\n{result.stdout}"
-            )
-        return result.stdout
+        try:
+            # communicate() (not a bare wait()) so a chatty child cannot fill the pipe.
+            stdout, _ = proc.communicate(input, timeout=timeout)
+            return proc.returncode, stdout or ""
+        except subprocess.TimeoutExpired:
+            pass
+        for sig, wait_for in ((signal.SIGTERM, term_grace), (signal.SIGKILL, reap_wait)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=wait_for)
+            except subprocess.TimeoutExpired:
+                continue
+            try:  # straggling grandchildren that outlived the leader (same group)
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            for stream in (proc.stdout, proc.stdin):
+                try:
+                    if stream:
+                        stream.close()
+                except OSError:
+                    pass
+            raise ActionTimeout(f"action timed out after {timeout:g}s and was killed: {description}")
+        raise ActionUnreapable(
+            f"action timed out after {timeout:g}s and the child (pid {proc.pid}) could not be reaped "
+            f"after SIGKILL: {description}"
+        )
 
     def read(self, argv: list[str]) -> str:
         output = self.run(argv, dangerous=False)
@@ -164,6 +280,20 @@ class HostActions:
                 except FileNotFoundError:
                     pass
             raise
+
+    def remove_file(self, path: str) -> None:
+        """Delete one file (missing is fine); recorded in dry-run."""
+        target = PurePosixPath(path)
+        if not path.startswith("/") or ".." in target.parts:
+            raise ActionError(f"path must be absolute and normalized: {path}")
+        self.planned.append(PlannedAction(("/usr/bin/rm", "-f", path), f"remove {path}", True))
+        if self.dry_run:
+            self.dry_run_removals.append(path)
+            return
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
 
     def mkdir(self, path: str) -> None:
         self.planned.append(PlannedAction(("/usr/bin/mkdir", "-p", path), f"create directory {path}", True))

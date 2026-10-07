@@ -1,0 +1,11 @@
+# cli-extended surface lifecycle for debian-install-v2 (see docs/CLI-SPEC.md).
+# The standalone form is used because this project has no pyproject.toml.
+schema_version = 1
+
+[[clis]]
+id = "debian-install-v2"
+factory = "debian_install_v2.bootstrap:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/CLI-SPEC.md"
+findings = "docs/cli-review-findings.toml"

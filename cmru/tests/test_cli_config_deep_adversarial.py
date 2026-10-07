@@ -1,14 +1,9 @@
-"""Deep behavioural coverage for strict config and controller CLI contracts."""
+"""Deep behavioural coverage for strict config contracts."""
 from __future__ import annotations
-
-import json
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from cmru import config
-from cmru.controller import cli as controller_cli
 
 
 def test_installer_config_validates_and_preserves_explicit_values():
@@ -16,9 +11,11 @@ def test_installer_config_validates_and_preserves_explicit_values():
         "demo",
         {
             "install_dir_system": "/opt/demo",
-            "install_dir_user": "~/.local/demo",
-            "asset_suffix": ".tar.zst",
+            "install_dir_user": "demo-leaf",
+            "asset_suffix": ".tar.xz",
             "entrypoint": "demo",
+            "manifest_pubkey": "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3",
+            "launchers": ["demo"],
             "required_commands": ["tar"],
             "preserve": ["config.toml"],
             "manifest_name": "release.json",
@@ -27,8 +24,32 @@ def test_installer_config_validates_and_preserves_explicit_values():
         },
     )
     assert parsed.install_dir_system == "/opt/demo"
-    assert parsed.asset_suffix == ".tar.zst"
+    assert parsed.asset_suffix == ".tar.xz"
     assert parsed.wheels[0].distribution == "demo"
+    assert parsed.launchers == ["demo"] and parsed.manifest_pubkey.startswith("RWQ")
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"asset_suffix": ".tar.zst"}, "asset_suffix"),
+        ({"install_dir_system": "opt/demo"}, "install_dir_system"),
+        ({"install_dir_user": "/abs"}, "install_dir_user"),
+        ({"entrypoint": "../x.py"}, "entrypoint"),
+        ({"manifest_pubkey": "short"}, "manifest_pubkey"),
+        ({"manifest_pubkey": 5}, "manifest_pubkey"),
+        ({"launchers": "demo"}, "launchers"),
+        ({"launchers": ["a b"]}, "launchers"),
+        ({"launchers": ["demo"], "wheels": []}, "launchers"),
+    ],
+)
+def test_installer_config_grammar_refusals(override, message, capsys):
+    raw = {"install_dir_system": "/opt/demo", "install_dir_user": "demo",
+           "wheels": [{"path": "vendor/demo-*.whl", "distribution": "demo"}], **override}
+    with pytest.raises(SystemExit) as exc:
+        config._parse_installer("demo", raw)
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -110,92 +131,3 @@ def test_validate_runner_steps_checks_login_and_command_contract(capsys):
     with pytest.raises(SystemExit):
         config._validate_runner_steps(broken)
     assert "required" in capsys.readouterr().err
-
-
-class _Engine:
-    def __init__(self, result=None, error=None):
-        self.result = result
-        self.error = error
-        self.calls = []
-
-    def _call(self, name, *args, **kwargs):
-        self.calls.append((name, args, kwargs))
-        if self.error:
-            raise RuntimeError(self.error)
-        return self.result
-
-    def publish(self, plan): return self._call("publish", plan)
-    def approve(self, plan): return self._call("approve", plan)
-    def hold(self, plan): return self._call("hold", plan)
-    def status(self, plan): return self._call("status", plan)
-    def rollback(self, plan, **kwargs): return self._call("rollback", plan, **kwargs)
-
-
-def _args(**overrides):
-    values = {"plan": "plan.toml", "landscape": "prod", "consul_addr": None,
-              "token": None, "generation_base": 3, "dry_run": True,
-              "generation": 9}
-    values.update(overrides)
-    return SimpleNamespace(**values)
-
-
-def test_controller_command_families_dispatch_success_and_report_engine_failures(monkeypatch, capsys, tmp_path):
-    plan_path = tmp_path / "plan.toml"
-    plan_path.write_text("landscape = 'prod'\n", encoding="utf-8")
-    plan = SimpleNamespace(landscape="prod")
-    monkeypatch.setattr("cmru.controller.planner.load_plan", lambda _path: plan)
-    engine = _Engine(result={"nodes": []})
-    monkeypatch.setattr(controller_cli, "_build_engine", lambda *_args: engine)
-    assert controller_cli.cmd_publish(_args(plan=str(plan_path))) == 0
-    assert controller_cli.cmd_rollback(_args(plan=str(plan_path))) == 0
-    assert controller_cli.cmd_status(_args(plan=str(plan_path))) == 0
-    assert [call[0] for call in engine.calls] == ["publish", "rollback", "status"]
-    failing = _Engine(error="backend down")
-    monkeypatch.setattr(controller_cli, "_build_engine", lambda *_args: failing)
-    assert controller_cli.cmd_approve(_args()) == 1
-    assert controller_cli.cmd_hold(_args()) == 1
-    assert controller_cli.cmd_rollback(_args(plan=str(plan_path))) == 1
-    assert "backend down" in capsys.readouterr().err
-
-
-def test_controller_plan_and_required_argument_refusals(capsys, tmp_path):
-    missing = _args(plan=str(tmp_path / "missing.toml"))
-    assert controller_cli.cmd_publish(missing) == 2
-    assert controller_cli.cmd_rollback(missing) == 2
-    assert controller_cli.cmd_approve(_args(plan="")) == 2
-    assert controller_cli.cmd_hold(_args(plan="")) == 2
-    assert controller_cli.cmd_status(_args(plan=None, landscape="")) == 2
-    assert "required" in capsys.readouterr().err
-
-
-def test_controller_status_catalog_is_a_real_json_boundary(monkeypatch, capsys):
-    class Backend:
-        def _get(self, _path):
-            return 200, json.dumps([{"Node": "n1", "ServiceTags": ["canary"]}]), {}
-    monkeypatch.setattr(controller_cli, "_build_backend", lambda _args: Backend())
-    assert controller_cli.cmd_status(_args(plan=None, landscape="prod")) == 0
-    output = capsys.readouterr().out
-    assert "n1" in output and "canary" in output
-
-
-def test_controller_status_catalog_malformed_and_http_error_are_nonfatal_warnings(monkeypatch, capsys):
-    class Backend:
-        def __init__(self, status, body): self.status, self.body = status, body
-        def _get(self, _path): return self.status, self.body, {}
-    monkeypatch.setattr(controller_cli, "_build_backend", lambda _args: Backend(200, "not-json"))
-    assert controller_cli.cmd_status(_args(plan=None, landscape="prod")) == 0
-    assert "Could not parse" in capsys.readouterr().out
-    monkeypatch.setattr(controller_cli, "_build_backend", lambda _args: Backend(503, "busy"))
-    assert controller_cli.cmd_status(_args(plan=None, landscape="prod")) == 0
-    assert "HTTP 503" in capsys.readouterr().out
-
-
-def test_controller_parser_exposes_all_global_and_subcommand_contracts():
-    parser = controller_cli._build_parser()
-    args = parser.parse_args(["--landscape", "prod", "publish", "--plan", "p.toml", "--generation-base", "7", "--dry-run"])
-    assert args.verb == "publish" and args.generation_base == 7 and args.dry_run is True
-    args = parser.parse_args(["rollback", "--plan", "p.toml", "--generation", "4"])
-    assert args.generation == 4
-    from cli_extended import UsageError
-    with pytest.raises(UsageError, match="unrecognized arguments: --to v1"):
-        parser.parse_args(["rollback", "--plan", "p.toml", "--to", "v1"])

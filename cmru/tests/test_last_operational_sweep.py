@@ -9,14 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import bundle, release
-from cmru.agent import cli as agent_cli
-
-
-def test_agent_cli_main_dispatches_status_and_propagates_result(monkeypatch):
-    calls = []
-    monkeypatch.setattr(agent_cli, "cmd_status", lambda args: calls.append(args.scope) or 3)
-    assert agent_cli.main(["status"]) == 3
-    assert calls == ["user"]
 
 
 def test_bundle_write_tar_uses_source_file_content_and_executable_mode(tmp_path):
@@ -62,9 +54,3 @@ def test_release_variant_latest_manifest_contains_hash_and_label(tmp_path):
 def test_bundle_member_rejects_missing_source_and_content():
     with pytest.raises(ValueError, match="either source_path or content"):
         bundle.BundleMember("empty")
-
-
-def test_agent_cli_parser_rejects_unknown_scope():
-    from cli_extended import UsageError
-    with pytest.raises(UsageError):
-        agent_cli._build_parser().parse_args(["--scope", "invalid", "status"])

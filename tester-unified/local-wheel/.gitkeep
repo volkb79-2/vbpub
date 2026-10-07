@@ -1,0 +1,1 @@
+Drop a locally built cli_extended-*.whl here ONLY for `--build-arg CLI_EXTENDED_RESOLVE=local` (see ../README.md). Wheels are git-ignored.

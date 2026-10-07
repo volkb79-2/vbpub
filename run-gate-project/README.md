@@ -383,6 +383,20 @@ the tool's reason to exist and MUST be implemented + tested:
   `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
   `git config --global safe.directory '*'`
   inside the gate container.
+- **Mounts (RG-86):** an ephemeral container sees ONLY the judged worktree
+  (all its own files, git-ignored ones included) plus the git common dir
+  (read-write, ciu v8 SPEC S16.4.9), `<repo>/.run-gate` for assay state, and
+  explicit `RUN_GATE_EXTRA_MOUNTS`; never the main checkout or other
+  worktrees. `<common>/config` (and every `config`/`config.worktree` at any
+  depth under `modules/`) is overlaid with a per-run credential-free copy.
+  `<common>/worktrees/` is mounted read-only with its real contents and the
+  judged worktree's own admin dir read-write on top, so an in-container `git
+  worktree prune` fails (EROFS), `gc` keeps every sibling's objects and
+  `branch -D` of a sibling's branch is refused; `git worktree add` cannot
+  create a new admin dir inside the container. A plain (main) checkout is refused unless `--allow-main-checkout` /
+  `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (WARNs). `mode = "exec"` lanes are
+  unaffected. Isolation comes from mounting less; run-gate knows no
+  project's secret file names.
 - **Assay source or artifact:** internal lanes omit `assay_command` and
   `pins`; run-gate installs `assay/` from the selected worktree in the lane
   environment and the resulting verdict records the runtime version and

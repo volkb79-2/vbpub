@@ -19,7 +19,7 @@ _SEVERITIES = {
     "[ERROR]": "\033[31m",  # red
 }
 _RESET = "\033[0m"
-_TIME_ENV = "CMRU_LOG_PREFIX_TIME_SHORT"
+_TIME_ENV = "CMRU_INTERNAL_LOG_PREFIX_TIME_SHORT"
 
 
 def _colour_enabled(stream: TextIO) -> bool:

@@ -254,6 +254,48 @@ def test_a_changed_symlink_sibling_to_a_file_root_stays_outside_r1(tmp_path: Pat
     assert result.missing_lines == {"pkg/owned.zzz": frozenset({1})}
 
 
+@pytest.mark.parametrize("source_root_files", [("pkg/owned.zzz",), ()])
+def test_a_real_file_root_admits_only_that_file_not_its_package_siblings(
+    tmp_path: Path, source_root_files
+):
+    repo_top = tmp_path.resolve() / "repo"
+    package = repo_top / "pkg"
+    package.mkdir(parents=True)
+    (package / "owned.zzz").write_text("owned\n", encoding="utf-8")
+    (package / "other_package.zzz").write_text("other\n", encoding="utf-8")
+    paths = ("pkg/owned.zzz", "pkg/other_package.zzz")
+    added = AddedLines(
+        by_file=MappingProxyType({path: frozenset({1}) for path in paths})
+    )
+    profile = CoverageProfile(
+        files=MappingProxyType(
+            {
+                path: FileCoverage(
+                    executed=frozenset(), missing=frozenset({1}), excluded=frozenset()
+                )
+                for path in paths
+            }
+        )
+    )
+
+    result = evaluate_coverage(
+        added=added,
+        profile=profile,
+        adapter=FakeAdapter(),
+        repo_top=repo_top,
+        project_root=repo_top,
+        source_root_paths=((package / "owned.zzz").resolve(),),
+        source_root_files=source_root_files,
+        fail_under=100.0,
+        allow_excluded=False,
+        read_source_text=lambda path: (repo_top / path).read_text(encoding="utf-8"),
+    )
+
+    assert result.considered == 1
+    assert result.missing_lines == {"pkg/owned.zzz": frozenset({1})}
+    assert result.outcome is Outcome.FAIL
+
+
 def test_a_symlink_file_root_does_not_admit_its_resolved_target_into_r1(
     tmp_path: Path,
 ):

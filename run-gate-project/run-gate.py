@@ -120,6 +120,7 @@ __revision__ = 55  # rev 55: RG-84 (filed RG-83) PID 1 and cgroup resource-event
 
 import argparse
 import ast
+import atexit
 import calendar
 import copy
 import contextlib
@@ -139,6 +140,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -364,6 +366,11 @@ HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
 DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
+# RG-NARROW: a container lane sees only the judged worktree + the git metadata
+# it needs. The plain (main) checkout has no narrower view, so it is refused
+# unless the operator opts in explicitly. Applies to containers run-gate itself
+# creates (mode = "ephemeral" lanes and probes), never to `mode = "exec"`.
+ALLOW_MAIN_CHECKOUT_ENV_VAR = "RUN_GATE_ALLOW_MAIN_CHECKOUT"
 EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
 EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
@@ -6017,7 +6024,7 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                                                          worktree, env_source)
         return [docker, "exec", "--workdir", str(repo), name, "bash", "-c", script]
     argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
-            *dual_mount_flags(repo, physical_path(repo)),
+            *container_mount_flags(repo, worktree, env, with_state=True),
             *extra_mount_flags()]
     if env.get("user"):
         # A path probe must run as the same user as the real lane: image root
@@ -7496,7 +7503,8 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                 record("WARN", "host-lane git view (RG-21)",
                        f"{worktree} is a LINKED worktree; its gitdir is "
                        f"{gitdir}, OUTSIDE the tree. run-gate's own container "
-                       f"lanes are fine (they dual-mount the repo root), but a "
+                       f"lanes are fine (they dual-mount the worktree and "
+                       f"the git common dir), but a "
                        f"host lane delegating to a harness that bind-mounts "
                        f"only the judged tree by host path will fail with "
                        f"'not a git repository: {gitdir}'. Mount the common "
@@ -8806,7 +8814,8 @@ def build_command_inner(lane: dict, worktree: Path,
                         shlex.join(lane_command_argv(lane, worktree, base))])
 
 
-def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
+def dual_mount_flags(repo: Path, phys: Path,
+                     alias_root: Path | None = None) -> list[str]:
     """RG-3: the repo is dual-mounted (physical AND namespace paths) so
     worktree gitfiles recorded under EITHER namespace resolve (AGENTS trap
     #2). Inside the devcontainer the second view comes from mountinfo; on a
@@ -8829,10 +8838,317 @@ def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
     host, namespace = (part.strip() for part in raw.split("=", 1))
     if not host or not namespace:
         fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: empty path")
-    if Path(host) != repo:
+    root = alias_root if alias_root is not None else repo
+    if Path(host) != root:
         fail(f"${MOUNT_ALIAS_ENV_VAR} declares host path {host!r} but this gate's "
-             f"repo root is {repo} — the alias names THIS repo's namespace view")
-    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
+             f"repo root is {root} — the alias names THIS repo's namespace view")
+    if root == repo:
+        return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
+    # RG-NARROW: a sub-path of the aliased root (the judged worktree, the git
+    # directory) takes the same namespace prefix; anything outside the root has
+    # no declared namespace view.
+    try:
+        relative = repo.relative_to(root)
+    except ValueError:
+        fail(f"cannot dual-mount {repo}: it is outside the aliased root {root} "
+             f"(${MOUNT_ALIAS_ENV_VAR}), so no namespace view is declared "
+             f"for it")
+    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{Path(namespace) / relative}"]
+
+
+# ---------------------------------------------------------------------------
+# RG-NARROW: a container lane sees ONLY the judged worktree plus the git
+# metadata it needs, and never git credentials. Isolation comes from mounting
+# less, never from masking named files: run-gate has no knowledge of any
+# project's secret files.
+# ---------------------------------------------------------------------------
+
+_URL_USERINFO_RE = re.compile(
+    # No '.' in the scheme: a config KEY such as `url.https://tok@host/.insteadof`
+    # must not be read as the scheme "url.https".
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+\-]*://)(?P<userinfo>[^/\s]*)@")
+_WEB_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps"})
+_DROP_GIT_CONFIG_KEY_RE = re.compile(
+    # whole mail/IMAP sections carry credentials under many names
+    r"^(credential\.|include\.|includeif\.|sendemail\.|imap\.)"
+    r"|\.extraheader$"
+    r"|\.cookiefile$"
+    r"|^core\.(askpass|sshcommand)$"
+    # a credential word as the SUFFIX of the last key segment (smtppass,
+    # oauth-token, access_token, ...); a key is never dotted after its name
+    r"|(pass|passwd|password|token|secret|apikey|api-key|api_key)$",
+    re.IGNORECASE)
+_URL_REWRITE_KEY_RE = re.compile(r"^url\..*\.(push)?insteadof$", re.IGNORECASE)
+
+
+def strip_url_userinfo(text: str) -> str:
+    """Remove embedded credentials from every URL inside `text`.
+
+    http(s)/ftp userinfo is always a credential (a bare token is common);
+    for other schemes only `user:password@` is, so `ssh://git@host` survives.
+    """
+    def repl(match: re.Match) -> str:
+        # `git+https://`, `svn+http://`: any `<x>+http(s)` is a web scheme
+        scheme = match.group("scheme")[:-3].lower().rsplit("+", 1)[-1]
+        if scheme in _WEB_URL_SCHEMES or ":" in match.group("userinfo"):
+            return match.group("scheme")
+        return match.group(0)
+    return _URL_USERINFO_RE.sub(repl, text)
+
+
+def sanitize_git_config_entries(
+        entries: list[tuple[str, str | None]]) -> list[tuple[str, str | None]]:
+    """Generic git hygiene, no project knowledge: the same config minus
+    credentials. Strips userinfo from every URL, drops credential helpers,
+    `http.*.extraheader`, password/token-like keys, and `url.*.insteadOf`
+    rewrites whose base or value embeds credentials. `include`s are dropped:
+    they name host files that do not exist in the container."""
+    kept: list[tuple[str, str | None]] = []
+    for key, value in entries:
+        if _DROP_GIT_CONFIG_KEY_RE.search(key):
+            continue
+        clean_key = strip_url_userinfo(key)
+        clean_value = None if value is None else strip_url_userinfo(value)
+        if _URL_REWRITE_KEY_RE.match(key) and (
+                clean_key != key or clean_value != value):
+            continue
+        kept.append((clean_key, clean_value))
+    return kept
+
+
+def _git_config_quote(text: str) -> str:
+    return (text.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\t", "\\t"))
+
+
+def render_git_config(entries: list[tuple[str, str | None]]) -> str:
+    """Render `git config --list -z` style entries as a config file."""
+    lines: list[str] = []
+    current = None
+    for key, value in entries:
+        section, rest = key.split(".", 1)
+        if "." in rest:
+            subsection, name = rest.rsplit(".", 1)
+        else:
+            subsection, name = None, rest
+        if (section, subsection) != current:
+            current = (section, subsection)
+            lines.append(f"[{section}]" if subsection is None
+                         else f'[{section} "{_git_config_quote(subsection)}"]')
+        lines.append(f"\t{name}" if value is None
+                     else f'\t{name} = "{_git_config_quote(value)}"')
+    return "\n".join(lines) + "\n"
+
+
+def read_git_config_entries(path: Path) -> list[tuple[str, str | None]]:
+    proc = subprocess.run(["git", "config", "--file", str(path), "--list", "-z"],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        fail_infra(f"cannot read git config {path} to sanitize it: "
+                   f"{(proc.stderr.strip().splitlines() or ['git failed'])[-1]}")
+    entries: list[tuple[str, str | None]] = []
+    for item in proc.stdout.split("\0"):
+        if not item:
+            continue
+        key, sep, value = item.partition("\n")
+        entries.append((key, value if sep else None))
+    return entries
+
+
+def sanitized_git_config_text(path: Path) -> str:
+    return render_git_config(
+        sanitize_git_config_entries(read_git_config_entries(path)))
+
+
+def _make_private_dir(repo: Path) -> tuple[Path, Path]:
+    """A private (0700) per-run dir whose host path Docker can bind. System
+    temp first (outside every mount); `<repo>/.run-gate` only when the temp
+    area is not host-visible (a nested devcontainer). Returns (dir, physical)."""
+    last = "no candidate directory"
+    for fallback, base in ((False, Path(tempfile.gettempdir())),
+                           (True, repo / ".run-gate")):
+        try:
+            if fallback:
+                # A fresh checkout has no `.run-gate` yet (RG-85); the fallback
+                # must create it rather than fail the lane.
+                base.mkdir(parents=True, exist_ok=True)
+            made = Path(tempfile.mkdtemp(prefix="run-gate-gitcfg-", dir=base))
+        except OSError as exc:
+            last = str(exc)
+            continue
+        atexit.register(shutil.rmtree, made, ignore_errors=True)
+        try:
+            return made, physical_path(made)
+        except GateError as exc:
+            last = str(exc)
+            shutil.rmtree(made, ignore_errors=True)
+    fail_infra(f"no host-visible private directory for the sanitized git "
+               f"config: {last}")
+
+
+def git_mount_plan(worktree: Path, repo: Path) -> dict:
+    """Which git metadata a lane on `worktree` needs: a plain checkout owns
+    its `.git`; a linked worktree has a private admin dir inside the shared
+    common dir."""
+    dot_git = worktree / ".git"
+    if dot_git.is_dir():
+        return {"kind": "plain", "common": dot_git, "admin": None}
+    if not dot_git.is_file():
+        fail_infra(f"{worktree} is not a git checkout (no .git); run-gate "
+                   f"cannot decide which git metadata a container needs")
+    match = re.match(r"gitdir:\s*(.+)", dot_git.read_text(
+        encoding="utf-8", errors="replace").strip())
+    if not match:
+        fail_infra(f"{dot_git} is not a valid gitfile")
+    recorded = Path(match.group(1).strip())
+    if not recorded.is_absolute():
+        recorded = (worktree / recorded).resolve()
+    for admin in (recorded, repo / ".git" / "worktrees" / recorded.name):
+        if admin.is_dir():
+            common_file = admin / "commondir"
+            common = ((admin / common_file.read_text().strip()).resolve()
+                      if common_file.is_file() else admin.parent.parent)
+            return {"kind": "linked", "common": common, "admin": admin}
+    fail_infra(f"gitfile {dot_git} points at {recorded}, which is not "
+               f"reachable here, and {repo}/.git/worktrees/{recorded.name} "
+               f"does not exist")
+
+
+def _dual(path: Path, repo: Path) -> list[str]:
+    return dual_mount_flags(path, physical_path(path), repo)
+
+
+_MAX_GIT_OVERLAYS = 256  # bound on sibling admin dirs / submodule configs
+
+
+def git_config_overlay_flags(plan: dict, repo: Path) -> list[str]:
+    """Every git config file the container could read a credential from is
+    overlaid read-only with a per-run sanitized copy: `<common>/config`,
+    `config.worktree`, the judged admin dir's `config.worktree`, every
+    `config`/`config.worktree` at ANY depth under `<common>/modules` (nested
+    submodules), and any sibling `worktrees/*/config.worktree`. At most
+    `_MAX_GIT_OVERLAYS` of the module/sibling files."""
+    common, admin = plan["common"], plan["admin"]
+    targets = [common / "config", common / "config.worktree"]
+    if admin is not None:
+        targets.append(admin / "config.worktree")
+    if not targets[0].is_file():
+        fail_infra(f"git config {targets[0]} is missing; cannot build the "
+                   f"credential-free overlay")
+    extra = _nested_git_config_files(common / "modules")
+    # sibling per-worktree configs (usually absent): sanitized overlays on top
+    # of the read-only `worktrees/` mount; the judged one is already a target
+    extra += [path for path in sorted(
+        (common / "worktrees").glob("*/config.worktree"))
+        if path not in targets]
+    if len(extra) > _MAX_GIT_OVERLAYS:
+        fail_infra(f"{common} holds {len(extra)} submodule/sibling git "
+                   f"config files; more than {_MAX_GIT_OVERLAYS} cannot be "
+                   f"sanitized safely")
+    private, _phys = _make_private_dir(repo)
+    flags: list[str] = []
+    for index, target in enumerate([t for t in targets if t.is_file()] + extra):
+        copy_path = private / f"{index}.config"
+        copy_path.write_text(sanitized_git_config_text(target), encoding="utf-8")
+        copy_path.chmod(0o644)
+        source = physical_path(copy_path)
+        for destination in _dual(target, repo)[1::2]:
+            flags += ["-v", f"{source}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+_GIT_DIR_BULK = frozenset({"objects", "refs", "logs", "hooks", "info"})
+
+
+def _nested_git_config_files(modules: Path) -> list[Path]:
+    """Every `config` / `config.worktree` file anywhere under `<common>/modules`
+    (git names a submodule's dir by its PATH, so `modules/libs/a/config` and
+    `modules/libs/a/modules/b/config` exist; round-3 `*/config` missed them).
+    The bulk dirs of a git dir (objects, refs, ...) are not descended into."""
+    found: list[Path] = []
+    for root, dirs, files in os.walk(modules):
+        if "HEAD" in files:
+            dirs[:] = [d for d in dirs if d not in _GIT_DIR_BULK]
+        dirs.sort()
+        found += [Path(root) / name for name in sorted(files)
+                  if name in ("config", "config.worktree")]
+    return found
+
+
+def git_worktrees_mount_flags(plan: dict, repo: Path) -> list[str]:
+    """RG-86 round 4: `<common>/worktrees` is mounted READ-ONLY with its REAL
+    contents (so `git gc` sees every sibling's HEAD and index and keeps their
+    objects, `git branch -D` of a branch checked out elsewhere is refused, and
+    `git worktree prune` hits EROFS), and the judged worktree's OWN admin dir
+    is mounted read-write on top (a nested bind mount). Two mounts regardless
+    of the number of siblings. Hiding the siblings behind an empty directory
+    (round 3) let `gc --prune=now` delete objects only they referenced."""
+    directory = plan["common"] / "worktrees"
+    if not directory.is_dir():
+        return []
+    flags = [item for value in _dual(directory, repo)[1::2]
+             for item in ("-v", f"{value}:ro")]
+    if plan["admin"] is not None:
+        flags += _dual(plan["admin"], repo)
+    return flags
+
+
+_MAIN_CHECKOUT_WARNED: set[str] = set()
+
+
+def main_checkout_opted_in() -> bool:
+    return os.environ.get(ALLOW_MAIN_CHECKOUT_ENV_VAR, "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
+                          *, with_state: bool = False,
+                          create_state: bool = False) -> list[str]:
+    """The ONE mount set for an ephemeral container lane or probe.
+
+    linked worktree: the judged worktree (dual, phys + namespace) + the shared
+      git dir (dual, READ-WRITE per ciu v8 SPEC S16.4.9, so in-lane commits and
+      object writes work; `worktrees/` itself is read-only, so an in-lane
+      `git worktree add` fails; assay's snapshot uses its own object seed and
+      never runs it) + a sanitized `<common>/config` overlay. The rest of
+      the main checkout and every other worktree are NOT mounted; the judged
+      worktree keeps ALL its own files, git-ignored ones included.
+    plain checkout: refused unless opted in (flag/env); then the whole
+      checkout is mounted as before, with a WARN, and the config overlay.
+    `with_state` adds `<repo>/.run-gate` (durable assay state) unless the
+    environment declares its own state_root."""
+    plan = git_mount_plan(worktree, repo)
+    if plan["kind"] == "plain":
+        if not main_checkout_opted_in():
+            fail(f"container lanes on the plain (main) checkout {worktree} are "
+                 f"refused: every git-ignored file in it (local configs, "
+                 f"secrets) would be visible inside the container. Run from a "
+                 f"linked worktree (`git worktree add`, then --worktree PATH), "
+                 f"or explicitly opt in with --allow-main-checkout / "
+                 f"{ALLOW_MAIN_CHECKOUT_ENV_VAR}=1")
+        if str(worktree) not in _MAIN_CHECKOUT_WARNED:
+            _MAIN_CHECKOUT_WARNED.add(str(worktree))
+            print(f"{PROG}: WARN: main-checkout opt-in — every git-ignored "
+                  f"file under {worktree} is visible inside the container "
+                  f"(git credentials are still sanitized)",
+                  file=sys.stderr, flush=True)
+        mounts = _dual(worktree, repo)
+    else:
+        # ciu v8 SPEC S16.4.9: checkout + git common dir, READ-WRITE (in-lane
+        # commits and object writes). `worktrees/` is then re-mounted
+        # read-only below, with the judged worktree's own admin dir rw on top.
+        mounts = [*_dual(worktree, repo), *_dual(plan["common"], repo)]
+    # `<common>/worktrees` read-only with its real contents, own admin dir rw
+    mounts += git_worktrees_mount_flags(plan, repo)
+    mounts += git_config_overlay_flags(plan, repo)
+    if with_state and (env or {}).get("state_root") is None \
+            and plan["kind"] != "plain":
+        state = repo / ".run-gate"
+        if create_state:
+            state.mkdir(exist_ok=True)
+        if state.is_dir():
+            mounts += _dual(state, repo)
+    return mounts
 
 
 def _seed_from_wall_clock(now: float, wall_ts: float) -> float:
@@ -10000,10 +10316,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         return attached
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
-    phys = physical_path(repo)
-    # dual: worktree gitfiles (RG-3); the same explicit mounts also reach
-    # doctor and Assay-state probes through build_env_probe_argv().
-    mounts = [*dual_mount_flags(repo, phys), *extra_mount_flags()]
+    # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
+    # RG-3), never the whole repo; the same set also reaches doctor and
+    # Assay-state probes through build_env_probe_argv().
+    mounts = [*container_mount_flags(
+        repo, worktree, env, with_state=lane["kind"] == "assay",
+        create_state=lane["kind"] == "assay" and not dry_run),
+        *extra_mount_flags()]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -11033,6 +11352,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                to EPHEMERAL container lanes (e.g. docker.sock)",
         "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
         "                                mount view when none is derivable (bare host)",
+        "  RUN_GATE_ALLOW_MAIN_CHECKOUT  =1 (or --allow-main-checkout) permits container",
+        "                                lanes on the plain checkout; default REFUSED",
+        "                                (every git-ignored file would be visible)",
+        "                                (exec-mode lanes are never affected; container",
+        "                                git config is always a credential-free copy)",
         "  RUN_GATE_EVIDENCE_DIR         where preserved container logs are written",
         f"                                on failure (default {EVIDENCE_DIR_DEFAULT})",
         f"  {CGROUPFS_ROOT_ENV_VAR}      cgroupfs root for slice-memory admission",
@@ -11501,6 +11825,11 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--rejudge-outcome", metavar="BUCKET",
                         help="RG-66: assay R2 only — constrain rejudge outcomes")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--allow-main-checkout", action="store_true",
+                        help="RG-NARROW: permit container lanes on the plain "
+                             "(main) checkout, making every git-ignored file "
+                             "in it visible in the container (WARNs); also "
+                             f"${ALLOW_MAIN_CHECKOUT_ENV_VAR}=1")
     parser.add_argument("--fresh", action="store_true",
                         help="RG-35: remove the container an earlier client "
                              "left running for this lane (disclosed by name) "
@@ -11525,6 +11854,10 @@ def _dispatch(argv: list[str] | None = None, *,
             lane_args = []
         args = parser.parse_args(parse_argv)
         args.lane_args = lane_args
+        if args.allow_main_checkout:
+            # Env, not a parameter: sequence members, probes and re-attached
+            # lanes all reach container_mount_flags() and inherit it.
+            os.environ[ALLOW_MAIN_CHECKOUT_ENV_VAR] = "1"
         lock_wait_text = args.lock_wait or DEFAULT_LOCK_WAIT
         _validate_budget(lock_wait_text, "command line", "--lock-wait")
         lock_wait_seconds = budget_seconds(lock_wait_text)

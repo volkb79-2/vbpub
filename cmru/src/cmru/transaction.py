@@ -7,9 +7,13 @@ release child there.  The caller's uncommitted files therefore cannot leak into 
 wheel, image, tag, or release asset.
 
 The parent process owns a repository-local flock for the lifetime of its child.
-The child builds and publishes from the fixed candidate, then fast-forwards
-``origin/main`` from that exact branch tip; a concurrent remote update fails
-closed without rebasing the candidate.
+The child builds and publishes from the fixed candidate, then pushes that exact
+branch tip to ``origin/main``. When ``origin/main`` advanced during the gate the
+push is rejected; the candidate is then never rebased or force-pushed. Instead
+``origin/main`` is merged INTO the candidate (``--no-ff``, at most three
+attempts) provided the released project's own paths are untouched; a conflict,
+a touched project path or unknown paths stop with recovery instructions
+(REL-04, see :func:`promote_workspace`).
 """
 from __future__ import annotations
 
@@ -39,13 +43,28 @@ from cmru.git_auth import (
     without_publisher_tokens,
 )
 from cmru.config_names import PROJECT_CONFIG_FILENAME
+# RefusedBeforeChange / ReleaseLockHeld live in the domain-error family
+# (``cmru.errors``); re-exported here because callers know them as
+# ``transaction.RefusedBeforeChange``.
+from cmru.errors import (  # noqa: F401
+    CmruError,
+    RefusedBeforeChange,
+    ReleaseLockHeld,
+    UnsafeRecord,
+    UsageRefusal,
+)
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
 BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
+# Redesign section D: the bound launcher handed to project steps is internal.
+INTERNAL_BIN_ENV = "CMRU_INTERNAL_BIN"
 _LEGACY_RESUME_METADATA_KEY = "transaction_scope"
 _LEGACY_RESUME_METADATA_VALUE = "legacy-release-resume"
+# REL-14: one commit-id grammar for sidecars and abandon -- SHA-1 (40 hex) and
+# SHA-256 (64 hex) object formats alike.
+COMMIT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 def is_transaction_child(repo_root: Path) -> bool:
@@ -84,7 +103,7 @@ def is_transaction_child(repo_root: Path) -> bool:
         )
         worktrees = shared.list_git_worktrees(source_top)
         record = shared.find_workspace(child_common, child_top)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"invalid CMRU transaction child worktree: {exc}") from exc
 
     child_top = Path(child_top).resolve()
@@ -142,6 +161,24 @@ def is_transaction_child(repo_root: Path) -> bool:
         )
 
     return True
+
+
+def internal_launcher(repo_root: Path) -> str | None:
+    """Return the ``CMRU_INTERNAL_BIN`` launcher, only inside a transaction child.
+
+    Redesign section D: an operator's ambient environment must never choose the
+    executable a release child runs. The value is honoured only when this
+    process is verifiably its managed transaction child; an invalid child
+    context fails closed (ignored) rather than trusting the variable.
+    """
+    value = os.environ.get(INTERNAL_BIN_ENV, "").strip()
+    if not value:
+        return None
+    try:
+        child = is_transaction_child(repo_root)
+    except RuntimeError:
+        return None
+    return value if child else None
 
 
 def _git(repo_root: Path, *args: str, check: bool = True) -> str:
@@ -206,13 +243,13 @@ def _validate_legacy_release_progress(
     """Require a valid, committed legacy-release checkpoint at or before HEAD."""
     if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
+    if not COMMIT_ID_RE.fullmatch(head):
         raise RuntimeError(f"{path} has an invalid Git HEAD; refusing legacy resume")
     progress_workspace = ReleaseWorkspace(
         repo_root=repo_root.resolve(), path=path.resolve(), branch=branch, base=head,
     )
     progress = read_release_progress(repo_root, progress_workspace)
-    if progress is None or not re.fullmatch(r"[0-9a-f]{40}", progress):
+    if progress is None or not COMMIT_ID_RE.fullmatch(progress):
         raise RuntimeError(
             f"{path} has no valid CMRU release progress record; refusing legacy resume"
         )
@@ -232,6 +269,14 @@ def _validate_legacy_release_progress(
             f"({progress_check.returncode}): {detail}"
         )
     return progress
+
+
+# The operational failures the worktree library, git and the filesystem raise
+# (``worktree.WorkspaceError`` is a ``RuntimeError``).  Sites that translate a
+# library/OS failure into a clean ``RuntimeError`` catch exactly these, so a
+# programming error (KeyError, TypeError, AttributeError...) keeps its traceback
+# instead of being flattened to ``str(exc)`` (CLI-06).
+_DOMAIN_ERRORS = (RuntimeError, OSError, ValueError, subprocess.SubprocessError)
 
 
 def _shared_worktree():
@@ -275,7 +320,7 @@ def project_git_family_groups(
         selected = selected.resolve()
         try:
             top, common, _branch, _head = shared.discover_git_context(selected)
-        except Exception as exc:
+        except _DOMAIN_ERRORS as exc:
             raise RuntimeError(
                 f"CMRU project root {selected} is not inside a usable Git worktree: {exc}"
             ) from exc
@@ -283,7 +328,7 @@ def project_git_family_groups(
     if not groups:
         try:
             top, _common, _branch, _head = shared.discover_git_context(repo_root)
-        except Exception as exc:
+        except _DOMAIN_ERRORS as exc:
             raise RuntimeError(
                 f"CMRU root {repo_root} has no selected project Git family: {exc}"
             ) from exc
@@ -305,7 +350,7 @@ def source_git_root_for_projects(repo_root: Path, projects: Sequence[object]) ->
     groups = project_git_family_groups(repo_root, projects)
     if len(groups) != 1:
         details = ", ".join(str(root) for root in sorted(groups))
-        raise RuntimeError(
+        raise UsageRefusal(
             "selected CMRU projects belong to independent Git families; split the "
             f"transaction by family before allocating a worktree ({details})"
         )
@@ -328,7 +373,7 @@ def release_lock(repo_root: Path) -> Iterator[None]:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError("Another cmru release transaction is already running.") from exc
+            raise ReleaseLockHeld("Another cmru release transaction is already running.") from exc
         try:
             yield
         finally:
@@ -362,7 +407,7 @@ def local_main_divergence(repo_root: Path, *, ref: str = "main") -> tuple[int, i
         return int(ahead), int(behind)
     except (RuntimeError, ValueError) as exc:
         label = "local main" if ref == "main" else repr(ref)
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"Cannot compare {label} with origin/main; fetch/repair the ref, or pass a "
             "different --ref, before starting a release."
         ) from exc
@@ -378,7 +423,7 @@ def assert_local_main_not_ahead(repo_root: Path, *, ref: str = "main") -> int:
     ahead, behind = local_main_divergence(repo_root, ref=ref)
     if ahead:
         label = "Local main" if ref == "main" else repr(ref)
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"{label} is {ahead} commit(s) ahead of origin/main. Push those commits (or "
             "explicitly base the intended change on origin/main) before release; an "
             "isolated release snapshots origin/main and would omit them."
@@ -528,7 +573,7 @@ def create_workspace(
     # which would not be "this ONE transaction exclusively owns the name it
     # created" if that ever happened (an allocation collision or stale leftover).
     if path.exists():
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             f"worktree path already exists: {path}; refusing to reuse an occupied transaction name"
         )
     try:
@@ -560,7 +605,9 @@ def create_workspace(
             try:
                 with without_publisher_tokens():
                     shared.remove_workspace(context, force=True)
-            except Exception:
+            except _DOMAIN_ERRORS:
+                # Best-effort cleanup: the reset failure raised below is the
+                # error worth reporting, not a failed removal of its worktree.
                 pass
             raise RuntimeError(
                 f"git reset --hard {base} failed ({checkout.returncode}): "
@@ -580,18 +627,18 @@ def resume_workspace(
     or legacy nested ``cmru/release/*``)."""
     path = path.resolve()
     if not path.is_dir():
-        raise RuntimeError(f"release worktree does not exist: {path}")
+        raise UsageRefusal(f"release worktree does not exist: {path}")
     shared = _shared_worktree()
     try:
         path_top, path_common, _path_branch, _path_head = shared.discover_git_context(path)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"{path} is not a worktree: {exc}") from exc
     try:
         expected_common = _common_git_dir(repo_root)
     except RuntimeError:
         expected_common = None
     if expected_common is not None and path_common != expected_common:
-        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+        raise UsageRefusal(f"{path} is not a worktree of {repo_root}")
     # New transactions resume directly from their CMRU record. Legacy
     # candidates, including a removal-bridge record, must revalidate progress
     # and refresh origin/main before returning or completing adoption.
@@ -602,18 +649,18 @@ def resume_workspace(
             _require_cmru_record_purpose(record, "release", path)
             context = shared.ensure_workspace(record)
             if not _is_release_branch(context.branch):
-                raise RuntimeError(
+                raise UsageRefusal(
                     f"{path} is not a retained cmru release branch (got {context.branch!r})"
                 )
             if record.purpose == "cmru-legacy":
                 metadata = getattr(record, "metadata", None)
                 if not isinstance(metadata, Mapping):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"{path} has invalid legacy CMRU workspace metadata; refusing resume"
                     )
                 scope = metadata.get(_LEGACY_RESUME_METADATA_KEY)
                 if scope not in (None, _LEGACY_RESUME_METADATA_VALUE):
-                    raise RuntimeError(
+                    raise UnsafeRecord(
                         f"{path} has an unrecognized legacy CMRU transaction scope; "
                         "refusing resume"
                     )
@@ -638,11 +685,11 @@ def resume_workspace(
             )
     except subprocess.CalledProcessError:
         raise
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
-        raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
+        raise UsageRefusal(f"{path} is not a retained cmru release branch (got {branch!r})")
     if expected_common is None:
         raise RuntimeError(
             f"cannot validate legacy release worktree {path}: source Git family is unknown"
@@ -659,7 +706,7 @@ def resume_workspace(
             or Path(path_top).resolve() != path
         ):
             raise RuntimeError("legacy release worktree and source root do not share the exact Git family")
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
     run_remote_git(
         path_top, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
@@ -673,7 +720,7 @@ def resume_workspace(
             metadata={_LEGACY_RESUME_METADATA_KEY: _LEGACY_RESUME_METADATA_VALUE},
             identity_path=path,
         )
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"cannot adopt validated legacy release worktree {path}: {exc}") from exc
     return ReleaseWorkspace(
         repo_root=repo_root.resolve(), path=path, branch=branch,
@@ -690,11 +737,17 @@ def assert_resume_workspace_committed(path: Path) -> None:
     """
     changes = _git(path, "status", "--porcelain=v1", "--untracked-files=normal")
     if changes:
-        raise RuntimeError(
+        raise RefusedBeforeChange(
             "retained release worktree has uncommitted changes. Commit the fixes on "
             "that release branch, then rerun `cmru release --resume`; the resumed "
             "prepare and required gate will run against and ship that commit."
         )
+
+
+def _close_fd_if_open(fd: int) -> None:
+    """Close *fd* unless it is the ``-1`` "never opened" sentinel."""
+    if fd >= 0:
+        os.close(fd)
 
 
 def _copy_secret_overlay(
@@ -809,10 +862,9 @@ def _copy_secret_overlay(
                 os.unlink(temporary_name, dir_fd=parent_fd)
             except FileNotFoundError:
                 pass
-        if parent_fd >= 0 and parent_fd != root_fd:
-            os.close(parent_fd)
-        if root_fd >= 0:
-            os.close(root_fd)
+        if parent_fd != root_fd:
+            _close_fd_if_open(parent_fd)
+        _close_fd_if_open(root_fd)
 
 
 def copy_secret_overlays(
@@ -866,7 +918,7 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
             with without_publisher_tokens():
                 _shared_worktree().remove_workspace(workspace.context)
             return
-        except Exception as exc:
+        except _DOMAIN_ERRORS as exc:
             raise RuntimeError(str(exc)) from exc
     try:
         with without_publisher_tokens():
@@ -877,7 +929,7 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
                 purpose="cmru-legacy",
                 force=True,
             )
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(str(exc)) from exc
 
 
@@ -930,7 +982,7 @@ def write_release_tag_snapshot(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError("origin tag snapshot contains a malformed ref record")
     try:
@@ -969,7 +1021,7 @@ def read_release_tag_snapshot(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError(f"release tag snapshot is malformed: {path}")
         snapshot[ref] = oid
@@ -991,7 +1043,7 @@ def list_local_tag_refs(repo_root: Path) -> dict[str, str]:
         if (
             len(fields) != 2
             or not _valid_ls_remote_ref(fields[0], "refs/tags/")
-            or not re.fullmatch(r"[0-9a-f]{40}", fields[1])
+            or not COMMIT_ID_RE.fullmatch(fields[1])
         ):
             raise RuntimeError(f"local tag listing returned a malformed ref record: {line!r}")
         ref, oid = fields
@@ -1014,7 +1066,7 @@ def write_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError("local release tag attempt contains a malformed ref record")
         incoming[ref] = oid
@@ -1081,7 +1133,7 @@ def read_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError(f"release tag attempt record is malformed: {path}")
         attempts[ref] = oid
@@ -1104,7 +1156,7 @@ def write_confirmed_absent_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
         ):
             raise RuntimeError("confirmed absent release tag record contains a malformed ref")
         if attempts.get(ref) != oid:
@@ -1159,7 +1211,7 @@ def read_confirmed_absent_release_tag_attempts(
             not isinstance(ref, str)
             or not _valid_ls_remote_ref(ref, "refs/tags/")
             or not isinstance(oid, str)
-            or not re.fullmatch(r"[0-9a-f]{40}", oid)
+            or not COMMIT_ID_RE.fullmatch(oid)
             or attempts.get(ref) != oid
         ):
             raise RuntimeError(f"release tag absence record is malformed: {path}")
@@ -1240,7 +1292,7 @@ def parse_ls_remote_refs(
             raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
         oid, ref = fields
         valid_ref = _valid_ls_remote_ref(ref, namespace)
-        if not re.fullmatch(r"[0-9a-f]{40}", oid) or not valid_ref:
+        if not COMMIT_ID_RE.fullmatch(oid) or not valid_ref:
             raise RuntimeError(f"{description} returned a malformed ref record: {line!r}")
         if ref in refs:
             raise RuntimeError(f"{description} returned a duplicate ref record: {ref}")
@@ -1308,11 +1360,11 @@ def read_release_scope_for_path(path: Path) -> list[str] | None:
     """
     path = Path(path).expanduser().resolve()
     if not path.is_dir():
-        raise RuntimeError(f"release worktree does not exist: {path}")
+        raise UsageRefusal(f"release worktree does not exist: {path}")
     shared = _shared_worktree()
     try:
         top, _common, branch, head = shared.discover_git_context(path)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(f"{path} is not a readable Git worktree: {exc}") from exc
     top = Path(top).resolve()
     if top != path:
@@ -1486,10 +1538,23 @@ def validate_build_output_tree(
     """Validate one retained artifact directory against its immutable build manifest.
 
     This shared validator is used by `cmru publish` and the built-in publisher
-    adapters, so the path and digest rules have one implementation.
+    adapters, so the path and digest rules have one implementation. Every way the
+    record can be unsafe, incomplete or tampered with is an ``UnsafeRecord`` (a
+    refusal, exit 4); a malformed ID is a ``UsageRefusal`` (exit 2).
     """
+    try:
+        return _validate_build_output_tree(artifact_root, project_name, output_id)
+    except CmruError:
+        raise
+    except RuntimeError as exc:
+        raise UnsafeRecord(str(exc)) from exc
+
+
+def _validate_build_output_tree(
+    artifact_root: Path, project_name: str, output_id: str,
+) -> dict[str, Any]:
     if not is_build_output_id(output_id):
-        raise RuntimeError(f"invalid retained build output ID: {output_id!r}")
+        raise UsageRefusal(f"invalid retained build output ID: {output_id!r}")
     if artifact_root.name != output_id or artifact_root.is_symlink() or not artifact_root.is_dir():
         raise RuntimeError(f"{project_name}: retained build output is missing or unsafe: {artifact_root}")
     manifest_path = artifact_root / "build.json"
@@ -1644,7 +1709,20 @@ def validate_build_output_tree(
 def validate_retained_build_output(
     project: object, project_name: str, output_id: str,
 ) -> dict[str, Any]:
-    """Validate the complete project build record before any publisher runs."""
+    """Validate the complete project build record before any publisher runs.
+
+    Any way the record is unsafe or incomplete is an ``UnsafeRecord`` (exit 4)."""
+    try:
+        return _validate_retained_build_output(project, project_name, output_id)
+    except CmruError:
+        raise
+    except RuntimeError as exc:
+        raise UnsafeRecord(str(exc)) from exc
+
+
+def _validate_retained_build_output(
+    project: object, project_name: str, output_id: str,
+) -> dict[str, Any]:
     raw_root = getattr(project, "project_root", None)
     if raw_root is None:
         raise RuntimeError(f"{project_name}: cannot resolve a retained build output without project_root")
@@ -1690,7 +1768,7 @@ def is_build_output_id(value: str) -> bool:
 
 def _require_build_output_id(output_id: str) -> None:
     if not is_build_output_id(output_id):
-        raise RuntimeError(
+        raise UsageRefusal(
             "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
             "coordinate printed by cmru build"
         )
@@ -1907,7 +1985,7 @@ def retain_successful_build_outputs(
             moved_logs = True
             try:
                 staged_artifacts.replace(target_artifacts)
-            except Exception:
+            except Exception:  # re-raises below after restoring the first rename
                 # The sources are still safe in the retained worktree.  Restore
                 # the first rename so the caller checkout remains all-or-nothing.
                 target_logs.replace(staged_logs)
@@ -1974,7 +2052,7 @@ def _open_directory_path_nofollow(path: Path) -> int:
             os.close(current_fd)
             current_fd = next_fd
         return current_fd
-    except BaseException:
+    except BaseException:  # fd cleanup only; always re-raised (incl. KeyboardInterrupt)
         os.close(current_fd)
         raise
 
@@ -2010,14 +2088,14 @@ def _retained_build_output_parent_fds(
             if descriptor is not None:
                 os.close(descriptor)
         if exc.errno == errno.ELOOP:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build output path is or crosses a symlink"
             ) from exc
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
-    except BaseException:
+    except BaseException:  # fd cleanup only; always re-raised (incl. KeyboardInterrupt)
         for descriptor in (logs_parent_fd, artifact_parent_fd, root_fd):
             if descriptor is not None:
                 os.close(descriptor)
@@ -2072,7 +2150,7 @@ def _read_regular_file_at(
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build record is incomplete or unsafe: {path}"
             )
         chunks = []
@@ -2109,14 +2187,14 @@ def _retained_build_output_cleanup_facts(
             if descriptor is not None:
                 os.close(descriptor)
         if exc.errno == errno.ELOOP:
-            raise RuntimeError(
+            raise UnsafeRecord(
                 f"{project_name}: retained build output path is or crosses a symlink"
             ) from exc
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
-    except BaseException:
+    except BaseException:  # fd cleanup only; always re-raised (incl. KeyboardInterrupt)
         for descriptor in (logs_fd, artifact_fd):
             if descriptor is not None:
                 os.close(descriptor)
@@ -2148,7 +2226,7 @@ def _retained_build_output_identity_from_fds(
             artifact_fd, "build.json", project_name, manifest_path,
         )
     except OSError as exc:
-        raise RuntimeError(
+        raise UnsafeRecord(
             f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
             "remove it manually after inspection"
         ) from exc
@@ -2215,7 +2293,7 @@ def _create_private_cleanup_stage(parent_fd: int, output_id: str) -> tuple[str, 
             continue
         try:
             return stage_name, os.open(stage_name, flags, dir_fd=parent_fd)
-        except BaseException:
+        except BaseException:  # stage-dir cleanup only; always re-raised
             os.rmdir(stage_name, dir_fd=parent_fd)
             raise
     raise RuntimeError("could not allocate a private build-output cleanup directory")
@@ -2365,7 +2443,7 @@ def delete_retained_build_output(
             for parent_fd, stage_name, _stage_fd in stages:
                 os.rmdir(stage_name, dir_fd=parent_fd)
             return targets
-        except BaseException as exc:
+        except BaseException as exc:  # restores staged records, then always re-raises
             restore_failures: list[Path] = []
             for parent_fd, stage_name, stage_fd in reversed(moved):
                 try:
@@ -2408,12 +2486,12 @@ def discard_build_workspace(
     path = path.resolve()
     expected_parent = (repo_root / ".worktrees").resolve()
     if path.parent != expected_parent:
-        raise RuntimeError(f"{path} is outside this repository's managed .worktrees directory")
+        raise UsageRefusal(f"{path} is outside this repository's managed .worktrees directory")
     if not path.is_dir() or _common_git_dir(path) != _common_git_dir(repo_root):
-        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+        raise UsageRefusal(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
     if not _is_build_branch(branch):
-        raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
+        raise UsageRefusal(f"{path} is not a retained cmru build worktree (got {branch!r})")
     context = None
     shared = _shared_worktree()
     try:
@@ -2422,7 +2500,7 @@ def discard_build_workspace(
         if record is not None:
             _require_cmru_record_purpose(record, "build", path)
             context = shared.ensure_workspace(record)
-    except Exception as exc:
+    except _DOMAIN_ERRORS as exc:
         raise RuntimeError(str(exc)) from exc
     workspace = ReleaseWorkspace(
         repo_root=repo_root,
@@ -2634,22 +2712,22 @@ def retain_success_outputs(
                 retained.append(target_root)
             if attempt_evidence:
                 retained.append(evidence_root)
-        except Exception:
+        except Exception:  # rolls the moves back, then always re-raises
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
                 try:
                     shutil.move(str(target), str(source))
-                except Exception as rollback_exc:
+                except OSError as rollback_exc:  # shutil.Error is an OSError
                     rollback_errors.append(rollback_exc)
             if created_target_root and target_root.exists():
                 try:
                     shutil.rmtree(target_root)
-                except Exception as rollback_exc:
+                except OSError as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if created_evidence_root and evidence_root.exists():
                 try:
                     shutil.rmtree(evidence_root)
-                except Exception as rollback_exc:
+                except OSError as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if not artifact_parent_existed and artifact_parent.exists():
                 try:
@@ -2845,7 +2923,7 @@ def abandon_workspace(
         if current_local_tag_refs != dict(expected_local_tag_refs):
             raise RuntimeError("local release tags changed after abandonment inspection; retained transaction was not removed")
     if pushed and not removed:
-        if remote_candidate_oid is None or not re.fullmatch(r"[0-9a-f]{40}", remote_candidate_oid):
+        if remote_candidate_oid is None or not COMMIT_ID_RE.fullmatch(remote_candidate_oid):
             raise RuntimeError("origin candidate object ID is unavailable; retained transaction was not removed")
         result = run_remote_git(
             repo_root, "push",
@@ -2873,7 +2951,7 @@ def abandon_workspace(
     for tag_ref, expected_oid in sorted((local_tags_to_remove or {}).items()):
         if (
             not _valid_ls_remote_ref(tag_ref, "refs/tags/")
-            or not re.fullmatch(r"[0-9a-f]{40}", expected_oid)
+            or not COMMIT_ID_RE.fullmatch(expected_oid)
         ):
             raise RuntimeError("abandonment has a malformed local release-tag cleanup target")
         current_oid = list_local_tag_refs(repo_root).get(tag_ref)
@@ -2904,6 +2982,103 @@ def abandon_workspace(
     forget_release_scope(repo_root, workspace)
 
 
+@dataclass(frozen=True)
+class RemoteCandidate:
+    """An origin-only release candidate branch (KI-35): no local worktree/branch."""
+
+    branch: str
+    oid: str
+    main_oid: str
+    #: Commits on the candidate that origin/main does not contain.
+    unique_commits: int
+
+
+def inspect_remote_candidate(
+    repo_root: Path, branch: str, *, git_auth: GitHubGitAuth | None = None,
+) -> RemoteCandidate | None:
+    """Read-only facts about one origin ``cmru-release-*`` branch with no local
+    worktree. ``None`` means the branch is not on origin. Raises ``RuntimeError``
+    when a fact cannot be established (never folds it into "absent")."""
+    if not _is_release_branch(branch):
+        raise RuntimeError(f"{branch!r} is not a CMRU release transaction branch")
+    ref = "refs/heads/" + branch
+    remote = run_remote_git(
+        repo_root, "ls-remote", "--heads", "origin", ref, "refs/heads/main",
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if remote.returncode != 0:
+        raise RuntimeError(
+            "could not determine origin branch state: "
+            + (remote.stderr.strip() or "git ls-remote failed")
+        )
+    refs = parse_ls_remote_refs(
+        remote.stdout, namespace="refs/heads/", description="origin branch lookup",
+    )
+    if set(refs) - {ref, "refs/heads/main"}:
+        raise RuntimeError("origin branch lookup returned an unexpected ref")
+    oid = refs.get(ref)
+    if oid is None:
+        return None
+    main_oid = refs.get("refs/heads/main")
+    if main_oid is None:
+        raise RuntimeError("origin/main ref is missing; cannot tell whether the candidate was promoted")
+    fetch_hint = f"run `git fetch origin {branch} main` and retry"
+    counted = run_local_git(
+        repo_root, "rev-list", "--count", oid, f"^{main_oid}",
+        capture_output=True, text=True, check=False,
+    )
+    if counted.returncode != 0 or not counted.stdout.strip().isdigit():
+        raise RuntimeError(
+            f"candidate tip {oid[:12]} or origin/main {main_oid[:12]} is not available "
+            f"locally; {fetch_hint}"
+        )
+    return RemoteCandidate(branch, oid, main_oid, int(counted.stdout.strip()))
+
+
+def retire_remote_candidate(
+    repo_root: Path, candidate: RemoteCandidate, *,
+    git_auth: GitHubGitAuth | None = None,
+) -> None:
+    """Delete an origin-only candidate branch whose every commit is already on
+    origin/main, then drop its orphan sidecars. Never touches main, tags or assets."""
+    if candidate.unique_commits:
+        raise RuntimeError(
+            f"{candidate.branch} holds {candidate.unique_commits} commit(s) that origin/main "
+            "does not contain; refusing to delete it"
+        )
+    if not (COMMIT_ID_RE.fullmatch(candidate.oid) and _is_release_branch(candidate.branch)):
+        raise RuntimeError("malformed remote candidate; nothing was deleted")
+    ref = "refs/heads/" + candidate.branch
+    local = run_local_git(
+        repo_root, "show-ref", "--verify", "--quiet", ref,
+        capture_output=True, text=True, check=False,
+    )
+    if local.returncode == 0:
+        raise RuntimeError(
+            f"a local branch {candidate.branch} exists; abandon its worktree or delete it first"
+        )
+    result = run_remote_git(
+        repo_root, "push", f"--force-with-lease={ref}:{candidate.oid}",
+        "origin", f":{ref}",
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not delete origin candidate ref {ref}\n{result.stderr.strip()}"
+        )
+    verify = run_remote_git(
+        repo_root, "ls-remote", "--heads", "origin", ref,
+        auth=git_auth, capture_output=True, text=True, check=False,
+    )
+    if verify.returncode != 0 or parse_ls_remote_refs(
+        verify.stdout, namespace="refs/heads/", description="origin candidate deletion verification",
+    ):
+        raise RuntimeError(f"origin candidate ref {ref} still exists or could not be verified")
+    forget_release_scope(
+        repo_root, ReleaseWorkspace(repo_root, repo_root, candidate.branch, candidate.oid),
+    )
+
+
 def _tag_refs_for_prefixes(
     tag_refs: Mapping[str, str], prefixes: Sequence[str],
 ) -> dict[str, str]:
@@ -2920,32 +3095,146 @@ def _tag_refs_for_prefixes(
     return selected
 
 
-def promote_workspace(
-    workspace: ReleaseWorkspace, *, git_auth: GitHubGitAuth | None = None,
-) -> None:
-    """Fast-forward ``origin/main`` from the exact release candidate tip.
+PROMOTE_MERGE_ATTEMPTS = 3
+# Git's stderr for a push that lost a fast-forward race.
+_NON_FAST_FORWARD_MARKERS = ("non-fast-forward", "fetch first", "[rejected]")
 
-    The candidate is built and published before this function is called. It is
-    therefore unsafe to fetch and rebase here: rebasing would change the commit
-    that was gated and used to produce the public artifact. A concurrent update
-    is a deliberate, fail-closed outcome. The candidate branch and its durable
-    backup remain available for inspection; a later attempt can start from a
-    freshly fetched main without pretending that the already-published artifact
-    came from a different commit.
+
+def _promotion_recovery(workspace: ReleaseWorkspace) -> str:
+    return (
+        "The release itself is complete and must NOT be repeated: its tag and published "
+        "artifacts stay as they are. To land the candidate by hand, run in the retained "
+        f"worktree:\n  cd {workspace.path}\n  git fetch origin main\n"
+        "  git merge --no-ff origin/main     # resolve any conflict, then commit\n"
+        "  git push origin HEAD:refs/heads/main\n"
+        "Never force-push main."
+    )
+
+
+def _merge_origin_main_into_candidate(
+    workspace: ReleaseWorkspace,
+    *,
+    git_auth: GitHubGitAuth | None,
+    project_paths: Sequence[str],
+    release_label: str,
+) -> bool:
+    """Fetch origin/main and merge it into the candidate (``--no-ff``).
+
+    Returns False when origin/main is already contained in the candidate (the
+    rejection then had another cause). Raises, leaving the candidate unchanged,
+    when the merge would conflict or when origin/main changed the released
+    project's own paths (the gated and published content would then differ from
+    what lands on main).
     """
-    result = run_remote_git(
-        workspace.path, "push", "origin", "HEAD:refs/heads/main",
-        auth=git_auth, capture_output=True, text=True,
+    path = workspace.path
+    fetched = run_remote_git(
+        path, "fetch", "--prune", "origin", "main",
+        auth=git_auth, capture_output=True, text=True, check=False,
     )
-    if result.returncode == 0:
-        return
-    stderr = result.stderr or ""
-    raise RuntimeError(
-        "release candidate was not promoted to origin/main; the candidate may "
-        "have lost a fast-forward race or the remote rejected the push. The "
-        f"candidate branch {getattr(workspace, 'branch', '<unknown>')} was retained "
-        f"for inspection.\n{stderr}"
+    if fetched.returncode != 0:
+        raise RuntimeError(
+            "release candidate was not promoted: fetching origin/main failed "
+            f"({(fetched.stderr or '').strip()}). {_promotion_recovery(workspace)}"
+        )
+    origin_main = _git(path, "rev-parse", "origin/main")
+    contained = run_local_git(
+        path, "merge-base", "--is-ancestor", origin_main, "HEAD",
+        capture_output=True, text=True, check=False,
     )
+    if contained.returncode == 0:
+        return False
+    if contained.returncode != 1:
+        raise RuntimeError(
+            "release candidate was not promoted: could not compare the candidate with "
+            f"origin/main. {_promotion_recovery(workspace)}"
+        )
+    merge_base = _git(path, "merge-base", "HEAD", origin_main)
+    if not project_paths:
+        raise RuntimeError(
+            "release candidate was not promoted: origin/main advanced and the released "
+            "project's paths are unknown, so CMRU cannot prove the merge leaves the "
+            f"gated content unchanged. {_promotion_recovery(workspace)}"
+        )
+    touched = _git(
+        path, "diff", "--name-only", merge_base, origin_main, "--", *project_paths,
+    )
+    if touched:
+        raise RuntimeError(
+            "release candidate was not promoted: origin/main advanced AND changed the "
+            "released project's own paths, so merging would land content that differs "
+            f"from what was gated and published ({', '.join(touched.splitlines()[:5])}"
+            f"{'...' if len(touched.splitlines()) > 5 else ''}). Review those changes "
+            f"first; if they are acceptable, merge by hand. {_promotion_recovery(workspace)}"
+        )
+    label = release_label or workspace.branch
+    merged = run_local_git(
+        path, "merge", "--no-ff", "-m",
+        f"Merge origin/main into release candidate {label}\n\n"
+        "origin/main advanced while the release ran; none of the released "
+        "project's paths changed.",
+        origin_main,
+        capture_output=True, text=True, check=False,
+    )
+    if merged.returncode != 0:
+        run_local_git(path, "merge", "--abort", capture_output=True, text=True, check=False)
+        detail = (merged.stdout or merged.stderr or "").strip()
+        raise RuntimeError(
+            "release candidate was not promoted: merging origin/main into the candidate "
+            f"conflicted ({detail}); the merge was aborted and the candidate is unchanged. "
+            f"{_promotion_recovery(workspace)}"
+        )
+    return True
+
+
+def promote_workspace(
+    workspace: ReleaseWorkspace,
+    *,
+    git_auth: GitHubGitAuth | None = None,
+    project_paths: Sequence[str] = (),
+    release_label: str = "",
+    max_attempts: int = PROMOTE_MERGE_ATTEMPTS,
+) -> None:
+    """Land the release candidate on ``origin/main`` without ever force-pushing.
+
+    The candidate is built and published before this function is called, so the
+    gated commit must stay an ancestor of what lands: the candidate is never
+    rebased. When origin/main advanced during the (long) gate, the push is
+    rejected as non-fast-forward; REL-04: fetch, merge origin/main into the
+    candidate (``--no-ff``, naming the release), and push again, at most
+    ``max_attempts`` times. A conflict, or a merge that would touch the released
+    project's own paths, stops with recovery instructions; the tag and published
+    state are kept.
+    """
+    attempts = 0
+    while True:
+        result = run_remote_git(
+            workspace.path, "push", "origin", "HEAD:refs/heads/main",
+            auth=git_auth, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return
+        stderr = result.stderr or ""
+        failure = (
+            "release candidate was not promoted to origin/main; the candidate may "
+            "have lost a fast-forward race or the remote rejected the push. The "
+            f"candidate branch {getattr(workspace, 'branch', '<unknown>')} was retained "
+            f"for inspection.\n{stderr}"
+        )
+        if not any(marker in stderr for marker in _NON_FAST_FORWARD_MARKERS):
+            # Authentication, hook or network failures are not a lost race:
+            # merging main into the candidate cannot help, so fail immediately.
+            raise RuntimeError(failure)
+        if attempts >= max_attempts:
+            raise RuntimeError(
+                f"{failure}\nGave up after {attempts} merge attempt(s) because origin/main "
+                f"kept advancing. {_promotion_recovery(workspace)}"
+            )
+        attempts += 1
+        if not _merge_origin_main_into_candidate(
+            workspace, git_auth=git_auth, project_paths=project_paths,
+            release_label=release_label,
+        ):
+            raise RuntimeError(failure)
 
 
 def push_backup_branch(
@@ -3080,11 +3369,35 @@ def revert_promotion(
 
 _SYNC_DIRTY_REASON = (
     "Could not sync local main automatically: the caller checkout is dirty "
-    "(tracked or untracked changes, including ignored files and directories), "
+    "(tracked or untracked changes), "
     "so no rebase or rebase-abort was attempted and local main plus those files "
-    "were left untouched. Commit or stash all changes (including ignored files "
-    "with `git stash -a`), then run `git rebase origin/main` from the clean checkout."
+    "were left untouched. Commit or stash all changes, then run "
+    "`git rebase origin/main` from the clean checkout."
 )
+
+
+_SYNC_IGNORED_COLLISION_REASON = (
+    "Could not sync local main automatically: origin/main adds file(s) at path(s) that "
+    "are ignored (and present) in the caller checkout, which a checkout would silently "
+    "overwrite (or they could not be inspected). Local main and those files were left "
+    "untouched. Move them away (or `git stash -a`), then run `git rebase origin/main`."
+)
+
+
+def _ignored_paths_origin_would_overwrite(repo_root: Path) -> list[str] | None:
+    """Ignored local files that updating to origin/main would create-over (None: unknown)."""
+    try:
+        added = _git(
+            repo_root, "diff", "--name-only", "--diff-filter=ACR", "-z",
+            "HEAD", "origin/main",
+        )
+        ignored = _git(
+            repo_root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
+        )
+    except RuntimeError:
+        return None
+    incoming = {name for name in added.split("\0") if name}
+    return sorted(name for name in ignored.split("\0") if name in incoming)
 
 
 def _git_path_exists(repo_root: Path, name: str) -> bool | None:
@@ -3117,25 +3430,38 @@ def _sync_local_main_result(
     repo_root: Path, *, git_auth: GitHubGitAuth | None = None,
 ) -> _SyncLocalMainResult:
     """Perform caller-main synchronization and retain its exact per-call outcome."""
-    run_remote_git(
-        repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
-    )
+    try:
+        run_remote_git(
+            repo_root, "fetch", "--prune", "origin", "main", auth=git_auth, check=True,
+        )
+    except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
+        # REL-06: this runs after the release already completed (or failed and was
+        # reported). A transient fetch failure must not change that outcome.
+        return _SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: fetching origin/main failed "
+            f"({exc}). Local main was left untouched; run `git fetch origin main` and "
+            "`git rebase origin/main` from the caller checkout when origin is reachable.",
+        )
     current = _git(repo_root, "branch", "--show-current", check=False)
     if current == "main":
         # ``git rebase`` refuses a dirty checkout itself, but calling it first
-        # would produce a misleading secondary ``rebase --abort`` error. The
-        # ignored-inclusive status guard is deliberately broader than the
-        # release preflight: a later remote checkout can overwrite any local
-        # untracked path, even one hidden by .gitignore.
+        # would produce a misleading secondary ``rebase --abort`` error.
+        # Tracked and untracked (non-ignored) changes always block. Ignored files
+        # (REL-13) block only where origin/main would actually create a file at
+        # an ignored path: a checkout silently overwrites those, but ordinary
+        # ignored build output must not make every release warn.
         status = _git(
             repo_root,
             "status",
             "--porcelain",
             "--untracked-files=all",
-            "--ignored",
         )
         if status:
             return _SyncLocalMainResult(False, _SYNC_DIRTY_REASON)
+        collisions = _ignored_paths_origin_would_overwrite(repo_root)
+        if collisions is None or collisions:
+            return _SyncLocalMainResult(False, _SYNC_IGNORED_COLLISION_REASON)
         if _rebase_in_progress(repo_root) is True:
             return _SyncLocalMainResult(
                 False,
@@ -3267,16 +3593,20 @@ def run_child(
         env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
         candidate_cmru = workspace.path / "cmru" / "src"
         if "cmru" in project_names and (candidate_cmru / "cmru" / "cli.py").is_file():
+            # D10: a self-release runs the candidate cmru against the
+            # installed cli-extended wheel its floor names, never a candidate
+            # source checkout of the library.
             source_roots = [
                 candidate_cmru,
                 workspace.path / "libraries" / "worktree" / "src",
-                workspace.path / "libraries" / "cli-extended" / "src",
             ]
             source_paths = [str(path) for path in source_roots if path.is_dir()]
             inherited = env.get("PYTHONPATH", "")
             if inherited:
                 source_paths.extend(inherited.split(os.pathsep))
             env["PYTHONPATH"] = os.pathsep.join(source_paths)
-    launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
+    launcher = [
+        internal_launcher(workspace.repo_root) or shutil.which("cmru") or "cmru"
+    ]
     command = [*launcher, verb, *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

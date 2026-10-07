@@ -380,8 +380,17 @@ def build_wheel(config: BundleConfig) -> None:
         return
     log_info("Building client wheel")
     config.client_dir.mkdir(parents=True, exist_ok=True)
-    command = [config.wheel_python_bin, "-m", "pip", "wheel", ".", "-w", str(config.client_dir)]
+    command = [config.wheel_python_bin, "-m", "pip", "wheel", "."]
     if config.wheel_find_links is not None:
+        command.append("--no-index")
+    command.extend(["-w", str(config.client_dir)])
+    if config.wheel_find_links is not None:
+        # ``pip wheel .`` also collects the project's DEPENDENCY wheels into
+        # client_dir (that is the bundle's purpose), so ``--no-deps`` would
+        # change the artifact. When a local wheelhouse is declared it is the
+        # ONLY source (``--no-index``): a PyPI-default pip must never resolve an
+        # estate-internal name from a public index (dependency confusion, BG-05).
+        # The wheelhouse must therefore also hold the build requirements.
         command.extend(["--find-links", str(config.wheel_find_links)])
     subprocess.run(command, check=True, cwd=str(config.wheel_project_root))
 

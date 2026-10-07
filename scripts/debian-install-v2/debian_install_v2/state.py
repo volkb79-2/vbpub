@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
+from .notify import NotifyConfigError, effective_backend
 
 
 class StateError(RuntimeError):
@@ -45,7 +46,7 @@ class StateStore:
             "run_id": os.urandom(8).hex(),
             "phase": "stage1",
             "status": "running",
-            "config": {key: value for key, value in asdict(config).items() if not key.startswith("telegram_bot_token")},
+            "config": StateStore._persistable_config(asdict(config)),
             "steps": {},
             "telegram_thread_id": "",
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -67,10 +68,29 @@ class StateStore:
         return state
 
     @staticmethod
+    def _persistable_config(config: dict[str, Any]) -> dict[str, Any]:
+        """Config minus secrets; an inferred notify_backend is pinned explicitly so
+        the credential-stripped stage-two config resolves to the same backend."""
+        kept = {
+            key: value for key, value in config.items()
+            if not key.startswith("telegram_bot_token") and key != "mattermost_webhook_url"
+        }
+        has_telegram = bool(config.get("telegram_bot_token") and config.get("telegram_chat_id"))
+        has_mattermost = bool(config.get("mattermost_webhook_url"))
+        if not kept.get("notify_backend") and (has_telegram or has_mattermost):
+            try:
+                kept["notify_backend"] = effective_backend(
+                    "", has_telegram=has_telegram, has_mattermost=has_mattermost
+                )
+            except NotifyConfigError:
+                pass
+        return kept
+
+    @staticmethod
     def _without_secrets(state: dict[str, Any]) -> dict[str, Any]:
         config = state.get("config")
         if isinstance(config, dict):
-            state["config"] = {key: value for key, value in config.items() if not key.startswith("telegram_bot_token")}
+            state["config"] = StateStore._persistable_config(config)
         return state
 
     def save_new(self, state: dict[str, Any]) -> None:

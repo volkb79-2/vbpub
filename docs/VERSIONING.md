@@ -36,7 +36,7 @@ change bumps ciu's MAJOR. ciu is seeded at `v2.0.0` to match SPEC `2.0.0`.
 ```bash
 # Release directly from the ordinary checkout. cmru snapshots origin/main into
 # an isolated worktree, gates it, then tags/builds/publishes there.
-./cmru.release.sh --project ciu
+cmru release ciu
 ```
 
 The orchestrator (cmru `resolve_versions_from_git`) detects the isolated release HEAD is exactly on

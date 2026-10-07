@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .shellcmd import DEFAULT_EFFECT_PATTERNS
+
 
 @dataclass
 class ExtractConfig:
@@ -195,6 +197,53 @@ class ExtractConfig:
     show_tool_calls: bool = False
     show_tool_call_intent: bool = False
 
+    # `--tool-calls` (2026-10-06, operator decision): how a Claude Code tool
+    # call is rendered. Tool RESULTS are never rendered here (failures are
+    # `tool_errors` below).
+    #   "none"            -- no tool-call events (default; today's output).
+    #   "intent"          -- the call's own description/intent field only;
+    #                        a call without one yields no event.
+    #   "intent-or-call"  -- intent when present, else the call itself.
+    #   "call"            -- the call itself, one truncated line.
+    # The legacy show_tool_calls / show_tool_call_intent pair above keeps its
+    # exact prior output ("label" / "label-intent" in `tool_call_mode`) and is
+    # honoured only while this is "none".
+    tool_calls: str = "none"
+
+    # `--tool-errors`: a FAILED tool result (is_error, non-zero "Exit code N",
+    # interrupted) is rendered truncated, independent of `tool_calls`.
+    # "show" (default) or "hide". The harness's synthetic stop/denial result
+    # is a STOP marker, not an error, and is shown either way.
+    tool_errors: str = "show"
+
+    # Compression OPTIONS (operator follow-up 2026-10-06, no hard-coded cuts).
+    # All default to "off"/"as before" for a plain extract; `--successor-brief`
+    # turns them on (cli.py). The cleanups run BEFORE any truncation.
+    #   strip_cd_prefix -- drop a leading `cd X &&` / `cd X;` from a rendered call.
+    #   path_aliases    -- RESOLVED (name, path) pairs; a path under one renders
+    #                      as `$NAME` (cli.py resolves `--path-aliases auto`).
+    #   edit_calls      -- show | collapse (one line per consecutive same-file
+    #                      run: "edited F x N") | omit.
+    #   read_calls      -- show | collapse (read-only tools and read-only Bash
+    #                      runs -> "oriented: N reads").
+    #   effect_calls    -- "mode" (rendered like any call) | "always" (an
+    #                      outside-effect Bash command prints the call even in
+    #                      `intent` mode; needs --tool-calls != none).
+    #   timestamps      -- all (per show_timestamps) | gaps (only on the first
+    #                      event, boundaries, and after a gap of
+    #                      timestamp_gap_minutes or more) | none.
+    strip_cd_prefix: bool = False
+    path_aliases: tuple[tuple[str, str], ...] = ()
+    edit_calls: str = "show"
+    read_calls: str = "show"
+    effect_calls: str = "mode"
+    timestamps: str = "all"
+    timestamp_gap_minutes: int = 5
+    # The external-effect patterns (shellcmd.py) used to classify Bash calls
+    # for effect_calls; cli.py keeps these and the ledger's in step.
+    effect_patterns: tuple[str, ...] = DEFAULT_EFFECT_PATTERNS
+    effect_scp_uploads: bool = True
+
     # Text-only timestamps. The source event timestamp is used; empty source
     # timestamps stay absent rather than being invented.
     show_timestamps: str = "pre"
@@ -266,7 +315,32 @@ class ExtractConfig:
     # that motivated this.
     redact_patterns: tuple[str, ...] = ()
 
+    @property
+    def tool_call_mode(self) -> str:
+        """The effective tool-call rendering mode: `tool_calls` when set,
+        else the legacy flag pair mapped onto "label"/"label-intent", else
+        "none"."""
+        if self.tool_calls != "none":
+            return self.tool_calls
+        if self.show_tool_calls:
+            return "label-intent" if self.show_tool_call_intent else "label"
+        return "none"
+
     def __post_init__(self) -> None:
+        if self.tool_calls not in {"none", "intent", "intent-or-call", "call"}:
+            raise ValueError("tool_calls must be none, intent, intent-or-call, or call")
+        if self.tool_errors not in {"show", "hide"}:
+            raise ValueError("tool_errors must be show or hide")
+        if self.edit_calls not in {"show", "collapse", "omit"}:
+            raise ValueError("edit_calls must be show, collapse, or omit")
+        if self.read_calls not in {"show", "collapse"}:
+            raise ValueError("read_calls must be show or collapse")
+        if self.effect_calls not in {"always", "mode"}:
+            raise ValueError("effect_calls must be always or mode")
+        if self.timestamps not in {"all", "gaps", "none"}:
+            raise ValueError("timestamps must be all, gaps, or none")
+        if self.timestamp_gap_minutes < 0:
+            raise ValueError("timestamp_gap_minutes must be non-negative")
         if self.max_lifecycle_markers is not None:
             self.max_compactions = self.max_lifecycle_markers
         for name in ("max_checkpoints", "max_words", "max_compactions", "max_time_minutes"):

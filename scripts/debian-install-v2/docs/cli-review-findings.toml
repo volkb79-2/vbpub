@@ -1,0 +1,97 @@
+schema_version = 1
+cli_id = "debian-install-v2"
+
+# Review of 2026-10-05 (surface pack + cli-extended-review rubric, W9b).
+
+[[findings]]
+id = "F-001"
+status = "fixed"
+severity = "major"
+category = "semantics"
+route = "route:entrypoint:debian-install-v2/disable-stage2"
+summary = "disable-stage2 --dry-run printed 'Stage-two service disabled and completion marker recorded.' although nothing was executed"
+remedy = "In a dry run print the planned actions as JSON, like install and resume, and never claim the unit was disabled"
+# Fixed in bootstrap._disable_stage2; linked test:
+# test_cli_review_cases.py::test_dry_run_prints_the_planned_actions_and_asks_nothing[disable-stage2]
+
+[[findings]]
+id = "F-002"
+status = "fixed"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:debian-install-v2/install"
+summary = "the install description restated the verb name and did not say what stage one does"
+remedy = "Describe stage one: partition and configure the host, then schedule the reboot that starts stage two (the one-line catalog summary stays short)"
+
+[[findings]]
+id = "F-003"
+status = "fixed"
+severity = "minor"
+category = "help"
+route = "route:entrypoint:debian-install-v2/resume"
+summary = "resume and status showed no example of their preview/machine-readable forms"
+remedy = "Add 'resume --dry-run' and 'status --config install.json --json' to the examples"
+
+[[findings]]
+id = "F-004"
+status = "open"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:debian-install-v2/verify"
+summary = "verify is a read verb with no --json: scripts can only read its exit status and log lines"
+remedy = "Make Installer.verify return per-check results, set include_json=True on the verb and emit the results with runtime.output.primary"
+
+[[findings]]
+id = "F-005"
+status = "fixed"
+severity = "minor"
+category = "grammar"
+route = "route:entrypoint:debian-install-v2/build-customscript"
+summary = "Requires(--repo-url, --bootstrap-url) also refused the canonical repository URL given explicitly without --bootstrap-url"
+remedy = "Reverted to the previous behaviour: --repo-url defaults to the canonical URL again, the constraint is removed, and customscript.resolve_bootstrap_url enforces 'a custom repository needs --bootstrap-url'. A constraint on a defaulted option is tracked as cli-extended CLI-EXT-20."
+# Linked test: test_cli_review_cases.py::test_explicit_canonical_repo_url_needs_no_bootstrap_url
+
+[[findings]]
+id = "F-006"
+status = "wontfix"
+severity = "note"
+category = "consistency"
+route = "route:entrypoint:debian-install-v2/resume"
+summary = "resume takes its state directory from the environment variable VBPUB_STATE_DIR, not from an option"
+remedy = "Add a --state-dir option if the stage-two unit's environment contract is ever replaced"
+rationale = "The generated systemd unit already exports VBPUB_STATE_DIR and invokes 'resume --yes'; resume refuses a missing or relative value with exit 2 and a message naming the variable."
+
+[[findings]]
+id = "F-007"
+status = "open"
+severity = "note"
+category = "help"
+route = "route:entrypoint:debian-install-v2/install"
+summary = "the library-owned --dry-run help ('show what would change without changing anything') cannot say that install, resume and disable-stage2 print the planned actions as JSON"
+remedy = "Upstream (cli-extended): let VerbSpec carry a per-verb dry-run help sentence; until then the verb descriptions and CLI-SPEC.md carry it"
+
+[[findings]]
+id = "F-008"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-19: no packaged skills registered"
+remedy = "Package skills and call register_skills_verbs if an agent workflow ever drives this installer"
+rationale = "The installer is run by operators and by cloud-init/systemd, with its own README and CLI-SPEC.md; no agent-facing procedure exists to package."
+
+[[findings]]
+id = "F-009"
+status = "wontfix"
+severity = "note"
+category = "adoption"
+summary = "AC-20: no doctor verb"
+remedy = "Register a doctor verb if environment checks beyond plan and verify are needed (python, cli-extended wheel, Questionary, root)"
+rationale = "plan inspects the target host and verify runs the live health gates; bootstrap-remote.py and the entrypoint already refuse with exact messages when python, root or the library are missing. A doctor verb would duplicate both."
+
+[[findings]]
+id = "F-010"
+status = "open"
+severity = "minor"
+category = "adoption"
+summary = "AC-24: the standalone script declares no cli-extended floor; an installed library older than the features it uses (resolve, VerbSpec dry_run, constraints) fails at import or build time with an unrelated error"
+remedy = "Record the floor (cli-extended>=0.2.0, reason: identity resolve, dry_run verbs, constraints) in the repository-root requirements source and have the entrypoint check the installed or wheel metadata version and refuse with an actionable message"

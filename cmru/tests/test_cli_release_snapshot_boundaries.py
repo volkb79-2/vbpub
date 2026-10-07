@@ -19,6 +19,7 @@ def test_child_release_args_rebases_a_relative_config_from_the_git_root(tmp_path
         ["demo", "--resume", ".worktrees/candidate", "--config", "old.toml"],
         Path("cmru.orchestration.toml"), root,
         source_git_root=root, target_override="demo", original_target="demo",
+        forward_from=None,
     )
 
     assert args == ["demo", "--config", "cmru.orchestration.toml"]
@@ -79,7 +80,7 @@ def test_multi_family_dispatch_refuses_a_short_snapshot_handoff_write(monkeypatc
         cli._dispatch_independent_git_families(
             "release", [], tmp_path / "cmru.orchestration.toml", tmp_path,
             {"alpha": project_a, "beta": project_b}, ["alpha", "beta"],
-            original_target=None,
+            original_target=None, forward_from=None,
             origin_main_snapshots={root_a: "a" * 40, root_b: "b" * 40},
         )
     assert calls == [f"{root_a.resolve()}:{'a' * 40}".encode("utf-8")]

@@ -8,6 +8,7 @@ Convention: ``prefix`` in ReleaseHost methods is the full tag prefix
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -65,8 +66,18 @@ class GitHubReleaseHost(ReleaseHost):
             })
         return out
 
-    def resolve_latest(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Highest-semver release for prefix (e.g. "ciu-v"); returns {version,tag,asset,sha256,url} (S5)."""
+    def resolve_latest(
+        self, prefix: str, asset_suffix: str = "", variant: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Highest-semver release for prefix (e.g. "ciu-v"); returns {version,tag,asset,sha256,url} (S5).
+
+        ``asset_suffix`` (the project's installer ``asset_suffix``, e.g. ".tar.xz") selects the
+        primary asset by type instead of by API order; with several matches the choice is
+        deterministic: ``<tag>-<variant><suffix>`` when ``variant`` is given, else
+        ``<tag><suffix>``, else the first in sorted order. A checksum sidecar that exists but
+        cannot be fetched or parsed raises ``RuntimeError`` (never ``sha256=None``), and so
+        does a release WITHOUT a sidecar when ``asset_suffix`` is given (an installer project:
+        its get.py refuses a bundle without one)."""
         candidates = []
         for rel in self._gh.list_releases():
             tag = rel.get("tag_name", "")
@@ -79,24 +90,46 @@ class GitHubReleaseHost(ReleaseHost):
             return None
         version, tag, assets = max(candidates, key=lambda c: _semver_key(c[0]))
 
-        # Find the primary asset (not .sha256, not latest.json)
-        asset_name = next(
-            (n for n in assets if not n.endswith(".sha256") and n != "latest.json"),
-            None,
-        )
+        # The primary asset: with `asset_suffix` the one asset of that type (never a
+        # sidecar), else the first non-sidecar, non-latest.json asset in API order.
+        matching = [
+            n for n in assets
+            if n and not n.endswith(".sha256") and n != "latest.json"
+            and (not asset_suffix or n.endswith(asset_suffix))
+        ]
+        if asset_suffix and (len(matching) > 1 or variant):
+            wanted = f"{tag}-{variant}{asset_suffix}" if variant else f"{tag}{asset_suffix}"
+            if wanted in matching:
+                matching = [wanted]
+            else:
+                matching = [] if variant else sorted(matching)
+        asset_name = matching[0] if matching else None
         if not asset_name:
             return None
 
         sha256_url = assets.get(f"{asset_name}.sha256")
         sha256_val: Optional[str] = None
+        if not sha256_url and asset_suffix:
+            raise RuntimeError(
+                f"release {tag} has no {asset_name}.sha256 asset; an installer release "
+                "must publish its checksum sidecar")
         if sha256_url:
+            # A published sidecar that cannot be read, or does not hold a digest, is an
+            # error: the caller must never get an unverified "latest" silently (INS-18).
+            from urllib.request import urlopen
             try:
-                from urllib.request import urlopen
                 with urlopen(sha256_url, timeout=10) as resp:
                     line = resp.read().decode("utf-8").strip()
-                    sha256_val = line.split()[0] if line else None
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError(
+                    f"cannot read the checksum sidecar {asset_name}.sha256 of {tag}: {exc}"
+                ) from exc
+            first = line.split()[0].lower() if line else ""
+            if not re.fullmatch(r"[0-9a-f]{64}", first):
+                raise RuntimeError(
+                    f"checksum sidecar {asset_name}.sha256 of {tag} does not start with a "
+                    f"SHA-256 hex digest")
+            sha256_val = first
 
         return {
             "version": version,

@@ -13,7 +13,7 @@ def test_native_release_log_overwrites_then_appends_with_divider(tmp_path, monke
 
     assert cli._prepare_native_release_log(tmp_path, append=False) == log.resolve()
     assert log.read_text(encoding="utf-8") == ""
-    assert cli.os.environ["CMRU_RUN_LOG"] == str(log.resolve())
+    assert cli.os.environ["CMRU_INTERNAL_RUN_LOG"] == str(log.resolve())
     assert cli.os.environ["PYTHONUNBUFFERED"] == "1"
 
     cli._prepare_native_release_log(tmp_path, append=True)

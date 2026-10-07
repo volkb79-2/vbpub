@@ -87,8 +87,8 @@ IDs in `NETCUP_SCP_API_PROTECTED_SERVER_IDS` so a later server rename cannot
 silently remove protection. The `.env` writer enforces mode `0600`.
 
 The guarded server mutations are ISO attach/detach, rescue deactivation,
-snapshot creation, task cancellation, firewall assignment, power operations,
-and Debian image installation. Read-only queries, snapshot `dryrun`,
+snapshot creation and deletion, task cancellation, firewall assignment, power
+operations, and Debian image installation. Read-only queries, snapshot `dryrun`,
 and installer `--dry-run` remain available. Account-level user-ISO upload and
 firewall-policy create/PUT are not server-targeted; applying a policy with
 `firewall SERVER set` is guarded. Task cancellation needs
@@ -150,6 +150,20 @@ customScript owns any remote key cleanup. If its JSON bundle declares a
 `completionMarker`, the Netcup monitor can safely wait for that marker before
 applying `--local-controller-key remove`; without one, the local key is kept.
 
+Host/local policy (2x2): host `remove` + local `retain` (default), host `remove`
++ local `remove`, and host `retain` + local `retain` are valid. Host `retain` +
+local `remove` is **rejected** (exit 2, before authentication): it would leave a
+key on the host whose private half was deleted. Host retention is the
+producer's setting (`retain_controller_ssh_key` / `RETAIN_CONTROLLER_SSH_KEY`
+in debian-install-v2); install-host detects it from the submitted customScript
+-- either `RETAIN_CONTROLLER_SSH_KEY=yes|no` or `"retain_controller_ssh_key"`
+inside the embedded `VBPUB_CONFIG_EXTRA_JSON` bundle (the bundle value wins,
+as in the bootstrap). When the host retains, an unset local choice defaults to
+`retain`. Limitation: a customScript that is not shell-splittable or sets the
+policy any other way is "not declared"; nothing is guessed, and the dry-run
+summary then prints `not declared by the customScript` -- pass
+`--local-controller-key` deliberately. The dry-run summary shows both settings.
+
 If the dry-run looks correct, the file-driven install can be made
 non-interactive:
 
@@ -182,7 +196,7 @@ spelling remains an alias for `--config FILE`.
 ### Notifications
 
 The installer supports one selected notification backend: `telegram`,
-`mattermost`, or `none`. Telegram remains the compatibility default. For the
+`mattermost`, or `none`. There is no backend unless a credential or `notify_backend` is configured (then notifications are off); when `notify_backend` is unset it is inferred from the one credential present (both present is a config error). The Debian wizard offers Mattermost first. `notify_host_label` is validated (`[A-Za-z0-9 ._:/-]`, max 64) and rejected otherwise. For the
 public Mattermost deployment described by
 [`nyxloom/mattermost/CONSUMER.md`](../../nyxloom/mattermost/CONSUMER.md), use
 the producer's incoming-webhook secret in the local `.env`. The externally
@@ -335,7 +349,12 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py iso-attached 799611 detach
 ./scp-api.py attach-iso 799611 --iso-id 1234
 ./scp-api.py rescuesystem 799611 deactivate
+./scp-api.py snapshots 799611 dryrun
 ./scp-api.py snapshots 799611 create --name before-upgrade
+./scp-api.py snapshots 799611 delete before-upgrade --dry-run   # shows the target, deletes nothing
+./scp-api.py snapshots 799611 delete before-upgrade
+./scp-api.py boot-order 799611
+./scp-api.py boot-order 799611 set HDD,CDROM,NETWORK
 ./scp-api.py tasks --state RUNNING --server-id 799611
 ./scp-api.py metrics 799611 cpu --hours 24
 ./scp-api.py guest-agent-status 799611
@@ -349,15 +368,76 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py power reset 799611
 ```
 
-`--filter` is case-insensitive and searches the returned fields, including an
-image flavour's name and alias or an ISO image's name, description, and
-architecture. Every `scp-api.py` verb supports `--help`; resource reads and
+`--filter` is case-insensitive and searches every displayed non-id column (the
+server name in the all-servers view, an ISO's architecture) plus a row's name,
+alias, text and description. It never matches an id column (`id`, `serverId`), so `--filter 13` finds "Debian 13" and not every
+row whose id happens to contain 13. Every `scp-api.py` verb supports `--help`; resource reads and
 API actions support `--json` for machine-readable output. No short `-h` alias
 is used, so the complete public spelling is visible in generated usage.
 
 `attach-iso` changes the server's attached media and requires either an ISO ID
-from `iso-bootable` or the name of an uploaded user ISO. `metrics` returns the
-raw timestamped SCP data for CPU, disk, or network lookback windows.
+from `iso-bootable` or the name of an uploaded user ISO. `metrics` prints a
+compact table (one row per series: min, avg, max, last over the window) and
+`--json` returns the raw timestamped SCP data. The API spec states no units;
+network is shown as B/s and network-packet as pkt/s (marked `*`, inferred from
+the samples against the server's monthly traffic counters), cpu and disk are
+shown as raw API numbers.
+
+`snapshots SERVER_ID dryrun` asks whether a snapshot is possible. The live API
+answers a JSON list: `[]` means possible and a non-empty list holds the blocking
+reasons; the CLI also accepts an object or an empty body, and `--json` prints the
+raw answer. Both `dryrun` and `create` need a disk (the API rejects a
+create without one with HTTP 422 "Disk name cannot be blank"): the server's only
+disk is used by default, `--disk-name NAME` selects one (required when the server
+has several disks), and `--online` requests an online snapshot, which needs no
+disk. `create` also takes `--description TEXT`. `snapshots SERVER_ID delete
+SNAPSHOT_NAME` removes a snapshot (`DELETE /servers/{id}/snapshots/{name}`; the
+API identifies a snapshot by its name, which `snapshots SERVER_ID` lists). It is
+irreversible, so it honours the protected-server denylist, is confirmed (`--yes`
+in a non-interactive run, else exit 2), and is refused with exit 2 when the name
+is not in the server's snapshot list. `--dry-run` looks the snapshot up and shows
+what would be deleted without sending the DELETE. The API answers a task; follow
+it with `./monitor-task.py watch TASK_UUID`. The server record's
+`snapshotCount` can be higher than the list `snapshots` shows (live: count 1,
+list `[]` on both test hosts); `GET /servers/{id}/snapshots` takes no paging
+parameters in the spec, so this is a provider-side discrepancy, not a client
+paging gap.
+
+`boot-order SERVER_ID` prints the boot order from the server's live record and
+`boot-order SERVER_ID set HDD,CDROM,NETWORK` replaces it (`PATCH
+/api/v1/servers/{id}`, `bootorder`; confirmed, subject to the protected-server
+denylist). `attach-iso --change-boot-device-to-cdrom` puts the CD-ROM first and
+the provider does NOT put the previous order back when the ISO is detached
+(live: HDD,CDROM,NETWORK became HDD,NETWORK,CDROM after attach and detach), so
+that option prints the previous order and the exact `boot-order ... set`
+command that restores it. The hint is a WARNING, so `--quiet` still shows it;
+with `--json` it is also the `restore_command` field of the result. It is only
+printed when every boot device name the API returned is HDD, CDROM or NETWORK.
+When `boot-order set` is answered with a task (HTTP 202) it prints "boot order
+change submitted (task UUID)" with a `monitor-task.py watch` hint, because the
+change is not applied yet; `--json` emits the task.
+`iso-attached SERVER_ID detach` refuses while the server has any PENDING,
+RUNNING or WAITING_FOR_CANCEL task (the provider answered HTTP 500 to a detach
+during a running attach); wait with `monitor-task.py watch TASK_UUID`. The check
+fails closed: if `GET /tasks` errors, detach is refused. `--ignore-active-tasks`
+skips the check (it prints a warning and the detach is still confirmed). The
+check is check-then-act: a task can start between the check and the DELETE, so
+it narrows the window but cannot close it.
+`snapshots ... --online` cannot be combined with `--disk-name` (exit 2; the
+provider error is `online.diskselected`), and the provider may refuse online
+snapshots on UEFI hosts (`online.uefi`). `snapshots SERVER_ID dryrun` renders the
+spec's HTTP 400 as "snapshot not possible; blocking reasons: ..." with exit 1
+(`--json` prints the raw reason list).
+`tasks --limit 0` makes no request and prints "limit 0: nothing requested".
+`monitor-task.py watch` never displays a progress percentage lower than one
+already shown (the provider's estimate is not monotonic); `--debug` notes the
+raw value.
+
+Usage errors raised by a verb (a missing argument, an invalid task UUID) print
+the one-line error and a hint, not the full help. Errors rejected by the shared
+parser (for example a non-integer server id) still print the full help, and
+every error is followed by the product banner line; both behaviours belong to
+the shared cli-extended library.
 `guest-agent-status` reports QEMU guest-agent availability; it is not an SSH
 or bootstrap health check. Firewall `get`/`set` operates on one interface MAC:
 if the server has exactly one interface, omit the MAC and the command resolves
@@ -482,6 +562,25 @@ policy. For Debian v2, use its `build-customscript` action and pass the JSON
 bundle to `wizard --custom-script-file`, or copy the bundle's `customScript`
 string into a reviewed `target-host.jsonc`. Netcup only validates the generic
 controller-key marker and submits the resulting opaque command.
+
+**Provider restart and `never_reboot` (LT-F-r1002-04).** Netcup's cloud-init
+ends the customScript run with `Post-Script finished / restarting... / Poweroff
+requested`, so the host is restarted after the script returns no matter what the
+script's own reboot settings say. For debian-install-v2 this means
+`never_reboot=true` cannot hold stage2 back on netcup: the enabled stage2 unit
+runs automatically on the provider's restart (observed about a minute into that
+boot) and the kernel installed by the stage1 upgrade is the one that boots.
+`never_reboot` only stops the installer from scheduling its OWN reboot. See the
+`never_reboot` section of `../debian-install-v2/README.md`.
+
+**Key recipe check.** A debian-install-v2 customScript that sets
+`retain_controller_ssh_key=true` but carries neither a `controller_ssh_pubkey` nor
+the `{{CONTROLLER_SSH_PUBKEY}}` marker could never install a key; `build-customscript`
+refuses to build it, and `install-host.py` refuses to send one that was built
+elsewhere. Build with `--controller-ssh-placeholder`. Also note
+`build-customscript` prints which branch and commit the host will fetch (default
+`main`) and warns when the local checkout is on another branch; pass
+`--repo-branch` to test unmerged code.
 
 If the bundle declares `completionMarker`, the wizard carries it into task
 monitoring. For a file-driven target, provide the same generic contract

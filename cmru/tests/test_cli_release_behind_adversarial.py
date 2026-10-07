@@ -72,7 +72,7 @@ def test_release_uses_fetched_origin_and_moved_config_path_when_local_main_is_be
     )
     exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.orchestration.toml"),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
         ])
     assert exc == 0
     assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
@@ -118,8 +118,8 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
     )
     exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
-            "--ref", "origin/main",
+            "--discard", "logs", "--discard", "artifacts",
+            "--ahead-check-ref", "origin/main",
         ])
     assert exc == 0
     assert seen_refs == ["origin/main"]
@@ -156,7 +156,7 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
     )
     exc = cli.main([
             "release", "demo", "--config", str(tmp_path / "cmru.toml"),
-            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--discard", "logs", "--discard", "artifacts",
         ])
     assert exc == 0
     assert seen_refs == ["main"]

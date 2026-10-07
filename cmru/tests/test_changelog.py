@@ -150,3 +150,97 @@ def test_backfill_catalogues_an_already_published_tag_without_moving_it(tmp_path
     assert "<!-- cmru: backfilled-after-release tag=demo-v0.1.0 -->" in history
     assert "feat(demo): first published feature" in history
     assert backfill_release_changelog(tmp_path, _project(), "demo-v0.1.0") is False
+
+
+def _init_demo(repo: Path, changelog: str = "# Changelog\n\n<!-- cmru: release history -->\n") -> None:
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@cmru.test")
+    _git(repo, "config", "user.name", "CMRU test")
+    _commit(repo, "chore: initialise demo", "demo/CHANGES.md", changelog)
+    _git(repo, "tag", "-a", "demo-v1.0.0", "-m", "Release demo-v1.0.0")
+
+
+def test_rel02_stale_generated_section_is_regenerated_in_place(tmp_path):
+    _init_demo(tmp_path)
+    _commit(tmp_path, "fix(demo): first fix", "demo/core.py", "A = 1\n")
+    project = _project()
+    assert generate_release_changelog(tmp_path, project) is True
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+    # Project commits land AFTER the generated section's source cursor.
+    _commit(tmp_path, "fix(demo): second fix after the section", "demo/core.py", "A = 2\n")
+
+    assert generate_release_changelog(tmp_path, project) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert history.count("## [1.0.1]") == 1
+    assert "first fix" in history
+    assert "second fix after the section" in history
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    assert f"<!-- cmru: source-end={head} -->" in history
+    assert history.count("<!-- cmru: release history -->") == 1
+
+
+def test_rel02_current_generated_section_stays_byte_identical_on_resume(tmp_path):
+    _init_demo(tmp_path)
+    _commit(tmp_path, "fix(demo): only fix", "demo/core.py", "A = 1\n")
+    project = _project()
+    assert generate_release_changelog(tmp_path, project) is True
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+    before = (tmp_path / "demo" / "CHANGES.md").read_bytes()
+
+    assert generate_release_changelog(tmp_path, project) is False
+
+    assert (tmp_path / "demo" / "CHANGES.md").read_bytes() == before
+
+
+def test_rel02_stale_section_keeps_older_sections_intact(tmp_path):
+    _init_demo(
+        tmp_path,
+        "# Changelog\n\n<!-- cmru: release history -->\n\n## [0.9.0] - 2020-01-01\n"
+        "<!-- cmru: generated -->\n<!-- cmru: source-end=" + "0" * 40 + " -->\n\n- old\n",
+    )
+    _commit(tmp_path, "fix(demo): one", "demo/core.py", "A = 1\n")
+    project = _project()
+    generate_release_changelog(tmp_path, project)
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+    _commit(tmp_path, "fix(demo): two", "demo/core.py", "A = 2\n")
+    generate_release_changelog(tmp_path, project)
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert "## [0.9.0] - 2020-01-01" in history
+    assert "- old\n" in history
+    assert history.index("## [1.0.1]") < history.index("## [0.9.0]")
+
+
+def test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section(tmp_path):
+    _init_demo(
+        tmp_path,
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n- hand-written entry\n\n"
+        "<!-- cmru: release history -->\n",
+    )
+    _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
+    before = (tmp_path / "demo" / "CHANGES.md").read_bytes()
+
+    try:
+        generate_release_changelog(tmp_path, _project())
+    except RuntimeError as exc:
+        assert "KI-30" in str(exc)
+        assert "[Unreleased]" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("a non-empty [Unreleased] must block a tagged release")
+    assert (tmp_path / "demo" / "CHANGES.md").read_bytes() == before
+
+
+def test_rel10_cleared_unreleased_section_with_a_comment_is_accepted(tmp_path):
+    _init_demo(
+        tmp_path,
+        "# Changelog\n\n## [Unreleased]\n\n<!-- cleared for 6.0.0; content regenerated -->\n\n"
+        "<!-- cmru: release history -->\n",
+    )
+    _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+    assert "## [1.0.1]" in (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")

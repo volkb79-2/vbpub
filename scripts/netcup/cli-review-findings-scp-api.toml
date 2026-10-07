@@ -41,12 +41,13 @@ rationale = "Compatibility with existing scripts; the swap is covered by replay 
 
 [[findings]]
 id = "SA-005"
-status = "open"
+status = "fixed"
 severity = "minor"
 category = "help"
 route = "route:entrypoint:scp-api/snapshots"
 summary = "snapshots dryrun and snapshots create print nothing when the API returns an empty body"
 remedy = "Print a one-line confirmation ('snapshot creation is possible' / 'snapshot requested') when the response body is empty, as the other mutating verbs do."
+rationale = "Fixed (LT-NC1): dryrun prints 'snapshot possible' for an empty list, object or body (the live API answers []), or the blocking reasons; create prints 'snapshot requested' for an empty body. Evidence: test_dryrun_empty_answer_means_snapshot_possible, test_dryrun_lists_blocking_reasons."
 
 [[findings]]
 id = "SA-006"

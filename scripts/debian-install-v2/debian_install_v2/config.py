@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import logging
 import os
 import re
 import tempfile
@@ -8,6 +10,16 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
+from .notify import NotifyConfigError, effective_backend, validate_host_label, validate_webhook_url
+
+_LOG = logging.getLogger("debian_install_v2.config")
+_WARNED_UNKNOWN_KEYS: set[str] = set()
+_WARNED_REMOVED_KEYS: set[str] = set()
+# Config keys that existed in an earlier revision and are now ignored (with one
+# warning) instead of rejected, so an old saved config or resume state loads.
+REMOVED_KEYS = {
+    "zswap_zpool": "the zswap zpool knob is absent on 7.x kernels; zsmalloc is the only backend",
+}
 SCHEMA_VERSION = 1
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -35,6 +47,9 @@ class ConfigError(ValueError):
 class Config:
     schema_version: int = SCHEMA_VERSION
     fresh_install: bool = True
+    # LEGACY (v1 wrote its logs here). v2 never creates or writes this directory
+    # (LT-F-v1001-08): install logs are the provider's custom_script.output*,
+    # stage2_output, and journald. Kept so saved configs and LOG_DIR still load.
     log_dir: str = "/var/log/debian-install"
     state_dir: str = "/var/lib/vbpub/bootstrap"
     stage2_output: str = "/root/custom_script.output2"
@@ -58,18 +73,20 @@ class Config:
     swap_discard: bool = True
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
-    zswap_zpool: Literal["z3fold", "zbud", "zsmalloc"] = "z3fold"
     zswap_pool_percent: int = 25
-    # 50, not the kernel's own default of 60 or gstammtisch's 100: anon pages
-    # stay the most precious tier even with zswap making reclaim cheap, so
-    # this host fleet favors a middle value over "swap early, zswap absorbs
-    # it" (100) or the stock default (60). oomd (run_oomd_config) is the
-    # safety net that makes ANY of these values safe to run unattended;
-    # 5-10 is the documented alternative for latency-sensitive workloads
-    # (databases etc.) that want almost no anon reclaim regardless of swap
-    # cost, and 100 remains documented for a memory-fungible/zswap-protected
-    # host in the gstammtisch mold. See debian_install_v2/README.md.
-    vm_swappiness: int = 50
+    # zswap's accept_threshold_percent (gstammtisch value 90), and the
+    # per-cgroup writeback shrinker (Y by default, operator decision
+    # 2026-10-06). There is no zpool field: the knob is absent on 7.x.
+    zswap_accept_threshold_percent: int = 90
+    zswap_shrinker_enabled: bool = True
+    # 100 (gstammtisch value, operator decision 2026-10-06): with zswap in
+    # front of swap, reclaiming anonymous pages is cheap, so cold anon goes
+    # to the compressed pool early and file cache stays resident. The kernel
+    # accepts 0-200. oomd (run_oomd_config) is the safety net that makes any
+    # of these values safe to run unattended; 5-10 remains the documented
+    # alternative for latency-sensitive workloads that want almost no anon
+    # reclaim. See debian_install_v2/README.md.
+    vm_swappiness: int = 100
     docker_live_restore: bool = True
     # journald, not json-file: container logs must survive `docker rm`
     # (operator requirement, 2026-09-09) -- json-file's log is deleted with
@@ -81,10 +98,31 @@ class Config:
     docker_log_max_size: str = "50m"
     docker_log_max_file: str = "3"
     docker_cleanup_max_age_hours: int = 240
+    # daemon.json "default-address-pools" (mdt MDT-002): the ranges Docker
+    # carves per-network subnets from. Each entry is {"base": CIDR, "size":
+    # int}. Empty list = Docker's built-in default (the key is omitted).
+    docker_default_address_pools: list = field(
+        default_factory=lambda: [{"base": "10.240.0.0/16", "size": 24}]
+    )
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
+    # LT-UPG: run unattended-upgrade once during stage1 (before the stage1
+    # reboot, so a new kernel boots then) instead of waiting for the first
+    # daily timer. Honors apt_auto_upgrade_mode; no effect when
+    # run_apt_auto_upgrade is false or the mode is notify-only (count only).
+    apt_upgrade_at_install: bool = True
     reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
+    # Notification backend: "mattermost" | "telegram" | "none"; empty means
+    # "infer from whichever credential is present" (both present and no explicit
+    # choice is a config error -- see validate_config()). The webhook URL is a
+    # SECRET (it is the only thing needed to post to the channel): repr=False,
+    # never logged, never persisted into state.json.
+    notify_backend: str = ""
+    mattermost_webhook_url: str = field(default="", repr=False)
+    # Free-text label shown first in every Mattermost message (e.g. "netcup-1");
+    # empty falls back to the hostname alone.
+    notify_host_label: str = ""
     telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
     # A one-line `authorized_keys` entry (type + base64 + comment) for the
@@ -96,6 +134,9 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
+    # Keep the temporary controller access line after successful stage2.
+    # Failure paths always retain it for diagnosis.
+    retain_controller_ssh_key: bool = False
     # Runs the kernel's own official iocost calibration tool
     # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
     # a throwaway partition carved from the same free space swap will use,
@@ -107,10 +148,12 @@ class Config:
     # Off by default: it's destructive-by-design against its target and
     # adds real time to every install. Persists rbps/rseqiops/rrandiops/
     # wbps/wseqiops/wrandiops (io.cost.model's own fields) to state_dir/
-    # io-benchmark.json; nothing yet enables io.cost itself from the
-    # result -- that's a separate, later decision. See
-    # debian_install_v2/README.md and the design note this same commit adds.
+    # io-benchmark.json. See debian_install_v2/README.md.
     run_io_benchmark: bool = False
+    # Configure io.cost for the ROOT disk from that persisted result (boot-time
+    # unit). Takes effect only when a valid result exists; with none, the unit
+    # is not installed and the notification says so (never a failure).
+    iocost_enabled: bool = True
     # Per sub-test duration in seconds (iocost_coef_gen.py's own --duration;
     # it runs 6 sub-tests, so wall-clock cost is roughly 6x this). Its own
     # upstream default is 120 (~12 minutes total) -- operator-set default
@@ -136,6 +179,49 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
 
 
+MAX_ADDRESS_POOLS = 16
+
+
+def validate_address_pools(pools: Any) -> None:
+    """Validate docker_default_address_pools (see Config)."""
+    name = "docker_default_address_pools"
+    if not isinstance(pools, list):
+        raise ConfigError(f"{name} must be a list of {{base, size}} objects")
+    if len(pools) > MAX_ADDRESS_POOLS:
+        raise ConfigError(f"{name} may hold at most {MAX_ADDRESS_POOLS} pools")
+    networks = []
+    for index, pool in enumerate(pools):
+        if not isinstance(pool, dict) or set(pool) != {"base", "size"}:
+            raise ConfigError(f"{name}[{index}] must be an object with exactly base and size")
+        base, size = pool["base"], pool["size"]
+        if not isinstance(base, str):
+            raise ConfigError(f"{name}[{index}].base must be a CIDR string")
+        try:
+            network = ipaddress.ip_network(base, strict=True)
+        except ValueError as exc:
+            raise ConfigError(f"{name}[{index}].base is not a valid network: {exc}") from None
+        if network.version == 6 and network.network_address.ipv4_mapped is not None:
+            raise ConfigError(f"{name}[{index}].base must not be an IPv4-mapped IPv6 network")
+        addr = network.network_address
+        if addr.is_unspecified or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+            raise ConfigError(
+                f"{name}[{index}].base must not be an unspecified, loopback, link-local or multicast range"
+            )
+        if not network.is_private:
+            raise ConfigError(f"{name}[{index}].base must be a private range (RFC 1918 / ULA); public ranges are not allowed")
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise ConfigError(f"{name}[{index}].size must be an integer")
+        upper = 30 if network.version == 4 else 128
+        if not network.prefixlen <= size <= upper:
+            raise ConfigError(
+                f"{name}[{index}].size must be from {network.prefixlen} (the base prefix) to {upper}"
+            )
+        for other_index, other in networks:
+            if other.version == network.version and network.overlaps(other):
+                raise ConfigError(f"{name}[{index}].base overlaps {name}[{other_index}].base")
+        networks.append((index, network))
+
+
 def validate_config(config: Config) -> None:
     """Validate a Config instance with the same rules used by JSON loading."""
     if config.schema_version != SCHEMA_VERSION:
@@ -148,7 +234,7 @@ def validate_config(config: Config) -> None:
             raise ConfigError(f"{name} must be a JSON boolean")
     integer_names = [
         "schema_version", "swap_disk_total_gb", "swap_file_count", "swap_priority",
-        "preserve_root_size_gb", "zswap_pool_percent", "vm_swappiness",
+        "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
         "docker_cleanup_max_age_hours", "io_benchmark_duration_s", "io_benchmark_max_size_gb",
     ]
     for name in integer_names:
@@ -158,6 +244,7 @@ def validate_config(config: Config) -> None:
     string_names = [
         "log_dir", "state_dir", "stage2_output",
         "telegram_bot_token", "telegram_chat_id",
+        "notify_backend", "mattermost_webhook_url", "notify_host_label",
         "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
         "reboot_window_time", "controller_ssh_pubkey",
     ]
@@ -170,8 +257,7 @@ def validate_config(config: Config) -> None:
         )
     if not isinstance(config.zswap_compressor, str) or config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
-    if not isinstance(config.zswap_zpool, str) or config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
-        raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
+    validate_address_pools(config.docker_default_address_pools)
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
     if not _DOCKER_LOG_MAX_SIZE_RE.fullmatch(config.docker_log_max_size):
@@ -198,8 +284,10 @@ def validate_config(config: Config) -> None:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:
         raise ConfigError("swap_priority must be from 0 to 32767")
-    if not 0 <= config.vm_swappiness <= 100:
-        raise ConfigError("vm_swappiness must be from 0 to 100")
+    if not 0 <= config.zswap_accept_threshold_percent <= 100:
+        raise ConfigError("zswap_accept_threshold_percent must be from 0 to 100")
+    if not 0 <= config.vm_swappiness <= 200:
+        raise ConfigError("vm_swappiness must be from 0 to 200")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
     if not 1 <= config.io_benchmark_duration_s <= 300:
@@ -212,10 +300,59 @@ def validate_config(config: Config) -> None:
         raise ConfigError("reboot_window_time must be 24h HH:MM (e.g. '03:00')")
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("telegram_bot_token and telegram_chat_id must be supplied together")
+    if config.mattermost_webhook_url:
+        try:
+            validate_webhook_url(config.mattermost_webhook_url)
+        except NotifyConfigError as exc:
+            raise ConfigError(str(exc)) from None
+    try:
+        validate_host_label(config.notify_host_label)
+    except NotifyConfigError as exc:
+        raise ConfigError(str(exc)) from None
+    try:
+        resolve_notify_backend(config)
+    except NotifyConfigError as exc:
+        raise ConfigError(str(exc)) from None
     if not isinstance(config.credential_mode, str) or config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):
         raise ConfigError("credential_mode=root-storage requires state_dir under /var/lib")
+
+
+def resolve_notify_backend(config: "Config") -> str:
+    """The backend actually used: explicit notify_backend, else inferred."""
+    return effective_backend(
+        config.notify_backend,
+        has_telegram=bool(config.telegram_bot_token and config.telegram_chat_id),
+        has_mattermost=bool(config.mattermost_webhook_url),
+    )
+
+
+def require_notify_credentials(config: "Config") -> None:
+    """Initial-install check: an explicit backend must carry its credentials.
+
+    Not part of validate_config(): the stage-two config is re-validated with
+    credentials deliberately stripped (they arrive via credential files).
+    """
+    backend = resolve_notify_backend(config)
+    if backend == "mattermost" and not config.mattermost_webhook_url:
+        raise ConfigError("notify_backend=mattermost requires mattermost_webhook_url")
+    if backend == "telegram" and not (config.telegram_bot_token and config.telegram_chat_id):
+        raise ConfigError("notify_backend=telegram requires telegram_bot_token and telegram_chat_id")
+
+
+def drop_removed_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop known-removed config keys, warning once per process per key.
+
+    An old saved config may still carry them; they are ignored, not an error
+    (unlike a genuinely unknown key, which operator-supplied config rejects).
+    """
+    removed = sorted(key for key in data if key in REMOVED_KEYS)
+    for key in removed:
+        if key not in _WARNED_REMOVED_KEYS:
+            _WARNED_REMOVED_KEYS.add(key)
+            _LOG.warning("ignoring removed configuration key %s: %s", key, REMOVED_KEYS[key])
+    return {key: value for key, value in data.items() if key not in REMOVED_KEYS}
 
 
 def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
@@ -230,6 +367,7 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a JSON object")
     _reject_obsolete({str(key).upper() for key in data})
+    data = drop_removed_keys(data)
     allowed = {item.name for item in fields(Config)}
     unknown = sorted(set(data) - allowed)
     if unknown:
@@ -237,6 +375,31 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
     config = Config(**data)
     validate_config(config)
     return config
+
+
+def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
+    """Config dict from persisted state.json, tolerant of unknown keys.
+
+    state.json may have been written by an older or newer field set; resuming
+    must not abort on that (forward/backward compatibility). Unknown keys are
+    dropped with ONE warning naming them (names only, never values). Credential
+    keys are always dropped: they arrive through credential files. Operator
+    supplied config still goes through the strict ``load_config``.
+    """
+    saved = drop_removed_keys(saved)
+    allowed = {item.name for item in fields(Config)}
+    secret = {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
+    unknown = sorted(str(key) for key in saved if key not in allowed)
+    # bootstrap._stage2_config and Installer.resume both filter the same state
+    # in one stage2 process: warn once per process for each distinct key name.
+    fresh = [key for key in unknown if key not in _WARNED_UNKNOWN_KEYS]
+    if fresh:
+        _WARNED_UNKNOWN_KEYS.update(fresh)
+        _LOG.warning(
+            "ignoring unknown key(s) in the saved state configuration: %s",
+            ", ".join(fresh),
+        )
+    return {key: value for key, value in saved.items() if key in allowed and key not in secret}
 
 
 def save_config(path: str, config: Config, *, overwrite: bool = False) -> None:

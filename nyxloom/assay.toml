@@ -139,17 +139,30 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_cli_extract.py",
   "tests/test_session_extract_follow.py",
   "tests/test_session_extract_locate.py",
+  "tests/test_session_extract_successor.py",
+  "tests/test_session_extract_compress.py",
+  "tests/test_session_extract_r2_survivors.py",
+  "tests/test_session_extract_harness.py",
+  "tests/test_session_extract_presets.py",
+  "tests/test_session_extract_gap_closure.py",
+  "tests/test_session_extract_real_corpus.py",
+  "tests/test_cli_extract_groups.py",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
   "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src:../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The final current-main diff has 43 eligible candidates, within the approved
-# 45-candidate cap. The source-backed plan estimates a 43m wall bound with two
-# mutation jobs and the declared 120s per-candidate failsafe; allow 2h for
-# baseline, scheduling, and verdict overhead.
-budget = "2h"
+# The current-main diff had 43 eligible candidates (cap 45); the SUCCESSOR
+# package (2026-10) adds toolresult/stopstate/successor and brought the plan to
+# 144 (`assay plan`, measured with a temporary cap of 3000: 54 claude_code.py,
+# 34 stopstate.py, 32 toolresult.py, 10 successor.py, 8 ledger.py, 5 render.py,
+# 1 config.py; a plan over the cap reports cap+1, so earlier 46/53/61/67 readings
+# were only "more than the cap"), so the cap is raised to 150 (see
+# [lanes.session-extract.judge.mutation]). The plan estimates 8640 s wall with two
+# mutation jobs at the 120s per-candidate failsafe (a worst-case bound); allow 3h
+# for baseline, scheduling, and verdict overhead.
+budget = "6h"  # 336 candidates x 120s / 2 jobs = 20160s worst case (5.6h); a bound, not a measurement
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -178,7 +191,12 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 2
-max_mutants = 45
+# Cap 350: the real plan at c4812cbc8 is 336 candidates (`assay plan --allow-dirty` with
+# a temporary cap of 3000: claude_code 89, shellcmd 47, toolresult 40, stopstate 37,
+# compress 28, presets 22, ledger 18, watch 17, render 16, successor 13, config 4,
+# harness 3, follow 2). The earlier "151" was the plan's cap+1 sentinel for "more than
+# the 150 cap", and a cap of 200 reported 201 (the same sentinel), so neither was a count.
+max_mutants = 350
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

@@ -111,7 +111,7 @@ directory at that path is reported as an error. See
 [the consumer example](../docs/CONSUMERS.md#optional-git-config-mount).
 
 > **Naming:** this bootstrap is `initialize_container_environment.py`. The name `get.py` is reserved for
-> the CMRU release *installer* (`cmru/templates/get.py.tmpl`) — a different, manually-run host-side tool.
+> the CMRU release *installer* (`cmru/src/cmru/templates/get.py.tmpl`) — a different, manually-run host-side tool.
 
 ## Named-volume variant
 The default uses host bind mounts (host-visible state). For host-path-free portability, swap the

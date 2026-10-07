@@ -9,11 +9,11 @@ def test_standards_update_reloads_when_revision_was_already_current(monkeypatch,
     project_root = tmp_path / "demo"
     project_root.mkdir()
     (project_root / "cmru.toml").write_text(
-        "[project]\ntemplate_revision = 4\n", encoding="utf-8"
+        f"[project]\ntemplate_revision = {standards.PROJECT_TEMPLATE_REVISION}\n", encoding="utf-8"
     )
     project = SimpleNamespace(
         project_root=project_root,
-        template_revision=4,
+        template_revision=standards.PROJECT_TEMPLATE_REVISION,
         changelog="CHANGES.md",
         steps={"run-tests": []},
         runner_steps={"run-tests": SimpleNamespace(quiet=True)},

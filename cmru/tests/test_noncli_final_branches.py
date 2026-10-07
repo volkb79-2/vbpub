@@ -48,19 +48,27 @@ def test_handlers_omit_optional_urls_when_the_release_has_none(tmp_path, monkeyp
 def test_tester_gate_cli_keeps_command_without_separator(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
     commands = []
+    events = []
     monkeypatch.setattr(
         tester_gate, "build_docker_command",
-        lambda *args, **kwargs: commands.append(args[2]) or ["true"],
+        lambda *args, **kwargs: commands.append(args[2]) or events.append(kwargs["events_file"]) or ["true"],
     )
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))
-    monkeypatch.setattr(
-        tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0),
-    )
+
+    def clean_run(*args, **kwargs):
+        # What the in-container wrapper leaves behind after a clean run.
+        (tmp_path / events[0]).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / events[0]).write_text("pids.events max 0\nmemory.events oom_kill 0\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", clean_run)
     parsed = SimpleNamespace(
-        cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe",
-        memory="1G", memory_swap="2G", cpus="1", device_read_iops="",
+        cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe@sha256:" + "e" * 64,
+        memory="1G", memory_swap="2G", cpus="1", pids_limit="64", device_read_iops="",
         device_write_iops="", device_read_bps="", device_write_bps="",
-        enable_docker=False, dind_image=None, command=["true"], dry_run=False,
+        enable_docker=False, dind_image=None, dind_memory=None, dind_cpus=None,
+        dind_pids_limit=None, command=["true"], dry_run=False,
+        forward_background_slice=None, forward_gates_slice=None,
     )
     with patch.object(tester_gate.argparse.ArgumentParser, "parse_args", return_value=parsed):
         raised = tester_gate.main([])
@@ -108,12 +116,25 @@ def test_retain_outputs_rolls_back_when_destination_setup_fails(tmp_path):
 
 def test_promote_fails_closed_on_a_non_fast_forward(tmp_path):
     workspace = SimpleNamespace(repo_root=tmp_path, path=tmp_path, branch="cmru/release/x")
-    responses = iter([SimpleNamespace(returncode=1, stderr="[rejected] non-fast-forward", stdout="")])
+    # The rejection is classified by fetching origin/main: when origin/main is
+    # already contained in the candidate the push failed for another reason and
+    # nothing is merged (REL-04 covers the real merge path with a real origin).
+    responses = iter([
+        SimpleNamespace(returncode=1, stderr="[rejected] non-fast-forward", stdout=""),
+        SimpleNamespace(returncode=0, stderr="", stdout=""),
+        SimpleNamespace(returncode=0, stderr="", stdout="o" * 40 + "\n"),
+        SimpleNamespace(returncode=0, stderr="", stdout=""),
+    ])
     commands = []
     with patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or next(responses)):
         with pytest.raises(RuntimeError, match="candidate was not promoted"):
             transaction.promote_workspace(workspace)
-    assert commands == [["git", "push", "origin", "HEAD:refs/heads/main"]]
+    assert commands == [
+        ["git", "push", "origin", "HEAD:refs/heads/main"],
+        ["git", "fetch", "--prune", "origin", "main"],
+        ["git", "rev-parse", "origin/main"],
+        ["git", "merge-base", "--is-ancestor", "o" * 40, "HEAD"],
+    ]
 
 
 def test_sync_local_main_creates_missing_local_main_from_origin(tmp_path):

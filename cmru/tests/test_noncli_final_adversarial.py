@@ -62,20 +62,3 @@ class TestDelegatedExternalSeams:
         assert d.minisign_verify(tmp_path / "a", public_key="p")
         monkeypatch.setattr(d.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stderr=b"bad"))
         assert not d.minisign_verify(tmp_path / "a", public_key="p")
-
-
-class TestProtocolAndStateBoundaries:
-    def test_observed_unknown_health_round_trip_is_data_not_execution(self):
-        from cmru.agent.protocol import ObservedState
-        obs = ObservedState(health="unexpected", message="literal")
-        restored = ObservedState.from_json(obs.to_json())
-        assert restored.health == "unexpected" and restored.message == "literal"
-
-    def test_state_generation_invalid_and_identity_malformed_are_safe(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        from cmru.agent import state
-        state.ensure_state_dir()
-        (state.state_dir() / "current_generation").write_text("1.2")
-        (state.state_dir() / "identity.json").write_text("{")
-        assert state.read_current_generation() is None
-        assert state.read_identity() is None

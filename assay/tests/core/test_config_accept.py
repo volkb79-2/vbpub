@@ -287,7 +287,7 @@ env = {}
 budget = "1m"
 allow_argv_append = false
 """
-    with pytest.raises(LaneConfigError, match="defaults.env_passthrough\[0\].*non-empty"):
+    with pytest.raises(LaneConfigError, match=r"defaults.env_passthrough\[0\].*non-empty"):
         load_lane_file(project.write(text))
 
 
@@ -305,7 +305,7 @@ env_passthrough = [""]
 budget = "1m"
 allow_argv_append = false
 """
-    with pytest.raises(LaneConfigError, match="env_passthrough\[0\].*non-empty"):
+    with pytest.raises(LaneConfigError, match=r"env_passthrough\[0\].*non-empty"):
         load_lane_file(project.write(text))
 
 

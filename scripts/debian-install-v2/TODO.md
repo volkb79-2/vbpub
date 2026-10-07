@@ -1,5 +1,24 @@
 # debian-install-v2 — TODO / backlog
 
+## OPEN (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
+
+Test Augeas as an alternative for in-place config edits (see
+[`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); current approach is
+drop-ins plus whole-file templates. Evaluated 2026-10-06 and NOT adopted: the
+only true in-place edit in v2 is the fstab swap filter, and the lens catalog has
+no deb822 lens. The evaluation's code sketches were never executed; proving
+them in a throwaway container with the packages is the first step of any trial.
+
+## IMPLEMENTED (LT-IOB, 2026-10-06; live validation pending): io.cost benchmark step
+
+`Installer._run_io_benchmark()` — see `IO-BENCHMARK-DESIGN.md` and
+`LT-IOB-REPORT.md`. Unit-tested against a simulated disk only; the first
+real run (netcup test host, controller-driven) is still to happen. Open:
+(a) writing `io.cost.model`/`io.cost.qos` and enabling io.cost from the
+result (deliberately separate, "Not yet"); (b) Case B (hook already wrote
+swap) only benchmarks if tail free space remains, which is rarely the case;
+(c) `HostActions.run` has no timeout, so a hung `fio` would hang stage 2.
+
 ## Feature request: a zswap fill-watermark governor
 
 There is no kernel-native way to keep the zswap compressed pool hovering
@@ -53,7 +72,9 @@ request filed earlier the same session._
 _2026-09-08: feasibility report + implementation plan now exist —
 [`zswap-shrinker-threshold-feasibility.md`](zswap-shrinker-threshold-feasibility.md)._
 
-## Feature request: adopt nyxloom's Mattermost notification pattern (not the package itself)
+## DONE (LT-PREP, 2026-10-06): adopt nyxloom's Mattermost notification pattern (not the package itself)
+
+Implemented as `debian_install_v2/notify.py` + `notify_backend` config; historical investigation below.
 
 Operator asked (2026-09-08, netcup live-test session) whether the scp-api/
 debian-install-v2 tooling could adopt nyxloom's Telegram/Mattermost

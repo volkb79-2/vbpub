@@ -80,11 +80,6 @@ class TestHandlerSafetyContracts:
         with pytest.raises(RuntimeError, match="no matching"):
             h._host_bind_source(Path("/unknown"))
 
-    def test_repack_rejection_precedes_any_external_prerequisite(self):
-        import cmru.handlers as h
-        with pytest.raises(SystemExit): h._reject_experimental_repack(True)
-        h._reject_experimental_repack(False)
-
     def test_wheel_publish_rejects_missing_extra_and_wheel_build_cleans_stale(self, monkeypatch, tmp_path):
         import argparse
         import cmru.handlers as h
@@ -108,10 +103,10 @@ class TestHandlerSafetyContracts:
         assert not list((tmp_path / "dist").glob("*.whl"))
         assert "--cgroup-parent" in seen[0]
 
-    def test_oci_build_repack_and_prerequisite_paths_are_observable(self, monkeypatch, tmp_path):
+    def test_oci_build_and_prerequisite_paths_are_observable(self, monkeypatch, tmp_path):
         import argparse
         import cmru.handlers as h
-        args = argparse.Namespace(cwd=str(tmp_path), bake_file="b.hcl", target="img", repack=False)
+        args = argparse.Namespace(cwd=str(tmp_path), bake_file="b.hcl", bake_target="img")
         monkeypatch.setattr(h.shutil, "which", lambda _: "/docker")
         monkeypatch.setattr(h.subprocess, "run", lambda *a, **k: None)
         for key, val in [("REGISTRY", "ghcr.io"), ("GITHUB_USERNAME", "u"), ("GITHUB_PUSH_PAT", "p")]: monkeypatch.setenv(key, val)

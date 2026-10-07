@@ -1,0 +1,2135 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config/option:route:entrypoint:debian-install-v2/build-customscript/--config-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config",
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "group_id": "configuration-source",
+        "options": [
+          "option:route:entrypoint:debian-install-v2/build-customscript/--config",
+          "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+        ]
+      },
+      "signature": "sha256:7073adc3495bc0790c401bf628477b7caeb9cade7b50c711af1f53e89d019714"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/build-customscript/--config"
+      },
+      "signature": "sha256:f0de54f425f3da39e60a9e75c040e9a86f3a86aca596fc429128e6c4033b76fa"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/build-customscript/--config-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+      },
+      "signature": "sha256:e97b729ba61631cb12a8e787a8ca970a4732a72cc28ccaa7a55a7095b39aaf01"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--repo-url",
+        "option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch",
+        "option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder",
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config",
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:debian-install-v2/build-customscript/--repo-url",
+          "option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch",
+          "option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "configuration-source": [
+            "option:route:entrypoint:debian-install-v2/build-customscript/--config",
+            "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:0fafbaaef9de83785f3c88eb76620b07c478bc84021ca1e9c9ccb2fea4518e38"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url/--bootstrap-url",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url",
+        "spelling": "--bootstrap-url"
+      },
+      "signature": "sha256:3a3962bbe82aeebb464e1e84a3ff9c044c8d75d5bab45a15e75ace017c28648c"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--config-json/--config-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--config-json",
+        "spelling": "--config-json"
+      },
+      "signature": "sha256:904ed0cd783761f2da48edb8f5f0a8dfe0f0c7a1677c966cfbdf5b906d7e205b"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:54d5e9fede78b8f4ef8970fa76453005222d6e53ab2168bf21fe0beaeb7d45d0"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder/--controller-ssh-placeholder",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder",
+        "spelling": "--controller-ssh-placeholder"
+      },
+      "signature": "sha256:f2006b12d480d740e32120f1625bfdf8c7904689324d847b9fc4f73eb9069847"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4e4a1ceaf008e95766e723701254f0fbe6d7489e57eea20c8c47ae47eec80f4c"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch/--repo-branch",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch",
+        "spelling": "--repo-branch"
+      },
+      "signature": "sha256:8d5fc07fa49e97c9c67c09c846060a1458a314089a57fd2761918cf49318b072"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-url/--repo-url",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--repo-url"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-url",
+        "spelling": "--repo-url"
+      },
+      "signature": "sha256:24195d6a5e2a91ea8861f45cf861e09f7ce0d248df072b68807003b26c09c667"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "group_id": "configuration-source",
+        "options": [
+          "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+          "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+        ]
+      },
+      "signature": "sha256:cd21604bf71318a3692054845cf6976a8b093370f362687a42198941b8d33e17"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/disable-stage2/--config"
+      },
+      "signature": "sha256:77f15b9e99b1a1bb37b1342057856fbc65725ca6740687df6cfe4e4131e09929"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+      },
+      "signature": "sha256:4257c9d42fde094de814cf277766d211a50841c7b45472548316f5f507153602"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "configuration-source": [
+            "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+            "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:e7a13de5dfc6e629062d660f84ae9b34e8eb25a8f2701998f886b51585690a2d"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--config-json/--config-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
+        "spelling": "--config-json"
+      },
+      "signature": "sha256:2ab285031ddd70d1c129396ea2209d0e3698a7c917610c16d0cde9e69177d6d7"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:836163ddc8c29c2161c896c403432672de41a532bcaa755d9c8e5ef35a2bff2d"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:0bd69735ba95ed97228a550f0b97ddb787518577f11991fd47b947d861c2dcc5"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--dry-run"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:8679473910a4ebc8ef6dc9cbc8d2d802074333bbdf6b0094a7f6d6e39dd51da4"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/disable-stage2/option-spelling/option:route:entrypoint:debian-install-v2/disable-stage2/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/disable-stage2/--yes"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/disable-stage2/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:64d387edc8041c7aec5ac569fdced8240748c998c3ae7e8784754d85efee49ff"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/install/--config/option:route:entrypoint:debian-install-v2/install/--config-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--config",
+        "option:route:entrypoint:debian-install-v2/install/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "group_id": "configuration-source",
+        "options": [
+          "option:route:entrypoint:debian-install-v2/install/--config",
+          "option:route:entrypoint:debian-install-v2/install/--config-json"
+        ]
+      },
+      "signature": "sha256:16f64ba1b4212c6b1932b5d73730e14fd8e84056df47aab594b600a0d954a7c4"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/install/--config",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/install/--config"
+      },
+      "signature": "sha256:6edd83f43bfba78bdeeec6cf5ce2d45d76e725cfa65dcc53e1fb65575b9a6fa4"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/install/--config-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/install/--config-json"
+      },
+      "signature": "sha256:aab22d915e96ed8b811f1b15d895e0f4ff76a5b3cbe006aaa6ced08c50e2f5de"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--config",
+        "option:route:entrypoint:debian-install-v2/install/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "configuration-source": [
+            "option:route:entrypoint:debian-install-v2/install/--config",
+            "option:route:entrypoint:debian-install-v2/install/--config-json"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:9d424328ca8fb469dfced46b7cfde385f8959fdf4d7e81f46aa1aa6e4e8c7f49"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--config-json/--config-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/install/--config-json",
+        "spelling": "--config-json"
+      },
+      "signature": "sha256:092af66219cfc7c10d26a236dad8b153736f1071188ef4dd4cfeaac826bcd3eb"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/install/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:f45c4da1bf4f24e0c17113bfab7f3449c20cf040d5ec1218994a1bba01230193"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:3d0960b77d524b1397fb1fbf9c4190ac2c62ad67df503352f3fc284c24a43355"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:b4477249a5d86e26d7045fb821675b6aeaf2040582ca6ebaac26cd852532a479"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/install/option-spelling/option:route:entrypoint:debian-install-v2/install/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/install/--yes"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/install/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:8ef6041df29c7393e751359a36a282b69e89b07c294d515e42cebf99c5fb922b"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config/option:route:entrypoint:debian-install-v2/plan/--config-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--config",
+        "option:route:entrypoint:debian-install-v2/plan/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "group_id": "configuration-source",
+        "options": [
+          "option:route:entrypoint:debian-install-v2/plan/--config",
+          "option:route:entrypoint:debian-install-v2/plan/--config-json"
+        ]
+      },
+      "signature": "sha256:60e0dde472f95805cdcd0dd6f6df9cde79e44140bcab2e70c01891ff75baa53c"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/plan/--config"
+      },
+      "signature": "sha256:7cb1e86115e8b04e6ddec9f6f4c37785f4dd60dca255e703bbbbdb97d44d598e"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/plan/--config-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/plan/--config-json"
+      },
+      "signature": "sha256:c2fe51e57950502e06f0cd845915c828c1cb3d1c9e66aa6e878f44c3f84d05e6"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--config",
+        "option:route:entrypoint:debian-install-v2/plan/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "configuration-source": [
+            "option:route:entrypoint:debian-install-v2/plan/--config",
+            "option:route:entrypoint:debian-install-v2/plan/--config-json"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:e5a6f7068861f5d47c0aca6e595bb450cff9d4b6034a4bbf90327934638483e3"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config-json/--config-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--config-json",
+        "spelling": "--config-json"
+      },
+      "signature": "sha256:72f3e0c877b2e3a433556b7e611ee744fcc82ce8d0c56d200697e8ece1efe11a"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:32ebc4e479032b8f1149e04ac6b54da4ae2d3886fcb1ee26b3e4689006609c41"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:5993f330c803249553cc6d0254b0cf9a2e90b4474927e66f85d28d35c1dcaeda"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:d7332c6a3664a0b8c75ffc7e20d5de5e4f92b14bf9a0b42ee78d28a36e8d577a"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/resume/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:debian-install-v2/resume",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:6508d0985667a5ee9e1cdace5d74d1a57b5c671bce6c7459d3dc45e9ce8b990a"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/resume/option-spelling/option:route:entrypoint:debian-install-v2/resume/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/resume/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/resume",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/resume/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:05aab13bf7c8b70489748f89c9431d6dd324961847f7465f70b270f28141e104"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/resume/option-spelling/option:route:entrypoint:debian-install-v2/resume/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/resume/--dry-run"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/resume",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/resume/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:3db5cb6856fb98c21d257a43dfc1549cf9d32c7bd30121b113f1b2e4be08e674"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/resume/option-spelling/option:route:entrypoint:debian-install-v2/resume/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/resume/--yes"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/resume",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/resume/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:c6771107d9f4e0f0d90bcbd68929c71b2c5204126d38d0a2f45c21a7a4c9aff1"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/status/--config/option:route:entrypoint:debian-install-v2/status/--config-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--config",
+        "option:route:entrypoint:debian-install-v2/status/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "group_id": "configuration-source",
+        "options": [
+          "option:route:entrypoint:debian-install-v2/status/--config",
+          "option:route:entrypoint:debian-install-v2/status/--config-json"
+        ]
+      },
+      "signature": "sha256:f695c3487934bac46c408cdb1503dd017c447d4ee8112467fef23f38c7db7bbe"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/status/--config",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/status/--config"
+      },
+      "signature": "sha256:d025bde96e01877a0caa1ef864211180823c65ac74c371f082b6de7fb6833ec5"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/status/--config-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/status/--config-json"
+      },
+      "signature": "sha256:662c1144b3b8b984f30ced0ce387d7758aa638806f015ec3d96e503c4f54e954"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--config",
+        "option:route:entrypoint:debian-install-v2/status/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "configuration-source": [
+            "option:route:entrypoint:debian-install-v2/status/--config",
+            "option:route:entrypoint:debian-install-v2/status/--config-json"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:4421c25bcd6d0fd64d3f41b0e70aebe27b240b9c2cddcea75332829a5b7aa95b"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--config-json/--config-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/status/--config-json",
+        "spelling": "--config-json"
+      },
+      "signature": "sha256:40ba7ad5433908624d9147e32cb786f89ff38f77f16f74f705e4c6dba9593475"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/status/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:002f7f549162eb19843bd823357cb68bd555bc2a6246f88956b7f81cf7455dbc"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:2b1a76f60b01027bee89c98768459e5d2a8b4f403bf417f1b74f2643c9e258ac"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/status/option-spelling/option:route:entrypoint:debian-install-v2/status/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/status/--json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/status/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:a688201a1f383e50272e857fac7b4734f46fe3ddc2cecef2910a2894c5ee3549"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/exclusive-conflict/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config/option:route:entrypoint:debian-install-v2/verify/--config-json",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--config",
+        "option:route:entrypoint:debian-install-v2/verify/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "group_id": "configuration-source",
+        "options": [
+          "option:route:entrypoint:debian-install-v2/verify/--config",
+          "option:route:entrypoint:debian-install-v2/verify/--config-json"
+        ]
+      },
+      "signature": "sha256:f2031d0c6ee411050ff7232fbd071c2694be0fec32a211c92e4903941431e004"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/verify/--config"
+      },
+      "signature": "sha256:63f49037dc6440fd209da0b0397c9bfd4cdb4ffef7bb6e4ef1b4a5a11954f5e5"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/exclusive-member/configuration-source/option:route:entrypoint:debian-install-v2/verify/--config-json",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "group_id": "configuration-source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:debian-install-v2/verify/--config-json"
+      },
+      "signature": "sha256:f90ac29eea8f9561c72a615647ddcbccea7acbbee9f5ec9a6e252bec06087bec"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--config",
+        "option:route:entrypoint:debian-install-v2/verify/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "configuration-source": [
+            "option:route:entrypoint:debian-install-v2/verify/--config",
+            "option:route:entrypoint:debian-install-v2/verify/--config-json"
+          ]
+        },
+        "required_options": []
+      },
+      "signature": "sha256:05936f3329a3cbe88a8e8579c3ad93dfef461bf9bc86e42944a8a78f1362e82b"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--config-json/--config-json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--config-json"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/verify/--config-json",
+        "spelling": "--config-json"
+      },
+      "signature": "sha256:3b220a2145970401a05dbfe4570b6ac41855e97e6607e08f7d31eea31b3d8e8f"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/verify/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:35a217c5a8e814ea9a6e9bc91119aadd7f30c5bf32fd23e2b98f8f060d931a20"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/verify/option-spelling/option:route:entrypoint:debian-install-v2/verify/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/verify/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/verify",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/verify/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:7a8d1d3be12b20dfde0e90dbd04240ee5e66389e5eed08f5d7fdeafafb1e95b8"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/wizard/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/wizard/--output"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/wizard",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:debian-install-v2/wizard/--output"
+        ]
+      },
+      "signature": "sha256:764edab5cc5290869509a19935c10d1108eaa781daeeff5732c8de444cdedbc8"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/wizard/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/wizard/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:d48812fd88e48836b127f6427259edbb1b521cbc8704a1405ac978476ce20f97"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--from-config/--from-config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/wizard/--from-config"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/wizard/--from-config",
+        "spelling": "--from-config"
+      },
+      "signature": "sha256:eca10b57d59cdf3ce15a46fbf16c68ffb8899efff227798c3848a6f79a94c262"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/wizard/--output"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/wizard/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:de7ffeadebe49095cb8042c789c9292ab01ad122221d8d841b3f7d75b5160348"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/wizard/option-spelling/option:route:entrypoint:debian-install-v2/wizard/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/wizard/--yes"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/wizard/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:3bde59a83a135cfc108f9b41b8b8a16394d0c56d55fda70684ce8500b47a0ba8"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "debian-install-v2",
+    "display_name": "DEBIAN-INSTALL-V2",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:debian-install-v2",
+    "long_name": "Debian host installer",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "debian-install-v2.py",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a validated JSON configuration file (preferred over inline JSON)",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
+          "dest": "config_json",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config-json"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--config-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--repo-url",
+          "choices": null,
+          "const": null,
+          "default": "https://github.com/volkb79-2/vbpub",
+          "default_present": true,
+          "description": "repository containing bootstrap-remote.py",
+          "dest": "repo_url",
+          "effective_default": "https://github.com/volkb79-2/vbpub",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--repo-url"
+          ],
+          "help_group": "BOOTSTRAP SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-url",
+          "kind": "option",
+          "metavar": "URL",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "https://github.com/volkb79-2/vbpub"
+          },
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--repo-branch",
+          "choices": null,
+          "const": null,
+          "default": "main",
+          "default_present": true,
+          "description": "branch fetched by bootstrap-remote.py",
+          "dest": "repo_branch",
+          "effective_default": "main",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--repo-branch"
+          ],
+          "help_group": "BOOTSTRAP SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-branch",
+          "kind": "option",
+          "metavar": "BRANCH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "main"
+          },
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--bootstrap-url",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "explicit bootstrap-remote.py URL (required for a custom repository)",
+          "dest": "bootstrap_url",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--bootstrap-url"
+          ],
+          "help_group": "BOOTSTRAP SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--bootstrap-url",
+          "kind": "option",
+          "metavar": "URL",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--controller-ssh-placeholder",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "emit {{CONTROLLER_SSH_PUBKEY}} for a provider to replace at install time",
+          "dest": "controller_ssh_placeholder",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--controller-ssh-placeholder"
+          ],
+          "help_group": "SSH KEY INTEGRATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--controller-ssh-placeholder",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "render validated settings and a provider-neutral cloud-init bootstrap command as JSON",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:debian-install-v2/build-customscript",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "build-customscript"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "build-customscript"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "render validated settings and a provider-neutral cloud-init bootstrap command as JSON",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a validated JSON configuration file (preferred over inline JSON)",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/disable-stage2/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "disable-stage2"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
+          "dest": "config_json",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config-json"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/disable-stage2/--config-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "disable-stage2"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "disable the automatic stage-two service and mark it complete",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:debian-install-v2/disable-stage2",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "disable-stage2"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "disable-stage2"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "disable the automatic stage-two service and mark it complete [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a validated JSON configuration file (preferred over inline JSON)",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/install/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
+          "dest": "config_json",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config-json"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/install/--config-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "run stage one of a fresh Debian host installation: partition and configure the host, then schedule the reboot that starts stage two",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:debian-install-v2/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "run stage one of a fresh Debian host installation [mutating; dry-run; potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a validated JSON configuration file (preferred over inline JSON)",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
+          "dest": "config_json",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config-json"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--config-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "read the target host and show its root-disk/swap plan without applying changes",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:debian-install-v2/plan",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "plan"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "plan"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "read the target host and show its root-disk/swap plan without applying changes",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "continue stage two after reboot from state under VBPUB_STATE_DIR (normally systemd-invoked)",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:debian-install-v2/resume",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "resume"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "resume"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "continue stage two after reboot from state under VBPUB_STATE_DIR (normally systemd-invoked) [mutating; dry-run; potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a validated JSON configuration file (preferred over inline JSON)",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/status/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
+          "dest": "config_json",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config-json"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/status/--config-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "show persisted installation status, recorded steps, and paths to recent logs",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:debian-install-v2/status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show installation status",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a validated JSON configuration file (preferred over inline JSON)",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/verify/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "verify"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config-json",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read a JSON object from this argument; avoid secrets because argv may be visible",
+          "dest": "config_json",
+          "effective_default": null,
+          "exclusive_group": "configuration-source",
+          "exclusive_required": true,
+          "flags": [
+            "--config-json"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/verify/--config-json",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "verify"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "run live checks for the saved disk transaction and post-install health gates; does not write state",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:debian-install-v2/verify",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "verify"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "verify"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "run live checks for the saved disk transaction and post-install health gates; does not write state",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "destination for the mode-0600 validated configuration",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/wizard/--output",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "validated configuration to use as the starting point",
+          "dest": "from_config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-config"
+          ],
+          "help_group": "CONFIGURATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/wizard/--from-config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "interactive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "guide an operator through install settings and securely write JSON; requires Questionary from wizard-requirements.txt",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:debian-install-v2/wizard",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "wizard"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "wizard"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "interactively create validated installation settings [mutating; interactive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

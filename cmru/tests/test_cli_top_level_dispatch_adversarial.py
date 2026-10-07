@@ -60,8 +60,8 @@ def test_run_cleanup_deletes_declared_ghcr_packages_and_dry_run_is_non_mutating(
     assert "Would delete GHCR packages: one" in capsys.readouterr().out
 
 
-def test_orchestrate_step_order_selection_and_unknown_order_refusal(monkeypatch, tmp_path):
-    project = cli.ProjectConfig(name="demo", env={}, steps={})
+def test_orchestrate_step_first_runs_each_step_over_the_selection(monkeypatch, tmp_path):
+    project = cli.ProjectConfig(name="demo", env={}, steps={}, runner_steps={"build": object()})
     config = (tmp_path, {"demo": project}, ["demo"], ["demo"], ["build"],
               "step-first", {"build": ["demo"]}, _cleanup(), _github(), _env())
     monkeypatch.setattr(cli, "load_config", lambda _: config)
@@ -70,12 +70,6 @@ def test_orchestrate_step_order_selection_and_unknown_order_refusal(monkeypatch,
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     ran = []
     monkeypatch.setattr(cli, "run_project_step", lambda project, step, root, log_dir: ran.append((project.name, step)))
-    monkeypatch.setattr(cli.sys, "argv", ["cmru", "--build"])
+    monkeypatch.setattr(cli.sys, "argv", ["cmru", "--step", "build"])
     cli._orchestrate()
     assert ran == [("demo", "build")]
-
-    bad = (tmp_path, {"demo": project}, ["demo"], ["demo"], ["build"],
-           "step-first", {"build": ["missing"]}, _cleanup(), _github(), _env())
-    monkeypatch.setattr(cli, "load_config", lambda _: bad)
-    with pytest.raises(ValueError, match="Unknown project in step_project_order"):
-        cli._orchestrate()

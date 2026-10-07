@@ -49,7 +49,7 @@ def test_run_keeps_configured_default_steps_and_dry_run_never_executes(monkeypat
     assert "resolve-env (not executed during dry-run)" in output
     assert "No project command was started" in output
 
-    assert cli.main(["run", "demo", "--validate", "--dry-run"]) == 0
+    assert cli.main(["run", "demo", "--step", "validate", "--dry-run"]) == 0
     output = capsys.readouterr().out
     assert "Run plan: validate; projects: demo" in output
     assert "demo:validate" in output
@@ -75,9 +75,12 @@ def test_version_overrides_are_exclusive_and_refused_for_untagged_projects(
 
 def test_tool_deps_refresh_rejects_output_and_freshness_flags(monkeypatch, capsys):
     assert cli.main(["tool-deps", "--refresh", "provider", "--json"]) == 2
-    assert "cannot be combined with --json" in capsys.readouterr().err
+    assert "--refresh and --json cannot be used together" in capsys.readouterr().err
     assert cli.main(["tool-deps", "--refresh", "provider", "--allow-stale-tool-deps"]) == 2
-    assert "cannot be combined with --json or --allow-stale-tool-deps" in capsys.readouterr().err
+    assert (
+        "--refresh and --allow-stale-tool-deps cannot be used together"
+        in capsys.readouterr().err
+    )
 
 
 def test_user_parser_rejects_transaction_switch_and_removed_aliases(capsys):
@@ -332,7 +335,7 @@ def test_transaction_child_rechecks_progress_for_validated_legacy_record(
             transaction.is_transaction_child(child)
 
 
-def test_repack_is_rejected_before_external_side_effects(monkeypatch, tmp_path, capsys):
+def test_repack_is_not_accepted_and_nothing_external_runs(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         "cmru.handlers.subprocess.run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Docker was called")),
@@ -343,6 +346,6 @@ def test_repack_is_rejected_before_external_side_effects(monkeypatch, tmp_path, 
     )
     assert cli.main([
         "handler", "oci-image-build", "--cwd", str(tmp_path),
-        "--bake-file", "docker-bake.hcl", "--target", "demo", "--repack",
+        "--bake-file", "docker-bake.hcl", "--bake-target", "demo", "--repack",
     ]) == 2
-    assert "disabled" in capsys.readouterr().err.lower()
+    assert "unrecognized arguments: --repack" in capsys.readouterr().err

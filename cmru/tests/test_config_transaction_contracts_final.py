@@ -162,7 +162,7 @@ def test_transaction_resume_validates_branch_and_refreshes_base(tmp_path):
 def test_transaction_release_lock_refuses_second_holder(tmp_path):
     root = repo(tmp_path)
     with transaction.release_lock(root):
-        with pytest.raises(RuntimeError, match="already running"):
+        with pytest.raises(transaction.ReleaseLockHeld, match="already running"):
             with transaction.release_lock(root):
                 pass
 

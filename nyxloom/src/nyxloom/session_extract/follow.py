@@ -878,7 +878,12 @@ class Follower:
         printed_any: bool = True,
         bell_out=None,
         source_metadata: dict[str, str] | None = None,
+        watch=None,
     ):
+        # `watch`: a watch.WatchFormatter (--prose-only). When set, only
+        # operator/assistant prose is written, formatted by it, with no
+        # separators or cursor comments.
+        self._watch = watch
         self._source = source
         self._harness = harness
         self._session_path = session_path
@@ -987,6 +992,12 @@ class Follower:
                 result = self._selector.feed(ev)
                 for emitted in result.emitted:
                     self._redact(emitted)
+                    if self._watch is not None:
+                        chunk = self._watch.format(emitted)
+                        if chunk is not None:
+                            self._out.write(chunk)
+                            printed += 1
+                        continue
                     self._write(render.render_event_block(
                         emitted, self._block_render,
                         self._config.show_timestamps, self._config.timestamp_format,

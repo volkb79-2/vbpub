@@ -21,6 +21,6 @@ CIU-93's design was refined by the operator and accepted for **both lines**: `ci
 ## Next session, in order
 1. Fold round 4 when it arrives (same method; rev 3.5 / draft.8; response §8; Appendix D §D.5).
 2. Carve checkpoint A for `vbpub/ciu8` (load the `carve` skill; briefs with acceptance oracles; V8-1's table-spec + S3.8.5/S3.8.6 conformance tests first, then V8-27, V8-14, V8-2 (state root + host file + cold move), V8-11 + V8-26 (lock matrix + lease), V8-13, V8-5; first dstdns stack as the tracer bullet).
-3. Carve the v7 enrollment backport (N23: ciu v7 `host enroll` + `ciu/get.py` via `cmru get-py --project ciu`; cmru KI-24 first, since the ciu carve's O2/O3/O6 need the template subcommand) — dstdns P171 is the consumer.
+3. Carve the v7 enrollment backport (N23: ciu v7 `host enroll` + `ciu/get.py` via `cmru get-py ciu`; cmru KI-24 first, since the ciu carve's O2/O3/O6 need the template subcommand) — dstdns P171 is the consumer.
 4. RG-39 / N22 as a run-gate v7 package; NL-6 as a nyxloom consumer edit.
 5. (added 2026-10-03) Fold the dstdns consumer input `CIU-V8-CONSUMER-INPUT-DSTDNS-2026-10.md`: CIU-116..119, the RG-67/RG-70 notes, RG-73..76. It contradicts S4.1.1 (identity), S16.6.1 (slice not visible from the devcontainer) and the demo's exec-mode `unit` lane, and it reopens §4.9.

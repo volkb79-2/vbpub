@@ -36,7 +36,7 @@ WIZARD_SECTIONS = (
         "install",
         "Install behavior and paths",
         (
-            WizardField("log_dir", "Installer log directory"),
+            WizardField("log_dir", "Legacy log directory (not written by v2; logs are custom_script.output*, stage2 output, journald)"),
             WizardField("state_dir", "Persistent installer state directory"),
             WizardField("stage2_output", "Stage-two output log"),
             WizardField("auto_reboot_after_stage1", "Reboot automatically after stage one?", "boolean"),
@@ -72,9 +72,10 @@ WIZARD_SECTIONS = (
             WizardField("swap_discard", "Enable discard on swap?", "boolean"),
             WizardField("preserve_root_size_gb", "Root filesystem space to preserve (GiB)", "integer"),
             WizardField("zswap_compressor", "zswap compressor", "choice", ("zstd", "lz4", "lzo-rle")),
-            WizardField("zswap_zpool", "zswap memory allocator", "choice", ("z3fold", "zbud", "zsmalloc")),
             WizardField("zswap_pool_percent", "Maximum zswap pool (% of RAM)", "integer"),
-            WizardField("vm_swappiness", "vm.swappiness (0–100)", "integer"),
+            WizardField("zswap_accept_threshold_percent", "zswap accept threshold (% of pool; 0–100)", "integer"),
+            WizardField("zswap_shrinker_enabled", "Enable the zswap writeback shrinker?", "boolean"),
+            WizardField("vm_swappiness", "vm.swappiness (0–200)", "integer"),
         ),
     ),
     WizardSection(
@@ -85,6 +86,11 @@ WIZARD_SECTIONS = (
             WizardField("docker_log_driver", "Docker log driver"),
             WizardField("docker_log_max_size", "Per-file limit for drivers that support it"),
             WizardField("docker_log_max_file", "Number of retained files for drivers that support it"),
+            WizardField(
+                "docker_default_address_pools",
+                "Docker default address pools as a JSON list of {base, size} (empty list = Docker built-in default)",
+                "json",
+            ),
             WizardField("docker_cleanup_max_age_hours", "Maximum age for unused images (hours)", "integer"),
         ),
     ),
@@ -93,13 +99,20 @@ WIZARD_SECTIONS = (
         "Updates and reboot window",
         (
             WizardField("apt_auto_upgrade_mode", "Automatic-upgrade mode", "choice", ("full", "security-only", "notify-only")),
+            WizardField("apt_upgrade_at_install", "Run one unattended upgrade during the install (before the stage1 reboot)?", "boolean"),
             WizardField("reboot_window_time", "Preferred reboot window (24-hour HH:MM)"),
         ),
     ),
     WizardSection(
         "notifications",
-        "Telegram notifications and credentials",
+        "Notifications (Mattermost / Telegram) and credentials",
         (
+            WizardField(
+                "notify_backend", "Notification backend (auto = infer from the credential given)",
+                "choice", ("auto", "mattermost", "telegram", "none"),
+            ),
+            WizardField("mattermost_webhook_url", "Mattermost incoming-webhook URL (blank = none)", "secret", secret=True),
+            WizardField("notify_host_label", "Host label shown first in each Mattermost message (blank = hostname only)"),
             WizardField("telegram_bot_token", "Telegram bot token (blank disables notifications)", "secret", secret=True),
             WizardField("telegram_chat_id", "Telegram chat ID (required with a bot token)"),
             WizardField("telegram_verbose_progress", "Send a notification for every internal step?", "boolean"),
@@ -114,6 +127,11 @@ WIZARD_SECTIONS = (
                 "controller_ssh_pubkey",
                 "One authorized_keys public-key line (blank disables temporary access)",
             ),
+            WizardField(
+                "retain_controller_ssh_key",
+                "Keep the controller key on the host after a successful install?",
+                "boolean",
+            ),
         ),
     ),
     WizardSection(
@@ -123,12 +141,13 @@ WIZARD_SECTIONS = (
             WizardField("run_io_benchmark", "Run the destructive temporary-partition benchmark?", "boolean"),
             WizardField("io_benchmark_duration_s", "Duration per benchmark phase (seconds)", "integer"),
             WizardField("io_benchmark_max_size_gb", "Maximum temporary benchmark partition (GiB)", "integer"),
+            WizardField("iocost_enabled", "Configure io.cost for the root disk when a benchmark result exists?", "boolean"),
         ),
     ),
 )
 
 _FIXED_FIELDS = {"schema_version", "fresh_install"}
-_SECRET_FIELDS = {"telegram_bot_token"}
+_SECRET_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
 _SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey"}
 _WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "wizard-requirements.txt"
 
@@ -167,18 +186,28 @@ def _ask_field(questionary: Any, field: WizardField, current: Any, runtime: Any)
                 kbi_msg=""
             )
         elif field.kind == "choice":
+            auto = field.name == "notify_backend"  # "auto" stands for the unset ("") value
             answer = questionary.select(
-                prompt, choices=list(field.choices), default=current
+                prompt, choices=list(field.choices), default=(current or "auto") if auto else current
             ).ask(kbi_msg="")
+            if auto and answer == "auto":
+                answer = ""
         elif field.kind == "secret":
             answer = questionary.password(prompt, default=str(current)).ask(
                 kbi_msg=""
             )
         else:
-            answer = questionary.text(prompt, default=str(current)).ask(kbi_msg="")
+            default = json.dumps(current) if field.kind == "json" else str(current)
+            answer = questionary.text(prompt, default=default).ask(kbi_msg="")
 
         if answer is None:
             raise KeyboardInterrupt
+        if field.kind == "json":
+            try:
+                return json.loads(answer)
+            except (TypeError, ValueError):
+                runtime.output.warn(f"{field.name} must be valid JSON; please try again")
+                continue
         if field.kind != "integer":
             return answer.strip() if isinstance(answer, str) else answer
         try:

@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import cli
-from cmru.controller import cli as controller_cli
 
 
 @pytest.mark.parametrize("raw, seconds", [("2h30m", 9000), ("1 week", 604800), ("10secs", 10)])
@@ -71,44 +70,11 @@ def test_http_and_json_loader_preserve_status_body_and_headers(monkeypatch):
     assert cli.load_json("https://api.example/x", "token")[0] == []
 
 
-def test_main_dispatches_read_only_version_help_and_rejects_unknown_controller(monkeypatch, capsys):
+def test_main_dispatches_read_only_version_and_help(monkeypatch, capsys):
     cli.main(["version"])
     assert "cmru " in capsys.readouterr().out
     cli.main(["--help"])
     assert "cmru" in capsys.readouterr().out
-    assert controller_cli.main(["unknown"]) == 2
-    assert "invalid choice" in capsys.readouterr().err
-
-
-def test_main_run_step_routes_exact_remaining_argv(monkeypatch):
-    from cmru.runner import runner_cli
-
-    parser = runner_cli().parser
-    args = parser.parse_args(["demo", "--step", "test"])
-    assert args.target == "demo"
-    assert args.step == "test"
-
-
-def test_controller_commands_return_contractual_statuses_without_network(tmp_path, monkeypatch, capsys):
-    missing = SimpleNamespace(plan=str(tmp_path / "missing.toml"), landscape=None)
-    assert controller_cli.cmd_publish(missing) == 2
-    assert "Plan file not found" in capsys.readouterr().err
-    assert controller_cli.cmd_approve(SimpleNamespace(plan=None, landscape="land")) == 2
-    assert controller_cli.cmd_hold(SimpleNamespace(plan=None, landscape="land")) == 2
-    monkeypatch.setattr(controller_cli, "_build_backend", lambda args: SimpleNamespace(
-        _get=lambda *a: (200, "not-json", {})))
-    assert controller_cli.cmd_status(SimpleNamespace(plan=None, landscape="land")) == 0
-    assert "Could not parse" in capsys.readouterr().out
-
-
-def test_controller_engine_errors_are_reported_as_failure(monkeypatch, capsys):
-    class Engine:
-        def approve(self, plan): raise RuntimeError("backend down")
-        def hold(self, plan): raise RuntimeError("backend down")
-    monkeypatch.setattr(controller_cli, "_build_engine", lambda args, landscape: Engine())
-    assert controller_cli.cmd_approve(SimpleNamespace(plan="p", landscape="l")) == 1
-    assert controller_cli.cmd_hold(SimpleNamespace(plan="p", landscape="l")) == 1
-    assert "backend down" in capsys.readouterr().err
 
 
 def test_worktree_dispatch_refuses_non_git_directory(monkeypatch):

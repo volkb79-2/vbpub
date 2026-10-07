@@ -191,18 +191,35 @@ def _show(args: Any, runtime: Any) -> int:
     return 0
 
 
+def _monotonic_percent(
+    raw: int | float | None, highest: float | None, runtime: Any
+) -> tuple[int | float | None, float | None]:
+    """Never display a value lower than one already shown.
+
+    The provider's estimate is not monotonic (RUNNING (100%) then 91%, 94%);
+    the display is clamped and the raw value is noted under --debug.
+    """
+    if raw is None:
+        return None, highest
+    if highest is not None and raw < highest:
+        runtime.output.debug(f"progress raw {raw:.2f}% is below the {highest:.0f}% already shown; display clamped")
+        return highest, highest
+    return raw, raw
+
+
 def _watch(args: Any, runtime: Any) -> int:
     interval = args.poll if args.poll is not None else _load_poll_interval()
     if not math.isfinite(interval) or interval <= 0:
         raise CliFailure(
             "--poll must be a finite number greater than zero",
             exit_code=2,
-            show_help=True,
+            hint="run ./monitor-task.py help watch",
         )
 
     client = _create_client(runtime)
     progress = runtime.progress()
     last_signature: tuple[str, str, int | float | None, str] | None = None
+    highest: float | None = None
     while True:
         task = _fetch_task(client, args.task_uuid)
         state, name, percent, message = _task_fields(task)
@@ -211,6 +228,7 @@ def _watch(args: Any, runtime: Any) -> int:
                 "Netcup returned a task object without a usable state; "
                 "stopping instead of polling indefinitely"
             )
+        percent, highest = _monotonic_percent(percent, highest, runtime)
         signature = (state, name, percent, message)
         if signature != last_signature:
             rendered = f"Task state: {state}"

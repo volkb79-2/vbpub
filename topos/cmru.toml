@@ -32,13 +32,13 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "topos: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "topos: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "topos: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES"], cwd = "." },
+  { label = "topos: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES"], cwd = "." },
 ]
 
 [versions]

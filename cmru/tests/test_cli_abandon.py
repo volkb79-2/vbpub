@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from cli_extended import CliFailure
-from cmru import cli, transaction
+from cmru import cli, exit_codes, transaction
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +87,7 @@ def _install_candidate_facts(monkeypatch, root, candidates):
 def _install_abandon_inspection(
     monkeypatch, root, candidate, *, scope=None, configs=None, snapshot=None,
     attempts=None, local_tags=None, remote_tags=None, heads=None, merge_codes=None,
+    real_git=False,
 ):
     _install_candidate_facts(monkeypatch, root, [candidate])
     if scope is not None:
@@ -116,6 +117,9 @@ def _install_abandon_inspection(
             stderr="",
         ),
     )
+    if real_git:
+        # Local ancestry questions go to the real repository at `root`.
+        return
     outcomes = dict(merge_codes or {})
     monkeypatch.setattr(
         cli, "run_local_git",
@@ -206,7 +210,7 @@ def test_abandon_withholds_unclassified_local_scope_tag(monkeypatch, tmp_path, c
         lambda *_args, **_kwargs: pytest.fail("unclassified tag candidate was abandoned"),
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     output = capsys.readouterr().out
     assert "local-only release tag(s)" in output
     assert "git tag -d TAG" in output
@@ -382,15 +386,11 @@ def test_abandon_refuses_incomplete_local_transaction_facts(
 @pytest.mark.parametrize(
     "branch, candidates, message",
     [
-        ("cmru-release-missing", [], "no exact managed CMRU release branch"),
-        (
-            "cmru-build-20260924_120000-alpha-ab12cd",
-            [_workspace(Path("/tmp"), "cmru-build-20260924_120000-alpha-ab12cd")],
-            "is not a release transaction branch",
-        ),
+        ("cmru-release-missing", [], "no exact managed CMRU build or release branch"),
+        ("/nowhere/at/all", [], "no exact managed CMRU build or release branch"),
     ],
 )
-def test_abandon_branch_selection_is_exact_and_release_only(
+def test_abandon_branch_selection_is_exact(
     monkeypatch, tmp_path, branch, candidates, message,
 ):
     candidates = [
@@ -398,10 +398,73 @@ def test_abandon_branch_selection_is_exact_and_release_only(
     ]
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: candidates)
+    # KI-35: an unmatched release branch name is also looked up on origin; it
+    # is absent there, so the exact-selection refusal still applies.
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded_config(tmp_path, {}))
+    monkeypatch.setattr(transaction, "inspect_remote_candidate", lambda *_a, **_k: None)
     from cli_extended import CliFailure
 
-    with pytest.raises(CliFailure, match=message):
+    with pytest.raises(CliFailure, match=message) as refusal:
         _invoke_abandon(None, branch=branch)
+    assert refusal.value.exit_code == 2
+
+
+def test_abandon_relative_path_is_refused_with_the_absolute_path_hint(monkeypatch, tmp_path):
+    build = _workspace(tmp_path, "cmru-build-20260924_120000-alpha-ab12cd")
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [build])
+    from cli_extended import CliFailure
+
+    relative = f".worktrees/{Path(build.path).name}"
+    with pytest.raises(CliFailure, match="pass the absolute path shown by `cmru worktrees`") as refusal:
+        _invoke_abandon(None, branch=relative)
+    assert refusal.value.exit_code == 2
+    # A bare unknown branch name (no path separator) gets no path hint.
+    with pytest.raises(CliFailure) as plain:
+        _invoke_abandon(None, branch="nope")
+    assert "absolute path" not in str(plain.value)
+
+
+@pytest.mark.parametrize("by", ["branch", "path"])
+def test_abandon_discards_a_retained_build_worktree_by_branch_or_path(
+    monkeypatch, tmp_path, capsys, by,
+):
+    """The former ``cleanup --discard-build-worktree`` (redesign B6)."""
+    build = _workspace(tmp_path, "cmru-build-20260924_120000-alpha-ab12cd")
+    release = _workspace(tmp_path, "cmru-release-20260924_120001-beta-bc23de")
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _root: [release, build])
+    calls = []
+
+    def discard(root, path, *, dry_run, expected_workspace=None):
+        calls.append((dry_run, expected_workspace))
+        return build
+
+    monkeypatch.setattr(transaction, "discard_build_workspace", discard)
+    selector = build.branch if by == "branch" else str(build.path)
+
+    # dry-run: previews, mutates nothing, never prompts
+    runtime = _Runtime()
+    assert _invoke_abandon(None, branch=selector, runtime=runtime) == 0
+    assert calls == [(True, None)] and runtime.confirmed == []
+    assert "Would discard retained build worktree" in capsys.readouterr().out
+
+    # declined confirmation: nothing is discarded
+    calls.clear()
+    assert _invoke_abandon(
+        None, branch=selector, dry_run=False, runtime=_Runtime(confirm=False),
+    ) == 0
+    assert calls == [(True, None)]
+
+    # --yes: discards exactly the previewed worktree, without prompting
+    calls.clear()
+    runtime = _Runtime()
+    assert _invoke_abandon(
+        None, branch=selector, dry_run=False, yes=True, runtime=runtime,
+    ) == 0
+    assert calls == [(True, None), (False, build)] and runtime.confirmed == []
+    assert "Discarded retained build worktree" in capsys.readouterr().out
 
 
 def test_abandon_no_candidates_and_inspection_failure_are_reported(monkeypatch, tmp_path, capsys):
@@ -430,7 +493,7 @@ def test_abandon_preview_exposes_blockers_and_returns_two_without_mutation(
     )
     monkeypatch.setattr(transaction, "abandon_workspace", lambda *_, **__: pytest.fail("blocked preview mutated"))
 
-    assert _invoke_abandon(candidate) == 2
+    assert _invoke_abandon(candidate) == exit_codes.REFUSED
     output = capsys.readouterr().out
     assert "Withheld:" in output
     assert "external publication state unknown for external" in output
@@ -553,31 +616,129 @@ def test_abandon_withholds_unrequested_origin_branch_refs(monkeypatch, tmp_path,
         },
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     output = capsys.readouterr().out
     assert "origin branch lookup returned unexpected ref(s)" in output
     assert "refs/heads/other" in output
 
 
-@pytest.mark.parametrize(
-    "tag_rc, expected",
-    [
-        (0, "no pre-attempt origin tag snapshot"),
-        (2, "could not inspect remote tag alpha-v9"),
-    ],
-)
-def test_abandon_legacy_snapshot_uses_conservative_tag_ancestry_check(
-    monkeypatch, tmp_path, capsys, tag_rc, expected,
-):
-    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
-    _install_abandon_inspection(
-        monkeypatch, tmp_path, candidate, snapshot=None,
-        remote_tags={"refs/tags/alpha-v9": "d" * 40},
-        merge_codes={"d" * 40: tag_rc},
+def _real_git(repo: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False,
     )
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip()
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
-    assert expected in capsys.readouterr().out
+
+def _legacy_candidate_repo(tmp_path: Path):
+    """A REAL repository: old release tag < base == candidate tip, plus a side commit."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _real_git(repo, "init", "-b", "main")
+    _real_git(repo, "config", "user.email", "test@cmru.test")
+    _real_git(repo, "config", "user.name", "CMRU test")
+    for index, name in enumerate(("first", "base")):
+        (repo / f"{name}.txt").write_text(name, encoding="utf-8")
+        _real_git(repo, "add", ".")
+        _real_git(repo, "commit", "-m", name)
+        if index == 0:
+            first = _real_git(repo, "rev-parse", "HEAD")
+    base = _real_git(repo, "rev-parse", "HEAD")
+    branch = "cmru-release-20260924_120000-alpha-ab12cd"
+    _real_git(repo, "branch", branch, base)
+    return repo, branch, first, base
+
+
+def _legacy_inspect(monkeypatch, repo, branch, base, tag_oid):
+    candidate = _workspace(repo, branch, base=base)
+    _install_abandon_inspection(
+        monkeypatch, repo, candidate, snapshot=None,
+        remote_tags={"refs/tags/alpha-v9": tag_oid},
+        heads={"refs/heads/main": base},
+        real_git=True,
+    )
+    return candidate
+
+
+def test_rel03_legacy_abandon_ignores_an_earlier_release_tag_below_the_base(
+    monkeypatch, tmp_path, capsys,
+):
+    # Every earlier release tag is reachable from the candidate; one that is a
+    # strict ancestor of the transaction base cannot have been pushed by it.
+    repo, branch, first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, first)
+
+    assert _invoke_abandon(candidate, branch=branch) == 0
+    assert "no pre-attempt origin tag snapshot" not in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_keeps_a_tag_exactly_at_the_base_suspicious(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, base)
+
+    assert _invoke_abandon(candidate, branch=branch) == exit_codes.REFUSED
+    assert "no pre-attempt origin tag snapshot" in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_refuses_a_tag_on_a_candidate_only_commit(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    _real_git(repo, "checkout", "-q", branch)
+    (repo / "candidate.txt").write_text("candidate", encoding="utf-8")
+    _real_git(repo, "add", ".")
+    _real_git(repo, "commit", "-m", "release inputs")
+    new_tip = _real_git(repo, "rev-parse", "HEAD")
+    _real_git(repo, "checkout", "-q", "main")
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, new_tip)
+
+    assert _invoke_abandon(candidate, branch=branch) == exit_codes.REFUSED
+    assert "no pre-attempt origin tag snapshot" in capsys.readouterr().out
+
+
+def test_abandon_legacy_snapshot_refuses_when_a_remote_tag_cannot_be_inspected(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, "d" * 40)
+
+    assert _invoke_abandon(candidate, branch=branch) == exit_codes.REFUSED
+    assert "could not inspect remote tag alpha-v9" in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_ignores_a_tag_that_is_not_on_the_candidate(
+    monkeypatch, tmp_path, capsys,
+):
+    # A tag on a commit the candidate cannot reach was not made by this transaction.
+    repo, branch, _first, base = _legacy_candidate_repo(tmp_path)
+    (repo / "side.txt").write_text("side", encoding="utf-8")
+    _real_git(repo, "add", ".")
+    _real_git(repo, "commit", "-m", "side commit on main")
+    side = _real_git(repo, "rev-parse", "HEAD")
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, side)
+
+    assert _invoke_abandon(candidate, branch=branch) == 0
+    assert "no pre-attempt origin tag snapshot" not in capsys.readouterr().out
+
+
+def test_rel03_legacy_abandon_refuses_when_the_base_ancestry_cannot_be_inspected(
+    monkeypatch, tmp_path, capsys,
+):
+    repo, branch, first, base = _legacy_candidate_repo(tmp_path)
+    candidate = _legacy_inspect(monkeypatch, repo, branch, base, first)
+    real = cli.run_local_git
+
+    def fake(path, *args, **kwargs):
+        if args[:3] == ("merge-base", "--is-ancestor", first) and args[-1] == base:
+            return subprocess.CompletedProcess(args, 128, "", "fatal")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_local_git", fake)
+
+    assert _invoke_abandon(candidate, branch=branch) == exit_codes.REFUSED
+    assert "could not inspect remote tag alpha-v9" in capsys.readouterr().out
 
 
 def test_abandon_refuses_selected_scope_tag_changes_since_snapshot(monkeypatch, tmp_path, capsys):
@@ -587,7 +748,7 @@ def test_abandon_refuses_selected_scope_tag_changes_since_snapshot(monkeypatch, 
         remote_tags={"refs/tags/alpha-v9": "d" * 40},
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert "selected-scope release tag refs that changed" in capsys.readouterr().out
 
 
@@ -603,7 +764,7 @@ def test_abandon_refuses_a_baseline_tag_that_disappeared_from_origin(
         local_tags={tag_ref: oid}, remote_tags={},
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     output = capsys.readouterr().out
     assert "selected-scope release tag refs that changed" in output
     assert "origin/refs/tags/alpha-v9" in output
@@ -616,7 +777,7 @@ def test_abandon_refuses_a_scope_without_a_git_tag_prefix(monkeypatch, tmp_path,
         configs={"alpha": SimpleNamespace(git_tag=False)},
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert "no usable Git tag prefix" in capsys.readouterr().out
 
 
@@ -632,7 +793,7 @@ def test_abandon_refuses_scope_with_a_project_that_can_publish_without_a_tag(
         },
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert "can publish without a Git tag" in capsys.readouterr().out
 
 
@@ -652,7 +813,7 @@ def test_abandon_refuses_promoted_or_unclassifiable_release_progress(
     )
     monkeypatch.setattr(transaction, "read_release_progress", lambda *_: progress)
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert expected in capsys.readouterr().out
 
 
@@ -671,7 +832,7 @@ def test_abandon_refuses_candidate_ref_not_ancestral_to_its_worktree(
     )
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert "not a known ancestor" in capsys.readouterr().out
 
 
@@ -684,7 +845,7 @@ def test_abandon_refuses_tag_attempt_metadata_outside_project_scope(
         attempts={"refs/tags/beta-v9": "d" * 40},
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert "outside the recorded project scope" in capsys.readouterr().out
 
 
@@ -705,7 +866,7 @@ def test_abandon_refuses_ambiguous_local_tag_attempts(
         attempts={local_ref: attempted_oid}, local_tags={local_ref: "d" * 40},
     )
 
-    assert _invoke_abandon(candidate, branch=candidate.branch) == 2
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
     assert expected in capsys.readouterr().out
 
 
@@ -774,7 +935,7 @@ def test_abandon_refuses_when_origin_branch_recheck_fails(monkeypatch, tmp_path)
 def test_abandon_refuses_while_a_local_release_holds_the_lock(monkeypatch, tmp_path):
     @contextmanager
     def occupied_lock(_root):
-        raise RuntimeError("Another cmru release transaction is already running.")
+        raise transaction.ReleaseLockHeld("Another cmru release transaction is already running.")
         yield
 
     monkeypatch.setattr(transaction, "release_lock", occupied_lock)

@@ -47,6 +47,10 @@ class DependencyReport:
     # consumer -> its declared tool dependencies (S15). Defaulted so existing direct
     # DependencyReport(...) construction (tests included) keeps working unchanged.
     tool_dependencies: Mapping[str, tuple[ToolDependencyRef, ...]] = field(default_factory=dict)
+    # project -> dependency LEVEL (0 = no declared dependency; otherwise 1 + the
+    # highest level among its declared providers, i.e. the longest chain below it).
+    # Derived from the declared graph, so it is TRANSITIVE by construction.
+    levels: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -75,6 +79,7 @@ class DependencyReport:
                 ]
                 for name, refs in self.tool_dependencies.items()
             },
+            "levels": dict(self.levels),
             "errors": list(self.errors),
             "ok": self.ok,
         }
@@ -93,6 +98,68 @@ def _wheel_inputs(path: Path) -> list[str]:
             continue
         values.append(line.split()[0].split("[", 1)[0])
     return values
+
+
+_REQUIREMENT_NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _pyproject_requirements(path: Path) -> tuple[str | None, list[tuple[str, str]]]:
+    """``(distribution name, [(required name, where)])`` from a pyproject.toml.
+
+    Only ``[project.dependencies]`` and ``[project.optional-dependencies]`` are read:
+    pyproject is the dependency contract, never the imports.
+    """
+    import tomllib
+
+    project = tomllib.loads(path.read_text(encoding="utf-8")).get("project", {})
+    found: list[tuple[str, str]] = []
+    groups = [("[project.dependencies]", project.get("dependencies", ()))]
+    groups += [
+        (f"[project.optional-dependencies].{extra}", requirements)
+        for extra, requirements in (project.get("optional-dependencies") or {}).items()
+    ]
+    for where, requirements in groups:
+        for requirement in requirements:
+            match = _REQUIREMENT_NAME.match(str(requirement))
+            if match:
+                found.append((match.group(1), where))
+    name = project.get("name")
+    return (str(name) if name else None), found
+
+
+def compute_levels(declared: Mapping[str, Sequence[str]], names: Sequence[str]) -> dict[str, int]:
+    """Longest-chain level of every project over the declared edges.
+
+    ``level = 0`` without dependencies, else ``1 + max(level of each provider)``.
+    A project therefore sits strictly above ALL its transitive providers. Edges
+    that name unknown projects are ignored (reported elsewhere); a cycle leaves
+    the involved projects out (it is reported through the ordering check).
+    """
+    levels: dict[str, int] = {}
+    visiting: set[str] = set()
+
+    def resolve(name: str) -> int | None:
+        if name in levels:
+            return levels[name]
+        if name in visiting:
+            return None
+        visiting.add(name)
+        depth = 0
+        for provider in declared.get(name, ()):
+            if provider not in names:
+                continue
+            below = resolve(provider)
+            if below is None:
+                visiting.discard(name)
+                return None
+            depth = max(depth, below + 1)
+        visiting.discard(name)
+        levels[name] = depth
+        return depth
+
+    for name in names:
+        resolve(name)
+    return levels
 
 
 def build_report(
@@ -211,6 +278,42 @@ def build_report(
         if refs:
             tool_dependencies[consumer] = tuple(refs)
 
+    # pyproject is the dependency contract: every first-party project a project
+    # REQUIRES in [project.dependencies] / [project.optional-dependencies] must be
+    # a declared graph edge, or the release order can silently omit it (W3-ZERO:
+    # cmru requires cli-extended while the graph said "none"). Imports are never
+    # consulted. A first-party name is any project id, scm distribution name or
+    # pyproject [project].name; a requirement on the project itself (a self-extra)
+    # is not an edge, and third-party names are ignored.
+    own_requirements: dict[str, list[tuple[str, str]]] = {}
+    for consumer, project in projects.items():
+        project_root = getattr(project, "project_root", None)
+        pyproject = Path(project_root) / "pyproject.toml" if project_root is not None else None
+        if pyproject is None or not pyproject.is_file():
+            continue
+        try:
+            dist_name, requirements = _pyproject_requirements(pyproject)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{consumer!r}: cannot read {pyproject}: {exc}")
+            continue
+        if dist_name:
+            aliases.setdefault(_normalise(dist_name), consumer)
+        own_requirements[consumer] = requirements
+    for consumer, requirements in own_requirements.items():
+        for required, where in requirements:
+            provider = aliases.get(_normalise(required))
+            if provider is None or provider == consumer:
+                continue
+            if provider not in declared_copy.get(consumer, ()):
+                errors.append(
+                    f"{consumer!r} requires first-party {required!r} in pyproject.toml {where}, but "
+                    f"orchestration.project.{consumer}.depends_on does not declare {provider!r}"
+                )
+            else:
+                edges.append(DependencyEdge(
+                    provider, consumer, "pyproject", f"{consumer}: pyproject.toml {where}",
+                ))
+
     unique: dict[tuple[str, str, str], DependencyEdge] = {}
     for edge in edges:
         unique.setdefault((edge.provider, edge.consumer, edge.kind), edge)
@@ -221,6 +324,7 @@ def build_report(
         edges=tuple(unique.values()),
         errors=tuple(dict.fromkeys(errors)),
         tool_dependencies=tool_dependencies,
+        levels=compute_levels(declared_copy, order),
     )
 
 
@@ -240,6 +344,12 @@ def render_text(report: DependencyReport) -> str:
                 + ", ".join(f"{ref.provider}@{ref.version}" for ref in tool)
             )
     lines.append("")
+    if report.levels:
+        lines.append("LEVELS (a project releases after every project on a lower level; longest declared chain)")
+        for level in sorted(set(report.levels.values())):
+            members = [name for name in report.project_order if report.levels.get(name) == level]
+            lines.append(f"  L{level}: {', '.join(members)}")
+        lines.append("")
     if report.errors:
         lines.append("PREFLIGHT: FAIL")
         lines.extend(f"  - {error}" for error in report.errors)

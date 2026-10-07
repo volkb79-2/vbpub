@@ -7,9 +7,35 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 
 ## Install
 
+cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
+contract layer). It is published to GitHub Releases only, never PyPI: the bare name is
+unclaimed there, so a plain `pip install cmru` or `pip install -e .` would query the
+index for it. Install it first, from the release, verified by the sha256 in
+`cli-extended-latest/latest.json`, then install cmru offline:
+
 ```bash
-pip install -e .             # provides the `cmru` console script
+# 1. the released cli-extended wheel (url + sha256 come from the pointer; never an index)
+python3 -m pip install --no-index --no-deps ./cli_extended-<version>-py3-none-any.whl
+# 2. cmru from a built wheel or the checkout: no index, no dependency resolution
+python3 -m pip install --no-index --no-deps ./cmru-<version>-py3-none-any.whl
+python3 -m pip install --no-index --no-deps -e .      # developer checkout; provides `cmru`
+# or in one command, resolving the dependency from a local wheelhouse only:
+python3 -m pip install --no-index --find-links ./wheelhouse ./cmru-<version>-py3-none-any.whl
 ```
+
+The guided `cmru init` wizard asks its questions with the optional `questionary` prompt
+driver, which is the `interactive` extra: install the wheelhouse with `cmru[interactive]`
+(`python3 -m pip install --no-index --find-links ./wheelhouse 'cmru[interactive]'`; the
+wheelhouse must then also hold `questionary` and its dependencies). Neither cmru nor
+cli-extended is on a package index, so `cmru[interactive]` always needs `--find-links`
+pointing at the release assets (or the GitHub release URL) that carry both wheels. A run whose options
+already carry every fact needs no terminal and no extra.
+
+A `get.py` bundle that declares `[[project.installer.wheels]]` for cli-extended installs
+it first, hash-locked, with `--no-index --find-links` (`cmru get-py`; the order is enforced
+by the generated installer, not by the declaration order). The `tester-unified` image
+installs the released wheel by sha256 before cmru, and gate lanes use that installed
+wheel, never a `libraries/cli-extended/src` source root.
 
 CMRU's local tag inspection requires Git 2.43 or newer. Check `git --version`
 before running release or cleanup workflows. A multi-repository release reads
@@ -32,8 +58,8 @@ candidate for inspection. The reason is in the
 The [consumer guide](docs/CONSUMERS.md#git-version-for-local-tag-inspection)
 shows the prerequisite check.
 
-The wheel also installs the companion `cmru-agent` and `cmru-controller`
-entrypoints. All three use CMRU's registered CLI grammar; `cmru --help` lists
+The wheel installs the single `cmru` entrypoint (the `cmru-agent` and `cmru-controller`
+companions were retired on 2026-10-05). It uses CMRU's registered CLI grammar; `cmru --help` lists
 root verbs, and `cmru help <verb>` (or `<verb> --help`) shows that verb's exact
 options. The old release-scoped `--abandon` switch is removed; use
 `cmru abandon [BRANCH]` for a retained release transaction.
@@ -47,7 +73,12 @@ several repositories below it. A nested orchestration file starts a new root.
 To build CMRU itself before any CMRU wheel is installed, use the supported
 fresh-checkout bootstrap script. It imports handlers from `src`; the wheel bytes
 are built in the dedicated `wheel-builder` image, so the host does not need the
-`build` package:
+`build` package. The handlers also need `cli_extended`, so the script first obtains
+the released cli-extended wheel, verifies its sha256 and unpacks it into a private
+temporary directory on `PYTHONPATH` (nothing is installed into `$CMRU_BOOTSTRAP_PYTHON`):
+either `CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL` plus `CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256`
+(offline), or the release pointer through `tester-unified/fetch-cli-extended.py`.
+A digest mismatch stops the bootstrap before anything is built:
 
 ```bash
 cd /workspaces/vbpub/cmru
@@ -55,13 +86,18 @@ cd /workspaces/vbpub/cmru
 ```
 
 The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile).
-The script prints the manual virtual-environment install commands after it produces
-the wheel; once installed, all subsequent builds use the `cmru` console script.
+The script prints the manual virtual-environment install commands (cli-extended wheel
+first, then cmru, both `--no-index --no-deps`) after it produces the wheel; once
+installed, all subsequent builds use the `cmru` console script.
 
-The wheel installs the operator commands `cmru`, `cmru-agent`, and
-`cmru-controller`. It also carries the supported `python -m cmru.handlers`
-project-step and bootstrap CLI, the `cmru.bundle` and `cmru.runner` Python libraries, and the
-`cli-extended` and `worktree` libraries they use. Use installed console scripts
+The wheel installs the operator command `cmru`. It also carries the bootstrap-only `python -m cmru.handlers`
+alias (it runs the same `cmru handler` builder; project steps and the templates always use
+`cmru handler <verb>`, and `python -m cmru.handlers` exists only for the fresh-checkout bootstrap above),
+the `cmru.bundle` and `cmru.runner` Python libraries, the `worktree` library they use, and its
+agent skill as package data (`cmru/skills/cmru-cli`); install it with `cmru skills install`
+(`cmru skills check` verifies it, `cmru doctor` reports the whole environment; there is no
+`.claude/skills` source tree). The `cli-extended` library is NOT inside
+the wheel: it is the declared dependency above. Use installed console scripts
 for operator commands; the retired module CLI aliases for bundle, runner, and
 the operator scripts refuse and direct callers to the supported interface. See the
 [design rationale](docs/DESIGN-GUIDE.md#one-declared-cli-grammar) and the
@@ -120,7 +156,7 @@ cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact
 cmru versions init [all|P[,P...]] [--dry-run]    # derive registry targets from manifests
 cmru versions resolve [all|P[,P...]] [--dry-run] # resolve eligible versions and write native artifacts
 cmru versions check [all|P[,P...]] [--json]      # read-only comparison with fresh registry state
-cmru publish <name>               # caller-worktree push step
+cmru publish <name> --from-checkout    # explicit: caller-worktree push step
 cmru publish <name> --build-output ID  # publish exact retained build bytes
 cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d --dry-run  # preview age-based remote cleanup
@@ -128,7 +164,7 @@ cmru cleanup --remove-assets 30d --yes      # apply the reviewed cleanup actions
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
 cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
 cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
-cmru cleanup --discard-build-worktree /path/reported/by/cmru --yes
+cmru abandon /absolute/path/reported/by/cmru --yes   # discard a retained failed build worktree
 cmru version                      # print the CMRU version
 cmru --version                    # estate-wide top-level compatibility spelling
 cmru get-py ciu --config cmru.orchestration.toml --output ciu-get.py  # render from installed wheel
@@ -136,7 +172,7 @@ cmru --help                       # generated verb catalog; use `cmru help <verb
 ```
 
 These are representative operator workflows. The complete registered grammar,
-including `cmru-agent`, `cmru-controller`, nested handler verbs, the supported
+including nested handler verbs, the supported
 handlers module adapter, every option, and the required semantic review table, is maintained
 in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
 
@@ -253,15 +289,21 @@ unchanged. The compatibility rationale is in the
 
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes
-from the exact gated candidate commit, then fast-forwards `origin/main` from that same commit.
+from the exact gated candidate commit, then pushes that same commit to `origin/main`. If main
+advanced during the gate, CMRU merges `origin/main` into the candidate (up to three attempts, never
+a rebase or force-push) unless the new commits touched the project's own paths or conflict; see
+[promotion](docs/RELEASE-TRANSACTIONS.md#promotion-when-originmain-advanced-rel-04). A build
+failure after the tag push rolls that tag back so `--resume` works; once publishing began the tag
+is kept and the message prints exact recovery
+([post-publication recovery](docs/RELEASE-TRANSACTIONS.md#post-publication-recovery)).
 The exact release tag must be on `origin` before CMRU starts the build or publisher. After a
 failed push, CMRU checks origin: if the tag is absent, it removes that exact local tag and retains
 an untagged candidate that can be resumed; if origin confirms the exact candidate tag, it
 continues; when origin cannot be checked, it retains the tag and candidate for inspection.
 A same-name origin tag pointing to another object is a conflict, so CMRU retains the local
 tag and candidate for inspection instead of treating that state as absence.
-A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
-CMRU never rebases a candidate after building its public artifact. Resume retries only a
+A promotion that cannot merge `origin/main` safely fails closed and leaves the candidate
+branch/worktree for diagnosis; CMRU never rebases a candidate after building its public artifact. Resume retries only a
 pre-tag candidate; a release-plan refusal during resume also retains the existing candidate
 and its origin backup branch. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
@@ -293,7 +335,8 @@ checks again before writing the pointer in case a newer release appeared during 
 does not promote a source branch. `release`
 remains the source-first tag/build/publish/promote workflow. See the [KI-10 decision](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--publish-retained-build-output-by-id--shipped).
 After the transaction, CMRU reports whether caller `main` was synchronized. A dirty caller
-checkout—including ignored files or directories—is left untouched before any rebase attempt,
+checkout (tracked or untracked changes; ordinary ignored files only matter when `origin/main`
+would overwrite one) is left untouched before any rebase attempt,
 including when `--allow-uncommitted` was used; see the [caller-main cleanup guidance](docs/RELEASE-TRANSACTIONS.md#caller-main-cleanup)
 and normative [S-CLI.5a](docs/SPEC.md#s-cli5a--projects-release-one-after-another-not-in-a-shared-batch).
 
@@ -311,7 +354,8 @@ Use the native release command directly—no wrapper or `2>&1 | tee ...` is requ
 cmru release assay
 ```
 
-It overwrites the root `cmru.release.log` with the complete release transcript.
+It overwrites the root `cmru.release.log` with the complete release transcript. (`cmru status`
+is read-only: it never touches that log, and it does not take `--log-append`/`--show-run-details`.)
 The terminal stays readable: CMRU reports command labels, duration, known test-framework
 success evidence, and concise failure excerpts. Detailed subprocess output is line-flushed to
 the audit log and the transaction-local project files such as
@@ -320,8 +364,8 @@ artifact directories, and explicitly declared gate evidence by default before re
 worktree: logs move to `assay/logs/cmru-release/<immutable-tag>/`, declared directories move
 into `assay/artifacts/<immutable-tag>/` with the existing hash inventory in `release.json`, and
 gate evidence moves into `assay/evidence/cmru-release/<immutable-tag>/` with an `evidence.json`
-source-commit/hash manifest. Pass `--discard-logs-on-release`,
-`--discard-artifacts-on-release`, or `--discard-evidence-on-release` to opt out of each half.
+source-commit/hash manifest. Pass `release --discard logs`, `--discard artifacts`, or
+`--discard evidence` (repeatable) to opt out of each half.
 
 ```bash
 cmru release modern-debian-tools-python-debug --show-run-details
@@ -342,7 +386,7 @@ Each project owns one complete `cmru.toml` contract: identity, versioning, relea
 environment, and every runner step. That file is portable to a fresh repository root. A
 monorepo's nearest `cmru.orchestration.toml` contains central GitHub/target facts,
 selection, order/dependencies, cleanup, and no project commands. It establishes the CMRU root.
-`template_revision = 4` lets
+`template_revision = 5` lets
 `cmru standards` identify stale adoption without inventing project behavior. Ready-to-copy
 examples are [`templates/cmru.toml.tmpl`](templates/cmru.toml.tmpl) and
 [`templates/cmru.orchestration.toml.tmpl`](templates/cmru.orchestration.toml.tmpl).
@@ -356,18 +400,28 @@ execution setting fails before it can alter a release. `cmru.build.toml`, shell 
 configuration aliases are retired; there is no compatibility parser.
 
 The stock `tester-gate` command additionally requires an explicit tester image, memory,
-combined memory/swap, CPU ceiling, host-systemd probe image, and the host gates slice
+combined memory/swap, CPU ceiling, process ceiling (`CMRU_TESTER_PIDS_LIMIT`, passed as
+`--pids-limit`), host-systemd probe image, and the host gates slice
 (`CMRU_TESTER_CGROUP_PARENT`, normally `${CGROUP_PARENT_DEV_GATES}`) in `[env]`. A gate that
-uses `--enable-docker` must also declare its nested-Docker image. The stock `wheel-build`
+uses `--enable-docker` must also declare its nested-Docker image and that sidecar's own limits
+(`CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT`). The probe
+and DinD images run privileged, so they must be `@sha256:`-pinned and already present locally:
+they are started with `--pull=never`. The stock `wheel-build`
 handler requires an explicit wheel-builder image. These are release inputs, not CMRU
 defaults; pin immutable digests in a production contract.
 The CPU ceiling must be a finite decimal Docker can enforce (at least `0.00001` CPUs). CMRU
 uses Docker's `--cpus` limit and refuses values below that bound before host probes. Docker
 rejects `--cpus` and `--cpu-period` together, so CMRU does not set a separate CPU period.
 See the [tester-gate CPU ceiling rationale](docs/DESIGN-GUIDE.md#tester-gate-workload-cpu-ceiling).
-These CPU and memory inputs currently bound the tester workload; the optional DinD sidecar
-shares the gates slice but has no separate per-container resource cap yet, as recorded in
-[the canonical CLI audit](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semantic-audit).
+The workload and the DinD sidecar run under `--init` and, with the CPU, memory and pids
+inputs, are bounded separately (the sidecar by its own `CMRU_TESTER_DIND_*` values). After the
+command exits, cmru reads the container's own `pids.events`/`memory.events` (written by an
+in-container wrapper to `.cmru/tester-gate-events-<uuid>.txt` in the worktree): a non-zero
+`pids.events max` or `memory.events oom_kill`, or a missing/malformed file, makes the step exit
+3 even if the command exited 0 (this includes tests that provoke an OOM kill on purpose). The
+image's uid must be able to write `.cmru/` in the mounted worktree; a host/image uid mismatch
+shows up as a missing events file. See [the tester-gate
+contract](docs/SPEC.md#s26a--tester-gate-environment-preflight-ki-17).
 
 `cmru tester-gate --dry-run` prints the exact workload Docker command and, when
 `--enable-docker` is selected, the DinD startup command. It starts no container and skips
@@ -439,9 +493,9 @@ history, almost always a half-completed prior release — aborts with a named re
 (`--allow-tag-ahead-of-head` downgrades only that one deliberately). Any such plan-time refusal is a clean, typed failure that discards the
 just-created worktree — never retains it, since no project's cycle ever started. In the
 transaction worktree, cmru runs each changed project's required `run-tests` gate, then
-fast-forwards `origin/main` from the validated branch before creating tags or publishing.
-If another writer advanced remote main, the final candidate promotion fails closed after the
-artifact step. A failure keeps the branch/worktree for diagnosis; success removes both (after
+promotes `origin/main` from the validated branch after the artifact step (README promotion note above).
+If another writer advanced remote main, it is merged into the candidate when the project's own
+paths are untouched; otherwise the final promotion fails closed after the artifact step. A failure keeps the branch/worktree for diagnosis; success removes both (after
 optional evidence retention).
 
 When selected products live in independent Git repositories, CMRU runs one isolated transaction
@@ -461,7 +515,7 @@ publication metadata.
 If the build or retention fails, CMRU keeps the exact
 `cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree and prints its
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
-`cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
+`cmru abandon <absolute-path> --yes` only after inspection. An existing output
 coordinate is never overwritten; remove it explicitly with
 `cmru cleanup <name> --delete-build-output <id> --yes` before rebuilding that source.
 
@@ -578,8 +632,8 @@ fits the work:
 | Need | Interface | Role |
 |---|---|---|
 | Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
-| Register/build/publish an artifact handler from a project step | `python -m cmru.handlers …` | Explicit project-step adapter; also used by the fresh-checkout wheel bootstrap |
-| Preview or reproduce one declared step | `cmru run-step …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
+| Register/build/publish an artifact handler from a project step | `cmru handler <verb> …` | Project-step adapter (bound launcher inside a release transaction); `python -m cmru.handlers` is bootstrap-only, used by the fresh-checkout wheel bootstrap |
+| Preview or reproduce one declared step | `cmru run --step NAME …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Compose step or bundle behavior in Python | `cmru.runner.run_step` or `cmru.bundle.run_bundle` | Supported library entrypoints used by estate consumers |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 
@@ -587,14 +641,27 @@ fits the work:
 the deterministic format is `xztar` as specified in S9. It is a Python library,
 not a module CLI or top-level `cmru bundle` verb. A project that needs the
 reusable operation imports `run_bundle`; a root verb should be added only when a
-concrete operator workflow needs one. `cmru run-step` is the single-step CLI.
+concrete operator workflow needs one. `cmru run --step NAME` is the single-step CLI.
 The standalone generated `get.py` remains intentionally independent and uses
-`argparse` because adopters run it without a CMRU installation. The
+`argparse` because adopters run it without a CMRU installation. It is the generic
+installer only: a fail-closed, transactional `install`/`update`/`status`/`rollback` that
+verifies the SHA-256 sidecar, the manifest (and, when the project pins a `manifest_pubkey`, its
+minisign signature) and every wheel hash, builds each release in its own
+`releases/<tag>-<digest>/` directory with its own venv (offline, `--require-hashes`), swaps
+`current` atomically and keeps the previous release for `rollback` (SPEC S6.3-S6.17, and the
+[authoring guide](docs/CONSUMERS.md#authoring-an-installer-for-your-project) in CONSUMERS).
+A project adds its own commands with `[project.installer] extensions =
+["<relpath>.py"]` fragments that `cmru get-py` inlines verbatim (sha256-banner wrapped, one file,
+deterministic) after render-time checks. The names a fragment may use are the rendered file's
+`EXTENSION_API` tuple, a stability contract: changing or removing a name requires updating every
+in-repo fragment in the same change (see "Installer extensions" in
+[docs/CONSUMERS.md](docs/CONSUMERS.md#installer-extensions-project-owned-getpy-commands) and
+SPEC S6.14). Host enrollment (`get.py enroll`) is ciu's fragment, not cmru's. The
 [consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)
 shows installation and invocation examples.
 
-The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` argument
-is intentionally fail-closed while production-equivalence evidence is absent; use a
+The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` option was
+removed while KI-02 is open (it only ever failed) and returns when KI-02 is fixed; use a
 project-owned, tested flow such as MDT's for real OCI repacking.
 
 ## Differentiators
@@ -647,11 +714,8 @@ mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
 origin facts immediately before mutation.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
-The registered real-enrollment lane sets `CMRU_ENROLL_REQUIRED=1`; missing Docker or host-probe
-configuration, an unloaded or fragment-less gate slice on the Docker host, or a failed fixture-image
-build fail that lane instead of skipping O2/O3. It checks the host through CMRU's privileged systemd
-probe. Direct local test runs may still skip the container integration checks when prerequisites
-are unavailable.
+Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;
+cmru's gate has no enrollment lane (see "Installer extensions" under `cmru get-py`).
 Before tester-unified starts, the host gate points all visible root and selected
 project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.

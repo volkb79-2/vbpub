@@ -256,19 +256,22 @@ class TestManifestAndInstallerBoundaries(unittest.TestCase):
             comment = manifest.build_trusted_comment(project="demo", tag="demo-v1", manifest_path=path)
             self.assertIn(hashlib.sha256(path.read_bytes()).hexdigest(), comment)
 
-    def test_getpy_escaping_and_unreplaced_placeholder_warning(self):
+    def test_getpy_escaping_and_unreplaced_placeholder_is_fatal(self):
+        # W1-INSTALLER (R11): code-position values are json.dumps-escaped, a hostile
+        # text-position value is refused, and an unreplaced placeholder is a render error.
+        common = dict(repo_owner="o", repo_name="r", tag_prefix="a-v",
+                      install_dir_system="/opt/x", install_dir_user="y")
         with tempfile.TemporaryDirectory() as tmp:
             template = Path(tmp) / "template"
-            template.write_text("[[PROJECT_NAME]] [[ENTRYPOINT]] [[UNKNOWN]]", encoding="utf-8")
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                result = getpy.render_get_py(project_name='a"b', repo_owner="o", repo_name="r",
-                                              tag_prefix="a-v", install_dir_system="/x",
-                                              install_dir_user="/y", entrypoint='say "hi"',
-                                              template_path=template)
-            self.assertIn('a"b', result)
-            self.assertIn('say "hi"', result)
-            self.assertIn("unreplaced placeholders", stderr.getvalue())
+            template.write_text("[[PROJECT_NAME]] [[ENTRYPOINT]]", encoding="utf-8")
+            result = getpy.render_get_py(project_name="ab", entrypoint='say "hi".py',
+                                         template_path=template, **common)
+            self.assertEqual(result, 'ab "say \\"hi\\".py"')
+            with self.assertRaises(getpy.RenderError):
+                getpy.render_get_py(project_name='a"b', template_path=template, **common)
+            template.write_text("[[PROJECT_NAME]] [[UNKNOWN]]", encoding="utf-8")
+            with self.assertRaisesRegex(getpy.RenderError, "UNKNOWN"):
+                getpy.render_get_py(project_name="ab", template_path=template, **common)
 
 
 class TestHandlerFailureContracts(unittest.TestCase):
@@ -295,10 +298,16 @@ class TestHandlerFailureContracts(unittest.TestCase):
                 handlers._check_build_prerequisites()
         self.assertEqual(raised.exception.code, exit_codes.PREREQ_MISSING)
 
-    def test_repack_is_disabled_before_external_side_effects(self):
-        with self.assertRaises(SystemExit) as raised:
-            handlers._reject_experimental_repack(True)
-        self.assertEqual(raised.exception.code, exit_codes.CONFIG_ERROR)
+    def test_repack_is_not_part_of_the_handler_grammar(self):
+        # CLI-14: --repack always failed while KI-02 is open, so it is removed.
+        self.assertFalse(hasattr(handlers, "_reject_experimental_repack"))
+        self.assertEqual(
+            handlers.main([
+                "oci-image-push", "--cwd", ".", "--bake-file", "b.hcl",
+                "--bake-target", "t", "--repack",
+            ]),
+            exit_codes.CONFIG_ERROR,
+        )
 
     def test_wheel_glob_normalizes_project_name(self):
         self.assertEqual(handlers._wheel_glob("my-project"), "my_project-*.whl")

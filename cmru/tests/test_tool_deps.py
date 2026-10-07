@@ -1106,9 +1106,30 @@ def test_tool_deps_main_blocks_on_a_stale_pin_by_default(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(tool_deps, "_download_asset", lambda *a, **k: b"payload")
 
-    assert tool_deps.tool_deps_main([]) == 2
+    assert tool_deps.tool_deps_main([]) == 4  # refused by verification policy (redesign E)
     err = capsys.readouterr().err
     assert "blocking" in err
+
+    # --json carries the report on stdout (library output, one document) and
+    # the same policy exit; an allowed stale pin is exit 0.
+    assert tool_deps.tool_deps_main(["--json"]) == 4
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report[0]["project"] == "assay" and "blocking" in captured.err
+    assert tool_deps.tool_deps_main(["--json", "--allow-stale-tool-deps"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["project"] == "assay"
+
+
+def test_tool_deps_declared_constraints_refuse_meaningless_combinations(capsys):
+    """D4: --dry-run only means something with --refresh; --refresh has no
+    report or staleness semantics. The parser refuses these (exit 2) before any
+    configuration is read."""
+    assert tool_deps.tool_deps_main(["--dry-run"]) == 2
+    assert "--dry-run requires --refresh" in capsys.readouterr().err
+    assert tool_deps.tool_deps_main(["--refresh", "assay", "--json"]) == 2
+    assert "--refresh and --json cannot be used together" in capsys.readouterr().err
+    assert tool_deps.tool_deps_main(["--refresh", "assay", "--allow-stale-tool-deps"]) == 2
+    assert "cannot be used together" in capsys.readouterr().err
 
 
 def test_tool_deps_main_allow_stale_downgrades_to_a_pass(monkeypatch, tmp_path, capsys):

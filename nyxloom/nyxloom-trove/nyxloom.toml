@@ -242,10 +242,13 @@ feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectio
 transport = "mmctl"
 team = "nyxloom"
 channel = "intake"
-container = "nyxloom-1dd3d1-mattermost"
+container = "nyxloom-3oqua1-mattermost"
 # Only read by the `rest` transport; the stack's private-bridge address.
 # Both values follow mattermost's environment_tag ($INSTANCE_ID since
-# 2026-09-10, CIU-104) -- they name THIS checkout's instance (1dd3d1,
-# ../ciu.instance.generated.toml) and must be updated by hand here if this
-# checkout is ever re-cloned to a new physical path.
-base_url = "http://nyxloom-1dd3d1-mattermost:8065"
+# 2026-09-10, CIU-104) -- they name THIS checkout's instance (3oqua1,
+# ../ciu.instance.generated.toml) and must be updated by hand here whenever
+# the instance id changes: a re-clone to a new physical path, or a ciu
+# instance-identity regeneration (1dd3d1 -> 3oqua1 on 2026-10-06 with the
+# schema-2 identity file). Check with
+# `nyxloom/mattermost/tools/mm_reachability.py`. NL-38 tracks deriving them.
+base_url = "http://nyxloom-3oqua1-mattermost:8065"

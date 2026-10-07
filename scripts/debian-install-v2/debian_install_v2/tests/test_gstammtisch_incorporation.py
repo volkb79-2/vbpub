@@ -22,11 +22,11 @@ BASE = {
 
 # --- config validation -------------------------------------------------
 
-def test_vm_swappiness_default_is_50():
-    assert Config().vm_swappiness == 50
+def test_vm_swappiness_default_is_100():
+    assert Config().vm_swappiness == 100
 
 
-@pytest.mark.parametrize("value", [-1, 101])
+@pytest.mark.parametrize("value", [-1, 201])
 def test_vm_swappiness_out_of_range_rejected(value):
     with pytest.raises(ConfigError, match="vm_swappiness"):
         load_config(raw_json=json.dumps(dict(BASE, vm_swappiness=value)))
@@ -112,12 +112,13 @@ def test_notify_helper_written_unconditionally(tmp_path):
 
 def test_ksm_enabled_by_default_and_can_be_disabled(tmp_path):
     _, actions = install_dry(tmp_path)
-    assert "/etc/systemd/system/ksm-config.service" in actions.dry_run_writes
+    assert "/etc/tmpfiles.d/vbpub-ksm.conf" in actions.dry_run_writes
+    assert "/etc/systemd/system/ksm-config.service" not in actions.dry_run_writes
     descriptions = "\n".join(a.description for a in actions.planned)
-    assert "enable KSM unit" in descriptions
+    assert "apply /etc/tmpfiles.d/vbpub-ksm.conf now" in descriptions
 
     _, actions_off = install_dry(tmp_path, run_ksm=False)
-    assert "/etc/systemd/system/ksm-config.service" not in actions_off.dry_run_writes
+    assert "/etc/tmpfiles.d/vbpub-ksm.conf" not in actions_off.dry_run_writes
 
 
 def test_oomd_thresholds_written_and_enabled(tmp_path):
@@ -136,7 +137,7 @@ def test_oomd_installs_its_package_before_enabling_the_unit(tmp_path):
     _, actions = install_dry(tmp_path)
     argvs = [a.argv for a in actions.planned]
     install_idx = argvs.index(
-        ("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "systemd-oomd")
+        ("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "systemd-oomd")
     )
     enable_idx = argvs.index(("/usr/bin/systemctl", "enable", "--now", "systemd-oomd"))
     assert install_idx < enable_idx
@@ -160,12 +161,14 @@ def test_docker_cleanup_skipped_when_docker_install_disabled(tmp_path):
     assert "/etc/systemd/system/vbpub-docker-cleanup.service" not in actions.dry_run_writes
 
 
-def test_apt_auto_upgrade_full_mode_includes_all_pinned_origins(tmp_path):
+def test_apt_auto_upgrade_full_mode_excludes_testing_and_unstable(tmp_path):
+    # LT-UPG ruling: u-u ignores pins, so testing/unstable are not allowed origins.
     _, actions = install_dry(tmp_path, apt_auto_upgrade_mode="full")
     content = actions.dry_run_writes["/etc/apt/apt.conf.d/51-vbpub-unattended-upgrades"]
     assert "label=Debian-Security" in content
-    assert 'suite=testing' in content
-    assert 'suite=unstable' in content
+    assert "backports" in content
+    assert 'suite=testing' not in content
+    assert 'suite=unstable' not in content
     assert 'Automatic-Reboot "false"' in content
 
 
@@ -233,7 +236,10 @@ def test_stage2_unit_module_path_and_workdir_resolve(tmp_path):
     unit = actions.dry_run_writes["/etc/systemd/system/vbpub-bootstrap-stage2.service"]
     assert "ExecStart=" in unit
     exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
-    assert exec_line.endswith("-m debian_install_v2.bootstrap resume --yes")
+    # LT-S2: the unit goes through the installed entrypoint (it sets up the
+    # cli-extended wheel import path); `-m debian_install_v2...` crashed live.
+    assert exec_line.endswith("/debian-install-v2.py resume --yes")
+    assert "-m debian_install_v2" not in exec_line
     workdir_line = next(line for line in unit.splitlines() if line.startswith("WorkingDirectory="))
     workdir = workdir_line.removeprefix("WorkingDirectory=")
     # Regression, 2026-09-09: this used to assert workdir.endswith(

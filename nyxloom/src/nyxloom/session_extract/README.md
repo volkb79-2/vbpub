@@ -51,9 +51,13 @@ selects every epoch. It keeps ordinary operator, Q&A, and assistant prose
 events, including short messages, with minimal gaps. API-transport errors
 remain hidden unless `--show-api-errors` is used. It does not dump raw tool
 inputs/results, compaction summaries, or compaction prompt payloads. Use
-`--show-tool-calls` to add short Claude Code/Codex tool labels and
-`--show-tool-call-intent` to include a source description or intent when one
-exists. `--show-compaction-content` separately opts into compaction internals.
+`--tool-calls none|intent|intent-or-call|call` to show tool activity: `intent` is the
+tool's own description/intent field only, `intent-or-call` falls back to the call itself
+(one line, truncated) when no intent exists, `call` is the call itself; results are never
+shown, except that `--tool-errors show` (the default; `hide` to opt out) renders a FAILED
+result (non-zero exit, `is_error`, denial) truncated, whatever the call mode.
+`--show-tool-calls` / `--show-tool-call-intent` are deprecated aliases (identical output,
+stderr note). `--show-compaction-content` separately opts into compaction internals.
 `--include-thinking` controls recovered reasoning content.
 
 Profiles are operator use cases, not names for opaque compression strengths.
@@ -413,7 +417,16 @@ lossless.py     dump_claude_code(): the independent ground-truth dumper --
 ledger.py       build_ledger(): E-012's mechanical files-touched/commits/
                 branches/test-results ledger, aggregated per prompt
                 boundary. Opt-in via `extract --ledger` (Claude Code only,
-                text mode only today).
+                text mode only today). `session_ledger()` is the
+                whole-session form with an external-effects bucket
+                (Bash commands matching `DEFAULT_EFFECT_PATTERNS` /
+                `--effect-pattern`).
+toolresult.py   result_text/is_failed/is_denial/tool_intent/summarize_call:
+                the shared tool-call/result helpers behind `--tool-calls`
+                and `--tool-errors`.
+stopstate.py    build_stop_state(): cause (from the sidecar `.meta.json`
+                `stoppedByUser`), in-flight call, last intent.
+successor.py    assemble(): the `--successor-brief` document.
 debug_diff.py   render_debug(): `nyxloom-harness extract-debug`'s colored diff
                 between lossless.py's own dump and a given extract() run --
                 see its own module docstring for the full color-scheme
@@ -709,6 +722,47 @@ fingerprint, so parts added to that same row during the one-shot pass are
 noticed. If no newer sibling ever arrives, two unchanged observations emit a
 stable final row rather than holding it forever. Same shape of trade as the
 lookahead delay, for the same reason.
+
+## Successor brief (`--successor-brief`, E-020)
+
+`nyxloom extract --successor-brief [--order TEXT|@FILE] [--brief-max-chars N] ID` emits ONE
+markdown document for priming a FRESH agent from a stopped subagent's transcript (Claude Code
+adapter only; it cannot be combined with `--json`, `--follow`, `--task`/`--task-file`
+(use `--order`) or `--stop-state` (always included)). Sections, in order: a header (agent id, description,
+model, agent type, `stoppedByUser`, cwd, branch, first/last timestamps, record count, cursor
+marker), the original brief (the FIRST user record, verbatim and fenced; longer than
+`--brief-max-chars` it becomes a pointer to line 1 of the file plus a sha256), later
+operator/controller turns, the timeline (the `--profile all` prose with
+`--tool-calls intent-or-call --tool-errors show`), the whole-session ledger incl. external
+effects, the stop state, and the order. `--stop-state` alone appends just the stop-state
+block to a normal extract.
+
+What it is not: there is no redaction (the extract summarizes what the transcript already
+contains; keep the file in a scratch directory), tool RESULTS are not shown except errors,
+and every claim in it is the predecessor's own, not verified. External-effect detection is
+heuristic: it splits a Bash command into segments, drops heredoc bodies and wrapper words,
+then matches each segment against the patterns, so a missed effect is possible. Workflow and
+the live-state checks the CLI does not do: `.claude/skills/nyxloom-successor/SKILL.md`.
+Follow-ups: NL-31 (other adapters), NL-33 (wrapper, JSON form).
+
+## Presets, watch and `--jsonl` (SUCCESSOR-2)
+
+`--preset watch|successor|review|ledger` bundle options from the five `--help` groups
+(`presets.py`; the exact expansions are printed by `--help`, listed in `docs/CLI-REFERENCE.md`
+and pinned by `tests/test_session_extract_presets.py`). An explicit option always wins.
+`successor` includes `--stop-state`; `--successor-brief` implies it.
+
+`watch` (= `--profile all --timestamps all --prose-only`) is the live view: operator messages and
+assistant prose only. An AskUserQuestion interview is operator content and stays, compactly: each
+question is one assistant line, the selected answer plus free-text notes an OPERATOR line
+(`watch.items`). `--jsonl` emits `{"v": 1, "ts", "role", "text", "agent"?}`, a stable versioned
+contract for the VS Code extension: keys are pinned by tests, and a change needs a new `v`.
+
+Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
+Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:
+NL-35 (shell-variable indirection hides an effect), NL-36 (Edit/Write intent is only a
+best-effort `Intent:` line pairing). Re-verify the interrupt/denial/error classification for each
+new Claude Code version per the steps in `harness.py`.
 
 ## Delta extraction
 

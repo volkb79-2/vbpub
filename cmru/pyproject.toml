@@ -11,25 +11,52 @@ description = "CMRU — Configurable Multi Release Utility for CIU-family monore
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
-dependencies = []
+# cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored.
+# Floor 0.3.0 (raised from 0.2.0 on 2026-10-06): 0.2.0 was the first release carrying
+# the public API cmru's CLI is built on (CliRegistry/CliIdentity/SelectorList/runtime,
+# CLI-EXT contract_version 1); 0.3.0 is the first whose `register_skills_verbs`
+# forwards the consumer's global options to the skills child registry (CLI-EXT-26),
+# which cmru's `skills` group needs to accept --log-prefix-time-short (KI-61).
+# It is published to GitHub Releases only; the bare name is unclaimed on PyPI, so
+# every install of cmru MUST be `--no-index --find-links <wheelhouse>` (or
+# `--no-deps` after installing cli-extended first); see README "Install" (CX-D2).
+dependencies = ["cli-extended>=0.3.0"]
 
 [project.optional-dependencies]
 # tester-unified SoT: cmru's test closure, including coverage and property
 # tests for the shared workspace adapter.
 test = ["pytest>=8", "pytest-cov>=5.0", "hypothesis>=6.140"]
 versions-templates = ["Jinja2>=3.1,<4"]
+# `cmru init` asks its questions with the cli-extended prompt driver, which needs
+# questionary. cli-extended 0.3.0 declares `interactive = ["questionary>=2.1.1"]`
+# (Provides-Extra verified in the released wheel's METADATA); cmru re-exports the
+# extra because the bare cli-extended name is not installable by a cmru user.
+interactive = ["cli-extended[interactive]>=0.3.0"]
 
 [project.scripts]
-cmru            = "cmru.cli:main"            # existing
-cmru-agent      = "cmru.agent.cli:main"      # new (spec G §4)
-cmru-controller = "cmru.controller.cli:main" # new (spec G §4)
+cmru = "cmru.cli:main"
+
+# Surface lifecycle (cli-extended W3b). ONE entry covers every cmru route: the root
+# registry mounts the handlers registry as `cmru handler`, and `python -m cmru.handlers`
+# builds the identical registry (identity "cmru"), so a second entry would be a duplicate.
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "cmru"
+factory = "cmru.cli:_build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
+findings = "docs/cli-review-findings.toml"
 
 [tool.setuptools.packages.find]
-where = ["src", "../libraries/worktree/src", "../libraries/cli-extended/src"]
+where = ["src", "../libraries/worktree/src"]
 
+# `worktree` is still carried inside the cmru wheel (out of the cli-extended
+# adoption's scope). cli_extended is NOT mapped here: it comes from its own wheel.
 [tool.setuptools.package-dir]
 worktree = "../libraries/worktree/src/worktree"
-cli_extended = "../libraries/cli-extended/src/cli_extended"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -45,4 +72,6 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 # `cmru init` scaffolding ships inside the wheel so a plain pip install can
 # generate contracts without the repository present.
 [tool.setuptools.package-data]
-cmru = ["templates/*.toml", "templates/*.tmpl"]
+# Agent skills ship as package data too (`cmru skills install`; AC-19), so the
+# skill always matches the installed wheel instead of a `.claude/skills` checkout.
+cmru = ["templates/*.toml", "templates/*.tmpl", "skills/*/*", "skills/*/**/*"]
