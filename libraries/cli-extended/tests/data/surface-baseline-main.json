@@ -1,0 +1,1184 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:base/admission/set/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:base/admission/set/--max-concurrent"
+      ],
+      "route_id": "route:entrypoint:base/admission/set",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:base/admission/set/--max-concurrent"
+        ]
+      },
+      "signature": "sha256:7bf11f024137e63ee607b351422fa3fefd91adde7599b3e395e5592be17d1c21"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/set/option-spelling/option:route:entrypoint:base/admission/set/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/admission/set/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:base/admission/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/admission/set/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:9a5a9ea7b6a6931d816bfdebe44d8f137de9ecf32aee1d91c8501a56e70c2dc7"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/set/option-spelling/option:route:entrypoint:base/admission/set/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/admission/set/--json"
+      ],
+      "route_id": "route:entrypoint:base/admission/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/admission/set/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:300df3068dc61580a7d8659e75ae71fe16646bab696ad044bf2df2283ebdc588"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/set/option-spelling/option:route:entrypoint:base/admission/set/--max-concurrent/--max-concurrent",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/admission/set/--max-concurrent"
+      ],
+      "route_id": "route:entrypoint:base/admission/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/admission/set/--max-concurrent",
+        "spelling": "--max-concurrent"
+      },
+      "signature": "sha256:d14064af7307d44e154f9e5108e11e68855a2a2c0ffdb0423cf78ba2bf032431"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/set/option-spelling/option:route:entrypoint:base/admission/set/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/admission/set/--yes"
+      ],
+      "route_id": "route:entrypoint:base/admission/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/admission/set/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:e76fee5e965a95fd8ee9e51f3b8ba72ca03fd273e9aa7dc255629bb624f94a01"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/show/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:base/admission/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:b0a4cc7d4e770de25e3f59d49f94ae35c815943418e9e03baecab42dfa7b582f"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/show/option-spelling/option:route:entrypoint:base/admission/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/admission/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:base/admission/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/admission/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:31bde424526be29bc62a64701921a6aae35a3f00fbf5a96eb428b624edb606a5"
+    },
+    {
+      "id": "case:route:entrypoint:base/admission/show/option-spelling/option:route:entrypoint:base/admission/show/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/admission/show/--json"
+      ],
+      "route_id": "route:entrypoint:base/admission/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/admission/show/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:179b9185592703756fb7ed4873166883924042e506a51eb9b67a1b9c0ecf6b69"
+    },
+    {
+      "id": "case:route:entrypoint:base/doctor/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:base/doctor",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:4a12139fddb89885888b6fd9e0f673d983f8a31ac1f1b0c0d6c57239f35e19bc"
+    },
+    {
+      "id": "case:route:entrypoint:base/doctor/option-spelling/option:route:entrypoint:base/doctor/--check/--check",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/doctor/--check"
+      ],
+      "route_id": "route:entrypoint:base/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/doctor/--check",
+        "spelling": "--check"
+      },
+      "signature": "sha256:13eb6d23e1bcd8d91b21f2189af365cff868179a5d14183ecfd36c0d350d3cdb"
+    },
+    {
+      "id": "case:route:entrypoint:base/doctor/option-spelling/option:route:entrypoint:base/doctor/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/doctor/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:base/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/doctor/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:7a51f8e49669b7e0606ed0ca2ec38ce5d27274491ca78d57fdb40c3925809f4a"
+    },
+    {
+      "id": "case:route:entrypoint:base/doctor/option-spelling/option:route:entrypoint:base/doctor/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/doctor/--json"
+      ],
+      "route_id": "route:entrypoint:base/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/doctor/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:893ef3c4e136c44ac11300fd86031c6b0b7b51c55e207b21ad405dfa5387344d"
+    },
+    {
+      "id": "case:route:entrypoint:base/doctor/option-spelling/option:route:entrypoint:base/doctor/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/doctor/--profile"
+      ],
+      "route_id": "route:entrypoint:base/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/doctor/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:aeaffbdbdf295da8daba15841a1d2835f7e740d6a9b6ae75ca20f13b75672e27"
+    },
+    {
+      "id": "case:route:entrypoint:base/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:base/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:7def9dfbf23a9613c84d25f60a32505e992c924ce101f60529a3d1e6fcf32847"
+    },
+    {
+      "id": "case:route:entrypoint:base/list/option-spelling/option:route:entrypoint:base/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:base/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4e45436132d00660638504da6dd33cb55c92d9f2320c0096e35d9922981c1733"
+    },
+    {
+      "id": "case:route:entrypoint:base/list/option-spelling/option:route:entrypoint:base/list/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/list/--profile"
+      ],
+      "route_id": "route:entrypoint:base/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/list/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:bed91ca165816e6e859684f0916f5933e717f18632d0c969d5866a79ef645de4"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/argument-shape/argument:route:entrypoint:base/run/lane",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:base/run/lane"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:base/run/lane"
+      },
+      "signature": "sha256:9bc4ad8566971011bba062fa98414c2ea0d989c122621f42f00c4a29bc9d20e9"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:base/run/--rejudge-outcome",
+        "option:route:entrypoint:base/run/--rejudge"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "any_of": [
+          "--rejudge"
+        ],
+        "kind": "requires",
+        "option": "--rejudge-outcome",
+        "reason": "needs a rejudge id"
+      },
+      "signature": "sha256:0f22d322d920d569bf015c70f2f5b5ff0a7b4eeac30a883f7151dec36fa232e0"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:base/run/lane"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:base/run/lane": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:base/run/lane"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:65d4a1ed329e2e72c11fc1464a41b64433bfb8aa6eb8ec137a6a71fea0244e45"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:10e9af2ae97e3a28f77654f5f733c03666019eb5265d2ff6a057e009b714ef45"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--dry-run"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:62e1bd19e4e4041a94812039b7f1440c2129469225bc9a3d236e5cfc4602e05b"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--json"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:275c2053c56dc84729acd22343040131b557fb8ad7a88e44621e3e0bac7a7486"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--profile"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:9feffa681a7940ce2fd242472045c2a6313ce1c518fa61d3c3f195d0da42c138"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--rejudge-outcome/--rejudge-outcome",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--rejudge-outcome"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--rejudge-outcome",
+        "spelling": "--rejudge-outcome"
+      },
+      "signature": "sha256:c971a9e17959a66b9b78b29029377d6008a89121b45cff3d6fe6611904bf8673"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--rejudge/--rejudge",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--rejudge"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--rejudge",
+        "spelling": "--rejudge"
+      },
+      "signature": "sha256:5c41e56b37a4a3828e291a0cc98ffe98521f9dea46ee55ea73a5480d139c84dd"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--worktree/--worktree",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--worktree"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--worktree",
+        "spelling": "--worktree"
+      },
+      "signature": "sha256:3212bee38f0ce4518d57b1e8ed630454ae790f4fe60450957acfee29a97cac6f"
+    },
+    {
+      "id": "case:route:entrypoint:base/run/option-spelling/option:route:entrypoint:base/run/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:base/run/--yes"
+      ],
+      "route_id": "route:entrypoint:base/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:base/run/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:565f21c80540a884a23e92b561ce44792f26e00072832be7336d04f4b3325a97"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "base",
+    "display_name": "BASE",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:base",
+    "long_name": "Baseline tool",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "base",
+    "single_command": false
+  },
+  "incomplete": [
+    "base admission: delegated parser does not register inherited global option(s): --profile"
+  ],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "admission",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:base/admission",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "admission"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:base/admission/show",
+        "route:entrypoint:base/admission/set"
+      ],
+      "summary": "admission",
+      "synopsis_override": null,
+      "syntax_complete": false,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--max-concurrent",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "limit",
+          "dest": "max_concurrent",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--max-concurrent"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/admission/set/--max-concurrent",
+          "kind": "option",
+          "metavar": "N",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "admission",
+            "set"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "admission",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "admission",
+          "summary": "admission",
+          "synopsis": null
+        }
+      ],
+      "description": "set admission",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:base/admission/set",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "admission"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "admission",
+            "set"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "admission",
+        "set"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "set admission [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": false,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "admission",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "admission",
+          "summary": "admission",
+          "synopsis": null
+        }
+      ],
+      "description": "show admission",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:base/admission/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "admission"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "admission",
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "admission",
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "show admission",
+      "synopsis_override": null,
+      "syntax_complete": false,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "profile name",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/doctor/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--check",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "run only this check (repeatable)",
+          "dest": "check",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--check"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/doctor/--check",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "check this tool's environment and report problems",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:base/doctor",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "doctor"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "doctor"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "check this tool's environment and report problems",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "profile name",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/list/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "list lanes",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:base/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list lanes",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "profile name",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/run/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "lane to run",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:base/run/lane",
+          "kind": "argument",
+          "metavar": "LANE",
+          "minimum_values": 1,
+          "name": "lane",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--worktree",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "worktree",
+          "dest": "worktree",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--worktree"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/run/--worktree",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--rejudge",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "rejudge",
+          "dest": "rejudge",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--rejudge"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/run/--rejudge",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--rejudge-outcome",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "bucket",
+          "dest": "rejudge_outcome",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--rejudge-outcome"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:base/run/--rejudge-outcome",
+          "kind": "option",
+          "metavar": "BUCKET",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [
+        {
+          "any_of": [
+            "--rejudge"
+          ],
+          "kind": "requires",
+          "option": "--rejudge-outcome",
+          "reason": "needs a rejudge id"
+        }
+      ],
+      "delegated_metadata": [],
+      "description": "run a lane",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:base/run",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "run"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "run"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "run a lane [mutating; dry-run; potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": false
+}

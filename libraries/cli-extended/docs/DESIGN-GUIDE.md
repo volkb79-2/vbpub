@@ -123,6 +123,30 @@ line, then the normal product identity and complete command help. This gives
 operators the reason before the longer discovery content without weakening
 the required identity header on help/version output.
 
+## A default verb is a rewrite in front of the parser, not a second parser
+
+Some tools are called `tool NAME [options]` far more often than any verb
+(`run-gate LANE`). Hand-parsing the first token loses the generated help,
+constraints and surface; `VerbSpec(fallback=True)` keeps all three by rewriting
+argv before the one real parser runs. The rewrite is deliberately small: a first
+token that is not a registered verb, delegate, `help` or `version` selects the
+fallback verb, whose name is put FIRST (the root parser accepts no options before
+a verb, the verb's parser accepts every option anywhere). The leading-option scan
+therefore uses the root options plus the fallback verb's own, or
+`tool --worktree X LANE` would stop at `--worktree` and never be rewritten.
+
+Everything ambiguous is left to argparse instead of guessed at: `--`, an
+unknown leading option, a leading `--help`/`--version` and an empty argv are not
+rewritten, so a typo such as `--wrktree` is an ordinary usage error rather than a
+lane named `--wrktree`. A first token that is a typo of a verb (`docter`) becomes
+a lane and the handler refuses it; the library never swallows an error to be
+clever. Because the fallback shares its name space with verbs, a lane named like
+a verb is reachable only through the explicit `tool run NAME` spelling, so the
+consumer should refuse such lane names when it loads them. `run_cli` and
+`RegisteredCli.parse_args` use one helper so tests of the grammar cannot drift
+from what runs. The manifest records the fact as `"fallback": true` on that route
+only, so no other tool's manifest or signatures move.
+
 ## Keep service startup behind argument handling
 
 A CLI entrypoint may also be the command a service manager runs. Keep module
@@ -658,8 +682,13 @@ flow through findings.
 Every tool grew its own `doctor` with its own output and exit rule, so
 operators and CI could not rely on any of them. The shared verb fixes only the
 shell contract: named checks, four statuses, one text line per check, a JSON
-shape, and exit 1 exactly when something failed. What a check inspects stays
-the consumer's decision.
+shape, and a failure exit status exactly when something failed (1 by default;
+`fail_exit_code` lets a tool whose convention reserves 1 use another value in
+1..255, because the status number is a tool-wide convention, not a doctor
+decision). What a check inspects stays the consumer's decision. A check's
+`details` is structured JSON for machines; `lines` is the human counterpart,
+single-line strings printed under the check line, and it reaches JSON only when
+used so a tool that never sets it keeps its exact previous output.
 
 A check that raises is reported as `fail` (`check crashed: <Type>: <message>`)
 and the remaining checks still run. The alternative, letting the exception end

@@ -7,7 +7,47 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
-### Unreleased — library backlog fixes (CX-BACKLOG, 2026-10-06)
+### 0.4.0 — fallback verb and doctor exit code/detail lines (LCR-1, LCR-2)
+
+Library contract version is unchanged (1) and the surface manifest schema is
+unchanged (7). Both additions are opt-in: a tool that uses neither behaves, and
+exports its manifest and doctor JSON, byte-for-byte as before.
+
+- **Fallback ("default") verb (LCR-1).** `VerbSpec(fallback=True)` marks one verb
+  that runs when the first token is not a verb: `tool LANE ...` is `tool run LANE ...`.
+  A registry may have at most one; it must declare at least one `ArgumentSpec`,
+  cannot use `delegate=`, and is refused in a `single_command` registry (`ValueError`).
+  `run_cli` and the new `RegisteredCli.parse_args(argv)` (which runs no handler)
+  share one normalisation: leading options are scanned using the root parser's
+  options **plus** the fallback verb's own, and the fallback name is put
+  **first** (`tool --worktree X LANE` becomes `tool run --worktree X LANE`). A
+  `--` or an unknown leading option, a leading `--help`/`--version`, and an
+  empty argv are never rewritten (empty argv still prints help, exit 0).
+  Registered verbs, delegates, `help` and `version` always win, so a lane named
+  like a verb needs the explicit `tool run NAME` spelling. Errors are never
+  swallowed: `tool docter` becomes `tool run docter` and fails in the handler.
+  `RegisteredCli.fallback_verb` names the verb (`None` when absent).
+- **Help.** The catalog marks the verb `[default verb]`, adds the usage line
+  `tool [options] ARG ...`, and the verb's help shows `Behavior: default verb.`;
+  `help <verb>` works as for any verb.
+- **Surface export.** The route record carries `"fallback": true` only for that
+  verb (the key is absent for every other route), the review text says "a first
+  token that is not a verb selects this verb", and the key is part of the route's
+  review-signature context. A tool without a fallback verb exports an identical
+  manifest, so no `surface sync` is needed on upgrade. `surface check`, `audit`
+  and `assert_cli_contract` work unchanged with a fallback verb present.
+- **`register_doctor(..., fail_exit_code=1)` (LCR-2).** The exit status when any
+  check fails; an integer 1..255 (`ValueError` otherwise, including bools).
+  Clean and warn-only runs still exit 0. The default keeps today's exit 1.
+- **`CheckResult(lines=())` (LCR-2).** Single-line strings printed in human output,
+  indented four spaces under the check line and before `remedy:`. JSON adds a
+  `"lines"` array to a check only when it is non-empty, so the doctor JSON of
+  every existing tool is unchanged. A non-tuple or a multi-line entry is a `ValueError`.
+- **Notes.** `VerbSpec.summary` and the route record's `summary` for the fallback
+  verb now include `default verb` in the bracketed behavior labels; the route's
+  `behavior` list is unchanged (the fallback marker is its own key).
+
+### 0.3.0 — library backlog fixes (CX-BACKLOG, 2026-10-06)
 
 Library contract version is unchanged (1). Behaviour changes a consumer can see:
 
@@ -133,6 +173,38 @@ Behaviour changes a consumer can see:
   `cli-extended surface ...`; the shim is removed in a later release.
 
 <!-- cmru: release history -->
+
+## [0.4.0] - 2026-10-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=99f337081f71a727f868d003dbb81e97bb319524 -->
+
+### Added
+- feat(cli-extended): LCR-2 doctor fail_exit_code and CheckResult.lines (902fef22b)
+- feat(cli-extended): LCR-1 fallback verb, parse_args, surface fallback key (0be95b3b6)
+- feat(cmru): W2-PKG5 item 3: surface lifecycle, reviewed catalog, S-CLI.9 generated region, pytest plugin (7e99b63eb)
+- feat(cmru): W2-PKG0 registry factory and library-selector target adapter (a7272ace5)
+- feat(debian-install-v2): adopt cli-extended as a released wheel (W9b) (2ccb8b65d)
+- feat(cmru)!: retire cmru-agent/controller; CLI-04/05/14/18 + CLI-T1, doc drift (W0-RETIRE) (f6fef1d6b)
+
+### Fixed
+- fix(cmru): W2-PKG5 review round 1 B1 - one domain-error family (CmruError), exit codes per taxonomy, StepFailed; cli-extended backlog CLI-EXT-27..29 (2245651f2)
+- fix(cmru): W2-INTEG review round 1 (C1-C7, run_step removal) (508bc83d6)
+- fix(debian-install-v2): W9b review round 1 (exception boundary tests, https-only, hardening) (e94c30010)
+
+### Changed
+- Merge main into cli-ext-w9b-debian before landing (5d4a86192)
+- Merge main (15b4fbe6a, cli-extended 0.3.0) into cmru-wave-2026-10 (314c275c5)
+- backlog(cli-extended): CLI-EXT-23 error banner after every error, full help on parser errors (netcup LT-NC1 F4/B9) (d157f3ebf)
+
+### Documentation
+- docs(cli-extended): CLIX-04 adversarial review (ACCEPT-conditional) (fa24b7ddf)
+- docs(cli-extended): CLIX-04 report (LCR-1/LCR-2, plants, gate verdicts) (6b00a80fc)
+- docs(cli-extended): 0.4.0 contract notes, fallback verb and doctor lines in README/SPEC/guides (f3013ddb8)
+- docs(cli-extended,nyxloom): record nyxloom's vendoring removal (NL-30 packaging items, program row 3); NL-38 note on the stack move (a6500c523)
+- docs(cli-extended): W9b post-release live verification against cli-extended 0.2.0 (bc54d2977)
+
+### Testing
+- test(cli-extended): point the real-repo cmru skill test at cmru/src/cmru/skills (0b3d0c7c5)
 
 ## [0.3.0] - 2026-10-06
 <!-- cmru: generated -->

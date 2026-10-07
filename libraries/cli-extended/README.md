@@ -139,6 +139,14 @@ distribution and a version file against each other, and
 `unexpected_exceptions="report"` turns unexpected exceptions into a one-line
 error with a `--traceback` escape hatch. The reasons are in the
 [design guide](docs/DESIGN-GUIDE.md#version-sources-must-agree-and-failures-must-be-explicit).
+`VerbSpec(fallback=True)` makes one verb the *default verb* (0.4.0): when the
+first token is not a verb, delegate, `help` or `version`, `tool LANE ...` runs as
+`tool run LANE ...`, leading options included (`tool --worktree X LANE`). At most
+one per registry; it needs an `ArgumentSpec`, cannot use `delegate=`, and is
+refused for `single_command`. `RegisteredCli.parse_args(argv)` applies the same
+normalisation without running a handler, and `RegisteredCli.fallback_verb` names
+it. Help marks it `default verb`, `--`/unknown leading options are never
+rewritten, and the surface record carries `"fallback": true` for that route only.
 Handlers may return `None` for success; `RegisteredCli.run()` converts that to
 process status `0`. Prefer this shared behavior over repeating `return 0` in
 each successful handler. Return a status explicitly only when the command has
@@ -378,7 +386,8 @@ grammar shape, argparse action and converter, choices, defaults, const values,
 exclusive-group requirements, scope, placement, visibility, and help group.
 Each route's `single_command` and `no_args_action` flags are required manifest
 facts; rendering refuses a route record that omits either instead of assuming
-`false`.
+`false`. A route record gains `"fallback": true` only for a fallback verb (the
+key is otherwise absent, so existing manifests do not change).
 Single-command entrypoints list only the built-in help forms they actually
 accept. `cli-extended` also loads a product-owned
 TOML decision catalog, updates a marked Markdown section in the product's
@@ -571,7 +580,10 @@ app = registry.build()
 `<tool> doctor` verb. Each check returns `ok`, `warn`, `fail` or `skip` with a
 summary and optional remedy and JSON details; a crashing check is reported as
 `fail`, never swallowed. It supports `--check NAME` and `--json`, and exits 1
-only when a check failed. A registry that also ships agent skills gets a
+(or `register_doctor(..., fail_exit_code=N)`, 1..255) only when a check failed.
+A check may add `CheckResult(lines=("detail", ...))`: single-line strings printed
+four spaces in under the check line, before the remedy, and added to the JSON
+check as `"lines"` only when non-empty. A registry that also ships agent skills gets a
 `skills` check automatically: `warn` when the skills are merely not installed,
 `fail` when any is stale, modified, foreign, orphaned or left over. The
 [design guide](docs/DESIGN-GUIDE.md#one-doctor-verb-crashes-are-failures)
