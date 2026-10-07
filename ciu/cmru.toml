@@ -49,10 +49,7 @@ signature_name = "manifest.json.minisig"
 # Host enrollment (`get.py enroll`, CIU S14.7) is ciu-owned code inlined into the
 # rendered get.py by cmru's extensions mechanism (cmru W1-CIU-ENROLL, O4).
 # Hardening: CIU-122 / CIU-123.
-# TODO(cmru-6.0 post-release): remove shim. The line `extensions = ["installer/enroll.py"]`
-# is REMOVED here because the OLD cmru 5.5 refuses the unknown key; restore it once cmru 6.0
-# is the installed release. Until then cmru 6.0 renders ciu's get.py WITHOUT the enroll
-# extension, so do not release ciu inside the landing window.
+extensions = ["installer/enroll.py"]
 
 [[project.installer.wheels]]
 path = "vendor/ciu-*.whl"

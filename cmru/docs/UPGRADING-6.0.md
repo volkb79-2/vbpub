@@ -12,9 +12,10 @@ which skips ONLY the R2 mutation campaign by operator decision (2026-10-06); the
 recorded in the retained release evidence (`.assay/mutation-postponed-cmru.json`) and tracked as
 **KI-62**. The R2 run against the `cmru-v6.0.0` tag, and the fixes it backports, follow the release;
 see `KNOWN_ISSUES_TODO_BACKLOG.md` KI-62 for the current state. Until then 6.0.0 has no mutation
-evidence. During the landing window the estate also carries two compatibility shims for a
-not-yet-upgraded 5.5 (`default_projects` in `cmru.orchestration.toml`, and `ciu/cmru.toml` without its
-installer `extensions`); both are marked `TODO(cmru-6.0 post-release): remove shim`.
+evidence. The two landing-window compatibility shims for a not-yet-upgraded 5.5
+(`default_projects` in `cmru.orchestration.toml`, and `ciu/cmru.toml` without its installer
+`extensions`) were removed after the release; the only remaining `TODO(cmru-6.0 post-release)`
+markers belong to KI-62.
 
 cmru 6.0.0 is a **breaking** release: the command line was redesigned (hard renames, no
 compatibility spellings except `release --ref`), the exit-code scheme gained a fifth value, the

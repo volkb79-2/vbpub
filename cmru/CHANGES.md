@@ -36,6 +36,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: generated -->
 <!-- cmru: source-end=e5fed335bb8984369204805f47f682a8416e5349 -->
 
+**Summary (hand-written post-release curation).** cmru 6.0.0 is a breaking release built
+around a redesigned command line (hard renames, a fifth exit code, `cmru-agent` and
+`cmru-controller` retired). It adds the installer and host-enrollment mechanism (W1:
+project-owned `get.py` extensions), makes `cli-extended` a real wheel dependency instead of a
+vendored copy, gives `tester-gate` an `--init` PID 1 plus pids limits and hardened signals, and
+hardens the release gate (secret-overlay inventory, hermetic tests, provisional gate with the
+R2 mutation campaign postponed under KI-62). Upgrade steps and the old-to-new command table are
+in [docs/UPGRADING-6.0.md](docs/UPGRADING-6.0.md); the list below is generated from commit
+subjects only.
+
 ### Added
 - feat(cmru): LANDPREP provisional gate: --postpone-mutation, gate-provisional lane, KI-62 (208c60ba5)
 - feat(cmru): CMRU-FLOOR: cli-extended floor 0.3.0, remove KI-61 tolerance, surface sync (e09438f4a)

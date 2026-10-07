@@ -166,6 +166,53 @@ def test_wheel_oracle_rejects_a_wheel_without_the_packaged_skill(tmp_path):
         smoke.check_wheel_contents(_wheel(tmp_path, skill=False))
 
 
+def _fake_build(raises: bool):
+    """A `_run` stand-in that leaves what an in-tree `pip wheel` leaves behind."""
+
+    def fake_run(argv, *, cwd, env=None):
+        source = Path(argv[-1])
+        (source / "x.egg-info").mkdir()
+        (source / "build").mkdir(exist_ok=True)
+        (source / "build" / "new").write_text("n", encoding="utf-8")
+        if raises:
+            raise RuntimeError("simulated pip failure")
+
+    return fake_run
+
+
+@pytest.mark.parametrize("raises", [True, False], ids=["build-fails", "build-succeeds"])
+def test_wheel_build_cleanup_keeps_a_preexisting_build_dir_and_removes_its_own_egg_info(
+    monkeypatch, tmp_path, raises,
+):
+    source = tmp_path / "src"
+    (source / "build").mkdir(parents=True)
+    (source / "build" / "KEEP").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(smoke, "_run", _fake_build(raises))
+    if raises:
+        with pytest.raises(RuntimeError, match="simulated pip failure"):
+            smoke._build_wheel(source, tmp_path / "wh", cwd=tmp_path)
+    else:
+        smoke._build_wheel(source, tmp_path / "wh", cwd=tmp_path)
+    assert (source / "build" / "KEEP").read_text(encoding="utf-8") == "keep"
+    assert not (source / "x.egg-info").exists()
+
+
+@pytest.mark.parametrize("raises", [True, False], ids=["build-fails", "build-succeeds"])
+def test_wheel_build_cleanup_removes_the_build_dir_and_egg_info_it_created(
+    monkeypatch, tmp_path, raises,
+):
+    source = tmp_path / "src"
+    source.mkdir()
+    monkeypatch.setattr(smoke, "_run", _fake_build(raises))
+    if raises:
+        with pytest.raises(RuntimeError, match="simulated pip failure"):
+            smoke._build_wheel(source, tmp_path / "wh", cwd=tmp_path)
+    else:
+        smoke._build_wheel(source, tmp_path / "wh", cwd=tmp_path)
+    assert not (source / "build").exists()
+    assert not (source / "x.egg-info").exists()
+
+
 def test_wheel_oracle_requires_exactly_one_metadata_file(tmp_path):
     path = tmp_path / "broken-1.0-py3-none-any.whl"
     with zipfile.ZipFile(path, "w") as archive:

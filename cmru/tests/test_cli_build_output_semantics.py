@@ -1458,6 +1458,26 @@ def test_bound_cmru_launcher_precedes_ambient_path_and_checks_identity(monkeypat
         cli._create_bound_cmru_launcher(mismatched)
 
 
+def test_bound_cmru_launcher_identity_refusal_names_the_shadowing_metadata_location(
+    monkeypatch, tmp_path,
+):
+    stale = "/src/cmru/cmru.egg-info"
+
+    def fake_run(argv, **_kwargs):
+        if argv[-1] == "version":
+            return SimpleNamespace(returncode=0, stdout="cmru 5.3.2.dev36\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=stale + "\n", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    launcher_dir = tmp_path / "stale"
+    launcher_dir.mkdir()
+    with pytest.raises(RuntimeError, match="identity verification") as excinfo:
+        cli._create_bound_cmru_launcher(launcher_dir)
+    message = str(excinfo.value)
+    assert f"metadata resolved from {stale}" in message
+    assert "stale egg-info" in message
+
+
 def test_bound_cmru_launcher_imports_only_the_worktree_sibling_source_with_isolated_python(
     monkeypatch, tmp_path,
 ):
