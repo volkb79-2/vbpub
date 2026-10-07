@@ -9,8 +9,10 @@ PROJECT_ROOT = COMPOSE_TEMPLATE.parent
 
 def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
     compose = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
-    defaults = (COMPOSE_TEMPLATE.parent / "ciu.defaults.toml.j2").read_text(
-        encoding="utf-8"
+    defaults = " ".join(
+        (COMPOSE_TEMPLATE.parent / "ciu.defaults.toml.j2")
+        .read_text(encoding="utf-8")
+        .split()
     )
     gate_script = (COMPOSE_TEMPLATE.parent / "tools" / "gate.sh").read_text(
         encoding="utf-8"
@@ -20,8 +22,7 @@ def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
     assert 'network_mode: "none"' in compose
     assert compose.count('pid: "host"') == 1
     assert "CGPROFILE_PID_NAMESPACE_MODE: host" in compose
-    assert "daemon alone" in defaults
-    assert "uses the host PID namespace" in defaults
+    assert "managed service alone joins the host PID namespace" in defaults
     assert 'cgroup: "host"' not in compose
     assert 'network_mode: "host"' not in compose
     assert "source: /proc\n        target: /hostproc\n        read_only: true" in compose
@@ -47,6 +48,7 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    consumers_normalized = " ".join(consumers.split())
     defaults = (PROJECT_ROOT / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
@@ -63,7 +65,7 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "not an independent attestation" in design
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
-    assert "not an independent proof" in consumers
+    assert "not an independent proof" in consumers_normalized
     assert "it is not PID 1 in the host namespace" in defaults
     assert "never joins a host" not in dockerfile
     assert "This image does not" in dockerfile
