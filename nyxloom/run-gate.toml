@@ -40,6 +40,6 @@ assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
 # session-extract's selected current-main R2 boundary has 45 candidates, run
 # two-at-a-time with four pytest workers per candidate. This is the
-# outer/advisory mirror of assay.toml's four-hour campaign budget (raised
-# from 2h by the SUCCESSOR package: 151+ candidates, cap 200, see assay.toml).
-budget = "4h"
+# outer/advisory mirror of assay.toml's six-hour campaign budget (raised
+# from 2h by the SUCCESSOR package: 336 candidates, cap 350, see assay.toml).
+budget = "6h"

@@ -162,7 +162,7 @@ env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # [lanes.session-extract.judge.mutation]). The plan estimates 8640 s wall with two
 # mutation jobs at the 120s per-candidate failsafe (a worst-case bound); allow 3h
 # for baseline, scheduling, and verdict overhead.
-budget = "4h"  # cap 200 x 120s / 2 jobs = 12000s worst case (3h20m) plus overhead
+budget = "6h"  # 336 candidates x 120s / 2 jobs = 20160s worst case (5.6h); a bound, not a measurement
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -191,9 +191,12 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 2
-# Cap 200: 151 candidates were measured at a1bd314d0 (over the old 150 cap) and the
-# round-3 fixes (Intent post-pass, stop-state tail, clarify-declined match) add a few.
-max_mutants = 200
+# Cap 350: the real plan at c4812cbc8 is 336 candidates (`assay plan --allow-dirty` with
+# a temporary cap of 3000: claude_code 89, shellcmd 47, toolresult 40, stopstate 37,
+# compress 28, presets 22, ledger 18, watch 17, render 16, successor 13, config 4,
+# harness 3, follow 2). The earlier "151" was the plan's cap+1 sentinel for "more than
+# the 150 cap", and a cap of 200 reported 201 (the same sentinel), so neither was a count.
+max_mutants = 350
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
