@@ -95,3 +95,14 @@ case passed. A follow-up abort signal prevents a delayed reader from entering
 the drain path during failure cleanup. The full unit module passed (**98
 passed in 12.89s**), Ruff `E4,E7,E9,F` and `git diff --check` passed. The
 corrected exact-tip review and registered gates remain pending.
+
+## Follow-up review of `8fe585ec3`
+
+The independent review found one **P3** cleanup gap: if a bounded join timed
+out, the test could restore its `os.read` and poll instrumentation while the
+reader remained alive. Failure cleanup now sets the abort and stop signals,
+releases the barrier, and waits for the reader to terminate before restoring
+instrumentation. It closes the reused descriptor after termination. The full
+`test_mutation_witness_unit.py` module passed (**98 passed in 13.19s**); Ruff
+`E4,E7,E9,F` and `git diff --check` passed. A fresh exact-tip review and
+registered gates remain pending.

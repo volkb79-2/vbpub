@@ -545,6 +545,7 @@ def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch)
     drain_descriptors: list[int] = []
     drain_close_calls: list[int] = []
     started_threads: list[threading.Thread] = []
+    captures: list[ReceiptCapture] = []
     descriptor_accesses: list[str] = []
     reused_descriptor: int | None = None
 
@@ -554,6 +555,7 @@ def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch)
         return duplicate
 
     def wait_before_drain(capture: ReceiptCapture) -> None:
+        captures.append(capture)
         reader_waiting.set()
         assert release_reader.wait(10.0)
         if abort_reader.is_set():
@@ -653,19 +655,29 @@ def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch)
         abort_reader.set()
         release_reader.set()
         monkeypatch.setattr(threading.Thread, "ident", original_ident)
-        for thread in started_threads:
+        for capture in captures:
+            capture._stop.set()
             try:
-                thread.join(10.0)
+                with capture._drain_fd_lock:
+                    capture._close_drain_fd_locked()
             except BaseException:
                 pass
-        descriptor_to_close = reused_descriptor
-        if descriptor_to_close is None and drain_descriptors:
-            descriptor_to_close = drain_descriptors[0]
-        if descriptor_to_close is not None:
-            try:
-                original_close(descriptor_to_close)
-            except OSError:
-                pass
+        try:
+            for thread in started_threads:
+                # The abort and stop signals make both the barrier and the
+                # production drain loop exit. Keep the instrumentation in
+                # place until the reader has actually terminated.
+                thread.join()
+        finally:
+            descriptor_to_close = reused_descriptor
+            if descriptor_to_close is None and drain_descriptors:
+                descriptor_to_close = drain_descriptors[0]
+            if descriptor_to_close is not None:
+                try:
+                    original_close(descriptor_to_close)
+                except OSError:
+                    pass
+        assert all(not thread.is_alive() for thread in started_threads)
 
 
 def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):
