@@ -2585,8 +2585,18 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1, R2 by ingestion only (B046) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. R3 is not registered |
+| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and are qualified on real Vitest and dstdns source |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
+
+**B087's R3 qualification exercises both adapter transforms through the
+shared isolated canary runner.** `import-break` appends a top-level throw,
+which ES module evaluation reaches when tests import the target;
+`uncovered-line` appends an exported function that no test calls. The
+qualification accepts only the matching `COMMAND_FAILED` or
+`UNCOVERED_LINES` result after a passing control, respectively. The
+real-consumer transcript is in
+`nyxloom-trove/reports/B087-js-r3-qualification.md`; this adds no verdict
+or schema rule.
 
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own

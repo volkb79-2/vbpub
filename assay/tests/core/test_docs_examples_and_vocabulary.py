@@ -215,13 +215,16 @@ def test_assay_cli_skill_capabilities_match_the_current_registry():
     _assert_cli_skill_capability_items(items)
     assert "CONSUMERS" in skill
     readme = README.read_text(encoding="utf-8")
-    assert "JavaScript/TypeScript is supported at **R1 and R2 by ingestion**" in readme
     assert (
-        '`judge.language = "javascript"` resolves at **R1 and R2 by ingestion**.'
+        "JavaScript/TypeScript is supported at **R1, R2 by ingestion, and R3**"
+        in readme
+    )
+    assert (
+        '`judge.language = "javascript"` resolves at **R1, R2 by ingestion, and R3**.'
         in readme
     )
     design = DESIGN_GUIDE.read_text(encoding="utf-8")
-    assert "`javascript` | R1, R2 by ingestion only (B046)" in design
+    assert "`javascript` | R1, R2 by ingestion (B046), R3 canary (B087)" in design
     assert "`go` | R1 only (A-394)" in design
 
 

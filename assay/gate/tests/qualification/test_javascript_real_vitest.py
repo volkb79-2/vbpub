@@ -1,4 +1,4 @@
-"""B041(c) -- qualification: a real Vitest run inside a real assay snapshot.
+"""B041(c)/B087 -- qualification: real Vitest runs inside assay snapshots.
 
 Every earlier JavaScript test -- `test_cli_run_javascript.py`, the R1 end-to-
 end module -- drives `assay run` for real, but the LANE COMMAND itself is a
@@ -8,11 +8,12 @@ process. `tester-unified` has no Node toolchain (DESIGN-GUIDE §10), so this
 cannot be a registered-gate test either. This module is the missing proof:
 skipped everywhere except a real Node/npm environment that explicitly opts
 in, it builds an npm cache from the committed `probe-js` lockfile (B041(a)'s
-offline-install pattern), materialises a real two-commit git fixture, and
-drives the REAL `assay` CLI (`assay.cli.main`, the identical entry point the
-installed `assay` console-script wraps) against a REAL `npx --no-install
-vitest run --coverage` inside assay's own isolated snapshot -- asserting one
-genuine PASS and one genuine FAIL that names the uncovered line.
+offline-install pattern), materialises real two-commit git fixtures, and
+drives the REAL `assay` CLI (`assay.cli.main`, the installed
+`assay` console-script's entry point) against a REAL `npx --no-install
+vitest run --coverage` inside assay's isolated snapshot. The R1 cases assert
+coverage PASS/FAIL results; B087's R3 cases assert both canary transforms'
+cause-specific outcomes plus survivor and broken-control refusals.
 
 Running this for real is also what surfaced B049 (A-347): Vitest's own
 DEFAULT `coverage.clean = true` silently breaks assay's coverage-artifact
@@ -110,7 +111,7 @@ snapshot_selection = "repository"
 [lanes.ui.judge]
 language = "javascript"
 source_roots = ["src"]
-fail_under = 100.0
+fail_under = {floor}
 allow_excluded = false
 base = "{base}"
 
@@ -198,7 +199,13 @@ def npm_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return cache_dir
 
 
-def _seed_project(repo: GitRepo, *, app_ts: str, app_test_ts: str) -> str:
+def _seed_project(
+    repo: GitRepo,
+    *,
+    app_ts: str,
+    app_test_ts: str,
+    extra_sources: dict[str, str] | None = None,
+) -> str:
     """Commit the shared project scaffolding plus one version of the source,
     and return that commit's SHA -- the diff `base`."""
     shutil.copy(_PROBE_JS / "package.json", repo.path / "package.json")
@@ -207,6 +214,8 @@ def _seed_project(repo: GitRepo, *, app_ts: str, app_test_ts: str) -> str:
     repo.write(".gitignore", _GITIGNORE)
     repo.write("src/app.ts", app_ts)
     repo.write("src/app.test.ts", app_test_ts)
+    for path, text in (extra_sources or {}).items():
+        repo.write(path, text)
     return repo.commit_all("base")
 
 
@@ -216,8 +225,42 @@ def _advance(repo: GitRepo, *, app_ts: str, app_test_ts: str) -> None:
     repo.commit_all("advance")
 
 
-def _write_lane(repo: GitRepo, *, cache: Path, base: str) -> Path:
-    path = repo.write("assay.toml", _LANE_TOML.format(cache=cache, base=base))
+def _write_lane(
+    repo: GitRepo,
+    *,
+    cache: Path,
+    base: str,
+    canary_mechanism: str | None = None,
+    canary_target: str = "src/app.ts",
+    fail_under: float = 100.0,
+    include_r1: bool = True,
+) -> Path:
+    lane = _LANE_TOML.format(cache=cache, base=base, floor=fail_under)
+    if canary_mechanism is not None:
+        lane = lane.replace(
+            'rigor = ["R0", "R1"]',
+            'rigor = ["R0", "R1", "R3"]'
+            if include_r1
+            else 'rigor = ["R0", "R3"]',
+        )
+        if not include_r1:
+            lane = lane.replace(f"fail_under = {fail_under}\n", "")
+            lane = lane.replace(f'base = "{base}"\n', "")
+            lane = lane.replace('allow_excluded = false\n', "")
+            lane = lane.replace(
+                '\n[lanes.ui.judge.coverage]\n'
+                'format = "coverage-istanbul-json"\n'
+                'artifact = ".assay/coverage-final.json"\n'
+                'producer = "istanbul"\n',
+                "\n",
+            )
+        lane += (
+            "\n[lanes.ui.judge.canary]\n"
+            f'mechanism = "{canary_mechanism}"\n'
+            f'target = "{canary_target}"\n'
+            'budget_per_attempt = "5m"\n'
+        )
+    path = repo.write("assay.toml", lane)
     # A clean INVOKING checkout, not the snapshot: `assay run`'s own
     # preflight refuses `NO_MEASUREMENT`/`DIRTY_TREE` on an untracked
     # assay.toml exactly as it would on any other untracked file.
@@ -231,6 +274,15 @@ def _run_assay(path: Path) -> tuple[int, dict]:
     stdout, stderr = out.getvalue(), err.getvalue()
     print(f"$ assay run ui --file {path} --verdict-json -\nexit={code}\nSTDERR:\n{stderr}\nSTDOUT:\n{stdout}")
     return code, json.loads(stdout)
+
+
+def _claims_by_rigor(verdict: dict) -> dict[str, dict]:
+    return {claim["rigor"]: claim for claim in verdict["claims"]}
+
+
+def _r3_attempt(verdict: dict) -> tuple[dict, dict]:
+    claim = _claims_by_rigor(verdict)["R3"]
+    return claim, claim["canary"]["attempts"][0]
 
 
 def test_a_real_javascript_lane_passes_end_to_end(git_repo: GitRepo, npm_cache: Path):
@@ -279,3 +331,127 @@ def test_a_real_javascript_lane_fails_and_names_the_uncovered_line(
     assert r1["coverage"]["missing_lines"] == {"src/app.ts": [7]}
     assert r1["coverage"]["executable"] == 4
     assert r1["coverage"]["covered"] == 3
+
+
+def test_real_vitest_import_break_canary_is_caught_for_command_failure(
+    git_repo: GitRepo, npm_cache: Path
+):
+    base = _seed_project(git_repo, app_ts=_ADD_ONLY, app_test_ts=_ADD_ONLY_TEST)
+    _advance(git_repo, app_ts=_ADD_AND_MULTIPLY, app_test_ts=_ADD_AND_MULTIPLY_TEST)
+    path = _write_lane(
+        git_repo,
+        cache=npm_cache,
+        base=base,
+        canary_mechanism="import-break",
+    )
+
+    code, verdict = _run_assay(path)
+
+    assert code == 0, verdict
+    assert verdict["outcome"] == "PASS"
+    r3, attempt = _r3_attempt(verdict)
+    assert r3["status"] == "PASS"
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["transformed_outcome"] == "FAIL"
+    assert attempt["expected_reason_code"] == "COMMAND_FAILED"
+    assert attempt["observed_reason_code"] == "COMMAND_FAILED"
+
+
+def test_real_vitest_uncovered_line_canary_is_caught_by_coverage(
+    git_repo: GitRepo, npm_cache: Path
+):
+    base = _seed_project(git_repo, app_ts=_ADD_ONLY, app_test_ts=_ADD_ONLY_TEST)
+    _advance(git_repo, app_ts=_ADD_AND_MULTIPLY, app_test_ts=_ADD_AND_MULTIPLY_TEST)
+    path = _write_lane(
+        git_repo, cache=npm_cache, base=base, canary_mechanism="uncovered-line"
+    )
+
+    code, verdict = _run_assay(path)
+
+    assert code == 0, verdict
+    assert verdict["outcome"] == "PASS"
+    r3, attempt = _r3_attempt(verdict)
+    assert r3["status"] == "PASS"
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["transformed_outcome"] == "FAIL"
+    assert attempt["expected_reason_code"] == "UNCOVERED_LINES"
+    assert attempt["observed_reason_code"] == "UNCOVERED_LINES"
+
+
+def test_an_import_break_not_reached_by_the_tests_is_reported_as_survived(
+    git_repo: GitRepo, npm_cache: Path
+):
+    base = _seed_project(
+        git_repo,
+        app_ts=_ADD_ONLY,
+        app_test_ts=_ADD_ONLY_TEST,
+        extra_sources={"src/unimported.ts": "export function dormant() { return 1 }\n"},
+    )
+    _advance(git_repo, app_ts=_ADD_AND_MULTIPLY, app_test_ts=_ADD_AND_MULTIPLY_TEST)
+    path = _write_lane(
+        git_repo,
+        cache=npm_cache,
+        base=base,
+        canary_mechanism="import-break",
+        canary_target="src/unimported.ts",
+    )
+
+    code, verdict = _run_assay(path)
+
+    assert code != 0
+    assert verdict["outcome"] == "FAIL"
+    r3, attempt = _r3_attempt(verdict)
+    assert r3["status"] == "FAIL"
+    assert r3["reason_code"] == "CANARY_SURVIVED"
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["expected_reason_code"] == "COMMAND_FAILED"
+    assert attempt["observed_reason_code"] != "COMMAND_FAILED"
+
+
+def test_an_uncovered_line_canary_survives_when_the_coverage_floor_is_zero(
+    git_repo: GitRepo, npm_cache: Path
+):
+    base = _seed_project(git_repo, app_ts=_ADD_ONLY, app_test_ts=_ADD_ONLY_TEST)
+    _advance(git_repo, app_ts=_ADD_AND_MULTIPLY, app_test_ts=_ADD_AND_MULTIPLY_TEST)
+    path = _write_lane(
+        git_repo,
+        cache=npm_cache,
+        base=base,
+        canary_mechanism="uncovered-line",
+        fail_under=0.0,
+    )
+
+    code, verdict = _run_assay(path)
+
+    assert code != 0
+    assert verdict["outcome"] == "FAIL"
+    r3, attempt = _r3_attempt(verdict)
+    assert r3["status"] == "FAIL"
+    assert r3["reason_code"] == "CANARY_SURVIVED"
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["expected_reason_code"] == "UNCOVERED_LINES"
+    assert attempt["transformed_outcome"] == "PASS"
+
+
+def test_a_broken_control_never_passes_the_r3_canary(
+    git_repo: GitRepo, npm_cache: Path
+):
+    base = _seed_project(git_repo, app_ts=_ADD_ONLY, app_test_ts=_ADD_ONLY_TEST)
+    broken_tests = _ADD_AND_MULTIPLY_TEST.replace("toBe(6)", "toBe(7)")
+    _advance(git_repo, app_ts=_ADD_AND_MULTIPLY, app_test_ts=broken_tests)
+    path = _write_lane(
+        git_repo,
+        cache=npm_cache,
+        base=base,
+        canary_mechanism="import-break",
+        include_r1=False,
+    )
+
+    code, verdict = _run_assay(path)
+
+    assert code != 0
+    assert verdict["outcome"] == "FAIL"
+    r3, attempt = _r3_attempt(verdict)
+    assert r3["status"] == "INCONCLUSIVE"
+    assert r3["reason_code"] == "CANARY_INCONCLUSIVE"
+    assert attempt["control_outcome"] == "FAIL"

@@ -1536,16 +1536,17 @@ in `nyxloom-trove/4-backlog.md`:
   *narrows* the check, and `sql:drop-check` also rewrites `CREATE POLICY ...
   WITH CHECK`; the operator names describe the common case only.
 
-## JavaScript/TypeScript lanes (R1, and R2 by ingestion)
+## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 
 `judge.language = "javascript"` is a changed-line lane over
 `.js`/`.jsx`/`.ts`/`.tsx` — one language name for all four. It resolves at
-**R1** (coverage) and, since schema v9, at **R2 by evidence ingestion** — your
-own argv runs StrykerJS inside the snapshot and assay judges the report
-([below](#r2-for-javascript-by-ingesting-strykers-report-b046)). Assay still
-ships no JS/TS mutation engine, so a *native* R2 lane is still refused. **R3
-is unwired**, and a lane declaring it is refused `ERROR`/`BAD_LANE_CONFIG`
-before anything runs.
+**R1** (coverage), **R2 by evidence ingestion** — your own argv runs StrykerJS
+inside the snapshot and assay judges the report
+([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
+by the existing cause-sensitive canary runner. Assay still ships no JS/TS
+mutation engine, so a *native* R2 lane is still refused. B087 qualified both
+canary mechanisms against real Vitest and dstdns source through the shipped
+zipapp; see the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
 
@@ -1584,6 +1585,69 @@ export default defineConfig({
 `json-summary` (totals only, no per-file detail) or `lcov` (a different
 registry format — if you prefer it, declare `format = "lcov"` instead and
 point at `lcov.info`).
+
+### Add an R3 canary to a JavaScript lane
+
+R3 checks that the lane's command catches a deliberately injected cause. Use
+`import-break` when the test suite imports the target file; it must make the
+command fail with `COMMAND_FAILED`. Use `uncovered-line` when the lane also
+declares R1 coverage; the appended function body must make R1 fail with
+`UNCOVERED_LINES`. Choose a tracked source file that the lane's tests import;
+do not point the canary at a test file.
+
+This complete schema-v2 lane uses the existing Vitest installation in the
+clean invoking checkout through `link_paths`. Keep `coverage.clean = false`
+in `vitest.config.ts` as shown above. Replace the target with a real
+test-imported file and measure the command duration before setting the
+budgets:
+
+```toml
+schema_version = 2
+
+[lanes.ui]
+scope = "S1"
+rigor = ["R0", "R1", "R3"]
+enforcement = "gate"
+argv = ["npx", "--no-install", "vitest", "run", "--coverage"]
+env = {}
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui.isolation]
+snapshot_selection = "repository"
+link_paths = ["node_modules"]
+
+[lanes.ui.judge]
+language = "javascript"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+base_source = "request"
+
+[lanes.ui.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = ".assay/coverage-final.json"
+producer = "istanbul"
+
+[lanes.ui.judge.canary]
+mechanism = "uncovered-line"
+target = "src/app.ts"
+budget_per_attempt = "15m"
+```
+
+`budget_per_attempt` bounds one target's control and transformed runs;
+the lane `budget` also includes the ordinary baseline run. For one target,
+expect one baseline run plus two isolated command runs. Each additional
+target adds two more full command runs. `import-break` and `uncovered-line`
+are separate lane declarations because a lane names one mechanism.
+
+Run a request-based lane with the gate's selected base and retain progress:
+
+```bash
+mkdir -p .assay
+assay run ui --request-base "$BASE" --resume --progress .assay/progress-ui.jsonl --verdict-json .assay/verdict-ui.json
+```
 
 **`clean: false` is RECOMMENDED for any lane assay judges — and if you
 forget it, assay now names the cause instead of reporting no coverage
