@@ -174,6 +174,38 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.4.0] - 2026-10-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=99f337081f71a727f868d003dbb81e97bb319524 -->
+
+### Added
+- feat(cli-extended): LCR-2 doctor fail_exit_code and CheckResult.lines (902fef22b)
+- feat(cli-extended): LCR-1 fallback verb, parse_args, surface fallback key (0be95b3b6)
+- feat(cmru): W2-PKG5 item 3: surface lifecycle, reviewed catalog, S-CLI.9 generated region, pytest plugin (7e99b63eb)
+- feat(cmru): W2-PKG0 registry factory and library-selector target adapter (a7272ace5)
+- feat(debian-install-v2): adopt cli-extended as a released wheel (W9b) (2ccb8b65d)
+- feat(cmru)!: retire cmru-agent/controller; CLI-04/05/14/18 + CLI-T1, doc drift (W0-RETIRE) (f6fef1d6b)
+
+### Fixed
+- fix(cmru): W2-PKG5 review round 1 B1 - one domain-error family (CmruError), exit codes per taxonomy, StepFailed; cli-extended backlog CLI-EXT-27..29 (2245651f2)
+- fix(cmru): W2-INTEG review round 1 (C1-C7, run_step removal) (508bc83d6)
+- fix(debian-install-v2): W9b review round 1 (exception boundary tests, https-only, hardening) (e94c30010)
+
+### Changed
+- Merge main into cli-ext-w9b-debian before landing (5d4a86192)
+- Merge main (15b4fbe6a, cli-extended 0.3.0) into cmru-wave-2026-10 (314c275c5)
+- backlog(cli-extended): CLI-EXT-23 error banner after every error, full help on parser errors (netcup LT-NC1 F4/B9) (d157f3ebf)
+
+### Documentation
+- docs(cli-extended): CLIX-04 adversarial review (ACCEPT-conditional) (fa24b7ddf)
+- docs(cli-extended): CLIX-04 report (LCR-1/LCR-2, plants, gate verdicts) (6b00a80fc)
+- docs(cli-extended): 0.4.0 contract notes, fallback verb and doctor lines in README/SPEC/guides (f3013ddb8)
+- docs(cli-extended,nyxloom): record nyxloom's vendoring removal (NL-30 packaging items, program row 3); NL-38 note on the stack move (a6500c523)
+- docs(cli-extended): W9b post-release live verification against cli-extended 0.2.0 (bc54d2977)
+
+### Testing
+- test(cli-extended): point the real-repo cmru skill test at cmru/src/cmru/skills (0b3d0c7c5)
+
 ## [0.3.0] - 2026-10-06
 <!-- cmru: generated -->
 <!-- cmru: source-end=0321ffc3c7009b31f17b3320611ad74a19567345 -->
