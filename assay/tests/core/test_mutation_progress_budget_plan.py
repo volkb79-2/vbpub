@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import io
 import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import pytest
@@ -30,7 +32,7 @@ from assay.mutation import (
     run_mutation,
 )
 from assay import mutation as mutation_module
-from assay.runner import CommandResult, execute_command
+from assay.runner import CommandResult, default_process_runner, execute_command
 
 
 _TEXT = (
@@ -1398,12 +1400,8 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
         )
 
     assert result is not None and not isinstance(result, str)
-    # The pre-existing "a = False" -> TimeoutExpired candidate still trips
-    # `budget_exceeded` regardless of the DERIVED number's exact value: this
-    # fake runner decides on file content, not on the timeout it was handed
-    # -- the SAME evidence `test_per_candidate_budget_marks_one_mutant_and_
-    # continues` reads for an explicit duration, reused here to prove the
-    # derived path enforces exactly the same way.
+    # This fake runner proves the derived timeout is delivered and reported;
+    # the real-child test below separately proves the child wait enforces it.
     assert len(result.budget_exceeded) == 1
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == expected
@@ -1417,6 +1415,70 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
     assert plan_event["derived"] is True
     assert plan_event["budget_per_candidate_s"] == expected
     assert plan_event["baseline_s"] >= 0.0
+
+
+def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeypatch):
+    """The auto-derived timeout reaches the real process wait boundary.
+
+    Keep the derived value short in this boundary test; the independent
+    formula test above pins the shipped derivation. The sleeping child would
+    leave a marker after its normal completion, so its absence after that
+    point proves timeout cleanup killed the process group.
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    marker = tmp_path / "late-child-marker"
+    progress_path = tmp_path / ".assay" / "real-child.progress.jsonl"
+    derived_timeout = 0.15
+    monkeypatch.setattr(
+        mutation_module,
+        "auto_budget_per_candidate_seconds",
+        lambda baseline_s: derived_timeout,
+    )
+    script = (
+        "from pathlib import Path\n"
+        "import time\n"
+        "source = Path('pkg/flags.py').read_text(encoding='utf-8')\n"
+        "if 'a = False' in source:\n"
+        "    time.sleep(1.0)\n"
+        f"    Path({str(marker)!r}).write_text('finished', encoding='utf-8')\n"
+    )
+    lane = make_lane(argv=(sys.executable, "-c", script))
+    candidate_timeouts: list[float | None] = []
+
+    def run_real_candidate(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        candidate_timeouts.append(timeout)
+        return default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=run_real_candidate)
+    assert baseline.outcome is Outcome.PASS
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=5.0),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=run_real_candidate,
+            clock=lambda: datetime.now(timezone.utc),
+            budget_per_candidate_auto=True,
+            progress_artifact=progress_path,
+        )
+
+    assert result is not None and not isinstance(result, str)
+    assert len(result.budget_exceeded) == 1
+    assert len(result.survived) == 1
+    assert result.budget_per_candidate_derived_s == derived_timeout
+    assert candidate_timeouts == [derived_timeout, derived_timeout]
+    time.sleep(1.0)
+    assert not marker.exists(), "timed-out candidate child outlived process-group cleanup"
 
 
 def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):

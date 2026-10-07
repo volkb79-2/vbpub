@@ -42,6 +42,7 @@ document, independently worded) refuse.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 
@@ -50,6 +51,7 @@ from conftest import native_mutation, native_outcome, mutation_verdict_fixture, 
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
+from assay import verify
 from assay.verdict import (
     Claim,
     Judgment,
@@ -700,6 +702,68 @@ def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_proof_source(
         "raw verifier accepted an equivalent bucket with no declared "
         "equivalence_artifact"
     )
+
+
+def test_reserved_equivalence_ledger_passes_model_schema_and_raw_verifier(
+    validator: Draft202012Validator,
+):
+    """The v15 wire reservation remains independently verifiable while the
+    producer stays disabled until P10a/P10b. This positive ledger PASS keeps
+    schema, model reconstruction and raw verification from all rejecting the
+    reserved shape by default."""
+    document = mutation_verdict_fixture("r2_pass_equivalence_ledger")
+
+    _validate(document, validator)
+    verdict = verify._reconstruct_verdict(document)
+    assert verdict.judgment.r2.equivalence_ledger.entry_count == 1
+    failures: list[str] = []
+    verify._check_v15_r2_command(document, failures)
+    assert failures == []
+    assert verify_document(document) == []
+    assert document["outcome"] == "PASS"
+    assert len(document["claims"][1]["mutation"]["killed"]) == 1
+    assert len(document["claims"][1]["mutation"]["equivalent"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "schema_valid", "raw_fragment"),
+    [
+        ("sha256", "not-a-digest", False, "digests must be SHA-256 values"),
+        ("entry_count", 2, True, "entry_count differs from equivalent outcomes"),
+    ],
+)
+def test_reserved_equivalence_ledger_rejects_invalid_ledger_facts_at_each_layer(
+    validator: Draft202012Validator,
+    field: str,
+    value: object,
+    schema_valid: bool,
+    raw_fragment: str,
+):
+    document = mutation_verdict_fixture("r2_pass_equivalence_ledger")
+    broken = copy.deepcopy(document)
+    broken["judgment"]["r2"]["equivalence_ledger"][field] = value
+
+    if schema_valid:
+        _validate(broken, validator)
+    else:
+        assert why_invalid(validator, broken)
+    with pytest.raises((TypeError, ValueError)):
+        verify._reconstruct_verdict(broken)
+    failures: list[str] = []
+    verify._check_v15_r2_command(broken, failures)
+    assert any(raw_fragment in failure for failure in failures), failures
+
+
+def test_equivalence_ledger_and_artifact_are_refused_by_model_and_raw_verifier():
+    document = mutation_verdict_fixture("r2_pass_equivalence_ledger")
+    broken = copy.deepcopy(document)
+    broken["judgment"]["r2"]["equivalence_artifact"] = ".assay/schema-dump.sql"
+
+    with pytest.raises(ValueError, match="both equivalence_artifact and equivalence_ledger"):
+        verify._reconstruct_verdict(broken)
+    failures: list[str] = []
+    verify._check_v15_r2_command(broken, failures)
+    assert any("cannot accompany equivalence_artifact" in failure for failure in failures)
 
 
 def test_o9_negative_c_a_python_operator_declared_on_a_sql_lane(

@@ -196,3 +196,27 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - Next: commit these repairs, obtain the required fresh Sol xhigh review, then
   run `tester-unified` and `self-qualification-preflight` on the reviewed tip.
   B118 remains the prerequisite before B131.
+
+## Clean-tip review follow-up — 2026-10-07
+
+- Sol xhigh review of `37470c55f81ce095af60d5059daeffdd2cb65939` found two
+  oracle gaps, with no observed production defect: the reserved
+  `equivalence_ledger` had no valid positive verdict through schema, model,
+  and raw verification; the auto-budget test's fake runner raised its timeout
+  without consulting the supplied duration.
+- Added the hand-written `r2_pass_equivalence_ledger.json` control and
+  independent checks for schema/model/raw acceptance, malformed ledger facts,
+  and ledger-plus-artifact refusal. The test comment preserves the boundary:
+  wire verification is covered; B105 ledger production remains disabled.
+- Added a real sleeping candidate child under a short test-derived automatic
+  bound. The test verifies the derived duration reaches both candidates, the
+  slow candidate is classified `budget_exceeded`, and the child does not
+  survive process-group cleanup. The existing formula test remains the oracle
+  for the shipped derivation.
+- Focused suite in the estate venv: **108 passed in 55.23s** across verdict
+  artifacts, candidate budgets, raw B105 verification, and B114 real runs.
+  This is diagnostic evidence, not a registered gate. No container, full
+  registered gate, or B105 R2 campaign ran in this step.
+- Next: commit the review closure, obtain a fresh exact-tip Sol xhigh review,
+  then run the registered `tester-unified` and
+  `self-qualification-preflight` lanes. B118 remains a B131 prerequisite.

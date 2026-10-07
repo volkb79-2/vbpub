@@ -916,6 +916,7 @@ MUTATION_VERDICT_FIXTURES: dict[str, Path] = {
     name: VERDICT_FIXTURE_DIR / f"{name}.json"
     for name in (
         "r2_pass",
+        "r2_pass_equivalence_ledger",
         "r2_fail_mutants_survived",
         "r2_inconclusive_no_mutants",
         "r2_budget_exceeded_lane_timeout",
