@@ -8188,6 +8188,24 @@ def assay_state_root(repo: Path, env: dict | None = None) -> Path:
     return Path(configured) if configured is not None else repo / ".run-gate"
 
 
+def ensure_default_assay_state_root(path: Path) -> None:
+    """Create and validate Run-Gate's default, repo-owned state mount.
+
+    Container lanes mount this directory before launch; a bare-host Assay
+    lane has no mount builder, so its first run must establish the same
+    durable root itself. Do not accept a symlink or another existing object
+    as that root: it is also the in-container pytest temporary root.
+    """
+    try:
+        path.mkdir(exist_ok=True)
+        info = path.lstat()
+    except OSError as exc:
+        raise GateError(f"cannot create or inspect default Assay state root "
+                        f"{path}: {exc}") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        fail(f"default Assay state root {path} is not a real directory")
+
+
 def assay_state_root_remedy(state_root: Path, env_name: str,
                             env: dict | None) -> str:
     """Name a repair that matches whether the mount path is configurable."""
@@ -8355,6 +8373,8 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
                   f"{state_root} and the nearest existing directory for "
                   f"{state_dir} are writable on this host", flush=True)
             return
+        if (env or {}).get("state_root") is None:
+            ensure_default_assay_state_root(state_root)
     else:
         probe_argv = build_env_probe_argv(
             docker or "docker", env, env_name, repo, worktree, env_source,
@@ -8801,7 +8821,16 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
         run_argv += ["--rejudge", ",".join(rejudge)]
     if selective.get("rejudge_outcome"):
         run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
-    parts.append(f"{command} {shlex.join(run_argv)}")
+    # RG-85: the test command needs a real, writable path inside the selected
+    # checkout mount. A literal such as `/worktree/.run-gate` is not a
+    # namespace fact: tester-unified runs at the mounted checkout's actual
+    # path, which varies by host and worktree. Derive both values from the
+    # state mount already verified above; the consumer assay.toml forwards
+    # these names through its explicit env_passthrough list.
+    quoted_temp_root = shlex.quote(str(state_root_path))
+    parts.append(f"TMPDIR={quoted_temp_root} "
+                 f"GIT_CEILING_DIRECTORIES={quoted_temp_root} "
+                 f"{command} {shlex.join(run_argv)}")
     return " && ".join(parts)
 
 
@@ -9141,12 +9170,11 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
     # `<common>/worktrees` read-only with its real contents, own admin dir rw
     mounts += git_worktrees_mount_flags(plan, repo)
     mounts += git_config_overlay_flags(plan, repo)
-    if with_state and (env or {}).get("state_root") is None \
-            and plan["kind"] != "plain":
+    if with_state and (env or {}).get("state_root") is None:
         state = repo / ".run-gate"
         if create_state:
-            state.mkdir(exist_ok=True)
-        if state.is_dir():
+            ensure_default_assay_state_root(state)
+        if state.is_dir() and plan["kind"] != "plain":
             mounts += _dual(state, repo)
     return mounts
 

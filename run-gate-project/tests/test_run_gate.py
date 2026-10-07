@@ -2003,6 +2003,8 @@ class TestArgvConstruction:
         assert "--file assay.toml --verdict-json .assay/verdict-ciu.json" in inner
         assert "/opt/tester-venv/bin/python tools/assay/assay-6.1.0.pyz run ciu" \
             in inner
+        assert f"TMPDIR={repo / '.run-gate'}" in inner
+        assert f"GIT_CEILING_DIRECTORIES={repo / '.run-gate'}" in inner
         assert f"verdict artifact: {proj}/.assay/verdict-ciu.json" in proc.stdout
 
     def test_exit_status_passthrough_no_masking(self, tmp_path, monkeypatch):
@@ -3245,6 +3247,49 @@ def test_assay_inner_has_git_config_global():
         {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
         Path("/proj"), Path("/repo"))
     assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+
+
+def test_assay_inner_derives_test_temp_and_git_ceiling_from_state_root(tmp_path):
+    repo = tmp_path / "checkout with spaces"
+    project = repo / "run-gate-project"
+    state_root = repo / "durable state"
+    inner = run_gate.build_assay_inner(
+        {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+        project, repo, state_root=state_root)
+    assignment = shlex.quote(str(state_root))
+    assert f"TMPDIR={assignment}" in inner
+    assert f"GIT_CEILING_DIRECTORIES={assignment}" in inner
+    assert "/worktree/.run-gate" not in inner
+
+
+def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(tmp_path):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, SIMPLE_LANE)
+    state_root = repo / ".run-gate"
+    assert not state_root.exists()
+    run_gate.assure_assay_state_root(
+        None, {"kind": "assay", "assay_lane": "r1"}, {},
+        "bare-host", "bare host", repo, project, repo, "")
+    assert state_root.is_dir()
+
+
+def test_default_assay_state_root_refuses_symlink(tmp_path):
+    repo = make_repo(tmp_path)
+    project = make_project(repo, SIMPLE_LANE)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repo / ".run-gate").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(run_gate.GateError, match="not a real directory"):
+        run_gate.assure_assay_state_root(
+            None, {"kind": "assay", "assay_lane": "r1"}, {},
+            "bare-host", "bare host", repo, project, repo, "")
+
+
+def test_default_assay_state_root_creation_error_is_named(tmp_path):
+    missing_parent = tmp_path / "missing" / ".run-gate"
+    with pytest.raises(run_gate.GateError,
+                       match="cannot create or inspect default Assay state root"):
+        run_gate.ensure_default_assay_state_root(missing_parent)
 
 
 def test_source_backed_assay_inner_installs_selected_worktree_source():
@@ -7576,10 +7621,10 @@ class TestShippedGateFullDeclaration:
         for name in ("r1", "r2"):
             assert cfg["lanes"][name]["argv"][0] \
                 == "/opt/tester-venv/bin/python"
-            assert cfg["lanes"][name]["env"]["TMPDIR"] \
-                == "/worktree/.run-gate"
-            assert cfg["lanes"][name]["env"]["GIT_CEILING_DIRECTORIES"] \
-                == "/worktree/.run-gate"
+            assert "TMPDIR" not in cfg["lanes"][name]["env"]
+            assert "GIT_CEILING_DIRECTORIES" not in cfg["lanes"][name]["env"]
+            assert {"PATH", "TMPDIR", "GIT_CEILING_DIRECTORIES"} <= set(
+                cfg["lanes"][name]["env_passthrough"])
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"
@@ -24996,6 +25041,16 @@ class TestRgNarrowMounts:
         run_gate.container_mount_flags(repo, wt, {}, with_state=True,
                                        create_state=True)
         assert (repo / ".run-gate").is_dir()
+
+        # A plain checkout is already mounted wholesale, but a fresh
+        # opt-in Assay lane still needs the default state root to exist.
+        plain_base = tmp_path / "plain"
+        plain_base.mkdir()
+        plain = make_repo(plain_base)
+        monkeypatch.setenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, "1")
+        run_gate.container_mount_flags(plain, plain, {}, with_state=True,
+                                       create_state=True)
+        assert (plain / ".run-gate").is_dir()
 
     def test_plain_checkout_is_refused_without_opt_in(
             self, tmp_path, monkeypatch):

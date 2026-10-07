@@ -102,7 +102,7 @@ SPEC §9.
 | RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
 | RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | FIXED by RG-87 (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36; recurred 2026-10-06 22:51) |
 | RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
-| RG-85 | assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it) | Minor | OPEN |
+| RG-85 | assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it) | Minor | FIXED in RG-55 candidate: derive both pytest/Git paths from the verified state root, create the default root before fresh container or bare-host lanes |
 | RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test are in the candidate; final package acceptance and release pending) |
@@ -5797,16 +5797,16 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-85 — assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it)
 
-**Status:** OPEN. Filed 2026-10-06 during the 23.10.0 release-prep review (`run-gate-2310-adopt`). Severity Minor: the release gate (`selftest`) is unaffected, because it creates its own scratch root.
+**Status:** FIXED in the RG-55 candidate. Filed 2026-10-06 during the 23.10.0 release-prep review (`run-gate-2310-adopt`). Severity Minor: the release gate (`selftest`) is unaffected, because it creates its own scratch root.
 
 **Observed.**
 - `assay.toml:43` and `:84` set `TMPDIR` and `GIT_CEILING_DIRECTORIES` to `/worktree/.run-gate`.
 - In a fresh checkout that directory does not exist. Python silently ignores a nonexistent `TMPDIR`, so tests fall back to `/tmp`.
 - Result: `assay-r1 --base main` failed with 116 tests, and it returned NOT_RUN when no writable `.run-gate` state mount existed. Both passed once `.run-gate/` was created by hand.
 
-**Fix direction.** Either give the assay lanes the same `mkdir -p .run-gate` prelude that the selftest lane got in 23.10.0 (`623332171`), or have run-gate create the lane scratch root before it launches any lane.
+**Fix.** Run-Gate creates and validates its default `.run-gate/` root before container mounting or a fresh bare-host Assay launch. `build_assay_inner` derives `TMPDIR` and `GIT_CEILING_DIRECTORIES` from that same verified mount path; the consumer assay.toml explicitly passes both values through to pytest. This avoids both the missing-directory fallback and the old guessed `/worktree/.run-gate` namespace path.
 
-**Oracles.** From a fresh `git worktree add` of main, with no `.run-gate/` present, `assay-r1 --base main` reaches PASS with no manual setup. A plant that drops the prelude, or the pre-launch creation, fails a test.
+**Oracles.** Unit tests require fresh bare-host state-root creation, reject a symlink root, pin both derived environment assignments, and require R1/R2 to pass them through. The registered assay-r1 lane must PASS from a fresh checkout with no manual setup; removing root creation or either derived assignment must fail a targeted test and this live lane.
 
 ## RG-87 — `shim_dir_of` wrote test shims into the first writable real `$PATH` directory and replaced the operator's real `assay` with a fabricating fake
 

@@ -7443,3 +7443,25 @@ RW-434's settled combined first cgprofile `1.0.0` release plan rather than
 accepting CMRU's metadata-derived `0.1.0`; when acceptance is complete use
 the supported CMRU release flow with explicit `--set-version 1.0.0`. Release
 Run-Gate as 23.10.1 after its gates/review. No release was performed here.
+
+### RW-477 — 2026-10-07 10:57:32 UTC — diagnose R1 environment failure and repair RG-85
+
+The `gate-full` attempt on `3dad739281c4a33bbcf471093ac38f3dd5c39592`
+completed its selftest, then `assay-r1` failed after 285.7 seconds: 1,585
+passed, 116 failed, 2 skipped, and one error. The failures exercised real
+`/proc/self/mountinfo` translation from pytest fixture repositories. The
+configured `TMPDIR` and Git ceiling were the guessed `/worktree/.run-gate`,
+so pytest actually fell back to private `/tmp/pytest-of-tester`; those fixture
+paths had no host bind mapping. This is an environment/contract failure, not
+evidence that the 116 assertions found product regressions. The exact verdict,
+progress, and failed-run evidence are preserved under `.assay/` and
+`.run-gate/failed/`.
+
+The candidate now closes RG-85 at the shared Run-Gate/Assay boundary: derive
+both variables from the verified state mount, pass them explicitly through
+the Run-Gate assay declaration, create the default state directory for a
+fresh container or bare-host Assay lane, and refuse a symlink in its place.
+Regression tests cover derived paths, fresh-root creation, non-directory
+refusal, and the R1/R2 passthrough contract. `assay-r1` must be rerun on the
+committed candidate; RG-85 is not treated as accepted until that live lane
+passes.
