@@ -32,6 +32,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.1.0] - 2026-10-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e2f2cf6ba4b47ae2fce63b1f64bfc2ee2000dc8 -->
+
+### Added
+- feat(cmru): CMRU-CREDPASS: hand release credentials to the transaction child over a private pipe, never copy a secret file into the worktree (4bcfee24a)
+
+### Changed
+- chore(cmru): post-6.0.0 cleanup: remove landing shims, KI-65..68, bound-launcher refusal names the metadata location, 6.0.0 summary (2ecc41d5e)
+
+### Documentation
+- docs(cmru): KI-64 notes RG-NARROW shipped in run-gate 23.10.0; fix heading spacing and trailing newline (f9e40314b)
+- docs(cmru): renumber CREDPASS backlog entry KI-63 to KI-64 and note it in KI-65 (KI-63 is the walk hotfix) (5272c18ce)
+- docs(cmru): CMRU-CREDPASS report (50f01d224)
+
+### Testing
+- test(cmru): cover the unrunnable metadata probe branch of the launcher refusal (940d642ce)
+
 ## [6.0.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=e5fed335bb8984369204805f47f682a8416e5349 -->
