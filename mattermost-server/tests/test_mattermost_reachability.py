@@ -1,4 +1,4 @@
-"""Tests for mattermost/tools/mm_reachability.py.
+"""Tests for mattermost-server/tools/mm_reachability.py.
 
 A fake stack dir (fake ciu.toml + fake secrets) and a fake Docker/HTTP world:
 no network, no docker. All secret values below are fake.

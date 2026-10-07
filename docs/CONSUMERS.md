@@ -154,7 +154,7 @@ Mattermost password or PAT) into `.env`:
 
 ```bash
 sed -i 's/^NOTIFY_BACKEND=.*/NOTIFY_BACKEND=mattermost/' .env
-webhook_url=$(cat ../../mattermost/.ciu/secrets/installer_webhook_url)
+webhook_url=$(cat ../../mattermost-server/.ciu/secrets/installer_webhook_url)
 sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .env
 ```
 

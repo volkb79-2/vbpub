@@ -1,6 +1,6 @@
 # ─── PRE-RENDERED from ciu.compose.yml.j2 (defaults) — keep in sync ─────────
 # Plain-compose FALLBACK only. The PRIMARY, supported deploy path is
-# `ciu up --dir mattermost -y` (see README.md): that is the path
+# `ciu up --dir mattermost-server -y` (see README.md): that is the path
 # that applies the governance overlay. This file exists for the case ntfy's
 # sibling documents — a stale workspace ciu.env — and carries ABSOLUTE
 # PHYSICAL host paths, because compose here runs against the HOST docker
@@ -18,7 +18,7 @@
 # (the ciu path injects it via the S4.19 expose_env hatch; plain compose has
 # no such injection):
 #
-#   export MM_DB_PASSWORD="$(sudo cat /home/vb/volkb79-2/vbpub/mattermost/.ciu/secrets/mattermost/postgres_password)"
+#   export MM_DB_PASSWORD="$(sudo cat /home/vb/volkb79-2/vbpub/mattermost-server/.ciu/secrets/mattermost/postgres_password)"
 #   docker compose -f docker-compose.yml -p nyxloom-mattermost up -d
 #
 # Container names differ from the ciu path on purpose (nyxloom-mattermost vs
@@ -52,7 +52,7 @@
 # fails with `could not create config file: ... permission denied`. Create
 # them first:
 #
-#   P=/home/vb/volkb79-2/vbpub/mattermost
+#   P=/home/vb/volkb79-2/vbpub/mattermost-server
 #   docker run --rm -v "$P":/t alpine:3.20 sh -c '
 #     mkdir -p /t/vol-postgres-data /t/vol-mattermost-config /t/vol-mattermost-logs
 #     chown 70:994   /t/vol-postgres-data     && chmod 0700 /t/vol-postgres-data
@@ -63,7 +63,7 @@
 # not 999, which is the Debian one.)
 #
 # THIS FILE IS MAIN-CHECKOUT-ONLY. The three bind paths above are hardcoded
-# absolutes under `/home/vb/volkb79-2/vbpub/mattermost/`, because a
+# absolutes under `/home/vb/volkb79-2/vbpub/mattermost-server/`, because a
 # pre-rendered fallback has no ciu render context to resolve a stack-relative
 # path with. The ciu path resolves its hostdirs RELATIVE to whichever stack
 # directory it is invoked from, so running THIS file from a worktree writes
@@ -108,7 +108,7 @@ services:
       - postgres_password
     volumes:
       # nyxloom-P107: bind mount, SHARED with the ciu path (see header).
-      - /home/vb/volkb79-2/vbpub/mattermost/vol-postgres-data:/var/lib/postgresql/data
+      - /home/vb/volkb79-2/vbpub/mattermost-server/vol-postgres-data:/var/lib/postgresql/data
     expose:
       - "5432"
     networks:
@@ -209,8 +209,8 @@ services:
     volumes:
       # nyxloom-P107: config + logs are bind mounts, SHARED with the ciu
       # path (see header); data stays a project-scoped named volume.
-      - /home/vb/volkb79-2/vbpub/mattermost/vol-mattermost-config:/mattermost/config
-      - /home/vb/volkb79-2/vbpub/mattermost/vol-mattermost-logs:/mattermost/logs
+      - /home/vb/volkb79-2/vbpub/mattermost-server/vol-mattermost-config:/mattermost/config
+      - /home/vb/volkb79-2/vbpub/mattermost-server/vol-mattermost-logs:/mattermost/logs
       - mattermost-data:/mattermost/data
       - mattermost-plugins:/mattermost/plugins
       - mattermost-client-plugins:/mattermost/client/plugins
@@ -245,4 +245,4 @@ secrets:
   # ABSOLUTE PHYSICAL host path (DooD). ciu's GEN_LOCAL project store, as
   # materialized from the MAIN checkout's ciu root.
   postgres_password:
-    file: /home/vb/volkb79-2/vbpub/mattermost/.ciu/secrets/mattermost/postgres_password
+    file: /home/vb/volkb79-2/vbpub/mattermost-server/.ciu/secrets/mattermost/postgres_password

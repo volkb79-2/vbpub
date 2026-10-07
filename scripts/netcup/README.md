@@ -198,7 +198,7 @@ spelling remains an alias for `--config FILE`.
 The installer supports one selected notification backend: `telegram`,
 `mattermost`, or `none`. There is no backend unless a credential or `notify_backend` is configured (then notifications are off); when `notify_backend` is unset it is inferred from the one credential present (both present is a config error). The Debian wizard offers Mattermost first. `notify_host_label` is validated (`[A-Za-z0-9 ._:/-]`, max 64) and rejected otherwise. For the
 public Mattermost deployment described by
-[`mattermost/CONSUMER.md`](../../mattermost/CONSUMER.md), use
+[`mattermost-server/CONSUMER.md`](../../mattermost-server/CONSUMER.md), use
 the producer's incoming-webhook secret in the local `.env`. The externally
 reachable host is `mattermost.gstammtisch.dchive.de`:
 
@@ -211,7 +211,7 @@ From this checkout, the local secret file can provide the value without
 committing it:
 
 ```bash
-webhook_url=$(cat ../../mattermost/.ciu/secrets/installer_webhook_url)
+webhook_url=$(cat ../../mattermost-server/.ciu/secrets/installer_webhook_url)
 sed -i 's/^NOTIFY_BACKEND=.*/NOTIFY_BACKEND=mattermost/' .env
 sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .env
 ```

@@ -132,8 +132,9 @@ tag = "v{version}"
 
 # The `oci.postgres` (16-alpine, rolling) and `oci.mattermost` (>=11.10.1)
 # version targets lived here while the Mattermost stack was nyxloom/mattermost.
-# The stack moved to its own project at <vbpub>/mattermost (MM-MOVE), which
-# owns both image pins (mattermost/ciu.defaults.toml.j2); re-declare the two
+# The stack moved to its own project at <vbpub>/mattermost-server (MM-MOVE,
+# renamed from <vbpub>/mattermost by MM-RENAME), which
+# owns both image pins (mattermost-server/ciu.defaults.toml.j2); re-declare the two
 # targets in that project's cmru.toml when it gets one (later package).
 
 [versions.targets."oci.pwmcp"]

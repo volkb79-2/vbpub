@@ -21,7 +21,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/mattermost && \"$TESTER_VENV/bin/python\" -m pytest tests -q -p no:cacheprovider --cov=hooks --cov=tools --cov-branch --cov-report=term-missing",
+    "cd {worktree}/mattermost-server && \"$TESTER_VENV/bin/python\" -m pytest tests -q -p no:cacheprovider --cov=hooks --cov=tools --cov-branch --cov-report=term-missing",
 ]
 clean_tree = false
 budget = "5m"

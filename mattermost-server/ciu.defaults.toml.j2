@@ -459,7 +459,7 @@ url_base = "internal"
 # The `rest` read transport's credential. Minted by the hook through S9.4a
 # for the same reason as the webhook URLs: it does not exist until Mattermost
 # mints it, so no S4 directive can express it. Lands in the STACK store at
-# `mattermost/.ciu/secrets/intake_pat`, 0440, gitignored by `**/.ciu/`.
+# `mattermost-server/.ciu/secrets/intake_pat`, 0440, gitignored by `**/.ciu/`.
 #
 # REQUIRES `[mattermost].enable_user_access_tokens = true` (which drives
 # MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS). While that is false this entry

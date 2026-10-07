@@ -40,7 +40,7 @@ handoff/P18-decision-chat-bridge.md + nyxloom-trove/nyxloom.toml [notify]):
    cutover (P106/P107, NL-17). ntfy is retired; `[notify] backend =
    "mattermost"` names a SINGLE outbound channel, delivered through one
    incoming webhook that Mattermost binds to one channel at creation time
-   (mattermost/ciu.defaults.toml.j2: `daemon_webhook_url` ->
+   (mattermost-server/ciu.defaults.toml.j2: `daemon_webhook_url` ->
    `alerts`; the only other minted webhook, `installer_webhook_url` ->
    `installs`, belongs to the host-installer identity and is deliberately
    not a member of `alerts`). There is NO webhook for a separate feedback/

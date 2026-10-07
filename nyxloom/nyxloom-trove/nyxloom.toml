@@ -197,7 +197,7 @@ backend = "mattermost"
 # NTFY_URL). ciu's provisioning hook mints the webhook and persists the URL
 # to the stack secret store; export it from there:
 #
-#   export NYXLOOM_WEBHOOK_URL="$(cat mattermost/.ciu/secrets/daemon_webhook_url)"
+#   export NYXLOOM_WEBHOOK_URL="$(cat mattermost-server/.ciu/secrets/daemon_webhook_url)"
 #
 # It posts as the `nyxloom-daemon` account (a real, non-admin identity with
 # its own credential) — which is why `mattermost_username` is deliberately
@@ -225,14 +225,14 @@ feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectio
 # `rest` is the interchangeable alternative and needs a PAT plus
 # `[mattermost].enable_user_access_tokens = true`; switch with
 # `transport = "rest"` (or, for one run, `nyxloomctl intake-bridge poll --transport
-# rest`) once `mattermost/README.md`'s enable-PATs recipe has been run.
+# rest`) once `mattermost-server/README.md`'s enable-PATs recipe has been run.
 #
 # NEITHER credential is here, and neither may ever be: the PAT and the reply
 # webhook URL are both bearer secrets. Export them from the stack store, the
 # same way NYXLOOM_WEBHOOK_URL is exported above:
 #
-#   export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat mattermost/.ciu/secrets/intake_webhook_url)"
-#   export NYXLOOM_INTAKE_MM_TOKEN="$(cat mattermost/.ciu/secrets/intake_pat)"
+#   export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat mattermost-server/.ciu/secrets/intake_webhook_url)"
+#   export NYXLOOM_INTAKE_MM_TOKEN="$(cat mattermost-server/.ciu/secrets/intake_pat)"
 #
 # The ingress is CLOSED until NYXLOOM_CHANNEL_OPERATOR_ID names the operator the
 # channel's write ACL belongs to — an intake turn opens D-NNN decisions and
@@ -244,13 +244,13 @@ team = "nyxloom"
 channel = "intake"
 # `container` and `base_url` are DELIBERATELY UNSET (MM-MOVE, 2026-10-07).
 # Mattermost moved out of nyxloom's ciu root to its own root at
-# <vbpub>/mattermost, so its container name is derived from that root's
+# <vbpub>/mattermost-server, so its container name is derived from that root's
 # `deploy.project_name` + `$INSTANCE_ID` and changes whenever the instance is
 # regenerated. A literal here is a stale copy by construction (that is what
 # NL-38 recorded: the 1dd3d1 -> 3oqua1 regeneration broke it silently), so no
 # value is hard-coded. NL-38 owns the real fix: resolve both at poll time via
 # `ciu resolve`. Until that lands, the bridge needs these two keys supplied
-# (uncomment and fill from `mattermost/tools/mm_reachability.py` output for the
+# (uncomment and fill from `mattermost-server/tools/mm_reachability.py` output for the
 # live instance, or `docker ps`), or it refuses to poll.
 # container = "<resolved at cutover; see NL-38>"
 # base_url = "<rest transport only; the stack's private-bridge address>"
