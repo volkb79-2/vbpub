@@ -7768,3 +7768,13 @@ advanced the release entry to RG-89/rev57; the historical RG-88 entry itself
 is correct and remains unchanged. Updated only the active-entry comment and
 assertion to RG-89. The correction is committed separately and requires a
 fresh exact-tree selftest; no other Run-Gate gate is accepted from this run.
+
+### RW-493 — 2026-10-07 19:02:10 UTC — pass Run-Gate exact-tree selftest
+
+The corrected selftest passed on commit `3a9553f64` in 153.17 seconds:
+1,737 passed, 2 skipped, one existing pytest deprecation warning. Changed-line
+coverage was 33/33 executable lines and 22/22 branches. The lane used the
+declared tester-unified container with 1 GiB memory, 16 GiB swap, and 3 CPUs
+under `dev-gates.slice`; the daemon's optional DAMON start still returned
+`EBUSY`. Exact-tree Assay R1/R3, R2 after observer deployment, Run-Gate
+full-gate, and review remain pending.
