@@ -106,3 +106,14 @@ instrumentation. It closes the reused descriptor after termination. The full
 `test_mutation_witness_unit.py` module passed (**98 passed in 13.19s**); Ruff
 `E4,E7,E9,F` and `git diff --check` passed. A fresh exact-tip review and
 registered gates remain pending.
+
+## Final exact-tree review — `d324754c8669296e46555434499c07bbed73e9c1`
+
+The complete committed tree difference from main's B114 integration commit
+`2dd9b784f31d298f68a6e4e762051df6e7e2f3f6` received a read-only Sol xhigh
+review through `.codex2`. The reviewer reported **no findings**. The branch does
+not contain `2dd9b784` as an ancestor, so the review compared the two committed
+trees directly; it also inspected the branch history. `HEAD` was
+`d324754c8669296e46555434499c07bbed73e9c1` and `git status --short` was empty
+both before and after review. The review made no file changes. Merge and
+registered gates on the resulting main revision remain pending.
