@@ -1,4 +1,12 @@
-# B110-P3c — Liveness window lane keys with guardrails, and their v14 disclosure
+# B110-P3c — Liveness window lane keys with guardrails, and their v15 disclosure
+
+## Current contract reconciliation — 2026-10-07
+
+The disclosure target is verdict v15; v14 shipped in Assay 8.0.0. This work is
+part of the single CIU-managed `assay-b114-cold-witness` branch. B112/P1 and
+B113/P2 acceptance must precede moving the real-child tests; B113's source
+guards already on main are not by themselves evidence that its watchdog oracle
+is complete. See `../assay-B114-PLAN-2026-10-07.md`.
 
 **Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).** Round 1 applied P3C-1..P3C-8, the wrong anchors, and carver decision C17. Round 2 applied P3C2-1, P3C2-2 and C30:
 - the properties return `float | None`;

@@ -1,4 +1,14 @@
-# B110-P3d — B105 gate passes `--cold-witness`; source-bound report checker binds the v14 evidence and the campaign deadline
+# B110-P3d — B105 gate passes `--cold-witness`; source-bound report checker binds the v15 evidence and the campaign deadline
+
+## Current contract reconciliation — 2026-10-07
+
+This gate/report binding targets verdict v15; v14 shipped in Assay 8.0.0.
+Implement it on the CIU-managed `assay-b114-cold-witness` branch after B117/P6
+and the B114 producer are present. Keep the independent source-bound checker
+refusing all non-null ledger declarations until P10a's REVISE findings are
+resolved and P10b is separately implemented. The current release gate remains
+tester-unified; the B105 full-source self-qualification is a separately invoked
+campaign requiring its bounded pilot/go decision.
 
 **Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md).** Round 1 applied P3D-1..P3D-6, the wrong anchors, and carver decision C9. Round 2 applied P3D2-1 (the `sed` extraction is mandated and the stub python prints an integer), P3D2-2 (the zz_slow test path) and P3D2-3 (C12 limited to survived and witness-cold), plus C30 (tests are found by name after P1).
 

@@ -1,5 +1,35 @@
 # B110-P3b — R2 command transform, no-coverage R2 baseline, cold witness producer
 
+## Current contract reconciliation — 2026-10-07
+
+This package now targets verdict v15 (v14 is already shipped in Assay 8.0.0)
+and judge identity `/8` (the current label is `/7`). The active implementation
+is in the CIU-managed `assay-b114-cold-witness` worktree. B112/P1, B117/P6 and
+B115/P4 are included in the same serial wave before this package changes the
+executor; B113/P2's already merged code must be checked against its remaining
+acceptance oracle.
+
+**Cause-sensitive kill rule, superseding the fallback table below:** a positive
+exit status does not prove a test call failed. A cold attempt can be `killed`
+only when the trusted receipt proves the failed pytest *call* and matches the
+no-coverage R2 baseline's collection and hook/runtime facts, its started prefix
+reaches exactly the failed node, process and session exits are both 1, and no
+signal, termination request, cgroup resource event, collection/setup/teardown
+failure, auxiliary failure, or other uncertainty is present. A declared-command
+fallback can be `killed` only with equivalent trusted call-phase proof against
+the coverage baseline. The one known pinned pytest-cov wrapper condition may
+make the cold receipt unsupported; it permits the single declared fallback but
+does not weaken the declared call-phase proof.
+
+If the declared attempt exits unsuccessfully without that proof, it is
+`crashed`/`ERROR/EXEC_FAILED`, or the existing whole-lane infrastructure error
+is used when that is the actual cause. Do not retry beyond the one declared
+attempt. Add paired positive and negative oracles: a real call-phase failure
+kills; collection, setup, teardown, auxiliary, invalid/missing receipt,
+signal, termination, and cgroup-event cases never kill. Preserve B145 sampling
+around each attempt, and never use a zero cgroup delta as proof of a test
+failure.
+
 *Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md). Round 3: P3B3-1 (every `LANE_TIMEOUT` source in steps 2–4, including the snapshot-preparation timer, maps to `R2BaselineTimeoutError`), P3B3-2 (the timeout oracle's fake runner raises `TimeoutExpired`, keyed on the manifest env; `deadline=`/`progress_phase=`), and the C22 trust-widening residual. Round 1: P3B-1..P3B-13 and carver decisions C1, C2, C3 (consistency with P6), C10 and C15. Round 2: P3B2-1..P3B2-9 and carver decisions C21 (the R2-baseline timeout is whole-lane), C22 (declared-survivor proof), C23 (the pinned `run_mutation` order) and C30 (P4 in the v14 base; tests found by name after P1).*
 
 | Field | Value |

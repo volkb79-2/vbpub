@@ -1,4 +1,37 @@
-# B110-P3a — Verdict schema v14 hard cut: model, schema, verifier, fixtures, carve assets
+# B110-P3a — Verdict schema v15 hard cut: model, schema, verifier, fixtures, carve assets
+
+## Current contract reconciliation — 2026-10-07
+
+This addendum supersedes the package's v14 target and branch protocol below.
+Assay 8.0.0 already shipped v14, so this package implements the v14 → v15 hard
+cut on the CIU-managed `assay-b114-cold-witness` branch. The combined B114 work
+is serial in that worktree; it does not create or rebase the historical
+`assay-b110-v14` branch. Judge identity advances from `/7` to `/8`, and mutation
+state schema remains 1.
+
+P10a's independent Sol xhigh review returned **REVISE**. Use only the existing
+`BLOCKED-PARTIAL` escape: bound the reserved ledger anchor as a UTF-8 string,
+without claiming P10a's grammar or resolution contract. Keep ledger production
+absent and have the B105 report checker refuse every non-null ledger until P10a
+has a new READY review, committed E1–E6 probe results, and operator ratification
+of its pending choices. The reserved ledger wire may omit B145
+`resource_limit_evidence` only for an unexecuted `equivalent` outcome with
+`execution.mode == "ledger"`; every executed native candidate still requires
+the exact B145 counter evidence. Never fabricate zero counters for an
+unexecuted candidate.
+
+All version-specific targets in this brief advance by one: v14 becomes v15,
+and the shipped v14 is the old side of the hard cut. W9 remains frozen and W10
+is the new B114/v15 evidence asset; there is no W11 in this cut.
+`test_verdict_v14_successors.py` becomes the v15 successor test. Keep W9 intact
+and do not restore retired Topos or historical W9/W10 gate steps. The current
+tester-unified gate discovers the test suite directly; do not invent an
+obsolete `verdict-v14-successors` marker sequence.
+
+The v15 implementation carries B145 intact, including judge identity `/8` and
+per-attempt resource sampling. B112/P1 and B113/P2 must precede the P3c test
+moves; B117/P6 and B115/P4 are included before P3b edits the executor. See the
+current sequence in `../assay-B114-PLAN-2026-10-07.md`.
 
 *Revised 2026-09-28 after round-1 and round-2 reviews (see REVIEW-2026-09-28-round1.md, REVIEW-2026-09-28-round2.md). Round 1: P3A-1..P3A-13 and carver decisions C1, C9, C10 (the X8 split), C15. Round 2: P3A2-1..P3A2-4, the P3A-13 residual, and C23/C30 (pinned `run_mutation` order; tests are found by name after P1's `tests/zz_slow/` moves).*
 

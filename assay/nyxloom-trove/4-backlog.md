@@ -207,11 +207,11 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B109 — opt-in, dependency-aware carry-forward of unaffected B106 kills — OPEN (filed 2026-09-26 at operator request)
 - B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN, split 2026-09-28 into B111–B121 (plan `reports/assay-B110-PLAN-2026-09-28.md`; analysis `reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; decisions A-465–A-474). B110 keeps the pilot and go/no-go.
 
-**B110 split (filed 2026-09-28; briefs in `reports/b110/`; not yet dispatched)**
+**B110 split (filed 2026-09-28; briefs in `reports/b110/`; active B114 wave resumed 2026-10-07)**
 - B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — OPEN
 - B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — OPEN (after B111's leak fix)
 - B113 — P2 loop-progress guards — OPEN
-- B114 — P3 verdict v14 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (integration branch `assay-b110-v14`; after B120's anchor design)
+- B114 — P3 verdict v15 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (CIU worktree `assay-b114-cold-witness`; P10a is REVISE, using P3a's partial anchor path; P10b remains blocked)
 - B115 — P4 work-queue executor — OPEN
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
 - B117 — P6 persisted campaign deadline + process-group termination — OPEN
@@ -11444,9 +11444,9 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - [ ] Deterministic oracles for each guarded site.
 - [ ] tester-unified and preflight PASS.
 
-## B114 — B110 P3: verdict v14 cold-witness kills with a proven no-coverage R2 command
+## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
-**Status: OPEN (filed 2026-09-28; A-469/A-470/A-471; briefs `reports/b110/P3a-v14-schema-verify.md`, `P3b-r2-command-cold-witness.md`, `P3c-liveness-lane-keys.md`, `P3d-gate-report-binding.md`; integration branch `assay-b110-v14`).**
+**Status: OPEN (filed 2026-09-28; resumed 2026-10-07; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-cold-witness`; v15 replaces the already shipped v14 target).**
 
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
@@ -11456,16 +11456,34 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - per-candidate `evidence`;
 - `witness-cold` and `ledger` execution modes;
 - `judgment.r2.{cold_witness_kills, r2_command, liveness.cpu_window_s/idle_floor_s, equivalence_ledger}`;
-- judge identity `/3`;
+- judge identity `/8` (current `/7` after B145; mutation-state schema remains 1);
 - lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
-- B105 gate flag and source-bound report binding.
+- B105 gate flag and source-bound report binding;
+- B112/P1 suite scope and B117/P6 persisted deadline as direct prerequisites;
+- B115/P4 bounded work queue before P3b edits the executor loop;
+- audit the merged B111/P0 and B113/P2 implementations against their remaining acceptance oracles before closing those entries.
+
+The P10a Sol xhigh review returned **REVISE**. B114 uses only P3a's documented
+partial ledger-anchor path. The ledger envelope is reserved, but ledger
+production and audit remain unavailable; the B105 checker refuses non-null
+ledger use until P10a's probes, design review, and pending operator choices are
+complete. Only an unexecuted `equivalent` outcome with `execution.mode =
+"ledger"` may omit B145's per-execution resource counters; executed native
+outcomes retain the exact B145 contract.
+
+The declared fallback is cause-sensitive. A nonzero exit alone does not prove a
+test call failed: a kill requires a trusted receipt proving call-phase failure
+and matching the relevant baseline, with a valid started prefix, consistent
+process/session exits, and no setup, collection, teardown, auxiliary, signal,
+termination, or cgroup resource cause. Uncertain attempts never count as kills.
 
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
-- [ ] One v14 hard cut, with golden fixtures, W9 frozen and W10 added.
-- [ ] The v13 → v14 cold start.
+- [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
+- [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
+- [ ] Direct prerequisite acceptance for B112, B115, and B117; B111/P0 and B113/P2 closed only on exact gate evidence.
 - [ ] Docs are synced.
-- [ ] One tester-unified and one preflight PASS after the integration branch merges.
+- [ ] One tester-unified and one self-qualification-preflight PASS on the final reviewed merge commit.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
 
@@ -11713,7 +11731,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: OPEN, after the v14 wave (Wave A CD17).** The analysis package (A-478) gets an R0+R1 whole-target lane in Wave A. Add a mutation lane over its own suite once cold-witness kills make that cheap. Its ≈317 candidates then have their own evidence instead of none.
+**Status: OPEN, after B114 v15 and the B118 bounded pilot (Wave A CD17).** The analysis package (A-478) has an R0+R1 whole-target lane. Add a mutation lane over its own suite after cold-witness support and bounded pilot tooling are available. Recount candidates from the actual plan; the historical ≈317 estimate is not a current measurement.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 
