@@ -20,9 +20,7 @@ export function hasRole(role: UserRole | null | undefined, minRole: UserRole): b
 }
 
 
-Object.defineProperty({}, Symbol(), {
-  value: function (value = 0) {
-    const doubled = value * 2 // assay-canary: executed by no test
-    return doubled
-  },
-})
+;(() => function (value = 0) {
+  const doubled = value * 2 // assay-canary: executed by no test
+  return doubled
+})()

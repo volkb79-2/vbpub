@@ -262,7 +262,8 @@ def build_parser() -> argparse.ArgumentParser:
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
             "order or retry anything. This build evaluates R0, Python R1, "
-            "Python R2, Python R3, JavaScript R1, Go R1, and SQL R2."
+            "Python R2, Python R3, JavaScript R1, JavaScript R2 by evidence "
+            "ingestion, JavaScript R3, Go R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -774,11 +775,12 @@ def _built_in_registry() -> registry.Registry:
        ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` -- a stated absence of
        capability, never a PASS.
 
-    **B087 registers JavaScript at R3 after the producer was qualified.** The
-    real Vitest canary pair and dstdns UI qualification are recorded in
-    ``nyxloom-trove/reports/B087-js-r3-qualification.md``. The same adapter
-    now reaches R3 through the existing isolated producer path; no verdict or
-    schema change was needed.
+    **B087 registers JavaScript at R3 through the existing producer path.**
+    Real-Vitest fixture oracles exercise both canary mechanisms. The current
+    uncovered-line transform's dstdns qualification is pending; the report in
+    ``nyxloom-trove/reports/B087-js-r3-qualification.md`` archives an earlier
+    attempt that used a different transform and did not retain its verdicts.
+    No verdict or schema change was needed for the registration.
     """
     return registry.new_registry(
         registry.RegistryEntry(

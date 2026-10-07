@@ -103,3 +103,7 @@ workflows. If a lane's declared rigor tier isn't in this list for its
 language, that's a real capability gap to check `assay lanes --json` for (the
 "which rigor levels THIS build reaches" field), not something to route around
 silently.
+
+JavaScript R3 is registered and locally exercised. B087's current uncovered-
+line transform still needs retained dstdns qualification; the archived first
+attempt used an earlier transform and is not current qualification evidence.

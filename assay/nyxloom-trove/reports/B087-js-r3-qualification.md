@@ -6,22 +6,29 @@
 
 **Historical qualification:** operator-reported PASS for both JavaScript R3 mechanisms; the detailed verdicts and verifier results were not retained.
 
-**Current status:** this report describes the pre-review implementation. The
-CommonJS-compatible follow-up has not yet been requalified against dstdns; do
-not treat B087 as real-consumer-qualified until both lanes are rerun and their
-verdicts and `assay verify` transcripts are retained.
+**Current status:** this report archives the original attempt. The current
+CommonJS/global-shadowing/lint-compatible follow-up has not been requalified
+against dstdns. Do not treat B087 as real-consumer-qualified until both lanes
+are rerun against the current transform and their full verdicts and separate
+`assay verify` transcripts are retained.
 
-## Source and judge identity
+## Original run identity (operator-reported)
 
-- Assay zipapp: `8.0.1.dev32+gcac4a92f8`
-- Zipapp SHA-256: `2498cf249f3c598216414da844f4b80faf6a5cc7f17f864a84ad47426a3e4abb`
-- dstdns `main` before and after qualification: `305d85198bc121d3142ff4091cb1f2be821c6232`
-- Real comparison base: `fc75306035e8ffe6493417839649f09fec174991`
-- Clean judged commit in the disposable dstdns worktree: `e84c936b155f153e9e8d3183f92d7fca92dd7ba1`
-- Assay resolved the declared base to `fc75306035e8ffe6493417839649f09fec174991` (`merge-base`). The judged commit contains only temporary qualification lane declarations on top of dstdns `main`; the production source is byte-identical to dstdns `main`.
-- Target: `applications/webapp-ui-react/src/api/queries/domains.ts`. The real test files `src/api/queries/__tests__/domains.test.ts` and `domainIdentity.test.ts` import it as `../domains`.
+The following identity and coverage details are transcribed from the original
+operator record. The retained lane logs show only the outer PASS, judged
+commit, and argv; the detailed verdicts were removed with the disposable
+checkout, so the original judge-provenance binding and coverage counts cannot
+be independently confirmed from the surviving artifacts.
 
-The real range changes the target and its imported callers/tests. With the dstdns `ui_unit` source roots and Istanbul coverage policy, Assay judged 29 executable changed lines: all 29 were covered, and all 16 reported branches were covered.
+- Reported Assay zipapp: `8.0.1.dev32+gcac4a92f8`
+- Reported zipapp SHA-256: `2498cf249f3c598216414da844f4b80faf6a5cc7f17f864a84ad47426a3e4abb`
+- Reported dstdns `main` before and after qualification: `305d85198bc121d3142ff4091cb1f2be821c6232`
+- Reported real comparison base: `fc75306035e8ffe6493417839649f09fec174991`
+- Reported clean judged commit in the disposable dstdns worktree: `e84c936b155f153e9e8d3183f92d7fca92dd7ba1`
+- The original operator report says Assay resolved the declared base to `fc75306035e8ffe6493417839649f09fec174991` (`merge-base`) and the judged commit contained only temporary qualification lane declarations on top of dstdns `main`.
+- Reported target: `applications/webapp-ui-react/src/api/queries/domains.ts`. The real test files `src/api/queries/__tests__/domains.test.ts` and `domainIdentity.test.ts` imported it as `../domains`.
+
+The original operator report says the real range changed the target and its imported callers/tests. With dstdns `ui_unit` source roots and Istanbul coverage policy, it records 29 executable changed lines all covered and 16 reported branches all covered.
 
 ## Execution
 
@@ -39,10 +46,12 @@ Outer commands, run serially through dstdns's main `gate-slot.sh` wrapper:
   --base fc75306035e8ffe6493417839649f09fec174991
 ```
 
-Each temporary command lane invoked the built zipapp directly with its
-`assay.toml` lane, `--request-base`, `--require-judge-provenance`, `--resume`,
-and a gitignored `.assay/progress-<lane>.jsonl` stream and verdict destination.
-The verdict's provenance matched the zipapp version and SHA-256 above.
+The original operator notes say each temporary command lane invoked the built
+zipapp directly with its `assay.toml` lane, `--request-base`,
+`--require-judge-provenance`, `--resume`, and a gitignored
+`.assay/progress-<lane>.jsonl` stream and verdict destination. They report that
+the verdict provenance matched the zipapp version and SHA-256 above, but the
+verdict files needed to verify that match were not retained.
 
 ## Original run observations (not independently retained)
 
@@ -70,16 +79,20 @@ fields in the table are operator-reported and were not preserved for review.
 
 ## Cleanup and limits
 
-`ciu worktree rm assay-b087-js-r3-qual -y` removed the disposable checkout,
-its 14 containers, project volumes, and network. Exact branch/instance
-container, volume, and network prefixes were then confirmed absent. dstdns
-`main` remained clean at `305d85198bc121d3142ff4091cb1f2be821c6232`.
+The original operator reports that `ciu worktree rm assay-b087-js-r3-qual -y`
+removed the disposable checkout, its 14 containers, project volumes, and
+network; exact branch/instance resource prefixes were then confirmed absent.
+dstdns `main` was reported clean at
+`305d85198bc121d3142ff4091cb1f2be821c6232`.
 
-The dstdns run-gate profiler printed a cleanup warning on both runs
-(`NoneType` during profiler cleanup; no profile recorded). This did not change
-either Assay verdict or run-gate exit status. The warning belongs to the
-qualification runner, not the Assay result.
+The original operator also reports that the dstdns run-gate profiler printed a
+cleanup warning on both runs (`NoneType` during profiler cleanup; no profile
+recorded). They observed no change to either Assay verdict or run-gate exit
+status; that observation is not independently verifiable from the retained
+logs.
 
-This closes B087's real-consumer qualification acceptance. The requested
-independent Sol xhigh review and Assay's registered gate remain pending. The
-branch is not merged or released while B114 and B131 integrate first.
+This is an archival record of the first attempt; it does not close B087's
+acceptance. The current implementation remains unqualified against dstdns
+until both canary lanes are rerun with verdict JSON and verifier transcripts
+retained before cleanup. The branch remains unmerged and unreleased while B114
+integration proceeds.

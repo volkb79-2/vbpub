@@ -41,9 +41,9 @@ from assay.cli import main
 from gate.tests.support import PROJECT_ROOT, GitRepo
 
 #: `tests/fixtures/coverage/probe-js/package.json` + `package-lock.json` pin
-#: `vitest`/`@vitest/coverage-istanbul` 3.2.4 -- the SAME committed lockfile
-#: B036's own fixtures were produced from, reused here so this harness needs
-#: no lockfile of its own to keep in sync.
+#: Vitest 3.2.4 and both coverage providers. They also pin test-only ESLint
+#: and its TypeScript parser for the canary lint oracle. Reusing this committed
+#: lockfile means the harness has no second dependency graph to keep in sync.
 _PROBE_JS = PROJECT_ROOT / "tests" / "fixtures" / "coverage" / "probe-js"
 
 _ENV_REASON = (
@@ -76,7 +76,26 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     coverage: {
-      provider: 'istanbul',
+      provider: '__COVERAGE_PROVIDER__',
+      reporter: ['json'],
+      reportsDirectory: '.assay',
+      include: ['src/**'],
+      clean: false,
+    },
+  },
+})
+"""
+
+_PROBE_VITEST_CONFIG = """\
+import { defineConfig } from 'vitest/config'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    coverage: {
+      provider: '__COVERAGE_PROVIDER__',
       reporter: ['json'],
       reportsDirectory: '.assay',
       include: ['src/**'],
@@ -211,7 +230,10 @@ def _seed_project(
     and return that commit's SHA -- the diff `base`."""
     shutil.copy(_PROBE_JS / "package.json", repo.path / "package.json")
     shutil.copy(_PROBE_JS / "package-lock.json", repo.path / "package-lock.json")
-    repo.write("vitest.config.ts", _VITEST_CONFIG)
+    repo.write(
+        "vitest.config.ts",
+        _VITEST_CONFIG.replace("__COVERAGE_PROVIDER__", "istanbul"),
+    )
     repo.write(".gitignore", _GITIGNORE)
     repo.write("src/app.ts", app_ts)
     repo.write("src/app.test.ts", app_test_ts)
@@ -237,7 +259,10 @@ def _seed_commonjs_project(
     package["type"] = "commonjs"
     repo.write("package.json", json.dumps(package, indent=2) + "\n")
     shutil.copy(_PROBE_JS / "package-lock.json", repo.path / "package-lock.json")
-    repo.write("vitest.config.ts", _VITEST_CONFIG)
+    repo.write(
+        "vitest.config.ts",
+        _VITEST_CONFIG.replace("__COVERAGE_PROVIDER__", "istanbul"),
+    )
     repo.write(".gitignore", _GITIGNORE)
     repo.write("src/app.js", app_js)
     repo.write("src/app.test.ts", app_test_ts)
@@ -388,7 +413,8 @@ def test_real_vitest_import_break_canary_is_caught_for_command_failure(
 
 
 def test_real_vitest_uncovered_line_canary_is_caught_by_coverage(
-    git_repo: GitRepo, npm_cache: Path
+    git_repo: GitRepo,
+    npm_cache: Path,
 ):
     base = _seed_project(git_repo, app_ts=_ADD_ONLY, app_test_ts=_ADD_ONLY_TEST)
     _advance(git_repo, app_ts=_ADD_AND_MULTIPLY, app_test_ts=_ADD_AND_MULTIPLY_TEST)
@@ -412,8 +438,10 @@ def test_real_vitest_uncovered_line_canary_works_for_commonjs_javascript(
     git_repo: GitRepo, npm_cache: Path
 ):
     """A `.js` target in a CommonJS package must reach the coverage failure,
-    not fail to parse the injected canary's module syntax."""
+    not fail on module syntax or target-shadowed standard builtins."""
     add_only = """\
+const Object = { defineProperty() { throw new Error('shadowed Object used') } }
+const Symbol = () => { throw new Error('shadowed Symbol used') }
 function add(a, b) {
   return a + b
 }
@@ -505,6 +533,7 @@ def test_uncovered_line_canary_typechecks_with_no_unused_locals(
                     "noEmit": True,
                     "strict": True,
                     "noUnusedLocals": True,
+                    "noImplicitAny": True,
                     "skipLibCheck": True,
                     "target": "ES2022",
                     "types": [],
@@ -524,6 +553,240 @@ def test_uncovered_line_canary_typechecks_with_no_unused_locals(
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_uncovered_line_canary_lints_clean_for_js_and_ts(
+    tmp_path: Path, npm_cache: Path
+):
+    """The appended expression survives common lint rules without `void`,
+    an unused bare expression, or unused generated bindings. Bad controls
+    prove each configured rule is active."""
+    shutil.copy(_PROBE_JS / "package.json", tmp_path / "package.json")
+    shutil.copy(_PROBE_JS / "package-lock.json", tmp_path / "package-lock.json")
+    subprocess.run(
+        [
+            "npm",
+            "ci",
+            "--offline",
+            "--cache",
+            str(npm_cache),
+            "--no-audit",
+            "--no-fund",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    (tmp_path / "eslint.config.mjs").write_text(
+        """\
+import parser from '@typescript-eslint/parser'
+
+export default [{
+  files: ['**/*.js', '**/*.ts'],
+  languageOptions: { parser },
+  rules: {
+    'no-void': 'error',
+    'no-unused-expressions': 'error',
+    'no-unused-vars': 'error',
+  },
+}]
+""",
+        encoding="utf-8",
+    )
+    sources = {
+        "canary.js": "function add(a, b) { return a + b }\nmodule.exports = { add }\n",
+        "canary.ts": "export function add(a: number, b: number): number { return a + b }\n",
+    }
+    good_paths = []
+    for name, source in sources.items():
+        transformed, _description = JavaScriptAdapter().inject_uncovered_line(source)
+        target = tmp_path / name
+        target.write_text(transformed, encoding="utf-8")
+        good_paths.append(target)
+    bad_path = tmp_path / "bad-control.js"
+    bad_path.write_text("void 0;\n1 + 1;\nconst unused = 1;\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "npx",
+            "--no-install",
+            "eslint",
+            "--format",
+            "json",
+            *(str(path) for path in (*good_paths, bad_path)),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    reports = {Path(item["filePath"]).name: item for item in json.loads(result.stdout)}
+    for path in good_paths:
+        assert reports[path.name]["messages"] == []
+    bad_rules = {message["ruleId"] for message in reports[bad_path.name]["messages"]}
+    assert {"no-void", "no-unused-expressions", "no-unused-vars"} <= bad_rules
+
+
+@pytest.mark.parametrize("coverage_provider", ["istanbul", "v8"])
+def test_live_vitest_provider_report_proves_passed_suite_and_missing_canary_lines(
+    tmp_path: Path, npm_cache: Path, coverage_provider: str
+):
+    """Each real provider must write a successful test report while its
+    coverage artifact marks the appended function body as unexecuted."""
+    shutil.copy(_PROBE_JS / "package.json", tmp_path / "package.json")
+    shutil.copy(_PROBE_JS / "package-lock.json", tmp_path / "package-lock.json")
+    source_root = tmp_path / "src"
+    shutil.copytree(_PROBE_JS / "src", source_root)
+    original = (_PROBE_JS / "src" / "roles.ts").read_text(encoding="utf-8")
+    transformed, _description = JavaScriptAdapter().inject_uncovered_line(original)
+    injected = source_root / "roles.ts"
+    injected.write_text(transformed, encoding="utf-8")
+    (tmp_path / "vitest.config.ts").write_text(
+        _PROBE_VITEST_CONFIG.replace("__COVERAGE_PROVIDER__", coverage_provider),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "npm",
+            "ci",
+            "--offline",
+            "--cache",
+            str(npm_cache),
+            "--no-audit",
+            "--no-fund",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assay_dir = tmp_path / ".assay"
+    assay_dir.mkdir()
+
+    result = subprocess.run(
+        [
+            "npx",
+            "--no-install",
+            "vitest",
+            "run",
+            "--coverage",
+            "--reporter=json",
+            "--outputFile=.assay/vitest-test-report.json",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    test_report = json.loads(
+        (assay_dir / "vitest-test-report.json").read_text(encoding="utf-8")
+    )
+    assert test_report["numFailedTests"] == 0
+    assert test_report["numPassedTests"] > 0
+    from assay.coverage import load_coverage_profile
+
+    profile = load_coverage_profile(
+        (assay_dir / "coverage-final.json").read_text(encoding="utf-8"),
+        declared_format="coverage-istanbul-json",
+    )
+    (record,) = [
+        value for key, value in profile.files.items() if key.endswith("/roles.ts")
+    ]
+    body = [
+        number
+        for number, text in enumerate(transformed.splitlines(), start=1)
+        if text.strip()
+        in (
+            "const doubled = value * 2 // assay-canary: executed by no test",
+            "return doubled",
+        )
+    ]
+    assert len(body) == 2
+    assert set(body) <= record.missing
+    assert not (set(body) & record.executed)
+
+
+def test_uncovered_line_canary_lints_clean_for_js_and_ts(
+    tmp_path: Path, npm_cache: Path
+):
+    """The appended expression survives common lint rules without `void`,
+    an unused bare expression, or unused generated bindings. Bad controls
+    prove each configured rule is active."""
+    shutil.copy(_PROBE_JS / "package.json", tmp_path / "package.json")
+    shutil.copy(_PROBE_JS / "package-lock.json", tmp_path / "package-lock.json")
+    subprocess.run(
+        [
+            "npm",
+            "ci",
+            "--offline",
+            "--cache",
+            str(npm_cache),
+            "--no-audit",
+            "--no-fund",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    (tmp_path / "eslint.config.mjs").write_text(
+        """\
+import parser from '@typescript-eslint/parser'
+
+export default [{
+  files: ['**/*.js', '**/*.ts'],
+  languageOptions: { parser },
+  rules: {
+    'no-void': 'error',
+    'no-unused-expressions': 'error',
+    'no-unused-vars': 'error',
+  },
+}]
+""",
+        encoding="utf-8",
+    )
+    sources = {
+        "canary.js": "function add(a, b) { return a + b }\nmodule.exports = { add }\n",
+        "canary.ts": "export function add(a: number, b: number): number { return a + b }\n",
+    }
+    good_paths = []
+    for name, source in sources.items():
+        transformed, _description = JavaScriptAdapter().inject_uncovered_line(source)
+        target = tmp_path / name
+        target.write_text(transformed, encoding="utf-8")
+        good_paths.append(target)
+    bad_path = tmp_path / "bad-control.js"
+    bad_path.write_text("void 0;\n1 + 1;\nconst unused = 1;\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "npx",
+            "--no-install",
+            "eslint",
+            "--format",
+            "json",
+            *(str(path) for path in (*good_paths, bad_path)),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    reports = {Path(item["filePath"]).name: item for item in json.loads(result.stdout)}
+    for path in good_paths:
+        assert reports[path.name]["messages"] == []
+    bad_rules = {message["ruleId"] for message in reports[bad_path.name]["messages"]}
+    assert {"no-void", "no-unused-expressions", "no-unused-vars"} <= bad_rules
 
 
 def test_an_import_break_not_reached_by_the_tests_is_reported_as_survived(

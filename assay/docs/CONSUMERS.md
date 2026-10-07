@@ -1544,9 +1544,12 @@ in `nyxloom-trove/4-backlog.md`:
 inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
 by the existing cause-sensitive canary runner. Assay still ships no JS/TS
-mutation engine, so a *native* R2 lane is still refused. B087 qualified both
-canary mechanisms against real Vitest and dstdns source through the shipped
-zipapp; see the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
+mutation engine, so a *native* R2 lane is still refused. B087 registers R3
+and local real-Vitest tests exercise both mechanisms. Requalification of the
+current uncovered-line transform against dstdns is pending; the earlier
+operator-reported dstdns attempt used different code and did not retain its
+verdicts or verifier transcripts. See the
+[qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
 
@@ -1789,13 +1792,15 @@ snippet earlier in this section).
 the offline install plus the real run once, in the actual gate environment,
 and set the budget from that.
 
-**R3 triples this cost, not doubles it.** A canary run is baseline PLUS two
-further runs (import-break, uncovered-line), each against its OWN fresh
-snapshot — so each one repeats the offline install from a cold `node_modules`
-inside that snapshot. Budget a `javascript` R3 lane accordingly once it is
-wired — not yet: R3 is registered only after a real-Vitest canary pair has
-run (`gate/tests/qualification/test_javascript_real_vitest.py` proves R1 today;
-canary coverage is a later step).
+**One R3 lane selects one canary mechanism and runs three commands:** its
+baseline, the canary control, and the transformed target. The two canary
+commands use their own fresh snapshots, so each repeats the offline install
+from a cold `node_modules`. This triples the cost of that lane. The lane's
+`mechanism` is exactly one of `import-break` or `uncovered-line`; declare
+separate lanes if you want to exercise both, and budget each lane for its own
+baseline and two canary commands. R3 is registered and has local real-Vitest
+oracles. Qualification of the current transform against dstdns remains open;
+see the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 Gitignore what the run writes — the coverage directory, and anything your
 runner drops beside it — in the same change that adds the lane:

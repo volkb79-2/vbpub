@@ -103,12 +103,12 @@ def test_uncovered_line_appends_a_never_called_portable_function_value():
     transformed, description = ADAPTER.inject_uncovered_line(MODULE)
     added = transformed[len(MODULE) :]
 
-    assert "Object.defineProperty({}, Symbol(), {" in added
-    assert "value: function (value = 0) {" in added
-    assert "anonymous function value" in description
+    assert added.lstrip().startswith(";(() => function (value = 0) {")
+    assert added.rstrip().endswith("})()")
+    assert "uncalled anonymous function" in description
     assert "2 uncovered body lines" in description
-    # The property setup runs during module loading, but its function body is
-    # never called; the two body lines are the canary's uncovered evidence.
+    # The wrapper returns the function but does not call it; the two body
+    # lines are the canary's uncovered evidence.
     assert "const doubled = value * 2" in added
     assert "return doubled" in added
 
@@ -126,14 +126,15 @@ def test_neither_snippet_uses_syntax_that_is_typescript_only():
         assert "function (value:" not in added
 
 
-def test_the_canary_function_is_referenced_without_module_syntax():
-    """The "lint-clean" half of ``inject_uncovered_line``'s contract:
-    the function is the value of a property on a fresh object, so TypeScript
-    sees a reference without requiring an ESM export or CommonJS binding."""
+def test_the_uncovered_line_expression_has_no_target_bindings_or_module_syntax():
+    """The transform's top-level expression must not read shadowable globals
+    or depend on ESM exports/CommonJS bindings."""
     added = ADAPTER.inject_uncovered_line(MODULE)[0][len(MODULE) :]
 
-    assert added.lstrip().startswith("Object.defineProperty({}, Symbol(), {")
-    assert "value: function (value = 0) {" in added
+    assert added.lstrip().startswith(";(() => function (value = 0) {")
+    assert "Object" not in added
+    assert "Symbol" not in added
+    assert "void " not in added
     assert "export " not in added
     assert "module.exports" not in added
 
@@ -155,8 +156,9 @@ def test_the_two_transforms_are_different_and_independent():
 # the rest of this change committed real artifacts as evidence. It now
 # commits one. `tests/fixtures/canary/javascript/` holds the exact text
 # `inject_uncovered_line` produces for the probe project's own `roles.ts`,
-# plus the `coverage-final.json` a real `vitest run --coverage` produced from
-# that injected file, under BOTH providers.
+# plus the `coverage-final.json` each provider produced from that injected
+# file. These artifacts assert line classification only; the opt-in live
+# Vitest/R3 test separately proves each suite passes.
 
 CANARY_FIXTURES = (
     TESTS_ROOT / "fixtures" / "canary" / "javascript"
@@ -191,13 +193,9 @@ def test_the_committed_injected_file_is_byte_for_byte_what_this_adapter_produces
 
 @pytest.mark.parametrize("artifact", CANARY_ARTIFACTS)
 def test_a_real_coverage_run_reports_the_canary_body_as_uncovered(artifact: str):
-    """A-345's R1 claim, as committed evidence instead of a transcript: the
-    injected property setup runs during module loading, but its two function
-    body lines are executed by no test -- so a gate
-    enforcing a changed-line-coverage floor rejects the transform while a
-    tests-only gate sails past it. True under both providers (the defect
-    A-346 rules on does not touch this shape: there is no conditional
-    expression anywhere in the appended function)."""
+    """The committed provider artifacts classify the appended function body
+    lines as missing. Live provider runs separately establish that the suite
+    passes and that the R3 transform fails for uncovered lines."""
     from assay.coverage import load_coverage_profile
 
     profile = load_coverage_profile(
@@ -222,15 +220,3 @@ def test_a_real_coverage_run_reports_the_canary_body_as_uncovered(artifact: str)
     assert len(body) == 2
     assert set(body) <= record.missing
     assert not (set(body) & record.executed)
-
-
-def test_the_suite_that_produced_the_canary_artifacts_still_passed():
-    """The other half of the R1 canary's contract, and the reason it isolates
-    an AXIS rather than just breaking things: the injected function is valid,
-    lint-clean and test-neutral, so the project's own tests still pass. Both
-    committed artifacts exist at all only because the run they came from
-    completed -- a suite that had failed would have produced no coverage
-    document to commit, exactly as an import-break injection does (which is
-    why THAT half has no artifact here and cannot have one)."""
-    for artifact in CANARY_ARTIFACTS:
-        assert (CANARY_FIXTURES / artifact).is_file()

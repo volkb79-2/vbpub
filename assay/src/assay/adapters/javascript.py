@@ -147,9 +147,10 @@ methods receive only *text* and never a path: no type annotations (a ``.js``
 file would be a syntax error), and the canary function's parameter carries a
 DEFAULT rather than a type, so TypeScript infers ``number`` and
 ``noImplicitAny`` has nothing to complain about. The uncovered-line canary
-places an anonymous, never-called function in a property value on a fresh,
-unreachable object. That keeps the function referenced for ``noUnusedLocals``
-without module-specific ``export`` syntax or a global side effect.
+uses a leading-semicolon wrapper call that returns an anonymous function. The
+wrapper runs at module load, but the returned function is never called; the
+expression declares no module binding, reads no target-visible global, and
+does not use the ``void`` operator or a discarded bare expression.
 
 **``generate_mutation_sites`` is unconditionally ``"UNSUPPORTED"`` (A-183's
 own marker, Go's precedent).** Whether JS/TS mutation should be native or
@@ -208,12 +209,10 @@ _IMPORT_BREAK_SNIPPET = (
     '\n\nthrow new Error("assay-canary-import-break")\n'
 )
 _UNCOVERED_CANARY_SNIPPET = (
-    "\n\nObject.defineProperty({}, Symbol(), {\n"
-    "  value: function (value = 0) {\n"
-    "    const doubled = value * 2 // assay-canary: executed by no test\n"
-    "    return doubled\n"
-    "  },\n"
-    "})\n"
+    "\n\n;(() => function (value = 0) {\n"
+    "  const doubled = value * 2 // assay-canary: executed by no test\n"
+    "  return doubled\n"
+    "})()\n"
 )
 
 
@@ -464,12 +463,13 @@ def _inject_import_break(text: str) -> tuple[str, str]:
 
 
 def _inject_uncovered_line(text: str) -> tuple[str, str]:
-    """Append :data:`_UNCOVERED_CANARY_SNIPPET` -- an uncalled function value
-    on a fresh, unreachable object -- to *text*. The property setup runs at
-    module load, but the function body does not. Pure, same contract as
-    :func:`_inject_import_break`."""
+    """Append :data:`_UNCOVERED_CANARY_SNIPPET` -- a wrapper call that returns
+    an anonymous function which is never called -- to *text*. The wrapper
+    expression reads no target bindings and has no global side effect. Pure,
+    same contract as :func:`_inject_import_break`."""
     return _append_snippet(text, _UNCOVERED_CANARY_SNIPPET), (
-        "appended an uncalled anonymous function value on a fresh object "
+        "appended an uncalled anonymous function returned by a side-effect-free "
+        "wrapper call "
         "(2 uncovered body lines) at end of file"
     )
 
