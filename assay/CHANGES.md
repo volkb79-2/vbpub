@@ -2,7 +2,18 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs. A marked `backfilled-after-release` entry was generated after its immutable tag already existed.
 
-## [Unreleased]
+## [8.0.0] - 2026-10-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=43dd94c49725eda212cb8ab00ba1633d24d33547 -->
+<!-- Hand-folded from [Unreleased] before release; source-end advanced with it so cmru (REL-02) keeps this section verbatim. -->
+
+### BREAKING CHANGE
+- Verdict schema v14 is a hard cut from v13: `assay verify` rejects v13 and
+  earlier verdicts on the schema version alone, and a v12/v13 mutation state
+  is a cold start under v14. Consumers repin their gate to 8.0.0 (wheel or
+  `.pyz`) and re-run in one commit; see `docs/CONSUMERS.md`, "Migration notes
+  (v13 to v14)". v14 records the effective `env_passthrough` allowlist and
+  per-name SHA-256 fingerprints of passthrough values (B140-B142).
 
 ### Added
 - feat(assay): explicit project-level `[defaults].env_passthrough`, ordered
