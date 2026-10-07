@@ -1478,6 +1478,22 @@ def test_bound_cmru_launcher_identity_refusal_names_the_shadowing_metadata_locat
     assert "stale egg-info" in message
 
 
+def test_bound_cmru_launcher_identity_refusal_survives_an_unrunnable_metadata_probe(
+    monkeypatch, tmp_path,
+):
+    def fake_run(argv, **_kwargs):
+        if argv[-1] == "version":
+            return SimpleNamespace(returncode=0, stdout="cmru 5.3.2.dev36\n", stderr="")
+        raise OSError("probe interpreter vanished")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    launcher_dir = tmp_path / "unprobeable"
+    launcher_dir.mkdir()
+    with pytest.raises(RuntimeError, match="identity verification") as excinfo:
+        cli._create_bound_cmru_launcher(launcher_dir)
+    assert "metadata resolved from <unresolved>" in str(excinfo.value)
+
+
 def test_bound_cmru_launcher_imports_only_the_worktree_sibling_source_with_isolated_python(
     monkeypatch, tmp_path,
 ):
