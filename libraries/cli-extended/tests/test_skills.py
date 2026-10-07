@@ -991,7 +991,7 @@ def test_o7_boundary_lengths_are_valid():
 
 
 @pytest.mark.parametrize("name,path", [
-    ("cmru-cli", REPO_ROOT / "cmru/.claude/skills/cmru-cli"),
+    ("cmru-cli", REPO_ROOT / "cmru/src/cmru/skills/cmru-cli"),
     ("nyxloom-dispatch", REPO_ROOT / "nyxloom/.claude/skills/nyxloom-dispatch"),
 ])
 def test_o7_real_repo_skills_validate_and_install(name, path, tmp_path, monkeypatch):
