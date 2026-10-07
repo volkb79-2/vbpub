@@ -4,7 +4,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
-<!-- cmru: source-end=43dd94c49725eda212cb8ab00ba1633d24d33547 -->
+<!-- cmru: source-end=e464cebcfc17c1929354f3ebc6bf9e3e355576a8 -->
 <!-- Hand-folded from [Unreleased] before release; source-end advanced with it so cmru (REL-02) keeps this section verbatim. -->
 
 ### BREAKING CHANGE
@@ -62,6 +62,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): disable automatic Git maintenance and detached maintenance for
   every Assay Git child, independent of image, system, or consumer config
   (B147)
+- fix(assay): release-gate blockers found by the registered self-hosted gate:
+  `src/assay/failure_summary.py` joins the self-qualification and preflight R1
+  targets so the B105 report check matches the tracked sources, the shipped
+  tests are pyflakes-clean again, and the CONSUMERS schema-cut test reads the
+  topmost CHANGES section instead of requiring an `[Unreleased]` heading
 
 ### Changed
 - refactor(assay): repeated judge rules now live once: `assay.records` (the
