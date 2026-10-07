@@ -123,11 +123,6 @@ class ReceiptCapture:
             stop = getattr(self, "_stop", None)
             if stop is not None:
                 stop.set()
-            if thread is not None:
-                try:
-                    thread.join(self._JOIN_TIMEOUT_SECONDS)
-                except BaseException:
-                    pass
             descriptors = [write_fd, read_fd]
             for descriptor in descriptors:
                 try:
@@ -149,6 +144,11 @@ class ReceiptCapture:
                     # descriptor number that may have been reused.
                     with drain_lock:
                         self._close_drain_fd_locked()
+            if thread is not None:
+                try:
+                    thread.join(self._JOIN_TIMEOUT_SECONDS)
+                except BaseException:
+                    pass
             if isinstance(exc, Exception):
                 raise self._startup_error(exc) from exc
             raise

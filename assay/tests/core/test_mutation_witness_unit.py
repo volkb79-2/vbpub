@@ -529,28 +529,41 @@ def test_receipt_capture_closes_descriptors_and_raises_typed_error_if_reader_thr
             os.fstat(descriptor)
 
 
-def test_started_receipt_reader_retains_drain_descriptor_ownership_on_start_error(
-    monkeypatch,
-):
+def test_late_receipt_reader_does_not_touch_reused_drain_descriptor(monkeypatch):
     original_dup = os.dup
     original_start = threading.Thread.start
     original_ident = threading.Thread.ident
+    original_drain = ReceiptCapture._drain
+    original_close_drain = ReceiptCapture._close_drain_fd_locked
     original_close = os.close
+    original_read = os.read
+    original_poll = mutation_witness.select.poll
+    reader_waiting = threading.Event()
+    release_reader = threading.Event()
+    descriptor_reused = threading.Event()
     drain_descriptors: list[int] = []
     drain_close_calls: list[int] = []
     started_threads: list[threading.Thread] = []
+    descriptor_accesses: list[str] = []
+    reused_descriptor: int | None = None
 
     def record_dup(fd: int) -> int:
         duplicate = original_dup(fd)
         drain_descriptors.append(duplicate)
         return duplicate
 
+    def wait_before_drain(capture: ReceiptCapture) -> None:
+        reader_waiting.set()
+        assert release_reader.wait(10.0)
+        original_drain(capture)
+
     def start_then_fail(thread: threading.Thread) -> None:
         original_start(thread)
         if thread.name == "assay-witness-receipt":
-            assert thread.is_alive()
             started_threads.append(thread)
-            raise RuntimeError("injected post-start failure")
+            assert thread.is_alive()
+            assert reader_waiting.wait(10.0)
+            raise RuntimeError("injected start interruption before ident publication")
 
     def unpublished_ident(thread: threading.Thread) -> int | None:
         if thread.name == "assay-witness-receipt":
@@ -563,23 +576,80 @@ def test_started_receipt_reader_retains_drain_descriptor_ownership_on_start_erro
             drain_close_calls.append(fd)
         original_close(fd)
 
+    def close_drain_and_reuse_descriptor(capture: ReceiptCapture) -> None:
+        nonlocal reused_descriptor
+        drain_fd = capture._drain_fd
+        original_close_drain(capture)
+        if descriptor_reused.is_set():
+            return
+        replacement_fd = os.open(os.devnull, os.O_RDONLY)
+        if replacement_fd != drain_fd:
+            os.dup2(replacement_fd, drain_fd)
+            original_close(replacement_fd)
+        reused_descriptor = drain_fd
+        descriptor_reused.set()
+        release_reader.set()
+
+    class PollProxy:
+        def __init__(self):
+            self._poller = original_poll()
+
+        def register(self, fd: int, eventmask: int) -> None:
+            if (
+                descriptor_reused.is_set()
+                and drain_descriptors
+                and fd == drain_descriptors[0]
+            ):
+                descriptor_accesses.append("register")
+            self._poller.register(fd, eventmask)
+
+        def poll(self, timeout: int | None = None):
+            return self._poller.poll(timeout)
+
+    def tracking_poll() -> PollProxy:
+        return PollProxy()
+
+    def record_read(fd: int, size: int) -> bytes:
+        if (
+            descriptor_reused.is_set()
+            and drain_descriptors
+            and fd == drain_descriptors[0]
+        ):
+            descriptor_accesses.append("read")
+        return original_read(fd, size)
+
     monkeypatch.setattr(os, "dup", record_dup)
     monkeypatch.setattr(os, "close", record_close)
     monkeypatch.setattr(threading.Thread, "start", start_then_fail)
     monkeypatch.setattr(threading.Thread, "ident", property(unpublished_ident))
+    monkeypatch.setattr(os, "read", record_read)
+    monkeypatch.setattr(mutation_witness.select, "poll", tracking_poll)
+    monkeypatch.setattr(ReceiptCapture, "_drain", wait_before_drain)
+    monkeypatch.setattr(
+        ReceiptCapture,
+        "_close_drain_fd_locked",
+        close_drain_and_reuse_descriptor,
+    )
 
-    with pytest.raises(AssayError, match="receipt reader") as raised:
-        ReceiptCapture()
+    try:
+        with pytest.raises(AssayError, match="receipt reader") as raised:
+            ReceiptCapture()
 
-    assert raised.value.reason_code is ReasonCode.EXEC_FAILED
-    assert len(started_threads) == 1
-    monkeypatch.setattr(threading.Thread, "ident", original_ident)
-    started_threads[0].join(1.0)
-    assert not started_threads[0].is_alive()
-    assert len(drain_descriptors) == 1
-    assert drain_close_calls == drain_descriptors
-    with pytest.raises(OSError):
+        assert raised.value.reason_code is ReasonCode.EXEC_FAILED
+        assert len(started_threads) == 1
+        assert len(drain_descriptors) == 1
+        assert reused_descriptor == drain_descriptors[0]
+        assert drain_close_calls == drain_descriptors
+        assert descriptor_accesses == []
         os.fstat(drain_descriptors[0])
+    finally:
+        release_reader.set()
+        monkeypatch.setattr(threading.Thread, "ident", original_ident)
+        for thread in started_threads:
+            thread.join(1.0)
+            assert not thread.is_alive()
+        if reused_descriptor is not None:
+            original_close(reused_descriptor)
 
 
 def test_receipt_capture_stalled_reader_cannot_consume_a_later_capture(monkeypatch):

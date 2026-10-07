@@ -58,3 +58,22 @@ touching it. The regression masks `ident` while a real reader thread starts
 and asserts exactly one close and a joined thread. The full unit module passed
 after this change (**98 passed in 12.80s**); exact-tip review and registered
 gates for the corrected commit remain pending.
+
+## Follow-up review of `b3e706adc`
+
+The independent review found one **P3** test gap: its simulated reader started
+before the start error was raised, but it did not wait outside `_drain` while
+startup cleanup closed and reused the descriptor. The test therefore did not
+prove the `_drain_fd_closed` guard prevents late registration or read.
+
+The revised oracle holds the real reader at a barrier before `_drain` acquires
+the shared lock. Startup cleanup closes the drain descriptor, reuses its
+number for `/dev/null`, then releases the reader. A poll proxy and `os.read`
+observer fail if the reader touches that number after reuse. The full
+`test_mutation_witness_unit.py` module passed (**98 passed in 12.75s**); the
+new exact-tip review and registered gates remain pending.
+
+After the barrier oracle was added, the full unit module passed again
+(**98 passed in 12.74s**), Ruff `E4,E7,E9,F` and `git diff --check` passed.
+The exact-tip review of the strengthened oracle and registered gates remain
+pending.
