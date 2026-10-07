@@ -313,13 +313,20 @@ def materialize(
             f"secrets are declared: {names}"
         )
 
-    needs_project_lock = any(s.kind == "GEN_LOCAL" for s in specs)
-
     # S4.26: always serialize on the stack lock; additionally take the project
     # lock when GEN_LOCAL writes are in play. Order (stack then project) is
     # fixed to avoid deadlocks across concurrent runs.
     stack_lock = stack_dir / MACHINE_DIR / LOCK_NAME
     project_lock = repo_root / MACHINE_DIR / LOCK_NAME
+
+    # A stack that IS its own ciu root (stack files in the root directory, the
+    # pwmcp/mattermost layout) has stack_lock == project_lock. flock locks an
+    # open file description, so a second os.open() of the same file would
+    # block forever on our own first lock; the stack lock already covers it.
+    needs_project_lock = (
+        any(s.kind == "GEN_LOCAL" for s in specs)
+        and os.path.realpath(stack_lock) != os.path.realpath(project_lock)
+    )
 
     with contextlib.ExitStack() as locks:
         locks.enter_context(_flock(stack_lock))
