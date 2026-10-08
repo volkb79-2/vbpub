@@ -220,6 +220,52 @@ ambiguous match is a refusal, not a guess from a numeric PID. See the worked
 command in
 [`CONSUMERS.md`](CONSUMERS.md#resolve-a-target-from-a-cockpit).
 
+### Native R2 resource observation is data-only, not a broker
+
+Assay B145 must compare process- and memory-limit event counters through the
+candidate's enforcing ancestors. The tester container stays in a private
+cgroup namespace; making it host-namespaced would reveal host hierarchy state
+and is not needed for this read. Instead, Run-Gate can mount a second,
+observer-only socket from the existing daemon:
+
+```text
+Assay worker -- {thread_id} --> resource-observer.sock
+                                      |
+                       SO_PEERCRED + host proc/cgroup view
+                                      |
+Assay worker <-- own gates-slice ancestry and counters
+```
+
+The request supplies only a native TID. The daemon binds it to the connecting
+PID/UID, proves the TID belongs to that peer and that its live threads share
+one cgroup/credential set, derives the path itself, and returns only that
+peer cgroup's complete ancestry beneath `dev-gates.slice`. It does not return
+PIDs or sibling data. The daemon's own cgroup namespace is private too, so it
+maps outside-peer paths only when the leading `..` count exactly matches the
+full-root cgroup2 mount's `mountinfo` root; arbitrary normalization is
+refused. The response carries per-path limits, event counters, and mount ID.
+
+The observer is a distinct listener, not a read-only bind of `ctl.sock`:
+filesystem read-only does not restrict the verbs of an AF_UNIX service. The
+listener accepts one `resource-limits` query and no start/stop/placement
+operation. Run-Gate validates the fixed socket and mounts only that node
+read-only, forwarding its observed group ID. It does not add a Docker socket,
+host PID namespace, host cgroup namespace, or a second daemon.
+
+This gives the gate only the missing read path and keeps its namespace private;
+it also avoids another privileged service and duplicated authorization
+surface. It does **not** contain arbitrary code execution in cgprofile: the
+existing daemon has host-PID visibility, writable host cgroupfs for placement,
+and systemd-manager access. The protocol narrows normal requests, not the
+daemon's authority after compromise. An operator with unrestricted Docker
+access already has host-administrator capability; that fact does not reduce
+the daemon's independent compromise impact. A future broker is worthwhile
+only if its OS authority is genuinely narrower, its authenticated request
+surface is small, and the separation survives compromise of cgprofile; merely
+moving equivalent root operations to another process would move, not remove,
+the trust problem. The wire and failure behavior are specified in
+[`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and contract §9.
+
 The short-lived helper-placement probe runs under the injected interactive
 slice only after confirming that it matches the cockpit container's actual
 Docker parent. It asks host systemd for `LoadState`, `FragmentPath`, and

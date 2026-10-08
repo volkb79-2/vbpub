@@ -2,7 +2,8 @@
 
 **Scope.** How a consumer talks to `cgprofile serve`. The authority for the
 CONTENT of every response is `RG55-INTERFACE-CONTRACT.md` (§2 the verbs, §3
-the Summary, §7 the computation rules, §8 the v1.1 amendment); this file is
+the Summary, §7 the computation rules, §8 the v1.1 amendment, §9 the native
+R2 observer); this file is
 the authority for the REQUEST side — the carriers, the one request shape,
 and each verb's `args` names — because that is what a consumer has to get
 byte-right and the contract states it only in prose.
@@ -195,3 +196,35 @@ are produced by running the real client and the real daemon (see that
 directory's `README.md` for how, and for the only normalization applied).
 They are compared byte-for-byte by `tests/test_serve_socket_carrier.py`, and
 they are what the run-gate socket client (P5) is written against.
+
+## 8. Native R2 resource observer (RG-89)
+
+This is a **separate listener**, not a new verb on the control carrier:
+`/run/cgprofile/resource-observer.sock`. Run-Gate may bind-mount only this
+socket into an explicitly opted-in Assay R2 container. The listener is served
+by the existing daemon and accepts no control operation, including `start`,
+`stop`, or placement. Its socket mode uses the existing `/run/cgprofile`
+directory group and `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the
+observed socket GID as a supplementary group. A read-only mount of `ctl.sock`
+is not equivalent and is prohibited for this use.
+
+The request is exactly:
+
+```json
+{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
+```
+
+There is one positive native TID, one line, one connection, at most 4096
+bytes, and an absolute five-second server deadline. `SO_PEERCRED` is required.
+The daemon uses that PID/UID plus the requested TID to prove the caller's
+thread identity, shared thread cgroup/credentials, and gates-slice membership;
+the request cannot choose a PID, cgroup path, or slice. A successful response
+contains only the complete canonical leaf-to-root cgroup-v2 ancestry, mount
+ID, limit presence/value pairs, and pids/memory event counters. It contains
+no process list, PID, or sibling cgroup data. See contract §9 for the exact
+response shape and the verified private-cgroup-namespace path mapping.
+
+Assay configures this socket explicitly and consults it only after its local
+reader proves that ancestors are hidden. Any other local failure, invalid
+response, identity mismatch, incomplete hierarchy, or ambiguous shared
+ancestor delta remains a fail-closed lane error.

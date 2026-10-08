@@ -38,6 +38,7 @@ budget = "5h"
 kind = "command"
 environment = "tester-unified"
 argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m", "bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
+resource_observer = "cgprofile"
 clean_tree = true
 # The persisted B117 campaign deadline bounds preflight and full qualification
 # together. Assay still caps preflight at 60m and the full lane at 5h. This

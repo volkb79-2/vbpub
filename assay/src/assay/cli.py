@@ -2150,7 +2150,7 @@ def _run_reserved(
         # is a `CommandResult` -- the command never ran, which is what
         # `NO_MEASUREMENT`/`LANE_TIMEOUT` says.
         if _has_native_r2(lane):
-            capability = resource_limits.inspect_current_cgroup_observation()
+            capability = _current_cgroup_observation_capability()
             if not capability.available:
                 try:
                     if (
@@ -2338,6 +2338,13 @@ def _has_native_r2(lane: Lane) -> bool:
         and lane.judge is not None
         and lane.judge.mutation is not None
         and not lane.judge.mutation.is_ingested
+    )
+
+
+def _current_cgroup_observation_capability() -> resource_limits.ResourceObservationCapability:
+    """Use the same explicit observer opt-in for preflight and candidate reads."""
+    return resource_limits.inspect_current_cgroup_observation(
+        observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
     )
 
 
@@ -2697,7 +2704,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
     reuse_command_plan = discovered.reuse_command_plan
     reuse_command_cwd = discovered.reuse_command_cwd
     cgroup_capability = (
-        resource_limits.inspect_current_cgroup_observation()
+        _current_cgroup_observation_capability()
         if _has_native_r2(lane)
         else None
     )
@@ -2984,7 +2991,7 @@ def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
     """
     built_in = _built_in_registry()
     cgroup_capability = (
-        resource_limits.inspect_current_cgroup_observation()
+        _current_cgroup_observation_capability()
         if any(_has_native_r2(lane) for lane in lane_file.lanes.values())
         else None
     )

@@ -81,6 +81,69 @@ counters also produce ERROR and retain the raw status when available, because
 run-gate cannot certify the run. A dry run starts no lane and does not sample
 these counters.
 
+## Private-namespace R2 uses a read-only cgroup observer
+
+Assay B145 must see every enforcing ancestor of a mutation worker. A private
+cgroup namespace intentionally hides those ancestors, so native R2 refuses
+before candidates instead of treating a parent pids.max or memory limit as
+a test failure. Giving the test container --cgroupns=host would solve
+visibility by widening the workload's kernel view; granting host PID access
+would also expose host process information. Neither is needed for a
+read-only counter query.
+
+The existing cgprofile daemon already has the host proc and cgroup view
+required for its measurement and placement duties. Run-Gate's explicit
+resource_observer = "cgprofile" lane setting mounts a separate
+observer-only Unix socket, not ctl.sock, into the opted-in tester container.
+It is supported on native Assay lanes and on any explicitly opted-in
+`tester-unified` command lane. Its intended command use is a wrapper that
+launches an Assay campaign (such as Assay's B105 self-qualification driver).
+Run-Gate cannot establish from arbitrary command argv whether a script will
+launch Assay, so the opt-in is defined by the declared lane rather than a
+fragile command-string heuristic. This keeps the observer available across
+the wrapper boundary without asking the wrapper to recreate Docker mount or
+credential logic; the inherited endpoint variable must reach its Assay
+process.
+The first cut restricted the setting to native Assay lanes, but that excluded
+B105's qualification wrapper: it builds and installs the exact source wheel,
+then runs Assay in a private venv, so replacing it with the ordinary lane
+driver would discard its deadline and receipt guarantees. The extension is
+limited to an explicit opt-in on `tester-unified` command lanes. It broadens
+which runner may receive the same read-only endpoint, not what the endpoint
+can do: the daemon still binds each query to that peer's native thread and
+returns only that peer's gates-slice ancestry, never a caller-selected path,
+sibling cgroup, or control operation. The explicit lane declaration is the
+grant; the command process is trusted with the same narrow query capability
+whether or not it passes the endpoint onward to Assay.
+The observer accepts only a resource-counter request; filesystem read-only
+alone would not constrain the existing control socket's verbs. Docker also
+receives the socket's observed GID as a supplementary group, and the socket
+path, type, owner, group, and mode are checked before launch. Missing service
+or unsafe socket state is an infrastructure refusal, never a reason to
+silently run without B145.
+
+The client sends only its native thread ID. The daemon binds that request to
+SO_PEERCRED, checks the thread's host/namespace PID mapping, verifies that
+all peer threads share one cgroup and credentials, and derives the cgroup
+path itself. Because the daemon has a private cgroup namespace too, host
+procfs paths may begin with parent components such as /../../dev.slice/....
+The observer accepts them only when their parent-component count exactly
+matches the full-root cgroup2 mount's mountinfo root, then derives the
+canonical hierarchy path and verifies it lies below the configured gates
+slice. It returns that cgroup's ancestry counters and signatures only—no PIDs,
+process listing, caller-selected path, or sibling data.
+
+Assay prefers its local hierarchy and consults the observer only when the
+local failure specifically proves ancestors are hidden. It validates the
+remote identity and complete hierarchy, then compares counters per cgroup
+across each candidate window. A shared-ancestor event without a matching leaf
+delta aborts the lane without assigning a candidate bucket. Thus the query
+adds no placement authority and cannot turn unrelated sibling pressure into a
+mutation kill or survivor. The tradeoff is deliberate fail-closed behavior:
+ambiguous shared-limit activity makes the lane ERROR and requires a clean
+retry; it is not guessed away or assigned to whichever candidate happened to
+run.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral

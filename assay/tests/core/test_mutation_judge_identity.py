@@ -42,6 +42,25 @@ from assay import isolation, mutation
 from assay.cli import main
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
+from assay.resource_limits import ResourceLimitCounters
+
+
+@pytest.fixture(autouse=True)
+def _stable_resource_counters_for_identity_campaigns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these synthetic campaigns independent of the host cgroup layout.
+
+    This module tests mutation-state identity and resume behavior, not B145's
+    cgroup reader. Its temporary Git repositories have no real lane cgroup;
+    resource-observer and native-reader behavior is covered separately.
+    """
+    zero = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(mutation, "_read_candidate_resource_counters", lambda: zero)
 
 
 # --- the tree digest ----------------------------------------------------------
@@ -1128,8 +1147,8 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b114_advances_the_judge_identity_label():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/8"
+def test_combined_b114_rg89_advances_the_judge_identity_label():
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/9"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
@@ -1383,7 +1402,7 @@ def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
     """A worker-capability guard repair cold-starts earlier B145 results.
 
     Generate a realistic persisted `killed` record using the former `/6`
-    identity, then resume the unchanged lane under `/7`. This models builds
+    identity, then resume the unchanged lane under `/9`. This models builds
     whose Assay version string is unchanged; the judge label alone must reject
     a zero-delta kill that may have come from an unguarded worker.
     """
@@ -1406,7 +1425,7 @@ def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
     old_record = _records(state_dir)[0]
     assert old_record["resource_limit_evidence"] == zero_resource_limit_evidence_dict()
 
-    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/7")
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/9")
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
 
     assert _resumed(second) == 0

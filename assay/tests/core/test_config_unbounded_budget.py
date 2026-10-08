@@ -620,7 +620,11 @@ def test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout(
         memory_oom_kill=0,
         memory_oom_group_kill=0,
     )
-    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
+    monkeypatch.setattr(
+        mutation,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: counters,
+    )
 
     base_rev, head_rev = _seed(git_repo)
     timeouts: list[object] = []
