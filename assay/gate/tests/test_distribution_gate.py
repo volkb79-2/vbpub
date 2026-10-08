@@ -349,6 +349,9 @@ def test_registered_tester_log_follower_has_a_bound(
         "        name = pathlib.Path(os.environ['DOCKER_NAME_FILE']).read_text(encoding='ascii')\n"
         "        owner = pathlib.Path(os.environ['DOCKER_OWNER_FILE']).read_text(encoding='ascii')\n"
         "        print(cid + '|' + name + '|' + owner)\n"
+        "elif args[:2] == ['update', '--cpus=3']:\n"
+        "    expected = pathlib.Path(os.environ['DOCKER_NAME_FILE']).read_text(encoding='ascii')\n"
+        "    if len(args) != 3 or args[2] != expected: raise SystemExit(92)\n"
         "elif args[:2] == ['logs', '--follow']:\n"
         "    time.sleep(60)\n"
         "elif args[:1] == ['wait']:\n"
@@ -638,10 +641,12 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
     assert "B145 bounded probe log" in proc.stdout
     docker_calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
     assert docker_calls[0][:2] == ["run", "-d"]
-    assert docker_calls[1][:2] == ["ps", "--all"]
-    assert docker_calls[2] == ["logs", _FAKE_B145_ID]
-    assert docker_calls[3][:2] == ["ps", "--all"]
-    assert docker_calls[4] == ["rm", "-f", _FAKE_B145_ID]
+    name = docker_calls[0][docker_calls[0].index("--name") + 1]
+    assert docker_calls[1] == ["update", "--cpus=3", name]
+    assert docker_calls[2][:2] == ["ps", "--all"]
+    assert docker_calls[3] == ["logs", _FAKE_B145_ID]
+    assert docker_calls[4][:2] == ["ps", "--all"]
+    assert docker_calls[5] == ["rm", "-f", _FAKE_B145_ID]
     timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
     assert any(f"150s docker wait {_FAKE_B145_ID}" in call for call in timeout_calls)
     assert any(f"20s docker rm -f {_FAKE_B145_ID}" in call for call in timeout_calls)
@@ -693,7 +698,7 @@ def test_b145_name_conflict_never_removes_by_name_or_unverified_cid(
         (
             "run_b145_low_pids_probe",
             '"/workspaces/vbpub/.worktrees/assay-b145" '
-            '"/host/vbpub" "dev-gates.slice"',
+            '"/host/vbpub" "dev-gates.slice" "994"',
             124,
             "exceeded 150s",
         ),

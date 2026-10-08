@@ -8094,3 +8094,34 @@ is invoked through command substitution, so stdout is the machine-readable
 slice channel and must contain only the verified unit name. Move the
 container-name diagnostic to stderr (the existing helper test asserts it is
 there), then commit and rerun the registered gate on a quiet exact tree.
+
+### RW-510 — 2026-10-08 12:07:37 UTC — repair the tester-unified suite after rev58 observer integration
+
+The registered `tester-unified` run on clean tree `c94388ab2c421637a25a8f2889c3f8ea110daace`
+failed after 510.715 seconds: 7,865 passed, 17 failed, 11 skipped, and 1
+collection/test error. The separate `selftest` on the same tree passed in
+185.704 seconds (1,740 passed, 2 skipped; 33/33 changed lines and 22/22
+branches). Its profile had no DAMON samples because the host DAMON interface
+returned `EBUSY`; it is not DAMON-overhead evidence.
+
+The tester failures were traced to: (a) a generated fake-Docker script in
+`test_cgroup_parent.py` with a broken newline escape, whose syntax error was
+masked by the helper's intentional stderr suppression; (b) Docker fakes and
+call-order expectations that did not account for the immediate CPU-cap update;
+(c) one B145 probe test missing its observer GID argument; (d) a stale SQL
+failure-message assertion and a synchronous mock that logs in-container cleanup
+before the host-side cap update; (e) a cgroup-counter test calling the local
+reader despite the tester's private cgroup namespace; (f) a stale mutation
+reader monkeypatch; (g) missing `ASSAY_RESOURCE_OBSERVER_SOCKET` passthrough in
+the full self-qualification Assay lane and a corresponding stale Run-Gate
+config assertion; and (h) an unused `Path` import tripping the source-tree
+pyflakes gate.
+
+These are repair hypotheses supported by the failure traces, not yet qualified
+fixes. The candidate has been patched but not committed or rerun. Recheck
+`git diff --check`, static syntax/config parsing, and the exact committed tree,
+then rerun the registered `tester-unified` gate using this worktree's Run-Gate
+rev58 source overlay. Installed cockpit Run-Gate remains rev55 and cannot parse
+the candidate's `resource_observer` lane key; installed Assay is
+`8.0.1.dev76+g70bf4493e.d20261007`, while the gate-built candidate wheel is
+`8.0.1.dev143+gc94388ab2`. Do not conflate those source/wheel versions.

@@ -37,7 +37,7 @@ def run_probe(
 import json, os, pathlib, sys
 args = sys.argv[1:]
 with open(os.environ["DOCKER_CALLS"], "a", encoding="utf-8") as stream:
-    stream.write(json.dumps(args) + "\n")
+    stream.write(json.dumps(args) + "\\n")
 if args[:2] == ["image", "inspect"]:
     raise SystemExit(0)
 if args[0] == "inspect":

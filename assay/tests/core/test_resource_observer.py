@@ -4,7 +4,6 @@ import json
 import socket
 import threading
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 

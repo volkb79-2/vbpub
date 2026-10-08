@@ -1788,7 +1788,13 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert calls[0] == ["ps", "--no-trunc", "--format", "{{.Names}}"]
     launch = next(call for call in calls if call[:2] == ["run", "-d"])
     launch_index = calls.index(launch)
-    assert calls[launch_index + 1] == ["update", "--cpus=3", args["--runner-name"]]
+    update = ["update", "--cpus=3", args["--runner-name"]]
+    update_index = calls.index(update)
+    # The mock executes the detached runner synchronously, so its in-container
+    # PostgreSQL cleanup may be logged before docker run returns to this update.
+    # Still require the cap update before the host begins following runner logs.
+    assert update_index > launch_index
+    assert update_index < calls.index(["logs", "--follow", _FAKE_RUNNER_ID])
     assert "--init" in launch and "--cgroupns=host" not in launch
     assert launch[launch.index("--label") + 1] == f"assay.sql-gate.owner={args['--ownership-token']}"
     assert "--cgroup-parent=dev-gates.slice" in launch and "--network=none" in launch
@@ -1902,7 +1908,7 @@ def test_an_ambiguous_runner_conflict_preserves_the_sql_recovery_scratch(
     )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert "could not start the cgroup-visible SQL qualification container" in proc.stderr
+    assert "could not start the observer-enabled SQL qualification container" in proc.stderr
     calls = _docker_calls(docker_log)
     assert not any(call[:2] == ["rm", "-f"] for call in calls)
     runner_cidfile = next(call[call.index("--cidfile") + 1] for call in calls if "--cidfile" in call)
