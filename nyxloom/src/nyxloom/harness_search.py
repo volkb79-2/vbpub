@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from collections import Counter
@@ -920,11 +921,13 @@ def _search_process_worker_count() -> int:
         return 1
     main_path = Path(main_file).resolve()
     module_entrypoint = Path(__file__).with_name("cli_harness.py").resolve()
+    scripts_directory = sysconfig.get_path("scripts")
     console_entrypoint = (
-        Path(sys.argv[0]).name == "nyxloom-harness"
-        and main_path.is_file()
+        (Path(scripts_directory) / "nyxloom-harness").resolve()
+        if scripts_directory
+        else None
     )
-    if main_path != module_entrypoint and not console_entrypoint:
+    if main_path != module_entrypoint and main_path != console_entrypoint:
         return 1
     process_cpu_count = getattr(os, "process_cpu_count", None)
     available = process_cpu_count() if callable(process_cpu_count) else os.cpu_count()

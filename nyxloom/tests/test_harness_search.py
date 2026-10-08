@@ -665,7 +665,7 @@ def test_default_targeted_text_frequency_cap_is_64():
 def test_search_worker_count_stays_inline_without_importable_main(
     tmp_path, monkeypatch,
 ):
-    user_script = tmp_path / "calling_search.py"
+    user_script = tmp_path / "nyxloom-harness"
     user_script.write_text("from nyxloom import search_sessions\n", encoding="utf-8")
     monkeypatch.setitem(
         search.sys.modules,
@@ -678,15 +678,27 @@ def test_search_worker_count_stays_inline_without_importable_main(
 
 
 def test_search_worker_count_uses_bounded_workers_for_guarded_cli(
-    monkeypatch,
+    tmp_path, monkeypatch,
 ):
-    cli_entrypoint = Path(search.__file__).with_name("cli_harness.py")
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    cli_entrypoint = scripts_directory / "nyxloom-harness"
+    cli_entrypoint.write_text(
+        "from nyxloom.cli_harness import main\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        search.sysconfig,
+        "get_path",
+        lambda key: str(scripts_directory) if key == "scripts" else None,
+    )
     monkeypatch.setitem(
         search.sys.modules,
         "__main__",
         SimpleNamespace(__file__=str(cli_entrypoint)),
     )
-    monkeypatch.setattr(search.sys, "argv", [str(cli_entrypoint)])
     monkeypatch.setattr(search.os, "process_cpu_count", lambda: 100, raising=False)
     monkeypatch.setattr(search.os, "cpu_count", lambda: 100)
 
