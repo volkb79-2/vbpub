@@ -300,7 +300,11 @@ def test_socket_client_rejects_deep_json_without_parser_traceback(tmp_path):
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(socket_path))
     listener.listen(1)
-    deeply_nested = b"[" * 2000 + b"0" + b"]" * 2000 + b"\n"
+    # Python 3.14's JSON decoder accepts more than 2,000 nested arrays; this
+    # bounded 200-KiB response reaches its recursion guard while staying below
+    # the observer client's 1-MiB response ceiling.
+    depth = 100_000
+    deeply_nested = b"[" * depth + b"0" + b"]" * depth + b"\n"
 
     def serve_one():
         conn, _ = listener.accept()

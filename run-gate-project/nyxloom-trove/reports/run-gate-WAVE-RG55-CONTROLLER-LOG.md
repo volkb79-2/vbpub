@@ -8004,3 +8004,52 @@ No fix is yet qualified by a registered gate; do not reuse the failed
 preflight as a PASS or infer an R2 result. After the targeted fixes, rerun the
 preflight on the new exact tree, then continue the remaining short gates and
 review only after all required results are green.
+
+### RW-505 — 2026-10-08 03:00:32 UTC — repair Assay preflight and remove host cgroup namespaces
+
+Clarify RW-504: the `RecursionError` guard in
+`read_resource_observer_counters` was already added on candidate
+`b7a32f14949e000051cddfa38a5b45a26019a5d0`; the preflight's third failure was
+that its 2,000-level JSON fixture was accepted by Python 3.14 and then rejected
+by the intended object-shape check. Increase the bounded fixture enough to
+exercise the real parser recursion path.
+
+On `b7a32f1`, Assay `self-qualification-preflight` failed R0 after 7,352 tests,
+with three failures; derived R1 is not acceptance evidence. Two failures are
+the same cause: the observer socket was mounted in the Run-Gate container, but
+`ASSAY_RESOURCE_OBSERVER_SOCKET` was absent from both B105 `env_passthrough`
+lists, so the nested Assay command launched native R2 without the observer.
+Add the variable to both lanes and pin the contract in `test_self_lane.py`.
+
+The profiler `r0-r1` gate on `b7a32f1` passed: 2,460 tests, 8,307 statements
+and 3,070 branches at 100% line and branch coverage; saved Run-Gate verdict is
+PASS, exit 0, clean tree, 152.698 seconds. Its profile did not obtain DAMON
+samples (`no pids to monitor yet`, zero samples), so it is not DAMON-overhead
+evidence.
+
+The Assay registered tester gate also still launched its main suite, B145
+probes, and SQL witness with `--cgroupns=host`; the cgroup-parent helper used
+the same flag to inspect host cgroups. This conflicts with the wave's
+private-namespace policy. Replace those launches with private cgroup namespaces
+and the separately authorized, read-only resource-observer socket wherever
+Assay needs host ancestry. Replace the helper's host namespace view with
+read-only host cgroupfs and systemd-bus mounts, while verifying a loaded,
+non-transient slice and its instantiated cgroup path. Its short probe must
+itself use the declared interactive parent and a CPU cap. Preserve the
+bounded-wait probe's absence of observer and Docker-socket access. All results
+from `b7a32f1` become diagnostic-only after these repairs; final evidence must
+be rerun on the final quiet tree.
+
+### RW-506 — 2026-10-08 03:16:45 UTC — invoke the matching Run-Gate source
+
+The installed `/home/vscode/.venv` Run-Gate is 23.10.0 / rev 55; it rejects
+Assay's current `resource_observer = "cgprofile"` lane setting as an unknown
+key before launching a gate. The current candidate source is rev 58 and
+contains the RG-89 lane contract. Do not treat the installed wheel's refusal
+as an Assay failure or update the shared venv merely to bypass it. For this
+candidate's registered gate, invoke the installed entrypoint with
+`PYTHONPATH` set to this worktree's `run-gate-project/`, so the exact rev-58
+source validates and drives the lane. Its dry-run passed for
+`assay/tester-unified`; no gate was launched at this ruling. Preserve this
+distinction in the gate record and decide separately whether a later Run-Gate
+release/install is in scope.

@@ -80,9 +80,10 @@ when another `run-gate-*` container is running; exit 3 always means rerun, and t
 receipt is left as it was. On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
 runs alongside other projects' `run-gate-*` containers (printing
 `ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
-SQL phase starts a separate `tester-unified` container with `--cgroupns=host`
-and mounts the Docker socket only there, so its real Assay witness can observe
-the cgroup ancestors required by B145. Its `--allow-shared-host` still refuses
+SQL phase starts a separate `tester-unified` container with a private
+cgroup namespace and the read-only resource-observer socket, and mounts the
+Docker socket only there. The observer supplies only the runner's own cgroup
+ancestors required by B145. Its `--allow-shared-host` still refuses
 another `run-gate-assay-sql-*` container after excluding its own runner. No collected judge test
 reads history or tags (A-475), so both lanes use the shallow snapshot default
 (`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so

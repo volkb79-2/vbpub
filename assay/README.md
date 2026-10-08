@@ -738,10 +738,10 @@ a worked, pasteable lane.
 The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
 (A-480), with no consumer checkout: after the ordinary registered
 `tester-unified` suite passes, a dedicated `tester-unified` qualification
-container runs `gate/python/qualify_sql.py` from an exact-OID clone with
-`--cgroupns=host`. Only this qualification container receives the Docker socket,
-so its real `assay run` witness can observe the cgroup ancestors required by
-B145 while driving assay's own schema
+container runs `gate/python/qualify_sql.py` from an exact-OID clone in a private
+cgroup namespace. It receives the read-only resource-observer socket for B145
+ancestor counters and is the only phase that receives the Docker socket, which
+it uses to drive assay's own schema
 (`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
 matrix and a witnessed `assay run` against one digest-pinned, never-pulled
 PostgreSQL container named `run-gate-assay-sql-<pid>-<epoch>`. A busy host,

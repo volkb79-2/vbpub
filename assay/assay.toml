@@ -55,7 +55,7 @@ argv = ["python", "-m", "pytest", "tests", "gate/tests", "-q", "--ignore=gate/te
 # process through the WHEEL nyxloom-trove/nyxloom.toml's gate script builds
 # and installs, never a bind-mounted source copy.
 env = {}
-env_passthrough = ["PATH"]
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 
 # This is the ordinary inner tester phase's budget. The host registered gate
 # has a separate 5h budget for both sequential assay lanes, B145 probes, the
@@ -205,6 +205,7 @@ argv = [
 env = {}
 env_passthrough = [
   "PATH",
+  "ASSAY_RESOURCE_OBSERVER_SOCKET",
   "ASSAY_B105_COVERAGE_SOURCE",
   "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
   "ASSAY_B105_SOURCE_COMMIT",

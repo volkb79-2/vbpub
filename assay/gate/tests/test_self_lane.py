@@ -87,6 +87,10 @@ def test_b105_run_gate_lanes_provide_observer_to_nested_r2_tests():
         assert lane["environment"] == "tester-unified"
         assert lane["resource_observer"] == "cgprofile"
 
+    assay_lanes = load_lane_file(SELF_LANE_FILE)
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
+        assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
+
 
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
     # A-046/A-133 still govern the ordinary release gate. B105's new lane is
@@ -836,6 +840,8 @@ def test_preflight_measures_the_same_complete_source_inventory_before_r2():
     }
     assert b105_coverage_env.isdisjoint(qualification.env_passthrough)
     assert b105_coverage_env.issubset(preflight.env_passthrough)
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in qualification.env_passthrough
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in preflight.env_passthrough
 
 
 def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(

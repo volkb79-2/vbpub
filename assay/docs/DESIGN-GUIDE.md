@@ -3406,14 +3406,15 @@ The mask/lexer tests prove which bytes assay replaces; only a real catalog can
 say the replacement *means* something. The gate proves that with assay's own
 material and no consumer checkout. After the ordinary registered
 `tester-unified` suite exits green, the outer driver starts a second, dedicated
-`tester-unified` container for SQL qualification. It uses `--cgroupns=host` so
-the real `assay run` witness can see the cgroup hierarchy B145 requires; only
-this phase receives the Docker socket, which it uses to run the pinned
-PostgreSQL fixture. The driver mounts the exact-OID clone of the gated commit
-and runs `gate/python/qualify_sql.py` there with the image's Python 3.14
-interpreter. A red ordinary tester ends the script first, so PostgreSQL never
-runs after a red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified`
-between the tester and the receipt.
+`tester-unified` container for SQL qualification. Its cgroup namespace stays
+private; the read-only resource-observer socket provides the runner's verified
+ancestor counters when B145 proves the local namespace hides them. Only this
+phase receives the Docker socket, which it uses to run the pinned PostgreSQL
+fixture. The driver mounts the exact-OID clone of the gated commit and runs
+`gate/python/qualify_sql.py` there with the image's Python 3.14 interpreter. A
+red ordinary tester ends the script first, so PostgreSQL never runs after a red
+tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified` between the tester
+and the receipt.
 
 **Inputs, all in the repository.** The schema is
 `tests/fixtures/mutation/sql/qualification/01-schema.sql` (sha256 pinned in

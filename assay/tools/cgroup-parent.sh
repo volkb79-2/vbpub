@@ -7,13 +7,37 @@
 set -euo pipefail
 
 PROBE_IMAGE="${ASSAY_CGROUP_PROBE_IMAGE:-tester-unified:local}"
+PROBE_ID=""
+PROBE_NAME=""
+PROBE_OWNER=""
+PROBE_CIDFILE=""
+PROBE_SCRATCH=""
 
 die() { printf 'cgroup-parent: %s\n' "$*" >&2; exit 1; }
 
+cleanup_probe() {
+  local result=$? recorded="" inventory=""
+  trap - EXIT
+  if [[ -n "$PROBE_CIDFILE" && -s "$PROBE_CIDFILE" ]]; then
+    recorded="$(<"$PROBE_CIDFILE")"
+  fi
+  if [[ "$recorded" =~ ^[0-9a-f]{64}$ ]]; then
+    inventory="$(docker inspect --format \
+      '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.cgroup-parent.owner"}}' \
+      "$recorded" 2>/dev/null)" || inventory=""
+    if [[ "$inventory" == "$recorded|/$PROBE_NAME|$PROBE_OWNER" ]]; then
+      docker rm -f "$PROBE_NAME" >/dev/null 2>&1 || result=1
+    fi
+  fi
+  if [[ -n "$PROBE_SCRATCH" ]]; then
+    rm -rf -- "$PROBE_SCRATCH"
+  fi
+  exit "$result"
+}
+
 slice="${CGROUP_PARENT_DEV_GATES:-}"
-if [ -z "$slice" ]; then
-  die 'CGROUP_PARENT_DEV_GATES is unset. Refusing to launch a gate
-container without an explicitly declared gates cgroup tier.'
+if [[ -z "$slice" ]]; then
+  die 'CGROUP_PARENT_DEV_GATES is unset. Refusing to launch a gate container without an explicitly declared gates cgroup tier.'
 fi
 
 case "$slice" in
@@ -21,38 +45,119 @@ case "$slice" in
   *) die "\"$slice\" does not name a systemd slice unit" ;;
 esac
 
-stem="${slice%.slice}"
-case "$stem" in
-  -*|*-) die "\"$slice\" has an empty hierarchy component" ;;
-esac
-rel=""
-acc=""
-IFS='-' read -r -a parts <<<"$stem"
-for part in "${parts[@]}"; do
-  [ -n "$part" ] || die "\"$slice\" has an empty hierarchy component"
-  if [ -z "$acc" ]; then acc="$part"; else acc="$acc-$part"; fi
-  rel="$rel/$acc.slice"
-done
+probe_parent="${CGROUP_PARENT_DEV_INTERACTIVE:-}"
+[[ -n "$probe_parent" ]] \
+  || die 'CGROUP_PARENT_DEV_INTERACTIVE is unset. Refusing to launch an unplaced slice-verification probe.'
 
-verdict="$(
-  docker run --rm -i --cgroupns=host --network=none \
-    -e "CG_REL=$rel" "$PROBE_IMAGE" sh -s <<'PROBE' 2>/dev/null || true
-d="/sys/fs/cgroup${CG_REL}"
-if [ ! -d "$d" ]; then echo "MISSING $d"; exit 0; fi
-read_or() { if [ -r "$1" ]; then cat "$1"; else echo "$2"; fi; }
+cockpit_name="${HOSTNAME:-}"
+[[ -n "$cockpit_name" ]] \
+  || die 'HOSTNAME is unset. Cannot verify the trusted interactive cgroup parent.'
+cockpit_parent="$(docker inspect --format '{{.HostConfig.CgroupParent}}' "$cockpit_name" 2>/dev/null)" \
+  || die "could not read the cockpit container's actual Docker cgroup parent"
+[[ "$cockpit_parent" == "$probe_parent" ]] \
+  || die "trusted probe parent $probe_parent differs from the cockpit's actual Docker parent $cockpit_parent"
+
+docker image inspect "$PROBE_IMAGE" >/dev/null 2>&1 \
+  || die "probe image $PROBE_IMAGE is unavailable"
+
+PROBE_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/assay-cgroup-parent.XXXXXXXX")" \
+  || die 'could not create private probe ownership scratch'
+PROBE_CIDFILE="$PROBE_SCRATCH/container.cid"
+PROBE_NAME="assay-cgroup-parent-${BASHPID}-$(date +%s%N)-${RANDOM}"
+PROBE_OWNER="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" \
+  || die 'could not create probe ownership token'
+[[ "$PROBE_OWNER" =~ ^[0-9a-f]{64}$ ]] \
+  || die 'could not create a valid probe ownership token'
+trap cleanup_probe EXIT
+
+printf 'ASSAY_CGROUP_PARENT_PROBE_CONTAINER=%s\n' "$PROBE_NAME"
+probe_id="$(docker run -d \
+  --cidfile "$PROBE_CIDFILE" \
+  --label "assay.cgroup-parent.owner=$PROBE_OWNER" \
+  --name "$PROBE_NAME" \
+  --cgroup-parent="$probe_parent" \
+  --cpus=3 \
+  --network=none \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --user=0:0 \
+  --mount type=bind,source=/sys/fs/cgroup,target=/hostcg,readonly \
+  --mount type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly \
+  --mount type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
+  -e DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus \
+  "$PROBE_IMAGE" \
+  bash -c 'set -eu
+unit=$1
+state="$(/bin/systemctl show "$unit" --property=LoadState --value)"
+fragment="$(/bin/systemctl show "$unit" --property=FragmentPath --value)"
+control_group="$(/bin/systemctl show "$unit" --property=ControlGroup --value)"
+if [[ "$state" != loaded || -z "$fragment" ]]; then
+  printf "MISSING unit=%s LoadState=%s FragmentPath=%s\n" "$unit" "$state" "$fragment"
+  exit 1
+fi
+case "$fragment" in
+  /run/systemd/transient/*)
+    printf "MISSING transient-unit=%s\n" "$fragment"
+    exit 1
+    ;;
+esac
+case "$control_group" in
+  /*) ;;
+  *) printf "MISSING unit=%s has unsafe ControlGroup=%s\n" "$unit" "$control_group"; exit 1 ;;
+esac
+case "$control_group" in
+  /|*//*|*/./*|*/../*|*/.|*/..|*/)
+    printf "MISSING unit=%s has unsafe ControlGroup=%s\n" "$unit" "$control_group"
+    exit 1
+    ;;
+esac
+d="/hostcg$control_group"
+if [[ ! -d "$d" ]]; then printf "MISSING %s\n" "$d"; exit 1; fi
+read_or() { if [[ -r "$1" ]]; then cat "$1"; else printf "%s" "$2"; fi; }
 configured=0
-if [ "$(read_or "$d/memory.max" max)"           != "max" ];         then configured=1; fi
-if [ "$(read_or "$d/memory.high" max)"          != "max" ];         then configured=1; fi
-if [ "$(read_or "$d/memory.swap.max" max)"      != "max" ];         then configured=1; fi
-if [ "$(read_or "$d/cpu.weight" 100)"           != "100" ];         then configured=1; fi
-if [ "$(read_or "$d/io.weight" "default 100")"  != "default 100" ]; then configured=1; fi
-if [ "$configured" = "1" ]; then echo "OK"; else echo "UNCONFIGURED $d"; fi
-PROBE
-)"
+[[ "$(read_or "$d/memory.max" max)" != max ]] && configured=1
+[[ "$(read_or "$d/memory.high" max)" != max ]] && configured=1
+[[ "$(read_or "$d/memory.swap.max" max)" != max ]] && configured=1
+[[ "$(read_or "$d/cpu.max" "max 100000")" != "max 100000" ]] && configured=1
+[[ "$(read_or "$d/cpu.weight" 100)" != 100 ]] && configured=1
+[[ "$(read_or "$d/io.weight" "default 100")" != "default 100" ]] && configured=1
+if [[ "$configured" != 1 ]]; then printf "UNCONFIGURED %s\n" "$d"; exit 1; fi
+printf "OK unit=%s LoadState=%s ControlGroup=%s\n" "$unit" "$state" "$control_group"
+sleep 2
+' _ "$slice")" || die 'could not start the detached slice-verification probe'
 
-case "$verdict" in
-  OK) printf '%s\n' "$slice" ;;
-  MISSING\ *) die "slice \"$slice\" has no host cgroup at ${verdict#MISSING }; refusing a fail-open transient slice" ;;
-  UNCONFIGURED\ *) die "slice \"$slice\" exists at ${verdict#UNCONFIGURED } but has only kernel-default resource knobs" ;;
-  *) die "could not verify host cgroup slice \"$slice\"" ;;
+# The initial cap is present in docker run; update it immediately as required
+# for every container started from the cockpit.
+docker update --cpus=3 "$PROBE_NAME" >/dev/null \
+  || die 'could not apply the slice-verification probe CPU cap'
+[[ "$probe_id" =~ ^[0-9a-f]{64}$ ]] \
+  || die 'Docker returned a malformed slice-verification container ID'
+PROBE_ID="$probe_id"
+[[ -s "$PROBE_CIDFILE" && "$(<"$PROBE_CIDFILE")" == "$PROBE_ID" ]] \
+  || die 'slice-verification container ID does not match its cidfile'
+
+inventory="$(docker inspect --format \
+  '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.cgroup-parent.owner"}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.CgroupParent}}' \
+  "$PROBE_ID" 2>/dev/null)" \
+  || die 'could not verify slice-probe ownership and placement'
+[[ "$inventory" == "$PROBE_ID|/$PROBE_NAME|$PROBE_OWNER|3000000000|$probe_parent" ]] \
+  || die "slice-probe ownership, cap, or parent mismatch: $inventory"
+
+probe_status="$(timeout --signal=TERM --kill-after=5s 30s docker wait "$PROBE_ID")" \
+  || die 'could not collect slice-verification probe exit status'
+probe_output="$(timeout --kill-after=5s 15s docker logs "$PROBE_ID" 2>&1)" \
+  || die 'could not collect slice-verification probe output'
+[[ "$probe_status" == 0 ]] || die "host slice verification failed: $probe_output"
+case "$probe_output" in
+  OK\ *) ;;
+  MISSING\ *) die "requested host slice is not a loaded, instantiated slice: $probe_output" ;;
+  UNCONFIGURED\ *) die "requested host slice has only kernel-default resource knobs: $probe_output" ;;
+  *) die "could not verify requested host slice: $probe_output" ;;
 esac
+
+docker rm "$PROBE_NAME" >/dev/null \
+  || die 'could not remove the slice-verification probe container'
+PROBE_ID=""
+PROBE_CIDFILE=""
+printf '%s\n' "$slice"
