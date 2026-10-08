@@ -497,3 +497,30 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   and after; the review ran no tests, gates, or containers. A full-base
   `git diff --check` then identified a trailing blank line in
   `test_verify_b114_coverage.py`, removed as a whitespace-only follow-up.
+
+## 2026-10-08 — RG-55 controller integration probes
+
+- On the reconciled B114 tree, the live `cgroup-parent.sh` probe succeeded
+  with `CGROUP_PARENT_DEV_GATES=dev-gates.slice` and
+  `CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice`. It used a private
+  cgroup namespace and the host system-bus socket from a bounded, networkless
+  `tester-unified:local` container; it verified both units and the gates
+  slice's configured controls, then removed its exact probe container.
+- The same helper with B105's 2-GiB RAM reserve correctly refused admission:
+  `dev-gates.slice` had only 714,911,744 bytes of measured headroom. This was
+  while the RG-89 R2 campaign container was active; the refusal happened after
+  the host-unit query and is evidence that the reserve gate is active, not a
+  helper failure. Host memory PSI `full avg10` was 0.00% at that check.
+- A registered `tester-unified` invocation on integration commit `a9b2ff7c`
+  was attempted while that same R2 container remained active. Run-Gate's
+  host-busy guard rejected it before starting the test container; it is not a
+  test result and must not be counted as B114 acceptance evidence.
+- That short attempt also reproduced RG-88 with the installed Run-Gate rev55:
+  the daemon returned a valid summary with `damon.hot_bytes: null`, and rev55
+  raised `NoneType.get` while formatting the footprint, losing the recorded
+  summary but not changing the lane's own exit status. RG-88 is already fixed
+  in main by rev56 commit `3c77a9314`; its regression
+  `test_unavailable_damon_with_null_hot_bytes_keeps_the_disclosure` passed
+  locally. No additional backlog row is needed. The next registered lane must
+  wait until the R2 container has finished; use a Run-Gate build containing
+  the rev56 formatter fix when that release is available.
