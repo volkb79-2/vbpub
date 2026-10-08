@@ -488,5 +488,11 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   cgroup-parent tests **23 passed**; docs examples/vocabulary **55 passed**.
   Ruff `E4,E7,E9,F`, `bash -n`, `shellcheck -e SC2016`, and `git diff --check`
   passed. No registered gate or R2 campaign ran on this repair diff. The next
-  step is a fresh exact-tip Sol xhigh review, followed by provisional merge and
-  all three registered B114 acceptance lanes on the merged commit.
+  step is provisional merge, followed by all three registered B114 acceptance
+  lanes on the merged commit.
+
+- The fresh Sol xhigh review of the full B114 diff through `976b5c41` passed
+  with no actionable findings. HEAD and clean worktree status matched before
+  and after; the review ran no tests, gates, or containers. A full-base
+  `git diff --check` then identified a trailing blank line in
+  `test_verify_b114_coverage.py`, removed as a whitespace-only follow-up.

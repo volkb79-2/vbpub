@@ -312,4 +312,3 @@ def test_campaign_binds_exact_utc_deadline_and_rejects_expiry_at_creation():
     changed = deepcopy(control)
     changed["campaign"]["expires_at_utc"] = changed["campaign"]["created_at_utc"]
     _must_refuse(control, changed, "campaign.expires_at_utc must be later")
-
