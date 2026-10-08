@@ -265,7 +265,8 @@ def _store_sessions(
             )
         )
         found = []
-        seen_transcripts: set[tuple[int, int] | Path] = set()
+        indexes: dict[tuple[int, int] | Path, int] = {}
+        priorities: dict[tuple[int, int] | Path, int] = {}
         for index, root in enumerate(roots, 1):
             try:
                 if not stat.S_ISDIR(root.stat().st_mode):
@@ -276,15 +277,7 @@ def _store_sessions(
                 raise SearchError(f"could not inspect Claude Code session root {root}: {exc}") from exc
             _report(progress, f"Discovering Claude Code sessions under {root}", index, len(roots))
             for session in _claude_sessions(root, progress=progress):
-                source = Path(session.source)
-                identity = _path_identity(source)
-                key: tuple[int, int] | Path = (
-                    identity if identity is not None else source
-                )
-                if key in seen_transcripts:
-                    continue
-                seen_transcripts.add(key)
-                found.append(session)
+                _merge_claude_session(found, indexes, priorities, session)
         return found
     if client == "codex":
         if source_roots is None:
@@ -384,13 +377,56 @@ def _walk_files(root: Path, *, progress: Progress | None = None) -> Iterator[Pat
                 yield path
 
 
+def _claude_session_priority(session: _DiscoveredSession) -> int:
+    source = Path(session.source)
+    if source.parent.name == "subagents" and source.stem.startswith("agent-"):
+        agent_id = source.stem.removeprefix("agent-")
+        if agent_id.casefold() == session.session_id.casefold():
+            return 3
+    if source.stem.casefold() == session.session_id.casefold():
+        return 2
+    return 1
+
+
+def _merge_claude_session(
+    found: list[_DiscoveredSession],
+    indexes: dict[tuple[int, int] | Path, int],
+    priorities: dict[tuple[int, int] | Path, int],
+    candidate: _DiscoveredSession,
+) -> None:
+    source = Path(candidate.source)
+    identity = _path_identity(source)
+    key: tuple[int, int] | Path = identity if identity is not None else source
+    priority = _claude_session_priority(candidate)
+    if key not in indexes:
+        indexes[key] = len(found)
+        priorities[key] = priority
+        found.append(candidate)
+        return
+
+    current_index = indexes[key]
+    current = found[current_index]
+    current_priority = priorities[key]
+    if (
+        priority == current_priority
+        and candidate.session_id.casefold() != current.session_id.casefold()
+    ):
+        raise SearchError(
+            "session search is indeterminate; hard-linked Claude Code "
+            f"transcript {source} has conflicting session IDs "
+            f"{current.session_id!r} and {candidate.session_id!r}"
+        )
+    if priority > current_priority:
+        found[current_index] = candidate
+        priorities[key] = priority
+
+
 def _claude_sessions(
     root: Path, *, progress: Progress | None = None,
 ) -> list[_DiscoveredSession]:
     if not _root_is_available(root):
         return []
     found: list[_DiscoveredSession] = []
-    seen_files: set[tuple[int, int] | Path] = set()
     indexes: dict[tuple[int, int] | Path, int] = {}
     priorities: dict[tuple[int, int] | Path, int] = {}
     for path in _walk_files(root, progress=progress):
@@ -408,41 +444,14 @@ def _claude_sessions(
                 f"session search is indeterminate; could not resolve Claude Code "
                 f"session {path}: {type(exc).__name__}: {exc}"
             ) from exc
-        identity = _path_identity(source)
-        key: tuple[int, int] | Path = identity if identity is not None else source
         if source.parent.name == "subagents" and source.stem.startswith("agent-"):
             session_id = source.stem.removeprefix("agent-")
-            priority = 3
         elif transcript_session_id:
             session_id = transcript_session_id
-            priority = (
-                2
-                if source.stem.casefold() == transcript_session_id.casefold()
-                else 1
-            )
         else:
             session_id = source.stem
-            priority = 0
         candidate = _DiscoveredSession("claude", session_id, str(source))
-        if key not in seen_files:
-            seen_files.add(key)
-            indexes[key] = len(found)
-            priorities[key] = priority
-            found.append(candidate)
-            continue
-
-        current_index = indexes[key]
-        current = found[current_index]
-        current_priority = priorities[key]
-        if priority == current_priority and session_id != current.session_id:
-            raise SearchError(
-                "session search is indeterminate; hard-linked Claude Code "
-                f"transcript {source} has conflicting session IDs "
-                f"{current.session_id!r} and {session_id!r}"
-            )
-        if priority > current_priority:
-            found[current_index] = candidate
-            priorities[key] = priority
+        _merge_claude_session(found, indexes, priorities, candidate)
     return found
 
 

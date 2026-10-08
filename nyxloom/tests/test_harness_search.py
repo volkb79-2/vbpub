@@ -245,6 +245,66 @@ def test_claude_hard_links_with_conflicting_agent_ids_are_indeterminate(tmp_path
         search._claude_sessions(root)
 
 
+def test_claude_hard_link_agent_ids_that_only_differ_by_case_are_equivalent(
+    tmp_path,
+):
+    root = tmp_path / "projects"
+    parent_id = "12345678-1234-1234-1234-123456789abc"
+    agent_id = "a36c6ff1d3cc69767"
+    original = _write_jsonl(
+        root / "project" / parent_id / "subagents" / f"agent-{agent_id}.jsonl",
+        {"sessionId": parent_id, "parentUuid": "parent"},
+    )
+    os.link(original, original.with_name(f"agent-{agent_id.upper()}.jsonl"))
+
+    found = search._claude_sessions(root)
+
+    assert len(found) == 1
+    assert found[0].session_id.casefold() == agent_id.casefold()
+
+
+def test_claude_cross_root_hard_link_aliases_upgrade_to_agent_filename(tmp_path):
+    first_root = tmp_path / "first-projects"
+    second_root = tmp_path / "second-projects"
+    parent_id = "12345678-1234-1234-1234-123456789abc"
+    agent_id = "a36c6ff1d3cc69767"
+    original = _write_jsonl(
+        second_root / "project" / parent_id / "subagents" / f"agent-{agent_id}.jsonl",
+        {"sessionId": parent_id, "parentUuid": "parent"},
+    )
+    alias = first_root / "project" / "000-alias.jsonl"
+    alias.parent.mkdir(parents=True)
+    os.link(original, alias)
+
+    found = search._store_sessions(
+        "claude", source_roots=(first_root, second_root),
+    )
+
+    assert [(row.session_id, row.source) for row in found] == [
+        (agent_id, str(original.resolve())),
+    ]
+
+
+def test_claude_conflicting_hard_link_agent_ids_across_roots_are_indeterminate(
+    tmp_path,
+):
+    first_root = tmp_path / "first-projects"
+    second_root = tmp_path / "second-projects"
+    parent_id = "12345678-1234-1234-1234-123456789abc"
+    original = _write_jsonl(
+        first_root / "project" / parent_id / "subagents" / "agent-aaaaaaaaaaaaaaaaa.jsonl",
+        {"sessionId": parent_id, "parentUuid": "parent"},
+    )
+    alias = second_root / "project" / parent_id / "subagents" / "agent-bbbbbbbbbbbbbbbbb.jsonl"
+    alias.parent.mkdir(parents=True)
+    os.link(original, alias)
+
+    with pytest.raises(search.SearchError, match="conflicting session IDs"):
+        search._store_sessions(
+            "claude", source_roots=(first_root, second_root),
+        )
+
+
 def test_claude_signature_scan_stops_at_its_fifty_line_bound(tmp_path):
     path = tmp_path / "large.jsonl"
     path.write_text(
