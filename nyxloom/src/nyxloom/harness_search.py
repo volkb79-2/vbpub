@@ -38,6 +38,7 @@ TERM_MATCHES = ("exact", "prefix")
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _NONASCII_BYTES = re.compile(rb"[\x80-\xff]")
 _JSONL_CHUNK_SIZE = 8 * 1024 * 1024
+_ACTIVITY_CHUNK_SIZE = 1024 * 1024
 _PROGRESS_FILE_THRESHOLD = 64 * 1024 * 1024
 _PROGRESS_BYTE_STEP = 16 * 1024 * 1024
 _RG_ARGV_PATH_BUDGET = 128 * 1024
@@ -187,7 +188,11 @@ def _source_roots(paths: Sequence[str | Path] | None) -> tuple[Path, ...] | None
         roots.append(path)
     if not roots:
         raise SearchError("at least one --source-root is required when source roots are supplied")
-    return _dedupe_paths(roots)
+    # Keep physical aliases until each client has interpreted the path. An
+    # OpenCode database is selected partly by its spelling (the `.db` suffix),
+    # so inode-deduping `store.sqlite` before an alias `store.db` is filtered
+    # can discard the only compatible root.
+    return tuple(dict.fromkeys(roots))
 
 
 def _directory_roots(
@@ -204,7 +209,7 @@ def _directory_roots(
         raise SearchError(
             f"{client} requires at least one directory --source-root"
         )
-    return tuple(directories)
+    return _dedupe_paths(directories)
 
 
 def _root_is_available(root: Path) -> bool:
@@ -385,20 +390,29 @@ def _claude_sessions(
     if not _root_is_available(root):
         return []
     found = []
-    seen_files: set[tuple[int, int]] = set()
+    seen_files: set[tuple[int, int] | Path] = set()
     for path in _walk_files(root, progress=progress):
         if path.suffix != ".jsonl" or not _is_claude_transcript(path):
             continue
-        identity = _path_identity(path)
-        if identity is not None and identity in seen_files:
+        try:
+            # Report the target's real filename and ID when discovery first
+            # encounters a symlink alias (including a symlinked parent root).
+            source = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SearchError(
+                f"session search is indeterminate; could not resolve Claude Code "
+                f"session {path}: {type(exc).__name__}: {exc}"
+            ) from exc
+        identity = _path_identity(source)
+        key: tuple[int, int] | Path = identity if identity is not None else source
+        if key in seen_files:
             continue
-        if identity is not None:
-            seen_files.add(identity)
-        if path.parent.name == "subagents" and path.stem.startswith("agent-"):
-            session_id = path.stem.removeprefix("agent-")
+        seen_files.add(key)
+        if source.parent.name == "subagents" and source.stem.startswith("agent-"):
+            session_id = source.stem.removeprefix("agent-")
         else:
-            session_id = path.stem
-        found.append(_DiscoveredSession("claude", session_id, str(path)))
+            session_id = source.stem
+        found.append(_DiscoveredSession("claude", session_id, str(source)))
     return found
 
 
@@ -1030,32 +1044,45 @@ def _jsonl_last_activity(
     total: int | None = None,
 ) -> str | None:
     """Read the newest source-order root timestamp after a query match."""
-    chunk_size = 1024 * 1024
+    chunk_size = _ACTIVITY_CHUNK_SIZE
     progress_step = _PROGRESS_BYTE_STEP
     try:
         with path.open("rb") as source:
             source.seek(0, 2)
             file_size = source.tell()
             position = file_size
-            carry = b""
+            # Chunks are retained as pieces until a line boundary is found.
+            # Appending a growing carry buffer to every earlier chunk makes a
+            # single huge final JSONL record quadratic in copied bytes.
+            carry_parts: list[bytes] = []
             last_progress = 0
             while position > 0:
                 read_size = min(chunk_size, position)
                 position -= read_size
                 source.seek(position)
-                block = source.read(read_size) + carry
+                block = source.read(read_size)
                 lines = block.split(b"\n")
-                carry = lines[0]
-                for raw_line in reversed(lines[1:]):
-                    if b'"timestamp"' not in raw_line and b"\\u" not in raw_line:
-                        continue
-                    line = raw_line.decode("utf-8", errors="replace")
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
-                        return record["timestamp"]
+                if len(lines) == 1:
+                    carry_parts.append(block)
+                else:
+                    # The final segment in this chunk joins any pieces read
+                    # from later chunks. Join those pieces once, at the line
+                    # boundary, then continue toward older complete records.
+                    raw_line = lines[-1] + b"".join(reversed(carry_parts))
+                    carry_parts = [lines[0]] if lines[0] else []
+                    candidates = [raw_line, *reversed(lines[1:-1])]
+                    for raw_line in candidates:
+                        if not raw_line:
+                            continue
+                        if b'"timestamp"' not in raw_line and b"\\u" not in raw_line:
+                            continue
+                        line = raw_line.decode("utf-8", errors="replace")
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
+                            return record["timestamp"]
                 scanned = file_size - position
                 if progress is not None and scanned - last_progress >= progress_step:
                     _report(
@@ -1065,14 +1092,16 @@ def _jsonl_last_activity(
                         file_size,
                     )
                     last_progress = scanned
-            if carry:
-                line = carry.decode("utf-8", errors="replace")
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    return None
-                if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
-                    return record["timestamp"]
+            if carry_parts:
+                raw_line = b"".join(reversed(carry_parts))
+                if b'"timestamp"' in raw_line or b"\\u" in raw_line:
+                    line = raw_line.decode("utf-8", errors="replace")
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        return None
+                    if isinstance(record, dict) and isinstance(record.get("timestamp"), str):
+                        return record["timestamp"]
     except OSError as exc:
         raise SearchError(f"could not read session activity from {path}: {exc}") from exc
     return None

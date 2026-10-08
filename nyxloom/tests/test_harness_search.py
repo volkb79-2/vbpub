@@ -183,13 +183,14 @@ def test_claude_discovery_filters_transcripts_and_names_subagents(tmp_path):
 def test_claude_discovery_deduplicates_physical_transcript_aliases(tmp_path):
     root = tmp_path / "projects"
     original = _write_jsonl(
-        root / "project" / "session.jsonl",
+        root / "project" / "real-session-id.jsonl",
         {"sessionId": "session", "parentUuid": None},
     )
-    (original.parent / "alias.jsonl").symlink_to(original)
+    (original.parent / "000-alias.jsonl").symlink_to(original)
     found = search._claude_sessions(root)
     assert len(found) == 1
-    assert found[0].source in {str(original), str(original.parent / "alias.jsonl")}
+    assert found[0].session_id == "real-session-id"
+    assert found[0].source == str(original.resolve())
 
 
 def test_claude_signature_scan_stops_at_its_fifty_line_bound(tmp_path):
@@ -253,7 +254,7 @@ def test_claude_search_deduplicates_transcript_aliases_across_source_roots(tmp_p
     alias.symlink_to(original)
 
     found = search._store_sessions(
-        "claude", source_roots=(first_root, second_root),
+        "claude", source_roots=(second_root, first_root),
     )
     assert len(found) == 1
     assert found[0].source == str(original)
@@ -433,6 +434,27 @@ def test_opencode_explicit_alias_stores_are_scanned_once_with_progress(
     ) == []
     assert calls == [database.resolve()]
     assert progress and "Discovering OpenCode sessions" in progress[0][0]
+
+
+def test_opencode_root_deduplication_keeps_a_compatible_database_alias(
+    tmp_path, monkeypatch,
+):
+    database = _opencode_db(tmp_path / "store.sqlite")
+    compatible_alias = tmp_path / "store.db"
+    compatible_alias.symlink_to(database)
+    calls = []
+    monkeypatch.setattr(
+        search.opencode,
+        "list_agents",
+        lambda store: calls.append(store) or [],
+    )
+
+    assert search.search_sessions(
+        "needle",
+        client="opencode",
+        source_roots=(database, compatible_alias),
+    ) == []
+    assert calls == [database.resolve()]
 
 
 def test_text_collection_skips_metadata_and_counts_unicode_words():
@@ -1093,24 +1115,21 @@ def test_walk_progress_and_physical_directory_cycle_are_deduplicated(tmp_path, m
     assert len(list(search._walk_files(root))) == 501
 
 
-def test_claude_transcript_physical_aliases_and_unknown_identity(tmp_path, monkeypatch):
+def test_claude_transcript_aliases_deduplicate_by_canonical_path_without_inode(
+    tmp_path, monkeypatch,
+):
     root = tmp_path / "projects"
     original = _write_jsonl(
         root / "project" / "session.jsonl",
         {"sessionId": "session", "parentUuid": None},
     )
-    alias = original.with_name("alias.jsonl")
+    alias = original.with_name("000-alias.jsonl")
     alias.symlink_to(original)
-    original_identity = search._path_identity
-
-    def no_alias_identity(path):
-        if path == alias:
-            return None
-        return original_identity(path)
-
-    monkeypatch.setattr(search, "_path_identity", no_alias_identity)
+    monkeypatch.setattr(search, "_path_identity", lambda _path: None)
     found = search._claude_sessions(root)
-    assert {row.source for row in found} == {str(original), str(alias)}
+    assert [(row.session_id, row.source) for row in found] == [
+        ("session", str(original.resolve())),
+    ]
 
 
 def test_codex_search_skips_non_directory_roots_and_deduplicates_aliases(
@@ -1416,6 +1435,20 @@ def test_jsonl_last_activity_reads_unterminated_records_and_reports_long_scans(
     path.mkdir()
     with pytest.raises(search.SearchError, match="could not read session activity"):
         search._jsonl_last_activity(path)
+
+
+def test_jsonl_last_activity_handles_a_large_unterminated_record_across_chunks(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "large-final-record.jsonl"
+    monkeypatch.setattr(search, "_ACTIVITY_CHUNK_SIZE", 128)
+    path.write_text(
+        '{"timestamp":"2026-01-01"}\n'
+        + json.dumps({"timestamp": "2026-01-02", "content": "x" * 32_000}),
+        encoding="utf-8",
+    )
+
+    assert search._jsonl_last_activity(path) == "2026-01-02"
 
 
 def test_opencode_targeted_counts_skip_raw_misses_and_report_large_result_sets(tmp_path):
