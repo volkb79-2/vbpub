@@ -41,6 +41,7 @@ _SEQUENTIAL_ARGV = f'["{sys.executable}", "-m", "pytest", "tests", "-q", "-p", "
 def _seed(repo: GitRepo, *, argv: str | None = None) -> Path:
     repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
     repo.write("src/mod.py", "def flag(a, b, c, d):\n    return 0\n")
+    repo.write("tests/test_smoke.py", "def test_smoke():\n    assert True\n")
     repo.write("notes.txt", "one\n")
     base = repo.commit_all("seed")
     repo.write("src/mod.py", _SOURCE)

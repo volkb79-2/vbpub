@@ -228,6 +228,11 @@ def test_r2_manifest_accepts_ignored_or_outside_paths(tmp_path, monkeypatch):
 
 
 def test_cold_witness_plan_preview_reports_transformed_argv_and_refusal(tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_smoke.py").write_text(
+        "def test_smoke():\n    assert True\n", encoding="utf-8"
+    )
     lane = _r2_lane(tmp_path)
     plan = SimpleNamespace(
         argv_declared=(

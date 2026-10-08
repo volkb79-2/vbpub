@@ -73,8 +73,21 @@ def record():
 def read_state():
     return json.loads(state_path.read_text(encoding="utf-8"))
 
+def read_unit_probe_state():
+    return json.loads(Path(os.environ["DOCKER_UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
+
+def is_unit_probe_target(target):
+    try:
+        probe = read_unit_probe_state()
+    except (OSError, json.JSONDecodeError):
+        return False
+    return target in (probe["id"], probe["name"])
+
 def one_after(flag):
     return args[args.index(flag) + 1]
+
+def value_with_prefix(prefix):
+    return next(item[len(prefix):] for item in args if item.startswith(prefix))
 
 record()
 if args[:2] == ["image", "inspect"]:
@@ -85,6 +98,15 @@ if args and args[0] == "exec":
 if args[:2] == ["ps", "--no-trunc"]:
     if mode == "busy":
         print("run-gate-other-session")
+    raise SystemExit(0)
+if args and args[0] == "run" and "--detach" in args and any(
+    "source=/run/dbus/system_bus_socket" in item for item in args
+):
+    name = value_with_prefix("--name=")
+    owner = value_with_prefix("--label=io.assay.cgroup-parent.owner=")
+    probe = {"id": "c" * 64, "name": name, "owner": owner, "units": args[-2:]}
+    Path(os.environ["DOCKER_UNIT_PROBE_STATE"]).write_text(json.dumps(probe), encoding="utf-8")
+    print(probe["id"])
     raise SystemExit(0)
 if args[:2] == ["run", "--rm"] and any("source=/run/dbus/system_bus_socket" in item for item in args):
     for unit in args[-2:]:
@@ -138,6 +160,10 @@ if args and args[0] == "inspect":
         hostname = Path("/proc/sys/kernel/hostname").read_text(encoding="utf-8").strip()
         print("|".join(("b" * 64, hostname, os.environ["CGROUP_PARENT_DEV_INTERACTIVE"], "true")))
         raise SystemExit(0)
+    if is_unit_probe_target(args[1]):
+        state = read_unit_probe_state()
+        print("|".join((state["id"], "/" + state["name"], state["owner"])))
+        raise SystemExit(0)
     state = read_state()
     if mode == "hang-inspect":
         time.sleep(5)
@@ -159,12 +185,23 @@ if args and args[0] == "inspect":
         print("|".join((state["id"], "/" + state["name"], token)))
     raise SystemExit(0)
 if args and args[0] == "wait":
+    if is_unit_probe_target(args[1]):
+        print("0")
+        raise SystemExit(0)
     if mode == "blocked-wait":
         while not read_state().get("stopped"):
             time.sleep(0.05)
     print(os.environ.get("DOCKER_WAIT_STATUS", "0"))
     raise SystemExit(0)
 if args and args[0] == "logs":
+    if is_unit_probe_target(args[1]):
+        for unit in read_unit_probe_state()["units"]:
+            print(f"ASSAY_UNIT_BEGIN={unit}")
+            print(f"Id={unit}")
+            print("LoadState=loaded")
+            print(f"FragmentPath=/etc/systemd/system/{unit}")
+            print(f"ASSAY_UNIT_END={unit}")
+        raise SystemExit(0)
     if mode == "hang-logs" and "--follow" not in args:
         time.sleep(5)
     state = read_state()
@@ -180,6 +217,8 @@ if args and args[0] == "stop":
     state_path.write_text(json.dumps(state), encoding="utf-8")
     raise SystemExit(0)
 if args and args[0] == "rm":
+    if is_unit_probe_target(args[-1]):
+        raise SystemExit(0)
     if "-f" in args and mode == "force-remove-fails":
         raise SystemExit(18)
     raise SystemExit(0)
@@ -259,6 +298,7 @@ def run_launcher(
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
         "DOCKER_STATE": str(state),
+        "DOCKER_UNIT_PROBE_STATE": str(tmp_path / "docker-unit-probe-state.json"),
         "DOCKER_MODE": mode,
         "DOCKER_WAIT_STATUS": wait_status,
         "TMPDIR": str(tmp_path),
@@ -307,6 +347,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
         "DOCKER_STATE": str(state),
+        "DOCKER_UNIT_PROBE_STATE": str(tmp_path / "docker-unit-probe-state.json"),
         "DOCKER_MODE": mode,
         "TMPDIR": str(tmp_path),
     }
@@ -562,7 +603,9 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     try:
         for _ in range(200):
             if trace.exists() and any(
-                json.loads(line)[:1] == ["wait"] for line in trace.read_text(encoding="utf-8").splitlines()
+                json.loads(line)[:1] == ["wait"]
+                and CONTAINER_ID in json.loads(line)
+                for line in trace.read_text(encoding="utf-8").splitlines()
             ):
                 break
             if proc.poll() is not None:
