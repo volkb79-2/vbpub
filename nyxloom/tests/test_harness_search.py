@@ -7,14 +7,15 @@ import json
 import os
 import sqlite3
 from collections import Counter
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from nyxloom import harness_search as search
 from nyxloom.cli_registry import harness_cli
 from nyxloom.session_extract.locate import LocateError
+
+from nyxloom import harness_search as search
 
 
 @pytest.fixture
@@ -642,6 +643,179 @@ def test_targeted_text_counts_only_requested_ascii_terms_and_keeps_prefixes():
     assert nonmatching_unicode == Counter()
 
 
+def test_targeted_text_counts_saturate_each_query_term_independently():
+    counts = Counter()
+    search._add_text(
+        counts,
+        {"content": "qcow qcow qc qc qc qcow"},
+        ("qcow", "qc"),
+        "prefix",
+        term_frequency_cap=3,
+    )
+
+    assert counts == Counter(qcow=3, qc=3)
+
+
+def test_targeted_text_counts_do_not_revisit_ascii_text_without_matches():
+    counts = Counter()
+    search._add_text(counts, {"content": "ordinary words"}, ("qcow",))
+    assert counts == Counter()
+
+
+def test_targeted_ascii_count_stops_if_active_query_pattern_disappears(monkeypatch):
+    original_pattern = search._query_text_pattern
+    calls = 0
+
+    def pattern_once(terms, term_match):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return None
+        return original_pattern(terms, term_match)
+
+    monkeypatch.setattr(search, "_query_text_pattern", pattern_once)
+    counts = Counter()
+    search._add_text(counts, {"content": "qcow"}, ("qcow",))
+    assert counts == Counter()
+
+
+def test_default_targeted_text_frequency_cap_is_64():
+    counts = Counter()
+    search._add_text(counts, {"content": "qcow " * 100}, ("qcow",))
+
+    assert counts == Counter(qcow=64)
+
+
+def test_unicode_targeted_count_stops_after_each_term_reaches_its_cap():
+    counts = Counter()
+    search._add_text(
+        counts,
+        {"content": ["qcow cloud café", "ordinary café"]},
+        ("qcow", "cloud"),
+        term_frequency_cap=1,
+    )
+    assert counts == Counter(qcow=1, cloud=1)
+
+
+def test_search_worker_count_stays_inline_without_importable_main(
+    tmp_path, monkeypatch,
+):
+    user_script = tmp_path / "nyxloom-harness"
+    user_script.write_text("from nyxloom import search_sessions\n", encoding="utf-8")
+    monkeypatch.setitem(
+        search.sys.modules,
+        "__main__",
+        SimpleNamespace(__file__=str(user_script)),
+    )
+    monkeypatch.setattr(search.sys, "argv", [str(user_script)])
+
+    assert search._search_process_worker_count() == 1
+
+
+def test_search_worker_count_uses_bounded_workers_for_guarded_cli(
+    tmp_path, monkeypatch,
+):
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    cli_entrypoint = scripts_directory / "nyxloom-harness"
+    monkeypatch.setattr(
+        search.sysconfig,
+        "get_path",
+        lambda key: str(scripts_directory) if key == "scripts" else None,
+    )
+    monkeypatch.setitem(
+        search.sys.modules,
+        "__main__",
+        SimpleNamespace(__file__=str(cli_entrypoint)),
+    )
+    monkeypatch.setattr(search.os, "process_cpu_count", lambda: 100, raising=False)
+    monkeypatch.setattr(search.os, "cpu_count", lambda: 100)
+
+    cli_entrypoint.write_text(
+        '"""Installed harness command."""\n'
+        "import sys\n"
+        "from nyxloom.cli_harness import main\n"
+        "if __name__ == '__main__':\n"
+        "    sys.exit(main())\n",
+        encoding="utf-8",
+    )
+    assert search._search_process_worker_count() == search._RIPGREP_MAX_WORKERS
+
+
+def test_search_worker_count_uses_bounded_workers_for_module_entrypoint(
+    monkeypatch,
+):
+    module_entrypoint = Path(search.__file__).with_name("cli_harness.py")
+    monkeypatch.setitem(
+        search.sys.modules,
+        "__main__",
+        SimpleNamespace(__file__=str(module_entrypoint)),
+    )
+    monkeypatch.setattr(search.os, "process_cpu_count", lambda: 100, raising=False)
+    monkeypatch.setattr(search.os, "cpu_count", lambda: 100)
+
+    assert search._search_process_worker_count() == search._RIPGREP_MAX_WORKERS
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "import os\nfrom nyxloom.cli_harness import main\n"
+            "if __name__ == '__main__': main()\n"
+        ),
+        (
+            "import sys\nfrom other import main\n"
+            "if __name__ == '__main__': main()\n"
+        ),
+        (
+            "import sys\nfrom nyxloom.cli_harness import main\n"
+            "if __name__ != '__main__': main()\n"
+        ),
+    ),
+)
+def test_guarded_console_entrypoint_rejects_unsafe_top_level_shapes(
+    tmp_path, source,
+):
+    entrypoint = tmp_path / "nyxloom-harness"
+    entrypoint.write_text(source, encoding="utf-8")
+    assert not search._is_guarded_harness_console_entrypoint(entrypoint)
+
+
+def test_guarded_console_entrypoint_rejects_unreadable_or_invalid_source(tmp_path):
+    missing = tmp_path / "missing-entrypoint"
+    invalid = tmp_path / "invalid-entrypoint"
+    invalid.write_text("if __name__ == :\n", encoding="utf-8")
+
+    assert not search._is_guarded_harness_console_entrypoint(missing)
+    assert not search._is_guarded_harness_console_entrypoint(invalid)
+
+
+def test_search_worker_count_rejects_unguarded_canonical_console_script(
+    tmp_path, monkeypatch,
+):
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    cli_entrypoint = scripts_directory / "nyxloom-harness"
+    cli_entrypoint.write_text(
+        "from nyxloom.cli_harness import main\n"
+        "main()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        search.sysconfig,
+        "get_path",
+        lambda key: str(scripts_directory) if key == "scripts" else None,
+    )
+    monkeypatch.setitem(
+        search.sys.modules,
+        "__main__",
+        SimpleNamespace(__file__=str(cli_entrypoint)),
+    )
+
+    assert search._search_process_worker_count() == 1
+
+
 def test_jsonl_content_skips_bad_lines_and_keeps_latest_string_timestamp(tmp_path):
     path = tmp_path / "transcript.jsonl"
     path.write_text(
@@ -707,6 +881,22 @@ def test_streaming_record_filter_counts_repeated_query_words_in_a_candidate_reco
     assert search._filtered_jsonl_counts(path, ("qcow",), "prefix") == Counter(qcow=3)
 
 
+def test_streaming_record_filter_keeps_unsaturated_terms_after_one_term_caps(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(search, "_TERM_FREQUENCY_CAP", 3)
+    path = tmp_path / "saturated-term.jsonl"
+    path.write_text(
+        ''.join('{"content":"qcow"}\n' for _ in range(8))
+        + ''.join('{"content":"cloud"}\n' for _ in range(3)),
+        encoding="utf-8",
+    )
+
+    assert search._filtered_jsonl_counts(
+        path, ("qcow", "cloud"), "exact",
+    ) == Counter(qcow=3, cloud=3)
+
+
 def test_streaming_record_filter_keeps_records_whose_query_crosses_a_chunk(
     tmp_path, monkeypatch,
 ):
@@ -763,6 +953,221 @@ def test_ripgrep_candidate_stream_parses_records_and_preserves_exact_path(
     assert result == {str(path): Counter(qcow=2)}
     assert "--null" in calls[0][0]
     assert calls[0][0][-1] == str(path)
+
+
+def test_ripgrep_candidate_stream_uses_bounded_process_workers(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "parallel-search.jsonl"
+    records = ["qcow"] * 8 + ["cloud"] * 3 + ["qcow"]
+    output = b"".join(
+        os.fsencode(path) + b"\0"
+        + json.dumps({"content": word}).encode("utf-8") + b"\n"
+        for word in records
+    )
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = io.BytesIO(output)
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("a completed ripgrep process should not be terminated")
+
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(
+        search.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(search, "_RIPGREP_PARALLEL_AFTER_CANDIDATES", 1)
+    monkeypatch.setattr(search, "_RIPGREP_MAX_WORKERS", 2)
+    monkeypatch.setattr(search, "_RIPGREP_BATCH_RECORD_LIMIT", 2)
+    monkeypatch.setattr(search, "_RIPGREP_MAX_PENDING_PER_WORKER", 1)
+    monkeypatch.setattr(search, "_search_process_worker_count", lambda: 2)
+    monkeypatch.setattr(search, "_TERM_FREQUENCY_CAP", 3)
+
+    result = search._ripgrep_jsonl_counts(
+        (path,), ("qcow", "cloud"), "exact", client="codex",
+    )
+
+    assert result == {str(path): Counter(qcow=3, cloud=3)}
+
+
+def test_count_ripgrep_batch_skips_capped_terms_and_raw_record_misses():
+    source = "/sessions/one.jsonl"
+    raw_record = b'{"content":"qcow only"}'
+
+    assert search._count_ripgrep_batch(
+        ((source, raw_record),),
+        {source: Counter(qcow=2, cloud=2)},
+        ("qcow", "cloud"),
+        "exact",
+        2,
+    ) == {}
+    assert search._count_ripgrep_batch(
+        ((source, raw_record),),
+        {source: Counter(qcow=2)},
+        ("qcow", "cloud"),
+        "exact",
+        2,
+    ) == {}
+
+
+def test_submit_ripgrep_batch_ignores_empty_batch():
+    class NoSubmitExecutor:
+        def submit(self, *_args):
+            pytest.fail("empty batches must not be submitted")
+
+    pending = set()
+    search._submit_ripgrep_batch(
+        NoSubmitExecutor(), pending, [], {}, ("qcow",), "exact", 64, 2,
+    )
+    assert pending == set()
+
+
+def test_ripgrep_reuses_one_process_pool_across_path_batches(
+    tmp_path, monkeypatch,
+):
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    records_by_path = {
+        str(first): ("qcow",),
+        str(second): ("cloud",),
+    }
+
+    class FakeProcess:
+        def __init__(self, path):
+            self.stdout = io.BytesIO(b"".join(
+                os.fsencode(path) + b"\0"
+                + json.dumps({"content": word}).encode("utf-8") + b"\n"
+                for word in records_by_path[str(path)]
+            ))
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("a completed ripgrep process should not be terminated")
+
+    def fake_popen(args, **_kwargs):
+        return FakeProcess(Path(args[-1]))
+
+    batches = ((first,), (second,))
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search, "_ripgrep_path_batches", lambda _paths: iter(batches))
+    monkeypatch.setattr(search, "_RIPGREP_PARALLEL_AFTER_CANDIDATES", 1)
+    monkeypatch.setattr(search, "_RIPGREP_BATCH_RECORD_LIMIT", 1)
+    monkeypatch.setattr(search, "_RIPGREP_MAX_PENDING_PER_WORKER", 1)
+    monkeypatch.setattr(search, "_search_process_worker_count", lambda: 2)
+    original_executor = search.ProcessPoolExecutor
+    executor_creations = []
+
+    def record_executor_creation(**kwargs):
+        executor_creations.append(kwargs["max_workers"])
+        return original_executor(**kwargs)
+
+    monkeypatch.setattr(search, "ProcessPoolExecutor", record_executor_creation)
+
+    result = search._ripgrep_jsonl_counts(
+        (first, second), ("qcow", "cloud"), "exact", client="codex",
+    )
+
+    assert result == {
+        str(first): Counter(qcow=1),
+        str(second): Counter(cloud=1),
+    }
+    assert executor_creations == [2]
+
+
+def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inline(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "bounded-batches.jsonl"
+    oversized = {"content": "qcow", "padding": "x" * 512}
+    payloads = (
+        oversized,
+        {"content": "qcow"},
+        {"content": "cloud"},
+        oversized,
+    )
+    encoded = tuple(json.dumps(payload).encode("utf-8") for payload in payloads)
+    path_bytes = os.fsencode(path)
+    output = b"".join(
+        path_bytes + b"\0" + record + b"\n"
+        for record in encoded
+    )
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = io.BytesIO(output)
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("a completed ripgrep process should not be terminated")
+
+    submitted_batches = []
+
+    class RecordingExecutor:
+        def __init__(self, *, max_workers):
+            assert max_workers == 2
+
+        def submit(self, function, records, *args):
+            submitted_batches.append(records)
+            future = Future()
+            future.set_result(function(records, *args))
+            return future
+
+        def shutdown(self, *, wait, cancel_futures):
+            assert wait is True
+            assert cancel_futures is False
+
+    small_sizes = tuple(len(path_bytes) + len(record) for record in encoded[1:3])
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(
+        search.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(search, "_RIPGREP_PARALLEL_AFTER_CANDIDATES", 1)
+    monkeypatch.setattr(search, "_RIPGREP_MAX_WORKERS", 2)
+    monkeypatch.setattr(search, "_RIPGREP_MAX_PENDING_PER_WORKER", 1)
+    monkeypatch.setattr(search, "_RIPGREP_BATCH_RECORD_LIMIT", 128)
+    monkeypatch.setattr(search, "_RIPGREP_BATCH_BYTE_LIMIT", max(small_sizes) + 1)
+    monkeypatch.setattr(search, "_search_process_worker_count", lambda: 2)
+    monkeypatch.setattr(search, "ProcessPoolExecutor", RecordingExecutor)
+
+    result = search._ripgrep_jsonl_counts(
+        (path,), ("qcow", "cloud"), "exact", client="codex",
+    )
+
+    assert small_sizes[0] < search._RIPGREP_BATCH_BYTE_LIMIT
+    assert small_sizes[1] < search._RIPGREP_BATCH_BYTE_LIMIT
+    assert sum(small_sizes) > search._RIPGREP_BATCH_BYTE_LIMIT
+    assert len(path_bytes) + len(encoded[0]) > search._RIPGREP_BATCH_BYTE_LIMIT
+    assert len(submitted_batches) == 2
+    assert all(len(batch) == 1 for batch in submitted_batches)
+    assert all(
+        len(os.fsencode(source)) + len(record) <= search._RIPGREP_BATCH_BYTE_LIMIT
+        for batch in submitted_batches
+        for source, record in batch
+    )
+    assert all(
+        record != encoded[0]
+        for batch in submitted_batches
+        for _source, record in batch
+    )
+    assert result == {str(path): Counter(qcow=3, cloud=1)}
 
 
 def test_documents_uses_ripgrep_counts_for_supported_transcripts(tmp_path, monkeypatch):
@@ -831,6 +1236,24 @@ def test_opencode_term_counts_reads_messages_and_parts_and_skips_malformed_json(
     assert search._opencode_term_counts(database) == {
         "s1": Counter({"cli": 2, "gate": 1, "backlog": 1}),
     }
+
+
+def test_opencode_targeted_counts_cap_two_terms_and_omit_empty_sessions(
+    tmp_path, monkeypatch,
+):
+    database = _opencode_db(
+        tmp_path / "opencode-capped.db",
+        messages=(
+            ("m1", "matched", json.dumps({"content": "qcow cloud"})),
+            ("m2", "matched", json.dumps({"content": "qcow cloud"})),
+            ("m3", "metadata-only", json.dumps({"timestamp": "qcow"})),
+        ),
+    )
+    monkeypatch.setattr(search, "_TERM_FREQUENCY_CAP", 1)
+
+    assert search._opencode_term_counts(
+        database, ("qcow", "cloud"),
+    ) == {"matched": Counter(qcow=1, cloud=1)}
 
 
 def test_opencode_term_counts_rejects_non_store_and_database_errors(tmp_path):
@@ -1412,7 +1835,7 @@ def test_filtered_jsonl_handles_empty_invalid_incomplete_and_large_progress_file
     progress.clear()
     assert search._filtered_jsonl_counts(
         path, ("qcow",), "exact", progress=lambda *event: progress.append(event),
-    ) == Counter(qcow=4096)
+    ) == Counter(qcow=search._TERM_FREQUENCY_CAP)
     assert any("candidate records" in event[0] for event in progress)
 
     monkeypatch.setattr(search, "_PROGRESS_FILE_THRESHOLD", 8)
@@ -1525,7 +1948,9 @@ def test_ripgrep_candidate_stream_skips_nonmatching_and_bad_records_and_reports_
         (path,), ("qcow",), "exact", client="codex",
         progress=lambda *event: progress.append(event),
     )
-    assert result == {str(path): Counter(qcow=4096)}
+    assert result == {
+        str(path): Counter(qcow=search._TERM_FREQUENCY_CAP),
+    }
     assert any("candidate records" in event[0] for event in progress)
 
 

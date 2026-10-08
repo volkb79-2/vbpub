@@ -241,12 +241,18 @@ requested words, and uses ripgrep's native parallel scanner, when installed,
 to stream only candidate JSONL records into Python. The Python side checks
 each record against the normal text-field and token rules; Unicode case-fold
 expansions and JSON-escaped query letters are included in the candidate
-filter. Without ripgrep, fixed-size reads and a raw-line filter provide the
-same search semantics while keeping memory bounded. OpenCode rows use a raw
-candidate check before JSON decoding. Exact activity timestamps are read from
-the end only for transcripts that match. Progress uses cli-extended's existing
-renderer on stderr with the standard `--progress` modes; the search command
-does not add a second progress API.
+filter. After 512 candidate records, the guarded `nyxloom-harness` entrypoint
+uses one bounded pool of up to four processes for JSON decoding and text
+counting in batches; each submitted batch is capped at 128 records and 1 MiB
+of path and record bytes, and larger individual records are counted inline.
+At most two batches per worker can be pending; shorter searches avoid worker
+startup. Embedded calls from other Python entrypoints stay inline so worker
+startup cannot re-import the caller's module. Without ripgrep, fixed-size reads
+and a raw-line filter provide the same search semantics while keeping memory
+bounded. OpenCode rows use a raw candidate check before JSON decoding. Exact
+activity timestamps are read from the end only for transcripts that match.
+Progress uses cli-extended's existing renderer on stderr with the standard
+`--progress` modes; the search command does not add a second progress API.
 
 Codex homes can be aliases of one another (for example, `~/.codex2/sessions`
 symlinked to `~/.codex/sessions`). Search and bare-ID resolution compare
@@ -259,8 +265,11 @@ it does not need this particular root-alias check; file aliases inside one
 selected tree remain a possible separate cleanup if that layout appears.
 
 The default `best` order favors sessions matching more distinct query words,
-then weights rare terms more heavily and modestly rewards repeats. `date` puts
-newer recorded activity first. Results include the exact source path so a
-same-ID collision across local clients remains distinguishable. The
+then weights rare terms more heavily and modestly rewards repeats. Counts
+saturate at 64 occurrences of each query word per session: matching presence
+and matched-word output stay exact, while further repetitions no longer raise
+that word's relevance score. `date` puts newer recorded activity first.
+Results include the exact source path so a same-ID collision across local
+clients remains distinguishable. The
 [consumer recipe](CONSUMERS.md#search-local-session-history) shows the
 copyable command and output fields.

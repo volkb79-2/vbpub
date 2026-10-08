@@ -148,7 +148,9 @@ families; `extract-report` reports cost/timeline data for those formats.
 query words, reports progress, and prints session IDs plus matching metadata,
 never transcript text. It uses ripgrep when available and keeps no index.
 Clients and source roots can be limited; any/all query words and exact/prefix
-matching are selectable. See the
+matching are selectable. Per-word frequency contributes to ranking up to 64
+occurrences per session, so repeated text cannot dominate the relevance score.
+See the
 [search design](docs/DESIGN-GUIDE.md#local-session-search) and
 [worked examples](docs/CONSUMERS.md#search-local-session-history).
 `extract --help` groups its controls by source, selection, content,
