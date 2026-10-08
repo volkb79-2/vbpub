@@ -1099,7 +1099,26 @@ you're changing assay itself:
   (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
   separately invoked `./run-gate.py self-qualification` requires that receipt for
   its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
-  R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
+  R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
+  bare-host `tools/self-qualification-container.sh` wrapper because the
+  generic run-gate tester container has a private cgroup namespace. The
+  wrapper derives the Docker host repository path with `findmnt`, verifies the
+  installed gates slice through the host system bus before using it, and checks
+  for 2 GiB of point-in-time RAM headroom. It then attaches the cgroup probe and
+  detached `tester-unified` runner to that slice, sets explicit CPU/memory
+  bounds, mounts the selected repository at both host and `/workspaces/vbpub`
+  paths, disables networking, and verifies the returned container ID,
+  ownership, launch settings, and `docker wait` status. The three registered
+  Assay lanes share a run-gate lock; a Git-common-directory lock also
+  serializes B105 callers across container `/tmp` namespaces. The wrapper
+  refuses to launch beside an already-running registered gate, but that scan
+  does not atomically exclude a different project's gate started afterward.
+  The gate coordinator must keep all other registered gates serial for the
+  full B105 run; a concurrent cross-project gate invalidates its resource
+  evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is unsupported for B105 because it
+  requires that exclusive window; it applies only to the ordinary
+  `tester-unified` gate. Infrastructure refusals are recorded as `ERROR`, not
+  as an Assay test failure. The inner lane writes its verdict, progress, and
   raw baseline coverage arcs in
   `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
   commit and tree under a separately reserved directory for each attempt, and verifies
@@ -1121,6 +1140,8 @@ you're changing assay itself:
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  A standalone R0/R1 preflight has a 75-minute run-gate budget and a 90-minute
+  Nyxloom outer timeout, leaving time for startup and evidence collection.
   The full-source attempt is currently unqualified: the latest run stopped at
   15/3,760 candidates; an earlier attempt stopped after 38 completions. The
   full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is

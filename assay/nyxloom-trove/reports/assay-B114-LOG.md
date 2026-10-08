@@ -301,3 +301,30 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   failure path. The focused oracle passed (**1 passed in 0.84s**); the full
   module passed (**53 passed in 7.88s**); Ruff `E4,E7,E9,F` and
   `git diff --check` passed. A fresh exact-tip review remains pending.
+
+## 2026-10-08 — resume and B105 admission/cleanup repairs
+
+- Resumed from the provisionally integrated Assay tip `6086d4c9`. The B114
+  feature commits are already ancestors of `main`; this worktree contains the
+  remaining uncommitted acceptance repairs. CIU inspection confirms the
+  worktree is registered, attached to `assay-b114-cold-witness`, and based on
+  the recorded fork point. Its ignored `.assay/` state was preserved.
+- Closed the current B105 launcher review items: derive the Docker-host bind
+  source from `findmnt`, query the host systemd unit before placing a probe in
+  the requested gates slice, reject runtime-generated units, fail on missing
+  or unreadable cgroup controls, and verify finite point-in-time RAM headroom
+  before launching the capped qualification container. The wrapper holds a
+  Git-common-directory lock across B105 callers, treats the Docker gate scan
+  as a non-atomic preflight requiring serial coordination, and force-removes
+  only a container whose ID, name, and ownership token reconcile.
+- Added wrapper/cgroup regression cases for failed Docker probes and reads,
+  uninstalled/runtime-generated slices, RAM admission, shared-host refusal,
+  cross-`/tmp` B105 serialization, and forced cleanup after a failed stop.
+- B087 coordination: its second lane remains held while B114 uses the shared
+  registered-gate slot; its runner and support containers were left untouched.
+- The plan's actual bounded pilot sequence needs B118 tooling plus B108 phase
+  1 campaign analysis before the pilot run; B119/P9 remains downstream of
+  B108, and P10b/P11 remain conditional as their briefs specify.
+- `bash -n` passed for the three changed shell entry points and
+  `git diff --check` passed. No test or registered gate has run on this
+  uncommitted repair set; the earlier receipts are not evidence for its tip.

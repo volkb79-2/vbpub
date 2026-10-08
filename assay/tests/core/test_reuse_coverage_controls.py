@@ -101,6 +101,17 @@ def test_current_schema_artifact_must_pass_the_current_verifier(tmp_path):
         reuse.load_reuse_source(path)
 
 
+def test_unsupported_schema_version_is_not_treated_as_a_legacy_cold_start(
+    tmp_path,
+):
+    path = _write_document(tmp_path, {"schema_version": VERDICT_SCHEMA_VERSION + 1})
+    with pytest.raises(
+        AssayError,
+        match=f"schema_version {VERDICT_SCHEMA_VERSION + 1} is unsupported",
+    ):
+        reuse.load_reuse_source(path)
+
+
 @pytest.mark.parametrize(
     ("policy", "mutation", "claim"),
     [

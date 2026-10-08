@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -15,25 +16,105 @@ GATE_DRIVER = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 
 
-def run_probe(tmp_path: Path, verdict: str, *, slice_name: str | None):
+def run_probe(
+    tmp_path: Path,
+    verdict: str,
+    *,
+    slice_name: str | None,
+    systemd_output: str | None = None,
+    systemctl_exit: int = 0,
+    cgroup_values: dict[str, str | None] | None = None,
+    cgroup_transport_exit: int | None = None,
+    memory_reserve_bytes: int | None = None,
+    probe_parent: str | None = "dev-interactive.slice",
+):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
     argv_log = tmp_path / "docker.argv"
+    call_order = tmp_path / "call-order"
     docker = fake_bin / "docker"
     docker.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$DOCKER_ARGV_LOG\"\n"
-        f"printf '%s\\n' {verdict!r}\n",
+        r'''#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with Path(os.environ["DOCKER_ARGV_LOG"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\n")
+is_unit_probe = any("source=/run/dbus/system_bus_socket" in arg for arg in args)
+with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
+    stream.write("unit\n" if is_unit_probe else "cgroup\n")
+if is_unit_probe:
+    print(os.environ["SYSTEMD_OUTPUT"])
+    raise SystemExit(int(os.environ["SYSTEMCTL_EXIT"]))
+
+script = sys.stdin.read().replace("/sys/fs/cgroup", os.environ["FAKE_CGROUP_ROOT"])
+docker_env = os.environ.copy()
+for index, arg in enumerate(args[:-1]):
+    if arg == "-e" and args[index + 1].startswith("CG_REL="):
+        docker_env["CG_REL"] = args[index + 1].split("=", 1)[1]
+    if arg == "-e" and args[index + 1].startswith("CG_MEMORY_RESERVE_BYTES="):
+        docker_env["CG_MEMORY_RESERVE_BYTES"] = args[index + 1].split("=", 1)[1]
+proc = subprocess.run(["sh", "-s"], input=script, capture_output=True,
+                      text=True, env=docker_env, check=False)
+sys.stdout.write(proc.stdout)
+sys.stderr.write(proc.stderr)
+if os.environ.get("CGROUP_TRANSPORT_EXIT") is not None:
+    raise SystemExit(int(os.environ["CGROUP_TRANSPORT_EXIT"]))
+raise SystemExit(proc.returncode)
+''',
         encoding="utf-8",
     )
     docker.chmod(0o755)
+    cgroot = tmp_path / "cgroupfs"
+    cgdir = cgroot / "dev.slice" / "dev-gates.slice"
+    if not verdict.startswith("MISSING"):
+        cgdir.mkdir(parents=True)
+        defaults = {
+            "memory.max": "8589934592\n",
+            "memory.high": "max\n",
+            "memory.swap.max": "8589934592\n",
+            "memory.current": "1073741824\n",
+            "cpu.weight": "100\n",
+            "io.weight": "default 100\n",
+        }
+        if verdict.startswith("UNCONFIGURED"):
+            defaults.update({
+                "memory.max": "max\n",
+                "memory.swap.max": "max\n",
+            })
+        defaults.update(cgroup_values or {})
+        for filename, value in defaults.items():
+            path = cgdir / filename
+            if value is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(value, encoding="ascii")
     env = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_ARGV_LOG": str(argv_log),
+        "CALL_ORDER": str(call_order),
+        "FAKE_CGROUP_ROOT": str(cgroot),
+        "SYSTEMD_OUTPUT": (
+            "LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-gates.slice"
+            if systemd_output is None else systemd_output
+        ),
+        "SYSTEMCTL_EXIT": str(systemctl_exit),
     }
     if slice_name is not None:
         env["CGROUP_PARENT_DEV_GATES"] = slice_name
+    if probe_parent is not None:
+        env["CGROUP_PARENT_DEV_INTERACTIVE"] = probe_parent
+    if cgroup_transport_exit is not None:
+        env["CGROUP_TRANSPORT_EXIT"] = str(cgroup_transport_exit)
+    argv = [str(SCRIPT)]
+    if memory_reserve_bytes is not None:
+        argv.extend(["--memory-reserve-bytes", str(memory_reserve_bytes)])
     proc = subprocess.run(
-        [str(SCRIPT)], capture_output=True, text=True, env=env, check=False
+        argv, capture_output=True, text=True, env=env, check=False
     )
     return proc, argv_log
 
@@ -53,10 +134,70 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
 
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
-    argv = argv_log.read_text(encoding="utf-8")
-    assert "--cgroupns=host" in argv
-    assert "--network=none" in argv
-    assert "CG_REL=/dev.slice/dev-gates.slice" in argv
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len(calls) == 2
+    unit_call, cgroup_call = calls
+    assert "--cgroup-parent=dev-interactive.slice" in unit_call
+    assert "source=/run/dbus/system_bus_socket" in " ".join(unit_call)
+    assert "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus" in " ".join(unit_call)
+    assert "--cgroupns=host" in cgroup_call
+    assert "--cgroup-parent=dev-gates.slice" in cgroup_call
+    assert "--network=none" in cgroup_call
+    assert "CG_REL=/dev.slice/dev-gates.slice" in " ".join(cgroup_call)
+
+
+def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        systemd_output="LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-gates.slice",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert argv_log.exists()
+    assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
+        "unit",
+        "cgroup",
+    ]
+
+
+def test_transient_or_missing_systemd_slice_is_refused_before_docker(tmp_path: Path):
+    for unit_properties in (
+        "LoadState=loaded\nFragmentPath=",
+        "LoadState=not-found\nFragmentPath=",
+    ):
+        case = tmp_path / str(len(list(tmp_path.iterdir())))
+        case.mkdir()
+        proc, argv_log = run_probe(
+            case,
+            "OK",
+            slice_name="dev-gates.slice",
+            systemd_output=unit_properties,
+        )
+        assert proc.returncode != 0
+        assert "not a loaded installed slice" in proc.stderr
+        calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+        assert len(calls) == 1
+        assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
+            "unit"
+        ]
+
+
+def test_systemd_verification_failure_is_refused_before_docker(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        systemd_output="",
+        systemctl_exit=1,
+    )
+
+    assert proc.returncode != 0
+    assert "could not query Docker-host systemd unit" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len(calls) == 1
+    assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == ["unit"]
 
 
 def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
@@ -68,15 +209,112 @@ def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
             tmp_path, verdict, slice_name="dev-gates.slice"
         )
         assert proc.returncode != 0
-        assert "refusing" in proc.stderr or "kernel-default" in proc.stderr
+        assert "could not verify host cgroup slice" in proc.stderr
 
 
 def test_non_slice_name_is_refused_before_docker(tmp_path: Path):
     proc, argv_log = run_probe(tmp_path, "OK", slice_name="dev-background")
 
     assert proc.returncode != 0
-    assert "does not name a systemd slice" in proc.stderr
+    assert "not a valid systemd slice unit name" in proc.stderr
     assert not argv_log.exists()
+
+
+def test_host_unit_probe_requires_trusted_interactive_parent(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path, "OK", slice_name="dev-gates.slice", probe_parent=None
+    )
+
+    assert proc.returncode != 0
+    assert "CGROUP_PARENT_DEV_INTERACTIVE is unset" in proc.stderr
+    assert not argv_log.exists()
+
+
+def test_runtime_generated_host_unit_is_refused_before_target_cgroup_probe(
+    tmp_path: Path,
+):
+    for fragment_path in (
+        "/run/systemd/transient/dev-gates.slice",
+        "/run/systemd/generator/dev-gates.slice",
+        "/run/systemd/system/dev-gates.slice",
+    ):
+        case = tmp_path / str(len(list(tmp_path.iterdir())))
+        case.mkdir()
+        proc, argv_log = run_probe(
+            case,
+            "OK",
+            slice_name="dev-gates.slice",
+            systemd_output=f"LoadState=loaded\nFragmentPath={fragment_path}",
+        )
+
+        assert proc.returncode != 0
+        assert "is runtime-generated, not an installed slice" in proc.stderr
+        assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
+            "unit"
+        ]
+        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_docker_probe_nonzero_is_not_certified_by_success_output(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_transport_exit=7,
+    )
+
+    assert proc.returncode != 0
+    assert "probe exit 7" in proc.stderr
+    assert "ASSAY_CGROUP_PARENT_PROBE=OK" in proc.stderr
+
+
+def test_cgroup_control_read_must_succeed_and_be_nonempty(tmp_path: Path):
+    for value, expected in ((None, "absent or unreadable"), ("", "is empty")):
+        case = tmp_path / str(len(list(tmp_path.iterdir())))
+        case.mkdir()
+        proc, _argv_log = run_probe(
+            case,
+            "OK",
+            slice_name="dev-gates.slice",
+            cgroup_values={"memory.current": value},
+        )
+        assert proc.returncode != 0
+        assert expected in proc.stderr
+
+
+def test_b105_requires_finite_point_in_time_ram_headroom(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        memory_reserve_bytes=2147483648,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "RAM admission OK" in proc.stderr
+    assert proc.stdout == "dev-gates.slice\n"
+
+
+def test_b105_refuses_insufficient_or_unknown_ram_headroom(tmp_path: Path):
+    cases = [
+        ({"memory.current": "7516192768\n"}, "has 1073741824 bytes"),
+        (
+            {"memory.max": "max\n", "cpu.weight": "500\n"},
+            "cannot establish finite RAM headroom",
+        ),
+    ]
+    for values, message in cases:
+        case = tmp_path / str(len(list(tmp_path.iterdir())))
+        case.mkdir()
+        proc, _argv_log = run_probe(
+            case,
+            "OK",
+            slice_name="dev-gates.slice",
+            cgroup_values=values,
+            memory_reserve_bytes=2147483648,
+        )
+        assert proc.returncode != 0
+        assert message in proc.stderr
 
 
 def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():

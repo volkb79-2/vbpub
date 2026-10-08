@@ -2323,6 +2323,21 @@ The B105 lanes collect `tests/` only (B123), take their import paths from
 pyproject's own `pythonpath = ["src", "analysis/src"]` and carry no
 `--override-ini` (a `-o` token makes a lane ineligible for the mutation
 witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
+The two B105 `run-gate.toml` entries run a bare-host Assay wrapper before the
+inner lane. The generic run-gate tester container uses a private cgroup
+namespace, which cannot satisfy B148's full-ancestor observation preflight.
+`tools/self-qualification-container.sh` derives the host repository bind with
+`findmnt` and verifies the gates slice through the host system bus before using
+it. The read-only cgroup probe then checks at least 2 GiB of point-in-time RAM
+headroom. The wrapper launches a detached `tester-unified` container in that
+slice with `--cgroupns=host`, `--init`, network disabled, explicit CPU and
+memory bounds, and the repository mounted at both its physical host path and
+`/workspaces/vbpub`. It verifies the container's ID, ownership token, cgroup,
+limits, mounts and environment before waiting on that ID; the Docker wait
+status and an inner success marker are both required. This keeps the namespace
+choice at the gate boundary. Assay itself still refuses when a selected native
+candidate cannot observe its cgroup hierarchy, and does not select a namespace
+for external consumers.
 For an R2 lane the driver runs `assay plan` first, writes
 `.assay/plan-<lane>.json`, and hands it to `tools/b105_report_check.py
 --plan-json`. The checker refuses (B111), in order and after its own
@@ -2356,7 +2371,7 @@ report without a matching receipt. The preflight lane needs none. Run
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; the gate still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one), any other value of the variable is an error, and the receipt is unchanged.
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). Run-gate maps exit 3 from the registered Assay command lanes to infrastructure `ERROR`, never an Assay test failure. The registered Assay lanes share one run-gate lock, and a Git-common-directory lock also serializes B105 callers across container `/tmp` namespaces. The wrapper's one-time scan is not an atomic lease against another project starting a gate afterward. The coordinator must keep all other registered gates serial until B105 finishes; a concurrent cross-project gate invalidates its resource evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted only by the ordinary `tester-unified` lane; B105 refuses it because B105 requires an exclusive host window. For the ordinary gate, the opt-in (CD50) permits running alongside other projects' `run-gate-*` containers, prints `ASSAY_GATE_SHARED_HOST=<names>` on stdout, and still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one). Any other value of the variable is an error, and the receipt is unchanged.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. B114 persists one
@@ -2381,6 +2396,10 @@ another full attempt: target completion within 6 hours, never exceed the
 8-hour watchdog, and do not increase the approved RAM envelope. Until the
 full verifier-accepted report exists, this separate lane has no qualification
 claim and is not part of the ordinary R0 release gate.
+
+The standalone `self-qualification-preflight` lane has a 75-minute run-gate
+budget and a 90-minute Nyxloom timeout; the Assay lane remains capped at 60
+minutes. The outer reserve covers admission, startup, and evidence collection.
 
 The registered `self-qualification-preflight` lane runs the same R0 test
 command and whole-source R1 coverage declaration without R2 or R3. The full

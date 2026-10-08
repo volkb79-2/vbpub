@@ -5536,20 +5536,15 @@ class Verdict:
     def _check_equivalence_pairing(
         self, mutation: Mutation, policy: JudgmentR2
     ) -> None:
-        """(P33/V5-3, invariant 2) the ``equivalent`` bucket and
-        ``equivalence_artifact`` are both present or both absent.
+        """(P33/V5-3, invariant 2) an ``equivalent`` bucket needs a proof source.
 
         Equivalence is PROVEN by comparing the declared artifact's bytes
         against the baseline run's. With no declaration there is no proof
         source, so an equivalence claim would have been inferred from
         something else — which is exactly what A-209's both-present pattern
-        exists to forbid one field over.
+        exists to forbid one field over. The earlier cold-witness policy check
+        refuses two simultaneous proof sources on the public construction path.
         """
-        if policy.equivalence_artifact is not None and policy.equivalence_ledger is not None:
-            raise ValueError(
-                "judgment.r2 cannot declare both equivalence_artifact and "
-                "equivalence_ledger"
-            )
         if (
             mutation.equivalent
             and policy.equivalence_artifact is None
@@ -5595,6 +5590,8 @@ class Verdict:
                 "judgment.r2.r2_command.argv_declared differs from top-level argv_declared"
             )
 
+        # R2Command's constructor requires both baselines. Every branch that
+        # reads them below requires cold_enabled, which requires command above.
         cold_baseline = None if command is None else command.r2_baseline
         coverage_baseline = None if command is None else command.coverage_baseline
         for bucket in MUTATION_BUCKETS:
@@ -5612,13 +5609,10 @@ class Verdict:
                         "cold-disabled native outcomes cannot carry evidence or "
                         "witness-cold execution"
                     )
-                if cold_execution and (bucket != "killed" or not cold_enabled):
-                    raise ValueError(
-                        f"mutation.{bucket} cannot carry witness-cold execution"
-                    )
-                if ledger_execution and (
-                    bucket != "equivalent" or policy.equivalence_ledger is None
-                ):
+                # Mutation already rejects witness modes outside killed and
+                # ledger mode outside equivalent. This check binds the latter
+                # to the independent ledger declaration.
+                if ledger_execution and policy.equivalence_ledger is None:
                     raise ValueError(
                         f"mutation.{bucket} ledger execution requires an equivalent "
                         "entry and judgment.r2.equivalence_ledger"
@@ -5638,8 +5632,8 @@ class Verdict:
                     continue
 
                 if bucket == "killed" and cold_enabled:
-                    if execution is None:
-                        raise ValueError("cold-witness kill requires an execution witness")
+                    # MutantOutcome requires native identity and execution
+                    # together; evidence is native-only, so execution exists.
                     if execution.mode == "full":
                         if execution.witness is None:
                             raise ValueError(
@@ -5649,10 +5643,6 @@ class Verdict:
                             raise ValueError(
                                 "full kill evidence cannot carry started-prefix facts"
                             )
-                        if coverage_baseline is None:
-                            raise ValueError(
-                                "full kill requires a coverage command baseline"
-                            )
                         self._check_evidence_matches_baseline(
                             evidence, coverage_baseline, "declared"
                         )
@@ -5661,38 +5651,19 @@ class Verdict:
                             raise ValueError(
                                 "witness-prefix kill evidence cannot carry started-prefix facts"
                             )
-                        if cold_baseline is None:
-                            raise ValueError(
-                                "witness-prefix kill requires an R2 command baseline"
-                            )
-                        self._check_evidence_matches_baseline(
-                            evidence, cold_baseline, "r2"
-                        )
-                    elif cold_execution:
-                        if evidence.started_count is None:
-                            raise ValueError(
-                                "witness-cold kill requires started-prefix evidence"
-                            )
-                        if cold_baseline is None:
-                            raise ValueError(
-                                "witness-cold kill requires an R2 command baseline"
-                            )
                         self._check_evidence_matches_baseline(
                             evidence, cold_baseline, "r2"
                         )
                     else:
-                        raise ValueError(
-                            "cold-policy killed outcome has unsupported execution mode "
-                            f"{execution.mode!r}"
+                        # The execution vocabulary is closed, and Mutation
+                        # has already refused ledger mode in killed.
+                        if evidence.started_count is None:
+                            raise ValueError(
+                                "witness-cold kill requires started-prefix evidence"
+                            )
+                        self._check_evidence_matches_baseline(
+                            evidence, cold_baseline, "r2"
                         )
-                elif cold_execution:
-                    if evidence.started_count is None:
-                        raise ValueError(
-                            "witness-cold kill requires started-prefix evidence"
-                        )
-                    if cold_baseline is None:
-                        raise ValueError("witness-cold kill requires an R2 command baseline")
-                    self._check_evidence_matches_baseline(evidence, cold_baseline, "r2")
                 else:
                     if evidence.started_count is not None:
                         raise ValueError(
@@ -5703,18 +5674,12 @@ class Verdict:
                             baseline = cold_baseline
                         else:
                             baseline = coverage_baseline
-                        if baseline is None:
-                            raise ValueError("survivor evidence has no matching command baseline")
                         self._check_evidence_matches_baseline(
                             evidence, baseline, evidence.command
                         )
 
         ledger = policy.equivalence_ledger
         if ledger is not None:
-            if policy.equivalence_artifact is not None:
-                raise ValueError(
-                    "judgment.r2.equivalence_ledger cannot accompany equivalence_artifact"
-                )
             if len(mutation.equivalent) != ledger.entry_count:
                 raise ValueError(
                     "equivalence ledger entry_count differs from mutation.equivalent"

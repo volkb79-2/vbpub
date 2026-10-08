@@ -34,7 +34,6 @@ from assay.resource_limits import (
     ResourceLimitEvidence,
     ResourceLimitObservationError,
     _mount_id_for_fd,
-    _read_control_text,
     read_current_cgroup_counters,
 )
 from assay.runner import default_process_runner, execute_command
@@ -406,8 +405,17 @@ def test_reader_refuses_a_sampled_counter_from_another_mount(
 def test_missing_optional_control_still_checks_its_parent_mount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    cgroup_dir = tmp_path / "cgroup" / "worker"
+    mount_root = tmp_path / "cgroup"
+    cgroup_dir = mount_root / "worker"
     cgroup_dir.mkdir(parents=True)
+    _lock_cgroup_controls(mount_root, cgroup_dir)
+    cgroup_file = tmp_path / "proc-cgroup"
+    cgroup_file.write_text("0::/worker\n", encoding="utf-8")
+    mountinfo_file = tmp_path / "mountinfo"
+    mountinfo_file.write_text(
+        f"31 23 0:28 / {mount_root} ro - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
     original_mount_id_for_fd = resource_limits._mount_id_for_fd
 
     def report_parent_overmount(fd: int) -> int:
@@ -419,8 +427,8 @@ def test_missing_optional_control_still_checks_its_parent_mount(
     monkeypatch.setattr(resource_limits, "_mount_id_for_fd", report_parent_overmount)
 
     with pytest.raises(ResourceLimitObservationError, match="different mount"):
-        _read_control_text(
-            cgroup_dir / "pids.events", expected_mount_id=31, optional=True
+        read_current_cgroup_counters(
+            cgroup_file=cgroup_file, mountinfo_file=mountinfo_file
         )
 
 
