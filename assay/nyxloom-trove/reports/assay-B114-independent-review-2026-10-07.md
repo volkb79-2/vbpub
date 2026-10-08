@@ -138,11 +138,23 @@ execution, and the test allowed an absent mutation payload. The correction
 patches only `mutation.ReceiptCapture`, the alias used at the candidate call
 site, and asserts that this factory ran exactly once before accepting the
 `ERROR/EXEC_FAILED` verdict. This leaves the baseline reader untouched. The
-focused local diagnostic now refuses earlier because the devcontainer's
-installed Assay lacks the wheel provenance required by this fixture's CLI
-preflight. The registered tester-unified lane builds and installs the wheel,
-so it remains the required oracle environment. Ruff and `git diff --check`
-pass. Exact-tip review and registered gate remain pending.
+next registered tester-unified run still stopped before the candidate because
+the fixture declared three sites but `max_mutants=1`. Raising the fixture cap
+to 3 reaches the candidate and preserves the startup failure injection. The
+focused real-run test passed locally (**1 passed in 1.37s**); Ruff and
+`git diff --check` passed. A new exact-tip review and registered gate remain
+pending.
+
+## Post-review registered gate result — candidate cap
+
+The registered `tester-unified` gate on merge
+`b10b861813a991a7d9fd261dd154cab14bb78f2d` exited 1 after 476.54s with
+**7,826 passed, 11 skipped, 1 failed**. The only failure was the new
+candidate-reach assertion: `max_mutants=1` was below the fixture's three
+discovered sites, so Assay correctly refused before submission. The test now
+sets `max_mutants=3`. Its focused real-run case passed locally (**1 passed in
+1.37s**); Ruff and `git diff --check` passed. The correction needs a fresh
+exact-tip review, merge, registered gate, and preflight.
 
 ## Follow-up review of `466a94eeb`
 
@@ -153,3 +165,13 @@ candidate call site is not reached. `HEAD` was
 `466a94eebb1028023237adf9f2dba09eaef8d811` and status was clean before and
 after the `.codex2` read-only review. A corrected-tip registered gate remains
 pending.
+
+## Follow-up review of `18476448f`
+
+The Sol xhigh review of the cap correction from `65a912f3e` reported **no
+findings**. It confirmed the fixture discovers three sites and now sets
+`max_mutants=3`; the candidate-only receipt seam remains isolated, and the test
+fails if the candidate factory is not reached. `HEAD` was
+`18476448f946b15ce7df96835cec4518d02a09c7` and status was clean before and
+after the `.codex2` read-only review. Merge and the corrected-tip registered
+gate remain pending.

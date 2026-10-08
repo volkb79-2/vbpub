@@ -592,7 +592,7 @@ def test_cold_witness_reader_thread_start_failure_is_typed_and_never_a_kill(
     monkeypatch: pytest.MonkeyPatch,
 ):
     attempt_log = tmp_path / "attempts.log"
-    config = _seed_campaign(git_repo, attempt_log, max_mutants=1)
+    config = _seed_campaign(git_repo, attempt_log, max_mutants=3)
     monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
     original_receipt_capture = mutation.ReceiptCapture
     original_start = threading.Thread.start
