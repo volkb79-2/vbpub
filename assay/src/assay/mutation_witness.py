@@ -43,6 +43,146 @@ B105_ARCHIVE_ENV = (
 # cold-command parser. Unknown letters refuse closed instead of being guessed.
 COLD_PYTEST_FLAG_OPTIONS = frozenset("qvslxdVh")
 COLD_PYTEST_VALUE_OPTIONS = frozenset("Wckmnopr")
+PYTEST_LONG_VALUE_OPTIONS = frozenset(
+    {
+        "--assert",
+        "--basetemp",
+        "--capture",
+        "--code-highlight",
+        "--config-file",
+        "--confcutdir",
+        "--cov-config",
+        "--cov-context",
+        "--cov-fail-under",
+        "--cov-precision",
+        "--cov-report",
+        "--deselect",
+        "--dist",
+        "--doctest-glob",
+        "--doctest-report",
+        "--durations",
+        "--durations-min",
+        "--hypothesis-profile",
+        "--hypothesis-seed",
+        "--hypothesis-verbosity",
+        "--import-mode",
+        "--ignore",
+        "--ignore-glob",
+        "--junit-prefix",
+        "--junitprefix",
+        "--junit-xml",
+        "--log-auto-indent",
+        "--log-cli-date-format",
+        "--log-cli-format",
+        "--log-cli-level",
+        "--log-date-format",
+        "--log-disable",
+        "--log-file",
+        "--log-file-date-format",
+        "--log-file-format",
+        "--log-file-level",
+        "--log-file-mode",
+        "--log-format",
+        "--log-level",
+        "--maxfail",
+        "--max-warnings",
+        "--maxprocesses",
+        "--max-worker-restart",
+        "--numprocesses",
+        "--override-ini",
+        "--pastebin",
+        "--pdbcls",
+        "--pythonwarnings",
+        "--px",
+        "--report-chars",
+        "--randomly-seed",
+        "--rootdir",
+        "--rsyncdir",
+        "--rsyncignore",
+        "--show-capture",
+        "--tb",
+        "--tx",
+        "--testrunuid",
+        "--verbosity",
+        "--maxschedchunk",
+        "--color",
+        "--asyncio-mode",
+    }
+)
+PYTEST_LONG_OPTIONAL_VALUE_OPTIONS = frozenset(
+    {"--cache-show", "--debug", "--lfnf", "--junitxml", "--cov"}
+)
+PYTEST_LONG_FLAG_OPTIONS = frozenset(
+    {
+        "--asyncio-debug",
+        "--cache-clear",
+        "--collect-in-virtualenv",
+        "--collect-only",
+        "--continue-on-collection-errors",
+        "--cov-append",
+        "--cov-branch",
+        "--disable-plugin-autoload",
+        "--disable-pytest-warnings",
+        "--disable-warnings",
+        "--doctest-continue-on-failure",
+        "--doctest-ignore-import-errors",
+        "--doctest-modules",
+        "--exitfirst",
+        "--failed-first",
+        "--ff",
+        "--fixtures",
+        "--funcargs",
+        "--fixtures-per-test",
+        "--force-short-summary",
+        "--full-trace",
+        "--help",
+        "--help-verbose",
+        "--keep-duplicates",
+        "--lf",
+        "--last-failed",
+        "--last-failed-no-failures",
+        "--looponfail",
+        "--loadscope-reorder",
+        "--markers",
+        "--nf",
+        "--new-first",
+        "--no-cov",
+        "--no-cov-on-fail",
+        "--no-fold-skipped",
+        "--no-header",
+        "--no-loadscope-reorder",
+        "--no-showlocals",
+        "--no-summary",
+        "--noconftest",
+        "--pdb",
+        "--pyargs",
+        "--quiet",
+        "--runxfail",
+        "--setup-only",
+        "--setup-plan",
+        "--setup-show",
+        "--showlocals",
+        "--stepwise",
+        "--stepwise-reset",
+        "--stepwise-skip",
+        "--sw",
+        "--sw-reset",
+        "--sw-skip",
+        "--strict",
+        "--strict-config",
+        "--strict-markers",
+        "--trace",
+        "--trace-config",
+        "--version",
+        "--verbose",
+        "--warnings",
+        "--co",
+        "--cov-reset",
+        "--xfail-tb",
+        "--hypothesis-show-statistics",
+        "--hypothesis-explain",
+    }
+)
 HOOK_FINGERPRINT_HOOKS = (
     "pytest_runtestloop",
     "pytest_runtest_protocol",
@@ -511,35 +651,78 @@ def supports_sequential_pytest(
 
 
 def _contains_xdist_option(tokens: Sequence[str]) -> bool:
+    parallel_options = {
+        "--dist",
+        "--loadscope-reorder",
+        "--maxprocesses",
+        "--max-worker-restart",
+        "--no-loadscope-reorder",
+        "--numprocesses",
+        "--px",
+        "--rsyncdir",
+        "--rsyncignore",
+        "--testrunuid",
+        "--tx",
+        "--maxschedchunk",
+        "--looponfail",
+    }
     return any(
-        token in ("-n", "--numprocesses", "--dist")
-        or token.startswith(("-n=", "--numprocesses=", "--dist="))
+        token == "-f"
+        or token.startswith("-f")
+        or token == "-n"
         or (token.startswith("-n") and len(token) > 2)
+        or token.partition("=")[0] in parallel_options
         for token in tokens
     )
 
 
 def _pytest_configs_allow_sequential(cwd: Path, argv: Sequence[str]) -> bool:
-    explicit: Path | None = None
-    for index, token in enumerate(argv):
-        if token in ("-c", "--config-file"):
-            if index + 1 >= len(argv):
-                return False
-            explicit = Path(argv[index + 1])
-            break
-        if token.startswith("--config-file="):
-            explicit = Path(token.partition("=")[2])
-            break
+    cwd = Path(os.path.abspath(cwd))
+    parsed = _pytest_selectors_and_config(argv)
+    if parsed is None:
+        return False
+    explicit, selectors = parsed
     if explicit is not None:
         if not explicit.is_absolute():
             explicit = cwd / explicit
         return _config_addopts_allow_sequential(explicit)
 
-    # Inspect every recognized config on the path to the filesystem root.
-    # pytest selects one config, but treating any inherited xdist setting as
-    # uncertainty is a safe fallback when its rootdir selection is external
-    # to this read-only preview.
-    for directory in (cwd, *cwd.parents):
+    # pytest can choose rootdir from an explicit test path below cwd. Preserve
+    # both lexical and resolved ancestors: pytest normalizes `..` but follows
+    # test-path symlinks differently from Path.resolve(), and a config on the
+    # lexical path can still supply addopts. `--pyargs` can select an installed
+    # package outside cwd, whose config this preview cannot establish.
+    search_roots = {cwd}
+    for token in selectors:
+        raw_path = token.partition("::")[0]
+        if not raw_path:
+            return False
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        candidate = Path(os.path.abspath(candidate))
+        try:
+            if candidate.is_dir():
+                search_roots.add(candidate)
+                search_roots.add(candidate.resolve())
+            elif candidate.is_file():
+                search_roots.add(candidate.parent)
+                search_roots.add(candidate.resolve().parent)
+            else:
+                # pytest treats every positional token as a path/package
+                # selector. A missing bare name is still unresolved, even
+                # though it has no slash or extension to mark it as a path.
+                return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    search_directories: set[Path] = set()
+    for root in search_roots:
+        search_directories.update((root, *root.parents))
+    # pytest selects one config, but treating any recognized config on the
+    # selected test paths as relevant is a safe fallback when rootdir
+    # selection is external to this read-only preview.
+    for directory in sorted(search_directories, key=lambda item: (len(item.parts), str(item))):
         for name in (
             "pytest.toml",
             ".pytest.toml",
@@ -553,6 +736,83 @@ def _pytest_configs_allow_sequential(cwd: Path, argv: Sequence[str]) -> bool:
             if candidate.is_file() and not _config_addopts_allow_sequential(candidate):
                 return False
     return True
+
+
+def _pytest_selectors_and_config(
+    argv: Sequence[str],
+) -> tuple[Path | None, tuple[str, ...]] | None:
+    """Separate pytest path selectors from option values without guessing.
+
+    The config admission check must not mistake ``-k`` expressions, plugin
+    names, or option values for test paths. Unknown options refuse the bounded
+    preview because their value arity is not available without loading pytest
+    and its plugins.
+    """
+    selectors: list[str] = []
+    explicit: Path | None = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        index += 1
+        if token == "--":
+            selectors.extend(argv[index:])
+            break
+        if token == "-" or not token.startswith("-"):
+            selectors.append(token)
+            continue
+        if token.startswith("--"):
+            option, equals, inline_value = token.partition("=")
+            if option in PYTEST_LONG_VALUE_OPTIONS or option in PYTEST_LONG_OPTIONAL_VALUE_OPTIONS:
+                if equals:
+                    value = inline_value
+                elif option in PYTEST_LONG_OPTIONAL_VALUE_OPTIONS:
+                    value = ""
+                    if index < len(argv) and not argv[index].startswith("-"):
+                        value = argv[index]
+                        index += 1
+                else:
+                    if index >= len(argv) or argv[index].startswith("-"):
+                        return None
+                    value = argv[index]
+                    index += 1
+                if not value and option not in PYTEST_LONG_OPTIONAL_VALUE_OPTIONS:
+                    return None
+                if option == "--config-file":
+                    if explicit is not None:
+                        return None
+                    explicit = Path(value)
+                elif option in ("--rootdir", "--confcutdir"):
+                    # These change pytest's config/root selection rules.
+                    return None
+                continue
+            if equals or option not in PYTEST_LONG_FLAG_OPTIONS:
+                return None
+            if option == "--pyargs":
+                return None
+            continue
+
+        body = token[1:]
+        position = 0
+        while position < len(body):
+            letter = body[position]
+            if letter in COLD_PYTEST_FLAG_OPTIONS:
+                position += 1
+                continue
+            if letter in COLD_PYTEST_VALUE_OPTIONS:
+                value = body[position + 1 :]
+                if not value:
+                    if index >= len(argv) or argv[index].startswith("-"):
+                        return None
+                    value = argv[index]
+                    index += 1
+                if letter == "c":
+                    if explicit is not None:
+                        return None
+                    explicit = Path(value)
+                position = len(body)
+                continue
+            return None
+    return explicit, tuple(selectors)
 
 
 def _config_addopts_allow_sequential(path: Path) -> bool:

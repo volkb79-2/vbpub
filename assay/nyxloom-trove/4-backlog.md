@@ -11520,6 +11520,7 @@ matching plan and deadline.
 - [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
 - [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [ ] B148's full cgroup visibility preflight refuses selected native candidates before R0 and reports the same candidate-selection facts in `assay plan`.
+- [ ] The B105 wrapper binds its kernel-hostname lookup to the cockpit's mount/PID namespaces, and the MDT host `initializeCommand` verifies its declared cgroup slices before Docker creates the cockpit.
 - [ ] Docs are synced.
 - [ ] A cold-policy full kill requires declared coverage-baseline evidence and
   a verified failed-call witness; B105 binds that node to the R2 manifest, and
@@ -11816,11 +11817,11 @@ Fix: make the test hermetic. Give it an ancestor chain it controls: either stop 
 
 ## B135 — the mutation witness ignores pytest 9's `pytest.toml`
 
-**Status: OPEN (found by the W4 review, 2026-09-29, `REVIEW-W4.md`).**
+**Status: FOLDED INTO B114 (2026-10-08; pending B114's final registered gate).**
 
 `src/assay/mutation_witness.py:107` looks for these config files when deciding whether a lane's pytest `addopts` allow the sequential witness: `pytest.ini`, `.pytest.ini`, `pyproject.toml`, `tox.ini` and `setup.cfg`. pytest 9 also reads `pytest.toml` and `.pytest.toml`, and an empty `pytest.toml` takes precedence over `pyproject.toml`. So a consumer whose xdist `addopts` live in `pytest.toml` gets a witness decision based on the wrong file.
 
-Fix: add both names in pytest's own precedence order, and check the order against the installed pytest version. Test with a `pytest.toml` carrying `-n auto`, and prove it refuses. Record the precedence in DESIGN-GUIDE. Consumer-visible: the witness may then refuse a lane it used to accept.
+Fix folded into B114: add both names in pytest's own precedence order, check the order against pytest 9, and prove a `pytest.toml` carrying `-n auto` refuses. B114 also binds config search to parsed test-path selectors, skips recognized option values such as `-k` expressions, and refuses unresolved bare paths or ambiguous option syntax. The B114 registered gate remains the completion evidence. Consumer-visible: cold-witness admission may refuse a lane it used to accept.
 
 ## B136 — `plan-estimate` does not bind the baseline progress file to the planned lane
 

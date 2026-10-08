@@ -47,12 +47,14 @@ devcontainer, `docker compose up -d --force-recreate`.
 `runArgs` (devcontainers), ciu governance (compose stacks). Not by this
 companion at all — it only supplies the destination.
 
-**Graceful degradation:** if the named slice has no unit file, systemd invents
+**Unknown-parent hazard:** if the named slice has no unit file, systemd invents
 a **transient, unlimited** slice of that name and the container starts
-normally. That is why shipping the runArg is safe on ungoverned hosts — and
-also why a missing unit fails *silently* rather than loudly. `systemd-cgls`
-showing the slice proves placement only, never that any limit is in force;
-`mdt-host-check.sh` checks the unit file, not the tree.
+normally. The MDT devcontainer template's host-side `initializeCommand` now
+refuses to create the cockpit unless the active runArg and all declared dev-tier
+units match loaded, installed slice files. Containers launched outside that
+template still need their own pre-launch check. `systemd-cgls` showing the
+slice proves placement only, never that any limit is in force;
+`mdt-host-check.sh` checks unit installation, not the live container tree.
 
 ### 2. Transient docker scopes — the units don't exist until the container does
 

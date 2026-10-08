@@ -79,13 +79,20 @@ def one_after(flag):
 record()
 if args[:2] == ["image", "inspect"]:
     raise SystemExit(0)
+if args and args[0] == "exec":
+    print("|".join((os.readlink("/proc/self/ns/mnt"), os.readlink("/proc/self/ns/pid"))))
+    raise SystemExit(0)
 if args[:2] == ["ps", "--no-trunc"]:
     if mode == "busy":
         print("run-gate-other-session")
     raise SystemExit(0)
 if args[:2] == ["run", "--rm"] and any("source=/run/dbus/system_bus_socket" in item for item in args):
-    print("LoadState=loaded")
-    print("FragmentPath=/etc/systemd/system/dev-gates.slice")
+    for unit in args[-2:]:
+        print(f"ASSAY_UNIT_BEGIN={unit}")
+        print(f"Id={unit}")
+        print("LoadState=loaded")
+        print(f"FragmentPath=/etc/systemd/system/{unit}")
+        print(f"ASSAY_UNIT_END={unit}")
     raise SystemExit(0)
 if args[:2] == ["run", "--rm"]:
     print("ASSAY_CGROUP_MEMORY_MAX=8589934592")
@@ -126,8 +133,12 @@ if args and args[0] == "run" and "-d" in args:
     print(state["id"])
     raise SystemExit(0)
 if args and args[0] == "inspect":
-    state = read_state()
     fmt = one_after("--format")
+    if fmt == "{{.Id}}|{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}":
+        hostname = Path("/proc/sys/kernel/hostname").read_text(encoding="utf-8").strip()
+        print("|".join(("b" * 64, hostname, os.environ["CGROUP_PARENT_DEV_INTERACTIVE"], "true")))
+        raise SystemExit(0)
+    state = read_state()
     if mode == "hang-inspect":
         time.sleep(5)
     if fmt == "{{.Id}}":
@@ -582,7 +593,7 @@ def test_host_workspace_override_must_match_findmnt_workspace_bind(
     )
 
     assert proc.returncode != 0
-    assert "differs from the selected checkout parent bind source" in proc.stderr
+    assert "differs from the findmnt workspace bind source" in proc.stderr
     assert not any(call and call[0] == "run" and "-d" in call for call in calls)
 
 

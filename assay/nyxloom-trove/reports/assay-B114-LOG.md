@@ -356,3 +356,56 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   registered gates have run on it yet. The next steps are the exact-tip Sol
   xhigh review, serial provisional merge, then fresh registered
   `tester-unified` and `self-qualification-preflight` receipts.
+
+## Sol xhigh repair follow-up — 2026-10-08
+
+- The exact-tip Sol xhigh review of `0720efc56ce69e55668b5805f3e028c2b7feebf1`
+  found three P2s: hostname lookup could inspect a different container with the
+  same hostname; the first host-manager probe could launch before proving its
+  interactive slice was installed; and pytest admission missed lexical
+  ancestors of symlinked test paths. The review recorded the same HEAD and
+  status before and after and ran no tests or gates.
+- B105 now compares the current process's mount and PID namespace identities
+  with the `docker exec` target before trusting its inspected parent. A live
+  acceptance probe returned identical namespace IDs for the cockpit.
+- The MDT template's host-side `initializeCommand` now derives its three tier
+  names from `containerEnv`, requires the interactive name to match the active
+  `runArgs`, and checks exact `Id`, `LoadState=loaded`, and an existing
+  non-runtime `FragmentPath` before Docker creates the cockpit. Missing,
+  malformed, unqueryable, and timed-out checks refuse startup. README,
+  DESIGN-GUIDE, CONSUMERS, lifecycle, template, and host-setup docs remove the
+  prior safe-no-op claim; a docs test parses the consumer JSON example and pins
+  its cross-links.
+- Cold-witness pytest config admission now checks lexical and resolved path
+  ancestors, absolute paths, unresolved path selectors, and `--pyargs`. Tests
+  cover child config paths and a symlink selector with xdist configured on its
+  lexical parent.
+- Final focused local checks: Assay cgroup/self-qualification/mutation-witness
+  tests **149 passed**; MDT devcontainer/template tests **33 passed**;
+  `git diff --check`, shell syntax, and Python compilation passed. No registered
+  gate or R2 campaign has run. The B087 agent reports its registered gate slot
+  idle and is holding it until the B114 run completes.
+
+## 2026-10-08 — follow-up review repairs
+
+- The next exact-diff review found that MDT's line scan could certify a
+  `--cgroup-parent` string outside the effective JSONC `runArgs`, and that
+  pytest admission could treat option values as path selectors while allowing
+  a missing bare selector. MDT now parses JSONC structurally, preserves quoted
+  strings/comments, rejects duplicate keys, and matches the actual runArgs to
+  the interactive environment value. Assay separates recognized pytest
+  option values from selectors, rejects unknown option arity and root
+  selection overrides, and refuses every unresolved positional selector.
+- Added regressions for a misleading nested cgroup-parent decoy, duplicate
+  JSON keys, two-token runArgs, `-k` and `--ignore` values, unresolved bare and
+  post-`--` selectors, unknown option arity, xdist transport, and root overrides.
+  Folded B135 into B114 with its registered-gate completion condition.
+- Current focused checks: Assay cgroup/self-qualification/mutation-witness
+  tests **151 passed**; MDT template tests **35 passed**; Ruff
+  `E4,E7,E9,F`, Python compilation, and `git diff --check` passed. The
+  installed pytest long-option list was compared with Assay's recognized
+  option grammar; no installed option remains unclassified.
+- B087 confirmed no registered gate or R2/R3 campaign is running and is holding
+  its slot. No registered gate or R2 campaign has run on this repair diff; the
+  next step is a fresh exact-tip Sol xhigh review, followed by the serial
+  registered gates.

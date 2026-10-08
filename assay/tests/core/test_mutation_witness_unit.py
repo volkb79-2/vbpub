@@ -226,9 +226,124 @@ def test_cold_short_option_classes_match_installed_pytest_and_xdist_parser():
 def test_pytest_config_files_are_read_fail_closed(tmp_path, name, contents, expected):
     config = tmp_path / name
     config.write_text(contents, encoding="utf-8")
+    (tmp_path / "tests").mkdir()
     assert supports_sequential_pytest(
         (sys.executable, "-m", "pytest", "tests"), cwd=tmp_path, env={}
     ) is expected
+
+
+@pytest.mark.parametrize(
+    ("contents", "expected"),
+    [
+        ('[pytest]\naddopts = ["-n", "2"]\n', False),
+        ('[pytest]\naddopts = ["-q"]\n', True),
+    ],
+)
+def test_test_path_pytest_config_controls_sequential_admission(
+    tmp_path, contents, expected
+):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "pytest.toml").write_text(contents, encoding="utf-8")
+    test_file = tests / "test_example.py"
+    test_file.write_text("def test_example(): pass\n", encoding="utf-8")
+
+    assert supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "tests"), cwd=tmp_path, env={}
+    ) is expected
+    assert supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "tests/test_example.py::test_example"),
+        cwd=tmp_path,
+        env={},
+    ) is expected
+    assert supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", str(test_file.resolve())),
+        cwd=tmp_path,
+        env={},
+    ) is expected
+
+
+def test_symlinked_test_path_checks_lexical_pytest_config(tmp_path):
+    lexical_parent = tmp_path / "sub"
+    lexical_parent.mkdir()
+    target_tests = tmp_path / "other" / "tests"
+    target_tests.mkdir(parents=True)
+    (lexical_parent / "pytest.toml").write_text(
+        '[pytest]\naddopts = ["-n", "2"]\n', encoding="utf-8"
+    )
+    (target_tests / "test_example.py").write_text(
+        "def test_example(): pass\n", encoding="utf-8"
+    )
+    (lexical_parent / "alias").symlink_to(target_tests, target_is_directory=True)
+
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "sub/alias/test_example.py"),
+        cwd=tmp_path,
+        env={},
+    )
+
+
+def test_pyargs_config_selection_is_not_assumed_sequential(tmp_path):
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "--pyargs", "external_package"),
+        cwd=tmp_path,
+        env={},
+    )
+
+
+def test_pytest_option_values_are_not_misread_as_test_paths(tmp_path):
+    nested = tmp_path / "tests"
+    nested.mkdir()
+    (nested / "pytest.toml").write_text(
+        '[pytest]\naddopts = ["-n", "2"]\n', encoding="utf-8"
+    )
+
+    assert supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "-k", "tests"),
+        cwd=tmp_path,
+        env={},
+    )
+    assert supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "--ignore", "tests"),
+        cwd=tmp_path,
+        env={},
+    )
+
+
+def test_unresolved_path_selector_is_not_assumed_sequential(tmp_path):
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "missing/tests"),
+        cwd=tmp_path,
+        env={},
+    )
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "missing"),
+        cwd=tmp_path,
+        env={},
+    )
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "--", "missing"),
+        cwd=tmp_path,
+        env={},
+    )
+
+
+def test_unknown_pytest_option_arity_and_xdist_transport_refuse_sequential(
+    tmp_path,
+):
+    argv = (sys.executable, "-m", "pytest")
+    assert not supports_sequential_pytest(
+        (*argv, "--plugin-option", "tests"), cwd=tmp_path, env={}
+    )
+    assert not supports_sequential_pytest(
+        (*argv, "--tx=ssh=worker"), cwd=tmp_path, env={}
+    )
+    assert not supports_sequential_pytest(
+        (*argv, "--rootdir=."), cwd=tmp_path, env={}
+    )
+    assert not supports_sequential_pytest(
+        (*argv, "--confcutdir=."), cwd=tmp_path, env={}
+    )
 
 
 @pytest.mark.parametrize(

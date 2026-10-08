@@ -58,6 +58,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Read pytest 9's `pytest.toml` and `.pytest.toml` before the other recognized
   config formats when checking whether cold-witness `addopts` run sequentially;
   also inspect the native `[tool.pytest]` table in `pyproject.toml` (B135).
+  Separate recognized pytest option values from test selectors; unresolved
+  bare paths, unknown option arity, and root-selection overrides disable cold
+  witness instead of producing a guessed admission result.
+- Include test-path directories in cold-witness pytest config admission, and
+  refuse unresolved paths or `--pyargs` when the selected configuration cannot
+  be established.
+- Bind the B105 cockpit lookup to its mount and PID namespace identities,
+  preventing a matching hostname from naming another container; document the
+  MDT host bootstrap's pre-start cgroup-slice check and persisted campaign clock.
 - Capture private cold-witness receipts over a bounded framed pipe, rejecting
   extra or trailing bytes so post-session hooks cannot rewrite a witness;
   safely read the ordered manifest and recheck the campaign deadline at the

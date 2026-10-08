@@ -373,10 +373,11 @@ image, so it lives in two places that must agree:
 - **Container side** — `templates/devcontainer.json` ships
   `"--cgroup-parent=dev-interactive.slice"` in `runArgs`, plus `containerEnv` vars
   (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`/`CGROUP_PARENT_DEV_GATES`) any in-container tool
-  reads instead of hardcoding a slice name. Host setup is a prerequisite for the bounded
-  behavior: if the host has no such unit, systemd may create a transient unlimited slice
-  and the container can start without the intended protection. Verify the host with
-  `mdt-host-check.sh` before relying on placement.
+  reads instead of hardcoding a slice name. The host-side `initializeCommand`
+  verifies all three units are loaded from installed files before Docker creates
+  the devcontainer. A missing or runtime-generated unit stops startup because
+  systemd otherwise accepts the name by creating a transient unlimited slice.
+  Install the host setup and verify it with `mdt-host-check.sh` before rebuilding.
 - **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
   themselves: `dev-interactive.slice` for devcontainers, `dev-gates.slice` for gate/lane
   containers, and `dev-background.slice` for long-running stacks plus the Docker daemon-wide
@@ -396,6 +397,9 @@ opens a host shell. Review commands before running them. The helper runs
 `mdt doctor` afterward and may remount cgroup2 to restore required flags.
 See the [operator examples and safety details](docs/CONSUMERS.md#host-commands-from-an-mdt-devcontainer)
 and the [host-escape design](docs/DESIGN-GUIDE.md#host-namespace-access).
+
+The reason for checking the slice units before container creation is documented
+in the [host cgroup preflight design](docs/DESIGN-GUIDE.md#host-cgroup-preflight).
 
 [`host-setup/CGROUP-NOTES.md`](host-setup/CGROUP-NOTES.md) explains what a slice unit
 fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it

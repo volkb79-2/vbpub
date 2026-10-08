@@ -1103,11 +1103,15 @@ you're changing assay itself:
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
   wrapper derives the Docker host workspace root with `findmnt`, confirms the
-  configured interactive parent matches the running container's Docker
-  `CgroupParent`, verifies both that parent and the installed gates slice
-  through the host system bus before using them, and checks for 2 GiB of
-  point-in-time RAM headroom. It then attaches the cgroup probe and detached `tester-unified`
-  runner to the gates slice, sets explicit CPU/memory bounds, mounts the whole
+  kernel hostname identifies the inspected cockpit container, and checks its
+  mount and PID namespaces through `docker exec` before trusting its `CgroupParent`.
+  The MDT host-side initialize command verifies the interactive, background,
+  and gates slices before creating the cockpit. A tightly capped bootstrap
+  probe queries the host system bus from this already-used parent,
+  then verifies both units before any container uses the gates slice and checks
+  for 2 GiB of point-in-time RAM headroom. It attaches the cgroup probe and
+  detached `tester-unified` runner to the gates slice, sets explicit CPU/memory
+  bounds, mounts the whole
   workspace root at both its physical host path and `/workspaces/vbpub` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
@@ -1148,7 +1152,9 @@ you're changing assay itself:
   The full-source attempt is currently unqualified: the latest run stopped at
   15/3,760 candidates; an earlier attempt stopped after 38 completions. The
   full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is
-  incomplete. The in-container gate has a 7h30m timeout and Nyxloom has an
+  incomplete. B114 persists one campaign deadline across preflight, resume,
+  and retry, so starting a new invocation cannot reset the campaign clock.
+  The in-container gate has a 7h30m timeout and Nyxloom has an
   8-hour outer watchdog. Do not treat partial or timed-out state as a pass;
   B114's cold-witness and campaign-deadline support is now available, but the
   B118 bounded pilot and go/no-go decision must happen before another full
@@ -1167,8 +1173,13 @@ you're changing assay itself:
   test may be followed by other started tests in that full retry. The coverage
   and no-coverage baselines must collect the same ordered node IDs. That
   collection equality crosses command variants; hook and runtime proofs are
-  command-local. A cold
-  candidate matches the no-coverage R2 baseline, and a declared fallback
+  command-local. Cold-witness admission checks pytest configuration in both
+  the command directory and directories named by test-path arguments; it
+  separates recognized option values such as `-k` expressions from test
+  selectors, and refuses unresolved selectors, unknown option arity,
+  root-selection overrides, or package-based config selection it cannot
+  establish.
+  A cold candidate matches the no-coverage R2 baseline, and a declared fallback
   matches the coverage baseline. The two baseline hook fingerprints
   intentionally differ because pytest-cov is loaded only by the declared
   command. Each baseline must finish its complete suite with both the pytest

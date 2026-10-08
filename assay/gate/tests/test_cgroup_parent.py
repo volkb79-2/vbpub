@@ -14,6 +14,7 @@ from gate.tests.support import PROJECT_ROOT
 SCRIPT = PROJECT_ROOT / "tools" / "cgroup-parent.sh"
 GATE_DRIVER = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
+KERNEL_HOSTNAME = Path("/proc/sys/kernel/hostname").read_text(encoding="utf-8").strip()
 
 
 def run_probe(
@@ -28,6 +29,9 @@ def run_probe(
     cgroup_transport_exit: int | None = None,
     memory_reserve_bytes: int | None = None,
     probe_parent: str | None = "dev-interactive.slice",
+    container_parent: str = "dev-interactive.slice",
+    remote_mnt_namespace: str | None = None,
+    remote_pid_namespace: str | None = None,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -49,11 +53,20 @@ if args and args[0] == "inspect":
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
         stream.write("parent\n")
     print("|".join((
+        "b" * 64,
         os.environ["HOST_CONFIGURED_HOSTNAME"],
         os.environ["HOST_CGROUP_PARENT"],
         os.environ["HOST_CONTAINER_RUNNING"],
     )))
     raise SystemExit(int(os.environ["HOST_INSPECT_EXIT"]))
+if args and args[0] == "exec":
+    with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
+        stream.write("identity\n")
+    print("|".join((
+        os.environ["HOST_REMOTE_MNT_NS"],
+        os.environ["HOST_REMOTE_PID_NS"],
+    )))
+    raise SystemExit(int(os.environ["HOST_EXEC_EXIT"]))
 is_unit_probe = any("source=/run/dbus/system_bus_socket" in arg for arg in args)
 with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
     stream.write("unit\n" if is_unit_probe else "cgroup\n")
@@ -109,10 +122,13 @@ raise SystemExit(proc.returncode)
         "CALL_ORDER": str(call_order),
         "FAKE_CGROUP_ROOT": str(cgroot),
         "HOSTNAME": "assay-probe-test",
-        "HOST_CONFIGURED_HOSTNAME": "assay-probe-test",
-        "HOST_CGROUP_PARENT": "dev-interactive.slice",
+        "HOST_CONFIGURED_HOSTNAME": KERNEL_HOSTNAME,
+        "HOST_CGROUP_PARENT": container_parent,
         "HOST_CONTAINER_RUNNING": "true",
         "HOST_INSPECT_EXIT": "0",
+        "HOST_REMOTE_MNT_NS": remote_mnt_namespace or os.readlink("/proc/self/ns/mnt"),
+        "HOST_REMOTE_PID_NS": remote_pid_namespace or os.readlink("/proc/self/ns/pid"),
+        "HOST_EXEC_EXIT": "0",
         "SYSTEMD_OUTPUT": "\n".join((
             _unit_output(
                 "dev-gates.slice",
@@ -166,13 +182,16 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 3
-    parent_call, unit_call, cgroup_call = calls
-    assert parent_call[:2] == ["inspect", "assay-probe-test"]
+    assert len(calls) == 4
+    parent_call, identity_call, unit_call, cgroup_call = calls
+    assert parent_call[:2] == ["inspect", KERNEL_HOSTNAME]
     assert (
-        "{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}"
+        "{{.Id}}|{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}"
         in parent_call
     )
+    assert identity_call[:3] == ["exec", KERNEL_HOSTNAME, "sh"]
+    assert "readlink /proc/self/ns/mnt" in identity_call[-1]
+    assert "readlink /proc/self/ns/pid" in identity_call[-1]
     assert "--cgroup-parent=dev-interactive.slice" in unit_call
     assert "dev-gates.slice" in unit_call
     assert "dev-interactive.slice" in unit_call
@@ -199,6 +218,7 @@ def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
     assert argv_log.exists()
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
         "parent",
+        "identity",
         "unit",
         "cgroup",
     ]
@@ -220,9 +240,9 @@ def test_transient_or_missing_systemd_slice_is_refused_before_docker(tmp_path: P
         assert proc.returncode != 0
         assert "not a loaded installed slice" in proc.stderr
         calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
-            "parent", "unit"
+            "parent", "identity", "unit"
         ]
 
 
@@ -238,9 +258,9 @@ def test_systemd_verification_failure_is_refused_before_docker(tmp_path: Path):
     assert proc.returncode != 0
     assert "could not query Docker-host systemd unit" in proc.stderr
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
-        "parent", "unit"
+        "parent", "identity", "unit"
     ]
 
 
@@ -294,9 +314,9 @@ def test_runtime_generated_host_unit_is_refused_before_target_cgroup_probe(
         assert proc.returncode != 0
         assert "is runtime-generated, not an installed slice" in proc.stderr
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
-            "parent", "unit"
+            "parent", "identity", "unit"
         ]
-        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 2
+        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 3
 
 
 def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe(
@@ -318,9 +338,9 @@ def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe
         in proc.stderr
     )
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
-        "parent", "unit"
+        "parent", "identity", "unit"
     ]
 
 
@@ -337,33 +357,42 @@ def test_systemd_unit_id_must_match_requested_slice(tmp_path: Path):
 
     assert proc.returncode != 0
     assert 'returned a different unit ID (Id=other.slice)' in proc.stderr
-    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 2
+    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 3
 
 
-def test_interactive_probe_parent_must_match_running_container(tmp_path: Path):
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir(exist_ok=True)
-    docker = fake_bin / "docker"
-    docker.write_text(
-        "#!/bin/sh\nprintf '%s\\n' assay-probe-test\|dev-other.slice\|true\n",
-        encoding="utf-8",
+def test_hostname_match_with_a_different_container_namespace_is_refused(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        remote_mnt_namespace="mnt:[9999999999]",
     )
-    docker.chmod(0o755)
-    proc = subprocess.run(
-        [str(SCRIPT)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
-            "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
-            "HOSTNAME": "assay-probe-test",
-        },
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert calls[0][:2] == ["inspect", KERNEL_HOSTNAME]
+    assert calls[1][:2] == ["exec", KERNEL_HOSTNAME]
+
+    assert proc.returncode != 0
+    assert "resolved to a different container namespace" in proc.stderr
+
+
+def test_inspected_cockpit_parent_must_match_configured_interactive_tier(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        container_parent="dev-other.slice",
     )
 
     assert proc.returncode != 0
     assert "does not match the running container's Docker CgroupParent" in proc.stderr
+    assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
+        "parent", "identity"
+    ]
+    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 2
 
 
 def test_running_container_inspect_failure_refuses_before_unit_probe(tmp_path: Path):

@@ -760,10 +760,17 @@ order ([pytest 9.0 configuration docs](https://docs.pytest.org/en/9.0.x/referenc
 `[pytest]` `addopts` in the pytest 9 TOML files, native `[tool.pytest]`
 `addopts`, and the existing `[tool.pytest.ini_options]` form. Because Assay
 does not reproduce pytest's complete root-directory search, it checks every
-recognized config on the current directory's ancestor chain; an xdist setting
-or malformed config makes the cold witness unavailable. The declared full
-suite remains the fallback. This catches pytest 9's higher-precedence TOML
-files even when a lower-precedence `pyproject.toml` appears harmless.
+recognized config on the current directory's ancestor chain and on directories
+named by test-path arguments. An xdist setting or malformed config makes the
+cold witness unavailable. Unresolved path selectors and `--pyargs` also refuse
+the optimization because their config search cannot be established. The
+declared full suite remains the fallback. The argument reader separates
+recognized option values (such as a `-k` expression or `-p` plugin name) from
+test-path selectors; an unknown option arity, `--rootdir`, or `--confcutdir`
+refuses the optimization rather than guessing which config pytest will load.
+A missing positional selector is unresolved even when it is a bare name with
+no slash. This catches pytest 9's higher-precedence TOML files even when a
+lower-precedence `pyproject.toml` appears harmless.
 
 Pytest's built-in HookImpl callables are captured before its initial conftests
 load. Built-ins created later during startup are accepted only when their
@@ -2341,12 +2348,17 @@ inner lane. The generic run-gate tester container uses a private cgroup
 namespace, which cannot satisfy B148's full-ancestor observation preflight.
 `tools/self-qualification-container.sh` derives the host workspace root with
 `findmnt`; the cgroup helper verifies both the interactive probe parent and
-the gates slice through the host system bus before using them. Before that
-query, it verifies that the explicitly configured interactive parent matches
-the running container's Docker `CgroupParent`. The initial read-only system-bus
-query is itself capped and placed under that already-used parent; the gates
-slice is not used until both unit identities and installed fragments are
-verified. The read-only cgroup probe
+the gates slice through the host system bus before using them. The cockpit has
+no host systemd bus or host cgroup namespace, so the MDT host-side
+`initializeCommand` verifies the interactive, background, and gates slices
+before Docker creates the cockpit. At runtime, the helper reads the kernel
+hostname, checks Docker's full ID, configured hostname, running state and
+actual `CgroupParent`, then compares mount and PID namespaces through
+`docker exec` to bind that lookup to the cockpit itself. Its first read-only
+system-bus query is a tightly capped bootstrap container under the already
+verified interactive tier. The gates slice is not used until both unit
+identities and installed fragments are verified. The
+read-only cgroup probe
 then checks at least 2 GiB of point-in-time RAM headroom. The wrapper launches
 a detached `tester-unified` container in that
 slice with `--cgroupns=host`, `--init`, network disabled, explicit CPU and

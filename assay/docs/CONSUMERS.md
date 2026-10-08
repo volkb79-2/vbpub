@@ -75,10 +75,15 @@ and shared Git directory available to the container. The wrapper derives that
 root from `findmnt`, checks both the explicitly configured interactive probe
 parent and the gates slice through a read-only system-bus query before using
 the gates slice, and verifies at least 2 GiB of point-in-time RAM headroom. It
-first confirms the supplied interactive parent matches the running container's
-Docker `CgroupParent`. The initial query is capped and placed under that
-already-used parent; the gates slice is not used until both units are confirmed
-installed. It also verifies the container
+first reads the kernel hostname, confirms Docker reports the cockpit's full
+container ID, hostname, running state and actual `CgroupParent`, then compares
+mount and PID namespace identities through `docker exec` so another container
+with a matching hostname cannot stand in for the cockpit. The MDT template's
+`initializeCommand` verifies the interactive, background, and gates units from
+the host before Docker creates the cockpit. Since the cockpit has no host bus,
+the later host-manager query is a tightly capped bootstrap container under that
+already-verified parent. The gates slice is not used until both units are
+confirmed installed. It also verifies the container
 configuration; the inner gate checks that its commit and tree equal the
 wrapper's recorded source. Do not run `self-qualification-gate.sh` directly or
 substitute a generic private-cgroup tester container. The invoking environment
@@ -129,9 +134,9 @@ attempt preserves it for recovery. The runner uses Docker `--mount` for reposito
 binds, so a missing daemon-side source fails at launch rather than creating a
 phantom directory.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
-the separate 60-minute R0/R1 preflight. This interim budget resets on a new
-invocation, so do not use resume/retry to bypass the overall ceiling. B114
-persists one campaign deadline across preflight, resume and retry. The 7h30m
+the separate 60-minute R0/R1 preflight. The per-invocation cap can apply again
+on retry, but B114 persists one campaign deadline across preflight, resume and
+retry, so a new invocation cannot reset the campaign clock. The 7h30m
 timeout starts only after run-gate/container startup and covers the in-container
 B105 driver command; it stops before outer evidence collection. Nyxloom's
 8-hour watchdog is a separate outer failsafe, not the campaign-wide deadline.
@@ -194,12 +199,16 @@ session exit status; if it changes that status, the receipt cannot prove a kill
 or survivor. Any other unreviewed hook makes the proof unavailable.
 
 Before injecting the witness plugin, Assay checks `addopts` in recognized
-pytest config files from the command directory through its ancestors. This
-includes pytest 9's higher-precedence `pytest.toml` and `.pytest.toml`,
-`[tool.pytest]` in `pyproject.toml`, and the earlier INI formats. An xdist
-setting such as `-n auto`, or malformed config, disables cold witness for that
-lane; the declared full-suite path remains available. Plan the lane after
-changing pytest config so the capability result reflects the current tree.
+pytest config files from the command directory and directories named by
+test-path arguments, through each path's ancestors. This includes pytest 9's
+higher-precedence `pytest.toml` and `.pytest.toml`, `[tool.pytest]` in
+`pyproject.toml`, and the earlier INI formats. An xdist setting such as
+`-n auto`, malformed config, an unresolved path selector, or `--pyargs`
+disables cold witness for that lane. Assay separates recognized option values
+such as `-k` expressions and `-p` plugin names from test paths. Unknown option
+arity, `--rootdir`, `--confcutdir`, or an unresolved bare selector also disable
+cold witness; the declared full-suite path remains available. Plan the lane
+after changing pytest config so the capability result reflects the current tree.
 
 A `witness-cold` kill means one test-call failure was verified and the ordered
 manifest confirms the failing node was reached. Tests after that call are

@@ -188,7 +188,11 @@ refuses to continue until `install.sh --wizard` confirms the choice again.
 
 The wizard also configures `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` for the
 host-side `initialize_container_environment.py` that runs before a devcontainer
-starts. Its default, `create-by-spelling`, creates a missing source ending in
+starts. Before preparing mount sources, that bootstrap derives the slice names
+from the vendored `devcontainer.json` and requires each to be loaded from an
+installed unit file. It refuses before Docker creates a devcontainer if a
+slice is absent, runtime-generated, or unqueryable. Install host setup and run
+`mdt-host-check.sh` before rebuilding. Its default, `create-by-spelling`, creates a missing source ending in
 `/` as a directory and a missing source without `/` as an empty file with mode
 `0600`.
 The `fail` option refuses every missing `$HOME` source managed by the bootstrap.
@@ -768,7 +772,8 @@ sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background,dev-gates,dev-me
         /etc/modules-load.d/mdt-bfq.conf /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
 sudo systemctl daemon-reload
 sudo rm -rf /etc/mdt /var/lib/mdt        # config + benchmark results
-# containers keep their (now transient, unlimited) slices until recreated.
+# existing containers keep their current placement until recreated. A later
+# MDT devcontainer rebuild refuses startup until the installed slice units return.
 # /etc/docker/daemon.json is NOT removed here — it's a merge, not a wholesale
 # install; manually drop the cgroup-parent/live-restore/log-opts keys you no
 # longer want and `systemctl restart docker` if you do.

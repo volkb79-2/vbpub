@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Resolve and verify the host cgroup tier before Assay launches a gate
 # container. systemd auto-creates transient .slice units for unknown names, so
-# the Docker host's installed unit must be checked before using it as a parent.
+# the target gates unit must be checked before any container uses it as parent.
 
 set -euo pipefail
 
@@ -39,24 +39,54 @@ esac
 
 command -v timeout >/dev/null 2>&1 \
   || die 'timeout is required to bound Docker cgroup probes'
-[[ -n "${HOSTNAME:-}" && "$HOSTNAME" != *$'\n'* ]] \
-  || die 'HOSTNAME is unset or malformed; cannot identify the running probe container'
+[[ -r /proc/sys/kernel/hostname ]] \
+  || die 'kernel hostname is unavailable; cannot identify the running cockpit container'
+if cockpit_hostname="$(cat /proc/sys/kernel/hostname)"; then
+  :
+else
+  die 'could not read the kernel hostname for the running cockpit container'
+fi
+[[ -n "$cockpit_hostname" && "$cockpit_hostname" != *$'\n'* \
+  && "$cockpit_hostname" != *'|'* ]] \
+  || die 'kernel hostname is empty or malformed; cannot identify the running cockpit container'
 
 if current_container_facts="$(
-  timeout --signal=TERM --kill-after=5s 30s docker inspect "$HOSTNAME" \
-    --format '{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}'
+  timeout --signal=TERM --kill-after=5s 30s docker inspect "$cockpit_hostname" \
+    --format '{{.Id}}|{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}'
 )"; then
   :
 else
   inspect_status=$?
-  die "could not inspect the running container \"$HOSTNAME\" before launching the host-unit probe (exit $inspect_status)"
+  die "could not inspect the running container \"$cockpit_hostname\" before launching the host-unit probe (exit $inspect_status)"
 fi
 [[ "$current_container_facts" != *$'\n'* ]] \
   || die 'Docker inspect returned multiple records for the running container'
-IFS='|' read -r current_configured_hostname current_cgroup_parent current_running \
+IFS='|' read -r current_container_id current_configured_hostname current_cgroup_parent current_running \
   <<<"$current_container_facts"
-[[ "$current_configured_hostname" == "$HOSTNAME" && "$current_running" == true ]] \
-  || die "Docker inspect did not identify the running container named by HOSTNAME=$HOSTNAME"
+[[ "$current_container_id" =~ ^[0-9a-f]{64}$ \
+  && "$current_configured_hostname" == "$cockpit_hostname" \
+  && "$current_running" == true ]] \
+  || die "Docker inspect did not identify one running cockpit container with kernel hostname $cockpit_hostname"
+if current_namespaces="$(
+  printf '%s|%s' "$(readlink /proc/self/ns/mnt)" "$(readlink /proc/self/ns/pid)"
+)"; then
+  :
+else
+  die 'could not read the running cockpit mount and PID namespace identities'
+fi
+[[ "$current_namespaces" =~ ^mnt:\[[0-9]+\]\|pid:\[[0-9]+\]$ ]] \
+  || die 'running cockpit namespace identities are malformed'
+if inspected_namespaces="$(
+  timeout --signal=TERM --kill-after=5s 30s docker exec "$cockpit_hostname" sh -c \
+    'printf "%s|%s\n" "$(readlink /proc/self/ns/mnt)" "$(readlink /proc/self/ns/pid)"'
+)"; then
+  :
+else
+  exec_status=$?
+  die "could not verify that Docker inspected the running cockpit itself (exit $exec_status)"
+fi
+[[ "$inspected_namespaces" == "$current_namespaces" ]] \
+  || die "Docker name lookup for kernel hostname $cockpit_hostname resolved to a different container namespace"
 [[ "$current_cgroup_parent" == "$probe_parent" ]] \
   || die "CGROUP_PARENT_DEV_INTERACTIVE does not match the running container's Docker CgroupParent (configured=$probe_parent, actual=$current_cgroup_parent)"
 
@@ -127,10 +157,15 @@ verify_installed_slice() {
   esac
 }
 
-# The first bounded, read-only query container must use the explicitly supplied
-# interactive tier so it can reach the Docker host's system bus. Its resource
-# caps apply during this bootstrap query; verify both that bootstrap parent and
-# the requested gates tier before launching a container in the gates tier.
+# The cockpit has no host system bus or host cgroup namespace, so a bounded,
+# read-only query container is needed to inspect the Docker host's systemd
+# manager. The MDT host-side initialize command verifies the interactive unit
+# before it permits Docker to create the cockpit. At runtime, the kernel
+# hostname identifies the inspected container, and mount/PID namespace checks
+# bind that lookup to this cockpit before its explicit parent is trusted. The
+# bootstrap container also has independent CPU, memory, and PID caps. Verify
+# both units from the host manager before launching any container under the
+# gates tier.
 verify_installed_slice "$probe_parent"
 verify_installed_slice "$slice"
 

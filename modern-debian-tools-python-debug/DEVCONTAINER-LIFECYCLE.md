@@ -111,15 +111,13 @@ containers read it from there. No hardcoded host path, no raw `containerEnv` var
 
 On hosts that tier resources via systemd slices (cgroup v2) — for example a shared host that also
 runs a production workload alongside devcontainers and best-effort test/build containers — this
-devcontainer should land in its own tier instead of the host's default (usually unlimited) cgroup.
+devcontainer must land in its own tier instead of the host's default cgroup.
 `templates/devcontainer.json` ships a `--cgroup-parent=dev-interactive.slice` runArg for this
 (plus `containerEnv` vars naming three dev-tier slices — `CGROUP_PARENT_DEV_INTERACTIVE`,
 `CGROUP_PARENT_DEV_BACKGROUND`, and, for gate/lane containers, `CGROUP_PARENT_DEV_GATES` — see
 below — for any in-container tool that spawns its own containers. Gate launchers fail closed when
 the gates value is absent; long-running stacks use the background value. See
-[host-setup/README.md](host-setup/README.md) "dev-gates: why"); this section
-explains the mechanism so you can reason about safety on hosts
-that do **not** opt in.
+[host-setup/README.md](host-setup/README.md) "dev-gates: why").
 See also [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) for how this fits the doctrine's
 layering (host/orchestration concern, not image content).
 
@@ -160,11 +158,14 @@ CPUWeight=200
 After installing or editing the unit: `systemctl daemon-reload` (no restart required — systemd
 activates the slice on demand the first time something references it).
 
-**Graceful degradation if the unit is missing:** systemd does not fail the container start when the
-named slice has no unit file — it transparently creates a **transient, unlimited** slice with the
-same name on the fly. The container starts exactly as it would with no `--cgroup-parent` at all.
-This is why shipping `--cgroup-parent=dev-interactive.slice` in the shared template is safe for
-every consumer, including those on hosts that never define the slice: at worst it is a no-op.
+Docker and systemd still accept an unknown parent by creating a **transient, unlimited** slice.
+The MDT template prevents that silent fallback: its host-side `initializeCommand` derives the
+interactive, background, and gates names from `containerEnv`, checks that the interactive name
+matches the `runArgs` parent, and verifies each unit's exact ID, `LoadState=loaded`, and installed
+`FragmentPath` before creating the devcontainer. Missing, runtime-generated, or unqueryable units
+stop startup. Install the host policy and run `mdt-host-check.sh` before rebuilding. See the
+[preflight design](docs/DESIGN-GUIDE.md#host-cgroup-preflight) and
+[consumer steps](docs/CONSUMERS.md#host-cgroup-preflight).
 
 ### What the container can (and can't) see about its own placement
 
