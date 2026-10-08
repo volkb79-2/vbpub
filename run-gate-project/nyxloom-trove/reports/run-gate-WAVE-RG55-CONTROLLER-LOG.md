@@ -7980,3 +7980,27 @@ this ruling and does not yet contain its log/contract clarification; it is
 superseded. Rebuild a fresh candidate from current `main` as first parent
 before any exact-tree gate. No registered gate or live acceptance probe has
 run on either candidate.
+
+### RW-504 — 2026-10-08 02:43:50 UTC — triage candidate preflight failures
+
+The exact-tree `self-qualification-preflight` on `09084078` failed R0; its
+derived R1 coverage is not acceptance evidence. The retained pytest output
+shows three failures, not a resource-pressure or scheduler effect:
+
+1. Both parameterizations of
+   `test_sigterm_leaves_r2_candidate_unclassified_and_dead` launch nested
+   native R2. The preflight lane did not opt into the read-only cgprofile
+   observer, so Assay correctly refused because the tester container's
+   private cgroup namespace hides host ancestors. Keep namespaces private;
+   give `self-qualification-preflight` the same `resource_observer =
+   "cgprofile"` lane setting as the full qualification. Pin that dependency
+   in Assay's gate tests.
+2. `read_resource_observer_counters` parsed daemon response JSON without
+   catching `RecursionError`. The source-derived untrusted-JSON sweep found
+   the uncaught site. Convert it to `ResourceLimitObservationError` and add a
+   socket-level deeply nested JSON regression test.
+
+No fix is yet qualified by a registered gate; do not reuse the failed
+preflight as a PASS or infer an R2 result. After the targeted fixes, rerun the
+preflight on the new exact tree, then continue the remaining short gates and
+review only after all required results are green.

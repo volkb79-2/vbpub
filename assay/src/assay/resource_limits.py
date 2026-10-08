@@ -949,9 +949,9 @@ def read_resource_observer_counters(socket_path: str) -> ResourceLimitCounters:
         )
     try:
         document = json.loads(response[:-1].decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ResourceLimitObservationError(
-            "resource observer response is not valid UTF-8 JSON"
+            "resource observer response cannot be parsed as JSON"
         ) from exc
     return _resource_counters_from_observer(document, thread_id)
 

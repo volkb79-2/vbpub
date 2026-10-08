@@ -60,6 +60,11 @@ artifacts = [
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification-preflight"]
+# The preflight runs the same real-process termination tests as the full
+# qualification. Those tests launch nested native R2, whose private cgroup
+# namespace intentionally cannot see host ancestors; provide the same
+# read-only observer endpoint as the full qualification lane.
+resource_observer = "cgprofile"
 clean_tree = true
 budget = "60m"
 # This standalone preflight creates its own b105-pre-* campaign deadline.

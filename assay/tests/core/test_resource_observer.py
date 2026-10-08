@@ -295,6 +295,30 @@ def test_socket_client_rejects_malformed_response_line(tmp_path, contents):
     listener.close()
 
 
+def test_socket_client_rejects_deep_json_without_parser_traceback(tmp_path):
+    socket_path = tmp_path / "observer.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    deeply_nested = b"[" * 2000 + b"0" + b"]" * 2000 + b"\n"
+
+    def serve_one():
+        conn, _ = listener.accept()
+        with conn:
+            payload = bytearray()
+            while b"\n" not in payload:
+                payload.extend(conn.recv(4096))
+            conn.sendall(deeply_nested)
+
+    server = threading.Thread(target=serve_one, daemon=True)
+    server.start()
+    with pytest.raises(ResourceLimitObservationError, match="cannot be parsed as JSON"):
+        resource_limits.read_resource_observer_counters(str(socket_path))
+    server.join(timeout=2)
+    listener.close()
+    assert not server.is_alive()
+
+
 @pytest.mark.parametrize("path", ["", "relative.sock"])
 def test_socket_client_requires_absolute_nonempty_path(path):
     with pytest.raises(ResourceLimitObservationError, match="socket path"):

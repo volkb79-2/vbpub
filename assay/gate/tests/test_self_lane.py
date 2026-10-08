@@ -78,6 +78,16 @@ def test_assays_own_lane_file_loads():
     assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID, "analysis"]
 
 
+def test_b105_run_gate_lanes_provide_observer_to_nested_r2_tests():
+    lanes = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"]
+
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
+        lane = lanes[lane_id]
+        assert lane["kind"] == "command"
+        assert lane["environment"] == "tester-unified"
+        assert lane["resource_observer"] == "cgprofile"
+
+
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
     # A-046/A-133 still govern the ordinary release gate. B105's new lane is
     # the explicit place where self-qualification policy is declared.

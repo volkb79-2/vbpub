@@ -28,6 +28,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   candidate events ordered.
 
 ### Fixed
+- Convert deeply nested or otherwise unparsable resource-observer JSON into a
+  structured observation refusal rather than leaking `RecursionError` (RG-89).
 - Leave a candidate unclassified and out of resume state when lane or campaign
   termination interrupts its post-command snapshot integrity check (B117).
 - Refuse native R2 before R0 when B145's full cgroup hierarchy is unavailable
