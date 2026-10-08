@@ -7798,3 +7798,20 @@ already advanced the judge identity to `/8`, the combined observer policy
 advances it to `/9`; the mutation-state schema remains unchanged. The merged
 tree requires fresh exact-tip gates and review; the R1 result above is evidence
 only for `ac8bac78e`.
+
+### RW-495 — 2026-10-08 00:40:40 UTC — make current main the first parent for changed-line evidence
+
+Local `main` advanced from `363a0412d14864fb9c35f86c3843cab6e8614603` to
+`b1c17a2a99e12b1880521bdc3b6ddbb04930f8f4` with two additional Assay B114
+commits, including the SQL witness fixture. The first RG-89 reconciliation
+merge had the feature branch as first parent. Assay B008 therefore correctly
+selected that feature parent as its R1 base; the gate passed while considering
+zero changed lines and branches. That zero-change PASS is not RG-89 coverage
+evidence.
+
+For the current exact-tree gate, integrate the RG-89 branch into a candidate
+whose first parent is current `main`. This preserves Assay's first-parent
+baseline semantics and makes R1 cover the actual feature delta. Verify the
+candidate's first parent, tree, nonzero changed-line/branch totals, and full
+coverage in the saved verdict. Keep the candidate HEAD unchanged for every
+gate and review; any follow-up commit requires fresh exact-tree evidence.
