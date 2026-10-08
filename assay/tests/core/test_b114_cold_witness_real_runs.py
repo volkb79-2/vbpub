@@ -598,10 +598,10 @@ def test_cold_witness_reader_thread_start_failure_is_typed_and_never_a_kill(
     failed_from: list[str] = []
 
     def fail_receipt_reader_on_candidate(thread: threading.Thread) -> None:
-        if (
-            thread.name == "assay-witness-receipt"
-            and threading.current_thread() is not threading.main_thread()
-        ):
+        # With jobs=1 the candidate executor may run inline on MainThread.
+        # ReceiptCapture is created only for an active R2 candidate attempt,
+        # so fail the named reader regardless of which thread owns the attempt.
+        if thread.name == "assay-witness-receipt":
             failed_from.append(threading.current_thread().name)
             raise RuntimeError("injected process-limit thread-start failure")
         original_start(thread)

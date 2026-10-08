@@ -117,3 +117,15 @@ trees directly; it also inspected the branch history. `HEAD` was
 `d324754c8669296e46555434499c07bbed73e9c1` and `git status --short` was empty
 both before and after review. The review made no file changes. Merge and
 registered gates on the resulting main revision remain pending.
+
+## Post-review registered gate result
+
+The registered `tester-unified` gate on merge
+`eabb6a10c07b4b74c957029002e998d9e137be4f` exited 1 after 483.61s with
+**7,826 passed, 11 skipped, 1 failed**. The failed real-run receipt-start
+oracle injected only when the caller was not `MainThread`, but the seeded
+`jobs=1` candidate can execute inline. Since `ReceiptCapture` is created only
+for an active R2 candidate, the oracle now fails the named receipt-reader
+start independent of caller thread. The focused oracle passed locally (**1
+passed in 0.46s**); Ruff and `git diff --check` passed. Exact-tip review and a
+registered gate on the correction remain pending.
