@@ -683,12 +683,6 @@ def test_search_worker_count_uses_bounded_workers_for_guarded_cli(
     scripts_directory = tmp_path / "scripts"
     scripts_directory.mkdir()
     cli_entrypoint = scripts_directory / "nyxloom-harness"
-    cli_entrypoint.write_text(
-        "from nyxloom.cli_harness import main\n"
-        "if __name__ == '__main__':\n"
-        "    main()\n",
-        encoding="utf-8",
-    )
     monkeypatch.setattr(
         search.sysconfig,
         "get_path",
@@ -702,7 +696,39 @@ def test_search_worker_count_uses_bounded_workers_for_guarded_cli(
     monkeypatch.setattr(search.os, "process_cpu_count", lambda: 100, raising=False)
     monkeypatch.setattr(search.os, "cpu_count", lambda: 100)
 
+    cli_entrypoint.write_text(
+        "import sys\n"
+        "from nyxloom.cli_harness import main\n"
+        "if __name__ == '__main__':\n"
+        "    sys.exit(main())\n",
+        encoding="utf-8",
+    )
     assert search._search_process_worker_count() == search._RIPGREP_MAX_WORKERS
+
+
+def test_search_worker_count_rejects_unguarded_canonical_console_script(
+    tmp_path, monkeypatch,
+):
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    cli_entrypoint = scripts_directory / "nyxloom-harness"
+    cli_entrypoint.write_text(
+        "from nyxloom.cli_harness import main\n"
+        "main()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        search.sysconfig,
+        "get_path",
+        lambda key: str(scripts_directory) if key == "scripts" else None,
+    )
+    monkeypatch.setitem(
+        search.sys.modules,
+        "__main__",
+        SimpleNamespace(__file__=str(cli_entrypoint)),
+    )
+
+    assert search._search_process_worker_count() == 1
 
 
 def test_jsonl_content_skips_bad_lines_and_keeps_latest_string_timestamp(tmp_path):

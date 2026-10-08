@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import os
@@ -914,6 +915,65 @@ def _active_query_terms(
     return tuple(term for term in terms if counts.get(term, 0) < cap)
 
 
+def _is_guarded_harness_console_entrypoint(path: Path) -> bool:
+    """Recognize the installed wrapper's safe, guarded top-level shape."""
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError):
+        return False
+    has_sys_import = False
+    has_harness_main_import = False
+    has_guarded_main_call = False
+    for statement in module.body:
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            continue
+        if isinstance(statement, ast.Import):
+            if len(statement.names) != 1 or not (
+                statement.names[0].name == "sys"
+                and statement.names[0].asname is None
+            ):
+                return False
+            has_sys_import = True
+            continue
+        if isinstance(statement, ast.ImportFrom):
+            if not (
+                statement.level == 0
+                and statement.module == "nyxloom.cli_harness"
+                and len(statement.names) == 1
+                and statement.names[0].name == "main"
+                and statement.names[0].asname is None
+            ):
+                return False
+            has_harness_main_import = True
+            continue
+        if not isinstance(statement, ast.If):
+            return False
+        condition = statement.test
+        if not (
+            isinstance(condition, ast.Compare)
+            and isinstance(condition.left, ast.Name)
+            and condition.left.id == "__name__"
+            and len(condition.ops) == 1
+            and isinstance(condition.ops[0], ast.Eq)
+            and len(condition.comparators) == 1
+            and isinstance(condition.comparators[0], ast.Constant)
+            and condition.comparators[0].value == "__main__"
+            and not statement.orelse
+        ):
+            return False
+        has_guarded_main_call |= any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "main"
+            for node in ast.walk(statement)
+        )
+    return has_sys_import and has_harness_main_import and has_guarded_main_call
+
+
 def _search_process_worker_count() -> int:
     main_module = sys.modules.get("__main__")
     main_file = getattr(main_module, "__file__", None)
@@ -922,12 +982,19 @@ def _search_process_worker_count() -> int:
     main_path = Path(main_file).resolve()
     module_entrypoint = Path(__file__).with_name("cli_harness.py").resolve()
     scripts_directory = sysconfig.get_path("scripts")
-    console_entrypoint = (
-        (Path(scripts_directory) / "nyxloom-harness").resolve()
+    console_entrypoints = (
+        {
+            (Path(scripts_directory) / "nyxloom-harness").resolve(),
+            (Path(scripts_directory) / "nyxloom-harness-script.py").resolve(),
+        }
         if scripts_directory
-        else None
+        else set()
     )
-    if main_path != module_entrypoint and main_path != console_entrypoint:
+    is_console_entrypoint = (
+        main_path in console_entrypoints
+        and _is_guarded_harness_console_entrypoint(main_path)
+    )
+    if main_path != module_entrypoint and not is_console_entrypoint:
         return 1
     process_cpu_count = getattr(os, "process_cpu_count", None)
     available = process_cpu_count() if callable(process_cpu_count) else os.cpu_count()
