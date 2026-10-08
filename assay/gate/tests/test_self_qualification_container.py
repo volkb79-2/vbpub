@@ -16,7 +16,7 @@ import pytest
 
 from gate.tests.support import PROJECT_ROOT
 
-REPO_ROOT = PROJECT_ROOT.parents[2]
+REPO_ROOT = PROJECT_ROOT.parent
 SCRIPT = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
 CGROUP_HELPER = PROJECT_ROOT / "tools" / "cgroup-parent.sh"
 CONTAINER_ID = "a" * 64
@@ -228,7 +228,9 @@ raise SystemExit(90)
 
 @pytest.fixture
 def committed_worktree():
-    worktree = Path(tempfile.mkdtemp(prefix="assay-b105-launcher-", dir=REPO_ROOT / ".worktrees"))
+    worktrees_dir = REPO_ROOT / ".worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    worktree = Path(tempfile.mkdtemp(prefix="assay-b105-launcher-", dir=worktrees_dir))
     project = worktree / "assay"
     (project / "tools").mkdir(parents=True)
     (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\nversion='1.0'\n", encoding="utf-8")
