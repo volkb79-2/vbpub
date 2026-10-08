@@ -61,9 +61,9 @@ if args[:2] == ["run", "-d"]:
         for value in args
         if value.startswith("--cgroup-parent=")
     )
-    pathlib.Path(cidfile).write_text(os.environ["PROBE_ID"])
+    pathlib.Path(cidfile).write_text(os.environ["FAKE_DOCKER_ID"])
     pathlib.Path(os.environ["DOCKER_STATE"]).write_text(json.dumps({
-        "id": os.environ["PROBE_ID"], "name": name, "owner": owner, "parent": parent
+        "id": os.environ["FAKE_DOCKER_ID"], "name": name, "owner": owner, "parent": parent
     }))
     print(os.environ["DOCKER_OUTPUT_ID"])
     raise SystemExit(0)
@@ -86,7 +86,7 @@ raise SystemExit("unexpected docker argv: " + repr(args))
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_CALLS": str(calls_path),
         "DOCKER_STATE": str(state_path),
-        "PROBE_ID": PROBE_ID,
+        "FAKE_DOCKER_ID": PROBE_ID,
         "DOCKER_OUTPUT_ID": docker_output_id,
         "PROBE_OUTPUT": output,
         "WAIT_STATUS": wait_status,

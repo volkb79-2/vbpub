@@ -8159,3 +8159,19 @@ cidfile ID and exact ownership inspection; the test asserts it never uses the
 malformed stdout value for cleanup. This is diagnostic instrumentation, not a
 qualified fix: rerun the registered gate from a clean committed tree with the
 candidate Run-Gate rev58 overlay and keep HEAD quiet until completion.
+
+### RW-513 — 2026-10-08 19:05:00 UTC — isolate fake Docker IDs from helper state
+
+The registered `tester-unified` run on `fe3ab85d9d82db7effbb8cd81abd200672880a93`
+failed R0 after 629.503 seconds: 7,880 passed, 4 failed, and 11 were skipped.
+Three cgroup-parent cases reached the cidfile-consistency refusal; the new
+malformed-output regression reached cleanup but observed no ownership inspect.
+Inspection found a test-fixture environment collision: the fake Docker used
+`PROBE_ID` for its synthetic container ID, while the helper initializes its
+own exported `PROBE_ID` to empty before invoking Docker. Thus the fake wrote an
+empty cidfile/state record even though its stdout came from a separate value.
+Rename the fixture-only variable to `FAKE_DOCKER_ID`, preserving the helper's
+ownership checks and malformed-output diagnostic. This is a fixture repair,
+not a production behavior change. Rerun the registered gate on the committed
+tip with the candidate Run-Gate rev58 overlay; no gate on this exact tree has
+passed yet.
