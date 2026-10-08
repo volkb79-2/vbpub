@@ -74,7 +74,7 @@ trap cleanup_probe EXIT
 # systemd's local private transport even when DBUS_SYSTEM_BUS_ADDRESS is set;
 # do not mount /run/systemd/private. busctl is given the mounted system-bus
 # address explicitly and makes only GetUnit/GetProperty calls.
-printf 'ASSAY_CGROUP_PARENT_PROBE_CONTAINER=%s\n' "$PROBE_NAME"
+printf 'ASSAY_CGROUP_PARENT_PROBE_CONTAINER=%s\n' "$PROBE_NAME" >&2
 probe_id="$(docker run -d \
   --cidfile "$PROBE_CIDFILE" \
   --label "assay.cgroup-parent.owner=$PROBE_OWNER" \

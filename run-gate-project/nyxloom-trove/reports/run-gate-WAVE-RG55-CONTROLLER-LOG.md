@@ -8082,3 +8082,15 @@ the exact helper had already passed one live bounded probe, but the registered
 after committing this patch and rerun that registered gate using the matching
 Run-Gate rev58 source overlay; do not interpret the earlier fast failure or
 the bounded helper probe as suite evidence.
+
+### RW-509 — 2026-10-08 03:30:19 UTC — keep probe diagnostics off the cgroup value channel
+
+The registered `tester-unified` run on `8655daf710608f8f2b4578be5f05449dd788a8d4`
+exited FAIL after 4.491 seconds, before the B145 bounded-wait container could
+start. The captured `cgroup_parent` value contained the helper's
+`ASSAY_CGROUP_PARENT_PROBE_CONTAINER=...` diagnostic followed by
+`dev-gates.slice`; Docker rejected that as an invalid slice unit. The helper
+is invoked through command substitution, so stdout is the machine-readable
+slice channel and must contain only the verified unit name. Move the
+container-name diagnostic to stderr (the existing helper test asserts it is
+there), then commit and rerun the registered gate on a quiet exact tree.
