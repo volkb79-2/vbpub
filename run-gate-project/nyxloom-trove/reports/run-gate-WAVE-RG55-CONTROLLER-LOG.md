@@ -7881,3 +7881,19 @@ that run Assay R2 (including B105 self-qualification); they must preserve
 CONSUMERS, CHANGES, and both byte-identical contract mirrors must state the
 actual scope and trust boundary. This ruling authorizes implementation and
 review; it does not authorize merge or release.
+
+### RW-499 — 2026-10-08 01:10:50 UTC — reconcile the design guide with RW-467
+
+The overall RG-55 design guide still listed host PID and cgroup namespaces
+together as rejected for the daemon, contradicting the operator's binding
+RW-467 authorization and the current daemon deployment contract. Correct the
+alternatives table and add an A5 clarification: only the managed daemon uses
+host PID mode so DAMON `pid_target` values are interpreted in the host PID
+namespace; its cgroup and network namespaces remain private, and workload,
+helper, gate, and test containers remain private. Keep the security disclosure
+that host-PID visibility expands process-table/PID-operation authority, does
+not contain daemon compromise, and does not authorize numeric-PID signaling.
+RW-467/RW-468 remain the source decisions; D-32's no-broker choice is
+unchanged. The corrected design is on commit `58ded267`; the current
+main-first candidate is `e66f9367`. No gate evidence is claimed for either
+candidate, and all exact-tree gates must use the final reconciled candidate.
