@@ -26,6 +26,7 @@ def run_probe(
     probe_parent: str | None = "dev-interactive.slice",
     cockpit_parent: str = "dev-interactive.slice",
     wait_status: str = "0",
+    docker_output_id: str = PROBE_ID,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -64,7 +65,7 @@ if args[:2] == ["run", "-d"]:
     pathlib.Path(os.environ["DOCKER_STATE"]).write_text(json.dumps({
         "id": os.environ["PROBE_ID"], "name": name, "owner": owner, "parent": parent
     }))
-    print(os.environ["PROBE_ID"])
+    print(os.environ["DOCKER_OUTPUT_ID"])
     raise SystemExit(0)
 if args[:2] == ["update", "--cpus=3"]:
     raise SystemExit(0)
@@ -86,6 +87,7 @@ raise SystemExit("unexpected docker argv: " + repr(args))
         "DOCKER_CALLS": str(calls_path),
         "DOCKER_STATE": str(state_path),
         "PROBE_ID": PROBE_ID,
+        "DOCKER_OUTPUT_ID": docker_output_id,
         "PROBE_OUTPUT": output,
         "WAIT_STATUS": wait_status,
         "COCKPIT_PARENT": cockpit_parent,
@@ -200,6 +202,34 @@ def test_missing_or_unconfigured_slice_is_refused_and_own_probe_removed(
     assert expected in proc.stderr
     assert calls[-1][:2] == ["rm", "-f"]
     assert calls[-1][2].startswith("assay-cgroup-parent-")
+
+
+def test_malformed_docker_id_reports_bounded_output_and_cleans_up_by_cidfile(
+    tmp_path: Path,
+):
+    malformed_id = "not-an-id-" + "x" * 200
+    proc, calls = run_probe(
+        tmp_path,
+        "OK unit=dev-gates.slice LoadState=loaded ControlGroup=/dev.slice/dev-gates.slice",
+        slice_name="dev-gates.slice",
+        docker_output_id=malformed_id,
+    )
+
+    assert proc.returncode != 0
+    assert "characters=210" in proc.stderr
+    assert f"prefix={malformed_id[:80]})" in proc.stderr
+    assert malformed_id not in proc.stderr
+    cleanup_inspects = [
+        call
+        for call in calls
+        if call[0] == "inspect"
+        and "Config.Labels" in call[call.index("--format") + 1]
+        and "NanoCpus" not in call[call.index("--format") + 1]
+    ]
+    assert cleanup_inspects[-1][-1] == PROBE_ID
+    assert calls[-1][:2] == ["rm", "-f"]
+    assert calls[-1][2].startswith("assay-cgroup-parent-")
+    assert malformed_id not in [argument for call in calls for argument in call]
 
 
 def test_non_slice_name_is_refused_before_docker(tmp_path: Path):

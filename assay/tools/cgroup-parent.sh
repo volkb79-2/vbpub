@@ -151,8 +151,11 @@ sleep 2
 # for every container started from the cockpit.
 docker update --cpus=3 "$PROBE_NAME" >/dev/null \
   || die 'could not apply the slice-verification probe CPU cap'
-[[ "$probe_id" =~ ^[0-9a-f]{64}$ ]] \
-  || die 'Docker returned a malformed slice-verification container ID'
+if [[ ! "$probe_id" =~ ^[0-9a-f]{64}$ ]]; then
+  id_prefix="${probe_id:0:80}"
+  printf -v id_prefix_quoted '%q' "$id_prefix"
+  die "Docker returned a malformed slice-verification container ID (characters=${#probe_id}, prefix=${id_prefix_quoted})"
+fi
 PROBE_ID="$probe_id"
 [[ -s "$PROBE_CIDFILE" && "$(<"$PROBE_CIDFILE")" == "$PROBE_ID" ]] \
   || die 'slice-verification container ID does not match its cidfile'

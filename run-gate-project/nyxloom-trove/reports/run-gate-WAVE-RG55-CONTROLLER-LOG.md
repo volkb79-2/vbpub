@@ -8144,3 +8144,18 @@ uses `--cgroup-parent=VALUE`; make the fixture parse the actual form.
 No R0/R1/R2/R3 gate result passed on this tree. Commit these two focused fixes,
 then rerun the registered `tester-unified` gate with the rev58 source overlay
 and keep the committed tree quiet through completion.
+
+### RW-512 — 2026-10-08 17:20:05 UTC — expose bounded diagnostics for malformed probe IDs
+
+The registered `tester-unified` rerun on `1266057b31dc04300a513d100980cbade8929897`
+failed R0 after 559.8 seconds: 7,880 passed, 3 failed, and 11 were skipped.
+All three failures are in `test_cgroup_parent.py`; the helper reports that the
+captured `docker run -d` output is not a 64-character lowercase hex ID. The
+B105 observer-lane policy failures from the previous run are gone. The failure
+trace does not reveal the captured ID, so the immediate repair is limited to a
+bounded shell-escaped prefix and character count in that refusal message, plus
+a regression using malformed output. Cleanup remains guarded by the separate
+cidfile ID and exact ownership inspection; the test asserts it never uses the
+malformed stdout value for cleanup. This is diagnostic instrumentation, not a
+qualified fix: rerun the registered gate from a clean committed tree with the
+candidate Run-Gate rev58 overlay and keep HEAD quiet until completion.
