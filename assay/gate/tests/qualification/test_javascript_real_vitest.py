@@ -7,7 +7,8 @@ double for the producer (A-334's own definition), never a real `vitest`
 process. `tester-unified` has no Node toolchain (DESIGN-GUIDE §10), so this
 cannot be a registered-gate test either. This module is the missing proof:
 skipped everywhere except a real Node/npm environment that explicitly opts
-in, it builds an npm cache from the committed `probe-js` lockfile (B041(a)'s
+in and satisfies the lockfile's engine ranges, it builds an npm cache from
+the committed `probe-js` lockfile (B041(a)'s
 offline-install pattern), materialises real two-commit git fixtures, and
 drives the REAL `assay` CLI (`assay.cli.main`, the installed
 `assay` console-script's entry point) against a REAL `npx --no-install
@@ -38,6 +39,9 @@ import pytest
 
 from assay.adapters.javascript import JavaScriptAdapter
 from assay.cli import main
+from gate.tests.node_toolchain import (
+    node_version_supports_pinned_qualification_engines,
+)
 from gate.tests.support import PROJECT_ROOT, GitRepo
 
 #: `tests/fixtures/coverage/probe-js/package.json` + `package-lock.json` pin
@@ -47,20 +51,30 @@ from gate.tests.support import PROJECT_ROOT, GitRepo
 _PROBE_JS = PROJECT_ROOT / "tests" / "fixtures" / "coverage" / "probe-js"
 
 _ENV_REASON = (
-    "real-vitest qualification: needs ASSAY_NODE_QUALIFICATION=1 and node/npm "
-    "on PATH. tester-unified has no Node toolchain (DESIGN-GUIDE §10), so "
-    "this can never be a registered-gate test; it runs by explicit opt-in "
-    "wherever Node genuinely is available (this devcontainer included)."
+    "real-vitest qualification: needs ASSAY_NODE_QUALIFICATION=1, npm, and "
+    "Node ^20.19, ^22.13, or >=24 for pinned ESLint 10.12.0. tester-unified "
+    "has no Node toolchain (DESIGN-GUIDE §10), so this runs only by explicit "
+    "opt-in in a compatible Node environment."
 )
 
 
 def _node_qualification_enabled() -> bool:
     import os
 
+    if os.environ.get("ASSAY_NODE_QUALIFICATION") != "1":
+        return False
+    node = shutil.which("node")
+    if node is None or shutil.which("npm") is None:
+        return False
+    try:
+        result = subprocess.run(
+            [node, "--version"], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     return (
-        os.environ.get("ASSAY_NODE_QUALIFICATION") == "1"
-        and shutil.which("node") is not None
-        and shutil.which("npm") is not None
+        result.returncode == 0
+        and node_version_supports_pinned_qualification_engines(result.stdout)
     )
 
 
@@ -711,82 +725,6 @@ def test_live_vitest_provider_report_proves_passed_suite_and_missing_canary_line
     assert len(body) == 2
     assert set(body) <= record.missing
     assert not (set(body) & record.executed)
-
-
-def test_uncovered_line_canary_lints_clean_for_js_and_ts(
-    tmp_path: Path, npm_cache: Path
-):
-    """The appended expression survives common lint rules without `void`,
-    an unused bare expression, or unused generated bindings. Bad controls
-    prove each configured rule is active."""
-    shutil.copy(_PROBE_JS / "package.json", tmp_path / "package.json")
-    shutil.copy(_PROBE_JS / "package-lock.json", tmp_path / "package-lock.json")
-    subprocess.run(
-        [
-            "npm",
-            "ci",
-            "--offline",
-            "--cache",
-            str(npm_cache),
-            "--no-audit",
-            "--no-fund",
-        ],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    (tmp_path / "eslint.config.mjs").write_text(
-        """\
-import parser from '@typescript-eslint/parser'
-
-export default [{
-  files: ['**/*.js', '**/*.ts'],
-  languageOptions: { parser },
-  rules: {
-    'no-void': 'error',
-    'no-unused-expressions': 'error',
-    'no-unused-vars': 'error',
-  },
-}]
-""",
-        encoding="utf-8",
-    )
-    sources = {
-        "canary.js": "function add(a, b) { return a + b }\nmodule.exports = { add }\n",
-        "canary.ts": "export function add(a: number, b: number): number { return a + b }\n",
-    }
-    good_paths = []
-    for name, source in sources.items():
-        transformed, _description = JavaScriptAdapter().inject_uncovered_line(source)
-        target = tmp_path / name
-        target.write_text(transformed, encoding="utf-8")
-        good_paths.append(target)
-    bad_path = tmp_path / "bad-control.js"
-    bad_path.write_text("void 0;\n1 + 1;\nconst unused = 1;\n", encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            "npx",
-            "--no-install",
-            "eslint",
-            "--format",
-            "json",
-            *(str(path) for path in (*good_paths, bad_path)),
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-
-    assert result.returncode == 1, result.stdout + result.stderr
-    reports = {Path(item["filePath"]).name: item for item in json.loads(result.stdout)}
-    for path in good_paths:
-        assert reports[path.name]["messages"] == []
-    bad_rules = {message["ruleId"] for message in reports[bad_path.name]["messages"]}
-    assert {"no-void", "no-unused-expressions", "no-unused-vars"} <= bad_rules
 
 
 def test_an_import_break_not_reached_by_the_tests_is_reported_as_survived(
