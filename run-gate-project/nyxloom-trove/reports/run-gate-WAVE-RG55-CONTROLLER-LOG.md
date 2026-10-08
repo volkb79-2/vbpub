@@ -8210,3 +8210,23 @@ configuration with a lane-contract test. This preserves private namespaces and
 uses the observer only for the documented hidden-ancestor case. Rerun the
 registered `tester-unified` gate on the committed tree; no overall gate has
 passed on the candidate yet.
+
+### RW-516 — 2026-10-08 22:07:03 UTC — backport first RG-89 mutation-survivor oracles
+
+The exact-tree R2 campaign remains on `5c43550b116203db0037c30d150d079b14b77bd4`
+in its isolated worktree; do not edit or switch that tree. At the last allowed
+progress check (21:58:32 UTC), 34/120 candidates were judged. The next status
+check is not due until at least 22:23:32 UTC.
+
+In the separate current-main integration worktree, the first observed
+resource-observer survivors motivated commit `75d9c4f0e`: independent
+CapEff/CapPrm bypass-capability cases, a malformed stat record with the
+closing delimiter at offset zero, the exact 19-field boundary, and empty
+NSpid coverage. The parser now rejects the offset-zero delimiter. The focused
+resource-observer suite passed 53 tests; branch-aware coverage for
+`lib/resource_observer.py` was 100% (275 statements, 124 branches). These are
+local targeted results, not registered-gate or R2 evidence. A fourth observed
+type-guard mutant appears equivalent because `_read_status` returns only a
+non-empty tuple or raises; retain that as a provisional proof until final R2
+triage confirms the exact candidate and operator. No release or merge is
+authorized by this progress entry.
