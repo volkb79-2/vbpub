@@ -37,6 +37,16 @@ def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
         "        bind:\n"
         "          create_host_path: false"
     ) in compose
+    assert (
+        "source: {{ cgprofile.daemon.socket_dir }}\n"
+        "        target: {{ cgprofile.daemon.socket_dir }}\n"
+        "        bind:\n"
+        "          create_host_path: false"
+    ) in compose
+    assert (
+        "- {{ cgprofile.daemon.socket_dir }}:"
+        "{{ cgprofile.daemon.socket_dir }}"
+    ) not in compose
     assert "AttachProcessesToUnit" in compose
     assert "lib.placement.CgroupWriteGuard" in compose
     assert "--cgroupns=host" not in gate_script
@@ -63,6 +73,8 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "## Daemon safety and placement" in design
     assert "host PID namespace" in design
     assert "not an independent attestation" in design
+    assert "create_host_path: false" in design
+    assert "refuses a missing source" in consumers
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
     assert "not an independent proof" in consumers_normalized

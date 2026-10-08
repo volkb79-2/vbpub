@@ -18,6 +18,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
+- fix(cgprofile): refuse a missing host socket-directory bind source instead
+  of letting Compose create an empty directory that hides the host-setup
+  prerequisite
 - fix(cgprofile): accept an already-correct daemon-created shared DAMON lock
   without caller-side chown/chmod, and continue helper-mode profiling without
   optional DAMON when lock preparation is unavailable; close one-shot identity

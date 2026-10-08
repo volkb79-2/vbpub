@@ -188,6 +188,11 @@ The daemon's PID check is a consistency check between its configured proc view
 and local namespace, not an independent attestation that the procfs bind is
 the host's. The managed CIU Compose service provides the deployment fact with
 `pid: "host"` and an explicit host `/proc` bind.
+The required `/run/cgprofile` socket directory uses Compose's long bind form
+with `create_host_path: false`: if host-setup has not created the source,
+deployment must fail instead of Docker manufacturing an empty host directory
+that hides the missing prerequisite and leaves the daemon writing sockets to
+the wrong place.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
 session volume and the DAMON admin sysfs state required for observation, in

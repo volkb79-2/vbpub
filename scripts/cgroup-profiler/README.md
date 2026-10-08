@@ -259,7 +259,9 @@ mean the kernel accepted a configured monitoring context. Check each session's
   without dispatch. `watch` has no timeout after its initial request line.
   - **Host prerequisite:** the directory `/run/cgprofile` on the host is
     created by mdt host-setup's tmpfiles.d entry `mdt-cgprofile.conf`
-    (`d /run/cgprofile 0770 root docker -`). **That entry decides who may
+    (`d /run/cgprofile 0770 root docker -`). The daemon Compose service
+    refuses a missing bind source rather than creating an empty directory.
+    **That entry decides who may
     use the socket carrier: members of the `docker` group** — the same
     principals who can already `docker exec` into the daemon, which is why
     the two carriers have the same trust boundary. The daemon re-asserts

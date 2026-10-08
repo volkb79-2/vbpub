@@ -201,7 +201,9 @@ resource_observer = "cgprofile"
 
 The existing host `/run/cgprofile` directory bind is sufficient for the
 devcontainer to see the daemon-created socket; no second host mount or new
-host-setup unit is needed. The upgraded daemon creates
+host-setup unit is needed. Host-setup must create this directory first;
+Compose refuses a missing source rather than silently creating an empty host
+directory. The upgraded daemon creates
 `/run/cgprofile/resource-observer.sock` beside `ctl.sock`. At gate launch,
 Run-Gate validates that fixed host path and mounts only the observer socket
 read-only into `tester-unified`, adds its observed GID, and sets
