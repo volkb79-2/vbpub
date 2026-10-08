@@ -229,7 +229,8 @@ See the [search design](DESIGN-GUIDE.md#local-session-search) for matching
 and ranking behavior and [the consumer recipe](CONSUMERS.md#search-local-session-history)
 for source selection and progress controls. Exact word matching and any query
 word are the defaults; `prefix` matches `qcow` in `qcow2`, and `all` requires
-every query word.
+every query word. Relevance scores reward up to 64 occurrences of each query
+word per session; more repeats no longer raise that word's score.
 
 | Command | Purpose |
 |---|---|

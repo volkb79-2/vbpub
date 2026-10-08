@@ -173,6 +173,8 @@ nyxloom-harness search 'cli-extended gate backlog' --sort-by date --client codex
 
 `--sort-by best` is the default and puts sessions matching more distinct
 query words first; `date` puts the newest recorded activity first.
+Relevance scores reward repeats up to 64 occurrences of each query word in a
+session; repetitions beyond that do not change its score.
 Repeat `--client` to select a list of harnesses. Repeat `--source-root` to
 limit the scan to listed locations; each selected client looks for its own
 format in each root. Claude Code and Codex use directory roots. OpenCode
