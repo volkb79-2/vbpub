@@ -39,6 +39,26 @@ esac
 
 command -v timeout >/dev/null 2>&1 \
   || die 'timeout is required to bound Docker cgroup probes'
+[[ -n "${HOSTNAME:-}" && "$HOSTNAME" != *$'\n'* ]] \
+  || die 'HOSTNAME is unset or malformed; cannot identify the running probe container'
+
+if current_container_facts="$(
+  timeout --signal=TERM --kill-after=5s 30s docker inspect "$HOSTNAME" \
+    --format '{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}'
+)"; then
+  :
+else
+  inspect_status=$?
+  die "could not inspect the running container \"$HOSTNAME\" before launching the host-unit probe (exit $inspect_status)"
+fi
+[[ "$current_container_facts" != *$'\n'* ]] \
+  || die 'Docker inspect returned multiple records for the running container'
+IFS='|' read -r current_configured_hostname current_cgroup_parent current_running \
+  <<<"$current_container_facts"
+[[ "$current_configured_hostname" == "$HOSTNAME" && "$current_running" == true ]] \
+  || die "Docker inspect did not identify the running container named by HOSTNAME=$HOSTNAME"
+[[ "$current_cgroup_parent" == "$probe_parent" ]] \
+  || die "CGROUP_PARENT_DEV_INTERACTIVE does not match the running container's Docker CgroupParent (configured=$probe_parent, actual=$current_cgroup_parent)"
 
 rel=""
 acc=""
@@ -61,25 +81,58 @@ if unit_properties="$(
     --mount=type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly \
     --mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
     -e DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus \
-    -e CGROUP_PARENT_DEV_GATES="$slice" \
     "$PROBE_IMAGE" sh -c \
-    'exec systemctl show "$1" --property=LoadState,FragmentPath --no-pager' \
-    assay-cgroup-unit-probe "$slice"
+    'set -eu
+     for unit do
+       printf "ASSAY_UNIT_BEGIN=%s\\n" "$unit"
+       systemctl show "$unit" --property=Id,LoadState,FragmentPath --no-pager
+       printf "ASSAY_UNIT_END=%s\\n" "$unit"
+     done' \
+    assay-cgroup-unit-probe "$slice" "$probe_parent"
 )"; then
   :
 else
   probe_status=$?
   die "could not query Docker-host systemd unit \"$slice\" before any container uses it (exit $probe_status)"
 fi
-load_state="$(printf '%s\n' "$unit_properties" | sed -n 's/^LoadState=//p')"
-fragment_path="$(printf '%s\n' "$unit_properties" | sed -n 's/^FragmentPath=//p')"
-[[ "$load_state" == loaded && "$fragment_path" == /* \
-  && "$fragment_path" != *$'\n'* ]] \
-  || die "Docker-host unit \"$slice\" is not an installed loaded slice (LoadState=$load_state, FragmentPath=$fragment_path)"
-case "$fragment_path" in
-  /run/systemd/*)
-    die "Docker-host unit \"$slice\" is runtime-generated, not an installed slice (FragmentPath=$fragment_path)" ;;
-esac
+
+unit_property() {
+  local unit="$1" property="$2" value
+  value="$(printf '%s\n' "$unit_properties" | awk \
+    -v unit="$unit" -v property="$property" '
+      $0 == "ASSAY_UNIT_BEGIN=" unit { active = 1; next }
+      $0 == "ASSAY_UNIT_END=" unit { active = 0; next }
+      active && index($0, property "=") == 1 {
+        print substr($0, length(property) + 2)
+        count++
+      }
+      END { if (count != 1) exit 1 }
+    ')" || die "Docker-host systemd query returned an incomplete $property for \"$unit\""
+  printf '%s' "$value"
+}
+
+verify_installed_slice() {
+  local unit="$1" unit_id load_state fragment_path
+  unit_id="$(unit_property "$unit" Id)"
+  load_state="$(unit_property "$unit" LoadState)"
+  fragment_path="$(unit_property "$unit" FragmentPath)"
+  [[ "$unit_id" == "$unit" ]] \
+    || die "Docker-host query for \"$unit\" returned a different unit ID (Id=$unit_id)"
+  [[ "$load_state" == loaded && "$fragment_path" == /* \
+    && "$fragment_path" != *$'\n'* ]] \
+    || die "Docker-host unit \"$unit\" is not a loaded installed slice (LoadState=$load_state, FragmentPath=$fragment_path)"
+  case "$fragment_path" in
+    /run/systemd/*)
+      die "Docker-host unit \"$unit\" is runtime-generated, not an installed slice (FragmentPath=$fragment_path)" ;;
+  esac
+}
+
+# The first bounded, read-only query container must use the explicitly supplied
+# interactive tier so it can reach the Docker host's system bus. Its resource
+# caps apply during this bootstrap query; verify both that bootstrap parent and
+# the requested gates tier before launching a container in the gates tier.
+verify_installed_slice "$probe_parent"
+verify_installed_slice "$slice"
 
 # Only after the host's installed unit is proven do we place a small probe in
 # it. That creates the slice cgroup when it is inactive and lets us read the

@@ -328,3 +328,31 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
 - `bash -n` passed for the three changed shell entry points and
   `git diff --check` passed. No test or registered gate has run on this
   uncommitted repair set; the earlier receipts are not evidence for its tip.
+
+## 2026-10-08 — exact-tip review repairs and B135
+
+- The Sol xhigh read-only review of `a50d1e1b` found a linked-worktree mount
+  failure, a test diagnostic mismatch, unverified bootstrap placement, the
+  non-atomic cross-project gate scan, and a missing changelog entry.
+- The B105 launcher now mounts the whole host workspace root at both its
+  physical path and `/workspaces/vbpub`; the linked worktree and its shared Git
+  directory remain addressable inside the child. Its tests assert this mount
+  pair. The cgroup helper checks the running container's inspected
+  `CgroupParent` against `CGROUP_PARENT_DEV_INTERACTIVE`, then queries the host
+  system bus for both that parent and the gates slice, checking unit IDs,
+  installed fragments and runtime-generated paths before using the gates
+  slice. The test diagnostic now matches the refusal wording.
+- The one-time Docker scan still cannot provide an atomic cross-project lease.
+  This wave relies on the estate's serial registered-gate policy: B087's lane
+  remains held, and no other registered gate may start during a B105 run. The
+  docs and wrapper keep this limitation explicit; the coordinator must verify
+  the gate slot immediately before and after each lane.
+- Folded B135 into the cold-witness admission fix. pytest 9's `pytest.toml` and
+  `.pytest.toml` are now inspected ahead of the older config formats; native
+  `[tool.pytest]` `pyproject.toml` addopts are checked too. README,
+  DESIGN-GUIDE, CONSUMERS and CHANGES describe when xdist config disables the
+  cold-witness path.
+- Static `bash -n` and `git diff --check` pass on this repair set. No tests or
+  registered gates have run on it yet. The next steps are the exact-tip Sol
+  xhigh review, serial provisional merge, then fresh registered
+  `tester-unified` and `self-qualification-preflight` receipts.

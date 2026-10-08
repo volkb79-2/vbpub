@@ -540,7 +540,15 @@ def _pytest_configs_allow_sequential(cwd: Path, argv: Sequence[str]) -> bool:
     # uncertainty is a safe fallback when its rootdir selection is external
     # to this read-only preview.
     for directory in (cwd, *cwd.parents):
-        for name in ("pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg"):
+        for name in (
+            "pytest.toml",
+            ".pytest.toml",
+            "pytest.ini",
+            ".pytest.ini",
+            "pyproject.toml",
+            "tox.ini",
+            "setup.cfg",
+        ):
             candidate = directory / name
             if candidate.is_file() and not _config_addopts_allow_sequential(candidate):
                 return False
@@ -549,17 +557,49 @@ def _pytest_configs_allow_sequential(cwd: Path, argv: Sequence[str]) -> bool:
 
 def _config_addopts_allow_sequential(path: Path) -> bool:
     try:
-        if path.name == "pyproject.toml":
+        if path.name in ("pytest.toml", ".pytest.toml"):
             document = tomllib.loads(path.read_text(encoding="utf-8"))
-            pytest_config = document.get("tool", {}).get("pytest", {})
-            options = pytest_config.get("ini_options", {})
-            addopts = options.get("addopts", ()) if isinstance(options, dict) else ()
+            pytest_config = document.get("pytest", {})
+            if not isinstance(pytest_config, dict):
+                return False
+            addopts = pytest_config.get("addopts", "")
             if isinstance(addopts, str):
                 tokens = shlex.split(addopts)
-            elif isinstance(addopts, list) and all(isinstance(item, str) for item in addopts):
-                tokens = [token for item in addopts for token in shlex.split(item)]
+            elif isinstance(addopts, list) and all(
+                isinstance(item, str) for item in addopts
+            ):
+                tokens = addopts
             else:
                 return False
+        elif path.name == "pyproject.toml":
+            document = tomllib.loads(path.read_text(encoding="utf-8"))
+            tool_config = document.get("tool", {})
+            if not isinstance(tool_config, dict):
+                return False
+            pytest_config = tool_config.get("pytest", {})
+            if not isinstance(pytest_config, dict):
+                return False
+            options = pytest_config.get("ini_options", {})
+            if not isinstance(options, dict):
+                return False
+            # pytest 9.0 added native TOML types in [tool.pytest], while
+            # [tool.pytest.ini_options] remains supported. Conservatively
+            # inspect both tables if both are present; malformed or ambiguous
+            # configuration cannot certify the sequential witness.
+            native_addopts = pytest_config.get("addopts", "")
+            ini_addopts = options.get("addopts", "")
+            tokens = []
+            for addopts in (native_addopts, ini_addopts):
+                if isinstance(addopts, str):
+                    tokens.extend(shlex.split(addopts))
+                elif isinstance(addopts, list) and all(
+                    isinstance(item, str) for item in addopts
+                ):
+                    tokens.extend(
+                        token for item in addopts for token in shlex.split(item)
+                    )
+                else:
+                    return False
         else:
             parser = configparser.ConfigParser(interpolation=None, strict=True)
             with path.open(encoding="utf-8") as stream:

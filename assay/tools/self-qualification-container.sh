@@ -82,13 +82,12 @@ case "$worktree/" in
   *) die 'the selected worktree is outside the derived workspace mount target' ;;
 esac
 worktree_suffix="${worktree#"$workspace_target"}"
-actual_host_repo_root="${workspace_fsroot}${worktree_suffix}"
-host_repo_root="${ASSAY_GATE_HOST_REPO_ROOT:-$actual_host_repo_root}"
-[[ "$host_repo_root" == "$actual_host_repo_root" ]] \
-  || die 'ASSAY_GATE_HOST_REPO_ROOT differs from the selected checkout parent bind source'
-[[ "$host_repo_root" == /* && "$host_repo_root" != "/" \
-  && "$host_repo_root" != *$'\n'* && "$host_repo_root" != *,* ]] \
-  || die 'the host repository bind source is not a usable Docker mount source'
+host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
+[[ "$host_workspace_root" == "$workspace_fsroot" ]] \
+  || die 'ASSAY_GATE_HOST_WORKSPACE_ROOT differs from the findmnt workspace bind source'
+[[ "$host_workspace_root" == /* && "$host_workspace_root" != "/" \
+  && "$host_workspace_root" != *$'\n'* && "$host_workspace_root" != *,* ]] \
+  || die 'the host workspace bind source is not a usable Docker mount source'
 
 # The run-gate `resources.shared` flock is scoped to its caller's /tmp. B105
 # callers in separate container namespaces can therefore race on one Docker
@@ -245,17 +244,17 @@ ownership_token="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" \
 [[ "$ownership_token" =~ ^[0-9a-f]{64}$ ]] || die 'container ownership token is malformed'
 container_name="run-gate-assay-${lane}-${BASHPID}-${RANDOM}-$(date +%s)"
 ownership_file="$scratch/container.cid"
-printf 'worktree=%s\ncommit=%s\ntree=%s\nparent_bind_source=%s\ncontainer_name=%s\nownership_token=%s\n' \
-  "$worktree" "$source_commit" "$source_tree" "$host_repo_root" \
+printf 'worktree=%s\ncommit=%s\ntree=%s\nworkspace_bind_source=%s\ncontainer_name=%s\nownership_token=%s\n' \
+  "$worktree" "$source_commit" "$source_tree" "$host_workspace_root" \
   "$container_name" "$ownership_token" >"$scratch/ownership.txt"
 forwarded_env=()
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]]; then
   forwarded_env+=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
 fi
 
-mount_args=(--mount "type=bind,src=$host_repo_root,dst=$host_repo_root")
-if [[ "$host_repo_root" != "/workspaces/vbpub" ]]; then
-  mount_args+=(--mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub")
+mount_args=(--mount "type=bind,src=$host_workspace_root,dst=$host_workspace_root")
+if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
+  mount_args+=(--mount "type=bind,src=$host_workspace_root,dst=/workspaces/vbpub")
 fi
 
 wait_timeout_label=65m
@@ -340,9 +339,9 @@ fi
 mounts="$(docker_bounded inspect "$container_id" \
   --format '{{range .Mounts}}{{printf "%s\t%s\n" .Source .Destination}}{{end}}')" \
   || die 'could not inspect B105 container mounts'
-expected_mounts="$host_repo_root"$'\t'"$host_repo_root"
-if [[ "$host_repo_root" != "/workspaces/vbpub" ]]; then
-  expected_mounts+=$'\n'"$host_repo_root"$'\t'"/workspaces/vbpub"
+expected_mounts="$host_workspace_root"$'\t'"$host_workspace_root"
+if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
+  expected_mounts+=$'\n'"$host_workspace_root"$'\t'"/workspaces/vbpub"
 fi
 if [[ "$(printf '%s\n' "$mounts" | sed '/^$/d' | sort)" != \
       "$(printf '%s\n' "$expected_mounts" | sort)" ]] \

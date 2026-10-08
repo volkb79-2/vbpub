@@ -69,10 +69,16 @@ Use the registered commands from the same clean worktree:
 `./run-gate.py self-qualification`. The B105 lanes execute a bare-host Assay
 wrapper that launches the inner lane in a detached `tester-unified` container
 with the host gates cgroup namespace visible, explicit CPU/memory bounds,
-network disabled, and both host and `/workspaces/vbpub` repository mounts. The
-wrapper derives the host bind source from `findmnt`, checks the installed host
-slice through a read-only system-bus query before using it, and verifies at
-least 2 GiB of point-in-time RAM headroom. It also verifies the container
+network disabled, and the whole workspace root mounted at both its physical
+host path and `/workspaces/vbpub`. This keeps a linked worktree's nested path
+and shared Git directory available to the container. The wrapper derives that
+root from `findmnt`, checks both the explicitly configured interactive probe
+parent and the gates slice through a read-only system-bus query before using
+the gates slice, and verifies at least 2 GiB of point-in-time RAM headroom. It
+first confirms the supplied interactive parent matches the running container's
+Docker `CgroupParent`. The initial query is capped and placed under that
+already-used parent; the gates slice is not used until both units are confirmed
+installed. It also verifies the container
 configuration; the inner gate checks that its commit and tree equal the
 wrapper's recorded source. Do not run `self-qualification-gate.sh` directly or
 substitute a generic private-cgroup tester container. The invoking environment
@@ -186,6 +192,14 @@ the path is the root `tests/conftest.py` and
 exception also applies to consumer projects. The hook must preserve pytest's
 session exit status; if it changes that status, the receipt cannot prove a kill
 or survivor. Any other unreviewed hook makes the proof unavailable.
+
+Before injecting the witness plugin, Assay checks `addopts` in recognized
+pytest config files from the command directory through its ancestors. This
+includes pytest 9's higher-precedence `pytest.toml` and `.pytest.toml`,
+`[tool.pytest]` in `pyproject.toml`, and the earlier INI formats. An xdist
+setting such as `-n auto`, or malformed config, disables cold witness for that
+lane; the declared full-suite path remains available. Plan the lane after
+changing pytest config so the capability result reflects the current tree.
 
 A `witness-cold` kill means one test-call failure was verified and the ordered
 manifest confirms the failing node was reached. Tests after that call are

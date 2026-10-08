@@ -1102,13 +1102,16 @@ you're changing assay itself:
   R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
-  wrapper derives the Docker host repository path with `findmnt`, verifies the
-  installed gates slice through the host system bus before using it, and checks
-  for 2 GiB of point-in-time RAM headroom. It then attaches the cgroup probe and
-  detached `tester-unified` runner to that slice, sets explicit CPU/memory
-  bounds, mounts the selected repository at both host and `/workspaces/vbpub`
-  paths, disables networking, and verifies the returned container ID,
-  ownership, launch settings, and `docker wait` status. The three registered
+  wrapper derives the Docker host workspace root with `findmnt`, confirms the
+  configured interactive parent matches the running container's Docker
+  `CgroupParent`, verifies both that parent and the installed gates slice
+  through the host system bus before using them, and checks for 2 GiB of
+  point-in-time RAM headroom. It then attaches the cgroup probe and detached `tester-unified`
+  runner to the gates slice, sets explicit CPU/memory bounds, mounts the whole
+  workspace root at both its physical host path and `/workspaces/vbpub` so
+  linked-worktree Git paths resolve inside the runner, disables networking,
+  and verifies the returned container ID, ownership, launch settings, and
+  `docker wait` status. The three registered
   Assay lanes share a run-gate lock; a Git-common-directory lock also
   serializes B105 callers across container `/tmp` namespaces. The wrapper
   refuses to launch beside an already-running registered gate, but that scan
@@ -1190,7 +1193,10 @@ you're changing assay itself:
   in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
   [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does
   not complete Assay's separate B105 whole-source qualification; the bounded
-  pilot remains a prerequisite to another full campaign.
+  pilot remains a prerequisite to another full campaign. Witness admission
+  checks pytest configuration, including pytest 9's `pytest.toml`,
+  `.pytest.toml` and native `[tool.pytest]` table. Parallel xdist `addopts`
+  make cold witness unavailable, so the full-suite path remains authoritative.
 
 ## Further reading
 

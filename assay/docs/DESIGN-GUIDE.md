@@ -752,6 +752,19 @@ pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
 and must match that baseline. The ordinary full-suite behavior remains the
 default when the option is absent.
 
+Witness admission also checks pytest configuration before injecting its
+plugin. It checks recognized config files in pytest's documented precedence
+order ([pytest 9.0 configuration docs](https://docs.pytest.org/en/9.0.x/reference/customize.html)):
+`pytest.toml`, `.pytest.toml`, `pytest.ini`, `.pytest.ini`,
+`pyproject.toml`, `tox.ini`, then `setup.cfg`. The TOML readers handle
+`[pytest]` `addopts` in the pytest 9 TOML files, native `[tool.pytest]`
+`addopts`, and the existing `[tool.pytest.ini_options]` form. Because Assay
+does not reproduce pytest's complete root-directory search, it checks every
+recognized config on the current directory's ancestor chain; an xdist setting
+or malformed config makes the cold witness unavailable. The declared full
+suite remains the fallback. This catches pytest 9's higher-precedence TOML
+files even when a lower-precedence `pyproject.toml` appears harmless.
+
 Pytest's built-in HookImpl callables are captured before its initial conftests
 load. Built-ins created later during startup are accepted only when their
 plugin class and source callable match objects captured at that early point.
@@ -2326,13 +2339,21 @@ witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
 The two B105 `run-gate.toml` entries run a bare-host Assay wrapper before the
 inner lane. The generic run-gate tester container uses a private cgroup
 namespace, which cannot satisfy B148's full-ancestor observation preflight.
-`tools/self-qualification-container.sh` derives the host repository bind with
-`findmnt` and verifies the gates slice through the host system bus before using
-it. The read-only cgroup probe then checks at least 2 GiB of point-in-time RAM
-headroom. The wrapper launches a detached `tester-unified` container in that
+`tools/self-qualification-container.sh` derives the host workspace root with
+`findmnt`; the cgroup helper verifies both the interactive probe parent and
+the gates slice through the host system bus before using them. Before that
+query, it verifies that the explicitly configured interactive parent matches
+the running container's Docker `CgroupParent`. The initial read-only system-bus
+query is itself capped and placed under that already-used parent; the gates
+slice is not used until both unit identities and installed fragments are
+verified. The read-only cgroup probe
+then checks at least 2 GiB of point-in-time RAM headroom. The wrapper launches
+a detached `tester-unified` container in that
 slice with `--cgroupns=host`, `--init`, network disabled, explicit CPU and
-memory bounds, and the repository mounted at both its physical host path and
-`/workspaces/vbpub`. It verifies the container's ID, ownership token, cgroup,
+memory bounds, and the whole workspace root mounted at both its physical host
+path and `/workspaces/vbpub`. Mounting the workspace root keeps a linked
+worktree's nested path and shared Git directory available in the container. It
+verifies the container's ID, ownership token, cgroup,
 limits, mounts and environment before waiting on that ID; the Docker wait
 status and an inner success marker are both required. This keeps the namespace
 choice at the gate boundary. Assay itself still refuses when a selected native

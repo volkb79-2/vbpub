@@ -184,6 +184,11 @@ def test_cold_short_option_classes_match_installed_pytest_and_xdist_parser():
 @pytest.mark.parametrize(
     ("name", "contents", "expected"),
     [
+        ("pytest.toml", "", True),
+        ("pytest.toml", '[pytest]\naddopts = ["-n", "auto"]\n', False),
+        (".pytest.toml", '[pytest]\naddopts = ["-q"]\n', True),
+        (".pytest.toml", '[pytest]\naddopts = "--numprocesses=auto"\n', False),
+        ("pytest.toml", '[pytest]\naddopts = "-n auto"\n', False),
         ("pytest.ini", "[pytest]\naddopts = -q\n", True),
         (".pytest.ini", "[pytest]\naddopts = --dist=load\n", False),
         ("tox.ini", "[pytest]\naddopts = --numprocesses 2\n", False),
@@ -203,6 +208,12 @@ def test_cold_short_option_classes_match_installed_pytest_and_xdist_parser():
             '[tool.pytest.ini_options]\naddopts = ["-q", "-n 2"]\n',
             False,
         ),
+        (
+            "pyproject.toml",
+            '[tool.pytest]\naddopts = ["-n", "auto"]\n',
+            False,
+        ),
+        ("pyproject.toml", "tool = 9\n", False),
         (
             "pyproject.toml",
             '[tool.pytest.ini_options]\naddopts = ["-q", "--maxfail=1"]\n',

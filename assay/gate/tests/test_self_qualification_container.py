@@ -219,7 +219,7 @@ def run_launcher(
     mode: str = "success",
     wait_status: str = "0",
     background: str | None = None,
-    host_repo_root: str | None = None,
+    host_workspace_root: str | None = None,
     shared_host_value: str | None = None,
     status_fail_at: int | None = None,
     trace_timeouts: bool = False,
@@ -258,10 +258,10 @@ def run_launcher(
         "TIMEOUT_TRACE": str(tmp_path / "timeout.jsonl"),
         "FAST_DOCKER_TIMEOUT": "1" if fast_docker_timeout else "0",
     }
-    env.pop("ASSAY_GATE_HOST_REPO_ROOT", None)
+    env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
-    if host_repo_root is not None:
-        env["ASSAY_GATE_HOST_REPO_ROOT"] = host_repo_root
+    if host_workspace_root is not None:
+        env["ASSAY_GATE_HOST_WORKSPACE_ROOT"] = host_workspace_root
     if shared_host_value is not None:
         env["ASSAY_GATE_ALLOW_SHARED_HOST"] = shared_host_value
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
@@ -299,7 +299,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         "DOCKER_MODE": mode,
         "TMPDIR": str(tmp_path),
     }
-    env.pop("ASSAY_GATE_HOST_REPO_ROOT", None)
+    env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
     return env, trace
@@ -309,7 +309,7 @@ def launch_call(calls: list[list[str]]) -> list[str]:
     return next(call for call in calls if call and call[0] == "run" and "-d" in call)
 
 
-def host_worktree_path(worktree: Path) -> str:
+def host_workspace_root(worktree: Path) -> str:
     target = subprocess.run(
         ["findmnt", "--target", str(worktree), "--noheadings", "--output", "TARGET"],
         check=True, capture_output=True, text=True,
@@ -319,7 +319,7 @@ def host_worktree_path(worktree: Path) -> str:
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     assert str(worktree).startswith(target.rstrip("/") + "/")
-    return fsroot + str(worktree)[len(target):]
+    return fsroot
 
 
 @pytest.mark.parametrize(
@@ -376,11 +376,11 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         assert "CGROUP_PARENT_DEV_BACKGROUND" not in " ".join(launch)
     else:
         assert f"CGROUP_PARENT_DEV_BACKGROUND={background}" in launch
-    host_repo_root = host_worktree_path(committed_worktree)
+    host_workspace = host_workspace_root(committed_worktree)
     mounts = [launch[index + 1] for index, item in enumerate(launch[:-1]) if item == "--mount"]
-    expected_mounts = [f"type=bind,src={host_repo_root},dst={host_repo_root}"]
-    if host_repo_root != "/workspaces/vbpub":
-        expected_mounts.append(f"type=bind,src={host_repo_root},dst=/workspaces/vbpub")
+    expected_mounts = [f"type=bind,src={host_workspace},dst={host_workspace}"]
+    if host_workspace != "/workspaces/vbpub":
+        expected_mounts.append(f"type=bind,src={host_workspace},dst=/workspaces/vbpub")
     assert mounts == expected_mounts
     assert all("docker.sock" not in mount for mount in mounts)
     if inner_budget is not None:
@@ -573,12 +573,12 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
 
 
-def test_host_source_override_must_match_parent_checkout_bind(
+def test_host_workspace_override_must_match_findmnt_workspace_bind(
     tmp_path: Path, committed_worktree: Path
 ):
     proc, calls, _elapsed = run_launcher(
         tmp_path, committed_worktree, lane="self-qualification-preflight",
-        host_repo_root="/other/vbpub",
+        host_workspace_root="/other/vbpub",
     )
 
     assert proc.returncode != 0

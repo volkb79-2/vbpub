@@ -22,6 +22,7 @@ def run_probe(
     *,
     slice_name: str | None,
     systemd_output: str | None = None,
+    probe_systemd_output: str | None = None,
     systemctl_exit: int = 0,
     cgroup_values: dict[str, str | None] | None = None,
     cgroup_transport_exit: int | None = None,
@@ -44,6 +45,15 @@ from pathlib import Path
 args = sys.argv[1:]
 with Path(os.environ["DOCKER_ARGV_LOG"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(args) + "\n")
+if args and args[0] == "inspect":
+    with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
+        stream.write("parent\n")
+    print("|".join((
+        os.environ["HOST_CONFIGURED_HOSTNAME"],
+        os.environ["HOST_CGROUP_PARENT"],
+        os.environ["HOST_CONTAINER_RUNNING"],
+    )))
+    raise SystemExit(int(os.environ["HOST_INSPECT_EXIT"]))
 is_unit_probe = any("source=/run/dbus/system_bus_socket" in arg for arg in args)
 with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
     stream.write("unit\n" if is_unit_probe else "cgroup\n")
@@ -98,10 +108,27 @@ raise SystemExit(proc.returncode)
         "DOCKER_ARGV_LOG": str(argv_log),
         "CALL_ORDER": str(call_order),
         "FAKE_CGROUP_ROOT": str(cgroot),
-        "SYSTEMD_OUTPUT": (
-            "LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-gates.slice"
-            if systemd_output is None else systemd_output
-        ),
+        "HOSTNAME": "assay-probe-test",
+        "HOST_CONFIGURED_HOSTNAME": "assay-probe-test",
+        "HOST_CGROUP_PARENT": "dev-interactive.slice",
+        "HOST_CONTAINER_RUNNING": "true",
+        "HOST_INSPECT_EXIT": "0",
+        "SYSTEMD_OUTPUT": "\n".join((
+            _unit_output(
+                "dev-gates.slice",
+                "Id=dev-gates.slice\n"
+                "LoadState=loaded\n"
+                "FragmentPath=/etc/systemd/system/dev-gates.slice"
+                if systemd_output is None else systemd_output,
+            ),
+            _unit_output(
+                "dev-interactive.slice",
+                "Id=dev-interactive.slice\n"
+                "LoadState=loaded\n"
+                "FragmentPath=/etc/systemd/system/dev-interactive.slice"
+                if probe_systemd_output is None else probe_systemd_output,
+            ),
+        )),
         "SYSTEMCTL_EXIT": str(systemctl_exit),
     }
     if slice_name is not None:
@@ -117,6 +144,10 @@ raise SystemExit(proc.returncode)
         argv, capture_output=True, text=True, env=env, check=False
     )
     return proc, argv_log
+
+
+def _unit_output(unit: str, properties: str) -> str:
+    return f"ASSAY_UNIT_BEGIN={unit}\n{properties}\nASSAY_UNIT_END={unit}"
 
 
 def test_unset_gates_tier_refuses_before_docker(tmp_path: Path):
@@ -135,9 +166,16 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 2
-    unit_call, cgroup_call = calls
+    assert len(calls) == 3
+    parent_call, unit_call, cgroup_call = calls
+    assert parent_call[:2] == ["inspect", "assay-probe-test"]
+    assert (
+        "{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}"
+        in parent_call
+    )
     assert "--cgroup-parent=dev-interactive.slice" in unit_call
+    assert "dev-gates.slice" in unit_call
+    assert "dev-interactive.slice" in unit_call
     assert "source=/run/dbus/system_bus_socket" in " ".join(unit_call)
     assert "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus" in " ".join(unit_call)
     assert "--cgroupns=host" in cgroup_call
@@ -151,12 +189,16 @@ def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
         tmp_path,
         "OK",
         slice_name="dev-gates.slice",
-        systemd_output="LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-gates.slice",
+        systemd_output=(
+            "Id=dev-gates.slice\nLoadState=loaded\n"
+            "FragmentPath=/etc/systemd/system/dev-gates.slice"
+        ),
     )
 
     assert proc.returncode == 0, proc.stderr
     assert argv_log.exists()
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
+        "parent",
         "unit",
         "cgroup",
     ]
@@ -164,8 +206,8 @@ def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
 
 def test_transient_or_missing_systemd_slice_is_refused_before_docker(tmp_path: Path):
     for unit_properties in (
-        "LoadState=loaded\nFragmentPath=",
-        "LoadState=not-found\nFragmentPath=",
+        "Id=dev-gates.slice\nLoadState=loaded\nFragmentPath=",
+        "Id=dev-gates.slice\nLoadState=not-found\nFragmentPath=",
     ):
         case = tmp_path / str(len(list(tmp_path.iterdir())))
         case.mkdir()
@@ -178,9 +220,9 @@ def test_transient_or_missing_systemd_slice_is_refused_before_docker(tmp_path: P
         assert proc.returncode != 0
         assert "not a loaded installed slice" in proc.stderr
         calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-        assert len(calls) == 1
+        assert len(calls) == 2
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
-            "unit"
+            "parent", "unit"
         ]
 
 
@@ -196,8 +238,10 @@ def test_systemd_verification_failure_is_refused_before_docker(tmp_path: Path):
     assert proc.returncode != 0
     assert "could not query Docker-host systemd unit" in proc.stderr
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 1
-    assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == ["unit"]
+    assert len(calls) == 2
+    assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
+        "parent", "unit"
+    ]
 
 
 def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
@@ -244,15 +288,105 @@ def test_runtime_generated_host_unit_is_refused_before_target_cgroup_probe(
             case,
             "OK",
             slice_name="dev-gates.slice",
-            systemd_output=f"LoadState=loaded\nFragmentPath={fragment_path}",
+            systemd_output=f"Id=dev-gates.slice\nLoadState=loaded\nFragmentPath={fragment_path}",
         )
 
         assert proc.returncode != 0
         assert "is runtime-generated, not an installed slice" in proc.stderr
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
-            "unit"
+            "parent", "unit"
         ]
-        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 1
+        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        probe_systemd_output=(
+            "Id=dev-interactive.slice\nLoadState=loaded\n"
+            "FragmentPath=/run/systemd/transient/dev-interactive.slice"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert (
+        'Docker-host unit "dev-interactive.slice" is runtime-generated'
+        in proc.stderr
+    )
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len(calls) == 2
+    assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
+        "parent", "unit"
+    ]
+
+
+def test_systemd_unit_id_must_match_requested_slice(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        systemd_output=(
+            "Id=other.slice\nLoadState=loaded\n"
+            "FragmentPath=/etc/systemd/system/dev-gates.slice"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert 'returned a different unit ID (Id=other.slice)' in proc.stderr
+    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_interactive_probe_parent_must_match_running_container(tmp_path: Path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    docker = fake_bin / "docker"
+    docker.write_text(
+        "#!/bin/sh\nprintf '%s\\n' assay-probe-test\|dev-other.slice\|true\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    proc = subprocess.run(
+        [str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+            "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+            "HOSTNAME": "assay-probe-test",
+        },
+    )
+
+    assert proc.returncode != 0
+    assert "does not match the running container's Docker CgroupParent" in proc.stderr
+
+
+def test_running_container_inspect_failure_refuses_before_unit_probe(tmp_path: Path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    docker = fake_bin / "docker"
+    docker.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+    docker.chmod(0o755)
+    proc = subprocess.run(
+        [str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+            "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+            "HOSTNAME": "assay-probe-test",
+        },
+    )
+
+    assert proc.returncode != 0
+    assert "could not inspect the running container" in proc.stderr
 
 
 def test_docker_probe_nonzero_is_not_certified_by_success_output(tmp_path: Path):
