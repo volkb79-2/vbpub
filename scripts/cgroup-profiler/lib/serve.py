@@ -33,6 +33,7 @@ lookups).
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -41,6 +42,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -52,13 +54,19 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import access, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
-from . import limits as limits_mod, liveness as liveness_mod, placement as placement_mod
+from . import (
+    limits as limits_mod,
+    liveness as liveness_mod,
+    placement as placement_mod,
+    resource_observer as resource_observer_mod,
+)
 from .version import runtime_version
 
 CONTRACT_VERSION = 1
 CGPROFILE_VERSION = runtime_version("1.1.0")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
+DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = "/run/cgprofile/resource-observer.sock"
 DEFAULT_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 DEFAULT_DAEMON_NAME = "cgprofile-host-daemon"
 DEFAULT_MAX_SESSIONS = 16
@@ -301,6 +309,7 @@ class SessionServer:
         *,
         sessions_dir: str = DEFAULT_SESSIONS_DIR,
         socket_path: str = DEFAULT_SOCKET_PATH,
+        observer_socket_path: Optional[str] = None,
         damon_default: str = "on",
         interval: float = DEFAULT_INTERVAL,
         keep_sessions: int = DEFAULT_KEEP_SESSIONS,
@@ -333,6 +342,13 @@ class SessionServer:
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
         self.sessions_dir = sessions_dir
         self.socket_path = socket_path
+        self.observer_socket_path = observer_socket_path or (
+            DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH
+            if socket_path == DEFAULT_SOCKET_PATH
+            else os.path.join(os.path.dirname(socket_path) or ".", "resource-observer.sock")
+        )
+        if os.path.normpath(self.observer_socket_path) == os.path.normpath(self.socket_path):
+            raise ValueError("resource observer socket must be distinct from the control socket")
         self.damon_default = damon_default
         self.default_interval = interval
         self.keep_sessions = keep_sessions
@@ -406,6 +422,8 @@ class SessionServer:
         self._by_target: Dict[Tuple[str, Optional[str]], str] = {}
         self._lock = threading.RLock()
         self._sock: Optional[socket.socket] = None
+        self._observer_sock: Optional[socket.socket] = None
+        self._observer_thread: Optional[threading.Thread] = None
         self._stopping = False
 
         self.started_at = self._iso(self.clock())
@@ -2367,6 +2385,95 @@ class SessionServer:
         sock.settimeout(self.accept_timeout)
         self._sock = sock
         self._assert_socket_permissions(socket_dir)
+        try:
+            self._bind_observer_socket()
+        except OSError as exc:
+            # The profiler's established control carrier remains available
+            # if this additive observer endpoint cannot be created. Native
+            # R2 consumers fail closed when their opted-in socket is absent.
+            self._log(
+                f"resource observer socket unavailable at "
+                f"{self.observer_socket_path}: {type(exc).__name__}: {exc}"
+            )
+
+    def _bind_observer_socket(self) -> None:
+        observer_dir = os.path.dirname(self.observer_socket_path) or "."
+        os.makedirs(observer_dir, exist_ok=True)
+        try:
+            existing = os.lstat(self.observer_socket_path)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISSOCK(existing.st_mode):
+                raise OSError(
+                    errno.EEXIST,
+                    "refusing to replace a non-socket resource observer path",
+                    self.observer_socket_path,
+                )
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(0.2)
+            try:
+                probe.connect(self.observer_socket_path)
+            except OSError as exc:
+                if exc.errno not in (errno.ECONNREFUSED, errno.ENOENT):
+                    raise OSError(
+                        errno.EADDRINUSE,
+                        "cannot prove existing observer socket is stale",
+                        self.observer_socket_path,
+                    ) from exc
+            else:
+                raise OSError(
+                    errno.EADDRINUSE,
+                    "resource observer socket is already accepting connections",
+                    self.observer_socket_path,
+                )
+            finally:
+                probe.close()
+            os.unlink(self.observer_socket_path)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(self.observer_socket_path)
+            sock.listen(16)
+            sock.settimeout(self.accept_timeout)
+            self._observer_sock = sock
+            self._assert_one_socket_permissions(
+                observer_dir, self.observer_socket_path, warn_root_only=False
+            )
+        except Exception:
+            sock.close()
+            raise
+
+    def _assert_one_socket_permissions(
+        self, socket_dir: str, socket_path: str, *, warn_root_only: bool
+    ) -> None:
+        try:
+            os.chmod(socket_dir, SOCKET_DIR_MODE)
+        except OSError as exc:
+            self._log(f"could not chmod {socket_dir} to {SOCKET_DIR_MODE:04o}: {exc}")
+        try:
+            os.chmod(socket_path, SOCKET_MODE)
+        except OSError as exc:
+            self._log(f"could not chmod {socket_path} to {SOCKET_MODE:04o}: {exc}")
+        try:
+            dir_gid = os.stat(socket_dir).st_gid
+        except OSError as exc:
+            self._log(f"could not stat {socket_dir}: {exc}")
+            return
+        try:
+            os.chown(socket_path, 0, dir_gid)
+        except OSError as exc:
+            self._log(f"could not set {socket_path} owner root:gid={dir_gid}: {exc}")
+        if warn_root_only and dir_gid == 0:
+            self._log(
+                f"socket carrier root-only until host-setup is installed "
+                f"({socket_dir} is root:root — mdt host-setup's "
+                f"mdt-cgprofile.conf owns that directory); the exec "
+                f"carrier is unaffected"
+            )
+        try:
+            os.chmod(socket_path, SOCKET_MODE)
+        except OSError as exc:
+            self._log(f"could not chmod {socket_path} to {SOCKET_MODE:04o}: {exc}")
 
     def _assert_socket_permissions(self, socket_dir: str) -> None:
         """Re-assert §8.1's directory/socket permissions at every start.
@@ -2438,6 +2545,17 @@ class SessionServer:
             return None
         return uid
 
+    def _peer_credentials(self, conn: socket.socket) -> Optional[Tuple[int, int, int]]:
+        """Return `(pid, uid, gid)` captured by SO_PEERCRED."""
+        try:
+            raw = conn.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+            )
+            pid, uid, gid = struct.unpack("3i", raw)
+        except (OSError, AttributeError, struct.error):
+            return None
+        return (pid, uid, gid)
+
     def _peer_allowed(self, uid: Optional[int]) -> bool:
         """§8.1's authorisation rule. uid 0 is ALWAYS allowed (that is how
         the exec carrier arrives — `docker exec` runs as root inside the
@@ -2462,6 +2580,17 @@ class SessionServer:
         if os.path.exists(self.socket_path):
             try:
                 os.unlink(self.socket_path)
+            except OSError:
+                pass
+        owned_observer_socket = self._observer_sock is not None
+        if owned_observer_socket:
+            try:
+                self._observer_sock.close()
+            finally:
+                self._observer_sock = None
+        if owned_observer_socket and os.path.exists(self.observer_socket_path):
+            try:
+                os.unlink(self.observer_socket_path)
             except OSError:
                 pass
 
@@ -2706,6 +2835,13 @@ class SessionServer:
         thread of the main interpreter; the real CLI entry point always runs
         this from there, via ``serve_forever``)."""
         self._bind()
+        if self._observer_sock is not None:
+            self._observer_thread = threading.Thread(
+                target=self._observer_accept_loop,
+                daemon=True,
+                name="cgprofile-resource-observer",
+            )
+            self._observer_thread.start()
         try:
             while not self._stopping:
                 try:
@@ -2722,6 +2858,13 @@ class SessionServer:
                 try:
                     self._close_socket()
                 finally:
+                    if self._observer_thread is not None:
+                        self._observer_thread.join(timeout=6.0)
+                        if self._observer_thread.is_alive():
+                            self._log(
+                                "resource observer accept thread did not stop within 6 seconds"
+                            )
+                        self._observer_thread = None
                     try:
                         pool_closed = self.damon_pool.close()
                     except Exception as exc:  # noqa: BLE001 - shutdown remains best-effort
@@ -2737,6 +2880,109 @@ class SessionServer:
                             "DAMON pool shutdown could not confirm every owned slot off "
                             f"or restore its original count; quarantined={quarantined}"
                         )
+
+    def _observer_accept_loop(self) -> None:
+        observer_sock = self._observer_sock
+        if observer_sock is None:
+            return
+        while not self._stopping:
+            try:
+                conn, _addr = observer_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self._handle_observer_connection(conn)
+
+    def _handle_observer_connection(self, conn: socket.socket) -> None:
+        """Serve one strictly read-only query on the dedicated socket."""
+        try:
+            peer = self._peer_credentials(conn)
+            uid = None if peer is None else peer[1]
+            if not self._peer_allowed(uid):
+                conn.sendall((json.dumps(self._error_response(
+                    "peer-refused", "peer UID is not allowed by the configured socket policy"
+                )) + "\n").encode("utf-8"))
+                return
+            deadline = time.monotonic() + 5.0
+            data = bytearray()
+            while len(data) <= 4096:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                conn.settimeout(remaining)
+                chunk = conn.recv(4097 - len(data))
+                if not chunk:
+                    return
+                data.extend(chunk)
+                newline = data.find(b"\n")
+                if newline >= 0:
+                    if newline + 1 != len(data):
+                        response = self._error_response(
+                            "bad-argument", "observer accepts exactly one request line"
+                        )
+                    else:
+                        response = self._observer_dispatch(bytes(data[:newline]), peer)
+                    conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+                    return
+            response = self._error_response(
+                "bad-argument", "observer request exceeds 4096 bytes"
+            )
+            conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return
+        except Exception as exc:  # noqa: BLE001 - keep the daemon accept loop alive
+            self._log(
+                f"unhandled resource observer error: {type(exc).__name__}: {exc}"
+            )
+            try:
+                conn.sendall((json.dumps(self._error_response(
+                    "daemon-error", "resource observer failed closed"
+                )) + "\n").encode("utf-8"))
+            except OSError:
+                pass
+        finally:
+            conn.close()
+
+    def _observer_dispatch(
+        self, payload: bytes, peer: Optional[Tuple[int, int, int]]
+    ) -> Dict[str, Any]:
+        try:
+            req = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return self._error_response("bad-argument", "request was not valid JSON")
+        verb, args, wire_error = self._validate_wire(req)
+        if wire_error is not None:
+            return wire_error
+        if verb != "resource-limits":
+            return self._error_response(
+                "bad-argument", "resource observer socket accepts only 'resource-limits'"
+            )
+        if set(args) != {"thread_id"}:
+            return self._error_response(
+                "bad-argument", "resource-limits requires exactly one 'thread_id' argument"
+            )
+        if type(args["thread_id"]) is not int or args["thread_id"] <= 0:
+            return self._error_response(
+                "bad-argument", "resource-limits 'thread_id' must be a positive integer"
+            )
+        if peer is None:
+            return self._error_response(
+                "peer-refused", "SO_PEERCRED is required for resource observation"
+            )
+        try:
+            body = resource_observer_mod.observe_peer_cgroup(
+                peer_pid=peer[0],
+                peer_uid=peer[1],
+                thread_id=args["thread_id"],
+                proc_root=self.proc_root,
+                cgroup_root=self.cgroup_root,
+                mountinfo_path=os.path.join(self.proc_root, "self", "mountinfo"),
+                gates_slice_name=self.gates_slice_name,
+            )
+        except resource_observer_mod.ResourceObserverError as exc:
+            return self._error_response("observer-refused", str(exc))
+        return {"ok": True, "contract": CONTRACT_VERSION, **body}
 
     def serve_forever(self) -> None:
         """Blocks until :meth:`request_shutdown` is called or a signal

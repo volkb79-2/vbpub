@@ -244,10 +244,22 @@ and every visible ancestor with those interfaces. A finite `memory.max`
 requires its event file. If the candidate's memory controller is inactive,
 visible active ancestor counters are sampled too. `max` catches a memory limit boundary even when
 the OOM path does not run; `oom_kill` also catches a global OOM kill when the
-candidate's `memory.max` is unlimited. Run Docker lanes with `--cgroupns=host`
-so Assay can see the actual hierarchy root. A private cgroup namespace or a
-cgroup mount rooted below an ancestor cannot prove that a parent limit was
-untouched. With selected native candidates, B148 refuses before R0 with
+candidate's `memory.max` is unlimited. Keep Docker lanes in a private cgroup
+namespace; do not use `--cgroupns=host` as a workaround. Assay first reads
+its local cgroup view. If that view specifically proves ancestors are hidden,
+a caller may explicitly provide `ASSAY_RESOURCE_OBSERVER_SOCKET` for a
+trusted observer-only Unix socket. The endpoint must bind the request to the
+caller's peer credentials and native thread ID, derive the cgroup itself,
+return a complete verified ancestry, and expose no control verbs. Run-Gate's
+`resource_observer = "cgprofile"` option mounts the separate cgprofile
+observer socket read-only, supplies its observed GID, and sets this variable.
+Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
+protocol read-only. Without the explicit endpoint, or on any endpoint,
+identity, mount, or counter failure, Assay returns `ERROR/EXEC_FAILED`.
+Before R0, B148 applies the same local-first observation rule to the exact
+selected native candidate set: a configured observer can satisfy the preflight
+only when the local reader specifically proves ancestors hidden. Without a
+usable local view or explicit observer, Assay refuses before R0 with
 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; a visibility loss during a
 candidate remains `ERROR/EXEC_FAILED`. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
@@ -282,12 +294,17 @@ do not carry these counters. See the
 ### Native R2 cgroup visibility preflight (B148)
 
 Native R2 needs the complete cgroup v2 ancestor hierarchy B145 uses to
-separate a test failure from a process or memory limit event. Assay probes that
-same full reader before R0. If native candidates are selected and the
-hierarchy is hidden, it writes a `NO_MEASUREMENT` verdict with reason code
-`CGROUP_OBSERVATION_UNAVAILABLE` and leaves the lane command unstarted. The
-message names the observation failure; configure the runner so the Assay
-process can see the full hierarchy, then run again.
+separate a test failure from a process or memory limit event. Before R0,
+Assay probes the same local-first reader for the exact selected native
+candidate set. If a private cgroup namespace hides ancestors, a caller may
+explicitly configure a trusted observer-only socket with
+`ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay consults it only after the local reader
+specifically proves that ancestors are hidden. Run-Gate's
+`resource_observer = "cgprofile"` option mounts cgprofile's separate observer
+socket read-only and supplies this setting. Do not use `--cgroupns=host` or
+mount cgprofile's control socket as a workaround. If neither the local view
+nor the explicit observer can provide the required hierarchy, Assay writes
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
 
 Check the candidate selection without running R0:
 
@@ -310,11 +327,13 @@ unstarted. Assay keeps lane-wide discovery errors under their own reason; an
 R2-only `MUTATION_DISCOVERY_FAILED` is included in the cgroup refusal detail
 because the verdict schema does not permit that code on the R0 claim.
 
-Do not retry an unchanged hidden-ancestor run; move it to a runner that exposes
-the full cgroup hierarchy. Assay does not silently select a namespace setting
-or add a lane option that could substitute for the kernel's visibility.
-Candidate-time reader errors still use B145's `ERROR/EXEC_FAILED`, since a
-successful preflight cannot prove that observability stayed stable later. See
+Do not retry an unchanged hidden-ancestor run without changing its observation
+path: configure the trusted observer fallback or provide a complete local
+view while retaining the test container's private namespace. Assay does not
+silently select a namespace setting or add a lane option that substitutes for
+kernel visibility. Candidate-time reader errors still use B145's
+`ERROR/EXEC_FAILED`, since a successful preflight cannot prove that
+observability stayed stable later. See
 the [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148).
 
 From a clean Assay worktree, capture the gate output under `.assay/` so it does

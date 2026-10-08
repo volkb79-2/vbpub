@@ -20,6 +20,7 @@ from conftest import (
     prepared_snapshot,
 )
 import assay.resource_limits as resource_limits
+import assay.mutation as mutation_module
 from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import (
@@ -49,7 +50,7 @@ _REAL_INSPECT_CURRENT_CGROUP_OBSERVATION = (
 
 def test_cgroup_capability_probe_uses_a_worker_thread(monkeypatch):
     main_thread = threading.get_ident()
-    observed_threads: list[int] = []
+    observed_calls: list[tuple[int, str | None]] = []
     counters = ResourceLimitCounters(
         pids_max=0,
         memory_max=0,
@@ -64,16 +65,23 @@ def test_cgroup_capability_probe_uses_a_worker_thread(monkeypatch):
     )
     monkeypatch.setattr(
         resource_limits,
-        "read_current_cgroup_counters",
-        lambda: observed_threads.append(threading.get_ident()) or counters,
+        "read_candidate_resource_counters",
+        lambda **kwargs: observed_calls.append(
+            (threading.get_ident(), kwargs.get("observer_socket_path"))
+        )
+        or counters,
     )
 
-    capability = resource_limits.inspect_current_cgroup_observation()
+    observer_path = "/run/cgprofile/resource-observer.sock"
+    capability = resource_limits.inspect_current_cgroup_observation(
+        observer_socket_path=observer_path
+    )
 
     assert capability.available is True
     assert capability.reason is None
-    assert len(observed_threads) == 1
-    assert observed_threads[0] != main_thread
+    assert len(observed_calls) == 1
+    assert observed_calls[0][0] != main_thread
+    assert observed_calls[0][1] == observer_path
 
 
 def test_cgroup_capability_probe_preserves_full_reader_refusal(monkeypatch):
@@ -84,8 +92,8 @@ def test_cgroup_capability_probe_preserves_full_reader_refusal(monkeypatch):
     )
     monkeypatch.setattr(
         resource_limits,
-        "read_current_cgroup_counters",
-        lambda: (_ for _ in ()).throw(
+        "read_candidate_resource_counters",
+        lambda **_kwargs: (_ for _ in ()).throw(
             ResourceLimitObservationError("the ancestor is hidden")
         ),
     )
@@ -167,6 +175,10 @@ def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path
         limit_signature=(
             (str(cgroup_dir), 31, True, None, True, None, True, True),
             (str(parent_dir), 31, True, 12, True, 4096, True, True),
+        ),
+        path_event_counters=(
+            (str(cgroup_dir), 2, 1, 1, 2, 0),
+            (str(parent_dir), 3, 2, 3, 4, 1),
         ),
     )
 
@@ -884,7 +896,8 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
         )
     )
     monkeypatch.setattr(
-        "assay.mutation.read_current_cgroup_counters", lambda: next(samples)
+        "assay.mutation.read_candidate_resource_counters",
+        lambda **_kwargs: next(samples),
     )
 
     def failing_candidate_runner(argv, *, env, cwd, timeout):
@@ -958,8 +971,8 @@ def test_worker_start_failure_is_a_payload_free_execution_error(
         process_runner=baseline_runner,
     )
     monkeypatch.setattr(
-        "assay.mutation.read_current_cgroup_counters",
-        lambda: ResourceLimitCounters(
+        "assay.mutation.read_candidate_resource_counters",
+        lambda **_kwargs: ResourceLimitCounters(
             pids_max=0,
             memory_max=0,
             memory_oom=0,
@@ -1098,3 +1111,36 @@ def test_low_pids_limit_event_cannot_become_a_kill(
         Outcome.ERROR,
         ReasonCode.EXEC_FAILED,
     )
+
+
+def test_mutation_counter_reader_delegates_and_wraps_observer_failures(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+
+    observer_path = "/run/cgprofile/resource-observer.sock"
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", observer_path)
+    calls = []
+
+    def observe(**kwargs):
+        calls.append(kwargs)
+        return counters
+
+    monkeypatch.setattr(mutation_module, "read_candidate_resource_counters", observe)
+    assert mutation_module._read_candidate_resource_counters() is counters
+    assert calls == [{"observer_socket_path": observer_path}]
+
+    def refused(**_kwargs):
+        raise ResourceLimitObservationError("observer unavailable")
+
+    monkeypatch.setattr(mutation_module, "read_candidate_resource_counters", refused)
+    with pytest.raises(AssayError, match="required cgroup v2.*observer unavailable") as failure:
+        mutation_module._read_candidate_resource_counters()
+    assert failure.value.outcome is Outcome.ERROR
+    assert failure.value.reason_code is ReasonCode.EXEC_FAILED

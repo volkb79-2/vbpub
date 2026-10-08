@@ -11,6 +11,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   repin Assay before relying on v15 verdict fields.
 
 ### Added
+- Add opt-in native R2 resource-counter observation through cgprofile's
+  observer-only Unix socket when the local cgroup reader proves relevant
+  ancestors are hidden; bind replies to the caller's native thread and fail
+  closed on identity or ancestry mismatch (RG-89).
 - Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
   command, ordered collection and hook facts; a `witness-cold` kill records its
   failed test call and labels later tests unrun. Hook trust is pinned to
@@ -108,8 +112,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): prevent cgroup process-limit or OOM events from becoming native
   R2 kills or survivors; sample candidate and visible-ancestor event counters,
   bind them to the executing worker's cgroup, capabilities, and selected mount,
-  reject affected resume records, and advance the judge identity to `/7`,
-  cold-starting the earlier `/4`, `/5`, and `/6` B145 evidence (B145)
+  reject affected resume records, use the explicit peer-bound resource
+  observer only when a private cgroup namespace hides ancestors, and advance
+  the judge identity to `/8`, cold-starting all earlier B145 evidence (B145,
+  RG-89)
 - fix(assay): disable automatic Git maintenance and detached maintenance for
   every Assay Git child, independent of image, system, or consumer config
   (B147)

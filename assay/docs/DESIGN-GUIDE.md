@@ -617,7 +617,10 @@ rather than from the declared budget.
 
 A candidate that reaches a process or memory limit has not shown that the test
 suite caught a mutant. Before native R2 starts candidates, Assay requires a
-visible cgroup v2 path through the hierarchy root. The sampler reads
+verified cgroup v2 path through the hierarchy root. It prefers its local view;
+when that view specifically proves ancestors are hidden, an explicitly
+configured peer-bound observer may provide the complete ancestry. No other
+local-reader failure falls back to a remote view. The sampler reads
 `/proc/thread-self/cgroup`, because a worker thread in a threaded cgroup v2
 subtree can have a different cgroup from the process leader; `/proc/self/cgroup`
 would identify the wrong execution context. The capability guard likewise
@@ -650,7 +653,9 @@ ancestor. A read-only mount alone cannot stop `CLONE_INTO_CGROUP` from moving a
 candidate into an existing child; the kernel checks inode permissions without
 the mount's read-only flag. Assay refuses when candidate credentials or
 capabilities can write those files, and refuses overmounts that shadow a
-sampled path.
+sampled path. A hidden ancestor is still a refusal unless the caller explicitly
+supplies the separate observer-only endpoint described in
+[`CONSUMERS.md`](CONSUMERS.md#native-r2-resource-limit-observation-b145).
 
 For each started full candidate command, Assay records the selected counters
 immediately before and after it. If the lane stops before a full command starts,
@@ -665,9 +670,13 @@ event cannot be hidden by a later command. A positive delta never certifies a
 kill or survivor. The visible cgroup paths, controller availability, and
 configured limits must match between the bracketing samples. If they change,
 or if a required counter is missing, malformed, or unreadable, native R2 fails
-closed. B148 refuses before R0 when native candidates are selected but the
-preflight cannot see all ancestors; a candidate-time loss of observation
-remains `ERROR/EXEC_FAILED`. Worker
+closed. A cgroup mount rooted below the hierarchy root refuses native R2
+before its candidate sweep; a hidden local ancestor requires the explicit
+observer and is refused when that endpoint is absent or unprovable. B148
+performs the same local-first/explicit-observer capability check before R0,
+but only when the deterministically selected native candidate set is
+non-empty and within `max_mutants`; inventory failures remain refusals, not
+empty-set results. Worker
 creation failure at the executor boundary yields a payload-free
 `ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
 cannot escape the verdict path. This contract observes cgroup v2 events; it
@@ -675,9 +684,9 @@ does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. Resume state with a positive counter delta is rejected for reuse, and
-the worker capability guard advances the judge identity to `/7`, so `/4`,
-`/5`, and `/6` B145 records are cold starts. The B114 cold-witness policy
-advances the identity to `/8`; the mutation-state schema number
+the B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
+identity inputs advanced it to `/8`, and the RG-89 observer policy advances
+it to `/9`; older records are cold starts. The mutation-state schema number
 does not change: this is a change in what the judge identity covers, not the
 record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
@@ -693,9 +702,12 @@ submit any candidate. The plan uses the same declared source roots, operator
 selection, candidate ceiling and deterministic shard function as R2. A
 selected candidate with an unavailable hierarchy produces
 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
-The operator must run the lane where the complete ancestor hierarchy can be
-observed; Assay does not choose a Docker cgroup namespace or add a config
-override for this fact.
+The probe uses the same local-first reader as candidate sampling; only a
+specific hidden-ancestor refusal may consult the caller's explicitly configured
+observer-only socket. This lets test containers retain private cgroup
+namespaces without turning the full host hierarchy into their interface.
+Assay does not choose a Docker cgroup namespace or add a lane override for this
+fact.
 
 The refusal does not apply to ingested R2, unsupported discovery, an empty
 candidate selection, or a discovery result over `max_mutants`; those cases

@@ -695,6 +695,7 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     lane = run_gate["lanes"][QUALIFICATION_ID]
     assert lane["kind"] == "command"
     assert lane["environment"] == "tester-unified"
+    assert lane["resource_observer"] == "cgprofile"
     assert lane["clean_tree"] is True
     assert lane["argv"] == [
         "timeout",
@@ -720,6 +721,7 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
     preflight = run_gate["lanes"][PREFLIGHT_ID]
     assert preflight["kind"] == "command"
     assert preflight["environment"] == "tester-unified"
+    assert "resource_observer" not in preflight
     assert preflight["clean_tree"] is True
     assert preflight["budget"] == "60m"
     assert PREFLIGHT_ID in preflight["argv"][-1]
