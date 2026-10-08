@@ -485,7 +485,8 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   direct `-n`, `-o addopts=-n2`, and `--override-ini=addopts=-n2` environment
   values.
 - Focused results: mutation-witness and B106 reuse tests **177 passed**;
-  cgroup-parent tests **23 passed**; docs examples/vocabulary **55 passed**.
+  B114 coverage-verifier tests **40 passed**; cgroup-parent tests **23 passed**;
+  docs examples/vocabulary **55 passed**.
   Ruff `E4,E7,E9,F`, `bash -n`, `shellcheck -e SC2016`, and `git diff --check`
   passed. No registered gate or R2 campaign ran on this repair diff. The next
   step is provisional merge, followed by all three registered B114 acceptance
