@@ -3421,11 +3421,11 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
 def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
-    # The tagged release remains source rev 55; RG-88 is the current
+    # The tagged release remains source rev 55; RG-89 is the current
     # unreleased revision. Historical release metadata must not drift when
     # the launcher revision advances.
     assert "This section describes released source rev 55." in changes
-    assert f"RG-88, rev {run_gate.__revision__}" in changes
+    assert f"RG-89, rev {run_gate.__revision__}" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes
@@ -7793,7 +7793,196 @@ class TestShippedGateFullDeclaration:
             "budget": "15m",
         }
         assert lanes["assay-r2"]["assay_lane"] == "r2"
+        assert lanes["assay-r2"]["environment"] == "tester-unified"
+        assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
+        assert lanes["assay-r2"]["resources"] == {"cpus": "3"}
         assert "assay-r2" not in gate_full["argv"][2]
+
+
+class TestResourceObserverLane:
+    def _stat(self, mode, uid=0, gid=994):
+        return SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid)
+
+    def _patch_socket_metadata(self, monkeypatch, socket_path, *,
+                               parent_mode=None, parent_uid=0,
+                               parent_gid=994, socket_mode=None,
+                               socket_uid=0, socket_gid=994,
+                               missing=None):
+        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o770
+        socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
+
+        def fake_lstat(path):
+            path = Path(path)
+            if path == socket_path.parent:
+                return self._stat(parent_mode, parent_uid, parent_gid)
+            if path == socket_path:
+                if missing:
+                    raise OSError("socket path missing")
+                return self._stat(socket_mode, socket_uid, socket_gid)
+            raise AssertionError(f"unexpected lstat path: {path}")
+
+        real_os = run_gate.os
+
+        class OsProxy:
+            def __getattr__(self, name):
+                return fake_lstat if name == "lstat" else getattr(real_os, name)
+
+        monkeypatch.setattr(run_gate, "os", OsProxy())
+
+    def test_disabled_observer_adds_no_docker_flags(self):
+        assert run_gate.resource_observer_docker_flags(
+            {"kind": "assay", "environment": "tester-unified"}) == []
+
+    @pytest.mark.parametrize("lane, message", [
+        ({"kind": "assay", "environment": "tester-unified",
+         "resource_observer": "other"}, "must be 'cgprofile'"),
+        ({"kind": "command", "environment": "bare-host",
+         "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
+        ({"kind": "sequence", "environment": "tester-unified",
+          "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
+        ({"kind": "assay", "environment": "bare-host",
+          "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
+    ])
+    def test_invalid_observer_lane_refuses(self, lane, message):
+        with pytest.raises(run_gate.GateError, match=message):
+            run_gate.resource_observer_docker_flags(lane)
+
+    def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
+        run_gate._validate_lane(
+            "probe", {"kind": "command", "environment": "tester-unified",
+                      "argv": ["true"], "resource_observer": "cgprofile"},
+            "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="only for assay or command lanes"):
+            run_gate._validate_lane(
+                "probe", {"kind": "sequence", "lanes": ["inner"],
+                          "resource_observer": "cgprofile"}, "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="environment = \\\"tester-unified\\\""):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "environment": "bare-host",
+                       "assay_lane": "r2", "resource_observer": "cgprofile"},
+                "fixture")
+        with pytest.raises(run_gate.GateError, match="must be 'cgprofile'"):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "environment": "tester-unified",
+                       "assay_lane": "r2", "resource_observer": "anything"},
+                "fixture")
+
+    def test_missing_socket_is_infrastructure_error(self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
+        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"})
+
+    @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
+        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFDIR | 0o770, 1000, None, 0, 994, "root-owned directory"),
+        (None, 0, run_gate.stat.S_IFREG | 0o660, 0, 994, "not a Unix socket"),
+        (None, 0, None, 1000, 994, "ownership does not match"),
+        (None, 0, None, 0, 995, "ownership does not match"),
+        (None, 0, run_gate.stat.S_IFSOCK | 0o666, 0, 994, "not accessible to other"),
+        (None, 0, run_gate.stat.S_IFSOCK | 0o640, 0, 994, "group-connectable"),
+    ])
+    def test_unsafe_socket_metadata_refuses(
+            self, tmp_path, monkeypatch, parent_mode, parent_uid,
+            socket_mode, socket_uid, socket_gid, message):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_mode=parent_mode,
+            parent_uid=parent_uid, socket_mode=socket_mode,
+            socket_uid=socket_uid, socket_gid=socket_gid)
+        with pytest.raises(run_gate.GateInfraError, match=message):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"})
+
+    @pytest.mark.parametrize("kind", ["assay", "command"])
+    def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
+            self, tmp_path, monkeypatch, kind):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        assert run_gate.resource_observer_docker_flags({
+            "kind": kind, "environment": "tester-unified",
+            "resource_observer": "cgprofile"}) == [
+                "--mount",
+                f"type=bind,source={socket_path},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+                "--group-add", "1234",
+                "-e", "ASSAY_RESOURCE_OBSERVER_SOCKET="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+            ]
+        assert "ctl.sock" not in run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE
+
+    @pytest.mark.parametrize("kind", ["assay", "command"])
+    def test_container_argv_wires_the_opted_in_observer(
+            self, tmp_path, monkeypatch, kind):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lane = {
+            "kind": kind,
+            "environment": "tester-unified",
+            "resource_observer": "cgprofile",
+            "budget": "4h",
+            "resources": {"cpus": "3"},
+        }
+        if kind == "assay":
+            lane["assay_lane"] = "r2"
+        else:
+            lane["argv"] = ["bash", "-c", "true"]
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_kw: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_assay_inner", lambda *_a, **_kw: "true")
+        monkeypatch.setattr(run_gate, "assure_assay_state_root", lambda *_a, **_kw: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_kw: "true")
+        assembled = []
+        real_join = run_gate.shlex.join
+
+        def capture_argv(argv):
+            assembled.append(list(argv))
+            return real_join(argv)
+
+        monkeypatch.setattr(run_gate.shlex, "join", capture_argv)
+        assert run_gate.run_container_lane(
+            lane, "assay-r2", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester-unified:local"},
+            "fixture", "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test"},
+        ) == 0
+        argv, = assembled
+        assert "--cgroup-parent" in argv
+        assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "3"
+        assert ["--mount", f"type=bind,source={socket_path},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly"] == argv[
+                    argv.index("--mount"):argv.index("--mount") + 2]
+        assert ["--group-add", "1234"] == argv[
+            argv.index("--group-add"):argv.index("--group-add") + 2]
+        assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}" in argv
+        assert not any("ctl.sock" in item for item in argv)
 
 
 class TestComparisonBasePassthrough:
@@ -23209,6 +23398,7 @@ class TestUserDocumentationOracles:
             "sequence stop_on": {"FAIL", "never"},
             "exit_map verdict": {"PASS", "FAIL", "ERROR"},
             "admission unreadable_policy": {"refuse", "unbudgeted"},
+            "resource observer": {"cgprofile"},
             "run-gate result": set(run_gate.VERDICT_EXIT_CODES),
             "NOT_RUN reason": set(run_gate.NOT_RUN_REASONS),
         }

@@ -18,6 +18,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
+- fix(cgprofile): refuse a missing host socket-directory bind source instead
+  of letting Compose create an empty directory that hides the host-setup
+  prerequisite
 - fix(cgprofile): accept an already-correct daemon-created shared DAMON lock
   without caller-side chown/chmod, and continue helper-mode profiling without
   optional DAMON when lock preparation is unavailable; close one-shot identity
@@ -44,6 +47,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - fix(cgprofile): CP-10 -- decouple the daemon's host-PSI liveness pause check (`host_proc_root`) from the real `/proc` used for subtree/pid resolution, ending a real-host-memory-pressure-driven test flake session 6 misattributed to test order (b50163e9)
 
 ### Added
+- feat(cgprofile): add a separate observer-only Unix socket for native Assay
+  R2; bind each query to SO_PEERCRED and a native TID, derive only the peer's
+  complete gates-slice ancestry, and keep the control socket and placement
+  protocol out of tester containers (RG-89)
 - feat(cgprofile): CP-5 -- daemon sessions write real `events.jsonl` rows via `lib.events.Detector` on the sampler's own cadence (16b01c1c)
 - feat(cgprofile): CP-7 -- the session manifest's `limits` table resolves real effective cgroup limits at `start` (907ddd50)
 - feat(cgprofile): CP-6 -- DAMON hot/warm/cold/idle series read into `ctl report`'s HTML render (e053276b)

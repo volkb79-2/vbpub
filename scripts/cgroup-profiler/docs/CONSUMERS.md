@@ -185,6 +185,42 @@ also needs the injected `CGROUP_PARENT_DEV_INTERACTIVE` value to match the
 cockpit's actual Docker parent. Missing systemd or cgroup evidence is a hard
 refusal, not permission to rely on Docker's default parent.
 
+## Native R2 resource observer
+
+Assay B145 refuses to classify native R2 candidates when private cgroup
+namespaces hide an enforcing ancestor. With a cgprofile daemon that implements
+contract §9 and a Run-Gate build that supports RG-89, opt the lane in:
+
+```toml
+[lanes.assay-r2]
+kind = "assay"
+assay_lane = "r2"
+environment = "tester-unified"
+resource_observer = "cgprofile"
+```
+
+The existing host `/run/cgprofile` directory bind is sufficient for the
+devcontainer to see the daemon-created socket; no second host mount or new
+host-setup unit is needed. Host-setup must create this directory first;
+Compose refuses a missing source rather than silently creating an empty host
+directory. The upgraded daemon creates
+`/run/cgprofile/resource-observer.sock` beside `ctl.sock`. At gate launch,
+Run-Gate validates that fixed host path and mounts only the observer socket
+read-only into `tester-unified`, adds its observed GID, and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` inside the container. A missing daemon/socket
+or unsafe ownership/mode is an infrastructure refusal, never a silent
+fallback. The selected container retains private PID, cgroup, and network
+namespaces; do not mount `ctl.sock` or the Docker socket for this feature.
+
+Assay uses its local B145 reader first and contacts the observer only when the
+local view specifically proves that ancestors are hidden. The daemon derives
+the peer's cgroup from `SO_PEERCRED` plus the supplied native TID, limits
+queries to the configured gates slice, and returns only that peer's ancestry
+counters. Any incomplete identity or ambiguous shared-ancestor event remains
+`ERROR/EXEC_FAILED`, not a candidate kill/survivor. See the
+[`observer protocol`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and
+[`design rationale`](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
+
 ## Resolve a target from a cockpit
 
 In helper mode, `self` means the invoking container. The caller resolves its

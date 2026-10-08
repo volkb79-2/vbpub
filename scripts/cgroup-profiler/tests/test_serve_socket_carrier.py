@@ -1147,7 +1147,10 @@ class TestSocketPermissions:
         monkeypatch.setattr(serve.os, "chown", lambda p, u, g: chowns.append((p, u, g)))
         server, _socket_dir = self._bound(tmp_path)
         try:
-            assert chowns == [(server.socket_path, 0, 4242)]
+            assert chowns == [
+                (server.socket_path, 0, 4242),
+                (server.observer_socket_path, 0, 4242),
+            ]
             assert "root-only" not in capsys.readouterr().err
         finally:
             server._close_socket()
