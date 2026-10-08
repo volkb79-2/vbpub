@@ -663,15 +663,34 @@ def test_default_targeted_text_frequency_cap_is_64():
 
 
 def test_search_worker_count_stays_inline_without_importable_main(
-    monkeypatch,
+    tmp_path, monkeypatch,
 ):
+    user_script = tmp_path / "calling_search.py"
+    user_script.write_text("from nyxloom import search_sessions\n", encoding="utf-8")
     monkeypatch.setitem(
         search.sys.modules,
         "__main__",
-        SimpleNamespace(__file__="<stdin>"),
+        SimpleNamespace(__file__=str(user_script)),
     )
+    monkeypatch.setattr(search.sys, "argv", [str(user_script)])
 
     assert search._search_process_worker_count() == 1
+
+
+def test_search_worker_count_uses_bounded_workers_for_guarded_cli(
+    monkeypatch,
+):
+    cli_entrypoint = Path(search.__file__).with_name("cli_harness.py")
+    monkeypatch.setitem(
+        search.sys.modules,
+        "__main__",
+        SimpleNamespace(__file__=str(cli_entrypoint)),
+    )
+    monkeypatch.setattr(search.sys, "argv", [str(cli_entrypoint)])
+    monkeypatch.setattr(search.os, "process_cpu_count", lambda: 100, raising=False)
+    monkeypatch.setattr(search.os, "cpu_count", lambda: 100)
+
+    assert search._search_process_worker_count() == search._RIPGREP_MAX_WORKERS
 
 
 def test_jsonl_content_skips_bad_lines_and_keeps_latest_string_timestamp(tmp_path):
@@ -853,6 +872,64 @@ def test_ripgrep_candidate_stream_uses_bounded_process_workers(
     )
 
     assert result == {str(path): Counter(qcow=3, cloud=3)}
+
+
+def test_ripgrep_reuses_one_process_pool_across_path_batches(
+    tmp_path, monkeypatch,
+):
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    records_by_path = {
+        str(first): ("qcow",),
+        str(second): ("cloud",),
+    }
+
+    class FakeProcess:
+        def __init__(self, path):
+            self.stdout = io.BytesIO(b"".join(
+                os.fsencode(path) + b"\0"
+                + json.dumps({"content": word}).encode("utf-8") + b"\n"
+                for word in records_by_path[str(path)]
+            ))
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("a completed ripgrep process should not be terminated")
+
+    def fake_popen(args, **_kwargs):
+        return FakeProcess(Path(args[-1]))
+
+    batches = ((first,), (second,))
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search, "_ripgrep_path_batches", lambda _paths: iter(batches))
+    monkeypatch.setattr(search, "_RIPGREP_PARALLEL_AFTER_CANDIDATES", 1)
+    monkeypatch.setattr(search, "_RIPGREP_BATCH_RECORD_LIMIT", 1)
+    monkeypatch.setattr(search, "_RIPGREP_MAX_PENDING_PER_WORKER", 1)
+    monkeypatch.setattr(search, "_search_process_worker_count", lambda: 2)
+    original_executor = search.ProcessPoolExecutor
+    executor_creations = []
+
+    def record_executor_creation(**kwargs):
+        executor_creations.append(kwargs["max_workers"])
+        return original_executor(**kwargs)
+
+    monkeypatch.setattr(search, "ProcessPoolExecutor", record_executor_creation)
+
+    result = search._ripgrep_jsonl_counts(
+        (first, second), ("qcow", "cloud"), "exact", client="codex",
+    )
+
+    assert result == {
+        str(first): Counter(qcow=1),
+        str(second): Counter(cloud=1),
+    }
+    assert executor_creations == [2]
 
 
 def test_documents_uses_ripgrep_counts_for_supported_transcripts(tmp_path, monkeypatch):

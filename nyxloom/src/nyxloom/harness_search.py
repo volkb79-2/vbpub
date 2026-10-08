@@ -918,6 +918,14 @@ def _search_process_worker_count() -> int:
     main_file = getattr(main_module, "__file__", None)
     if not main_file or not Path(main_file).is_file():
         return 1
+    main_path = Path(main_file).resolve()
+    module_entrypoint = Path(__file__).with_name("cli_harness.py").resolve()
+    console_entrypoint = (
+        Path(sys.argv[0]).name == "nyxloom-harness"
+        and main_path.is_file()
+    )
+    if main_path != module_entrypoint and not console_entrypoint:
+        return 1
     process_cpu_count = getattr(os, "process_cpu_count", None)
     available = process_cpu_count() if callable(process_cpu_count) else os.cpu_count()
     return min(_RIPGREP_MAX_WORKERS, max(1, available or 1))
@@ -1044,97 +1052,125 @@ def _ripgrep_jsonl_counts(
     candidates_seen = 0
     frequency_cap = _TERM_FREQUENCY_CAP
     parallel_workers = _search_process_worker_count()
-    for batch in _ripgrep_path_batches(paths):
-        _report(
-            progress,
-            f"Searching {client} transcripts with ripgrep ({len(batch):,} files)",
-        )
-        with tempfile.TemporaryFile() as stderr_file:
-            try:
-                process = subprocess.Popen(
-                    [
-                        binary,
-                        "--no-config",
-                        "--no-ignore",
-                        "--hidden",
-                        "--text",
-                        "--null",
-                        "--with-filename",
-                        "--no-heading",
-                        "--no-line-number",
-                        "--regexp",
-                        pattern,
-                        "--",
-                        *(str(path) for path in batch),
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=stderr_file,
-                )
-            except OSError as exc:
-                raise SearchError(
-                    f"could not start ripgrep for {client} session search: {exc}"
-                ) from exc
-            assert process.stdout is not None
-            completed = False
-            return_code = None
-            executor = None
-            pending = set()
-            queued_records: list[tuple[str, bytes]] = []
-            queued_bytes = 0
-
-            try:
-                for raw_path, raw_record in _ripgrep_records(
-                    process.stdout, progress=progress, client=client,
-                ):
-                    path_text = os.fsdecode(raw_path)
-                    candidates_seen += 1
-                    if progress is not None and candidates_seen % 4096 == 0:
-                        _report(
-                            progress,
-                            f"Checking {client} transcripts: {candidates_seen:,} candidate records",
-                            candidates_seen,
-                            None,
-                        )
-                    session_counts = counts.get(path_text, Counter())
-                    active_terms = _active_query_terms(
-                        session_counts, terms, frequency_cap,
+    executor: ProcessPoolExecutor | None = None
+    pending: set[Future] = set()
+    queued_records: list[tuple[str, bytes]] = []
+    queued_bytes = 0
+    completed = False
+    try:
+        for batch in _ripgrep_path_batches(paths):
+            _report(
+                progress,
+                f"Searching {client} transcripts with ripgrep ({len(batch):,} files)",
+            )
+            with tempfile.TemporaryFile() as stderr_file:
+                try:
+                    process = subprocess.Popen(
+                        [
+                            binary,
+                            "--no-config",
+                            "--no-ignore",
+                            "--hidden",
+                            "--text",
+                            "--null",
+                            "--with-filename",
+                            "--no-heading",
+                            "--no-line-number",
+                            "--regexp",
+                            pattern,
+                            "--",
+                            *(str(path) for path in batch),
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=stderr_file,
                     )
-                    if not active_terms:
-                        continue
-                    if (
-                        len(active_terms) != len(terms)
-                        and not _raw_bytes_may_match(
-                            raw_record, active_terms, term_match,
-                        )
+                except OSError as exc:
+                    raise SearchError(
+                        f"could not start ripgrep for {client} session search: {exc}"
+                    ) from exc
+                assert process.stdout is not None
+                process_completed = False
+                try:
+                    for raw_path, raw_record in _ripgrep_records(
+                        process.stdout, progress=progress, client=client,
                     ):
-                        continue
-                    if (
-                        executor is None
-                        and (
-                            parallel_workers <= 1
-                            or candidates_seen < _RIPGREP_PARALLEL_AFTER_CANDIDATES
+                        path_text = os.fsdecode(raw_path)
+                        candidates_seen += 1
+                        if progress is not None and candidates_seen % 4096 == 0:
+                            _report(
+                                progress,
+                                f"Checking {client} transcripts: {candidates_seen:,} candidate records",
+                                candidates_seen,
+                                None,
+                            )
+                        session_counts = counts.get(path_text, Counter())
+                        active_terms = _active_query_terms(
+                            session_counts, terms, frequency_cap,
                         )
-                    ):
-                        _merge_capped_count_increments(
-                            counts,
-                            _count_ripgrep_batch(
-                                ((path_text, raw_record),),
-                                {path_text: Counter(counts.get(path_text, Counter()))},
-                                terms,
-                                term_match,
+                        if not active_terms:
+                            continue
+                        if (
+                            len(active_terms) != len(terms)
+                            and not _raw_bytes_may_match(
+                                raw_record, active_terms, term_match,
+                            )
+                        ):
+                            continue
+                        if (
+                            executor is None
+                            and (
+                                parallel_workers <= 1
+                                or candidates_seen < _RIPGREP_PARALLEL_AFTER_CANDIDATES
+                            )
+                        ):
+                            _merge_capped_count_increments(
+                                counts,
+                                _count_ripgrep_batch(
+                                    ((path_text, raw_record),),
+                                    {path_text: Counter(counts.get(path_text, Counter()))},
+                                    terms,
+                                    term_match,
+                                    frequency_cap,
+                                ),
                                 frequency_cap,
-                            ),
-                            frequency_cap,
-                        )
-                        continue
-                    if executor is None:
-                        executor = ProcessPoolExecutor(max_workers=parallel_workers)
-                        _report(
-                            progress,
-                            f"Counting {client} candidates with {parallel_workers} workers",
-                        )
-                    if len(raw_record) > _RIPGREP_WORKER_RECORD_BYTE_LIMIT:
-                        if queued_records:
+                            )
+                            continue
+                        if executor is None:
+                            executor = ProcessPoolExecutor(max_workers=parallel_workers)
+                            _report(
+                                progress,
+                                f"Counting {client} candidates with {parallel_workers} workers",
+                            )
+                        record_size = len(raw_path) + len(raw_record)
+                        if record_size > _RIPGREP_WORKER_RECORD_BYTE_LIMIT:
+                            if queued_records:
+                                _submit_ripgrep_batch(
+                                    executor,
+                                    pending,
+                                    queued_records,
+                                    counts,
+                                    terms,
+                                    term_match,
+                                    frequency_cap,
+                                    parallel_workers,
+                                )
+                                queued_bytes = 0
+                            _merge_capped_count_increments(
+                                counts,
+                                _count_ripgrep_batch(
+                                    ((path_text, raw_record),),
+                                    {path_text: Counter(counts.get(path_text, Counter()))},
+                                    terms,
+                                    term_match,
+                                    frequency_cap,
+                                ),
+                                frequency_cap,
+                            )
+                            continue
+                        if queued_records and (
+                            len(queued_records) >= _RIPGREP_BATCH_RECORD_LIMIT
+                            or queued_bytes + record_size > _RIPGREP_BATCH_BYTE_LIMIT
+                        ):
                             _submit_ripgrep_batch(
                                 executor,
                                 pending,
@@ -1146,65 +1182,55 @@ def _ripgrep_jsonl_counts(
                                 parallel_workers,
                             )
                             queued_bytes = 0
-                        _merge_capped_count_increments(
-                            counts,
-                            _count_ripgrep_batch(
-                                ((path_text, raw_record),),
-                                {path_text: Counter(counts.get(path_text, Counter()))},
+                        queued_records.append((path_text, raw_record))
+                        queued_bytes += record_size
+                        if (
+                            len(queued_records) >= _RIPGREP_BATCH_RECORD_LIMIT
+                            or queued_bytes >= _RIPGREP_BATCH_BYTE_LIMIT
+                        ):
+                            _submit_ripgrep_batch(
+                                executor,
+                                pending,
+                                queued_records,
+                                counts,
                                 terms,
                                 term_match,
                                 frequency_cap,
-                            ),
-                            frequency_cap,
-                        )
-                        continue
-                    queued_records.append((path_text, raw_record))
-                    queued_bytes += len(raw_path) + len(raw_record)
-                    if (
-                        len(queued_records) >= _RIPGREP_BATCH_RECORD_LIMIT
-                        or queued_bytes >= _RIPGREP_BATCH_BYTE_LIMIT
-                    ):
-                        _submit_ripgrep_batch(
-                            executor,
-                            pending,
-                            queued_records,
-                            counts,
-                            terms,
-                            term_match,
-                            frequency_cap,
-                            parallel_workers,
-                        )
-                        queued_bytes = 0
-                if executor is not None:
-                    if queued_records:
-                        _submit_ripgrep_batch(
-                            executor,
-                            pending,
-                            queued_records,
-                            counts,
-                            terms,
-                            term_match,
-                            frequency_cap,
-                            parallel_workers,
-                        )
-                    while pending:
-                        _collect_ripgrep_batch(pending, counts, frequency_cap)
-                completed = True
-            finally:
-                process.stdout.close()
-                if not completed and process.poll() is None:
-                    process.terminate()
-                return_code = process.wait()
-                if executor is not None:
-                    executor.shutdown(wait=True, cancel_futures=not completed)
-            if return_code not in (0, 1):
-                stderr_file.seek(0)
-                details = stderr_file.read().decode("utf-8", errors="replace").strip()
-                detail_text = f": {details}" if details else ""
-                raise SearchError(
-                    f"ripgrep could not search {client} session transcripts "
-                    f"(exit {return_code}){detail_text}"
+                                parallel_workers,
+                            )
+                            queued_bytes = 0
+                    process_completed = True
+                finally:
+                    process.stdout.close()
+                    if not process_completed and process.poll() is None:
+                        process.terminate()
+                    return_code = process.wait()
+                if return_code not in (0, 1):
+                    stderr_file.seek(0)
+                    details = stderr_file.read().decode("utf-8", errors="replace").strip()
+                    detail_text = f": {details}" if details else ""
+                    raise SearchError(
+                        f"ripgrep could not search {client} session transcripts "
+                        f"(exit {return_code}){detail_text}"
+                    )
+        if executor is not None:
+            if queued_records:
+                _submit_ripgrep_batch(
+                    executor,
+                    pending,
+                    queued_records,
+                    counts,
+                    terms,
+                    term_match,
+                    frequency_cap,
+                    parallel_workers,
                 )
+            while pending:
+                _collect_ripgrep_batch(pending, counts, frequency_cap)
+        completed = True
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=not completed)
     return counts
 
 

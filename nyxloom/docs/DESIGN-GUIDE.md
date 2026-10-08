@@ -241,9 +241,11 @@ requested words, and uses ripgrep's native parallel scanner, when installed,
 to stream only candidate JSONL records into Python. The Python side checks
 each record against the normal text-field and token rules; Unicode case-fold
 expansions and JSON-escaped query letters are included in the candidate
-filter. After 512 candidate records, a bounded pool of up to four processes
-handles JSON decoding and text counting in batches; shorter searches avoid
-worker startup. Without ripgrep, fixed-size reads and a raw-line filter provide
+filter. After 512 candidate records, the guarded `nyxloom-harness` entrypoint
+uses one bounded pool of up to four processes for JSON decoding and text
+counting in batches; shorter searches avoid worker startup. Embedded calls from
+other Python entrypoints stay inline so worker startup cannot re-import the
+caller's module. Without ripgrep, fixed-size reads and a raw-line filter provide
 the same search semantics while keeping memory bounded. OpenCode rows use a
 raw candidate check before JSON decoding. Exact activity timestamps are read
 from the end only for transcripts that match. Progress uses cli-extended's
