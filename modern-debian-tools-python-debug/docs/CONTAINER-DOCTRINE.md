@@ -93,12 +93,14 @@ devcontainer *consumes*; it does not *contain*.
 The same layering applies one level further out: **cgroup/slice placement is a host and launcher
 concern, never image content.** `--cgroup-parent` (and its compose/orchestrator equivalents) is
 fixed at container *create* time by whatever creates the container — this image has no way to
-express or enforce it from inside. mdt's devcontainer template ships a `--cgroup-parent` runArg as a
-convenience for hosts that opt into systemd-slice governance, with safe no-op behavior everywhere
-else (see [DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
-(cgroups/slices)" for the full mechanism — create-time-only placement, the host-side slice
-prerequisite, graceful degradation, and how to introspect effective limits from inside the
-container).
+express or enforce it from inside. MDT's devcontainer template ships a
+`--cgroup-parent` runArg and a host-side preflight that verifies the named
+systemd slices before creating the container. This prevents systemd's silent
+fallback to a transient unlimited slice (see
+[DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md) § "Host resource
+governance (cgroups/slices)" for create-time-only placement, the host-side
+slice requirement, the preflight, and how to inspect effective limits inside
+the container).
 
 ### VM userland is a cockpit tool, not a service boundary
 

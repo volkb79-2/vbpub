@@ -301,3 +301,199 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   failure path. The focused oracle passed (**1 passed in 0.84s**); the full
   module passed (**53 passed in 7.88s**); Ruff `E4,E7,E9,F` and
   `git diff --check` passed. A fresh exact-tip review remains pending.
+
+## 2026-10-08 — resume and B105 admission/cleanup repairs
+
+- Resumed from the provisionally integrated Assay tip `6086d4c9`. The B114
+  feature commits are already ancestors of `main`; this worktree contains the
+  remaining uncommitted acceptance repairs. CIU inspection confirms the
+  worktree is registered, attached to `assay-b114-cold-witness`, and based on
+  the recorded fork point. Its ignored `.assay/` state was preserved.
+- Closed the current B105 launcher review items: derive the Docker-host bind
+  source from `findmnt`, query the host systemd unit before placing a probe in
+  the requested gates slice, reject runtime-generated units, fail on missing
+  or unreadable cgroup controls, and verify finite point-in-time RAM headroom
+  before launching the capped qualification container. The wrapper holds a
+  Git-common-directory lock across B105 callers, treats the Docker gate scan
+  as a non-atomic preflight requiring serial coordination, and force-removes
+  only a container whose ID, name, and ownership token reconcile.
+- Added wrapper/cgroup regression cases for failed Docker probes and reads,
+  uninstalled/runtime-generated slices, RAM admission, shared-host refusal,
+  cross-`/tmp` B105 serialization, and forced cleanup after a failed stop.
+- B087 coordination: its second lane remains held while B114 uses the shared
+  registered-gate slot; its runner and support containers were left untouched.
+- The plan's actual bounded pilot sequence needs B118 tooling plus B108 phase
+  1 campaign analysis before the pilot run; B119/P9 remains downstream of
+  B108, and P10b/P11 remain conditional as their briefs specify.
+- `bash -n` passed for the three changed shell entry points and
+  `git diff --check` passed. No test or registered gate has run on this
+  uncommitted repair set; the earlier receipts are not evidence for its tip.
+
+## 2026-10-08 — exact-tip review repairs and B135
+
+- The Sol xhigh read-only review of `a50d1e1b` found a linked-worktree mount
+  failure, a test diagnostic mismatch, unverified bootstrap placement, the
+  non-atomic cross-project gate scan, and a missing changelog entry.
+- The B105 launcher now mounts the whole host workspace root at both its
+  physical path and `/workspaces/vbpub`; the linked worktree and its shared Git
+  directory remain addressable inside the child. Its tests assert this mount
+  pair. The cgroup helper checks the running container's inspected
+  `CgroupParent` against `CGROUP_PARENT_DEV_INTERACTIVE`, then queries the host
+  system bus for both that parent and the gates slice, checking unit IDs,
+  installed fragments and runtime-generated paths before using the gates
+  slice. The test diagnostic now matches the refusal wording.
+- The one-time Docker scan still cannot provide an atomic cross-project lease.
+  This wave relies on the estate's serial registered-gate policy: B087's lane
+  remains held, and no other registered gate may start during a B105 run. The
+  docs and wrapper keep this limitation explicit; the coordinator must verify
+  the gate slot immediately before and after each lane.
+- Folded B135 into the cold-witness admission fix. pytest 9's `pytest.toml` and
+  `.pytest.toml` are now inspected ahead of the older config formats; native
+  `[tool.pytest]` `pyproject.toml` addopts are checked too. README,
+  DESIGN-GUIDE, CONSUMERS and CHANGES describe when xdist config disables the
+  cold-witness path.
+- Static `bash -n` and `git diff --check` pass on this repair set. No tests or
+  registered gates have run on it yet. The next steps are the exact-tip Sol
+  xhigh review, serial provisional merge, then fresh registered
+  `tester-unified` and `self-qualification-preflight` receipts.
+
+## Sol xhigh repair follow-up — 2026-10-08
+
+- The exact-tip Sol xhigh review of `0720efc56ce69e55668b5805f3e028c2b7feebf1`
+  found three P2s: hostname lookup could inspect a different container with the
+  same hostname; the first host-manager probe could launch before proving its
+  interactive slice was installed; and pytest admission missed lexical
+  ancestors of symlinked test paths. The review recorded the same HEAD and
+  status before and after and ran no tests or gates.
+- B105 now compares the current process's mount and PID namespace identities
+  with the `docker exec` target before trusting its inspected parent. A live
+  acceptance probe returned identical namespace IDs for the cockpit.
+- The MDT template's host-side `initializeCommand` now derives its three tier
+  names from `containerEnv`, requires the interactive name to match the active
+  `runArgs`, and checks exact `Id`, `LoadState=loaded`, and an existing
+  non-runtime `FragmentPath` before Docker creates the cockpit. Missing,
+  malformed, unqueryable, and timed-out checks refuse startup. README,
+  DESIGN-GUIDE, CONSUMERS, lifecycle, template, and host-setup docs remove the
+  prior safe-no-op claim; a docs test parses the consumer JSON example and pins
+  its cross-links.
+- Cold-witness pytest config admission now checks lexical and resolved path
+  ancestors, absolute paths, unresolved path selectors, and `--pyargs`. Tests
+  cover child config paths and a symlink selector with xdist configured on its
+  lexical parent.
+- Final focused local checks: Assay cgroup/self-qualification/mutation-witness
+  tests **149 passed**; MDT devcontainer/template tests **33 passed**;
+  `git diff --check`, shell syntax, and Python compilation passed. No registered
+  gate or R2 campaign has run. The B087 agent reports its registered gate slot
+  idle and is holding it until the B114 run completes.
+
+## 2026-10-08 — follow-up review repairs
+
+- The next exact-diff review found that MDT's line scan could certify a
+  `--cgroup-parent` string outside the effective JSONC `runArgs`, and that
+  pytest admission could treat option values as path selectors while allowing
+  a missing bare selector. MDT now parses JSONC structurally, preserves quoted
+  strings/comments, rejects duplicate keys, and matches the actual runArgs to
+  the interactive environment value. Assay separates recognized pytest
+  option values from selectors, rejects unknown option arity and root
+  selection overrides, and refuses every unresolved positional selector.
+- Added regressions for a misleading nested cgroup-parent decoy, duplicate
+  JSON keys, two-token runArgs, `-k` and `--ignore` values, unresolved bare and
+  post-`--` selectors, unknown option arity, xdist transport, and root overrides.
+  Folded B135 into B114 with its registered-gate completion condition.
+- Current focused checks: Assay cgroup/self-qualification/mutation-witness
+  tests **151 passed**; MDT template tests **35 passed**; Ruff
+  `E4,E7,E9,F`, Python compilation, and `git diff --check` passed. The
+  installed pytest long-option list was compared with Assay's recognized
+  option grammar; no installed option remains unclassified.
+- B087 confirmed no registered gate or R2/R3 campaign is running and is holding
+  its slot. No registered gate or R2 campaign has run on this repair diff; the
+  next step is a fresh exact-tip Sol xhigh review, followed by the serial
+  registered gates.
+
+## 2026-10-08 — Sol xhigh follow-up repairs
+
+- The Sol xhigh review of `03f3c592` found: MDT could count a
+  `--cgroup-parent` token consumed as an earlier Docker option's value; Assay
+  could miss pytest's active config when `cwd` was a symlink and argv had no
+  path selector; and the declared gate set did not exercise MDT's initializer
+  acceptance item.
+- MDT now parses Docker `runArgs` option/value boundaries (including short
+  forms), records only effective cgroup-parent options, and refuses unknown or
+  positional syntax it cannot classify. Added decoy-label regressions for
+  `--label` and `-l`, a positive case where a decoy label value precedes the
+  actual cgroup-parent, and a refusal case for an unknown Docker option. The
+  parser's long-option set was compared with this host's `docker run --help`;
+  every listed option is classified.
+- Assay config admission now searches both lexical and resolved cwd paths,
+  including the no-selector case. Added a symlinked cwd regression with a
+  resolved `pytest.toml` that enables xdist. README, design, and consumer docs
+  now state this behavior. B114 acceptance now requires the MDT `smoke` lane
+  alongside Assay `tester-unified` and `self-qualification-preflight`.
+- Verification: Assay mutation-witness plus docs tests **168 passed**; MDT
+  template tests **39 passed**; Ruff `E4,E7,E9,F`, changed-file Python
+  compilation, and `git diff --check` passed. No registered gate or R2
+  campaign was started. A fresh exact-tip Sol xhigh review is required before
+  registered acceptance gates.
+
+## 2026-10-08 — second Sol xhigh follow-up repairs
+
+- The exact-tip Sol xhigh review of `ea9de716` confirmed the acceptance gates
+  still had to run and found two additional defects: the short-option scanner
+  missed bundled xdist `-qn2`; and the host-unit probe accepted complete
+  property lines without the closing frame marker, while trusting attached
+  `docker run` transport status.
+- Assay now parses short-option bundles for `-n`/`-f`, rejects bundled `-o`
+  overrides, and applies those checks to pytest config `addopts`. The
+  symlinked-cwd regression now covers both a command with no path selector and
+  one with `tests` selected, against `pytest.toml` `addopts = ["-qn2"]`.
+- The systemd query now starts a uniquely named detached container, records
+  its ID, reads its own exit status through `docker wait`, captures output via
+  `docker logs`, removes the container, and requires exactly two ordered,
+  complete frames before accepting any unit properties. Added regressions for
+  a nonzero container exit delivered over a successful wait transport and for
+  truncated frames with container exit 0.
+- Verification: Assay mutation-witness plus docs tests **174 passed**;
+  `gate/tests/test_cgroup_parent.py` **21 passed**; Ruff `E4,E7,E9,F`, Python
+  compilation, `bash -n`, `shellcheck -e SC2016`, and `git diff --check`
+  passed. Plain ShellCheck reports SC2016 for intentionally single-quoted
+  in-container scripts (one pre-existing and one added). No registered gate
+  or R2 campaign ran on this diff. The next exact-tip Sol xhigh review must be
+  followed by Assay `tester-unified`, Assay
+  `self-qualification-preflight`, and MDT `smoke` on the final merged commit.
+- The unrelated RG-89 `tester-unified` gate ended FAIL at commit
+  `1266057b31dc04300a513d100980cbade8929897` after 559.796 seconds: its R0
+  reported three failures in that worktree's `test_cgroup_parent.py` and
+  recorded exit 1. Its run-gate history is outside this branch and is not
+  B114 evidence. The registered-gate slot is now idle. B087 may run its
+  non-registered uncovered-line canary; its registered gate and merge remain
+  held until B114 acceptance.
+
+## 2026-10-08 — third Sol xhigh follow-up repairs
+
+- The exact-diff review of `6086d4c9..e97156e3` found two P2s: a failed Docker
+  probe launch could make the EXIT trap force-remove a pre-existing container
+  with the generated name, and `PYTEST_ADDOPTS="-o addopts=-n2"` could enable
+  xdist while sequential replay admission still accepted the command.
+- The systemd probe now carries a per-invocation ownership label. Before any
+  removal, cleanup reconciles its Docker ID, exact generated name, and owner
+  label, then removes by ID. Ambiguous or foreign containers are left alone.
+  Fake-Docker regressions cover a name collision and a container created before
+  the launch command reports failure.
+- Sequential replay now declines any nonempty `PYTEST_ADDOPTS`; the cold-witness
+  refusal still reports the environment-specific reason. README,
+  DESIGN-GUIDE, and CONSUMERS describe the restriction. Added replay tests for
+  direct `-n`, `-o addopts=-n2`, and `--override-ini=addopts=-n2` environment
+  values.
+- Focused results: mutation-witness and B106 reuse tests **177 passed**;
+  B114 coverage-verifier tests **40 passed**; cgroup-parent tests **23 passed**;
+  docs examples/vocabulary **55 passed**.
+  Ruff `E4,E7,E9,F`, `bash -n`, `shellcheck -e SC2016`, and `git diff --check`
+  passed. No registered gate or R2 campaign ran on this repair diff. The next
+  step is provisional merge, followed by all three registered B114 acceptance
+  lanes on the merged commit.
+
+- The fresh Sol xhigh review of the full B114 diff through `976b5c41` passed
+  with no actionable findings. HEAD and clean worktree status matched before
+  and after; the review ran no tests, gates, or containers. A full-base
+  `git diff --check` then identified a trailing blank line in
+  `test_verify_b114_coverage.py`, removed as a whitespace-only follow-up.

@@ -73,6 +73,28 @@ It sets `shutdownAction: "none"` so closing the attached Dev Containers session 
 container available. Adoption details are in the
 [consumer guide](CONSUMERS.md#codex-profile-state-and-container-lifetime).
 
+## Host cgroup preflight
+
+Docker accepts an unknown `--cgroup-parent` by creating a transient, unlimited
+systemd slice. A check performed from a container launched under that parent is
+too late: the check has already caused the unsafe placement it is supposed to
+prevent. The vendored `initializeCommand` runs on the Docker host before the
+devcontainer starts, so it verifies `dev-interactive.slice`,
+`dev-background.slice`, and `dev-gates.slice` are each loaded from an installed
+unit file. Missing, transient, malformed, or unqueryable units stop startup.
+
+This check is part of the host setup contract, not a fallback policy. The host
+installer creates and verifies the unit files; the bootstrap confirms the
+running systemd manager loaded them before `runArgs` can use the interactive
+slice. Gate launchers separately verify the gates slice before launching a lane.
+The initializer parses Docker's option/value boundaries in `runArgs` before
+matching the effective `--cgroup-parent` with the interactive tier. If an
+earlier value-taking option consumes a token that looks like a cgroup parent,
+or an option cannot be classified, startup refuses instead of accepting a
+decoy.
+See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
+install and rebuild steps.
+
 ## BuildKit guard policy
 
 The guard defaults to `report-only` because a reserved Buildx worker may be

@@ -164,6 +164,10 @@ def test_tree_entry_kind_refuses_a_gitlink_that_is_neither_blob_nor_tree(
         ),
         ("malformed metadata", b"100644 blob\tsrc/api.py\x00"),
         ("an unsupported object type", b"160000 commit " + b"a" * 40 + b"\tsrc/api.py\x00"),
+        (
+            "an unsupported mode/type pair",
+            b"100600 blob " + b"a" * 40 + b"\tsrc/api.py\x00",
+        ),
     ],
 )
 def test_tree_entry_kind_rejects_every_malformed_raw_record(

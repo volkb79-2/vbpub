@@ -213,8 +213,37 @@ need host namespaces; it does not preserve devcontainer isolation.
 
 ## Consumer devcontainer
 
-Copy the current MDT template and retain these mandatory values in
-`containerEnv` and `mounts`:
+Copy both `devcontainer.json` and `initialize_container_environment.py` from the
+current MDT template. Keep the host-side `initializeCommand` and interactive
+`runArgs` entry together:
+
+```jsonc
+{
+  "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
+  "runArgs": ["--cgroup-parent=dev-interactive.slice"]
+}
+```
+
+The initializer runs on the Docker host before container creation. It refuses
+startup unless `dev-interactive.slice`, `dev-background.slice`, and
+`dev-gates.slice` are loaded from installed unit files. Install the host policy
+and verify it before rebuilding:
+
+```bash
+sudo ./host-setup/install.sh --wizard
+sudo mdt-host-check.sh
+```
+
+Keep `--cgroup-parent` as an effective Docker option in `runArgs`. The
+initializer follows Docker's option/value boundaries and refuses a token that
+is consumed as another option's value or whose surrounding option syntax it
+cannot classify.
+
+Do not remove the initializer while keeping the `--cgroup-parent` entry;
+otherwise systemd can silently create an unlimited transient slice. The full
+template also supplies these mandatory values in `containerEnv` and `mounts`.
+See the [preflight design](DESIGN-GUIDE.md#host-cgroup-preflight) for why the
+check runs before container creation.
 
 ```jsonc
 {

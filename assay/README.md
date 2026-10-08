@@ -189,8 +189,9 @@ assay exists to close that gap mechanically, not by policy:
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
-  runs the candidate's full suite. A v12, v13, or v14 verdict is a cold start
-  under v15, and `assay verify` rejects all three. See the
+  runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
+  replay because it can override configured addopts. A v12, v13, or v14 verdict
+  is a cold start under v15, and `assay verify` rejects all three. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -1099,7 +1100,33 @@ you're changing assay itself:
   (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
   separately invoked `./run-gate.py self-qualification` requires that receipt for
   its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
-  R0-R3 qualification in `tester-unified`, writes its verdict, progress, and
+  R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
+  bare-host `tools/self-qualification-container.sh` wrapper because the
+  generic run-gate tester container has a private cgroup namespace. The
+  wrapper derives the Docker host workspace root with `findmnt`, confirms the
+  kernel hostname identifies the inspected cockpit container, and checks its
+  mount and PID namespaces through `docker exec` before trusting its `CgroupParent`.
+  The MDT host-side initialize command verifies the interactive, background,
+  and gates slices before creating the cockpit. A tightly capped bootstrap
+  probe queries the host system bus from this already-used parent,
+  then verifies both units before any container uses the gates slice and checks
+  for 2 GiB of point-in-time RAM headroom. It attaches the cgroup probe and
+  detached `tester-unified` runner to the gates slice, sets explicit CPU/memory
+  bounds, mounts the whole
+  workspace root at both its physical host path and `/workspaces/vbpub` so
+  linked-worktree Git paths resolve inside the runner, disables networking,
+  and verifies the returned container ID, ownership, launch settings, and
+  `docker wait` status. The three registered
+  Assay lanes share a run-gate lock; a Git-common-directory lock also
+  serializes B105 callers across container `/tmp` namespaces. The wrapper
+  refuses to launch beside an already-running registered gate, but that scan
+  does not atomically exclude a different project's gate started afterward.
+  The gate coordinator must keep all other registered gates serial for the
+  full B105 run; a concurrent cross-project gate invalidates its resource
+  evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is unsupported for B105 because it
+  requires that exclusive window; it applies only to the ordinary
+  `tester-unified` gate. Infrastructure refusals are recorded as `ERROR`, not
+  as an Assay test failure. The inner lane writes its verdict, progress, and
   raw baseline coverage arcs in
   `.assay/coverage-self-qualification-preflight-snapshots/`, keyed by source
   commit and tree under a separately reserved directory for each attempt, and verifies
@@ -1121,10 +1148,14 @@ you're changing assay itself:
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  A standalone R0/R1 preflight has a 75-minute run-gate budget and a 90-minute
+  Nyxloom outer timeout, leaving time for startup and evidence collection.
   The full-source attempt is currently unqualified: the latest run stopped at
   15/3,760 candidates; an earlier attempt stopped after 38 completions. The
   full R0–R3 Assay lane has a 5-hour per-invocation cap; reaching it is
-  incomplete. The in-container gate has a 7h30m timeout and Nyxloom has an
+  incomplete. B114 persists one campaign deadline across preflight, resume,
+  and retry, so starting a new invocation cannot reset the campaign clock.
+  The in-container gate has a 7h30m timeout and Nyxloom has an
   8-hour outer watchdog. Do not treat partial or timed-out state as a pass;
   B114's cold-witness and campaign-deadline support is now available, but the
   B118 bounded pilot and go/no-go decision must happen before another full
@@ -1143,8 +1174,13 @@ you're changing assay itself:
   test may be followed by other started tests in that full retry. The coverage
   and no-coverage baselines must collect the same ordered node IDs. That
   collection equality crosses command variants; hook and runtime proofs are
-  command-local. A cold
-  candidate matches the no-coverage R2 baseline, and a declared fallback
+  command-local. Cold-witness admission checks pytest configuration in both
+  the command directory and directories named by test-path arguments; it
+  separates recognized option values such as `-k` expressions from test
+  selectors, and refuses unresolved selectors, unknown option arity,
+  root-selection overrides, or package-based config selection it cannot
+  establish.
+  A cold candidate matches the no-coverage R2 baseline, and a declared fallback
   matches the coverage baseline. The two baseline hook fingerprints
   intentionally differ because pytest-cov is loaded only by the declared
   command. Each baseline must finish its complete suite with both the pytest
@@ -1169,7 +1205,12 @@ you're changing assay itself:
   in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
   [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does
   not complete Assay's separate B105 whole-source qualification; the bounded
-  pilot remains a prerequisite to another full campaign.
+  pilot remains a prerequisite to another full campaign. Witness admission
+  checks pytest configuration, including pytest 9's `pytest.toml`,
+  `.pytest.toml` and native `[tool.pytest]` table. It checks both lexical and
+  resolved command directories so symlinks cannot hide active config when the
+  command has no test-path selector. Parallel xdist `addopts`
+  make cold witness unavailable, so the full-suite path remains authoritative.
 
 ## Further reading
 

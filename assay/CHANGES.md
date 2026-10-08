@@ -23,6 +23,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Bound mutation worker submissions to the configured job count while keeping
   candidate events ordered.
 
+### Changed
+- B105's bare-host wrapper mounts the full workspace root at its physical host
+  path and `/workspaces/vbpub`, preserving linked-worktree Git paths. It checks
+  both the interactive probe parent and gates slice through the host system
+  bus before using the gates slice; B105 still requires Docker access and an
+  exclusive registered-gate window.
+
 ### Fixed
 - Leave a candidate unclassified and out of resume state when lane or campaign
   termination interrupts its post-command snapshot integrity check (B117).
@@ -48,6 +55,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   plan, and read reports, plans, tester receipts, deadlines and manifests as
   bounded no-follow regular files (64 MiB, 16 MiB and 4 KiB for report, plan
   and receipt).
+- Read pytest 9's `pytest.toml` and `.pytest.toml` before the other recognized
+  config formats when checking whether cold-witness `addopts` run sequentially;
+  also inspect the native `[tool.pytest]` table in `pyproject.toml` (B135).
+  Separate recognized pytest option values from test selectors; unresolved
+  bare paths, unknown option arity, and root-selection overrides disable cold
+  witness instead of producing a guessed admission result.
+- Include test-path directories in cold-witness pytest config admission, and
+  refuse unresolved paths or `--pyargs` when the selected configuration cannot
+  be established.
+- Bind the B105 cockpit lookup to its mount and PID namespace identities,
+  preventing a matching hostname from naming another container; document the
+  MDT host bootstrap's pre-start cgroup-slice check and persisted campaign clock.
 - Capture private cold-witness receipts over a bounded framed pipe, rejecting
   extra or trailing bytes so post-session hooks cannot rewrite a witness;
   safely read the ordered manifest and recheck the campaign deadline at the

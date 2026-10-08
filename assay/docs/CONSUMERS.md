@@ -63,6 +63,33 @@ invoke the separate, more expensive full-source R0-R3 campaign when that
 qualification is required. It runs in the dedicated `tester-unified`
 environment, uses the exact selected worktree source, resumes native R2 from
 gitignored state, and verifies its verdict before it can report success.
+Use the registered commands from the same clean worktree:
+`./run-gate.py tester-unified`, followed by
+`./run-gate.py self-qualification-preflight` or
+`./run-gate.py self-qualification`. The B105 lanes execute a bare-host Assay
+wrapper that launches the inner lane in a detached `tester-unified` container
+with the host gates cgroup namespace visible, explicit CPU/memory bounds,
+network disabled, and the whole workspace root mounted at both its physical
+host path and `/workspaces/vbpub`. This keeps a linked worktree's nested path
+and shared Git directory available to the container. The wrapper derives that
+root from `findmnt`, checks both the explicitly configured interactive probe
+parent and the gates slice through a read-only system-bus query before using
+the gates slice, and verifies at least 2 GiB of point-in-time RAM headroom. It
+first reads the kernel hostname, confirms Docker reports the cockpit's full
+container ID, hostname, running state and actual `CgroupParent`, then compares
+mount and PID namespace identities through `docker exec` so another container
+with a matching hostname cannot stand in for the cockpit. The MDT template's
+`initializeCommand` verifies the interactive, background, and gates units from
+the host before Docker creates the cockpit. Since the cockpit has no host bus,
+the later host-manager query is a tightly capped bootstrap container under that
+already-verified parent. The gates slice is not used until both units are
+confirmed installed. It also verifies the container
+configuration; the inner gate checks that its commit and tree equal the
+wrapper's recorded source. Do not run `self-qualification-gate.sh` directly or
+substitute a generic private-cgroup tester container. The invoking environment
+must expose Docker, `$CGROUP_PARENT_DEV_GATES`, and the trusted
+`$CGROUP_PARENT_DEV_INTERACTIVE` probe tier. If another registered gate is
+active, the wrapper refuses and the lane should be retried after it ends.
 The pytest command resolves `src/` inside each isolated snapshot (through
 pyproject's `pythonpath = ["src", "analysis/src"]`, with no `--override-ini`) so R1
 coverage and R2 mutations apply to the snapshot being judged. It collects the judge
@@ -76,9 +103,18 @@ does not need one). The receipt lives in that worktree's ignored `.assay/` and n
 its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
 run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
-when another `run-gate-*` container is running; exit 3 always means rerun, and the
-receipt is left as it was. On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
-runs alongside other projects' `run-gate-*` containers (printing
+when another `run-gate-*` container is running. Run-gate maps this infrastructure
+status to `ERROR`, not to an Assay test failure; retry after the host is clear.
+The three registered Assay lanes share one run-gate lock, and a separate lock
+in the Git common directory serializes B105 callers across container `/tmp`
+namespaces. The wrapper's one-time scan is not an atomic lease against another
+project starting a gate afterward. The coordinator must keep all other
+registered gates serial until B105 finishes; a concurrent cross-project gate
+invalidates its resource evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted
+only by the ordinary `tester-unified` lane; B105 refuses it because B105
+requires an exclusive host window. The receipt is left as it was on refusal.
+On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1`
+runs the ordinary gate alongside other projects' `run-gate-*` containers (printing
 `ASSAY_GATE_SHARED_HOST=<names>`) and still refuses any other `run-gate-assay-*` one; the
 SQL phase starts a separate `tester-unified` container with `--cgroupns=host`
 and mounts the Docker socket only there, so its real Assay witness can observe
@@ -98,9 +134,9 @@ attempt preserves it for recovery. The runner uses Docker `--mount` for reposito
 binds, so a missing daemon-side source fails at launch rather than creating a
 phantom directory.
 The full R0–R3 Assay invocation has a 5-hour failure-only budget, following
-the separate 60-minute R0/R1 preflight. This interim budget resets on a new
-invocation, so do not use resume/retry to bypass the overall ceiling. B114
-persists one campaign deadline across preflight, resume and retry. The 7h30m
+the separate 60-minute R0/R1 preflight. The per-invocation cap can apply again
+on retry, but B114 persists one campaign deadline across preflight, resume and
+retry, so a new invocation cannot reset the campaign clock. The 7h30m
 timeout starts only after run-gate/container startup and covers the in-container
 B105 driver command; it stops before outer evidence collection. Nyxloom's
 8-hour watchdog is a separate outer failsafe, not the campaign-wide deadline.
@@ -113,6 +149,11 @@ before another full attempt; the target is 6 hours and the hard ceiling is 8
 hours, with no increase to the approved RAM envelope. Until that work and a
 verifier-accepted full report exists, do not interpret an invocation or a
 resumed partial report as qualification.
+
+When preparing coverage outside the full campaign, the registered standalone
+`self-qualification-preflight` lane has a 75-minute run-gate budget and a
+90-minute Nyxloom timeout. The Assay lane itself remains capped at 60 minutes;
+the extra time covers admission, startup, and evidence collection.
 
 ### Cold-witness R2 (B114)
 
@@ -156,6 +197,19 @@ the path is the root `tests/conftest.py` and
 exception also applies to consumer projects. The hook must preserve pytest's
 session exit status; if it changes that status, the receipt cannot prove a kill
 or survivor. Any other unreviewed hook makes the proof unavailable.
+
+Before injecting the witness plugin, Assay checks `addopts` in recognized
+pytest config files from both the lexical and resolved command directories and
+their ancestors, plus directories named by test-path arguments and their
+resolved paths. This includes pytest 9's
+higher-precedence `pytest.toml` and `.pytest.toml`, `[tool.pytest]` in
+`pyproject.toml`, and the earlier INI formats. An xdist setting such as
+`-n auto`, malformed config, an unresolved path selector, or `--pyargs`
+disables cold witness for that lane. Assay separates recognized option values
+such as `-k` expressions and `-p` plugin names from test paths. Unknown option
+arity, `--rootdir`, `--confcutdir`, or an unresolved bare selector also disable
+cold witness; the declared full-suite path remains available. Plan the lane
+after changing pytest config so the capability result reflects the current tree.
 
 A `witness-cold` kill means one test-call failure was verified and the ordered
 manifest confirms the failing node was reached. Tests after that call are
@@ -3198,9 +3252,10 @@ survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
 that candidate. A v12, v13, or v14 verdict is a cold start under v15: `assay plan`
 marks its evidence unproven and `assay run` runs every candidate fully after
-the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist, custom test loops,
-or uncertain pytest hooks also use full runs. `--reuse-from` cannot be combined
-with `--shard`, because the feature returns a complete unsharded campaign.
+the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist,
+nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
+full runs. `--reuse-from` cannot be combined with `--shard`, because the
+feature returns a complete unsharded campaign.
 The [B106 design](DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
 explains the receipt fields and fallback rule.
 

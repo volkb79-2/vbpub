@@ -310,17 +310,13 @@ def _require_mount_id(fd: int, expected_mount_id: int, name: str) -> None:
         )
 
 
-def _read_control_text(
-    path: Path, *, expected_mount_id: int, optional: bool
-) -> str | None:
+def _read_control_text(path: Path, *, expected_mount_id: int) -> str | None:
     """Read a control file and bind its bytes to the selected mount ID."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
     except FileNotFoundError:
         _require_path_mount_id(path.parent, expected_mount_id)
-        if optional:
-            return None
-        raise ResourceLimitObservationError(f"{path.name} is unavailable") from None
+        return None
     except OSError as exc:
         raise ResourceLimitObservationError(f"cannot read {path.name}: {exc}") from exc
     try:
@@ -337,13 +333,10 @@ def _read_control_text(
 
 
 def _require_path_mount_id(path: Path, expected_mount_id: int) -> None:
-    path_only = getattr(os, "O_PATH", None)
-    if path_only is None:
-        raise ResourceLimitObservationError(
-            "the platform cannot establish cgroup path mount identity"
-        )
+    # The public reader established O_PATH support while opening the selected
+    # hierarchy root; this helper only checks paths beneath that same root.
     try:
-        fd = os.open(path, path_only | os.O_CLOEXEC)
+        fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     except OSError as exc:
         raise ResourceLimitObservationError(
             f"cannot open {path.name} to establish cgroup mount identity: {exc}"
@@ -471,6 +464,10 @@ def _visible_cgroup_directories(
         )
 
     cgroup_path = PurePosixPath(unified_path)
+    if ".." in cgroup_path.parts:
+        raise ResourceLimitObservationError(
+            "the calling thread cgroup path escapes its hierarchy"
+        )
     matching_mounts: list[tuple[int, Path, PurePosixPath]] = []
     visible_mount_points: list[Path] = []
     for line in mountinfo_text.splitlines():
@@ -539,15 +536,7 @@ def _visible_cgroup_directories(
     directory = current_directory
     while directory != hierarchy_root:
         directories.append(directory)
-        parent = directory.parent
-        if (
-            parent == directory
-            or (parent != hierarchy_root and hierarchy_root not in parent.parents)
-        ):
-            raise ResourceLimitObservationError(
-                "the process cgroup is outside the visible cgroup2 hierarchy"
-            )
-        directory = parent
+        directory = directory.parent
     visible_directories = tuple(directories)
     if visible_mount_points.count(hierarchy_root) != 1:
         raise ResourceLimitObservationError(
@@ -580,9 +569,7 @@ def _visible_cgroup_directories(
 def _read_event_file_if_present(
     path: Path, required: frozenset[str], *, expected_mount_id: int
 ) -> dict[str, int] | None:
-    text = _read_control_text(
-        path, expected_mount_id=expected_mount_id, optional=True
-    )
+    text = _read_control_text(path, expected_mount_id=expected_mount_id)
     if text is None:
         return None
     values: dict[str, int] = {}
@@ -605,24 +592,11 @@ def _read_event_file_if_present(
     return values
 
 
-def _read_event_file(
-    path: Path, required: frozenset[str], *, expected_mount_id: int
-) -> dict[str, int]:
-    values = _read_event_file_if_present(
-        path, required, expected_mount_id=expected_mount_id
-    )
-    if values is None:
-        raise ResourceLimitObservationError(f"{path.name} is unavailable")
-    return values
-
-
 def _read_limit_file(
     path: Path, *, expected_mount_id: int
 ) -> tuple[bool, int | None]:
     """Read a cgroup limit, returning (interface present, limit or max)."""
-    text = _read_control_text(
-        path, expected_mount_id=expected_mount_id, optional=True
-    )
+    text = _read_control_text(path, expected_mount_id=expected_mount_id)
     if text is None:
         return False, None
     fields = text.split()

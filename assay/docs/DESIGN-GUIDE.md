@@ -752,6 +752,28 @@ pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
 and must match that baseline. The ordinary full-suite behavior remains the
 default when the option is absent.
 
+Witness admission also checks pytest configuration before injecting its
+plugin. It checks recognized config files in pytest's documented precedence
+order ([pytest 9.0 configuration docs](https://docs.pytest.org/en/9.0.x/reference/customize.html)):
+`pytest.toml`, `.pytest.toml`, `pytest.ini`, `.pytest.ini`,
+`pyproject.toml`, `tox.ini`, then `setup.cfg`. The TOML readers handle
+`[pytest]` `addopts` in the pytest 9 TOML files, native `[tool.pytest]`
+`addopts`, and the existing `[tool.pytest.ini_options]` form. Because Assay
+does not reproduce pytest's complete root-directory search, it checks every
+recognized config on both the lexical and resolved current-directory ancestor
+chains and on directories named by test-path arguments, including resolved
+paths. This covers a symlinked command directory even when argv has no
+positional test path. An xdist setting or malformed config makes the
+cold witness unavailable. Unresolved path selectors and `--pyargs` also refuse
+the optimization because their config search cannot be established. The
+declared full suite remains the fallback. The argument reader separates
+recognized option values (such as a `-k` expression or `-p` plugin name) from
+test-path selectors; an unknown option arity, `--rootdir`, or `--confcutdir`
+refuses the optimization rather than guessing which config pytest will load.
+A missing positional selector is unresolved even when it is a bare name with
+no slash. This catches pytest 9's higher-precedence TOML files even when a
+lower-precedence `pyproject.toml` appears harmless.
+
 Pytest's built-in HookImpl callables are captured before its initial conftests
 load. Built-ins created later during startup are accepted only when their
 plugin class and source callable match objects captured at that early point.
@@ -1390,7 +1412,9 @@ plugins. Instead, the current suite is fully collected and ordered, and only
 its ordinary sequential runner stops after a verified current failure. The
 feature initially supports a direct `pytest` executable or `python -m pytest`;
 other launchers keep the full-run path. Shards are refused with this option so
-one artifact cannot imply a complete campaign from a selected slice. See the
+one artifact cannot imply a complete campaign from a selected slice. Any
+nonempty `PYTEST_ADDOPTS` disables replay because `-o` can replace the project's
+configured addopts. See the
 [worked consumer example](CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 
 ### Rejudge help follows the canonical vocabulary (B096)
@@ -2323,6 +2347,34 @@ The B105 lanes collect `tests/` only (B123), take their import paths from
 pyproject's own `pythonpath = ["src", "analysis/src"]` and carry no
 `--override-ini` (a `-o` token makes a lane ineligible for the mutation
 witness); `gate/tests/test_self_lane.py` pins the exact argv of every lane.
+The two B105 `run-gate.toml` entries run a bare-host Assay wrapper before the
+inner lane. The generic run-gate tester container uses a private cgroup
+namespace, which cannot satisfy B148's full-ancestor observation preflight.
+`tools/self-qualification-container.sh` derives the host workspace root with
+`findmnt`; the cgroup helper verifies both the interactive probe parent and
+the gates slice through the host system bus before using them. The cockpit has
+no host systemd bus or host cgroup namespace, so the MDT host-side
+`initializeCommand` verifies the interactive, background, and gates slices
+before Docker creates the cockpit. At runtime, the helper reads the kernel
+hostname, checks Docker's full ID, configured hostname, running state and
+actual `CgroupParent`, then compares mount and PID namespaces through
+`docker exec` to bind that lookup to the cockpit itself. Its first read-only
+system-bus query is a tightly capped bootstrap container under the already
+verified interactive tier. The gates slice is not used until both unit
+identities and installed fragments are verified. The
+read-only cgroup probe
+then checks at least 2 GiB of point-in-time RAM headroom. The wrapper launches
+a detached `tester-unified` container in that
+slice with `--cgroupns=host`, `--init`, network disabled, explicit CPU and
+memory bounds, and the whole workspace root mounted at both its physical host
+path and `/workspaces/vbpub`. Mounting the workspace root keeps a linked
+worktree's nested path and shared Git directory available in the container. It
+verifies the container's ID, ownership token, cgroup,
+limits, mounts and environment before waiting on that ID; the Docker wait
+status and an inner success marker are both required. This keeps the namespace
+choice at the gate boundary. Assay itself still refuses when a selected native
+candidate cannot observe its cgroup hierarchy, and does not select a namespace
+for external consumers.
 For an R2 lane the driver runs `assay plan` first, writes
 `.assay/plan-<lane>.json`, and hands it to `tools/b105_report_check.py
 --plan-json`. The checker refuses (B111), in order and after its own
@@ -2356,7 +2408,7 @@ report without a matching receipt. The preflight lane needs none. Run
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
-`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; the gate still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one), any other value of the variable is an error, and the receipt is unchanged.
+`ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). Run-gate maps exit 3 from the registered Assay command lanes to infrastructure `ERROR`, never an Assay test failure. The registered Assay lanes share one run-gate lock, and a Git-common-directory lock also serializes B105 callers across container `/tmp` namespaces. The wrapper's one-time scan is not an atomic lease against another project starting a gate afterward. The coordinator must keep all other registered gates serial until B105 finishes; a concurrent cross-project gate invalidates its resource evidence. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted only by the ordinary `tester-unified` lane; B105 refuses it because B105 requires an exclusive host window. For the ordinary gate, the opt-in (CD50) permits running alongside other projects' `run-gate-*` containers, prints `ASSAY_GATE_SHARED_HOST=<names>` on stdout, and still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one). Any other value of the variable is an error, and the receipt is unchanged.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. B114 persists one
@@ -2381,6 +2433,10 @@ another full attempt: target completion within 6 hours, never exceed the
 8-hour watchdog, and do not increase the approved RAM envelope. Until the
 full verifier-accepted report exists, this separate lane has no qualification
 claim and is not part of the ordinary R0 release gate.
+
+The standalone `self-qualification-preflight` lane has a 75-minute run-gate
+budget and a 90-minute Nyxloom timeout; the Assay lane remains capped at 60
+minutes. The outer reserve covers admission, startup, and evidence collection.
 
 The registered `self-qualification-preflight` lane runs the same R0 test
 command and whole-source R1 coverage declaration without R2 or R3. The full
