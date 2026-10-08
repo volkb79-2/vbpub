@@ -70,6 +70,10 @@ PROBE_OWNER="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" \
   || die 'could not create a valid probe ownership token'
 trap cleanup_probe EXIT
 
+# Keep this verifier unprivileged and namespace-private. `systemctl` uses
+# systemd's local private transport even when DBUS_SYSTEM_BUS_ADDRESS is set;
+# do not mount /run/systemd/private. busctl is given the mounted system-bus
+# address explicitly and makes only GetUnit/GetProperty calls.
 printf 'ASSAY_CGROUP_PARENT_PROBE_CONTAINER=%s\n' "$PROBE_NAME"
 probe_id="$(docker run -d \
   --cidfile "$PROBE_CIDFILE" \
@@ -81,17 +85,33 @@ probe_id="$(docker run -d \
   --read-only \
   --cap-drop=ALL \
   --security-opt=no-new-privileges \
-  --user=0:0 \
+  --user=1003:1003 \
+  -w / \
   --mount type=bind,source=/sys/fs/cgroup,target=/hostcg,readonly \
-  --mount type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly \
   --mount type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
-  -e DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus \
   "$PROBE_IMAGE" \
   bash -c 'set -eu
 unit=$1
-state="$(/bin/systemctl show "$unit" --property=LoadState --value)"
-fragment="$(/bin/systemctl show "$unit" --property=FragmentPath --value)"
-control_group="$(/bin/systemctl show "$unit" --property=ControlGroup --value)"
+bus_address=unix:path=/tmp/host-system-bus
+busctl_json() {
+  timeout --kill-after=2s 5s /usr/bin/busctl \
+    --address="$bus_address" --no-pager --json=short "$@"
+}
+json_string() {
+  /usr/bin/python3 -I -c "import json,sys; value=json.load(sys.stdin)[\"data\"]; value=value[0] if isinstance(value,list) and len(value)==1 else value; assert isinstance(value,str); print(value)"
+}
+unit_json="$(busctl_json call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s "$unit")"
+unit_path="$(printf "%s\\n" "$unit_json" | json_string)"
+case "$unit_path" in
+  /org/freedesktop/systemd1/unit/*) ;;
+  *) printf "MISSING unit=%s has unsafe D-Bus object path=%s\\n" "$unit" "$unit_path"; exit 1 ;;
+esac
+state_json="$(busctl_json get-property org.freedesktop.systemd1 "$unit_path" org.freedesktop.systemd1.Unit LoadState)"
+fragment_json="$(busctl_json get-property org.freedesktop.systemd1 "$unit_path" org.freedesktop.systemd1.Unit FragmentPath)"
+control_group_json="$(busctl_json get-property org.freedesktop.systemd1 "$unit_path" org.freedesktop.systemd1.Slice ControlGroup)"
+state="$(printf "%s\\n" "$state_json" | json_string)"
+fragment="$(printf "%s\\n" "$fragment_json" | json_string)"
+control_group="$(printf "%s\\n" "$control_group_json" | json_string)"
 if [[ "$state" != loaded || -z "$fragment" ]]; then
   printf "MISSING unit=%s LoadState=%s FragmentPath=%s\n" "$unit" "$state" "$fragment"
   exit 1

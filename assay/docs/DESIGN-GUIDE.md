@@ -2315,6 +2315,23 @@ the module name `assay_judge_conftest`), so its `from conftest import` never
 competes with the judge's; a judge test may not import from it, and a layout
 test enforces that.
 
+### Unprivileged host-slice preflight for tester-unified
+
+The registered outer driver verifies that `CGROUP_PARENT_DEV_GATES` names a
+loaded, instantiated, resource-configured slice before starting gate probes.
+Its short verifier runs in the trusted interactive slice, with a private
+cgroup namespace, a three-CPU cap, no capabilities, no network, and a
+read-only host cgroupfs bind. It queries the host system manager through the
+mounted system-bus socket as UID 1003, using only `GetUnit` and
+`GetProperty` calls for `LoadState`, `FragmentPath`, and the slice's
+`ControlGroup`. The driver deliberately does not mount
+`/run/systemd/private`: `systemctl` uses that local private transport even
+when `DBUS_SYSTEM_BUS_ADDRESS` is set, and that socket would provide broader
+manager authority. The verifier instead gives `busctl` the system-bus address
+explicitly and never runs workload code in this container. A miss, unreadable
+bus, missing cgroup, or all-default resource knobs refuses before the suite;
+there is no transient-slice or Docker-unconfined fallback.
+
 ### Full-source self-qualification (B105)
 
 The separate `self-qualification` gate is deliberately invoked only when a

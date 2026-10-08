@@ -153,15 +153,21 @@ def test_verified_configured_slice_uses_a_private_capped_probe(tmp_path: Path):
     assert "--network=none" in run
     assert "--read-only" in run
     assert "--cap-drop=ALL" in run
-    assert "--user=0:0" in run
+    assert "--user=1003:1003" in run
+    assert "-w" in run and run[run.index("-w") + 1] == "/"
     assert "type=bind,source=/sys/fs/cgroup,target=/hostcg,readonly" in run
-    assert "type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly" in run
     assert "type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly" in run
+    assert not any("/run/systemd/system" in value for value in run)
+    assert not any("DBUS_SYSTEM_BUS_ADDRESS" in value for value in run)
     command = run[run.index("bash") + 2]
-    assert "/bin/systemctl show" in command
-    assert "--property=LoadState" in command
-    assert "--property=FragmentPath" in command
-    assert "--property=ControlGroup" in command
+    assert "/usr/bin/busctl" in command
+    assert "--address=\"$bus_address\"" in command
+    assert "--json=short" in command
+    assert "Manager GetUnit s \"$unit\"" in command
+    assert "org.freedesktop.systemd1.Unit LoadState" in command
+    assert "org.freedesktop.systemd1.Unit FragmentPath" in command
+    assert "org.freedesktop.systemd1.Slice ControlGroup" in command
+    assert "/bin/systemctl" not in command
     assert "/hostcg$control_group" in command
     assert "memory.max" in command and "cpu.max" in command
     assert not any("--cgroupns=host" in argv for argv in calls)

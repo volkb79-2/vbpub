@@ -88,6 +88,12 @@ another `run-gate-assay-sql-*` container after excluding its own runner. No coll
 reads history or tags (A-475), so both lanes use the shallow snapshot default
 (`snapshot_history = "shallow"`, B128; the lanes declare no `judge.base`, so
 the seed holds only the judged commit), and snapshot refs/tags are not copied.
+Before these probes, the host-side driver verifies the configured gates slice
+with a short, private-namespace `tester-unified` container in the trusted
+interactive slice. It reads the host cgroup tree through a read-only mount and
+queries systemd over the mounted system bus as UID 1003 using only `GetUnit`
+and `GetProperty`; it does not mount `/run/systemd/private`, the Docker socket,
+or cgprofile's control socket.
 The registered gate issues its receipt only after both qualification containers
 are removed; a failed removal is a failed gate, not a successful qualification.
 Both container lifecycles use their recorded Docker IDs for operations and

@@ -8053,3 +8053,32 @@ source validates and drives the lane. Its dry-run passed for
 `assay/tester-unified`; no gate was launched at this ruling. Preserve this
 distinction in the gate record and decide separately whether a later Run-Gate
 release/install is in scope.
+
+### RW-507 — 2026-10-08 03:26:16 UTC — query the host slice without systemctl's private transport
+
+The first registered `tester-unified` attempt on `80254340` exited FAIL after
+2.403 seconds, before any suite or B145 probe ran. Its exact error was
+`Failed to connect to system scope bus via local transport: No such file or
+directory`. The mounted `/run/dbus/system_bus_socket` is present and serves
+systemd queries, but `systemctl` selected its local private transport, which
+the probe deliberately does not mount. Keep the private cgroup namespace and
+do not expose `/run/systemd/private`. Replace the helper with a UID-1003,
+capability-free `busctl` probe explicitly addressed to the system bus; it calls
+only `Manager.GetUnit` and property getters for `LoadState`, `FragmentPath`,
+and the slice's `ControlGroup`, while reading cgroup limits through the
+read-only cgroupfs bind. The same four queries succeeded as UID 1003 through
+the live daemon's system-bus bind. The direct helper probe
+`assay-cgroup-parent-1148949-1791429965748703225-25438` then returned
+`dev-gates.slice` and was removed; the exact-name inventory is empty. This is
+not registered gate evidence. Rerun `tester-unified` on the committed repair
+tree before claiming suite coverage.
+
+### RW-508 — 2026-10-08 03:27:44 UTC — commit the bus-query repair before requalification
+
+Reviewed the unprivileged busctl repair and synchronized its behavior, test,
+and adoption/rationale docs. Static shell syntax and `git diff --check` pass;
+the exact helper had already passed one live bounded probe, but the registered
+`tester-unified` gate has not yet passed on this tree. Keep the worktree quiet
+after committing this patch and rerun that registered gate using the matching
+Run-Gate rev58 source overlay; do not interpret the earlier fast failure or
+the bounded helper probe as suite evidence.
