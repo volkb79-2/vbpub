@@ -2,7 +2,7 @@
   "format": 1,
   "files": {
     "src/assay/config.py": {
-      "lines": [99],
+      "lines": [99, 100],
       "reason": "TYPE_CHECKING imports SnapshotLimits only for annotations; importing isolation here would create a runtime cycle."
     },
     "src/assay/liveness.py": {

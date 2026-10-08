@@ -192,3 +192,30 @@ findings. `HEAD` was `af46e6fde3f53ac1c854018c8514b10ddb8ac819` and the sole
 worktree change was the SQL witness fixture before and after review. The
 corrected merge still needs the registered gate and self-qualification
 preflight.
+
+## Merged-tip self-qualification preflight — blockers
+
+The registered `self-qualification-preflight` was initially refused from the
+plain shared `main` checkout before launch (container lanes require a linked
+worktree). It then ran from the attached CIU worktree at the same merged commit,
+`b1c17a2a99e12b1880521bdc3b6ddbb04930f8f4`, and exited 1.
+
+R0 failed `COMMAND_FAILED` because the session-finish guard found the reviewed
+B105 coverage-exclusion inventory stale: `config.py` reported lines `[99, 100]`
+while the fixture listed `[99]`. The covered baseline also emitted two pytest
+failure markers at 16%; the session-finish exception prevented pytest from
+retaining their node IDs and tracebacks. R1 independently failed
+`UNCOVERED_LINES`: 95.457% (14,844/15,435 executable lines and 6,505/6,930
+branches) against the 100% whole-target floor, with 591 missing lines and 425
+missing branch arcs. The gate stopped before any R2 phase. The verdict and
+progress stream are retained under the worktree's ignored `.assay/` directory;
+the outer run log is `/tmp/run-gate/run-gate-vbpub-self-qualification-preflight-1012921-1791420803.log`.
+
+The exact-diff Sol xhigh review of the inventory correction reported no
+findings. Line 100 is already part of the annotation-only `TYPE_CHECKING` block
+and pragma at `src/assay/config.py:99`; adding it records existing behavior and
+does not widen the exclusion policy. The two pytest failures still need names
+and tracebacks from a rerun after this correction, and the R1 missing paths and
+branch arcs need behavioral coverage. No additional exclusions are supported
+by the current evidence. The exact-tip tester-unified and preflight must both
+pass before release.
