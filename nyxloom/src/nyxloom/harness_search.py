@@ -389,10 +389,15 @@ def _claude_sessions(
 ) -> list[_DiscoveredSession]:
     if not _root_is_available(root):
         return []
-    found = []
+    found: list[_DiscoveredSession] = []
     seen_files: set[tuple[int, int] | Path] = set()
+    indexes: dict[tuple[int, int] | Path, int] = {}
+    priorities: dict[tuple[int, int] | Path, int] = {}
     for path in _walk_files(root, progress=progress):
-        if path.suffix != ".jsonl" or not _is_claude_transcript(path):
+        if path.suffix != ".jsonl":
+            continue
+        is_transcript, transcript_session_id = _claude_transcript_metadata(path)
+        if not is_transcript:
             continue
         try:
             # Report the target's real filename and ID when discovery first
@@ -405,19 +410,44 @@ def _claude_sessions(
             ) from exc
         identity = _path_identity(source)
         key: tuple[int, int] | Path = identity if identity is not None else source
-        if key in seen_files:
-            continue
-        seen_files.add(key)
         if source.parent.name == "subagents" and source.stem.startswith("agent-"):
             session_id = source.stem.removeprefix("agent-")
+            priority = 3
+        elif transcript_session_id:
+            session_id = transcript_session_id
+            priority = (
+                2
+                if source.stem.casefold() == transcript_session_id.casefold()
+                else 1
+            )
         else:
             session_id = source.stem
-        found.append(_DiscoveredSession("claude", session_id, str(source)))
+            priority = 0
+        candidate = _DiscoveredSession("claude", session_id, str(source))
+        if key not in seen_files:
+            seen_files.add(key)
+            indexes[key] = len(found)
+            priorities[key] = priority
+            found.append(candidate)
+            continue
+
+        current_index = indexes[key]
+        current = found[current_index]
+        current_priority = priorities[key]
+        if priority == current_priority and session_id != current.session_id:
+            raise SearchError(
+                "session search is indeterminate; hard-linked Claude Code "
+                f"transcript {source} has conflicting session IDs "
+                f"{current.session_id!r} and {session_id!r}"
+            )
+        if priority > current_priority:
+            found[current_index] = candidate
+            priorities[key] = priority
     return found
 
 
-def _is_claude_transcript(path: Path) -> bool:
-    """Use the adapter's record discriminator while preserving read errors."""
+def _claude_transcript_metadata(path: Path) -> tuple[bool, str | None]:
+    """Return the Claude discriminator and source-declared session ID."""
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as source:
             for index, line in enumerate(source):
@@ -436,10 +466,16 @@ def _is_claude_transcript(path: Path) -> bool:
                     and "sessionId" in record
                     and "parentUuid" in record
                 ):
-                    return True
+                    session_id = record["sessionId"]
+                    return True, session_id if isinstance(session_id, str) else None
     except OSError as exc:
         raise SearchError(f"could not inspect Claude Code session {path}: {exc}") from exc
-    return False
+    return False, None
+
+
+def _is_claude_transcript(path: Path) -> bool:
+    """Use the adapter's record discriminator while preserving read errors."""
+    return _claude_transcript_metadata(path)[0]
 
 
 def _codex_sessions(

@@ -182,15 +182,67 @@ def test_claude_discovery_filters_transcripts_and_names_subagents(tmp_path):
 
 def test_claude_discovery_deduplicates_physical_transcript_aliases(tmp_path):
     root = tmp_path / "projects"
+    session_id = "12345678-1234-1234-1234-123456789abc"
     original = _write_jsonl(
-        root / "project" / "real-session-id.jsonl",
-        {"sessionId": "session", "parentUuid": None},
+        root / "project" / f"{session_id}.jsonl",
+        {"sessionId": session_id, "parentUuid": None},
     )
     (original.parent / "000-alias.jsonl").symlink_to(original)
     found = search._claude_sessions(root)
     assert len(found) == 1
-    assert found[0].session_id == "real-session-id"
+    assert found[0].session_id == session_id
     assert found[0].source == str(original.resolve())
+
+
+def test_claude_hard_link_alias_uses_source_session_id_and_canonical_path(
+    tmp_path,
+):
+    root = tmp_path / "projects"
+    session_id = "12345678-1234-1234-1234-123456789abc"
+    original = _write_jsonl(
+        root / "project" / f"{session_id}.jsonl",
+        {"sessionId": session_id, "parentUuid": None},
+    )
+    os.link(original, original.with_name("000-alias.jsonl"))
+
+    found = search._claude_sessions(root)
+
+    assert [(row.session_id, row.source) for row in found] == [
+        (session_id, str(original.resolve())),
+    ]
+
+
+def test_claude_hard_link_subagent_alias_prefers_agent_id_path(tmp_path):
+    root = tmp_path / "projects"
+    agent_id = "a36c6ff1d3cc69767"
+    parent_id = "12345678-1234-1234-1234-123456789abc"
+    original = _write_jsonl(
+        root / "project" / parent_id / "subagents" / f"agent-{agent_id}.jsonl",
+        {"sessionId": parent_id, "parentUuid": "parent"},
+    )
+    os.link(original, original.with_name("000-alias.jsonl"))
+
+    found = search._claude_sessions(root)
+
+    assert [(row.session_id, row.source) for row in found] == [
+        (agent_id, str(original.resolve())),
+    ]
+
+
+def test_claude_hard_links_with_conflicting_agent_ids_are_indeterminate(tmp_path):
+    root = tmp_path / "projects"
+    parent_id = "12345678-1234-1234-1234-123456789abc"
+    original = _write_jsonl(
+        root / "project" / parent_id / "subagents" / "agent-aaaaaaaaaaaaaaaaa.jsonl",
+        {"sessionId": parent_id, "parentUuid": "parent"},
+    )
+    os.link(
+        original,
+        original.with_name("agent-bbbbbbbbbbbbbbbbb.jsonl"),
+    )
+
+    with pytest.raises(search.SearchError, match="conflicting session IDs"):
+        search._claude_sessions(root)
 
 
 def test_claude_signature_scan_stops_at_its_fifty_line_bound(tmp_path):
@@ -212,6 +264,22 @@ def test_claude_signature_scan_skips_bad_and_non_mapping_signature_records(tmp_p
     assert search._is_claude_transcript(path) is False
 
 
+def test_claude_discovery_falls_back_to_filename_when_session_id_is_not_text(
+    tmp_path,
+):
+    root = tmp_path / "projects"
+    path = _write_jsonl(
+        root / "project" / "filename-id.jsonl",
+        {"sessionId": None, "parentUuid": None},
+    )
+
+    found = search._claude_sessions(root)
+
+    assert [(row.session_id, row.source) for row in found] == [
+        ("filename-id", str(path.resolve())),
+    ]
+
+
 def test_claude_transcript_read_error_is_indeterminate(tmp_path, monkeypatch):
     root = tmp_path / "projects"
     path = _write_jsonl(
@@ -228,6 +296,24 @@ def test_claude_transcript_read_error_is_indeterminate(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "open", fail_open)
     with pytest.raises(search.SearchError, match="could not inspect Claude Code session"):
         search._is_claude_transcript(path)
+
+
+def test_claude_transcript_path_resolution_error_is_indeterminate(tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    path = _write_jsonl(
+        root / "project" / "session.jsonl",
+        {"sessionId": "session", "parentUuid": None},
+    )
+    original_resolve = Path.resolve
+
+    def fail_resolve(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("forced Claude resolve failure")
+        return original_resolve(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    with pytest.raises(search.SearchError, match="could not resolve Claude Code session"):
+        search._claude_sessions(root)
 
 
 def test_store_sessions_uses_the_configured_claude_projects_root(tmp_path, monkeypatch):
