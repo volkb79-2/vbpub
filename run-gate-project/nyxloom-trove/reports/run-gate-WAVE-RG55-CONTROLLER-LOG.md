@@ -8230,3 +8230,13 @@ type-guard mutant appears equivalent because `_read_status` returns only a
 non-empty tuple or raises; retain that as a provisional proof until final R2
 triage confirms the exact candidate and operator. No release or merge is
 authorized by this progress entry.
+
+### RW-517 — 2026-10-08 22:07:42 UTC — keep survivor test cleanup lint-clean
+
+The focused Ruff check exposed an unused `leaf_procs` local in the existing
+`test_observation_rejects_writable_cgroup_procs` fixture. Remove that dead
+assignment; no test behavior changes. On the resulting worktree diff, Ruff
+(`E4,E7,E9,F`), Python compilation, and `git diff --check` pass. The focused
+resource-observer suite still passes 53 tests, with 100% line and branch
+coverage for `lib/resource_observer.py` (275 statements, 124 branches). These
+remain bounded cockpit checks, not registered gate evidence.

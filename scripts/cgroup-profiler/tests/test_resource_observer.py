@@ -224,7 +224,6 @@ def test_observation_rejects_bypass_capability_in_either_mask(tmp_path, field, c
 
 def test_observation_rejects_writable_cgroup_procs(tmp_path):
     kwargs = _fixture(tmp_path)
-    leaf_procs = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/") / "cgroup.procs"
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(resource_observer, "_mode_grants_write", lambda *_args: True)
     with pytest.raises(resource_observer.ResourceObserverError, match="can write cgroup.procs"):
