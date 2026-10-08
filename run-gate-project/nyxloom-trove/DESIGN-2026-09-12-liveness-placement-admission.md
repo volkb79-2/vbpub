@@ -561,7 +561,7 @@ inspection rather than stopping or deleting them.
 | Create `dev-gates.slice/rg-<token>` directly | Rejected. It bypasses systemd's unit ownership model; the live manager refused attachment because the slice is not delegated. Direct root writes do not repair that refusal or establish safe lifecycle ownership. |
 | Set `Delegate=yes` on `dev-gates.slice` | Rejected. systemd does not support delegation on slice units; it would also make both systemd and cgprofile writers below the slice. |
 | Put the lane leaf under the Docker/tester's existing scope | Rejected. Enabling controllers there can require the scope to become an empty internal node; that conflicts with container/runtime management and later `docker exec`. The independent delegated scope keeps the lane leaf outside that ownership domain while preserving the process's PID/mount namespaces. |
-| Give the daemon host PID/cgroup namespaces | Split decision: host PID is authorized for the managed daemon alone under RW-467, because DAMON sysfs resolves `pid_target` in the writer's active PID namespace; a read-only host `/proc` bind does not change that namespace. Host cgroup namespace remains private, as do daemon networking and all workload/helper/gate/test namespaces. The earlier all-host-namespace proposal is rejected. Host-PID visibility adds process-table and PID-operation authority; it is not a containment boundary, and no stall path may signal a numeric PID. |
+| Give the daemon host PID/cgroup namespaces | Split decision: the initial D-1 proposal for host PID and cgroup namespaces was narrowed by D-15; RW-467 later authorizes host PID for the managed daemon alone, because DAMON sysfs resolves `pid_target` in the writer's active PID namespace and a read-only host `/proc` bind does not change that namespace. Host cgroup namespace remains private, as do daemon networking and all workload/helper/gate/test namespaces. The original all-host-namespace combination remains rejected. Host-PID visibility adds process-table and PID-operation authority; it is not a containment boundary, and no stall path may signal a numeric PID. |
 | Mount the host system bus into the devcontainer | Rejected. The cockpit only needs the ctl protocol. Giving every cockpit process systemd RPC access is unnecessary authority; the bus stays daemon-only. |
 | Give the privileged daemon the raw host system-bus socket | This is the current P6 bridge, not a security sandbox. A read-only socket mount does not restrict RPC methods, and daemon-side allowlists only constrain normal requests; they do not contain a compromised daemon. The scope layout does not by itself prove D-15 against daemon compromise. |
 | Add a narrow host helper/broker instead of exposing the system bus to cgprofile | Deferred by D-32 for the current single-operator, rootful-Docker deployment. Keep it as a future option if the trust boundary changes or daemon-compromise containment becomes a requirement; see A4. |
@@ -772,11 +772,22 @@ without calling it least privilege.
 RW-467 records the operator's explicit deployment authorization: the managed
 `cgprofile-host-daemon` uses the host PID namespace so DAMON sysfs can resolve
 host `pid_target` values. This replaces only the host-PID portion of the
-earlier all-private daemon proposal. The daemon keeps a private cgroup
+earlier all-private daemon proposal. Historically D-1 proposed both host PID
+and host cgroup namespaces; D-15 narrowed that broad mode. RW-467 authorizes
+only the daemon's PID-namespace exception, not a return to the original
+pair. The daemon keeps a private cgroup
 namespace and disabled networking, has no Docker socket, and receives the
 host `/proc` view through the managed read-only bind. The one-shot helper,
 workload, gate, and test containers remain private in every namespace; in
 particular, no test container uses `--pid=host` or `--cgroupns=host`.
+
+D-15's initial absolute no-host-mutation wording was later qualified by
+D-25's explicit allowlist for DAMON and opt-in, identity-checked placement
+writes. The safety invariant is no hidden or general-purpose host mutation:
+the daemon may write only its enumerated DAMON/session paths and the exact
+delegated placement scope/leaf through the specified request flow. Host-PID
+visibility does not widen that write allowlist, add numeric-PID signaling, or
+make the in-process guard a sandbox against daemon compromise.
 
 The reason is specific to DAMON's PID interpretation: `/hostproc` lets the
 daemon read host process facts, but DAMON interprets `pid_target` against the
