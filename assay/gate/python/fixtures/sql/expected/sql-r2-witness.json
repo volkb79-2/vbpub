@@ -1237,9 +1237,13 @@
       "jobs": 1,
       "kill_attribution": "declared",
       "cold_witness_kills": false,
+      "r2_command": null,
+      "equivalence_ledger": null,
       "kill_signal_artifact": ".assay/kill-signal.txt",
       "liveness": {
         "active": false,
+        "cpu_window_s": null,
+        "idle_floor_s": null,
         "plugin": null,
         "reason": "language-not-python"
       },
