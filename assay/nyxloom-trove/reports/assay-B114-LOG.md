@@ -434,3 +434,36 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   compilation, and `git diff --check` passed. No registered gate or R2
   campaign was started. A fresh exact-tip Sol xhigh review is required before
   registered acceptance gates.
+
+## 2026-10-08 — second Sol xhigh follow-up repairs
+
+- The exact-tip Sol xhigh review of `ea9de716` confirmed the acceptance gates
+  still had to run and found two additional defects: the short-option scanner
+  missed bundled xdist `-qn2`; and the host-unit probe accepted complete
+  property lines without the closing frame marker, while trusting attached
+  `docker run` transport status.
+- Assay now parses short-option bundles for `-n`/`-f`, rejects bundled `-o`
+  overrides, and applies those checks to pytest config `addopts`. The
+  symlinked-cwd regression now covers both a command with no path selector and
+  one with `tests` selected, against `pytest.toml` `addopts = ["-qn2"]`.
+- The systemd query now starts a uniquely named detached container, records
+  its ID, reads its own exit status through `docker wait`, captures output via
+  `docker logs`, removes the container, and requires exactly two ordered,
+  complete frames before accepting any unit properties. Added regressions for
+  a nonzero container exit delivered over a successful wait transport and for
+  truncated frames with container exit 0.
+- Verification: Assay mutation-witness plus docs tests **174 passed**;
+  `gate/tests/test_cgroup_parent.py` **21 passed**; Ruff `E4,E7,E9,F`, Python
+  compilation, `bash -n`, `shellcheck -e SC2016`, and `git diff --check`
+  passed. Plain ShellCheck reports SC2016 for intentionally single-quoted
+  in-container scripts (one pre-existing and one added). No registered gate
+  or R2 campaign ran on this diff. The next exact-tip Sol xhigh review must be
+  followed by Assay `tester-unified`, Assay
+  `self-qualification-preflight`, and MDT `smoke` on the final merged commit.
+- The unrelated RG-89 `tester-unified` gate ended FAIL at commit
+  `1266057b31dc04300a513d100980cbade8929897` after 559.796 seconds: its R0
+  reported three failures in that worktree's `test_cgroup_parent.py` and
+  recorded exit 1. Its run-gate history is outside this branch and is not
+  B114 evidence. The registered-gate slot is now idle. B087 may run its
+  non-registered uncovered-line canary; its registered gate and merge remain
+  held until B114 acceptance.

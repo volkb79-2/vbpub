@@ -102,12 +102,28 @@ done
 # Query the Docker host's systemd manager through its read-only system-bus
 # socket. The cockpit's local systemctl may be only a shim, and launching the
 # candidate probe under `slice` before this check could instantiate a typo.
-if unit_properties="$(
-  timeout --signal=TERM --kill-after=5s 30s docker run --rm \
-    --cgroup-parent="$probe_parent" --cgroupns=private --network=none \
-    --cpus=0.25 --memory=128m --memory-swap=128m --pids-limit=64 \
-    --read-only --cap-drop=ALL --security-opt=no-new-privileges \
-    --user=1003:1003 --tmpfs=/tmp:rw,noexec,nosuid,size=16m \
+# Run detached and read `docker wait`'s container exit status separately from
+# the Docker CLI transport status; attached `docker run` can report transport
+# success after the command inside the container failed.
+unit_probe_name="assay-cgroup-unit-probe-${BASHPID:-$$}-${RANDOM}"
+unit_probe_id=""
+cleanup_unit_probe() {
+  local status=$? target="${unit_probe_id:-$unit_probe_name}"
+  if [[ -n "$target" ]]; then
+    timeout --signal=TERM --kill-after=5s 30s docker rm --force "$target" \
+      >/dev/null 2>&1 || true
+  fi
+  return "$status"
+}
+trap cleanup_unit_probe EXIT
+
+if unit_probe_id="$(
+  timeout --signal=TERM --kill-after=5s 30s docker run --detach \
+    --name="$unit_probe_name" --cgroup-parent="$probe_parent" \
+    --cgroupns=private --network=none --cpus=0.25 --memory=128m \
+    --memory-swap=128m --pids-limit=64 --read-only --cap-drop=ALL \
+    --security-opt=no-new-privileges --user=1003:1003 \
+    --tmpfs=/tmp:rw,noexec,nosuid,size=16m \
     --mount=type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly \
     --mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
     -e DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus \
@@ -122,9 +138,64 @@ if unit_properties="$(
 )"; then
   :
 else
-  probe_status=$?
-  die "could not query Docker-host systemd unit \"$slice\" before any container uses it (exit $probe_status)"
+  run_status=$?
+  die "could not start Docker-host systemd query container before any container uses \"$slice\" (exit $run_status)"
 fi
+[[ "$unit_probe_id" =~ ^[0-9a-f]{64}$ ]] \
+  || die 'Docker-host systemd query did not return one container ID'
+
+if unit_probe_exit_status="$(
+  timeout --signal=TERM --kill-after=5s 30s docker wait "$unit_probe_id"
+)"; then
+  :
+else
+  wait_status=$?
+  die "could not capture Docker-host systemd query container exit status (docker wait exit $wait_status)"
+fi
+if unit_properties="$(
+  timeout --signal=TERM --kill-after=5s 30s docker logs "$unit_probe_id"
+)"; then
+  :
+else
+  logs_status=$?
+  die "could not read Docker-host systemd query output (docker logs exit $logs_status)"
+fi
+if timeout --signal=TERM --kill-after=5s 30s docker rm "$unit_probe_id" >/dev/null; then
+  unit_probe_id=""
+  unit_probe_name=""
+else
+  rm_status=$?
+  die "could not remove Docker-host systemd query container (docker rm exit $rm_status)"
+fi
+[[ "$unit_probe_exit_status" =~ ^[0-9]+$ ]] \
+  || die "Docker-host systemd query returned an invalid container exit status \"$unit_probe_exit_status\""
+[[ "$unit_probe_exit_status" == 0 ]] \
+  || die "Docker-host systemd query container exited with status $unit_probe_exit_status for \"$slice\""
+
+verify_unit_frames() {
+  local output="$1" first_unit="$2" second_unit="$3"
+  if ! printf '%s\n' "$output" | awk \
+    -v first="$first_unit" -v second="$second_unit" '
+      BEGIN { expected[1] = first; expected[2] = second; next_unit = 1; active = 0 }
+      {
+        if (!active) {
+          if (next_unit > 2 || $0 != "ASSAY_UNIT_BEGIN=" expected[next_unit]) exit 1
+          active = 1
+          next
+        }
+        if ($0 ~ /^ASSAY_UNIT_BEGIN=/) exit 1
+        if ($0 ~ /^ASSAY_UNIT_END=/) {
+          if ($0 != "ASSAY_UNIT_END=" expected[next_unit]) exit 1
+          active = 0
+          next_unit++
+        }
+      }
+      END { if (active || next_unit != 3) exit 1 }
+    '; then
+    die "Docker-host systemd query returned incomplete or out-of-order frames for \"$first_unit\" and \"$second_unit\""
+  fi
+}
+verify_unit_frames "$unit_properties" "$slice" "$probe_parent"
 
 unit_property() {
   local unit="$1" property="$2" value

@@ -67,12 +67,22 @@ if args and args[0] == "exec":
         os.environ["HOST_REMOTE_PID_NS"],
     )))
     raise SystemExit(int(os.environ["HOST_EXEC_EXIT"]))
+if args and args[0] == "wait":
+    # docker wait succeeds as a transport while returning the container's own
+    # nonzero exit status on stdout.
+    print(os.environ["SYSTEMCTL_EXIT"])
+    raise SystemExit(0)
+if args and args[0] == "logs":
+    print(os.environ["SYSTEMD_OUTPUT"])
+    raise SystemExit(0)
+if args and args[0] == "rm":
+    raise SystemExit(0)
 is_unit_probe = any("source=/run/dbus/system_bus_socket" in arg for arg in args)
 with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
     stream.write("unit\n" if is_unit_probe else "cgroup\n")
 if is_unit_probe:
-    print(os.environ["SYSTEMD_OUTPUT"])
-    raise SystemExit(int(os.environ["SYSTEMCTL_EXIT"]))
+    print("f" * 64)
+    raise SystemExit(0)
 
 script = sys.stdin.read().replace("/sys/fs/cgroup", os.environ["FAKE_CGROUP_ROOT"])
 docker_env = os.environ.copy()
@@ -182,8 +192,8 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 4
-    parent_call, identity_call, unit_call, cgroup_call = calls
+    assert len(calls) == 7
+    parent_call, identity_call, unit_call, wait_call, logs_call, rm_call, cgroup_call = calls
     assert parent_call[:2] == ["inspect", KERNEL_HOSTNAME]
     assert (
         "{{.Id}}|{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}"
@@ -192,11 +202,15 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert identity_call[:3] == ["exec", KERNEL_HOSTNAME, "sh"]
     assert "readlink /proc/self/ns/mnt" in identity_call[-1]
     assert "readlink /proc/self/ns/pid" in identity_call[-1]
+    assert unit_call[0] == "run" and "--detach" in unit_call
     assert "--cgroup-parent=dev-interactive.slice" in unit_call
     assert "dev-gates.slice" in unit_call
     assert "dev-interactive.slice" in unit_call
     assert "source=/run/dbus/system_bus_socket" in " ".join(unit_call)
     assert "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus" in " ".join(unit_call)
+    assert wait_call == ["wait", "f" * 64]
+    assert logs_call == ["logs", "f" * 64]
+    assert rm_call == ["rm", "f" * 64]
     assert "--cgroupns=host" in cgroup_call
     assert "--cgroup-parent=dev-gates.slice" in cgroup_call
     assert "--network=none" in cgroup_call
@@ -240,7 +254,7 @@ def test_transient_or_missing_systemd_slice_is_refused_before_docker(tmp_path: P
         assert proc.returncode != 0
         assert "not a loaded installed slice" in proc.stderr
         calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-        assert len(calls) == 3
+        assert len(calls) == 6
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
             "parent", "identity", "unit"
         ]
@@ -256,12 +270,37 @@ def test_systemd_verification_failure_is_refused_before_docker(tmp_path: Path):
     )
 
     assert proc.returncode != 0
-    assert "could not query Docker-host systemd unit" in proc.stderr
+    assert "systemd query container exited with status 1" in proc.stderr
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 3
+    assert len(calls) == 6
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
         "parent", "identity", "unit"
     ]
+
+
+def test_truncated_systemd_output_with_zero_container_exit_is_refused(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        systemd_output=(
+            "ASSAY_UNIT_BEGIN=dev-gates.slice\n"
+            "Id=dev-gates.slice\n"
+            "LoadState=loaded\n"
+            "FragmentPath=/etc/systemd/system/dev-gates.slice"
+        ),
+        systemctl_exit=0,
+    )
+
+    assert proc.returncode != 0
+    assert "returned incomplete or out-of-order frames" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert [call[0] for call in calls] == [
+        "inspect", "exec", "run", "wait", "logs", "rm"
+    ]
+    assert calls[3] == ["wait", "f" * 64]
 
 
 def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
@@ -316,7 +355,7 @@ def test_runtime_generated_host_unit_is_refused_before_target_cgroup_probe(
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
             "parent", "identity", "unit"
         ]
-        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 3
+        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 6
 
 
 def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe(
@@ -338,7 +377,7 @@ def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe
         in proc.stderr
     )
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 3
+    assert len(calls) == 6
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
         "parent", "identity", "unit"
     ]
@@ -357,7 +396,7 @@ def test_systemd_unit_id_must_match_requested_slice(tmp_path: Path):
 
     assert proc.returncode != 0
     assert 'returned a different unit ID (Id=other.slice)' in proc.stderr
-    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 3
+    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 6
 
 
 def test_hostname_match_with_a_different_container_namespace_is_refused(

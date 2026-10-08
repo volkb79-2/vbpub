@@ -633,7 +633,7 @@ def supports_sequential_pytest(
         return False
     if _contains_xdist_option(pytest_args):
         return False
-    if any(token in ("-o", "--override-ini") or token.startswith("--override-ini=") for token in pytest_args):
+    if _contains_override_ini_option(pytest_args):
         # `addopts` overrides can introduce execution options in a spelling
         # this small parser cannot safely distinguish from ordinary config.
         return False
@@ -666,14 +666,54 @@ def _contains_xdist_option(tokens: Sequence[str]) -> bool:
         "--maxschedchunk",
         "--looponfail",
     }
-    return any(
-        token == "-f"
-        or token.startswith("-f")
-        or token == "-n"
-        or (token.startswith("-n") and len(token) > 2)
-        or token.partition("=")[0] in parallel_options
-        for token in tokens
-    )
+    for token in tokens:
+        if token.startswith("--"):
+            if token.partition("=")[0] in parallel_options:
+                return True
+            continue
+        if not token.startswith("-") or token == "-":
+            continue
+        body = token[1:]
+        position = 0
+        while position < len(body):
+            letter = body[position]
+            if letter in ("f", "n"):
+                return True
+            if letter in COLD_PYTEST_FLAG_OPTIONS:
+                position += 1
+                continue
+            if letter in COLD_PYTEST_VALUE_OPTIONS:
+                # The remaining bytes belong to this option's value, not to
+                # additional options in the short-option bundle.
+                break
+            # The option grammar is intentionally bounded. Refuse an
+            # unclassified short spelling in config addopts rather than
+            # overlooking an execution option in a bundle.
+            return True
+    return False
+
+
+def _contains_override_ini_option(tokens: Sequence[str]) -> bool:
+    """Detect ``-o`` even when pytest bundles it with other short flags."""
+    for token in tokens:
+        if token in ("-o", "--override-ini") or token.startswith("--override-ini="):
+            return True
+        if not token.startswith("-") or token.startswith("--") or token == "-":
+            continue
+        body = token[1:]
+        position = 0
+        while position < len(body):
+            letter = body[position]
+            if letter == "o":
+                return True
+            if letter in COLD_PYTEST_FLAG_OPTIONS:
+                position += 1
+                continue
+            # A value option consumes the rest of its token. Do not read an
+            # ``o`` inside a selector, warning filter, or plugin value as an
+            # option of its own.
+            break
+    return False
 
 
 def _pytest_configs_allow_sequential(cwd: Path, argv: Sequence[str]) -> bool:
@@ -882,7 +922,7 @@ def _config_addopts_allow_sequential(path: Path) -> bool:
             tokens = shlex.split(addopts)
     except (OSError, UnicodeDecodeError, configparser.Error, tomllib.TOMLDecodeError, ValueError):
         return False
-    return not _contains_xdist_option(tokens)
+    return not _contains_xdist_option(tokens) and not _contains_override_ini_option(tokens)
 
 
 def inject_witness_plugin(
@@ -997,6 +1037,16 @@ def cold_shape_refusal(
     except UnrecognizedCoverageOption as exc:
         return f"unrecognized coverage option {exc}"
     full_argv = (*transformed, *appended)
+    if full_argv:
+        first = full_argv[0].replace("\\", "/").rsplit("/", 1)[-1]
+        if first == "pytest":
+            pytest_args = full_argv[1:]
+        elif first.startswith("python") and len(full_argv) >= 3 and full_argv[1:3] == ("-m", "pytest"):
+            pytest_args = full_argv[3:]
+        else:
+            pytest_args = ()
+        if _contains_override_ini_option(pytest_args):
+            return "pytest override"
     if not supports_sequential_pytest(full_argv, env=env):
         return "not a sequential pytest command"
     if env.get("PYTEST_ADDOPTS", ""):

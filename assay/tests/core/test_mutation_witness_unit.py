@@ -189,6 +189,7 @@ def test_cold_short_option_classes_match_installed_pytest_and_xdist_parser():
         (".pytest.toml", '[pytest]\naddopts = ["-q"]\n', True),
         (".pytest.toml", '[pytest]\naddopts = "--numprocesses=auto"\n', False),
         ("pytest.toml", '[pytest]\naddopts = "-n auto"\n', False),
+        ("pytest.toml", '[pytest]\naddopts = ["-o", "addopts=-n2"]\n', False),
         ("pytest.ini", "[pytest]\naddopts = -q\n", True),
         (".pytest.ini", "[pytest]\naddopts = --dist=load\n", False),
         ("tox.ini", "[pytest]\naddopts = --numprocesses 2\n", False),
@@ -283,19 +284,40 @@ def test_symlinked_test_path_checks_lexical_pytest_config(tmp_path):
     )
 
 
-def test_symlinked_cwd_checks_resolved_pytest_config_without_path_selector(tmp_path):
+@pytest.mark.parametrize("selectors", [(), ("tests",)])
+def test_symlinked_cwd_checks_resolved_pytest_config_with_or_without_selector(
+    tmp_path, selectors
+):
     resolved = tmp_path / "actual"
     resolved.mkdir()
     (resolved / "pytest.toml").write_text(
-        '[pytest]\naddopts = ["-n", "auto"]\n', encoding="utf-8"
+        '[pytest]\naddopts = ["-qn2"]\n', encoding="utf-8"
+    )
+    (resolved / "tests").mkdir()
+    (resolved / "tests" / "test_example.py").write_text(
+        "def test_example(): pass\n", encoding="utf-8"
     )
     lexical = tmp_path / "alias"
     lexical.symlink_to(resolved, target_is_directory=True)
 
     assert not supports_sequential_pytest(
-        (sys.executable, "-m", "pytest", "-k", "selected_case"),
+        (sys.executable, "-m", "pytest", *selectors),
         cwd=lexical,
         env={},
+    )
+
+
+@pytest.mark.parametrize("option", ["-qn2", "-qf"])
+def test_cold_pytest_rejects_xdist_short_option_bundles(tmp_path, option):
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", option), cwd=tmp_path, env={}
+    )
+
+
+@pytest.mark.parametrize("option", ["-oaddopts=-n2", "-qoaddopts=-n2"])
+def test_cold_pytest_rejects_bundled_override_ini(tmp_path, option):
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", option), cwd=tmp_path, env={}
     )
 
 
