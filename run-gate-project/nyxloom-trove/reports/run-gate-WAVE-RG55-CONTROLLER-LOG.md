@@ -7897,3 +7897,16 @@ RW-467/RW-468 remain the source decisions; D-32's no-broker choice is
 unchanged. The corrected design is on commit `58ded267`; the current
 main-first candidate is `e66f9367`. No gate evidence is claimed for either
 candidate, and all exact-tree gates must use the final reconciled candidate.
+
+### RW-500 — 2026-10-08 01:14:15 UTC — reconcile RG-89 with the B105 main update
+
+Local `main` advanced from `b1c17a2a` to `6086d4c9` (2026-10-08
+01:11:44 UTC), merging Assay B105's exclusion-inventory correction. Rebuild
+the RG-89 evidence candidate with current `main` as its first parent; do not
+reuse the prior candidate based on `b1c17a2a`. The external Assay
+`self-qualification-preflight` recorded by the previous controller started
+from the older tree and is useful only as a slot/status event, not as evidence
+for the reconciled candidate. Current candidate: `cc902637`, first parent
+`6086d4c9`, clean; contract mirrors compare byte-identically; AST/TOML parse
+and `git diff --check` pass. No registered gate or live probe has run on
+`cc902637`; this ruling does not claim acceptance.
