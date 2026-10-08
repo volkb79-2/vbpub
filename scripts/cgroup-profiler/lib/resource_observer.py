@@ -142,7 +142,7 @@ def _proc_start_ticks(path: Path) -> int:
     except (OSError, UnicodeError) as exc:
         raise ResourceObserverError("cannot read authenticated peer process identity") from exc
     closing = text.rfind(")")
-    if closing < 0:
+    if closing <= 0:
         raise ResourceObserverError("peer process stat record is malformed")
     fields = text[closing + 1 :].split()
     if len(fields) <= 19 or not fields[19].isdecimal():

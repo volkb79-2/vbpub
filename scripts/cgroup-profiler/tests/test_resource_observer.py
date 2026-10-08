@@ -208,6 +208,20 @@ def test_observation_rejects_peer_capabilities_that_bypass_dac(tmp_path, caps):
         _observe(kwargs)
 
 
+@pytest.mark.parametrize("field", ["CapEff", "CapPrm"])
+@pytest.mark.parametrize("caps", [1 << 1, 1 << 21])
+def test_observation_rejects_bypass_capability_in_either_mask(tmp_path, field, caps):
+    kwargs = _fixture(tmp_path)
+    status = Path(kwargs["proc_root"]) / "4242/task/4250/status"
+    lines = _status(50, host_tid=4250, caps=0).splitlines()
+    target = next(index for index, line in enumerate(lines) if line.startswith(f"{field}:"))
+    lines[target] = f"{field}:\t{caps:016x}"
+    status.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+    with pytest.raises(resource_observer.ResourceObserverError, match="capabilities can bypass"):
+        _observe(kwargs)
+
+
 def test_observation_rejects_writable_cgroup_procs(tmp_path):
     kwargs = _fixture(tmp_path)
     leaf_procs = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/") / "cgroup.procs"
@@ -473,6 +487,10 @@ def test_status_reader_rejects_duplicate_malformed_and_out_of_range_facts(tmp_pa
     with pytest.raises(resource_observer.ResourceObserverError, match="malformed numeric"):
         resource_observer._read_status(path)
 
+    path.write_text(valid.replace("NSpid:\t4250 50", "NSpid:\t"), encoding="ascii")
+    with pytest.raises(resource_observer.ResourceObserverError, match="out-of-range"):
+        resource_observer._read_status(path)
+
     path.write_text(valid.replace("NSpid:\t4250 50", "NSpid:\t0 50"), encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="out-of-range"):
         resource_observer._read_status(path)
@@ -487,7 +505,13 @@ def test_proc_fact_readers_refuse_unreadable_or_malformed_records(tmp_path, monk
     stat_path.write_text("no close parenthesis", encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="stat record is malformed"):
         resource_observer._proc_start_ticks(stat_path)
+    stat_path.write_text(") " + " ".join(["S", *("0" for _ in range(19))]) + "\n", encoding="ascii")
+    with pytest.raises(resource_observer.ResourceObserverError, match="stat record is malformed"):
+        resource_observer._proc_start_ticks(stat_path)
     stat_path.write_text("(worker) S", encoding="ascii")
+    with pytest.raises(resource_observer.ResourceObserverError, match="start-time fact is malformed"):
+        resource_observer._proc_start_ticks(stat_path)
+    stat_path.write_text("42 (worker) " + " ".join(["S", *("0" for _ in range(18))]) + "\n", encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="start-time fact is malformed"):
         resource_observer._proc_start_ticks(stat_path)
     stat_path.write_text("(worker) S " + "0 " * 18 + "bad\n", encoding="ascii")
