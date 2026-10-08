@@ -1324,53 +1324,38 @@ def _add_text(
             counts.update(token.casefold() for token in _WORD.findall(text))
             continue
         if query_pattern is not None and text.isascii():
-            if term_frequency_cap is not None:
-                active_terms = tuple(
-                    term for term in terms
-                    if counts.get(term, 0) < term_frequency_cap
-                )
-                cursor = 0
-                while active_terms:
-                    active_pattern = _query_text_pattern(active_terms, term_match)
-                    if active_pattern is None:
-                        break
-                    restart = False
-                    for match in active_pattern.finditer(text, cursor):
-                        token = match.group().casefold()
-                        if term_match == "prefix":
-                            for term in active_terms:
-                                if token.startswith(term):
-                                    counts[term] += 1
-                        else:
-                            counts[token] += 1
-                        remaining_terms = tuple(
-                            term for term in active_terms
-                            if counts.get(term, 0) < term_frequency_cap
-                        )
-                        if remaining_terms != active_terms:
-                            active_terms = remaining_terms
-                            cursor = match.end()
-                            restart = True
-                            break
-                    if not restart:
-                        break
-                continue
-            for match in query_pattern.finditer(text):
-                token = match.group().casefold()
-                if term_match == "prefix":
-                    for term in terms:
-                        if token.startswith(term):
-                            counts[term] += 1
-                else:
-                    counts[token] += 1
-            continue
-        active_terms = (
-            tuple(
-                term for term in terms
-                if counts.get(term, 0) < term_frequency_cap
+            assert term_frequency_cap is not None
+            active_terms = _active_query_terms(
+                counts, terms, term_frequency_cap,
             )
-            if term_frequency_cap is not None
-            else terms
+            cursor = 0
+            while active_terms:
+                active_pattern = _query_text_pattern(active_terms, term_match)
+                if active_pattern is None:
+                    break
+                restart = False
+                for match in active_pattern.finditer(text, cursor):
+                    token = match.group().casefold()
+                    if term_match == "prefix":
+                        for term in active_terms:
+                            if token.startswith(term):
+                                counts[term] += 1
+                    else:
+                        counts[token] += 1
+                    remaining_terms = _active_query_terms(
+                        counts, active_terms, term_frequency_cap,
+                    )
+                    if remaining_terms != active_terms:
+                        active_terms = remaining_terms
+                        cursor = match.end()
+                        restart = True
+                        break
+                if not restart:
+                    break
+            continue
+        assert term_frequency_cap is not None
+        active_terms = _active_query_terms(
+            counts, terms, term_frequency_cap,
         )
         if not active_terms:
             continue
@@ -1379,13 +1364,11 @@ def _add_text(
             for term in active_terms:
                 if token == term or (term_match == "prefix" and token.startswith(term)):
                     counts[term] += 1
-            if term_frequency_cap is not None:
-                active_terms = tuple(
-                    term for term in active_terms
-                    if counts.get(term, 0) < term_frequency_cap
-                )
-                if not active_terms:
-                    break
+            active_terms = _active_query_terms(
+                counts, active_terms, term_frequency_cap,
+            )
+            if not active_terms:
+                break
 
 
 def _jsonl_content(
