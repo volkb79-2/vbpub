@@ -7910,3 +7910,17 @@ for the reconciled candidate. Current candidate: `cc902637`, first parent
 `6086d4c9`, clean; contract mirrors compare byte-identically; AST/TOML parse
 and `git diff --check` pass. No registered gate or live probe has run on
 `cc902637`; this ruling does not claim acceptance.
+
+### RW-501 — 2026-10-08 01:17:33 UTC — record the final current-main evidence candidate
+
+The main-first candidate was rebuilt after RW-500 and is now
+`8ff8af93ff7945be5775f684f48f36a2ab4b594f` (`rg89-resource-observer-mainfirst-20261008-rw500a`),
+with first parent `6086d4c9dfd394a90f553e9f23516361e8183a1b`. This supersedes
+the candidate SHA recorded in RW-500; RW-500 remains the accurate record of
+the decision and checks performed at that earlier checkpoint. The new
+candidate is clean, its contract mirrors are byte-identical, Python AST and
+TOML parsing pass, `git diff --check HEAD^1...HEAD` passes, and Run-Gate lists
+the expected Assay R1/R2/R3, selftest, and full-gate lanes. None of those
+checks is registered gate evidence. No registered gate or live acceptance
+probe has yet run on `8ff8af93`; exact-tree gates, live observer/DAMON
+acceptance, and independent review remain outstanding.
