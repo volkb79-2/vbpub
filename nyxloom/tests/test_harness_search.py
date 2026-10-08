@@ -689,7 +689,7 @@ def test_unicode_targeted_count_stops_after_each_term_reaches_its_cap():
     counts = Counter()
     search._add_text(
         counts,
-        {"content": ["qcow café", "qcow cloud", "qcow cloud"]},
+        {"content": ["qcow cloud café", "ordinary café"]},
         ("qcow", "cloud"),
         term_frequency_cap=1,
     )
@@ -1090,10 +1090,12 @@ def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inlin
     tmp_path, monkeypatch,
 ):
     path = tmp_path / "bounded-batches.jsonl"
+    oversized = {"content": "qcow", "padding": "x" * 512}
     payloads = (
+        oversized,
         {"content": "qcow"},
         {"content": "cloud"},
-        {"content": "qcow", "padding": "x" * 512},
+        oversized,
     )
     encoded = tuple(json.dumps(payload).encode("utf-8") for payload in payloads)
     path_bytes = os.fsencode(path)
@@ -1115,7 +1117,7 @@ def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inlin
         def terminate(self):
             pytest.fail("a completed ripgrep process should not be terminated")
 
-    small_sizes = tuple(len(path_bytes) + len(record) for record in encoded[:2])
+    small_sizes = tuple(len(path_bytes) + len(record) for record in encoded[1:3])
     monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
     monkeypatch.setattr(
         search.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess(),
@@ -1128,7 +1130,7 @@ def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inlin
     monkeypatch.setattr(
         search,
         "_RIPGREP_WORKER_RECORD_BYTE_LIMIT",
-        len(path_bytes) + len(encoded[2]) - 1,
+        len(path_bytes) + len(encoded[0]) - 1,
     )
     monkeypatch.setattr(search, "_search_process_worker_count", lambda: 2)
 
@@ -1139,7 +1141,7 @@ def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inlin
     assert small_sizes[0] < search._RIPGREP_BATCH_BYTE_LIMIT
     assert small_sizes[1] < search._RIPGREP_BATCH_BYTE_LIMIT
     assert sum(small_sizes) > search._RIPGREP_BATCH_BYTE_LIMIT
-    assert result == {str(path): Counter(qcow=2, cloud=1)}
+    assert result == {str(path): Counter(qcow=3, cloud=1)}
 
 
 def test_documents_uses_ripgrep_counts_for_supported_transcripts(tmp_path, monkeypatch):
