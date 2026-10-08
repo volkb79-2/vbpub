@@ -380,9 +380,7 @@ def _walk_files(root: Path, *, progress: Progress | None = None) -> Iterator[Pat
 def _claude_session_priority(session: _DiscoveredSession) -> int:
     source = Path(session.source)
     if source.parent.name == "subagents" and source.stem.startswith("agent-"):
-        agent_id = source.stem.removeprefix("agent-")
-        if agent_id.casefold() == session.session_id.casefold():
-            return 3
+        return 3
     if source.stem.casefold() == session.session_id.casefold():
         return 2
     return 1

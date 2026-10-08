@@ -1565,6 +1565,8 @@ def test_jsonl_last_activity_reads_unterminated_records_and_reports_long_scans(
     assert search._jsonl_last_activity(path) == "2026-01-01"
     path.write_text('{}\n{"timestamp":"2026-01-02"}\n', encoding="utf-8")
     assert search._jsonl_last_activity(path) == "2026-01-02"
+    path.write_text('{"timestamp": invalid}', encoding="utf-8")
+    assert search._jsonl_last_activity(path) is None
     path.write_text("", encoding="utf-8")
     assert search._jsonl_last_activity(path) is None
 
