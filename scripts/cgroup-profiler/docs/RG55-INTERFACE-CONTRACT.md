@@ -738,6 +738,14 @@ verifies `cgroup.procs` DAC permissions for the peer at every sampled
 ancestor, the hierarchy's mount identity, and the path's membership beneath
 the configured gates slice before returning counters.
 
+Checking every ancestor's `cgroup.procs` also closes thread-only migration:
+Linux's [cgroup-v2 migration rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#core-interface-files)
+require a writer moving a TID through `cgroup.threads` to have write access to
+`cgroup.procs` at the source/destination common ancestor. Since the observer
+walks the peer's ancestry through `/`, a peer that passes the check cannot
+move a process or thread to an unsampled sibling cgroup. The observer does not
+need to enumerate or trust sibling destinations.
+
 The daemon's cgroup namespace is private. For an outside peer, procfs can
 therefore report a path with leading `..` components. The daemon accepts such
 a path only when the full-root cgroup2 mount's `mountinfo` root consists of

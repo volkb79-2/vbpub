@@ -249,6 +249,12 @@ PIDs or sibling data. The daemon's own cgroup namespace is private too, so it
 maps outside-peer paths only when the leading `..` count exactly matches the
 full-root cgroup2 mount's `mountinfo` root; arbitrary normalization is
 refused. The response carries per-path limits, event counters, and mount ID.
+The DAC proof checks `cgroup.procs` on every ancestor through `/`. That also
+prevents thread-only migration through `cgroup.threads`: Linux's
+[cgroup-v2 migration rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#core-interface-files)
+require write access to `cgroup.procs` at the source/destination common
+ancestor for a TID move, so a peer cannot redirect its accounting to an
+unsampled sibling. The observer need not enumerate sibling destinations.
 
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The

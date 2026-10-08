@@ -7951,3 +7951,32 @@ rejudge may be used only where Assay validates the reused candidate identity.
 These historical artifacts do not change the current candidate's status:
 its registered gates, live probes, mutation gate, and independent review
 remain outstanding.
+
+### RW-503 — 2026-10-08 01:41:04 UTC — make the required daemon socket bind fail closed
+
+Static review found that `ciu.compose.yml.j2` still used Compose short syntax
+for the required `/run/cgprofile` host directory bind. Unlike the explicit
+long-form host binds beside it, short syntax can create a missing host source
+as an empty directory, hiding a missing host-setup prerequisite and leaving
+the daemon's sockets in the wrong mount. Change it to long-form bind syntax
+with `create_host_path: false`; pin both the required long form and absence of
+the short form in `test_deployment_contract.py`. README, DESIGN-GUIDE,
+CONSUMERS, and CHANGES now describe the failure behavior. This is within the
+current daemon deployment scope, not a live-host mutation.
+
+The same audit checked the observer's `cgroup.procs` DAC proof against
+thread-only movement. The kernel requires `cgroup.procs` write access at the
+source/destination common ancestor for a `cgroup.threads` move; because the
+observer checks the peer's full ancestor chain through `/`, this existing
+proof also blocks movement to an unsampled sibling. Document that rationale
+with the primary kernel reference in both byte-identical contract mirrors
+and the profiler DESIGN-GUIDE. No change to the observer's wire or policy is
+needed for this point.
+
+The implementation is committed on the feature branch as `930f0bba`, with
+the rationale and this ruling in its next commit. The interim main-first
+candidate `rg89-resource-observer-evidence-20261008-rw503` was created before
+this ruling and does not yet contain its log/contract clarification; it is
+superseded. Rebuild a fresh candidate from current `main` as first parent
+before any exact-tree gate. No registered gate or live acceptance probe has
+run on either candidate.
