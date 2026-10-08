@@ -61,9 +61,11 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
-   `R-43h`); and `resource_observer = "cgprofile"` for an Assay lane in
-   `tester-unified`, which exposes only the read-only observer socket to
-   recover hidden cgroup ancestors for native R2. It does not expose
+   `R-43h`); and `resource_observer = "cgprofile"` for an Assay or command
+   lane in `tester-unified`, which exposes only the read-only observer socket
+   to recover hidden cgroup ancestors for native R2. A command wrapper that
+   invokes Assay must preserve the inherited observer-path variable for its
+   Assay process. It does not expose
    `ctl.sock` or change the lane's private cgroup namespace. See the
    [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
    and [consumer setup](CONSUMERS.md#native-r2-resource-observer).

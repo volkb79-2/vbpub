@@ -9,7 +9,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Added
-- feat(run-gate): allow an Assay lane to opt into cgprofile's observer-only resource socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 57)
+- feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
 
 ### Fixed
 - fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)

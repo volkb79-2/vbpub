@@ -7836,23 +7836,30 @@ class TestResourceObserverLane:
     @pytest.mark.parametrize("lane, message", [
         ({"kind": "assay", "environment": "tester-unified",
          "resource_observer": "other"}, "must be 'cgprofile'"),
-        ({"kind": "command", "environment": "tester-unified",
+        ({"kind": "command", "environment": "bare-host",
          "resource_observer": "cgprofile"},
-         "requires an assay lane in tester-unified"),
+         "requires an assay or command lane in tester-unified"),
+        ({"kind": "sequence", "environment": "tester-unified",
+          "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
         ({"kind": "assay", "environment": "bare-host",
           "resource_observer": "cgprofile"},
-         "requires an assay lane in tester-unified"),
+         "requires an assay or command lane in tester-unified"),
     ])
     def test_invalid_observer_lane_refuses(self, lane, message):
         with pytest.raises(run_gate.GateError, match=message):
             run_gate.resource_observer_docker_flags(lane)
 
-    def test_load_validation_closes_observer_kind_and_environment(self):
-        with pytest.raises(run_gate.GateError, match="only for assay lanes"):
+    def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
+        run_gate._validate_lane(
+            "probe", {"kind": "command", "environment": "tester-unified",
+                      "argv": ["true"], "resource_observer": "cgprofile"},
+            "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="only for assay or command lanes"):
             run_gate._validate_lane(
-                "probe", {"kind": "command", "environment": "tester-unified",
-                          "argv": ["true"], "resource_observer": "cgprofile"},
-                "fixture")
+                "probe", {"kind": "sequence", "lanes": ["inner"],
+                          "resource_observer": "cgprofile"}, "fixture")
         with pytest.raises(run_gate.GateError,
                            match="environment = \\\"tester-unified\\\""):
             run_gate._validate_lane(
@@ -7900,15 +7907,16 @@ class TestResourceObserverLane:
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"})
 
+    @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, kind):
         socket_path = tmp_path / "resource-observer.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
         assert run_gate.resource_observer_docker_flags({
-            "kind": "assay", "environment": "tester-unified",
+            "kind": kind, "environment": "tester-unified",
             "resource_observer": "cgprofile"}) == [
                 "--mount",
                 f"type=bind,source={socket_path},target="
@@ -7919,8 +7927,9 @@ class TestResourceObserverLane:
             ]
         assert "ctl.sock" not in run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE
 
-    def test_assay_container_argv_wires_the_opted_in_observer(
-            self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("kind", ["assay", "command"])
+    def test_container_argv_wires_the_opted_in_observer(
+            self, tmp_path, monkeypatch, kind):
         socket_path = tmp_path / "resource-observer.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
@@ -7929,10 +7938,16 @@ class TestResourceObserverLane:
         repo = tmp_path / "repo"
         repo.mkdir()
         lane = {
-            "kind": "assay", "assay_lane": "r2",
-            "environment": "tester-unified", "resource_observer": "cgprofile",
-            "budget": "4h", "resources": {"cpus": "3"},
+            "kind": kind,
+            "environment": "tester-unified",
+            "resource_observer": "cgprofile",
+            "budget": "4h",
+            "resources": {"cpus": "3"},
         }
+        if kind == "assay":
+            lane["assay_lane"] = "r2"
+        else:
+            lane["argv"] = ["bash", "-c", "true"]
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
         monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_kw: None)
         monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_kw: [])
@@ -7943,6 +7958,7 @@ class TestResourceObserverLane:
         monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
         monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
         monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_kw: "true")
         assembled = []
         real_join = run_gate.shlex.join
 

@@ -749,8 +749,11 @@ outside the gates slice refuses the query.
 ### 9.3 Consumer rules
 
 Run-Gate's closed `resource_observer = "cgprofile"` lane key is legal only
-for an Assay lane in `tester-unified`. Before launch it verifies the fixed
-host socket's type and ownership/mode relationship to its root-owned parent;
+for an Assay lane or command lane in `tester-unified`. The explicit lane
+declaration is the opt-in; command wrappers that launch Assay R2 preserve the
+inherited endpoint variable for that process. The observer remains a
+read-only query bound to the command's own peer. Before launch Run-Gate verifies the fixed host
+socket's type and ownership/mode relationship to its root-owned parent;
 missing or unsafe state is an infrastructure refusal. It mounts only the
 observer socket read-only into the test container, adds the observed socket
 GID, and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. It

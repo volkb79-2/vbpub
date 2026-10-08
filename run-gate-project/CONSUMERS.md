@@ -219,9 +219,26 @@ not the pin table, owns its mutation budget.
 Native Assay R2 must inspect the candidate cgroup and every enforcing
 ancestor; a private cgroup namespace hides that ancestry, and Assay refuses
 instead of guessing. When the existing cgprofile daemon is available, an
-Assay lane may opt in with `resource_observer = "cgprofile"` as shown above.
-This value is closed and legal only for `kind = "assay"` with the explicit
-`tester-unified` environment.
+Assay or command lane in `tester-unified` may explicitly opt in with
+`resource_observer = "cgprofile"` as shown above. This value is closed and
+legal only for `kind = "assay"` or `kind = "command"` with the explicit
+`tester-unified` environment. It exposes a read-only query about that lane's
+own cgroup ancestry; it is intended for native Assay R2 or a command wrapper
+that launches it. Such a wrapper must preserve the inherited
+`ASSAY_RESOURCE_OBSERVER_SOCKET` variable for the Assay process. Opting in
+does not grant placement or daemon-control authority.
+
+For a command-wrapped qualification such as Assay's B105 self-qualification,
+the declaration is:
+
+```toml
+[lanes.self-qualification]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
+resource_observer = "cgprofile"
+clean_tree = true
+```
 
 Run-Gate checks the fixed
 `/run/cgprofile/resource-observer.sock` source and mounts only that socket

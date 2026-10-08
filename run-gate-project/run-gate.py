@@ -14,9 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 57  # rev 57: RG-89 Assay resource-observer socket
-# R2 Assay lanes may opt into the cgprofile observer-only socket; its mount,
-# GID grant, and private-namespace constraints are closed in the lane schema.
+__revision__ = 58  # rev 58: RG-89 observer for Assay and wrapped qualification lanes
+# R2 Assay lanes and explicit tester-unified command wrappers may opt into
+# the cgprofile observer-only socket; its mount, GID grant, and namespace
+# constraints are closed in the lane schema.
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -924,9 +925,9 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if table["resource_observer"] != "cgprofile":
             fail(f"{where} [lanes.{name}]: 'resource_observer' must be "
                  "'cgprofile'")
-        if kind != "assay":
+        if kind not in ("assay", "command"):
             fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
-                 "only for assay lanes")
+                 "only for assay or command lanes")
         if table.get("environment") != "tester-unified":
             fail(f"{where} [lanes.{name}]: 'resource_observer' requires "
                  "environment = \"tester-unified\"")
@@ -6017,8 +6018,10 @@ def resource_observer_docker_flags(lane: dict) -> list[str]:
         return []
     if lane.get("resource_observer") != "cgprofile":
         fail("lane resource_observer must be 'cgprofile'")
-    if lane.get("kind") != "assay" or lane.get("environment") != "tester-unified":
-        fail("resource_observer='cgprofile' requires an assay lane in tester-unified")
+    if lane.get("kind") not in ("assay", "command") \
+            or lane.get("environment") != "tester-unified":
+        fail("resource_observer='cgprofile' requires an assay or command lane "
+             "in tester-unified")
     socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
     try:
         parent = os.lstat(socket_path.parent)

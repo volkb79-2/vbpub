@@ -7816,6 +7816,33 @@ candidate's first parent, tree, nonzero changed-line/branch totals, and full
 coverage in the saved verdict. Keep the candidate HEAD unchanged for every
 gate and review; any follow-up commit requires fresh exact-tree evidence.
 
+### RW-497 — 2026-10-08 00:51:47 UTC — allow the read-only observer on wrapped Assay qualification
+
+RG-89's first Run-Gate contract limited `resource_observer = "cgprofile"`
+to `kind = "assay"`. The exact Assay B105 `self-qualification` lane is
+intentionally a `kind = "command"` wrapper: it builds a deterministic
+same-commit wheel, creates isolated build/run environments, and verifies the
+registered same-commit gate receipt. Replacing that script with a direct
+Assay lane would discard those qualification guarantees. With the original
+restriction, Assay R2 inside the wrapper inherited no observer socket and
+could not see the host gates ancestry in tester-unified's private cgroup
+namespace.
+
+Extend the closed opt-in to `kind = "command"` only when it explicitly uses
+`environment = "tester-unified"`; keep native Assay lanes supported. Run-Gate
+still validates the fixed socket and mounts only the separate observer-only
+socket read-only, grants only its observed GID, and supplies the endpoint
+variable. The daemon still binds each query to the peer's native thread and
+returns only that peer's gates-slice ancestry, with no caller-selected path,
+sibling query, control verb, Docker socket, or host namespace. The wrapper
+must preserve `ASSAY_RESOURCE_OBSERVER_SOCKET` for its Assay process.
+
+This revises only the runner-kind restriction in RW-487/R-46, not the wire
+contract or trust boundary. Bump Run-Gate to rev58; update its loader/argv
+tests, SPEC/README/DESIGN-GUIDE/CONSUMERS, the byte-identical contract mirrors,
+and Assay's B105 lane declaration. Exact tests and fresh review remain
+required. This ruling authorizes implementation, not merge or release.
+
 ### RW-496 — 2026-10-08 00:47:05 UTC — expose cgprofile's observer to its own R2 lane
 
 The cgroup-profiler `r2` lane was still declared as `kind = "command"`. Run-
@@ -7835,3 +7862,22 @@ handling, and the read-only observer mount consistently. `./run-gate.py
 validation only: do not launch cgprofile R2 until the updated daemon has
 created `/run/cgprofile/resource-observer.sock` and its live protocol probe
 passes.
+
+### RW-498 — 2026-10-08 00:52:53 UTC — define command-lane observer opt-in honestly
+
+RW-497's B105 motivation is narrow, but Run-Gate's implementation can only
+reliably validate the declared command lane kind and environment. It cannot
+prove that arbitrary argv or a script will launch Assay R2 without brittle
+command-string inspection. The observer endpoint itself accepts only a
+read-only resource query bound to the connecting command's peer and returns
+that peer's own ancestry; it grants no placement or control authority.
+
+Therefore `resource_observer = "cgprofile"` is legal on any explicitly
+opted-in `kind = "command", environment = "tester-unified"` lane, as well
+as native Assay lanes in that environment. This broadens the opt-in surface,
+not the observer's query authority. The intended command use remains wrappers
+that run Assay R2 (including B105 self-qualification); they must preserve
+`ASSAY_RESOURCE_OBSERVER_SOCKET` for Assay. README, SPEC, DESIGN-GUIDE,
+CONSUMERS, CHANGES, and both byte-identical contract mirrors must state the
+actual scope and trust boundary. This ruling authorizes implementation and
+review; it does not authorize merge or release.
