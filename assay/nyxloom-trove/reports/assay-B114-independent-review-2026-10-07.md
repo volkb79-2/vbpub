@@ -165,3 +165,13 @@ candidate call site is not reached. `HEAD` was
 `466a94eebb1028023237adf9f2dba09eaef8d811` and status was clean before and
 after the `.codex2` read-only review. A corrected-tip registered gate remains
 pending.
+
+## Follow-up review of `18476448f`
+
+The Sol xhigh review of the cap correction from `65a912f3e` reported **no
+findings**. It confirmed the fixture discovers three sites and now sets
+`max_mutants=3`; the candidate-only receipt seam remains isolated, and the test
+fails if the candidate factory is not reached. `HEAD` was
+`18476448f946b15ce7df96835cec4518d02a09c7` and status was clean before and
+after the `.codex2` read-only review. Merge and the corrected-tip registered
+gate remain pending.
