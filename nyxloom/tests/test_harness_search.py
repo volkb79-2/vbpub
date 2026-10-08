@@ -1127,11 +1127,6 @@ def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inlin
     monkeypatch.setattr(search, "_RIPGREP_MAX_PENDING_PER_WORKER", 1)
     monkeypatch.setattr(search, "_RIPGREP_BATCH_RECORD_LIMIT", 128)
     monkeypatch.setattr(search, "_RIPGREP_BATCH_BYTE_LIMIT", max(small_sizes) + 1)
-    monkeypatch.setattr(
-        search,
-        "_RIPGREP_WORKER_RECORD_BYTE_LIMIT",
-        len(path_bytes) + len(encoded[0]) - 1,
-    )
     monkeypatch.setattr(search, "_search_process_worker_count", lambda: 2)
 
     result = search._ripgrep_jsonl_counts(
@@ -1141,6 +1136,7 @@ def test_ripgrep_flushes_byte_limited_batches_and_counts_oversized_records_inlin
     assert small_sizes[0] < search._RIPGREP_BATCH_BYTE_LIMIT
     assert small_sizes[1] < search._RIPGREP_BATCH_BYTE_LIMIT
     assert sum(small_sizes) > search._RIPGREP_BATCH_BYTE_LIMIT
+    assert len(path_bytes) + len(encoded[0]) > search._RIPGREP_BATCH_BYTE_LIMIT
     assert result == {str(path): Counter(qcow=3, cloud=1)}
 
 

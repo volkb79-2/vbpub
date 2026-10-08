@@ -52,7 +52,6 @@ _RIPGREP_MAX_WORKERS = 4
 _RIPGREP_MAX_PENDING_PER_WORKER = 2
 _RIPGREP_BATCH_RECORD_LIMIT = 128
 _RIPGREP_BATCH_BYTE_LIMIT = 1024 * 1024
-_RIPGREP_WORKER_RECORD_BYTE_LIMIT = 4 * 1024 * 1024
 _METADATA_KEYS = {
     "agent",
     "cli_version",
@@ -1212,7 +1211,7 @@ def _ripgrep_jsonl_counts(
                                 f"Counting {client} candidates with {parallel_workers} workers",
                             )
                         record_size = len(raw_path) + len(raw_record)
-                        if record_size > _RIPGREP_WORKER_RECORD_BYTE_LIMIT:
+                        if record_size > _RIPGREP_BATCH_BYTE_LIMIT:
                             if queued_records:
                                 _submit_ripgrep_batch(
                                     executor,
