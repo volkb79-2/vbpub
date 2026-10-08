@@ -8190,3 +8190,23 @@ an `OK` record paired with nonzero status must still fail. A regression asserts
 that inconsistent `OK`/nonzero output is rejected and the owned probe is
 removed. Rerun the registered gate on the committed repair with Run-Gate rev58;
 no R0/R1/R2/R3 result has passed on this candidate yet.
+
+### RW-515 — 2026-10-08 20:37:28 UTC — pass the observer endpoint into Assay's analysis lane
+
+The registered `tester-unified` phase passed on
+`dc1ffcd59f424fd7c6a09e34a459d22aac4e2e40`, but the overall gate then failed
+in the separate `analysis` lane after 584.037 seconds. Its suite reported
+513 passed and 2 failed; changed-target coverage was 2,052/2,053 lines and
+996/998 branches because those two real-R2 integration tests refused before
+judging candidates. The refusal was correct: the tester container's private
+cgroup namespace hid ancestors, and `[lanes.analysis].env_passthrough` allowed
+only `PATH`, dropping the already-mounted read-only
+`ASSAY_RESOURCE_OBSERVER_SOCKET` before pytest. The accompanying
+`judge_provenance` diagnostic is expected for an in-process source-tree test;
+the fatal status was `CGROUP_OBSERVATION_UNAVAILABLE`, not provenance.
+
+Forward the observer socket path through the analysis lane and pin that
+configuration with a lane-contract test. This preserves private namespaces and
+uses the observer only for the documented hidden-ancestor case. Rerun the
+registered `tester-unified` gate on the committed tree; no overall gate has
+passed on the candidate yet.

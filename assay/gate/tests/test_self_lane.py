@@ -92,6 +92,12 @@ def test_b105_run_gate_lanes_provide_observer_to_nested_r2_tests():
         assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
 
 
+def test_analysis_lane_forwards_observer_to_real_nested_r2_tests():
+    lane = load_lane_file(SELF_LANE_FILE).lane("analysis")
+
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in lane.env_passthrough
+
+
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
     # A-046/A-133 still govern the ordinary release gate. B105's new lane is
     # the explicit place where self-qualification policy is declared.

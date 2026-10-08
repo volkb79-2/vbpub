@@ -307,7 +307,10 @@ argv = [
   "--cov-report=json:.assay/coverage-analysis.json",
 ]
 env = {}
-env_passthrough = ["PATH"]
+# O15/O5 analysis tests invoke real native R2 runs in-process. The outer
+# tester-unified container provides this read-only endpoint; forward its path
+# into the analysis test process so the private cgroup namespace stays intact.
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 budget = "60m"
 allow_argv_append = false
 
