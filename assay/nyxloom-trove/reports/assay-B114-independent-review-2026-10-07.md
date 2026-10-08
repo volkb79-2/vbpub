@@ -175,3 +175,20 @@ fails if the candidate factory is not reached. `HEAD` was
 `18476448f946b15ce7df96835cec4518d02a09c7` and status was clean before and
 after the `.codex2` read-only review. Merge and the corrected-tip registered
 gate remain pending.
+
+## Follow-up SQL witness fixture correction
+
+The registered `tester-unified` gate on main merge
+`363a0412d14864fb9c35f86c3843cab6e8614603` passed Assay's unit lane, the
+analysis lane, and independent self-hosting (7 passed), then exited 1 in SQL
+qualification because the normalized v15 verdict differed from its frozen
+witness. The SQL matrix and control checks passed. The fixture lacked explicit
+nulls emitted by the current serializer: `r2_command`, `equivalence_ledger`,
+`liveness.cpu_window_s`, and `liveness.idle_floor_s`.
+
+The first follow-up Sol xhigh review found the two missing liveness fields.
+After adding all four null fields, the exact-diff Sol xhigh review reported no
+findings. `HEAD` was `af46e6fde3f53ac1c854018c8514b10ddb8ac819` and the sole
+worktree change was the SQL witness fixture before and after review. The
+corrected merge still needs the registered gate and self-qualification
+preflight.
