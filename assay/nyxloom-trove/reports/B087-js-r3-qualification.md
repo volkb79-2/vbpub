@@ -6,11 +6,12 @@
 
 **Historical qualification:** operator-reported PASS for both JavaScript R3 mechanisms; the detailed verdicts and verifier results were not retained.
 
-**Current status:** this report archives the original attempt. The current
-CommonJS/global-shadowing/lint-compatible follow-up has not been requalified
-against dstdns. Do not treat B087 as real-consumer-qualified until both lanes
-are rerun against the current transform and their full verdicts and separate
-`assay verify` transcripts are retained.
+**Current status (2026-10-08):** this report archives the original attempt.
+The current CommonJS/global-shadowing/lint-compatible follow-up has not been
+requalified against dstdns. The B087 branch has been rebased onto Assay `main`
+at `6086d4c9`; B087 remains unqualified until both dstdns lanes run against
+the current transform and retain their full verdicts and separate
+`assay verify` transcripts.
 
 ## Original run identity (operator-reported)
 
@@ -94,5 +95,4 @@ logs.
 This is an archival record of the first attempt; it does not close B087's
 acceptance. The current implementation remains unqualified against dstdns
 until both canary lanes are rerun with verdict JSON and verifier transcripts
-retained before cleanup. The branch remains unmerged and unreleased while B114
-integration proceeds.
+retained before cleanup. The B087 branch remains unmerged and unreleased.

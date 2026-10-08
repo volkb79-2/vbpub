@@ -190,7 +190,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
-- B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — REGISTERED on `assay-b087-js-canary`; current dstdns qualification, final review, and registered gate pending; integration held for the B114 gate slot
+- B087 — JavaScript/TypeScript canary (R3) — REGISTERED on `assay-b087-js-canary`, rebased onto main `6086d4c9`; current dstdns qualification and registered Assay gate pending; no merge/release until qualification and gate evidence are complete
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
@@ -9493,7 +9493,7 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
-**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07); local real-Vitest oracles cover the current transforms. Current dstdns qualification, final Sol xhigh review, and registered Assay gate remain pending. Integration is held for the B114 gate slot; not merged or released.**
+**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07), rebased onto main `6086d4c9` (2026-10-08). Local real-Vitest oracles cover the current transforms. Current dstdns qualification and the registered Assay gate remain pending; the branch is not merged or released.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
