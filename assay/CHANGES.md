@@ -11,6 +11,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   repin Assay before relying on v15 verdict fields.
 
 ### Added
+- Add opt-in native R2 resource-counter observation through cgprofile's
+  observer-only Unix socket when the local cgroup reader proves relevant
+  ancestors are hidden; bind replies to the caller's native thread and fail
+  closed on identity or ancestry mismatch (RG-89).
 - Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
   command, ordered collection and hook facts; a `witness-cold` kill records its
   failed test call and labels later tests unrun. Hook trust is pinned to
