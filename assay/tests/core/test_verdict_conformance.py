@@ -24,8 +24,8 @@ terminals — reproduced against the installed console script, not inferred.
 rather than being deleted so that re-narrowing the audit is a visible,
 argued edit rather than a silent one.
 
-**P21 takes the vocabulary to 26 pairs**, and the audit moves with the
-capability rather than after it (A-141). Four of the seven new reasons were
+**P21 takes the vocabulary to 26 pairs; B114 adds the 27th**, and the audit
+moves with the capability rather than after it (A-141). Four of the seven new reasons were
 producer-reachable and fixtured here immediately; the three that no code in
 that build could render into an artifact were listed in
 ``EXCLUDED_ENTIRELY`` with the argument for each — P34/W3 makes one of the
@@ -133,6 +133,9 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "HEAD_CHANGED",
         "BASE_IS_HEAD",
         "EMPTY_COVERAGE",
+        # B114: resource counters were unavailable, so no mutation result is
+        # measured and the unknown cause must not become a classified kill.
+        "CGROUP_OBSERVATION_UNAVAILABLE",
         "MISSING_ATTESTATION",
         "STALE_ATTESTATION",
         # P21/A-163; P34/W3 lands the producer (A-253) --
@@ -1046,6 +1049,9 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             # policy has always meant -- assay's own engine, with assay's own
             # jobs/max_mutants/operators beside it.
             "producer": "native",
+            "cold_witness_kills": False,
+            "r2_command": None,
+            "equivalence_ledger": None,
             "jobs": 4,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
@@ -1096,6 +1102,9 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             # producer is stated, not implied, and this fixture is the native
             # side of that fork.
             "producer": "native",
+            "cold_witness_kills": False,
+            "r2_command": None,
+            "equivalence_ledger": None,
             "jobs": 2,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
@@ -1230,7 +1239,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 14,
+        "schema_version": VERDICT_SCHEMA_VERSION,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1344,9 +1353,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 14: a verdict "
+        f"schema_version 2 is not this verifier's version {VERDICT_SCHEMA_VERSION}: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 14"
+        f"with an assay whose VERDICT_SCHEMA_VERSION is {VERDICT_SCHEMA_VERSION}"
     ]
 
 
@@ -1374,9 +1383,9 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
 #: bump fails here; a bump fails with a KeyError until its digest is added.
 #: Carries forward the retired W9 gate phase's
-#: `test_shipped_schema_is_byte_identical_to_the_locked_v14_asset`.
+#: `test_shipped_schema_is_byte_identical_to_the_locked_v15_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    14: "6b0af8b1f083e5e9ece67963585944384bbebb56bee8e05b592a3fcaaa1f4b36",
+    15: "89d018d68705904f9e609ee528e3f48dc4f4452c0c56c2f525946f187c698621",
 }
 
 
@@ -1501,7 +1510,15 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
     ingested document.
     """
     judgment_r2 = document["judgment"]["r2"]
-    for assay_own_policy in ("jobs", "max_mutants", "operators"):
+    for assay_own_policy in (
+        "jobs",
+        "max_mutants",
+        "operators",
+        "cold_witness_kills",
+        "r2_command",
+        "equivalence_ledger",
+        "liveness",
+    ):
         judgment_r2.pop(assay_own_policy, None)
     judgment_r2["producer"] = "ingested"
     judgment_r2["producer_tool"] = {

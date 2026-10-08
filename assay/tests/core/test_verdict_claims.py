@@ -349,6 +349,7 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
+                cold_witness_kills=False,
             ),
         ),
         snapshot_policy=SnapshotPolicy(selection="repository"),

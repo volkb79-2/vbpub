@@ -1,0 +1,158 @@
+{
+ "schema_version": 15,
+ "assay_version": "0.1.0",
+ "lane": "package",
+ "commit": "111111111111111111111111111111111111111a",
+ "outcome": "PASS",
+ "exit_code": 0,
+ "started": "2026-08-07T14:00:00+00:00",
+ "ended": "2026-08-07T14:00:05+00:00",
+ "declared_rigor": [
+  "R0",
+  "R2"
+ ],
+ "declared_evidence": [],
+ "argv_declared": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_appended": [],
+ "argv_effective": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_modified": false,
+ "env_declared": {},
+ "env_effective": {},
+ "env_passthrough": [],
+ "env_effective_passthrough_sha256": {},
+ "scope": "S1",
+ "enforcement": "gate",
+ "judgment": {
+  "resolved": {
+   "language": "python",
+   "source_roots": [
+    "pkg"
+   ],
+   "base": "0000000000000000000000000000000000000a"
+  },
+  "r2": {
+   "producer": "native",
+   "cold_witness_kills": false,
+   "r2_command": null,
+   "equivalence_ledger": {
+    "path": "mutation-equivalence-ledger.toml",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "entry_count": 1,
+    "audit_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+   },
+   "jobs": 1,
+   "max_mutants": 50,
+   "operators": [
+    "python:compare-swap",
+    "python:boolop-swap"
+   ],
+   "kill_attribution": "unattributed",
+   "mode": "changed_lines"
+  }
+ },
+ "snapshot_policy": {
+  "selection": "repository"
+ },
+ "claims": [
+  {
+   "rigor": "R0",
+   "source": "computed",
+   "status": "PASS",
+   "verified_by_assay": true
+  },
+  {
+   "rigor": "R2",
+   "source": "computed",
+   "status": "PASS",
+   "verified_by_assay": true,
+   "mutation": {
+    "candidate_count": 2,
+    "total": 2,
+    "killed": [
+     {
+      "path": "pkg/checks.py",
+      "lineno": 12,
+      "start_byte": 100,
+      "end_byte": 101,
+      "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+      "operator": "python:compare-swap",
+      "description": "Lt->LtE",
+      "candidate_id": "e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87",
+      "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
+      "mutated_file_sha256": "c0bb2c7dd2c2910b442c0f957dbf27a69755b641dbdc63d1ce39c550b4194a22",
+      "execution": {
+       "mode": "full"
+      },
+      "resource_limit_evidence": {
+       "cgroup_version": 2,
+       "pids_events": {
+        "max": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       },
+       "memory_events": {
+        "max": {
+         "after": 0,
+         "before": 0,
+         "delta": 0
+        },
+        "oom": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        },
+        "oom_group_kill": {
+         "before": 0,
+         "after": 0,
+         "delta": 0
+        }
+       }
+      }
+     }
+    ],
+    "survived": [],
+    "crashed": [],
+    "budget_exceeded": [],
+    "equivalent": [
+     {
+      "path": "pkg/checks.py",
+      "lineno": 18,
+      "start_byte": 240,
+      "end_byte": 243,
+      "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+      "operator": "python:boolop-swap",
+      "description": "And->Or",
+      "candidate_id": "ab2de209fe03afc21aa4228b33b9de4de4b97d64de02eca186b710dabde3f8d7",
+      "source_sha256": "4d6ae68c084958848c0f45ca958aeca0ebd5089d71b0e4d8aa27e70f20001298",
+      "mutated_file_sha256": "50113ee9ec18d5dd071f232afbe65b46469ccd7cd1faa72d0fb740b04fc21968",
+      "execution": {
+       "mode": "ledger",
+       "anchor": "decision:python:boolop-swap:equivalent"
+      }
+     }
+    ],
+    "hung": [],
+    "candidate_ids": [
+     "e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87",
+     "ab2de209fe03afc21aa4228b33b9de4de4b97d64de02eca186b710dabde3f8d7"
+    ]
+   }
+  }
+ ],
+ "evidence": []
+}

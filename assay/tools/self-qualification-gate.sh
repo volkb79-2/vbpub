@@ -4,6 +4,9 @@
 # this inner driver builds the selected committed source as a wheel, runs the
 # declared lane against its isolated snapshots, and verifies the retained
 # verdict before reporting success.
+# A full B105 run reuses one persisted campaign deadline across preflight and
+# R2. To deliberately restart the same commit after expiry, move that deadline
+# and both bound mutation-state directories aside together.
 set -euo pipefail
 
 die() { printf 'self-qualification-gate: %s\n' "$*" >&2; exit 2; }
@@ -66,6 +69,9 @@ assay_git -C "$scratch/source" checkout --quiet --detach "$source_commit"
   || die "private clone HEAD differs from selected source commit"
 [[ "$(assay_git -C "$scratch/source" rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
   || die "private clone tree differs from selected source tree"
+source_epoch="$(assay_git -C "$scratch/source" log -1 --format=%ct "$source_commit")"
+[[ "$source_epoch" =~ ^[0-9]+$ ]] \
+  || die "cannot derive SOURCE_DATE_EPOCH from selected commit $source_commit"
 
 # S1 (B123): the full lane needs the registered tester-unified gate to have passed
 # at this exact commit and tree. `./run-gate.py tester-unified` writes this receipt
@@ -109,6 +115,7 @@ PYEOF
 
 echo "B105_PHASE=build-selected-wheel"
 mkdir -p "$scratch/dist"
+SOURCE_DATE_EPOCH="$source_epoch" \
 "$scratch/build-venv/bin/python" -m pip wheel \
   --no-index \
   --no-build-isolation \
@@ -144,6 +151,29 @@ print(metadata_version)
 PYEOF
 )"
 
+wheel_digest="$(sha256sum "$wheel" | cut -d' ' -f1)"
+if [[ "$requested_lane" == "self-qualification" ]]; then
+  campaign="b105-${source_commit:0:12}"
+else
+  campaign="b105-pre-${source_commit:0:12}"
+fi
+deadline=".assay/campaign-deadline-$campaign.json"
+
+check_campaign_wheel_digest() {
+  "$tester_python" "$scratch/source/assay/tools/b105_report_check.py" \
+    --deadline-wheel-check-only \
+    --deadline "$deadline" \
+    --expected-wheel-sha256 "$wheel_digest"
+}
+
+# Bind the wheel before installing the run closure or invoking plan/preflight/
+# R2. A same-OID retry must not spend hours on an artifact that the persisted
+# campaign deadline cannot accept.
+if [[ -e "$deadline" || -L "$deadline" ]]; then
+  check_campaign_wheel_digest \
+    || die "existing campaign deadline does not bind this deterministic source wheel"
+fi
+
 echo "B105_PHASE=install-wheel-and-tester-test-closure"
 "$scratch/run-venv/bin/python" -m pip install --no-index --no-deps "$wheel"
 tester_site="$("$tester_python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
@@ -170,19 +200,58 @@ assert pytest.__version__ and coverage.__version__
 print(f"B105_TEST_CLOSURE=pytest-{pytest.__version__},coverage-{coverage.__version__}")
 PYEOF
 
-wheel_digest="$(sha256sum "$wheel" | cut -d' ' -f1)"
-
 export PATH="$scratch/run-venv/bin:$PATH"
 assay_bin="$scratch/run-venv/bin/assay"
 
+if [[ "$requested_lane" == "self-qualification" ]]; then
+  if [[ ! -e "$deadline" ]]; then
+    if "$assay_bin" campaign init --file assay.toml \
+        --campaign "$campaign" \
+        --lane self-qualification \
+        --lane self-qualification-preflight \
+        --hours 8 \
+        --state-dir .assay/mutation-state-self-qualification \
+        --state-dir .assay/mutation-state-self-qualification-preflight \
+        --wheel-sha256 "$wheel_digest"; then
+      :
+    else
+      init_status=$?
+      echo "B105_CAMPAIGN_INIT_REFUSED=1" >&2
+      exit "$init_status"
+    fi
+  fi
+else
+  if [[ ! -e "$deadline" ]]; then
+    if "$assay_bin" campaign init --file assay.toml \
+        --campaign "$campaign" \
+        --lane self-qualification-preflight \
+        --hours 1 \
+        --state-dir .assay/mutation-state-self-qualification-preflight \
+        --wheel-sha256 "$wheel_digest"; then
+      :
+    else
+      init_status=$?
+      echo "B105_CAMPAIGN_INIT_REFUSED=1" >&2
+      exit "$init_status"
+    fi
+  fi
+fi
+echo "B105_CAMPAIGN_DEADLINE=$deadline"
+check_campaign_wheel_digest \
+  || die "persisted campaign deadline does not bind this deterministic source wheel"
+
 run_and_verify_lane() {
   local lane="$1" run_status=0 expected_rigor coverage_archive_root coverage_archive_attempt
+  local remaining_s
   local verdict_path=".assay/verdict-$lane.json"
   local progress_path=".assay/progress-$lane.jsonl"
   local state_path=".assay/mutation-state-$lane"
   local plan_path=".assay/plan-$lane.json"
+  local r2_manifest_path=".assay/r2-manifest-$lane.txt"
   local -a receipt_args=()
   local -a plan_args=()
+  local -a r2_manifest_args=()
+  local -a lane_flags=()
   [[ "$lane" == "self-qualification" ]] && receipt_args=(--tester-unified-receipt "$receipt")
 
   case "$lane" in
@@ -202,6 +271,9 @@ run_and_verify_lane() {
       expected_rigor="R0,R1,R2,R3"
       unset ASSAY_B105_COVERAGE_SOURCE ASSAY_B105_COVERAGE_ARCHIVE_DIR \
         ASSAY_B105_SOURCE_COMMIT ASSAY_B105_SOURCE_TREE
+      rm -f -- "$r2_manifest_path"
+      lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")
+      r2_manifest_args=(--r2-manifest "$r2_manifest_path")
       ;;
   esac
 
@@ -212,15 +284,36 @@ run_and_verify_lane() {
   fi
 
   echo "B105_PHASE=assay-run-$lane"
-  if "$assay_bin" run "$lane" --file assay.toml \
+  remaining_s="$("$scratch/run-venv/bin/python" - "$deadline" "$lane" <<'PYEOF'
+from datetime import datetime, timezone
+import math
+import sys
+from pathlib import Path
+
+from assay.cli import _parse_campaign_deadline
+
+_, _, expires_at = _parse_campaign_deadline(Path(sys.argv[1]), lane=sys.argv[2])
+remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+print(max(0, math.floor(remaining)))
+PYEOF
+)"
+  if timeout --verbose --signal=TERM --kill-after=30s \
+      "$((remaining_s + 120))s" "$assay_bin" run "$lane" --file assay.toml \
       --require-judge-provenance \
       --resume \
       --progress "$progress_path" \
       --state-dir "$state_path" \
-      --verdict-json "$verdict_path"; then
+      --verdict-json "$verdict_path" \
+      --campaign-deadline "$deadline" \
+      "${lane_flags[@]}"; then
     run_status=0
   else
     run_status=$?
+  fi
+
+  if (( run_status >= 124 )); then
+    echo "B105_TIMEOUT_FAILSAFE=1" >&2
+    return "$run_status"
   fi
 
   echo "B105_PHASE=assay-verify-$lane"
@@ -238,13 +331,18 @@ run_and_verify_lane() {
       --expected-version "$version" \
       --expected-wheel-sha256 "$wheel_digest" \
       --producer-exit "$run_status" \
+      --deadline "$deadline" \
       ${plan_args[@]+"${plan_args[@]}"} \
+      ${r2_manifest_args[@]+"${r2_manifest_args[@]}"} \
       ${receipt_args[@]+"${receipt_args[@]}"} || return 2
   else
     return "$run_status"
   fi
   [[ $run_status -eq 0 ]] || return "$run_status"
   echo "B105_VERIFIED_LANE=$lane"
+  if [[ "$lane" == "self-qualification" ]]; then
+    echo "B105_R2_MANIFEST=$r2_manifest_path"
+  fi
 }
 
 if [[ "$requested_lane" == "self-qualification-preflight" ]]; then

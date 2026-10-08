@@ -7778,3 +7778,23 @@ declared tester-unified container with 1 GiB memory, 16 GiB swap, and 3 CPUs
 under `dev-gates.slice`; the daemon's optional DAMON start still returned
 `EBUSY`. Exact-tree Assay R1/R3, R2 after observer deployment, Run-Gate
 full-gate, and review remain pending.
+
+### RW-494 — 2026-10-08 00:31:25 UTC — reconcile RG-89 with B114/B148
+
+Assay R1 passed on exact pre-reconciliation tree
+`ac8bac78e039cb8251a05bf9a4e2e64a8c7edfe7`: 53/53 changed executable
+lines and 22/22 changed branches, with no exclusions. Current local `main`
+had advanced to `363a0412d14864fb9c35f86c3843cab6e8614603` with B114
+cold-witness identity `/8` and B148's selection-specific pre-R0 visibility
+check. The RG-89 branch is being integrated with that tree.
+
+Binding reconciliation: preserve B148's refusal semantics, but have its
+preflight call the same local-first reader and explicit observer fallback as
+candidate sampling. The observer is consulted only when the local reader
+specifically proves ancestors hidden; test containers remain in private
+cgroup namespaces and do not receive `ctl.sock` or host cgroup namespaces.
+Keep B148 as A-484 and assign the RG-89 observer decision A-485. Because B114
+already advanced the judge identity to `/8`, the combined observer policy
+advances it to `/9`; the mutation-state schema remains unchanged. The merged
+tree requires fresh exact-tip gates and review; the R1 result above is evidence
+only for `ac8bac78e`.

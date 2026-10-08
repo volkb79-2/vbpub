@@ -228,6 +228,7 @@ def _native_r2(**overrides) -> JudgmentR2:
         "max_mutants": 10,
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",
+        "cold_witness_kills": False,
     }
     values.update(overrides)
     return JudgmentR2(**values)
@@ -278,7 +279,14 @@ def test_native_r2_derived_budget_lets_an_int_beyond_float_range_overflow():
 
 
 def _liveness(**overrides):
-    values = {"active": True, "reason": "x", "plugin": None}
+    active = overrides.get("active", True)
+    values = {
+        "active": active,
+        "reason": "x",
+        "plugin": "p" if active else None,
+        "cpu_window_s": 30.0 if active else None,
+        "idle_floor_s": 15.0 if active else None,
+    }
     values.update(overrides)
     return values
 

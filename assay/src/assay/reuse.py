@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 from .errors import AssayError, Outcome, ReasonCode
 
 MAX_REUSE_ARTIFACT_BYTES = 16 * 1024 * 1024
-LEGACY_COLD_START_VERSIONS = frozenset({12, 13})
+LEGACY_COLD_START_VERSIONS = frozenset({12, 13, 14})
 
 
 @record
@@ -27,7 +27,7 @@ class ReuseSource:
 
 
 def load_reuse_source(path: str | Path) -> ReuseSource:
-    """Read one bounded artifact; v12/v13 are recognized without their claims."""
+    """Read one bounded artifact; v12-v14 are recognized without their claims."""
     source_path = Path(path).expanduser()
     try:
         with source_path.open("rb") as stream:
@@ -74,7 +74,7 @@ def load_reuse_source(path: str | Path) -> ReuseSource:
     if version != VERDICT_SCHEMA_VERSION:
         raise _unreadable(
             source_path,
-            f"schema_version {version} is unsupported; expected 12 or 13 cold start "
+            f"schema_version {version} is unsupported; expected 12, 13 or 14 cold start "
             f"or current version {VERDICT_SCHEMA_VERSION}",
         )
     failures = verify_document(document)

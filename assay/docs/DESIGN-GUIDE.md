@@ -396,8 +396,8 @@ unkeyed SHA-256, so a low-entropy or guessable secret may be recovered by
 trying candidate values. It is for equality/change comparison, not secrecy or
 authentication; do not treat it as a password-hashing scheme.
 
-The digest field was added before the first v14 release. Because the schema is
-still v14, no released v14 consumer has to interpret the earlier draft shape.
+The digest field was added before the first v14 release. The v15 schema keeps
+that finalized field shape; no consumer has to distinguish the earlier draft.
 
 Two caveats that matter:
 
@@ -503,7 +503,7 @@ must stop and ask, never invent one:
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
 | `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED`, `RED_FIRST_UNPROVEN` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED`, `CGROUP_OBSERVATION_UNAVAILABLE` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED`, `CANDIDATE_HUNG` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
 
@@ -520,6 +520,10 @@ free, rather than costing a second cut of its own.**
   `detail`. **A mismatch is `NO_MEASUREMENT` and never `FAIL`**: it says the
   measurement's subject is unknown, not that the code is bad, and a `FAIL`
   would let a consumer read "the code is bad" off a deployment fact.
+- **`NO_MEASUREMENT`/`CGROUP_OBSERVATION_UNAVAILABLE`** (B148/A-484) — native
+  R2 has selected candidates, but the process cannot inspect the full cgroup
+  v2 ancestor hierarchy B145 requires. This is a pre-R0 environment refusal;
+  candidate-time observation failures remain `ERROR/EXEC_FAILED`.
 - **`FAIL`/`RED_FIRST_UNPROVEN`** (F015/M7, A-433 as amended by A-434 under
   DA-R18) — the R4 red-first (`fail-before/pass-after`) claim's judged
   refusal: assay materialised both commits and ran the declared tests on
@@ -668,7 +672,11 @@ configured limits must match between the bracketing samples. If they change,
 or if a required counter is missing, malformed, or unreadable, native R2 fails
 closed. A cgroup mount rooted below the hierarchy root refuses native R2
 before its candidate sweep; a hidden local ancestor requires the explicit
-observer and is refused when that endpoint is absent or unprovable. Worker
+observer and is refused when that endpoint is absent or unprovable. B148
+performs the same local-first/explicit-observer capability check before R0,
+but only when the deterministically selected native candidate set is
+non-empty and within `max_mutants`; inventory failures remain refusals, not
+empty-set results. Worker
 creation failure at the executor boundary yields a payload-free
 `ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
 cannot escape the verdict path. This contract observes cgroup v2 events; it
@@ -676,12 +684,152 @@ does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. Resume state with a positive counter delta is rejected for reuse, and
-the observer integration advances the judge identity to `/8`, so all earlier
-B145 records through `/7` are cold starts. The mutation-state schema number
+the B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
+identity inputs advanced it to `/8`, and the RG-89 observer policy advances
+it to `/9`; older records are cold starts. The mutation-state schema number
 does not change: this is a change in what the judge identity covers, not the
-record's outer shape. The
-v14 verdict shape adds the evidence only to native outcomes; ingested mutation
-reports do not claim local execution counters.
+record's outer shape. The v15 verdict shape adds B145's execution evidence
+only to native outcomes; ingested mutation reports do not claim local
+execution counters.
+
+#### Native R2 cgroup visibility preflight (B148)
+
+B145's full cgroup reader is the capability probe; a shallow check for a
+visible `0::/` path would certify the wrong thing. Before R0, `assay run`
+checks the capability and, only when it is unavailable, uses the planner's
+candidate discovery and shard selection to determine whether native R2 would
+submit any candidate. The plan uses the same declared source roots, operator
+selection, candidate ceiling and deterministic shard function as R2. A
+selected candidate with an unavailable hierarchy produces
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
+The probe uses the same local-first reader as candidate sampling; only a
+specific hidden-ancestor refusal may consult the caller's explicitly configured
+observer-only socket. This lets test containers retain private cgroup
+namespaces without turning the full host hierarchy into their interface.
+Assay does not choose a Docker cgroup namespace or add a lane override for this
+fact.
+
+The refusal does not apply to ingested R2, unsupported discovery, an empty
+candidate selection, or a discovery result over `max_mutants`; those cases
+have no native candidate command that can be submitted. If candidate
+discovery itself fails while visibility is unavailable, R0 still does not
+start. Lane-wide errors retain their typed pair; `MUTATION_DISCOVERY_FAILED`
+is R2-claim-only, so its exact diagnostic is carried in the lane-wide cgroup
+refusal rather than emitting a schema-invalid R0 claim (A-484). A failed
+discovery is not evidence that the candidate set is empty. `assay plan` reports whether the current
+selection requires observation and the probe result. `assay lanes --json`
+reports ambient availability with `applies_to =
+"conditional_native_r2_candidates"`; it does not claim that an unplanned lane
+will refuse.
+
+### Cold-witness R2 (B114)
+
+The ordinary mutation policy asks each candidate to run the full declared
+suite. B105 made that cost prohibitive: its first ordered 15 candidates took
+hundreds of seconds each, and the opening prefix was not a representative
+sample. B114 adds an explicit native-Python R2 policy that can stop a mutant
+after the first verified test-call failure. That is an existential witness
+that the mutation changes behavior. It does not claim that later tests passed:
+they are reported as unrun and may independently fail, hang, or crash.
+
+The shortcut is safe only when the run proves it is still judging the declared
+suite. Assay derives the no-coverage mutation command from the lane argv by
+removing only recognized coverage options and appending
+`-p no:pytest_cov`. It keeps test selection and order. The coverage and
+no-coverage baselines must collect the same ordered node IDs. That collection
+equality crosses command variants; hook and runtime proofs are command-local. A
+cold candidate matches the no-coverage R2 baseline, and a declared fallback
+matches the coverage baseline. The two baseline hook fingerprints intentionally
+differ because pytest-cov is loaded only by the declared command. Each baseline
+must finish its complete suite with both the pytest session and process exit
+status equal to zero; a hook cannot mask a baseline failure. The lifecycle
+check accepts pytest's built-in hooks and the exact
+reviewed Hypothesis 6.156.6 hooks only when their source digest, distribution
+ownership, plugin identity, function and wrapper flags match. The declared
+fallback also recognizes only pytest-cov 7.1.0 with its reviewed module source
+digest. These are code identities, not just names: another version or changed
+module source cannot establish a cold kill or survivor. The runtime fingerprint
+also binds installed plugin versions. Every candidate records its command
+variant and runtime collection/hook evidence. A cold kill also binds the failed
+node to its index in the ordered manifest and to the actual started-test
+prefix. A passing cold attempt is a survivor only after the complete
+transformed no-coverage R2 command and its proof finish. An uncertain cold
+attempt gets one fresh full declared-command attempt. A declared fallback
+supplies a result only when its
+call failure or full pass is proven against the coverage baseline. A fallback
+kill requires a verified failed-call witness and declared-command evidence that
+matches that baseline. The witness may be any node in the attempt's started
+prefix because a full pytest retry can continue after the failing call. With
+pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
+and must match that baseline. The ordinary full-suite behavior remains the
+default when the option is absent.
+
+Pytest's built-in HookImpl callables are captured before its initial conftests
+load. Built-ins created later during startup are accepted only when their
+plugin class and source callable match objects captured at that early point.
+Assay checks the live HookImpl against that exact registration before
+collection, so replacing a callable while keeping its module, path, qualname
+and fingerprint text unchanged makes the attempt unsupported.
+
+The same rule covers Assay's generated receipt hooks: their HookImpls,
+functions, code objects and globals are captured before candidate conftests
+load. Reviewed Hypothesis and pytest-cov callables are also pinned by code
+object, so changing `function.__code__` in place cannot retain trust through an
+unchanged function identity or fingerprint. A candidate-only `pytest_configure`
+replacement of the receipt hook is therefore unsupported before a cold result
+can be classified.
+
+When liveness is active, Assay also captures the exact materialized
+`assay_liveness_plugin` registrations for `pytest_configure`,
+`pytest_runtest_logreport`, `pytest_sessionfinish` and `pytest_unconfigure`.
+They must come from the selected plugin path and retain the same HookImpl,
+function, code object and globals. This closes a same-module/path substitution
+that could otherwise alter a test report before the witness hook sees it while
+leaving the displayed hook fingerprint unchanged. Collection compares all
+four registrations; the registry monitor then checks each hook as pytest calls
+it. A mismatch disables both cold and replay proof.
+
+The private receipt travels over a per-attempt bounded, length-framed pipe.
+The parent drains it while pytest runs and accepts exactly one complete
+frame. The plugin closes its writer at `pytest_sessionfinish`; any extra frame
+or trailing bytes invalidate the capture, so a later `pytest_unconfigure` hook
+cannot rewrite the captured bytes or add another accepted claim. The ordered
+manifest remains a sidecar because it can be much larger;
+Assay reads it through the bounded no-follow regular-file reader and checks its
+digest against the receipt before using node IDs.
+
+The root `tests/conftest.py::pytest_sessionfinish` hook has one compatibility
+exception because Assay's B105 archive hook is inert when
+`ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
+`ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent. The
+exception is path-based and therefore also applies to consumer projects with
+that root hook. It must preserve pytest's session exit status; if it changes
+the status, Assay refuses to use the receipt to prove a kill or survivor.
+Every other unreviewed hook keeps the proof unavailable.
+
+These proofs live in the v15 verdict and are checked independently by
+`assay verify`. B105 adds a separate source-bound check: it reads the lane
+argv and pytest configuration from the judged Git commit, independently
+recomputes the command transform, validates the ordered manifest sidecar and
+checks that the verdict's campaign binding matches the persisted deadline.
+The deadline includes the commit, tree, tool version, selected wheel digest
+and ordered R2 plan. Resume and retry spend the same absolute budget, so a
+restarted process cannot silently receive a fresh campaign allowance. The
+ordinary release lane stays R0-only;
+B105's full qualification is still gated on the later bounded-pilot decision.
+For B105, the selected commit timestamp normalizes wheel archive mtimes through
+`SOURCE_DATE_EPOCH`. A retry checks an existing deadline's wheel digest before
+installing the run closure or starting lane work, then checks the persisted
+deadline again after campaign initialization. In report checking, D1-D4 run
+before R2 plan parsing; only after those bindings pass does the checker parse
+the plan and compare its ordered digest. The report, plan, tester-unified
+receipt, deadline and manifest are read through bounded, no-follow regular-file
+descriptors: final-component symlinks and special files are refused, and
+concurrent file growth cannot make a checker read unbounded input. Report, plan
+and receipt limits are 64 MiB, 16 MiB and 4 KiB. Receipt validation remains
+first, followed by report validation and the plan-independent deadline checks
+before plan parsing. A two-clone artifact test also rebuilds the exact same
+commit with different checkout mtimes and requires identical wheel digests.
 
 #### Liveness process-group cleanup
 
@@ -1225,7 +1373,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v14, complete,
+The prior artifact must be a current-verifier-accepted v15, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -1549,8 +1697,10 @@ actually run), total pack-write I/O across the lane is bounded by
 `(U + 1) * max_pack_bytes` — the one-time seed transfer plus one independent
 pack per unit. Peak simultaneous pack space is bounded by
 `(1 + max(1, jobs)) * max_pack_bytes` — the seed plus at most `jobs` live
-children at once, since P23 submits mutation work in waves of size `jobs` and
-awaits each wave before starting the next. The conservative bound on
+children at once, since P23's continuous work queue keeps at most `jobs`
+candidate futures in flight. A finished candidate frees a slot immediately;
+the queue does not wait for a slow earlier candidate before submitting the
+next one. The conservative bound on
 materialized tree size for one live child is `max_entries * max_blob_bytes`.
 Hardlinking a child to the seed to avoid this cost is forbidden — it would
 destroy the isolation P22 exists to provide. There is no preflight free-space
@@ -2221,13 +2371,14 @@ gate started while another `run-gate-*` container runs exits 3 with
 `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>` and leaves the receipt as it was. A failing `docker ps` is treated the same way (`ASSAY_GATE_INCONCLUSIVE=host check failed (docker ps) — rerun`). On a deliberately shared host, `ASSAY_GATE_ALLOW_SHARED_HOST=1` (CD50) lets the gate run alongside other projects' `run-gate-*` containers, printing `ASSAY_GATE_SHARED_HOST=<names>` on stdout; the gate still refuses any other `run-gate-assay-*` container (the standalone harness's `--allow-shared-host` refuses only another `run-gate-assay-sql-*` one), any other value of the variable is an error, and the receipt is unchanged.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
-after a separately bounded 60-minute R0/R1 preflight. This interim budget
-resets on a new invocation; do not use resume/retry to bypass the overall
-ceiling. B110 must persist one campaign deadline before another full attempt.
+after a separately bounded 60-minute R0/R1 preflight. B114 persists one
+campaign deadline across preflight, resume and retry; a retry must not reset
+the campaign clock.
 The in-container driver command is wrapped with a 7h30m timeout; its clock
 starts only after run-gate/container startup and stops before outer evidence
-collection. Nyxloom applies a separate 8-hour outer failsafe. Neither is the
-campaign-wide deadline B110 requires. Expiry is incomplete, never a candidate
+collection. Nyxloom applies a separate 8-hour outer failsafe. These outer
+limits leave time for cleanup and do not replace the campaign deadline.
+Expiry is incomplete, never a candidate
 outcome or qualification pass. Candidate classification remains independent
 of host load and scheduling. The gate records the exact source commit/tree,
 runs `assay verify` on the result, and prints a success marker only after both
@@ -2236,16 +2387,11 @@ revision.
 
 The latest full-source attempt completed only 15 of 3,760 candidates before
 it was stopped; an earlier attempt stopped after 38 completions. Neither
-provides B105 qualification. B110 requires a structural
-rework and a bounded pilot before another full attempt: target completion
-within 6 hours, never exceed the 8-hour watchdog, and do not increase the
-approved RAM envelope. The cold-witness and distributed-shard behaviors are
-not shipped merely by this timeout change. B110 proposes an opt-in cold-witness
-policy: one verified call-phase test failure is an existential kill witness,
-but all tests after that failure are unrun and may independently fail, hang,
-or crash. Survivors and uncertain executions still run the complete declared
-suite. Until B110 is implemented and its
-full verifier-accepted result exists, this separate lane has no qualification
+provides B105 qualification. B114's cold-witness and persisted-deadline work
+is available, but B118's bounded pilot and go/no-go decision remain before
+another full attempt: target completion within 6 hours, never exceed the
+8-hour watchdog, and do not increase the approved RAM envelope. Until the
+full verifier-accepted report exists, this separate lane has no qualification
 claim and is not part of the ordinary R0 release gate.
 
 The registered `self-qualification-preflight` lane runs the same R0 test

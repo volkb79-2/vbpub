@@ -185,6 +185,7 @@ def _run(
             process_runner=decide,
             clock=_clock,
             executor_factory=lambda jobs: _SynchronousExecutor(),
+            budget_per_candidate_seconds=0.05,
             equivalence_artifact=_ARTIFACT,
             kill_signal_artifact=kill_signal_artifact,
             baseline_equivalence=_BASELINE_BYTES,
@@ -338,7 +339,8 @@ def test_a_lane_without_an_equivalence_artifact_is_byte_identical_before_and_aft
     even naming `equivalence_artifact=None` explicitly), so this proves the
     EXISTING call shape -- the one every pre-P34 caller still uses -- is
     untouched, not merely that passing `None` behaves the same as passing
-    `None`."""
+    `None`. The fake timeout is explicitly candidate-bounded so it remains a
+    classified timeout rather than consuming the lane deadline."""
     lane = make_lane(argv=("pytest", "-q"))
     repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
@@ -363,6 +365,7 @@ def test_a_lane_without_an_equivalence_artifact_is_byte_identical_before_and_aft
             process_runner=decide,
             clock=_clock,
             executor_factory=lambda jobs: _SynchronousExecutor(),
+            budget_per_candidate_seconds=0.05,
         )
 
     assert result is not None and not isinstance(result, str)

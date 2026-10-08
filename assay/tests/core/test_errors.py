@@ -73,6 +73,9 @@ EXPECTED_REASON_CODES = {
         "HEAD_CHANGED",
         "BASE_IS_HEAD",
         "EMPTY_COVERAGE",
+        # B114: cgroup resource counters could not be read, so mutation
+        # resource evidence is unknown rather than a classified kill.
+        "CGROUP_OBSERVATION_UNAVAILABLE",
         "MISSING_ATTESTATION",
         "STALE_ATTESTATION",
         # P21/A-163, reserved for P27's first real external-tool preflight.

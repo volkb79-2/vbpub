@@ -159,6 +159,7 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
             process_runner=decide,
             clock=_clock,
             executor_factory=lambda jobs: _SynchronousExecutor(),
+            budget_per_candidate_seconds=0.05,
         )
 
     assert baseline.outcome is Outcome.PASS

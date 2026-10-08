@@ -58,6 +58,7 @@ already applies to `scope`/`rigor`/`enforcement` via their own `frozenset`s.
 from __future__ import annotations
 
 import os
+import math
 import re
 import tomllib
 from dataclasses import field as dataclass_field
@@ -451,6 +452,8 @@ _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     # set, on `budget_per_candidate`'s own footing (assay orchestrates no
     # execution at all for that producer).
     "liveness",
+    "liveness_cpu_window",
+    "liveness_idle_floor",
 )
 
 #: (B046) The fields an INGESTED R2 lane declares: which report FORMAT the
@@ -569,6 +572,10 @@ class MutationConfig:
     #: loader boundary -- `assay.liveness.inject_liveness_plugin` and this
     #: field's own :meth:`as_declared` echo both read the string form only.
     liveness: str | None = None
+    #: (B110-P3c) Optional declared durations. Parsed seconds remain None
+    #: when the lane omits a key; the liveness module owns effective defaults.
+    liveness_cpu_window: str | None = None
+    liveness_idle_floor: str | None = None
     #: (B092) The explicitly declared, normalized POSIX path-glob list used
     #: only for the native-R2 tree-content identity. ``None`` means the key
     #: was omitted and preserves B088's legacy whole-tree encoding; ``()`` is
@@ -608,6 +615,22 @@ class MutationConfig:
     shard_count: int | None = None
 
     @property
+    def liveness_cpu_window_s(self) -> float | None:
+        return (
+            None
+            if self.liveness_cpu_window is None
+            else parse_duration(self.liveness_cpu_window)
+        )
+
+    @property
+    def liveness_idle_floor_s(self) -> float | None:
+        return (
+            None
+            if self.liveness_idle_floor is None
+            else parse_duration(self.liveness_idle_floor)
+        )
+
+    @property
     def is_ingested(self) -> bool:
         """(B046) Whether this lane's R2 evidence is INGESTED rather than
         computed by assay's own engine.
@@ -643,6 +666,10 @@ class MutationConfig:
             payload["budget_per_candidate"] = self.budget_per_candidate
         if self.liveness is not None:
             payload["liveness"] = self.liveness
+        if self.liveness_cpu_window is not None:
+            payload["liveness_cpu_window"] = self.liveness_cpu_window
+        if self.liveness_idle_floor is not None:
+            payload["liveness_idle_floor"] = self.liveness_idle_floor
         if self.identity_exclude is not None:
             payload["identity_exclude"] = list(self.identity_exclude)
         if self.shard_index is not None and self.shard_count is not None:
@@ -3254,6 +3281,58 @@ def _load_mutation(
             f"with the declared/derived budget_per_candidate as the only "
             f"bound"
         )
+    liveness_cpu_window: str | None = None
+    liveness_idle_floor: str | None = None
+    parsed_liveness_durations: dict[str, float] = {}
+    for key in ("liveness_cpu_window", "liveness_idle_floor"):
+        if key not in value:
+            continue
+        declared = value[key]
+        try:
+            parsed = parse_duration(declared)
+        except (TypeError, ValueError) as exc:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{key}' {exc}"
+            ) from exc
+        if not math.isfinite(parsed):
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{key}' must be a finite duration"
+            )
+        if parsed < 5.0:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{key}' must be at least 5s"
+            )
+        if parsed > 3600.0:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{key}' must be at most 1h"
+            )
+        parsed_liveness_durations[key] = parsed
+        if key == "liveness_cpu_window":
+            liveness_cpu_window = declared
+        else:
+            liveness_idle_floor = declared
+    if parsed_liveness_durations and liveness == LIVENESS_FALSE:
+        key = next(
+            key
+            for key in ("liveness_cpu_window", "liveness_idle_floor")
+            if key in parsed_liveness_durations
+        )
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.{key}' has no effect when "
+            "judge.mutation.liveness = false"
+        )
+    if parsed_liveness_durations and not (
+        language == "python" and argv_invokes_pytest(argv)
+    ):
+        key = next(
+            key
+            for key in ("liveness_cpu_window", "liveness_idle_floor")
+            if key in parsed_liveness_durations
+        )
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.{key}' has no effect: liveness can "
+            "never activate on this lane"
+        )
     identity_exclude = (
         _load_identity_exclude(value["identity_exclude"], where)
         if "identity_exclude" in value
@@ -3294,6 +3373,8 @@ def _load_mutation(
         equivalence_artifact=equivalence_artifact,
         budget_per_candidate=budget_per_candidate,
         liveness=liveness,
+        liveness_cpu_window=liveness_cpu_window,
+        liveness_idle_floor=liveness_idle_floor,
         identity_exclude=identity_exclude,
         shard_index=shard_index,
         shard_count=shard_count,
@@ -3346,7 +3427,10 @@ def _load_ingested_mutation(
         )
     orchestration_only = sorted(
         set(value)
-        & {"budget_per_candidate", "shard_index", "shard_count", "liveness"}
+        & {
+            "budget_per_candidate", "shard_index", "shard_count", "liveness",
+            "liveness_cpu_window", "liveness_idle_floor",
+        }
     )
     if orchestration_only:
         raise LaneConfigError(

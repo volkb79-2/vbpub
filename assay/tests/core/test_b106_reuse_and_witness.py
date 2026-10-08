@@ -5,15 +5,30 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from assay.adapters.python import PythonAdapter
+from assay.candidate_identity import candidate_id_from_fields
+from assay.config import MutationConfig
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.mutation_witness import (
+    MAX_INTERNAL_RECEIPT_BYTES,
+    read_internal_receipt,
+    replay_witness_from_receipt,
+    supports_sequential_pytest,
+)
+from assay.resource_limits import ResourceLimitCounters
+from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
+from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
+from assay.verify import verify_document
 from conftest import (
-    GitRepo,
     TESTS_ROOT,
+    GitRepo,
     make_lane,
     make_r2_judge,
     native_mutation,
@@ -22,21 +37,7 @@ from conftest import (
 )
 
 from assay import candidate_identity, mutation, runner, verdict
-from assay.adapters.python import PythonAdapter
-from assay.candidate_identity import candidate_id_from_fields
-from assay.config import MutationConfig
-from assay.errors import AssayError, Outcome, ReasonCode
-from assay.verdict import Mutation, MutationExecution, MutationWitnessReceipt
-from assay.mutation_witness import (
-    MAX_INTERNAL_RECEIPT_BYTES,
-    read_internal_receipt,
-    replay_witness_from_receipt,
-    supports_sequential_pytest,
-)
-from assay.reuse import classify_candidate, load_reuse_source, prior_only_candidates
 from assay import verify as raw_verify
-from assay.verify import verify_document
-from assay.resource_limits import ResourceLimitCounters
 
 FIXTURES = TESTS_ROOT / "fixtures" / "verdicts"
 
@@ -59,9 +60,9 @@ def _synthetic_candidate_resource_counters(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
-def _v14_killed_source() -> dict:
+def _v15_killed_source() -> dict:
     document = json.loads((FIXTURES / "r2_pass.json").read_text(encoding="utf-8"))
-    document["schema_version"] = 14
+    document["schema_version"] = verdict.VERDICT_SCHEMA_VERSION
     mutation = document["claims"][1]["mutation"]
     candidate_ids = []
     for index, item in enumerate(mutation["killed"]):
@@ -99,8 +100,8 @@ def _v14_killed_source() -> dict:
     return document
 
 
-@pytest.mark.parametrize("version", [12, 13])
-def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
+@pytest.mark.parametrize("version", [12, 13, 14])
+def test_v12_through_v14_are_bounded_cold_starts_without_candidate_inspection(
     tmp_path: Path, version: int
 ):
     path = tmp_path / "old.json"
@@ -118,7 +119,8 @@ def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
     assert source.candidate_ids == frozenset()
     assert source.outcomes == {}
     assert verify_document(json.loads(path.read_text()))[0].startswith(
-        f"schema_version {version} is not this verifier's version 14"
+        f"schema_version {version} is not this verifier's version "
+        f"{verdict.VERDICT_SCHEMA_VERSION}"
     )
 
 
@@ -126,7 +128,7 @@ def test_v12_and_v13_are_bounded_cold_starts_without_candidate_inspection(
     ("content", "detail"),
     [
         ('{"schema_version":14,"schema_version":14}', "duplicate object key"),
-        ('{"schema_version":15}', "unsupported"),
+        ('{"schema_version":15}', "current v15 verifier rejected"),
         ('{"schema_version":true}', "must be an integer"),
         ('{"schema_version":NaN}', "invalid JSON"),
     ],
@@ -144,8 +146,8 @@ def test_reuse_source_rejects_unreadable_or_foreign_envelopes(
     assert detail in str(caught.value)
 
 
-def test_complete_v14_campaign_exposes_only_killed_witnesses(tmp_path: Path):
-    document = _v14_killed_source()
+def test_complete_v15_campaign_exposes_only_killed_witnesses(tmp_path: Path):
+    document = _v15_killed_source()
     path = tmp_path / "prior.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -163,8 +165,8 @@ def test_complete_v14_campaign_exposes_only_killed_witnesses(tmp_path: Path):
     assert prior_only_candidates(source, [eligible[0]]) == [eligible[1]]
 
 
-def test_current_v14_verifier_rejects_incomplete_candidate_inventory():
-    document = _v14_killed_source()
+def test_current_v15_verifier_rejects_incomplete_candidate_inventory():
+    document = _v15_killed_source()
     document["claims"][1]["mutation"]["candidate_ids"].pop()
 
     failures = verify_document(document)
@@ -256,32 +258,32 @@ def test_raw_b106_receipt_refuses_malformed_and_non_killed_witnesses():
 
 
 def test_raw_b106_mutation_provenance_accepts_a_complete_native_record():
-    document = _v14_killed_source()
+    document = _v15_killed_source()
 
     assert _raw_failures(raw_verify._check_b106_mutation_provenance, document) == []
 
 
 def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["candidate_ids"] = ["bad"]
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("malformed digest" in item for item in failures)
     assert any("does not equal" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["source_sha256"] = "bad"
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("malformed B106 digest" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["candidate_id"] = "f" * 64
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("does not match its recorded identity inputs" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["killed"][0]["execution"] = {}
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
@@ -291,13 +293,13 @@ def test_raw_b106_mutation_provenance_checks_inventory_and_entry_binding():
 def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_ids(
     monkeypatch,
 ):
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     mutation["candidate_ids"] = [mutation["candidate_ids"][0]] * 2
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
     assert any("candidate_ids contains a duplicate" in item for item in failures)
 
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     mutation = document["claims"][1]["mutation"]
     same_candidate = "c" * 64
     monkeypatch.setattr(raw_verify, "candidate_id_from_fields", lambda **_kwargs: same_candidate)
@@ -309,7 +311,7 @@ def test_raw_b106_mutation_provenance_rejects_duplicate_inventory_and_outcome_id
 
 
 def test_raw_b106_mutation_provenance_handles_ingested_and_limit_sentinel_shapes():
-    document = _v14_killed_source()
+    document = _v15_killed_source()
     document["judgment"]["r2"]["producer"] = "ingested"
     document["claims"][1]["mutation"]["candidate_ids"] = []
     failures = _raw_failures(raw_verify._check_b106_mutation_provenance, document)
@@ -503,6 +505,9 @@ def test_internal_witness_receipts_are_bounded_strict_and_not_boolean_statuses(
 
     receipt_path.write_bytes(b" " * (MAX_INTERNAL_RECEIPT_BYTES + 1))
     assert read_internal_receipt(receipt_path) is None
+    fifo_path = tmp_path / "receipt-fifo"
+    os.mkfifo(fifo_path)
+    assert read_internal_receipt(fifo_path) is None
 
     receipt = {
         "unsupported": False,
@@ -629,8 +634,8 @@ operators = ["python:compare-swap"]
     head = repo.commit_all("add current candidate")
     assert repo.head() == head
 
-    prior = tmp_path / "prior-v14.json"
-    prior.write_text(json.dumps(_v14_killed_source()), encoding="utf-8")
+    prior = tmp_path / "prior-v15.json"
+    prior.write_text(json.dumps(_v15_killed_source()), encoding="utf-8")
     out = io.StringIO()
     exit_code = main(
         [
@@ -729,6 +734,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     original = runner.run_lane(
@@ -745,7 +751,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     assert first_outcome.execution.mode == "full"
     assert first_outcome.execution.witness.node_id == "tests/test_behavior.py::test_behavior"
     assert verify_document(original.to_dict()) == []
-    prior = tmp_path / "prior-v14.json"
+    prior = tmp_path / "prior-v15.json"
     prior.write_text(json.dumps(original.to_dict()), encoding="utf-8")
 
     git_repo.write(
@@ -779,11 +785,28 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
         "def test_behavior():\n"
         "    assert flag(1)\n",
     )
-    third_head = git_repo.commit_all("remove the assertion that killed the mutant")
+    git_repo.write(
+        "tests/conftest.py",
+        "import os\n"
+        "import pytest\n\n"
+        "@pytest.hookimpl(hookwrapper=True)\n"
+        "def pytest_runtest_makereport(item, call):\n"
+        "    outcome = yield\n"
+        "    report = outcome.get_result()\n"
+        "    if (os.environ.get('ASSAY_MUTATION_WITNESS_TARGET') == item.nodeid\n"
+        "            and report.when == 'call' and report.outcome == 'passed'):\n"
+        "        report.outcome = 'failed'\n"
+        "        report.longrepr = 'forged failure for replay guard'\n",
+    )
+    third_head = git_repo.commit_all(
+        "weaken the test and forge passing reports during targeted replay"
+    )
     calls: list[tuple[str, ...]] = []
+    observed_targets: list[str | None] = []
 
     def tracked_process_runner(argv, *, env, cwd, timeout):
         calls.append(tuple(argv))
+        observed_targets.append(env.get("ASSAY_MUTATION_WITNESS_TARGET"))
         return runner.default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
     stale_witness = runner.run_lane(
@@ -813,6 +836,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     )
     assert stale_witness.claims[1].mutation.survived
     assert stale_witness.claims[1].mutation.survived[0].execution.mode == "full"
+    assert observed_targets == [None, "tests/test_behavior.py::test_behavior", None]
     assert verify_document(stale_witness.to_dict()) == []
 
 
@@ -835,6 +859,7 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     original = runner.run_lane(
         lane,
@@ -918,6 +943,7 @@ def test_witness_capture_works_with_the_existing_liveness_plugin(git_repo: GitRe
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
 
     verdict = runner.run_lane(
@@ -954,6 +980,7 @@ def test_custom_sessionfinish_hook_forces_full_suite_fallback(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     original = runner.run_lane(
         lane,
@@ -1060,6 +1087,7 @@ def test_resume_preserves_witness_prefix_execution_provenance(
         ),
         budget="2m",
         budget_seconds=120,
+        env={"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
     )
     state_dir = tmp_path / "state"
     original = runner.run_lane(

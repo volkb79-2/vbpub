@@ -760,8 +760,10 @@ Docker socket.
 Assay first attempts its existing local B145 reader. It uses the configured
 observer only when the local reader specifically proves that the private
 cgroup namespace hides ancestors. Other local failures do not fall through.
-The remote response must be a complete, canonical, mount-consistent ancestry
-inside the gates slice. Per-path samples are compared around each candidate;
+The daemon accepts only a peer whose derived leaf is a descendant of the
+configured gates slice. It returns that peer's complete canonical ancestry
+through `/`, with per-path resource limits and event counters; it exposes no
+descendant or sibling cgroups. Per-path samples are compared around each candidate;
 a shared-ancestor delta without the same candidate-leaf delta aborts the lane
 before assigning a candidate bucket. Any endpoint, identity, path, mount,
 counter, or attribution uncertainty remains `ERROR/EXEC_FAILED`, never a

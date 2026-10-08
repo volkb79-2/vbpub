@@ -1,0 +1,54 @@
+{
+  "schema_version": 15,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "3333333333333333333333333333333333333340",
+  "outcome": "NO_MEASUREMENT",
+  "exit_code": 3,
+  "started": "2026-08-09T14:40:00+00:00",
+  "ended": "2026-08-09T14:40:05+00:00",
+  "reason_code": "CGROUP_OBSERVATION_UNAVAILABLE",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "env_passthrough": [],
+  "env_effective_passthrough_sha256": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "CGROUP_OBSERVATION_UNAVAILABLE"
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "CGROUP_OBSERVATION_UNAVAILABLE"
+    }
+  ],
+  "evidence": []
+}

@@ -13,9 +13,13 @@ gap — the artifact-level half lives in ``assay.verify`` and is proven in
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from conftest import native_mutation, native_outcome
 
+from assay.errors import Outcome, ReasonCode
+from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, transform_argv
 from assay.verdict import (
     CanaryAttempt,
     CanaryResult,
@@ -27,13 +31,17 @@ from assay.verdict import (
     JudgmentR2,
     JudgmentR3,
     JudgmentResolved,
+    MutantEvidence,
     MutantOutcome,
     Mutation,
+    MutationExecution,
     MutationProducerTool,
+    MutationWitnessReceipt,
+    R2BaselineFacts,
+    R2Command,
     SnapshotPolicy,
     Verdict,
 )
-from assay.errors import Outcome, ReasonCode
 
 #: sha256(b"<=") -- the replacement half of a `compare-swap` Lt->LtE site.
 #: Hand-computed, not read back from the code under test (A-067): a hash the
@@ -61,7 +69,7 @@ BASE_R1_POLICY = dict(
 #: (P33/V5-4) `kill_attribution` is REQUIRED on every `JudgmentR2`, and it is
 #: derived from `kill_signal_artifact`'s presence -- which P33 refuses at
 #: config load, so `unattributed` is what every lane in this build renders.
-BASE_R2_POLICY = dict(kill_attribution="unattributed")
+BASE_R2_POLICY = dict(kill_attribution="unattributed", cold_witness_kills=False)
 
 BASE_VERDICT = {
     "lane": "package",
@@ -455,6 +463,9 @@ def test_judgment_r2_untouched_form_builds():
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
         "kill_attribution": "unattributed",
+        "cold_witness_kills": False,
+        "r2_command": None,
+        "equivalence_ledger": None,
         # B035/A-329: `mode` is ALWAYS on the wire, exactly as
         # `judgment.r1.mode` is, and defaults to the only scope that existed
         # before whole-target judging.
@@ -544,6 +555,8 @@ def test_judgment_r2_liveness_round_trips_when_present():
             "active": True,
             "reason": "auto-pytest-argv",
             "plugin": ".assay/liveness/assay_liveness_plugin.py",
+            "cpu_window_s": 30.0,
+            "idle_floor_s": 15.0,
         },
         **BASE_R2_POLICY,
     )
@@ -551,6 +564,8 @@ def test_judgment_r2_liveness_round_trips_when_present():
         "active": True,
         "reason": "auto-pytest-argv",
         "plugin": ".assay/liveness/assay_liveness_plugin.py",
+        "cpu_window_s": 30.0,
+        "idle_floor_s": 15.0,
     }
 
 
@@ -563,6 +578,8 @@ def test_judgment_r2_liveness_inactive_form_round_trips():
             "active": False,
             "reason": "language-not-python",
             "plugin": None,
+            "cpu_window_s": None,
+            "idle_floor_s": None,
         },
         **BASE_R2_POLICY,
     )
@@ -629,6 +646,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
             operators=("python:compare-swap",),
             kill_attribution="unattributed",
             kill_signal_artifact=".assay/kill-signal.txt",
+            cold_witness_kills=False,
         )
     with pytest.raises(ValueError, match="no kill_signal_artifact"):
         JudgmentR2(
@@ -636,6 +654,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="declared",
+            cold_witness_kills=False,
         )
 
 
@@ -646,6 +665,7 @@ def test_judgment_r2_refuses_an_unknown_kill_attribution():
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="probably",
+            cold_witness_kills=False,
         )
 
 
@@ -1205,6 +1225,122 @@ def _r2_verdict(*, mutation: Mutation, policy: JudgmentR2, language: str, **over
     )
 
 
+def _cold_full_kill_policy_and_outcome():
+    common = {
+        "collection_count": 1,
+        "collection_sha256": "a" * 64,
+        "duplicates": 0,
+        "hook_count": 3,
+        "runtime_fingerprint_sha256": "c" * 64,
+    }
+    coverage_baseline = R2BaselineFacts(
+        **common,
+        hook_fingerprint_sha256="b" * 64,
+    )
+    r2_baseline = R2BaselineFacts(
+        **common,
+        hook_fingerprint_sha256="d" * 64,
+        wall_s=1.0,
+    )
+    argv = ("pytest", "-q")
+    command = R2Command(
+        transform=R2_TRANSFORM_ID,
+        argv_declared=argv,
+        argv_transformed=transform_argv(argv),
+        appended=R2_APPENDED,
+        cwd=".",
+        config_sha256=None,
+        coverage_baseline=coverage_baseline,
+        r2_baseline=r2_baseline,
+    )
+    policy = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        kill_attribution="unattributed",
+        cold_witness_kills=True,
+        r2_command=command,
+    )
+    witness = MutationWitnessReceipt(
+        node_id="tests/test_example.py::test_case",
+        when="call",
+        outcome="failed",
+        session_exit_status=1,
+        process_exit_status=1,
+    )
+    evidence = MutantEvidence(
+        command="declared",
+        collection_count=1,
+        collection_sha256="a" * 64,
+        hook_fingerprint_sha256="b" * 64,
+    )
+    outcome = native_outcome(
+        path="src/example.py",
+        lineno=1,
+        start_byte=4,
+        end_byte=5,
+        replacement_sha256=_SHA_LTE,
+        operator="python:compare-swap",
+        description="Lt->LtE",
+    )
+    outcome = replace(
+        outcome,
+        execution=MutationExecution(mode="full", witness=witness),
+        evidence=evidence,
+    )
+    return policy, outcome
+
+
+def test_verdict_accepts_a_cold_policy_full_kill_with_declared_proof():
+    policy, outcome = _cold_full_kill_policy_and_outcome()
+    mutation = native_mutation(candidate_count=1, total=1, killed=(outcome,))
+
+    verdict = _r2_verdict(mutation=mutation, policy=policy, language="python")
+
+    assert verdict.claims[1].mutation.killed[0].evidence.command == "declared"
+
+
+@pytest.mark.parametrize(
+    ("missing", "match"),
+    [
+        ("evidence", "cold-witness kill requires collection evidence"),
+        ("witness", "cold-policy full kill requires a failed-call witness"),
+        ("command", "mutant evidence command differs from its baseline"),
+        ("baseline", "mutant evidence hook_fingerprint_sha256 differs from its baseline"),
+    ],
+)
+def test_verdict_refuses_a_cold_policy_full_kill_without_matching_proof(missing, match):
+    policy, outcome = _cold_full_kill_policy_and_outcome()
+    if missing == "evidence":
+        outcome = replace(outcome, evidence=None)
+    elif missing == "witness":
+        outcome = replace(outcome, execution=MutationExecution(mode="full"))
+    elif missing == "command":
+        outcome = replace(
+            outcome,
+            evidence=MutantEvidence(
+                command="r2",
+                collection_count=1,
+                collection_sha256="a" * 64,
+                hook_fingerprint_sha256="d" * 64,
+            ),
+        )
+    else:
+        outcome = replace(
+            outcome,
+            evidence=MutantEvidence(
+                command="declared",
+                collection_count=1,
+                collection_sha256="a" * 64,
+                hook_fingerprint_sha256="e" * 64,
+            ),
+        )
+    mutation = native_mutation(candidate_count=1, total=1, killed=(outcome,))
+
+    with pytest.raises(ValueError, match=match):
+        _r2_verdict(mutation=mutation, policy=policy, language="python")
+
+
 def test_verdict_refuses_an_operator_whose_prefix_is_not_the_resolved_language():
     """(P33/V5-2, invariant 1) The schema closes each language's vocabulary
     but has no `$data`, so it cannot relate an operator to the language
@@ -1244,7 +1380,7 @@ def test_verdict_refuses_equivalent_mutants_with_no_declared_equivalence_artifac
     unpaired = JudgmentR2(
         jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
     )
-    with pytest.raises(ValueError, match="declares no\n?.*equivalence_artifact"):
+    with pytest.raises(ValueError, match="declares no proof source"):
         _r2_verdict(mutation=mutation, policy=unpaired, language="sql")
 
 
@@ -1277,6 +1413,7 @@ def test_verdict_refuses_a_declared_attribution_leaving_a_kill_unexplained():
         operators=("sql:drop-check",),
         kill_attribution="declared",
         kill_signal_artifact=".assay/kill-signal.txt",
+        cold_witness_kills=False,
     )
     explained = native_mutation(
         candidate_count=1,

@@ -1147,8 +1147,8 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b145_advances_the_judge_identity_label():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/8"
+def test_combined_b114_rg89_advances_the_judge_identity_label():
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/9"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
@@ -1402,7 +1402,7 @@ def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
     """A worker-capability guard repair cold-starts earlier B145 results.
 
     Generate a realistic persisted `killed` record using the former `/6`
-    identity, then resume the unchanged lane under `/8`. This models builds
+    identity, then resume the unchanged lane under `/9`. This models builds
     whose Assay version string is unchanged; the judge label alone must reject
     a zero-delta kill that may have come from an unguarded worker.
     """
@@ -1425,7 +1425,7 @@ def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
     old_record = _records(state_dir)[0]
     assert old_record["resource_limit_evidence"] == zero_resource_limit_evidence_dict()
 
-    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/8")
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/9")
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
 
     assert _resumed(second) == 0

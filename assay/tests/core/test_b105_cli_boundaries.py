@@ -153,6 +153,118 @@ def test_state_directory_inside_a_visible_project_path_is_refused(
         )
 
 
+def test_r2_manifest_requires_cold_witness_before_work(tmp_path):
+    with pytest.raises(LaneConfigError, match="--r2-manifest requires --cold-witness"):
+        cli._resolve_r2_manifest(
+            argparse.Namespace(r2_manifest=str(tmp_path / "manifest.txt")),
+            tmp_path,
+        )
+
+
+def test_run_r2_manifest_argument_refusal_writes_no_verdict_and_runs_nothing(
+    tmp_path, monkeypatch
+):
+    lane = _r2_lane(tmp_path)
+    _patch_lane_file(monkeypatch, lane, tmp_path)
+    output_path = tmp_path / "verdict.json"
+    monkeypatch.setattr(
+        cli,
+        "reserve_verdict_output",
+        lambda *_args, **_kwargs: pytest.fail("argument refusal must happen first"),
+    )
+    args = argparse.Namespace(
+        file="assay.toml",
+        lane="package",
+        r2_manifest=str(tmp_path / "manifest.txt"),
+        cold_witness=False,
+        verdict_json=str(output_path),
+    )
+
+    with pytest.raises(LaneConfigError, match="--r2-manifest requires --cold-witness"):
+        cli._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+    assert not output_path.exists()
+
+
+def test_run_and_plan_parsers_expose_cold_witness_flags():
+    parser = cli.build_parser()
+    run = parser.parse_args(["run", "package", "--cold-witness", "--r2-manifest", "m.txt"])
+    plan = parser.parse_args(["plan", "package", "--cold-witness"])
+    assert run.cold_witness is True
+    assert run.r2_manifest == "m.txt"
+    assert plan.cold_witness is True
+
+
+def test_r2_manifest_inside_visible_tree_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.git, "path_is_ignored", lambda *_args, **_kwargs: False)
+    with pytest.raises(LaneConfigError, match="--r2-manifest.*not git-ignored"):
+        cli._resolve_r2_manifest(
+            argparse.Namespace(
+                cold_witness=True,
+                r2_manifest=str(tmp_path / ".assay" / "manifest.txt"),
+            ),
+            tmp_path,
+        )
+
+
+def test_r2_manifest_accepts_ignored_or_outside_paths(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    ignored = project / ".assay" / "manifest.txt"
+    monkeypatch.setattr(cli.git, "path_is_ignored", lambda *_args, **_kwargs: True)
+    assert cli._resolve_r2_manifest(
+        argparse.Namespace(cold_witness=True, r2_manifest=str(ignored)), project
+    ) == ignored
+
+    outside = tmp_path / "manifest.txt"
+    monkeypatch.setattr(
+        cli.git,
+        "path_is_ignored",
+        lambda *_args, **_kwargs: pytest.fail("outside path must not query git"),
+    )
+    assert cli._resolve_r2_manifest(
+        argparse.Namespace(cold_witness=True, r2_manifest=str(outside)), project
+    ) == outside
+
+
+def test_cold_witness_plan_preview_reports_transformed_argv_and_refusal(tmp_path):
+    lane = _r2_lane(tmp_path)
+    plan = SimpleNamespace(
+        argv_declared=(
+            "/usr/bin/python3",
+            "-m",
+            "pytest",
+            "tests",
+            "--cov=src",
+            "--cov-branch",
+        ),
+        argv_appended=(),
+        env_effective={},
+    )
+    adapter = SimpleNamespace(name="python")
+
+    preview = cli._cold_witness_plan_preview(
+        lane, adapter=adapter, command_plan=plan, cwd=tmp_path
+    )
+    assert preview == {
+        "eligible": True,
+        "refusal": None,
+        "argv_transformed": ["/usr/bin/python3", "-m", "pytest", "tests"],
+    }
+
+    fail_fast_plan = SimpleNamespace(
+        argv_declared=("/usr/bin/python3", "-m", "pytest", "tests", "-x"),
+        argv_appended=(),
+        env_effective={},
+    )
+    refused = cli._cold_witness_plan_preview(
+        lane, adapter=adapter, command_plan=fail_fast_plan, cwd=tmp_path
+    )
+    assert refused["eligible"] is False
+    assert refused["refusal"] == "fail-fast option"
+    assert refused["argv_transformed"] == list(fail_fast_plan.argv_declared)
+
+
 def test_progress_file_inside_a_visible_project_path_is_refused(
     tmp_path, monkeypatch
 ):

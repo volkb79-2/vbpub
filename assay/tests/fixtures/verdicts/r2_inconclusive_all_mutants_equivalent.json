@@ -1,5 +1,5 @@
 {
- "schema_version": 14,
+ "schema_version": 15,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -39,6 +39,9 @@
   },
   "r2": {
    "producer": "native",
+   "cold_witness_kills": false,
+   "r2_command": null,
+   "equivalence_ledger": null,
    "jobs": 1,
    "max_mutants": 50,
    "operators": [

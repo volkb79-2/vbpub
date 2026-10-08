@@ -446,7 +446,12 @@ operators = ["python:compare-swap"]
             "active": False,
             "reason": "argv-does-not-invoke-pytest",
             "plugin": None,
+            "cpu_window_s": None,
+            "idle_floor_s": None,
         },
+        "cold_witness_kills": False,
+        "r2_command": None,
+        "equivalence_ledger": None,
     }
     assert r2_judgment["budget_per_candidate_derived_s"] > 0
     # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --

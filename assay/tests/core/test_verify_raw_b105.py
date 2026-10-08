@@ -91,6 +91,112 @@ def test_raw_b106_identity_reconstruction_refuses_malformed_identity_inputs():
     assert any("does not match its recorded identity" in item for item in failures)
 
 
+def test_raw_v15_verifier_requires_evidence_for_a_cold_witness_kill():
+    baseline = {
+        "collection_count": 2,
+        "collection_sha256": "a" * 64,
+        "hook_fingerprint_sha256": "b" * 64,
+    }
+    policy = {
+        "cold_witness_kills": True,
+        "r2_command": {"r2_baseline": baseline},
+    }
+    entry = {
+        "execution": {"mode": "witness-cold"},
+        "evidence": {
+            "command": "r2",
+            "collection_count": 2,
+            "collection_sha256": "a" * 64,
+            "hook_fingerprint_sha256": "b" * 64,
+            "started_count": 1,
+            "failed_call_index": 0,
+        },
+    }
+
+    assert _check(raw_verify._check_v15_evidence, "killed", entry, policy) == []
+    del entry["evidence"]
+
+    failures = _check(raw_verify._check_v15_evidence, "killed", entry, policy)
+
+    assert any("cold-witness kill requires collection evidence" in item for item in failures)
+
+
+def test_raw_v15_verifier_requires_baseline_evidence_and_witness_for_full_cold_kill():
+    coverage_baseline = {
+        "collection_count": 2,
+        "collection_sha256": "a" * 64,
+        "hook_fingerprint_sha256": "b" * 64,
+    }
+    r2_baseline = {
+        **coverage_baseline,
+        "hook_fingerprint_sha256": "c" * 64,
+    }
+    policy = {
+        "cold_witness_kills": True,
+        "r2_command": {
+            "coverage_baseline": coverage_baseline,
+            "r2_baseline": r2_baseline,
+        },
+    }
+    witness = {
+        "node_id": "tests/test_a.py::test_a",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    evidence = {
+        "command": "declared",
+        "collection_count": 2,
+        "collection_sha256": "a" * 64,
+        "hook_fingerprint_sha256": "b" * 64,
+        "started_count": None,
+        "failed_call_index": None,
+    }
+    entry = {
+        "execution": {"mode": "full", "witness": witness},
+        "evidence": evidence,
+    }
+    def check_execution(execution):
+        failures = []
+        raw_verify._check_b106_execution(
+            "killed", execution, failures, cold_policy=True
+        )
+        return failures
+
+    assert _check(raw_verify._check_v15_evidence, "killed", entry, policy) == []
+    assert check_execution(entry["execution"]) == []
+
+    missing_evidence = _check(
+        raw_verify._check_v15_evidence,
+        "killed",
+        {"execution": entry["execution"]},
+        policy,
+    )
+    assert any("cold-witness kill requires collection evidence" in item for item in missing_evidence)
+
+    missing_witness = check_execution({"mode": "full"})
+    assert any("full kill requires a failed-call witness" in item for item in missing_witness)
+
+    wrong_command = {**evidence, "command": "r2"}
+    wrong_command_failures = _check(
+        raw_verify._check_v15_evidence,
+        "killed",
+        {"execution": entry["execution"], "evidence": wrong_command},
+        policy,
+    )
+    assert any("full kill evidence must use the 'declared' command" in item for item in wrong_command_failures)
+
+    wrong_baseline = {**evidence, "hook_fingerprint_sha256": "d" * 64}
+    baseline_failures = _check(
+        raw_verify._check_v15_evidence,
+        "killed",
+        {"execution": entry["execution"], "evidence": wrong_baseline},
+        policy,
+    )
+    assert any("hook_fingerprint_sha256 differs from coverage_baseline" in item for item in baseline_failures)
+
+
 def test_raw_mutant_identity_order_checker_handles_shape_and_duplicate_cases():
     first = {
         "path": "src/a.py",

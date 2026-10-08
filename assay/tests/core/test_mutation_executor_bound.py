@@ -15,7 +15,9 @@ no sleeps, no elapsed-time comparison anywhere in this module
 from __future__ import annotations
 
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import json
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,8 +25,10 @@ import pytest
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
-from assay.errors import Outcome
-from assay.mutation import MutationTarget, run_mutation
+from assay import mutation as mutation_module, runner as runner_module
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.mutation import MutationTarget, candidate_id, collect_mutation_sites, run_mutation
+from assay.resource_limits import ResourceLimitCounters
 from assay.runner import execute_command
 
 #: Five independent mutable sites (one per line -- each an unrelated
@@ -43,6 +47,33 @@ _TEXT = (
 _TARGETS = (
     MutationTarget(path="pkg/flags.py", text=_TEXT, lines=frozenset({2, 3, 4, 5, 6})),
 )
+_TEXT3 = (
+    "def flags():\n"
+    "    a = True\n"
+    "    b = True\n"
+    "    c = True\n"
+    "    return a, b, c\n"
+)
+_TARGETS3 = (
+    MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2, 3, 4})),
+)
+_TEXT5 = _TEXT
+_TARGETS5 = _TARGETS
+
+
+@pytest.fixture(autouse=True)
+def _resource_counters_are_faked_for_executor_unit_tests(monkeypatch):
+    """Keep executor mechanics independent of the host's cgroup namespace."""
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(
+        mutation_module, "_read_candidate_resource_counters", lambda: counters
+    )
 
 
 def _always_pass(argv, *, env, cwd, timeout):
@@ -70,13 +101,13 @@ class _RecordingExecutor:
         return self._real.submit(fn, *args)
 
 
-def _seed_repo(tmp_path: Path, name: str) -> GitRepo:
+def _seed_repo(tmp_path: Path, name: str, text: str = _TEXT) -> GitRepo:
     repo = GitRepo(path=tmp_path / name)
     repo.path.mkdir()
     repo.git("init", "-q", "-b", "main")
     repo.git("config", "user.email", "assay-tests@example.com")
     repo.git("config", "user.name", "assay tests")
-    repo.write("pkg/flags.py", _TEXT)
+    repo.write("pkg/flags.py", text)
     repo.commit_all("add flags")
     return repo
 
@@ -315,3 +346,850 @@ def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
             process_runner=_always_pass,
             clock=lambda: datetime.now(timezone.utc),
         )
+
+
+def _candidate_names(targets):
+    jobs = collect_mutation_sites(
+        targets,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )
+    assert jobs != "UNSUPPORTED"
+    return tuple("abcde"[job.site.lineno - 2] for job in jobs)
+
+
+def _decide5(repo_path: Path, behaviours):
+    """Return a content-keyed ProcessRunner for the five independent sites."""
+    del repo_path
+
+    def process_runner(argv, *, env, cwd, timeout):
+        del env, timeout
+        source = (cwd / "pkg/flags.py").read_text(encoding="utf-8")
+        changed = [
+            name
+            for name in "abcde"
+            if f"{name} = False" in source
+        ]
+        if not changed:
+            return subprocess.CompletedProcess(list(argv), 0, "", "")
+        assert len(changed) == 1, f"expected one mutated site, found {changed}"
+        action = behaviours.get(changed[0])
+        if action is not None:
+            return action(argv, cwd)
+        # Default: the suite fails, so the mutant is killed.
+        return subprocess.CompletedProcess(list(argv), 1, "", "")
+
+    return process_runner
+
+
+def _run_queue_case(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    name: str,
+    targets,
+    text: str,
+    jobs: int,
+    process_runner,
+    repo: GitRepo | None = None,
+    state_root: Path | None = None,
+    resume: bool = False,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+    progress_events: list[dict] | None = None,
+    executor_factory=None,
+    expected_plan_sha256: str | None = None,
+    campaign_deadline_sha256: str | None = None,
+    budget_per_candidate_seconds: float | None = None,
+    equivalence_artifact: str | None = None,
+    baseline_equivalence: bytes | None = None,
+    oom_counter=None,
+    return_repo: bool = False,
+):
+    # Queue tests prove ordering and submission behavior; resource-limit
+    # semantics have their own cgroup-bound integration tests and lane gate.
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(
+        mutation_module, "_read_candidate_resource_counters", lambda: counters
+    )
+    repo = _seed_repo(tmp_path, name, text) if repo is None else repo
+    scratch_root = tmp_path / f"{name}-scratch"
+    scratch_root.mkdir()
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
+    plan = make_plan(lane)
+    deadline = make_deadline()
+    progress_stream = None
+    if progress_events is not None:
+        progress_stream = mutation_module.ProgressStream(
+            lambda event: progress_events.append(dict(event)),
+            clock=lambda: datetime.now(timezone.utc),
+        )
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=targets,
+            adapter=PythonAdapter(),
+            jobs=jobs,
+            max_mutants=50,
+            operators=("python:bool-const-flip",),
+            process_runner=process_runner,
+            clock=lambda: datetime.now(timezone.utc),
+            executor_factory=executor_factory or mutation_module._default_executor_factory,
+            state_root=state_root,
+            resume=resume,
+            expected_plan_sha256=expected_plan_sha256,
+            campaign_deadline_sha256=campaign_deadline_sha256,
+            shard_index=shard_index,
+            shard_count=shard_count,
+            progress_stream=progress_stream,
+            budget_per_candidate_seconds=budget_per_candidate_seconds,
+            equivalence_artifact=equivalence_artifact,
+            baseline_equivalence=baseline_equivalence,
+            oom_counter=(lambda: 0) if oom_counter is None else oom_counter,
+        )
+    assert baseline.outcome is Outcome.PASS
+    assert result is not None
+    return (result, repo) if return_repo else result
+
+
+def test_campaign_plan_mismatch_refuses_before_executor_or_candidate_state(
+    tmp_path, monkeypatch
+):
+    state_root = tmp_path / "campaign-plan-state"
+    executor_calls: list[int] = []
+
+    def factory(jobs):
+        executor_calls.append(jobs)
+        raise AssertionError("a mismatched campaign plan must not launch candidates")
+
+    with pytest.raises(mutation_module.CampaignPlanMismatchError, match="full mutation plan"):
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="campaign-plan-mismatch",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=2,
+            process_runner=_decide5(tmp_path, {}),
+            state_root=state_root,
+            executor_factory=factory,
+            expected_plan_sha256="f" * 64,
+            campaign_deadline_sha256="a" * 64,
+        )
+
+    assert executor_calls == []
+    assert list(state_root.glob("*.json")) == []
+
+
+def test_candidate_state_record_is_bound_to_campaign_deadline_bytes(
+    tmp_path, monkeypatch
+):
+    jobs = collect_mutation_sites(
+        _TARGETS3,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )
+    assert jobs != "UNSUPPORTED"
+    plan_digest = mutation_module.plan_sha256([candidate_id(job) for job in jobs])
+    deadline_digest = "a" * 64
+    state_root = tmp_path / "campaign-state"
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="campaign-state-binding",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=2,
+        process_runner=_decide5(tmp_path, {}),
+        state_root=state_root,
+        expected_plan_sha256=plan_digest,
+        campaign_deadline_sha256=deadline_digest,
+    )
+
+    assert result.total == 3
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in state_root.glob("*.json")]
+    assert len(records) == 3
+    assert {record["campaign_deadline_sha256"] for record in records} == {deadline_digest}
+
+
+def test_resume_reexecutes_state_bound_to_different_campaign_deadline_bytes(
+    tmp_path, monkeypatch
+):
+    repo = _seed_repo(tmp_path, "campaign-resume-binding", _TEXT3)
+    state_root = tmp_path / "campaign-resume-state"
+    jobs = collect_mutation_sites(
+        _TARGETS3,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )
+    assert jobs != "UNSUPPORTED"
+    plan_digest = mutation_module.plan_sha256([candidate_id(job) for job in jobs])
+    first_digest = "a" * 64
+    second_digest = "b" * 64
+    first, _ = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="campaign-resume-binding-first",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=2,
+        process_runner=_decide5(tmp_path, {}),
+        repo=repo,
+        state_root=state_root,
+        expected_plan_sha256=plan_digest,
+        campaign_deadline_sha256=first_digest,
+        return_repo=True,
+    )
+    assert first.total == 3
+
+    calls: list[str] = []
+
+    def pass_candidate(argv, cwd):
+        calls.append(Path(cwd).name)
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    progress_events: list[dict] = []
+    resumed = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="campaign-resume-binding-second",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=2,
+        process_runner=_decide5(
+            tmp_path,
+            dict.fromkeys(_candidate_names(_TARGETS3), pass_candidate),
+        ),
+        repo=repo,
+        state_root=state_root,
+        resume=True,
+        expected_plan_sha256=plan_digest,
+        campaign_deadline_sha256=second_digest,
+        progress_events=progress_events,
+    )
+
+    assert resumed.total == 3
+    assert len(calls) == 3
+    resume_events = [event for event in progress_events if event.get("event") == "resume"]
+    assert len(resume_events) == 1
+    assert resume_events[0]["rejected_total"] == 3
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in state_root.glob("*.json")]
+    assert {record["campaign_deadline_sha256"] for record in records} == {second_digest}
+
+
+def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
+    tmp_path, monkeypatch
+):
+    repo = _seed_repo(tmp_path, "campaign-lane-timeout", _TEXT3)
+    state_root = tmp_path / "campaign-lane-timeout-state"
+    candidate_calls: list[str] = []
+
+    def timeout_candidate(argv, cwd):
+        candidate_calls.append(Path(cwd).name)
+        raise subprocess.TimeoutExpired(list(argv), timeout=60.0, output=b"partial")
+
+    class Reservation:
+        def __init__(self):
+            self.closes = 0
+
+        def close(self):
+            self.closes += 1
+
+    reservations: list[Reservation] = []
+
+    def arm(*_args, **_kwargs):
+        reservation = Reservation()
+        reservations.append(reservation)
+        return reservation
+
+    monkeypatch.setattr(mutation_module, "_arm_artifact_reservation", arm)
+    first, _ = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="campaign-lane-timeout",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {_candidate_names(_TARGETS3)[0]: timeout_candidate}),
+        repo=repo,
+        state_root=state_root,
+        equivalence_artifact="equivalence.json",
+        baseline_equivalence=b"baseline-equivalence",
+        return_repo=True,
+    )
+
+    assert len(candidate_calls) == 1
+    assert len(first.budget_exceeded) == 3
+    assert reservations[0].closes == 1
+    assert list(state_root.glob("*.json")) == []
+
+    resumed_calls: list[str] = []
+
+    def pass_candidate(argv, cwd):
+        resumed_calls.append(Path(cwd).name)
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    resumed = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="campaign-lane-timeout-resume",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(
+            tmp_path,
+            dict.fromkeys(_candidate_names(_TARGETS3), pass_candidate),
+        ),
+        repo=repo,
+        state_root=state_root,
+        resume=True,
+    )
+    assert resumed.total == 3
+    assert len(resumed_calls) == 3
+    assert len(list(state_root.glob("*.json"))) == 3
+
+
+def test_oom_during_candidate_execution_is_unclassified_and_unrecorded(
+    tmp_path, monkeypatch
+):
+    values = iter((0, 0, 1))
+    state_root = tmp_path / "oom-state"
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="oom-candidate",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {}),
+        state_root=state_root,
+        oom_counter=lambda: next(values),
+    )
+
+    assert len(result.budget_exceeded) == 3
+    assert not result.killed
+    assert not result.crashed
+    assert list(state_root.glob("*.json")) == []
+
+
+class _OutstandingExecutor:
+    def __init__(self, jobs: int, state: dict) -> None:
+        self.jobs = jobs
+        self.state = state
+        self.real = ThreadPoolExecutor(max_workers=jobs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return self.real.__exit__(*args)
+
+    def submit(self, fn, *args):
+        position = args[0]
+        with self.state["lock"]:
+            self.state["positions"].append(position)
+            self.state["outstanding"] += 1
+            self.state["max_outstanding"] = max(
+                self.state["max_outstanding"], self.state["outstanding"]
+            )
+
+        def tracked(*inner_args):
+            try:
+                return fn(*inner_args)
+            finally:
+                with self.state["lock"]:
+                    self.state["outstanding"] -= 1
+
+        return self.real.submit(tracked, *args)
+
+
+def test_work_queue_bounds_in_flight_and_submits_in_position_order(tmp_path, monkeypatch):
+    state = {
+        "lock": threading.Lock(),
+        "outstanding": 0,
+        "max_outstanding": 0,
+        "positions": [],
+    }
+    executor_refs = []
+
+    def factory(jobs):
+        executor = _OutstandingExecutor(jobs, state)
+        executor_refs.append(executor)
+        return executor
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="queue-bound",
+        targets=_TARGETS5,
+        text=_TEXT5,
+        jobs=2,
+        process_runner=_decide5(tmp_path, {}),
+        executor_factory=factory,
+    )
+    assert result.total == 5
+    assert len(executor_refs) == 1
+    assert executor_refs[0].jobs == 2
+    assert state["positions"] == list(range(5))
+    assert state["max_outstanding"] <= 2
+
+
+def test_completed_candidate_releases_a_slot_without_waiting_for_the_batch(
+    tmp_path, monkeypatch
+):
+    names = _candidate_names(_TARGETS5)
+    name_at = dict(enumerate(names))
+    release_zero = threading.Event()
+    zero_started = threading.Event()
+    candidate_three_started = threading.Event()
+
+    def hold_zero(argv, cwd):
+        zero_started.set()
+        if not release_zero.wait(10):
+            raise AssertionError("position 0 was never released")
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    def observe_three(argv, cwd):
+        candidate_three_started.set()
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    behaviours = {
+        name_at[0]: hold_zero,
+        name_at[3]: observe_three,
+    }
+    with ThreadPoolExecutor(max_workers=1) as driver:
+        task = driver.submit(
+            _run_queue_case,
+            tmp_path,
+            monkeypatch,
+            name="queue-no-barrier",
+            targets=_TARGETS5,
+            text=_TEXT5,
+            jobs=3,
+            process_runner=_decide5(tmp_path, behaviours),
+        )
+        try:
+            assert zero_started.wait(5), "position 0 did not start"
+            assert candidate_three_started.wait(5), (
+                "position 3 did not start while position 0 held its worker slot"
+            )
+            assert not release_zero.is_set()
+        finally:
+            release_zero.set()
+        assert task.result(timeout=10).total == 5
+
+
+def test_candidate_event_buffer_orders_events_and_flushes_after_gaps():
+    buffer = mutation_module._CandidateEventBuffer(4)
+    event_one = {"candidate_index": 1}
+    event_two = {"candidate_index": 2}
+    buffer.stage(2, event_two)
+    assert buffer.drain_contiguous() == []
+    buffer.resolve_without_event(0)
+    buffer.stage(1, event_one)
+    assert buffer.drain_contiguous() == [event_one, event_two]
+    buffer.resolve_without_event(3)
+    assert buffer.drain_contiguous() == []
+
+    abnormal = mutation_module._CandidateEventBuffer(4)
+    event_three = {"candidate_index": 3}
+    abnormal.stage(1, event_one)
+    abnormal.stage(3, event_three)
+    assert abnormal.drain_contiguous() == []
+    assert abnormal.drain_all_ascending() == [event_one, event_three]
+
+
+def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_order(
+    tmp_path, monkeypatch
+):
+    names = _candidate_names(_TARGETS3)
+    name_at = dict(enumerate(names))
+    release_zero = threading.Event()
+    progress_events: list[dict] = []
+    state_root = tmp_path / "queue-state"
+    real_write = mutation_module._write_mutation_state_record
+    jobs = collect_mutation_sites(
+        _TARGETS3,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )
+    assert jobs != "UNSUPPORTED"
+    position_one_id = candidate_id(jobs[1])
+
+    def hold_zero(argv, cwd):
+        if not release_zero.wait(10):
+            raise AssertionError("position 0 was never released")
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    def complete_one(argv, cwd):
+        return subprocess.CompletedProcess(list(argv), 1, "", "")
+
+    def release_zero_after_one_is_recorded(root, payload):
+        real_write(root, payload)
+        if payload["candidate_id"] == position_one_id:
+            release_zero.set()
+
+    monkeypatch.setattr(
+        mutation_module,
+        "_write_mutation_state_record",
+        release_zero_after_one_is_recorded,
+    )
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="queue-progress-order",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=3,
+        process_runner=_decide5(
+            tmp_path,
+            {name_at[0]: hold_zero, name_at[1]: complete_one},
+        ),
+        state_root=state_root,
+        resume=True,
+        progress_events=progress_events,
+    )
+    assert result.total == 3
+    candidate_indices = [
+        event["candidate_index"]
+        for event in progress_events
+        if event.get("event") == "candidate"
+    ]
+    assert candidate_indices == [0, 1, 2]
+    assert len(list(state_root.glob("*.json"))) == 3
+
+
+def test_queue_drains_all_futures_and_raises_lowest_position_fatal(
+    tmp_path, monkeypatch
+):
+    futures: dict[int, Future] = {}
+    submitted: list[int] = []
+    all_submitted = threading.Event()
+    position_one_observed = threading.Event()
+    fault_zero = AssayError(
+        "position zero fatal", outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED
+    )
+    fault_one = AssayError(
+        "position one fatal",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.MUTATION_DISCOVERY_FAILED,
+    )
+    fault_two = AssayError(
+        "position two fatal", outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG
+    )
+
+    class InjectedExecutor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def submit(self, fn, position):
+            del fn
+            future = Future()
+            futures[position] = future
+            submitted.append(position)
+            if position == 1:
+                future.set_exception(fault_one)
+            if len(submitted) == 3:
+                all_submitted.set()
+            return future
+
+    real_wait = mutation_module.wait
+
+    def observe_first_fatal(waiting, *, return_when):
+        done, pending = real_wait(waiting, return_when=return_when)
+        if futures.get(1) in done:
+            position_one_observed.set()
+        return done, pending
+
+    monkeypatch.setattr(mutation_module, "wait", observe_first_fatal)
+    with ThreadPoolExecutor(max_workers=1) as driver:
+        task = driver.submit(
+            _run_queue_case,
+            tmp_path,
+            monkeypatch,
+            name="queue-fatal-order",
+            targets=_TARGETS5,
+            text=_TEXT5,
+            jobs=3,
+            process_runner=_decide5(tmp_path, {}),
+            executor_factory=lambda _jobs: InjectedExecutor(),
+        )
+        assert all_submitted.wait(5)
+        assert position_one_observed.wait(5)
+        futures[0].set_exception(fault_zero)
+        futures[2].set_exception(fault_two)
+        with pytest.raises(AssayError) as caught:
+            task.result(timeout=10)
+    assert caught.value is fault_zero
+    assert submitted == [0, 1, 2]
+
+
+def test_lane_timeout_stops_submission_but_drains_completed_in_flight_work(
+    tmp_path, monkeypatch
+):
+    names = _candidate_names(_TARGETS5)
+    name_at = dict(enumerate(names))
+    release = threading.Event()
+    timeout_started = threading.Event()
+    state = {
+        "lock": threading.Lock(),
+        "outstanding": 0,
+        "max_outstanding": 0,
+        "positions": [],
+    }
+    executor_refs = []
+
+    def factory(jobs):
+        executor = _OutstandingExecutor(jobs, state)
+        executor_refs.append(executor)
+        return executor
+
+    def hold(argv, cwd):
+        if not release.wait(10):
+            raise AssertionError("held in-flight candidate was not released")
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    timeout_error = AssayError(
+        "campaign deadline during candidate",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+    real_execute_plan = runner_module.execute_plan
+
+    def stop_position_one(plan, *, cwd, **kwargs):
+        source = (cwd / "pkg/flags.py").read_text(encoding="utf-8")
+        if f"{name_at[1]} = False" in source:
+            timeout_started.set()
+            raise timeout_error
+        return real_execute_plan(plan, cwd=cwd, **kwargs)
+
+    monkeypatch.setattr(runner_module, "execute_plan", stop_position_one)
+    state_root = tmp_path / "timeout-state"
+    progress_events: list[dict] = []
+    with ThreadPoolExecutor(max_workers=1) as driver:
+        task = driver.submit(
+            _run_queue_case,
+            tmp_path,
+            monkeypatch,
+            name="queue-timeout-drain",
+            targets=_TARGETS5,
+            text=_TEXT5,
+            jobs=3,
+            process_runner=_decide5(
+                tmp_path,
+                {name_at[0]: hold, name_at[2]: hold},
+            ),
+            state_root=state_root,
+            resume=True,
+            progress_events=progress_events,
+            executor_factory=factory,
+        )
+        assert timeout_started.wait(5), "position 1 did not reach its deadline"
+        release.set()
+        result = task.result(timeout=10)
+    assert len(executor_refs) == 1
+    assert state["positions"] == [0, 1, 2]
+    assert len(list(state_root.glob("*.json"))) == 2
+    assert len(result.budget_exceeded) == 3
+    assert [
+        event["candidate_index"]
+        for event in progress_events
+        if event.get("event") == "candidate"
+    ] == [0, 2]
+
+
+def test_fatal_stops_submission_but_records_other_in_flight_results(
+    tmp_path, monkeypatch
+):
+    names = _candidate_names(_TARGETS5)
+    name_at = dict(enumerate(names))
+    release = threading.Event()
+    fatal_started = threading.Event()
+    state = {
+        "lock": threading.Lock(),
+        "outstanding": 0,
+        "max_outstanding": 0,
+        "positions": [],
+    }
+
+    def factory(jobs):
+        return _OutstandingExecutor(jobs, state)
+
+    def hold(argv, cwd):
+        if not release.wait(10):
+            raise AssertionError("held in-flight candidate was not released")
+        return subprocess.CompletedProcess(list(argv), 1, "", "")
+
+    fatal = AssayError(
+        "candidate infrastructure failure",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.GIT_FAILED,
+    )
+    real_execute_plan = runner_module.execute_plan
+
+    def fail_position_one(plan, *, cwd, **kwargs):
+        source = (cwd / "pkg/flags.py").read_text(encoding="utf-8")
+        if f"{name_at[1]} = False" in source:
+            fatal_started.set()
+            raise fatal
+        return real_execute_plan(plan, cwd=cwd, **kwargs)
+
+    monkeypatch.setattr(runner_module, "execute_plan", fail_position_one)
+    state_root = tmp_path / "fatal-state"
+    progress_events: list[dict] = []
+    with ThreadPoolExecutor(max_workers=1) as driver:
+        task = driver.submit(
+            _run_queue_case,
+            tmp_path,
+            monkeypatch,
+            name="queue-fatal-drain",
+            targets=_TARGETS5,
+            text=_TEXT5,
+            jobs=3,
+            process_runner=_decide5(
+                tmp_path,
+                {name_at[0]: hold, name_at[2]: hold},
+            ),
+            state_root=state_root,
+            resume=True,
+            progress_events=progress_events,
+            executor_factory=factory,
+        )
+        assert fatal_started.wait(5), "position 1 did not reach the fatal path"
+        release.set()
+        with pytest.raises(AssayError) as caught:
+            task.result(timeout=10)
+    assert caught.value is fatal
+    assert state["positions"] == [0, 1, 2]
+    assert len(list(state_root.glob("*.json"))) == 2
+    assert [
+        event["candidate_index"]
+        for event in progress_events
+        if event.get("event") == "candidate"
+    ] == [0, 2]
+
+
+def test_resumed_pending_indices_remain_monotonic_under_reverse_completion(
+    tmp_path, monkeypatch
+):
+    state_root = tmp_path / "resume-order-state"
+    all_jobs = collect_mutation_sites(
+        _TARGETS5,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )
+    assert all_jobs != "UNSUPPORTED"
+    all_candidate_ids = [candidate_id(job) for job in all_jobs]
+    shard_pair = next(
+        (count, index)
+        for count in range(2, 6)
+        for index in range(count)
+        if len(
+            mutation_module.select_mutation_shard(
+                all_candidate_ids, index=index, count=count
+            )
+        )
+        == 2
+    )
+    first, repo = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="queue-resume-order",
+        targets=_TARGETS5,
+        text=_TEXT5,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {}),
+        state_root=state_root,
+        shard_index=shard_pair[1],
+        shard_count=shard_pair[0],
+        return_repo=True,
+    )
+    del first
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in state_root.glob("*.json")
+    ]
+    assert len(records) == 2
+    completed_ids = {record["candidate_id"] for record in records}
+    all_jobs = collect_mutation_sites(
+        _TARGETS5,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )
+    assert all_jobs != "UNSUPPORTED"
+    pending_jobs = [job for job in all_jobs if candidate_id(job) not in completed_ids]
+    pending_names = ["abcde"[job.site.lineno - 2] for job in pending_jobs]
+    assert len(pending_names) == 3
+
+    release_zero = threading.Event()
+    release_one = threading.Event()
+    completed: list[str] = []
+    finished = {name: threading.Event() for name in pending_names}
+
+    def complete_in_order(name, gate=None):
+        def action(argv, cwd):
+            if gate is not None and not gate.wait(10):
+                raise AssertionError(f"candidate {name} was not released")
+            completed.append(name)
+            finished[name].set()
+            return subprocess.CompletedProcess(list(argv), 1, "", "")
+
+        return action
+
+    behaviors = {
+        pending_names[0]: complete_in_order(pending_names[0], release_zero),
+        pending_names[1]: complete_in_order(pending_names[1], release_one),
+        pending_names[2]: complete_in_order(pending_names[2]),
+    }
+    progress_events: list[dict] = []
+    with ThreadPoolExecutor(max_workers=1) as driver:
+        task = driver.submit(
+            _run_queue_case,
+            tmp_path,
+            monkeypatch,
+            name="queue-resume-order-second",
+            repo=repo,
+            targets=_TARGETS5,
+            text=_TEXT5,
+            jobs=3,
+            process_runner=_decide5(tmp_path, behaviors),
+            state_root=state_root,
+            resume=True,
+            progress_events=progress_events,
+        )
+        try:
+            assert finished[pending_names[2]].wait(5)
+            release_one.set()
+            assert finished[pending_names[1]].wait(5)
+            release_zero.set()
+        finally:
+            release_one.set()
+            release_zero.set()
+        task.result(timeout=10)
+    assert completed == [pending_names[2], pending_names[1], pending_names[0]]
+    assert [
+        event["candidate_index"]
+        for event in progress_events
+        if event.get("event") == "candidate"
+    ] == [0, 1, 2]
+    assert len(list(state_root.glob("*.json"))) == 5

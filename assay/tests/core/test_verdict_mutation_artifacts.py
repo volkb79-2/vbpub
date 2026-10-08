@@ -42,6 +42,7 @@ document, independently worded) refuse.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 
@@ -50,6 +51,7 @@ from conftest import native_mutation, native_outcome, mutation_verdict_fixture, 
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
+from assay import verify
 from assay.verdict import (
     Claim,
     Judgment,
@@ -97,7 +99,10 @@ RESOLVED = JudgmentResolved(
 #: (P33/V5-4) Derived, not declared: `kill_signal_artifact` is refused at
 #: config load until P34, so every lane this build can run renders
 #: `unattributed`.
-UNATTRIBUTED = {"kill_attribution": "unattributed"}
+UNATTRIBUTED = {
+    "kill_attribution": "unattributed",
+    "cold_witness_kills": False,
+}
 
 #: Replacement hashes, hand-computed rather than read back from the code
 #: under test (A-067). Each is sha256 of the REPLACEMENT BYTES only.
@@ -543,6 +548,7 @@ def _sql_r2_policy(
         max_mutants=200,
         operators=operators,
         kill_attribution=kill_attribution,
+        cold_witness_kills=False,
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=equivalence_artifact,
     )
@@ -654,16 +660,16 @@ def test_o9_negative_a_sql_killed_with_no_kill_signal_under_declared_attribution
     assert failures, "raw verifier accepted a declared kill with no kill_signal"
 
 
-def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_equivalence_artifact(
+def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_proof_source(
     validator: Draft202012Validator,
 ):
     """(O9 negative b) The ``equivalent`` bucket and
-    ``judgment.r2.equivalence_artifact`` are both-present-or-both-absent
-    (P33/V5-3 invariant 2). Declaring neither is legal; a lane with the
-    bucket populated and no declared artifact would be claiming equivalence
-    was proven by nothing."""
+    A populated bucket requires exactly one proof source: either
+    ``equivalence_artifact`` or v15's reserved ``equivalence_ledger``, never
+    both. With neither source, the bucket claims equivalence was proven by
+    nothing."""
     mutation = native_mutation(candidate_count=1, total=1, equivalent=(SQL_EQUIVALENT,))
-    with pytest.raises(ValueError, match="declares no equivalence_artifact"):
+    with pytest.raises(ValueError, match="declares no proof source"):
         Verdict(
             **BASE,
             commit="7" * 39 + "3",
@@ -696,6 +702,68 @@ def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_equivalence_artifa
         "raw verifier accepted an equivalent bucket with no declared "
         "equivalence_artifact"
     )
+
+
+def test_reserved_equivalence_ledger_passes_model_schema_and_raw_verifier(
+    validator: Draft202012Validator,
+):
+    """The v15 wire reservation remains independently verifiable while the
+    producer stays disabled until P10a/P10b. This positive ledger PASS keeps
+    schema, model reconstruction and raw verification from all rejecting the
+    reserved shape by default."""
+    document = mutation_verdict_fixture("r2_pass_equivalence_ledger")
+
+    _validate(document, validator)
+    verdict = verify._reconstruct_verdict(document)
+    assert verdict.judgment.r2.equivalence_ledger.entry_count == 1
+    failures: list[str] = []
+    verify._check_v15_r2_command(document, failures)
+    assert failures == []
+    assert verify_document(document) == []
+    assert document["outcome"] == "PASS"
+    assert len(document["claims"][1]["mutation"]["killed"]) == 1
+    assert len(document["claims"][1]["mutation"]["equivalent"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "schema_valid", "raw_fragment"),
+    [
+        ("sha256", "not-a-digest", False, "digests must be SHA-256 values"),
+        ("entry_count", 2, True, "entry_count differs from equivalent outcomes"),
+    ],
+)
+def test_reserved_equivalence_ledger_rejects_invalid_ledger_facts_at_each_layer(
+    validator: Draft202012Validator,
+    field: str,
+    value: object,
+    schema_valid: bool,
+    raw_fragment: str,
+):
+    document = mutation_verdict_fixture("r2_pass_equivalence_ledger")
+    broken = copy.deepcopy(document)
+    broken["judgment"]["r2"]["equivalence_ledger"][field] = value
+
+    if schema_valid:
+        _validate(broken, validator)
+    else:
+        assert why_invalid(validator, broken)
+    with pytest.raises((TypeError, ValueError)):
+        verify._reconstruct_verdict(broken)
+    failures: list[str] = []
+    verify._check_v15_r2_command(broken, failures)
+    assert any(raw_fragment in failure for failure in failures), failures
+
+
+def test_equivalence_ledger_and_artifact_are_refused_by_model_and_raw_verifier():
+    document = mutation_verdict_fixture("r2_pass_equivalence_ledger")
+    broken = copy.deepcopy(document)
+    broken["judgment"]["r2"]["equivalence_artifact"] = ".assay/schema-dump.sql"
+
+    with pytest.raises(ValueError, match="both equivalence_artifact and equivalence_ledger"):
+        verify._reconstruct_verdict(broken)
+    failures: list[str] = []
+    verify._check_v15_r2_command(broken, failures)
+    assert any("cannot accompany equivalence_artifact" in failure for failure in failures)
 
 
 def test_o9_negative_c_a_python_operator_declared_on_a_sql_lane(

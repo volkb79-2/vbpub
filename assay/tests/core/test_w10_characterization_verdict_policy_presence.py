@@ -101,6 +101,7 @@ R2_POLICY = JudgmentR2(
     max_mutants=50,
     operators=("python:compare-swap",),
     kill_attribution="unattributed",
+    cold_witness_kills=False,
 )
 R3_POLICY = JudgmentR3(mechanism="uncovered-line", targets=("a.py",))
 R4_POLICY = JudgmentR4(

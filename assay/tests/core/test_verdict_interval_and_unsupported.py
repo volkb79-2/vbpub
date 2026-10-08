@@ -209,6 +209,7 @@ def test_the_unsupported_terminal_still_records_the_policy_it_applied():
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
+                cold_witness_kills=False,
             ),
         ),
         snapshot_policy=SnapshotPolicy(selection="repository"),
@@ -247,6 +248,7 @@ def test_a_policy_recorded_for_a_baseline_that_never_ran_is_refused():
                     max_mutants=50,
                     operators=("python:compare-swap",),
                     kill_attribution="unattributed",
+                    cold_witness_kills=False,
                 ),
             ),
         )

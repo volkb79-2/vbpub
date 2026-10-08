@@ -129,6 +129,16 @@ def lanes_json(path: Path) -> dict:
 #: until B043/B041(b)/B045 land (schema v9). Declared once so every expected
 #: entry below inherits it via `| _WAVE_B_STUB` rather than repeating it.
 _WAVE_B_STUB = {"cwd": None, "link_paths": []}
+_NO_RESOURCE_OBSERVATION = {
+    "applies_to": "none",
+    "available": None,
+    "reason": None,
+}
+_CONDITIONAL_RESOURCE_OBSERVATION = {
+    "applies_to": "conditional_native_r2_candidates",
+    "available": True,
+    "reason": None,
+}
 
 
 def test_document_envelope(project: Project):
@@ -165,6 +175,7 @@ def test_an_r0_only_lane(project: Project):
             "infrastructure_facts": [],
             "budget": "5m",
             "snapshot_selection": None,
+            "resource_observation": _NO_RESOURCE_OBSERVATION,
             **_WAVE_B_STUB,
         }
     ]
@@ -201,6 +212,7 @@ def test_a_python_r1_lane_with_a_declared_base(project: Project):
             "infrastructure_facts": [],
             "budget": "1h30m",
             "snapshot_selection": "repository",
+            "resource_observation": _NO_RESOURCE_OBSERVATION,
             **_WAVE_B_STUB,
         }
     ]
@@ -240,6 +252,7 @@ def test_a_javascript_r1_lane_that_delegates_its_base(project: Project):
             "infrastructure_facts": [],
             "budget": "15m",
             "snapshot_selection": "repository",
+            "resource_observation": _NO_RESOURCE_OBSERVATION,
             **_WAVE_B_STUB,
         }
     ]
@@ -276,6 +289,7 @@ def test_a_sql_r2_lane(project: Project):
             "infrastructure_facts": [],
             "budget": "20m",
             "snapshot_selection": "repository",
+            "resource_observation": _CONDITIONAL_RESOURCE_OBSERVATION,
             **_WAVE_B_STUB,
         }
     ]
@@ -310,6 +324,7 @@ def test_a_lane_with_declared_env_required_environment_command_and_infrastructur
             "infrastructure_facts": ["api", "db"],
             "budget": "10m",
             "snapshot_selection": None,
+            "resource_observation": _NO_RESOURCE_OBSERVATION,
             **_WAVE_B_STUB,
         }
     ]

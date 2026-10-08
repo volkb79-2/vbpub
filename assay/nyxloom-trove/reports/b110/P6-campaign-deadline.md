@@ -194,7 +194,7 @@ A mutant that signals its own candidate is still classified normally, because te
    - A per-candidate budget timeout (`not lane_bound`) keeps today's `budget_exceeded` classification and record. That is a genuine candidate outcome, the spinning-mutant case.
    - A `CANDIDATE_HUNG` result keeps today's `hung` classification unless termination was requested (step 3).
 3. Termination is already covered, because `execute_plan` raises when `_TERMINATION` is set (Interfaces 5). No extra check is needed here.
-4. The post-command dirt check's existing absorption of LANE_TIMEOUT (`mutation.py:2761-2779`) is unchanged. It only protects an already-decided *candidate* result. After step 2, an attempt the lane deadline cut off never reaches it.
+4. The post-command snapshot integrity check is part of the classification boundary. If the lane or campaign deadline, or a termination request, interrupts `_snapshot_left_dirt`, propagate `LANE_TIMEOUT`; leave the candidate unclassified and write no candidate state or progress event. A completed mutant command is not classified until snapshot HEAD, index, and worktree integrity are proven. This supersedes the earlier timeout absorption at this call site; a per-candidate budget expiry remains a genuine `budget_exceeded` result.
 
 **8. C8: state records are bound to the deadline.**
 - When `assay run` receives `--campaign-deadline`, every state record it writes gains the optional top-level key `campaign_deadline_sha256`: the SHA-256 of the deadline file's bytes as read in Flow 1. The loader tolerates extra top-level keys (`mutation.py:1310-1348`), and `MUTATION_STATE_SCHEMA_VERSION` stays 1.
