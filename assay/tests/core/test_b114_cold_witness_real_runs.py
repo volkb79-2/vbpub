@@ -594,33 +594,47 @@ def test_cold_witness_reader_thread_start_failure_is_typed_and_never_a_kill(
     attempt_log = tmp_path / "attempts.log"
     config = _seed_campaign(git_repo, attempt_log, max_mutants=1)
     monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+    original_receipt_capture = mutation.ReceiptCapture
     original_start = threading.Thread.start
+    candidate_capture_calls: list[str] = []
     failed_from: list[str] = []
 
     def fail_receipt_reader_on_candidate(thread: threading.Thread) -> None:
-        # With jobs=1 the candidate executor may run inline on MainThread.
-        # ReceiptCapture is created only for an active R2 candidate attempt,
-        # so fail the named reader regardless of which thread owns the attempt.
         if thread.name == "assay-witness-receipt":
             failed_from.append(threading.current_thread().name)
             raise RuntimeError("injected process-limit thread-start failure")
         original_start(thread)
 
-    monkeypatch.setattr(threading.Thread, "start", fail_receipt_reader_on_candidate)
+    def fail_candidate_receipt_capture():
+        # This alias is called at mutation.py's candidate-only ReceiptCapture
+        # site. runner.py uses its own import for the coverage baseline, so the
+        # injection cannot turn an R0 failure into a false R2 regression pass.
+        candidate_capture_calls.append("candidate")
+        with monkeypatch.context() as capture_patch:
+            capture_patch.setattr(
+                threading.Thread, "start", fail_receipt_reader_on_candidate
+            )
+            return original_receipt_capture()
+
+    monkeypatch.setattr(mutation, "ReceiptCapture", fail_candidate_receipt_capture)
     code, stdout, stderr, _progress, _manifest, verdict_path, _state_dir = (
         _run_cold_campaign(
             git_repo, config, tmp_path=tmp_path, attempt_log=attempt_log
         )
     )
 
+    assert candidate_capture_calls == ["candidate"], (
+        f"candidate ReceiptCapture was not reached: code={code}, "
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
     assert failed_from
     assert code == 2, f"stdout:\n{stdout}\nstderr:\n{stderr}"
     document = json.loads(verdict_path.read_text(encoding="utf-8"))
     r2 = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
     assert r2["status"] == "ERROR"
     assert r2["reason_code"] == "EXEC_FAILED"
-    mutation = r2.get("mutation")
-    assert mutation is None or mutation["killed"] == []
+    mutation_payload = r2.get("mutation")
+    assert mutation_payload is None or mutation_payload["killed"] == []
     assert cli.main(
         ["verify", str(verdict_path)], stdout=io.StringIO(), stderr=io.StringIO()
     ) == 0
