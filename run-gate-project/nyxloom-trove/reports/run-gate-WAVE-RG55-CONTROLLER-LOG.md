@@ -7924,3 +7924,30 @@ the expected Assay R1/R2/R3, selftest, and full-gate lanes. None of those
 checks is registered gate evidence. No registered gate or live acceptance
 probe has yet run on `8ff8af93`; exact-tree gates, live observer/DAMON
 acceptance, and independent review remain outstanding.
+
+### RW-502 — 2026-10-08 01:29:08 UTC — reconcile the preserved P1/P6 mutation artifacts
+
+The preserved P1 isolated artifacts refine the earlier handover. The
+`450fe53d` result remains a historical FAIL (109/121 killed, 12 survivors).
+A later rejudge at `dcdcc5d3` accounted for 125 candidates, killed 124, and
+left one `Lt->LtE` survivor at the `/proc/<pid>/stat` closing-delimiter
+boundary. It is a real behavioral distinction for a valid empty `comm`
+field, not an accepted equivalent. The follow-up test
+`test_start_time_accepts_an_empty_process_command_name` is present in the
+preserved P1 branch; current `main` independently contains the corresponding
+direct regression `test_proc_start_time_ticks_accepts_empty_comm_name`
+(commit `38e38349`) and the shared `proc_stat` parser. This closes that
+specific oracle gap in current source, but no R2 receipt on the current
+integrated source is claimed.
+
+The newest preserved P6 verdict is for tree `324eac95`: FAIL, 1,251
+candidates accounted for, 1,210 killed, 41 survived, zero budget-exceeded.
+The CIU checkout now points at `f516d7e5`, not the judged commit; the two are
+not in an ancestor relationship, and the profiler subtree has substantial
+source/test changes between them. Therefore neither its 41-survivor set nor
+any older P6 R2 receipt qualifies the current integrated tree. Run current
+exact-tree mutation evidence, then disposition each survivor; selective
+rejudge may be used only where Assay validates the reused candidate identity.
+These historical artifacts do not change the current candidate's status:
+its registered gates, live probes, mutation gate, and independent review
+remain outstanding.
