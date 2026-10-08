@@ -146,10 +146,27 @@ def _codex_sessions_roots() -> list[Path]:
     exercise the same scan.
     """
     roots: list[Path] = []
+    seen_paths: set[Path] = set()
+    seen_directories: set[tuple[int, int]] = set()
 
     def add(root: Path) -> None:
-        if root not in roots:
+        if root in seen_paths:
+            return
+        seen_paths.add(root)
+        try:
+            metadata = root.stat()
+        except FileNotFoundError:
+            # Keep missing configured roots in the result; the scanner treats
+            # an absent profile as a genuine negative.
             roots.append(root)
+            return
+        except OSError as exc:
+            raise _scan_indeterminate(root, "inspect", exc) from exc
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity in seen_directories:
+            return
+        seen_directories.add(identity)
+        roots.append(root)
 
     add(_codex_sessions_root())
     add(Path.home() / ".codex" / "sessions")
@@ -238,6 +255,25 @@ def _entry_mode(path: Path) -> int:
         raise _scan_indeterminate(path, "inspect", exc) from exc
 
 
+def _unique_physical_paths(paths: list[Path]) -> list[Path]:
+    """Collapse lexical aliases to one local file, preserving first-seen order."""
+    seen: set[tuple[int, int] | Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            key: tuple[int, int] | Path = path
+        except OSError as exc:
+            raise _scan_indeterminate(path, "inspect", exc) from exc
+        else:
+            key = (metadata.st_dev, metadata.st_ino)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
 def _claude_matches_in(project_dir: Path, ref: str) -> list[Path]:
     """Both file layouts one Claude Code project directory can hold a
     session under: `<uuid>.jsonl` for the interactive session itself, and
@@ -264,14 +300,30 @@ def _claude_matches_in(project_dir: Path, ref: str) -> list[Path]:
                 and nested_path.stem.lower() == f"agent-{wanted}"
             ):
                 matches.append(nested_path)
-    return matches
+    return _unique_physical_paths(matches)
 
 
 def _codex_matches(ref: str) -> list[Path]:
     suffix = f"-{ref.lower()}"
     matches: list[Path] = []
+    visited_directories: set[tuple[int, int]] = set()
+    seen_files: set[tuple[int, int]] = set()
 
     def visit(directory: Path, *, missing_ok: bool = False) -> None:
+        try:
+            directory_stat = directory.stat()
+        except FileNotFoundError as exc:
+            if missing_ok:
+                return
+            raise _scan_indeterminate(directory, "inspect", exc) from exc
+        except OSError as exc:
+            raise _scan_indeterminate(directory, "inspect", exc) from exc
+        if not stat.S_ISDIR(directory_stat.st_mode):
+            return
+        directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
+        if directory_identity in visited_directories:
+            return
+        visited_directories.add(directory_identity)
         for path in _scan_directory(directory, missing_ok=missing_ok):
             mode = _entry_mode(path)
             if stat.S_ISDIR(mode):
@@ -282,11 +334,18 @@ def _codex_matches(ref: str) -> list[Path]:
                 and path.name.endswith(".jsonl")
                 and path.stem.lower().endswith(suffix)
             ):
-                matches.append(path)
+                try:
+                    file_stat = path.stat()
+                except OSError as exc:
+                    raise _scan_indeterminate(path, "inspect", exc) from exc
+                file_identity = (file_stat.st_dev, file_stat.st_ino)
+                if file_identity not in seen_files:
+                    seen_files.add(file_identity)
+                    matches.append(path)
 
     for root in _codex_sessions_roots():
         visit(root, missing_ok=True)
-    return sorted(matches)
+    return sorted(_unique_physical_paths(matches))
 
 
 def _reasonix_matches(ref: str) -> list[Path]:
@@ -317,7 +376,7 @@ def _reasonix_matches(ref: str) -> list[Path]:
                     and subagent_path.name == wanted_name
                 ):
                     matches.append(subagent_path)
-    return sorted(matches)
+    return sorted(_unique_physical_paths(matches))
 
 
 def _opencode_matches(ref: str) -> list[Path]:
@@ -325,6 +384,7 @@ def _opencode_matches(ref: str) -> list[Path]:
 
     found: list[Path] = []
     failures: list[str] = []
+    seen_stores: set[tuple[int, int]] = set()
     for db in _opencode_db_candidates():
         try:
             db_stat = db.stat()
@@ -335,6 +395,10 @@ def _opencode_matches(ref: str) -> list[Path]:
             continue
         if not stat.S_ISREG(db_stat.st_mode):
             continue
+        identity = (db_stat.st_dev, db_stat.st_ino)
+        if identity in seen_stores:
+            continue
+        seen_stores.add(identity)
 
         try:
             sniffed = opencode_adapter.sniff(db)
@@ -377,7 +441,7 @@ def _opencode_matches(ref: str) -> list[Path]:
             f"opencode lookup for session {ref!r} is indeterminate; a known store "
             f"could not be inspected:\n{details}"
         )
-    return found
+    return _unique_physical_paths(found)
 
 
 def _sqlite_read_probe_error(db: Path) -> str | None:
@@ -443,7 +507,7 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
         raise _ambiguous(ref, [f"{db} --opencode-session {ref}" for db in dbs])
 
     if _REASONIX_SESSION_RE.match(ref):
-        candidates = _reasonix_matches(ref)
+        candidates = _unique_physical_paths(_reasonix_matches(ref))
         if len(candidates) == 1:
             return SessionRef(path=candidates[0])
         if not candidates:
@@ -473,10 +537,7 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
         if _UUID_RE.match(ref):
             candidates += _codex_matches(ref)
 
-        unique: list[Path] = []
-        for c in candidates:
-            if c not in unique:
-                unique.append(c)
+        unique = _unique_physical_paths(candidates)
         if len(unique) == 1:
             return SessionRef(path=unique[0])
         if not unique:

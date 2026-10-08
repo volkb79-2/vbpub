@@ -198,6 +198,17 @@ def test_a_preferred_claude_match_and_another_claude_match_are_ambiguous(home):
     assert message.index(str(preferred)) < message.index(str(other))
 
 
+def test_claude_project_symlink_alias_is_not_a_false_ambiguity(home):
+    expected = _claude_session(home, "-workspaces-actual", _UUID)
+    projects = home / ".claude" / "projects"
+    (projects / "-workspaces-alias").symlink_to(
+        projects / "-workspaces-actual", target_is_directory=True,
+    )
+
+    resolved = resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+    assert resolved.path.resolve() == expected.resolve()
+
+
 def test_a_preferred_claude_match_and_a_codex_match_are_ambiguous(home):
     preferred = _claude_session(home, "-workspaces-vbpub", _UUID)
     other = _codex_rollout(home, _UUID)
@@ -269,6 +280,23 @@ def test_same_uuid_in_two_codex_homes_is_ambiguous(home):
     assert str(default) in message and str(alternate) in message
 
 
+def test_codex_symlinked_home_is_searched_once(home):
+    expected = _codex_rollout(home, _UUID)
+    (home / ".codex2").symlink_to(home / ".codex", target_is_directory=True)
+
+    roots = locate._codex_sessions_roots()
+    assert roots == [home / ".codex" / "sessions"]
+    assert locate._codex_matches(_UUID) == [expected]
+
+
+def test_codex_directory_symlink_cycle_does_not_repeat_a_rollout(home):
+    expected = _codex_rollout(home, _UUID)
+    sessions = home / ".codex" / "sessions"
+    (sessions / "loop").symlink_to(sessions, target_is_directory=True)
+
+    assert locate._codex_matches(_UUID) == [expected]
+
+
 def test_no_match_errors_and_names_where_it_looked(home):
     _claude_session(home, "-workspaces-vbpub", _OTHER_UUID)
     with pytest.raises(LocateError) as e:
@@ -288,6 +316,17 @@ def test_opencode_session_id_resolves_to_its_store_and_carries_the_id(home):
     ref = resolve_session_ref(sid, Path("/workspaces/vbpub"))
     assert ref.path == db
     assert ref.session_id == sid
+
+
+def test_opencode_database_symlink_alias_is_not_a_false_ambiguity(
+    home, tmp_path, monkeypatch,
+):
+    db = _opencode_db(tmp_path / "opencode.db", [_OPENCODE_SID])
+    alias = tmp_path / "opencode-alias.db"
+    alias.symlink_to(db)
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db, alias])
+
+    assert locate._opencode_matches(_OPENCODE_SID) == [db]
 
 
 def test_opencode_lookup_honors_xdg_data_home(home, tmp_path, monkeypatch):
