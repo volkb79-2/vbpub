@@ -7815,3 +7815,23 @@ baseline semantics and makes R1 cover the actual feature delta. Verify the
 candidate's first parent, tree, nonzero changed-line/branch totals, and full
 coverage in the saved verdict. Keep the candidate HEAD unchanged for every
 gate and review; any follow-up commit requires fresh exact-tree evidence.
+
+### RW-496 — 2026-10-08 00:47:05 UTC — expose cgprofile's observer to its own R2 lane
+
+The cgroup-profiler `r2` lane was still declared as `kind = "command"`. Run-
+Gate rev57 deliberately accepts `resource_observer = "cgprofile"` only on a
+native Assay lane; consequently, the cgprofile mutation container would not
+receive the observer-only socket. Under tester-unified's private cgroup
+namespace, Assay B145 cannot verify the host gates ancestry locally and would
+refuse before classifying candidates. This is a lane wiring gap, not a daemon
+protocol or product-code failure.
+
+Convert cgprofile's `r2` to `kind = "assay"` with `assay_lane = "r2"` and
+`resource_observer = "cgprofile"`, retaining tester-unified, the 24-hour
+campaign bound, 3-CPU cap, and verdict/progress artifacts. The standard lane
+driver now supplies worktree Assay, request-base, resume/progress/state
+handling, and the read-only observer mount consistently. `./run-gate.py
+--list` recognizes the lane as an Assay lane. This is configuration
+validation only: do not launch cgprofile R2 until the updated daemon has
+created `/run/cgprofile/resource-observer.sock` and its live protocol probe
+passes.
