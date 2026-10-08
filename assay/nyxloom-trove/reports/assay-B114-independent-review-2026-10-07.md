@@ -117,3 +117,39 @@ trees directly; it also inspected the branch history. `HEAD` was
 `d324754c8669296e46555434499c07bbed73e9c1` and `git status --short` was empty
 both before and after review. The review made no file changes. Merge and
 registered gates on the resulting main revision remain pending.
+
+## Post-review registered gate result
+
+The registered `tester-unified` gate on merge
+`eabb6a10c07b4b74c957029002e998d9e137be4f` exited 1 after 483.61s with
+**7,826 passed, 11 skipped, 1 failed**. The failed real-run receipt-start
+oracle injected only when the caller was not `MainThread`, but the seeded
+`jobs=1` candidate can execute inline. Since `ReceiptCapture` is created only
+for an active R2 candidate, the oracle now fails the named receipt-reader
+start independent of caller thread. The focused oracle passed locally (**1
+passed in 0.46s**); Ruff and `git diff --check` passed. Exact-tip review and a
+registered gate on the correction remain pending.
+
+## Follow-up review of `e2f5109f3`
+
+The Sol xhigh review found one **P1** oracle gap: the revised global thread
+hook could fail `runner.py`'s coverage-baseline receipt before candidate
+execution, and the test allowed an absent mutation payload. The correction
+patches only `mutation.ReceiptCapture`, the alias used at the candidate call
+site, and asserts that this factory ran exactly once before accepting the
+`ERROR/EXEC_FAILED` verdict. This leaves the baseline reader untouched. The
+focused local diagnostic now refuses earlier because the devcontainer's
+installed Assay lacks the wheel provenance required by this fixture's CLI
+preflight. The registered tester-unified lane builds and installs the wheel,
+so it remains the required oracle environment. Ruff and `git diff --check`
+pass. Exact-tip review and registered gate remain pending.
+
+## Follow-up review of `466a94eeb`
+
+The Sol xhigh review of the correction from `e2f5109f3` reported **no
+findings**. The candidate-only `mutation.ReceiptCapture` seam leaves the
+runner's coverage-baseline capture untouched and fails explicitly if the
+candidate call site is not reached. `HEAD` was
+`466a94eebb1028023237adf9f2dba09eaef8d811` and status was clean before and
+after the `.codex2` read-only review. A corrected-tip registered gate remains
+pending.
