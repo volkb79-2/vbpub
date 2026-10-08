@@ -204,6 +204,22 @@ def test_missing_or_unconfigured_slice_is_refused_and_own_probe_removed(
     assert calls[-1][2].startswith("assay-cgroup-parent-")
 
 
+def test_ok_probe_output_with_nonzero_status_is_refused_and_own_probe_removed(
+    tmp_path: Path,
+):
+    proc, calls = run_probe(
+        tmp_path,
+        "OK unit=dev-gates.slice LoadState=loaded ControlGroup=/dev.slice/dev-gates.slice",
+        slice_name="dev-gates.slice",
+        wait_status="1",
+    )
+
+    assert proc.returncode != 0
+    assert "probe exited with status 1" in proc.stderr
+    assert calls[-1][:2] == ["rm", "-f"]
+    assert calls[-1][2].startswith("assay-cgroup-parent-")
+
+
 def test_malformed_docker_id_reports_bounded_output_and_cleans_up_by_cidfile(
     tmp_path: Path,
 ):

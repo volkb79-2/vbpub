@@ -171,11 +171,13 @@ probe_status="$(timeout --signal=TERM --kill-after=5s 30s docker wait "$PROBE_ID
   || die 'could not collect slice-verification probe exit status'
 probe_output="$(timeout --kill-after=5s 15s docker logs "$PROBE_ID" 2>&1)" \
   || die 'could not collect slice-verification probe output'
-[[ "$probe_status" == 0 ]] || die "host slice verification failed: $probe_output"
 case "$probe_output" in
-  OK\ *) ;;
   MISSING\ *) die "requested host slice is not a loaded, instantiated slice: $probe_output" ;;
   UNCONFIGURED\ *) die "requested host slice has only kernel-default resource knobs: $probe_output" ;;
+  OK\ *)
+    [[ "$probe_status" == 0 ]] \
+      || die "host slice-verification probe exited with status $probe_status: $probe_output"
+    ;;
   *) die "could not verify requested host slice: $probe_output" ;;
 esac
 

@@ -8175,3 +8175,18 @@ ownership checks and malformed-output diagnostic. This is a fixture repair,
 not a production behavior change. Rerun the registered gate on the committed
 tip with the candidate Run-Gate rev58 overlay; no gate on this exact tree has
 passed yet.
+
+### RW-514 — 2026-10-08 19:40:44 UTC — classify explicit slice refusals before probe exit status
+
+The registered `tester-unified` run on `456540b53c6fd17fbfda2a919a3b3660d189642e`
+failed R0 after 572.307 seconds: 7,882 passed, 2 failed, and 11 were skipped.
+The fake Docker ID collision is fixed: valid-path and malformed-ID cleanup
+cases now pass. The only failures are the MISSING and UNCONFIGURED refusal
+assertions. The probe correctly emits those specific messages and exits 1, but
+the helper checked the nonzero `docker wait` result first and replaced the
+specific refusal with a generic message. Preserve fail-closed behavior while
+classifying those explicit refusal records before checking status; conversely,
+an `OK` record paired with nonzero status must still fail. A regression asserts
+that inconsistent `OK`/nonzero output is rejected and the owned probe is
+removed. Rerun the registered gate on the committed repair with Run-Gate rev58;
+no R0/R1/R2/R3 result has passed on this candidate yet.
