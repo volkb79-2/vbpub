@@ -190,7 +190,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
-- B087 — JavaScript/TypeScript canary (R3) — REGISTERED on `assay-b087-js-canary`, rebased onto main `6086d4c9`; current dstdns qualification and registered Assay gate pending; no merge/release until qualification and gate evidence are complete
+- B087 — JavaScript/TypeScript canary (R3) — REGISTERED on `assay-b087-js-canary`; both dstdns R3 canaries now PASS with retained schema-v15 verdicts and verifier transcripts; registered Assay gate pending controller release; no merge/release yet
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
@@ -9493,7 +9493,7 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
-**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07), rebased onto main `6086d4c9` (2026-10-08). Local real-Vitest oracles cover the current transforms. Current dstdns qualification and the registered Assay gate remain pending; the branch is not merged or released.**
+**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07), rebased onto main `6086d4c9` (2026-10-08). Local real-Vitest oracles and both current dstdns R3 canaries pass; the registered Assay gate remains pending controller release. The branch is not merged or released.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
@@ -9532,12 +9532,12 @@ a product capability until a supported producer path reaches it" framing).
 
 ### Acceptance (for whoever picks this up)
 
-- [ ] the existing canary injection methods are exercised end-to-end against
+- [x] the existing canary injection methods are exercised end-to-end against
       a real JS/TS project's real source (not a fixture), confirming they
       produce a genuine control/transform pair the R3 machinery can judge
       using the current uncovered-line transform;
 - [x] `_built_in_registry()` registers `"javascript"` at R3;
-- [ ] a real qualification run, the same shape as the Go R1 qualification
+- [x] a real qualification run, the same shape as the Go R1 qualification
       (`README.md`'s "Qualified on a real project" paragraph) — a real
       commit range, through the shipped zipapp, compared against a hand-
       verified expectation, with any defect found treated as what a
@@ -9550,11 +9550,11 @@ a product capability until a supported producer path reaches it" framing).
 
 ### Qualification evidence
 
-The original dstdns attempt was operator-reported as passing both canaries,
-but it used an earlier uncovered-line transform and did not retain the full
-verdicts or separate verifier transcripts. It does not qualify the current
-implementation. Current real-consumer acceptance remains open; see the
-[qualification report](reports/B087-js-r3-qualification.md).
+The original dstdns attempt remains archival only. The current dstdns
+qualification passed both canaries with the B087 zipapp pinned by run-gate;
+full schema-v15 verdicts and separate verifier transcripts are retained in
+`reports/B087-js-r3-evidence/`. The registered Assay gate remains pending;
+see the [qualification report](reports/B087-js-r3-qualification.md).
 
 ## B088 — `--resume`'s candidate identity folds in the mutant's source bytes but not the judging test suite's, so a test-only fix silently replays a stale verdict instead of re-executing
 

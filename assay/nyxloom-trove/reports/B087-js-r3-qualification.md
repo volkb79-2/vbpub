@@ -1,17 +1,54 @@
 # B087 — JavaScript R3 real-consumer qualification
 
-**Date:** 2026-10-07
+**Date:** 2026-10-08 (updates the 2026-10-07 archival record)
 
 **Original Assay implementation commit:** `cac4a92f86537a22bf86ae1c39a0f3523ffb4b7d`
 
 **Historical qualification:** operator-reported PASS for both JavaScript R3 mechanisms; the detailed verdicts and verifier results were not retained.
 
-**Current status (2026-10-08):** this report archives the original attempt.
-The current CommonJS/global-shadowing/lint-compatible follow-up has not been
-requalified against dstdns. The B087 branch has been rebased onto Assay `main`
-at `6086d4c9`; B087 remains unqualified until both dstdns lanes run against
-the current transform and retain their full verdicts and separate
-`assay verify` transcripts.
+**Current status (2026-10-08):** both current JavaScript R3 canaries passed
+against dstdns using the pinned Assay candidate below. Full schema-v15
+verdicts, separate `assay verify` transcripts, progress streams, and run-gate
+logs are retained. The real-consumer qualification is complete for this
+candidate; the registered Assay `tester-unified` gate and merge remain on hold
+pending the controller's B114 release.
+
+## Current requalification (2026-10-08)
+
+Both lanes ran serially through dstdns's main `scripts/gate-slot.sh` wrapper
+and run-gate rev 55 against the same clean disposable CIU worktree. The lane
+declarations remain `kind = "assay"`; run-gate verified the candidate zipapp's
+version and SHA-256 pin before invoking Assay.
+
+| Fact | Value |
+|---|---|
+| Assay branch / source tip | `assay-b087-js-canary` / `ad17ab38` |
+| Assay artifact | `8.0.1.dev126+gad17ab38a`, SHA-256 `cbef763b036f3fcf3c91e46028ac482621372d154306c8790bdad16c69b86d18` |
+| dstdns main / comparison base | `305d85198bc121d3142ff4091cb1f2be821c6232` / `fc75306035e8ffe6493417839649f09fec174991` |
+| Judged disposable tree | `00b6f56d1dfa9f942c1ae261ef1b6306448a7cfe` |
+| run-gate container | `assay-b087-js-r3-qual-20261008-n1gbah-test-runner` |
+
+| Lane | Gate | R0 | R1 | R3 control | Transformed result | R3 | `assay verify` |
+|---|---|---|---|---|---|---|---|
+| `b087-import-break` | PASS, exit 0 | PASS | PASS, 29/29 changed executable lines and 16/16 branches | PASS | FAIL, `COMMAND_FAILED` (expected and observed) | PASS | exit 0 |
+| `b087-uncovered-line` | PASS, exit 0 | PASS | PASS, 29/29 changed executable lines and 16/16 branches | PASS | FAIL, `UNCOVERED_LINES` (expected and observed) | PASS | exit 0 |
+
+Both verdicts are schema v15, report Assay `8.0.1.dev126+gad17ab38a`, and
+bind to the same zipapp digest and judged tree above. The second lane ran from
+17:22:29.730Z to 17:23:54.283Z (84.565 seconds in its progress stream); the
+gate-slot wrapper and run-gate both exited 0. The run-gate profiler emitted a
+cleanup warning (`NoneType` access) and recorded no profile; the lane verdict
+remained PASS.
+
+Evidence is retained under `reports/B087-js-r3-evidence/`:
+
+- `dstdns-import-break.verdict.json`, `.assay-verify.txt`, `.progress.jsonl`,
+  `.run-gate-inner.log`, and `.run-gate-outer.log`;
+- `dstdns-uncovered-line.verdict.json`, `.assay-verify.txt`, `.progress.jsonl`,
+  `.run-gate-inner.log`, `.run-gate-outer.log`, and `.outer-exit.txt`.
+
+The disposable dstdns worktree and its support stack remain in place. No
+registered Assay gate or merge was started.
 
 ## Original run identity (operator-reported)
 
@@ -31,7 +68,7 @@ be independently confirmed from the surviving artifacts.
 
 The original operator report says the real range changed the target and its imported callers/tests. With dstdns `ui_unit` source roots and Istanbul coverage policy, it records 29 executable changed lines all covered and 16 reported branches all covered.
 
-## Execution
+## Original execution (archival)
 
 The temporary CIU-managed dstdns worktree used its own `dstdns/test-runner:latest` container, `assay-b087-js-r3-qual-bsokq1-test-runner`; both run-gate invocations resolved to that container and the loaded `dev-gates.slice`. `run-gate` was rev 55. The existing Vitest command used `npx --no-install`, the committed lockfile, and the worktree's `node_modules` link path.
 
@@ -78,7 +115,7 @@ Both run-gate command lanes returned PASS (exit 0), as the retained outer logs
 show. The schema-v14 verdict contents, canary attempt counts, and provenance
 fields in the table are operator-reported and were not preserved for review.
 
-## Cleanup and limits
+## Original cleanup and limits (archival)
 
 The original operator reports that `ciu worktree rm assay-b087-js-r3-qual -y`
 removed the disposable checkout, its 14 containers, project volumes, and
@@ -92,7 +129,6 @@ recorded). They observed no change to either Assay verdict or run-gate exit
 status; that observation is not independently verifiable from the retained
 logs.
 
-This is an archival record of the first attempt; it does not close B087's
-acceptance. The current implementation remains unqualified against dstdns
-until both canary lanes are rerun with verdict JSON and verifier transcripts
-retained before cleanup. The B087 branch remains unmerged and unreleased.
+This section records only the original attempt and its evidence gaps. The
+current qualification above supersedes its acceptance status. B087 remains
+unmerged and unreleased while the registered Assay gate is held.
