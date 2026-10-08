@@ -68,6 +68,45 @@ CGROUP_ENV_KEYS = (
     "CGROUP_PARENT_DEV_GATES",
 )
 
+# Docker's `run` options. `runArgs` is passed as argv, so a string that looks
+# like `--cgroup-parent` can be consumed as the value of an earlier option
+# (for example `--label --cgroup-parent=...`). Keep the parser fail-closed for
+# options it cannot classify rather than certifying a decoy token.
+DOCKER_RUN_VALUE_OPTIONS = frozenset(
+    {
+        "--add-host", "--annotation", "--attach", "--blkio-weight",
+        "--blkio-weight-device", "--cap-add", "--cap-drop", "--cgroup-parent",
+        "--cgroupns", "--cidfile", "--cpu-period", "--cpu-quota",
+        "--cpu-rt-period", "--cpu-rt-runtime", "--cpu-shares", "--cpus",
+        "--cpuset-cpus", "--cpuset-mems", "--detach-keys", "--device",
+        "--device-cgroup-rule", "--device-read-bps", "--device-read-iops",
+        "--device-write-bps", "--device-write-iops", "--dns", "--dns-option",
+        "--dns-search", "--domainname", "--entrypoint", "--env", "--env-file",
+        "--expose", "--gpus", "--group-add", "--health-cmd",
+        "--health-interval", "--health-retries", "--health-start-interval",
+        "--health-start-period", "--health-timeout", "--hostname", "--ip",
+        "--ip6", "--ipc", "--isolation", "--label", "--label-file", "--link",
+        "--link-local-ip", "--log-driver", "--log-opt", "--mac-address",
+        "--memory", "--memory-reservation", "--memory-swap",
+        "--memory-swappiness", "--mount", "--name", "--network",
+        "--network-alias", "--oom-score-adj", "--pid", "--pids-limit",
+        "--platform", "--publish", "--pull", "--restart", "--runtime",
+        "--security-opt", "--shm-size", "--stop-signal", "--stop-timeout",
+        "--storage-opt", "--sysctl", "--tmpfs", "--ulimit", "--umask",
+        "--user", "--userns", "--uts", "--volume", "--volume-driver",
+        "--volumes-from", "--workdir",
+    }
+)
+DOCKER_RUN_VALUE_SHORT_OPTIONS = frozenset({"a", "c", "e", "h", "l", "m", "p", "u", "v", "w"})
+DOCKER_RUN_BOOLEAN_OPTIONS = frozenset(
+    {
+        "--detach", "--help", "--init", "--interactive", "--no-healthcheck",
+        "--oom-kill-disable", "--privileged", "--publish-all", "--quiet",
+        "--read-only", "--rm", "--sig-proxy", "--tty", "--use-api-socket",
+    }
+)
+DOCKER_RUN_BOOLEAN_SHORT_OPTIONS = frozenset({"d", "i", "P", "q", "t"})
+
 HOME = Path(os.path.expanduser("~"))
 # Matches the devcontainer mount string: "source=...,target=...,type=bind[,...]"
 BIND_RE = re.compile(r'source=([^,"]+),target=[^,"]+,type=bind')
@@ -110,19 +149,7 @@ def host_cgroup_slices(dc_path: Path) -> tuple[str, ...]:
     if any(not isinstance(value, str) for value in environment.values()):
         raise ValueError(f"{dc_path} cgroup environment values must be strings")
 
-    run_parents: list[str] = []
-    index = 0
-    while index < len(run_args):
-        argument = run_args[index]
-        if argument == "--cgroup-parent":
-            if index + 1 >= len(run_args) or run_args[index + 1].startswith("--"):
-                raise ValueError(f"{dc_path} has an incomplete --cgroup-parent runArg")
-            run_parents.append(run_args[index + 1])
-            index += 2
-            continue
-        if argument.startswith("--cgroup-parent="):
-            run_parents.append(argument.partition("=")[2])
-        index += 1
+    run_parents = _docker_run_cgroup_parents(run_args, dc_path)
 
     if set(environment) != set(CGROUP_ENV_KEYS):
         raise ValueError(
@@ -142,6 +169,61 @@ def host_cgroup_slices(dc_path: Path) -> tuple[str, ...]:
     ):
         raise ValueError(f"{dc_path} has invalid or duplicate dev-tier slice names")
     return slices
+
+
+def _docker_run_cgroup_parents(run_args: list[str], dc_path: Path) -> list[str]:
+    """Read effective cgroup-parent values from Docker's run option argv."""
+    parents: list[str] = []
+    index = 0
+    while index < len(run_args):
+        argument = run_args[index]
+        index += 1
+        if argument == "--" or not argument.startswith("-") or argument == "-":
+            raise ValueError(f"{dc_path} has an unrecognized positional runArg {argument!r}")
+
+        if argument.startswith("--"):
+            option, separator, inline_value = argument.partition("=")
+            if option in DOCKER_RUN_VALUE_OPTIONS:
+                if separator:
+                    value = inline_value
+                else:
+                    if index >= len(run_args):
+                        raise ValueError(f"{dc_path} has an incomplete {option} runArg")
+                    value = run_args[index]
+                    index += 1
+                if not value:
+                    raise ValueError(f"{dc_path} has an empty {option} runArg")
+                if option == "--cgroup-parent":
+                    parents.append(value)
+                continue
+            if option in DOCKER_RUN_BOOLEAN_OPTIONS:
+                if separator and inline_value.lower() not in {"1", "0", "true", "false"}:
+                    raise ValueError(f"{dc_path} has an invalid boolean {option} runArg")
+                continue
+            raise ValueError(f"{dc_path} has an unsupported Docker runArg {argument!r}")
+
+        # Docker's short options may be bundled (for example `-it`) or may
+        # carry a value directly after the option (`-lkey=value`).
+        short_options = argument[1:]
+        short_index = 0
+        while short_index < len(short_options):
+            option = short_options[short_index]
+            short_index += 1
+            if option in DOCKER_RUN_VALUE_SHORT_OPTIONS:
+                value = short_options[short_index:]
+                if value.startswith("="):
+                    value = value[1:]
+                if not value:
+                    if index >= len(run_args):
+                        raise ValueError(f"{dc_path} has an incomplete -{option} runArg")
+                    value = run_args[index]
+                    index += 1
+                if not value:
+                    raise ValueError(f"{dc_path} has an empty -{option} runArg")
+                break
+            if option not in DOCKER_RUN_BOOLEAN_SHORT_OPTIONS:
+                raise ValueError(f"{dc_path} has an unsupported Docker runArg {argument!r}")
+    return parents
 
 
 def _parse_jsonc_object(text: str) -> dict:

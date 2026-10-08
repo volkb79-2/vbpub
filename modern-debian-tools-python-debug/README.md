@@ -377,6 +377,9 @@ image, so it lives in two places that must agree:
   verifies all three units are loaded from installed files before Docker creates
   the devcontainer. A missing or runtime-generated unit stops startup because
   systemd otherwise accepts the name by creating a transient unlimited slice.
+  The initializer reads the effective Docker option/value pairs in `runArgs`;
+  an ambiguous or unsupported option stops startup instead of certifying a
+  `--cgroup-parent` token used as another option's value.
   Install the host setup and verify it with `mdt-host-check.sh` before rebuilding.
 - **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
   themselves: `dev-interactive.slice` for devcontainers, `dev-gates.slice` for gate/lane

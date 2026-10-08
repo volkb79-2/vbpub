@@ -11532,7 +11532,7 @@ matching plan and deadline.
 - [ ] Recheck the lane deadline immediately after a successful snapshot
   integrity return; expiry at that boundary leaves the candidate unclassified
   and absent from resume state and candidate progress.
-- [ ] One tester-unified and one self-qualification-preflight PASS on the final reviewed merge commit.
+- [ ] Assay `tester-unified` and `self-qualification-preflight`, plus MDT `smoke`, PASS on the final reviewed merge commit; MDT smoke covers the host initializer regression and the Assay gates cover the verdict/cold-witness implementation.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
 

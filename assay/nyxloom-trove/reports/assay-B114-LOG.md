@@ -409,3 +409,28 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   its slot. No registered gate or R2 campaign has run on this repair diff; the
   next step is a fresh exact-tip Sol xhigh review, followed by the serial
   registered gates.
+
+## 2026-10-08 — Sol xhigh follow-up repairs
+
+- The Sol xhigh review of `03f3c592` found: MDT could count a
+  `--cgroup-parent` token consumed as an earlier Docker option's value; Assay
+  could miss pytest's active config when `cwd` was a symlink and argv had no
+  path selector; and the declared gate set did not exercise MDT's initializer
+  acceptance item.
+- MDT now parses Docker `runArgs` option/value boundaries (including short
+  forms), records only effective cgroup-parent options, and refuses unknown or
+  positional syntax it cannot classify. Added decoy-label regressions for
+  `--label` and `-l`, a positive case where a decoy label value precedes the
+  actual cgroup-parent, and a refusal case for an unknown Docker option. The
+  parser's long-option set was compared with this host's `docker run --help`;
+  every listed option is classified.
+- Assay config admission now searches both lexical and resolved cwd paths,
+  including the no-selector case. Added a symlinked cwd regression with a
+  resolved `pytest.toml` that enables xdist. README, design, and consumer docs
+  now state this behavior. B114 acceptance now requires the MDT `smoke` lane
+  alongside Assay `tester-unified` and `self-qualification-preflight`.
+- Verification: Assay mutation-witness plus docs tests **168 passed**; MDT
+  template tests **39 passed**; Ruff `E4,E7,E9,F`, changed-file Python
+  compilation, and `git diff --check` passed. No registered gate or R2
+  campaign was started. A fresh exact-tip Sol xhigh review is required before
+  registered acceptance gates.

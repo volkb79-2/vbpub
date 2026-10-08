@@ -420,6 +420,74 @@ def test_host_cgroup_slices_accept_two_token_parent_and_reject_duplicate_json_ke
         bootstrap.host_cgroup_slices(config)
 
 
+@pytest.mark.parametrize("label_option", ["--label", "-l"])
+def test_host_cgroup_parent_value_cannot_be_hidden_as_a_label_value(
+    tmp_path, label_option
+) -> None:
+    config = tmp_path / "devcontainer.json"
+    template = {
+        "containerEnv": {
+            "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+            "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
+            "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+        },
+        "runArgs": [label_option, "--cgroup-parent=dev-interactive.slice"],
+    }
+    config.write_text(json.dumps(template), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly one --cgroup-parent"):
+        bootstrap.host_cgroup_slices(config)
+
+
+def test_host_cgroup_parent_after_a_label_value_is_the_effective_option(
+    tmp_path,
+) -> None:
+    config = tmp_path / "devcontainer.json"
+    config.write_text(
+        json.dumps(
+            {
+                "containerEnv": {
+                    "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+                    "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
+                    "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+                },
+                "runArgs": [
+                    "--label",
+                    "--cgroup-parent=dev-decoy.slice",
+                    "--cgroup-parent=dev-interactive.slice",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert bootstrap.host_cgroup_slices(config) == (
+        "dev-interactive.slice",
+        "dev-background.slice",
+        "dev-gates.slice",
+    )
+
+
+def test_host_cgroup_preflight_refuses_unclassified_docker_run_options(tmp_path) -> None:
+    config = tmp_path / "devcontainer.json"
+    config.write_text(
+        json.dumps(
+            {
+                "containerEnv": {
+                    "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+                    "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
+                    "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+                },
+                "runArgs": ["--future-option", "value", "--cgroup-parent=dev-interactive.slice"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported Docker runArg"):
+        bootstrap.host_cgroup_slices(config)
+
+
 @pytest.mark.parametrize(
     "facts",
     [

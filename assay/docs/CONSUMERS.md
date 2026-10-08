@@ -199,8 +199,9 @@ session exit status; if it changes that status, the receipt cannot prove a kill
 or survivor. Any other unreviewed hook makes the proof unavailable.
 
 Before injecting the witness plugin, Assay checks `addopts` in recognized
-pytest config files from the command directory and directories named by
-test-path arguments, through each path's ancestors. This includes pytest 9's
+pytest config files from both the lexical and resolved command directories and
+their ancestors, plus directories named by test-path arguments and their
+resolved paths. This includes pytest 9's
 higher-precedence `pytest.toml` and `.pytest.toml`, `[tool.pytest]` in
 `pyproject.toml`, and the earlier INI formats. An xdist setting such as
 `-n auto`, malformed config, an unresolved path selector, or `--pyargs`

@@ -1206,7 +1206,9 @@ you're changing assay itself:
   not complete Assay's separate B105 whole-source qualification; the bounded
   pilot remains a prerequisite to another full campaign. Witness admission
   checks pytest configuration, including pytest 9's `pytest.toml`,
-  `.pytest.toml` and native `[tool.pytest]` table. Parallel xdist `addopts`
+  `.pytest.toml` and native `[tool.pytest]` table. It checks both lexical and
+  resolved command directories so symlinks cannot hide active config when the
+  command has no test-path selector. Parallel xdist `addopts`
   make cold witness unavailable, so the full-suite path remains authoritative.
 
 ## Further reading

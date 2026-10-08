@@ -760,8 +760,10 @@ order ([pytest 9.0 configuration docs](https://docs.pytest.org/en/9.0.x/referenc
 `[pytest]` `addopts` in the pytest 9 TOML files, native `[tool.pytest]`
 `addopts`, and the existing `[tool.pytest.ini_options]` form. Because Assay
 does not reproduce pytest's complete root-directory search, it checks every
-recognized config on the current directory's ancestor chain and on directories
-named by test-path arguments. An xdist setting or malformed config makes the
+recognized config on both the lexical and resolved current-directory ancestor
+chains and on directories named by test-path arguments, including resolved
+paths. This covers a symlinked command directory even when argv has no
+positional test path. An xdist setting or malformed config makes the
 cold witness unavailable. Unresolved path selectors and `--pyargs` also refuse
 the optimization because their config search cannot be established. The
 declared full suite remains the fallback. The argument reader separates

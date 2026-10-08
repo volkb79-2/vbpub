@@ -87,6 +87,11 @@ This check is part of the host setup contract, not a fallback policy. The host
 installer creates and verifies the unit files; the bootstrap confirms the
 running systemd manager loaded them before `runArgs` can use the interactive
 slice. Gate launchers separately verify the gates slice before launching a lane.
+The initializer parses Docker's option/value boundaries in `runArgs` before
+matching the effective `--cgroup-parent` with the interactive tier. If an
+earlier value-taking option consumes a token that looks like a cgroup parent,
+or an option cannot be classified, startup refuses instead of accepting a
+decoy.
 See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
 install and rebuild steps.
 

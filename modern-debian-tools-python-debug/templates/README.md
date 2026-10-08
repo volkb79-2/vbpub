@@ -104,7 +104,8 @@ MDT creates its known directory sources. Secret directories (`.ssh`/`.gnupg`/`.m
 
 The cgroup check requires each declared tier to be `LoadState=loaded` from an installed unit file.
 Missing, runtime-generated, or unqueryable slices stop startup before Docker can create a transient,
-unlimited parent. Install and verify the MDT host setup before rebuilding; see the
+unlimited parent. It parses Docker's `runArgs` option/value boundaries and refuses a cgroup-parent
+token consumed as another option's value or any option syntax it cannot classify. Install and verify the MDT host setup before rebuilding; see the
 [consumer steps](../docs/CONSUMERS.md#host-cgroup-preflight).
 
 The host bootstrap classifies existing sources by their actual type. For a missing source, the

@@ -283,6 +283,22 @@ def test_symlinked_test_path_checks_lexical_pytest_config(tmp_path):
     )
 
 
+def test_symlinked_cwd_checks_resolved_pytest_config_without_path_selector(tmp_path):
+    resolved = tmp_path / "actual"
+    resolved.mkdir()
+    (resolved / "pytest.toml").write_text(
+        '[pytest]\naddopts = ["-n", "auto"]\n', encoding="utf-8"
+    )
+    lexical = tmp_path / "alias"
+    lexical.symlink_to(resolved, target_is_directory=True)
+
+    assert not supports_sequential_pytest(
+        (sys.executable, "-m", "pytest", "-k", "selected_case"),
+        cwd=lexical,
+        env={},
+    )
+
+
 def test_pyargs_config_selection_is_not_assumed_sequential(tmp_path):
     assert not supports_sequential_pytest(
         (sys.executable, "-m", "pytest", "--pyargs", "external_package"),

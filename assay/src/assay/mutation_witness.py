@@ -693,6 +693,12 @@ def _pytest_configs_allow_sequential(cwd: Path, argv: Sequence[str]) -> bool:
     # lexical path can still supply addopts. `--pyargs` can select an installed
     # package outside cwd, whose config this preview cannot establish.
     search_roots = {cwd}
+    try:
+        # A cwd reached through a symlink can select a pytest config in its
+        # resolved directory even when argv has no positional test selector.
+        search_roots.add(cwd.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
     for token in selectors:
         raw_path = token.partition("::")[0]
         if not raw_path:

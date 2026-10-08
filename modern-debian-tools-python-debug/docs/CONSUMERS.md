@@ -234,6 +234,11 @@ sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
 
+Keep `--cgroup-parent` as an effective Docker option in `runArgs`. The
+initializer follows Docker's option/value boundaries and refuses a token that
+is consumed as another option's value or whose surrounding option syntax it
+cannot classify.
+
 Do not remove the initializer while keeping the `--cgroup-parent` entry;
 otherwise systemd can silently create an unlimited transient slice. The full
 template also supplies these mandatory values in `containerEnv` and `mounts`.
