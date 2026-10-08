@@ -1509,7 +1509,7 @@ def cmd_search(args) -> int:
                     message, current=current, total=total,
                 ),
             )
-        progress.finish("Session search complete")
+            progress.finish("Session search complete")
     if not results:
         print("No matching sessions.")
         return 0

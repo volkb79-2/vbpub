@@ -241,6 +241,24 @@ def test_store_sessions_uses_the_configured_claude_projects_root(tmp_path, monke
     ]
 
 
+def test_claude_search_deduplicates_transcript_aliases_across_source_roots(tmp_path):
+    first_root = tmp_path / "first-projects"
+    second_root = tmp_path / "second-projects"
+    original = _write_jsonl(
+        first_root / "project" / "first-name.jsonl",
+        {"sessionId": "session", "parentUuid": None, "content": "needle"},
+    )
+    alias = second_root / "other-project" / "different-name.jsonl"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to(original)
+
+    found = search._store_sessions(
+        "claude", source_roots=(first_root, second_root),
+    )
+    assert len(found) == 1
+    assert found[0].source == str(original)
+
+
 def test_codex_discovery_scans_each_existing_root_once_and_requires_metadata(tmp_path):
     root = tmp_path / "codex-sessions"
     supported = _write_jsonl(
@@ -531,6 +549,15 @@ def test_streaming_record_filter_keeps_records_whose_query_crosses_a_chunk(
     path.write_bytes(prefix + padding + b"qcow2" + b'"}\n')
 
     assert search._filtered_jsonl_counts(path, ("qcow",), "prefix") == Counter(qcow=1)
+
+
+def test_streaming_record_filter_handles_a_large_record_across_many_chunks(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(search, "_JSONL_CHUNK_SIZE", 64)
+    path = tmp_path / "large-record.jsonl"
+    path.write_bytes(b'{"content":"' + b"x" * (256 * 1024) + b" qcow" + b'"}\n')
+    assert search._filtered_jsonl_counts(path, ("qcow",), "exact") == Counter(qcow=1)
 
 
 def test_ripgrep_candidate_stream_parses_records_and_preserves_exact_path(
@@ -922,6 +949,38 @@ def test_cmd_search_without_a_progress_renderer_keeps_search_options(
         },
     )]
     assert "id" in capsys.readouterr().out
+
+
+def test_cmd_search_finishes_progress_inside_its_context(monkeypatch):
+    from nyxloom.cli import cmd_search
+
+    events = []
+
+    class Progress:
+        active = False
+
+        def __enter__(self):
+            self.active = True
+            return self
+
+        def __exit__(self, *_args):
+            self.active = False
+
+        def update(self, message, **kwargs):
+            events.append(("update", message, self.active))
+
+        def finish(self, message):
+            events.append(("finish", message, self.active))
+
+    progress = Progress()
+    monkeypatch.setattr(search, "search_sessions", lambda *_args, **_kwargs: [])
+    args = SimpleNamespace(
+        words=["qcow"], client=None, sort_by="best", source_root=None,
+        word_match="any", term_match="exact",
+        runtime=SimpleNamespace(progress=lambda: progress),
+    )
+    assert cmd_search(args) == 0
+    assert events[-1] == ("finish", "Session search complete", True)
 
 
 def test_explicit_root_validation_covers_empty_special_and_unreadable_paths(
@@ -1484,6 +1543,53 @@ def test_ripgrep_candidate_stream_accepts_final_records_without_a_newline(
     assert search._ripgrep_jsonl_counts(
         (path,), ("qcow",), "exact", client="codex",
     ) == {str(path): Counter(qcow=1)}
+
+
+def test_ripgrep_stream_handles_newlines_in_paths_and_heartbeats(tmp_path, monkeypatch):
+    path = tmp_path / "root with\nnewline" / "rollout.jsonl"
+    output = (
+        os.fsencode(path)
+        + b"\0"
+        + json.dumps({"content": "qcow"}).encode("utf-8")
+        + b"\n"
+    )
+
+    class Process:
+        def __init__(self):
+            self.stdout = io.BytesIO(output)
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("completed stream must not be terminated")
+
+    readiness = iter((False, True, True))
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(search, "_ripgrep_stdout_ready", lambda *_args: next(readiness, True))
+    progress = []
+    result = search._ripgrep_jsonl_counts(
+        (path,), ("qcow",), "exact", client="codex",
+        progress=lambda *event: progress.append(event),
+    )
+    assert result == {str(path): Counter(qcow=1)}
+    assert any("still searching" in event[0] for event in progress)
+
+
+def test_ripgrep_stdout_readiness_handles_selectable_and_memory_streams(monkeypatch):
+    class Selectable:
+        def fileno(self):
+            return 29
+
+    monkeypatch.setattr(search.select, "select", lambda *args: ([29], [], []))
+    assert search._ripgrep_stdout_ready(Selectable(), 0.1) is True
+    monkeypatch.setattr(search.select, "select", lambda *args: ([], [], []))
+    assert search._ripgrep_stdout_ready(Selectable(), 0.1) is False
+    assert search._ripgrep_stdout_ready(io.BytesIO(), 0.1) is True
 
 
 def test_targeted_fallback_skips_raw_nonmatches_and_invalid_timestamp_records(

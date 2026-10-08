@@ -6,11 +6,13 @@ import json
 import math
 import os
 import re
+import select
 import shutil
 import sqlite3
 import stat
 import subprocess
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing
@@ -258,6 +260,7 @@ def _store_sessions(
             )
         )
         found = []
+        seen_transcripts: set[tuple[int, int] | Path] = set()
         for index, root in enumerate(roots, 1):
             try:
                 if not stat.S_ISDIR(root.stat().st_mode):
@@ -267,7 +270,16 @@ def _store_sessions(
             except OSError as exc:
                 raise SearchError(f"could not inspect Claude Code session root {root}: {exc}") from exc
             _report(progress, f"Discovering Claude Code sessions under {root}", index, len(roots))
-            found.extend(_claude_sessions(root, progress=progress))
+            for session in _claude_sessions(root, progress=progress):
+                source = Path(session.source)
+                identity = _path_identity(source)
+                key: tuple[int, int] | Path = (
+                    identity if identity is not None else source
+                )
+                if key in seen_transcripts:
+                    continue
+                seen_transcripts.add(key)
+                found.append(session)
         return found
     if client == "codex":
         if source_roots is None:
@@ -604,6 +616,29 @@ def _filtered_jsonl_counts(
     if pattern is None:
         return None
     counts: Counter[str] = Counter()
+
+    def count_record(
+        buffer: bytes | bytearray, start: int, end: int,
+    ) -> None:
+        nonlocal matched_lines
+        if pattern.search(buffer, start, end) is None:
+            return
+        raw_line = bytes(buffer[start:end])
+        try:
+            record = json.loads(raw_line.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            return
+        _add_text(counts, record, terms, term_match)
+        matched_lines += 1
+        if progress is not None and matched_lines % 4096 == 0:
+            _report(
+                progress,
+                f"Checking {client or 'session'} transcript {path.name}: "
+                f"{matched_lines:,} candidate records",
+                matched_lines,
+                None,
+            )
+
     try:
         with path.open("rb") as source:
             file_size = source.seek(0, 2)
@@ -617,46 +652,24 @@ def _filtered_jsonl_counts(
                     0,
                     file_size,
                 )
-            pending = b""
+            pending = bytearray()
             bytes_read = 0
             last_progress = 0
             matched_lines = 0
             while True:
                 block = source.read(_JSONL_CHUNK_SIZE)
                 eof = not block
-                data = pending + block
-                if eof:
-                    complete_end = len(data)
-                else:
-                    complete_end = data.rfind(b"\n") + 1
-                position = 0
-                while (match := pattern.search(data, position)) is not None:
-                    if match.start() >= complete_end:
-                        break
-                    line_start = data.rfind(b"\n", 0, match.start()) + 1
-                    line_end = data.find(b"\n", match.end())
-                    if line_end < 0:
-                        line_end = complete_end
-                    raw_line = data[line_start:line_end]
-                    try:
-                        record = json.loads(raw_line.decode("utf-8", errors="replace"))
-                    except json.JSONDecodeError:
-                        pass
+                cursor = 0
+                while (line_end := block.find(b"\n", cursor)) >= 0:
+                    if pending:
+                        pending.extend(block[cursor:line_end])
+                        count_record(pending, 0, len(pending))
+                        pending.clear()
                     else:
-                        _add_text(counts, record, terms, term_match)
-                        matched_lines += 1
-                        if progress is not None and matched_lines % 4096 == 0:
-                            _report(
-                                progress,
-                                f"Checking {client or 'session'} transcript {path.name}: "
-                                f"{matched_lines:,} candidate records",
-                                matched_lines,
-                                None,
-                            )
-                    # One raw hit is enough to select a JSONL record. Parsing
-                    # then counts every requested term in that record.
-                    position = line_end + 1
-                pending = data[complete_end:]
+                        count_record(block, cursor, line_end)
+                    cursor = line_end + 1
+                if cursor < len(block):
+                    pending.extend(block[cursor:])
                 bytes_read += len(block)
                 if (
                     progress is not None
@@ -671,6 +684,8 @@ def _filtered_jsonl_counts(
                     )
                     last_progress = bytes_read
                 if eof:
+                    if pending:
+                        count_record(pending, 0, len(pending))
                     break
     except OSError as exc:
         raise SearchError(f"could not scan session transcript {path}: {exc}") from exc
@@ -758,6 +773,59 @@ def _ripgrep_path_batches(paths: Sequence[Path]) -> Iterator[tuple[Path, ...]]:
         yield tuple(batch)
 
 
+def _ripgrep_stdout_ready(stream, timeout: float) -> bool:
+    """Wait briefly for scanner output, with a compatibility path for test streams."""
+    try:
+        descriptor = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return True
+    readable, _, _ = select.select((descriptor,), (), (), timeout)
+    return bool(readable)
+
+
+def _ripgrep_records(stream, *, progress: Progress | None, client: str):
+    """Yield (path, JSONL record) frames without confusing newlines in paths."""
+    buffer = bytearray()
+    path_bytes: bytes | None = None
+    started = time.monotonic()
+    while True:
+        if progress is not None and not _ripgrep_stdout_ready(stream, 1.0):
+            elapsed = int(time.monotonic() - started)
+            _report(
+                progress,
+                f"Ripgrep is still searching {client} transcripts ({elapsed}s elapsed)",
+            )
+            continue
+        read = getattr(stream, "read1", stream.read)
+        chunk = read(64 * 1024)
+        if not chunk:
+            if path_bytes is not None and len(buffer):
+                yield path_bytes, bytes(buffer)
+            elif path_bytes is not None or buffer:
+                raise SearchError(
+                    f"ripgrep returned a malformed candidate record for {client}"
+                )
+            return
+        buffer.extend(chunk)
+        cursor = 0
+        while True:
+            if path_bytes is None:
+                separator = buffer.find(b"\0", cursor)
+                if separator < 0:
+                    break
+                path_bytes = bytes(buffer[cursor:separator])
+                cursor = separator + 1
+            line_end = buffer.find(b"\n", cursor)
+            if line_end < 0:
+                break
+            raw_record = bytes(buffer[cursor:line_end])
+            cursor = line_end + 1
+            yield path_bytes, raw_record
+            path_bytes = None
+        if cursor:
+            del buffer[:cursor]
+
+
 def _ripgrep_jsonl_counts(
     paths: Sequence[Path],
     terms: tuple[str, ...],
@@ -813,15 +881,10 @@ def _ripgrep_jsonl_counts(
             completed = False
             return_code = None
             try:
-                for output_line in process.stdout:
-                    raw_path, separator, raw_record = output_line.partition(b"\0")
-                    if not separator:
-                        raise SearchError(
-                            f"ripgrep returned a malformed candidate record for {client}"
-                        )
+                for raw_path, raw_record in _ripgrep_records(
+                    process.stdout, progress=progress, client=client,
+                ):
                     path_text = os.fsdecode(raw_path)
-                    if raw_record.endswith(b"\n"):
-                        raw_record = raw_record[:-1]
                     if not _raw_bytes_may_match(raw_record, terms, term_match):
                         continue
                     try:
