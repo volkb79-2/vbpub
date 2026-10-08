@@ -8125,3 +8125,22 @@ rev58 source overlay. Installed cockpit Run-Gate remains rev55 and cannot parse
 the candidate's `resource_observer` lane key; installed Assay is
 `8.0.1.dev76+g70bf4493e.d20261007`, while the gate-built candidate wheel is
 `8.0.1.dev143+gc94388ab2`. Do not conflate those source/wheel versions.
+
+### RW-511 — 2026-10-08 17:05:07 UTC — align B105's lane policy and cgroup fixture with the observer-enabled gate
+
+The registered `tester-unified` rerun on `9a89b568552f40be89d90da58f69401f585fdf91`
+ended FAIL. Run-Gate history records 585.9 seconds; the inner suite ran for
+540.82 seconds and reported 7,859 passed, 24 failed, and 11 skipped. The
+previously identified fixture/mock repairs no longer appear in the failing
+set. Twenty-one failures share one remaining cause: B105's full qualification
+report checker still required `env_passthrough == ["PATH"]`, while the
+committed full lane now correctly adds only
+`ASSAY_RESOURCE_OBSERVER_SOCKET` for nested R2 ancestry observation. Update
+that exact policy and derive the report fixture's value from the committed
+lane. The other three failures are the cgroup-parent fake Docker parser still
+expecting split `--cgroup-parent VALUE`, while the production argv correctly
+uses `--cgroup-parent=VALUE`; make the fixture parse the actual form.
+
+No R0/R1/R2/R3 gate result passed on this tree. Commit these two focused fixes,
+then rerun the registered `tester-unified` gate with the rev58 source overlay
+and keep the committed tree quiet through completion.

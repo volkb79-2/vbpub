@@ -55,7 +55,11 @@ if args[:2] == ["run", "-d"]:
     cidfile = args[args.index("--cidfile") + 1]
     name = args[args.index("--name") + 1]
     owner = args[args.index("--label") + 1].split("=", 1)[1]
-    parent = args[args.index("--cgroup-parent") + 1].split("=", 1)[1]
+    parent = next(
+        value.split("=", 1)[1]
+        for value in args
+        if value.startswith("--cgroup-parent=")
+    )
     pathlib.Path(cidfile).write_text(os.environ["PROBE_ID"])
     pathlib.Path(os.environ["DOCKER_STATE"]).write_text(json.dumps({
         "id": os.environ["PROBE_ID"], "name": name, "owner": owner, "parent": parent
