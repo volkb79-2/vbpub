@@ -161,6 +161,9 @@ def test_sequential_pytest_refuses_empty_override_and_untrusted_plugin_inputs():
     assert not supports_sequential_pytest(argv, env={"PYTEST_PLUGINS": "external"})
     assert not supports_sequential_pytest(argv, env={"PYTEST_ADDOPTS": "'unterminated"})
     assert not supports_sequential_pytest(argv, env={"PYTEST_ADDOPTS": "-n 2"})
+    assert not supports_sequential_pytest(
+        argv, env={"PYTEST_ADDOPTS": "-o addopts=-n2"}
+    )
 
 
 def test_cold_short_option_classes_match_installed_pytest_and_xdist_parser():

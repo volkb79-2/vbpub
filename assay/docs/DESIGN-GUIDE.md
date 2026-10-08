@@ -1412,7 +1412,9 @@ plugins. Instead, the current suite is fully collected and ordered, and only
 its ordinary sequential runner stops after a verified current failure. The
 feature initially supports a direct `pytest` executable or `python -m pytest`;
 other launchers keep the full-run path. Shards are refused with this option so
-one artifact cannot imply a complete campaign from a selected slice. See the
+one artifact cannot imply a complete campaign from a selected slice. Any
+nonempty `PYTEST_ADDOPTS` disables replay because `-o` can replace the project's
+configured addopts. See the
 [worked consumer example](CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 
 ### Rejudge help follows the canonical vocabulary (B096)

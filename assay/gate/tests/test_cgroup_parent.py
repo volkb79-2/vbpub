@@ -32,6 +32,7 @@ def run_probe(
     container_parent: str = "dev-interactive.slice",
     remote_mnt_namespace: str | None = None,
     remote_pid_namespace: str | None = None,
+    unit_probe_run_mode: str = "owned",
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -49,16 +50,31 @@ from pathlib import Path
 args = sys.argv[1:]
 with Path(os.environ["DOCKER_ARGV_LOG"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(args) + "\n")
+is_unit_probe = bool(args and args[0] == "run" and any(
+    "source=/run/dbus/system_bus_socket" in arg for arg in args
+))
 if args and args[0] == "inspect":
+    target = args[1] if len(args) > 1 else ""
+    if target == os.environ["HOST_CONFIGURED_HOSTNAME"]:
+        with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
+            stream.write("parent\n")
+        print("|".join((
+            "b" * 64,
+            os.environ["HOST_CONFIGURED_HOSTNAME"],
+            os.environ["HOST_CGROUP_PARENT"],
+            os.environ["HOST_CONTAINER_RUNNING"],
+        )))
+        raise SystemExit(int(os.environ["HOST_INSPECT_EXIT"]))
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
-        stream.write("parent\n")
-    print("|".join((
-        "b" * 64,
-        os.environ["HOST_CONFIGURED_HOSTNAME"],
-        os.environ["HOST_CGROUP_PARENT"],
-        os.environ["HOST_CONTAINER_RUNNING"],
-    )))
-    raise SystemExit(int(os.environ["HOST_INSPECT_EXIT"]))
+        stream.write("unit-owner\n")
+    try:
+        probe = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise SystemExit(1)
+    if target not in (probe["id"], probe["name"]):
+        raise SystemExit(1)
+    print("|".join((probe["id"], "/" + probe["name"], probe["owner"])))
+    raise SystemExit(0)
 if args and args[0] == "exec":
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
         stream.write("identity\n")
@@ -77,12 +93,24 @@ if args and args[0] == "logs":
     raise SystemExit(0)
 if args and args[0] == "rm":
     raise SystemExit(0)
-is_unit_probe = any("source=/run/dbus/system_bus_socket" in arg for arg in args)
-with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
-    stream.write("unit\n" if is_unit_probe else "cgroup\n")
 if is_unit_probe:
-    print("f" * 64)
+    with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
+        stream.write("unit\n")
+    name_arg = next(arg for arg in args if arg.startswith("--name="))
+    label_arg = next(arg for arg in args if arg.startswith("--label=io.assay.cgroup-parent.owner="))
+    name = name_arg.split("=", 1)[1]
+    owner = label_arg.split("=", 2)[2]
+    mode = os.environ["UNIT_PROBE_RUN_MODE"]
+    probe = {"id": "f" * 64, "name": name, "owner": owner}
+    if mode == "collision":
+        probe.update({"id": "a" * 64, "owner": "another-container"})
+    Path(os.environ["UNIT_PROBE_STATE"]).write_text(json.dumps(probe), encoding="utf-8")
+    if mode in ("collision", "created-failure"):
+        raise SystemExit(125)
+    print(probe["id"])
     raise SystemExit(0)
+with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
+    stream.write("cgroup\n")
 
 script = sys.stdin.read().replace("/sys/fs/cgroup", os.environ["FAKE_CGROUP_ROOT"])
 docker_env = os.environ.copy()
@@ -130,6 +158,8 @@ raise SystemExit(proc.returncode)
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_ARGV_LOG": str(argv_log),
         "CALL_ORDER": str(call_order),
+        "UNIT_PROBE_STATE": str(tmp_path / "unit-probe-state.json"),
+        "UNIT_PROBE_RUN_MODE": unit_probe_run_mode,
         "FAKE_CGROUP_ROOT": str(cgroot),
         "HOSTNAME": "assay-probe-test",
         "HOST_CONFIGURED_HOSTNAME": KERNEL_HOSTNAME,
@@ -192,8 +222,8 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 7
-    parent_call, identity_call, unit_call, wait_call, logs_call, rm_call, cgroup_call = calls
+    assert len(calls) == 9
+    parent_call, identity_call, unit_call, owner_check_call, wait_call, logs_call, remove_check_call, rm_call, cgroup_call = calls
     assert parent_call[:2] == ["inspect", KERNEL_HOSTNAME]
     assert (
         "{{.Id}}|{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}"
@@ -203,11 +233,14 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert "readlink /proc/self/ns/mnt" in identity_call[-1]
     assert "readlink /proc/self/ns/pid" in identity_call[-1]
     assert unit_call[0] == "run" and "--detach" in unit_call
+    assert any(arg.startswith("--label=io.assay.cgroup-parent.owner=") for arg in unit_call)
     assert "--cgroup-parent=dev-interactive.slice" in unit_call
     assert "dev-gates.slice" in unit_call
     assert "dev-interactive.slice" in unit_call
     assert "source=/run/dbus/system_bus_socket" in " ".join(unit_call)
     assert "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus" in " ".join(unit_call)
+    assert owner_check_call[0:2] == ["inspect", "f" * 64]
+    assert remove_check_call[0:2] == ["inspect", "f" * 64]
     assert wait_call == ["wait", "f" * 64]
     assert logs_call == ["logs", "f" * 64]
     assert rm_call == ["rm", "f" * 64]
@@ -215,6 +248,43 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert "--cgroup-parent=dev-gates.slice" in cgroup_call
     assert "--network=none" in cgroup_call
     assert "CG_REL=/dev.slice/dev-gates.slice" in " ".join(cgroup_call)
+
+
+def test_unit_probe_name_collision_never_removes_the_existing_container(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        unit_probe_run_mode="collision",
+    )
+
+    assert proc.returncode != 0
+    assert "could not start Docker-host systemd query container" in proc.stderr
+    assert "could not verify probe ownership" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert [call[0] for call in calls] == ["inspect", "exec", "run", "inspect"]
+    assert calls[-1][0:2] == ["inspect", next(
+        arg.split("=", 1)[1] for arg in calls[2] if arg.startswith("--name=")
+    )]
+    assert all(call[0] != "rm" for call in calls)
+
+
+def test_probe_created_before_run_error_is_removed_by_verified_id(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        unit_probe_run_mode="created-failure",
+    )
+
+    assert proc.returncode != 0
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert [call[0] for call in calls] == ["inspect", "exec", "run", "inspect", "rm"]
+    assert calls[-1] == ["rm", "--force", "f" * 64]
 
 
 def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
@@ -234,6 +304,8 @@ def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
         "parent",
         "identity",
         "unit",
+        "unit-owner",
+        "unit-owner",
         "cgroup",
     ]
 
@@ -254,9 +326,9 @@ def test_transient_or_missing_systemd_slice_is_refused_before_docker(tmp_path: P
         assert proc.returncode != 0
         assert "not a loaded installed slice" in proc.stderr
         calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-        assert len(calls) == 6
+        assert len(calls) == 8
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
-            "parent", "identity", "unit"
+            "parent", "identity", "unit", "unit-owner", "unit-owner"
         ]
 
 
@@ -272,9 +344,9 @@ def test_systemd_verification_failure_is_refused_before_docker(tmp_path: Path):
     assert proc.returncode != 0
     assert "systemd query container exited with status 1" in proc.stderr
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 6
+    assert len(calls) == 8
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
-        "parent", "identity", "unit"
+        "parent", "identity", "unit", "unit-owner", "unit-owner"
     ]
 
 
@@ -298,9 +370,9 @@ def test_truncated_systemd_output_with_zero_container_exit_is_refused(
     assert "returned incomplete or out-of-order frames" in proc.stderr
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
     assert [call[0] for call in calls] == [
-        "inspect", "exec", "run", "wait", "logs", "rm"
+        "inspect", "exec", "run", "inspect", "wait", "logs", "inspect", "rm"
     ]
-    assert calls[3] == ["wait", "f" * 64]
+    assert calls[4] == ["wait", "f" * 64]
 
 
 def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
@@ -353,9 +425,9 @@ def test_runtime_generated_host_unit_is_refused_before_target_cgroup_probe(
         assert proc.returncode != 0
         assert "is runtime-generated, not an installed slice" in proc.stderr
         assert (case / "call-order").read_text(encoding="utf-8").splitlines() == [
-            "parent", "identity", "unit"
+            "parent", "identity", "unit", "unit-owner", "unit-owner"
         ]
-        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 6
+        assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 8
 
 
 def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe(
@@ -377,9 +449,9 @@ def test_uninstalled_interactive_probe_parent_refuses_before_target_cgroup_probe
         in proc.stderr
     )
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 6
+    assert len(calls) == 8
     assert (tmp_path / "call-order").read_text(encoding="utf-8").splitlines() == [
-        "parent", "identity", "unit"
+        "parent", "identity", "unit", "unit-owner", "unit-owner"
     ]
 
 
@@ -396,7 +468,7 @@ def test_systemd_unit_id_must_match_requested_slice(tmp_path: Path):
 
     assert proc.returncode != 0
     assert 'returned a different unit ID (Id=other.slice)' in proc.stderr
-    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 6
+    assert len(argv_log.read_text(encoding="utf-8").splitlines()) == 8
 
 
 def test_hostname_match_with_a_different_container_namespace_is_refused(

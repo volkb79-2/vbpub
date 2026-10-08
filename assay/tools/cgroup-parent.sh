@@ -105,13 +105,52 @@ done
 # Run detached and read `docker wait`'s container exit status separately from
 # the Docker CLI transport status; attached `docker run` can report transport
 # success after the command inside the container failed.
-unit_probe_name="assay-cgroup-unit-probe-${BASHPID:-$$}-${RANDOM}"
+unit_probe_suffix="${BASHPID:-$$}-${RANDOM}-${RANDOM}"
+unit_probe_name="assay-cgroup-unit-probe-$unit_probe_suffix"
+unit_probe_owner="$unit_probe_suffix"
 unit_probe_id=""
+inspect_owned_unit_probe() {
+  local target="$1" facts inspected_id inspected_name inspected_owner
+  facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+    --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}')" \
+    || return 1
+  [[ "$facts" != *$'\n'* ]] || return 1
+  IFS='|' read -r inspected_id inspected_name inspected_owner <<<"$facts"
+  [[ "$inspected_id" =~ ^[0-9a-f]{64}$ \
+    && "$inspected_name" == "/$unit_probe_name" \
+    && "$inspected_owner" == "$unit_probe_owner" ]] || return 1
+  if [[ "$unit_probe_id" =~ ^[0-9a-f]{64}$ \
+    && "$inspected_id" != "$unit_probe_id" ]]; then
+    return 1
+  fi
+  printf '%s' "$inspected_id"
+}
+remove_owned_unit_probe() {
+  local target="$1" owned_id
+  owned_id="$(inspect_owned_unit_probe "$target")" \
+    || die 'Docker-host systemd query container identity could not be reconciled; refusing to remove it'
+  timeout --signal=TERM --kill-after=5s 30s docker rm "$owned_id" \
+    >/dev/null \
+    || die 'could not remove the verified Docker-host systemd query container'
+  unit_probe_id=""
+  unit_probe_name=""
+  unit_probe_owner=""
+}
 cleanup_unit_probe() {
-  local status=$? target="${unit_probe_id:-$unit_probe_name}"
-  if [[ -n "$target" ]]; then
-    timeout --signal=TERM --kill-after=5s 30s docker rm --force "$target" \
-      >/dev/null 2>&1 || true
+  local status=$? target owned_id
+  trap - EXIT
+  if [[ -n "$unit_probe_name" && -n "$unit_probe_owner" ]]; then
+    target="$unit_probe_name"
+    if [[ "$unit_probe_id" =~ ^[0-9a-f]{64}$ ]]; then
+      target="$unit_probe_id"
+    fi
+    if owned_id="$(inspect_owned_unit_probe "$target")"; then
+      timeout --signal=TERM --kill-after=5s 30s docker rm --force "$owned_id" \
+        >/dev/null 2>&1 \
+        || printf 'cgroup-parent: could not remove verified probe container %s\n' "$owned_id" >&2
+    else
+      printf 'cgroup-parent: could not verify probe ownership; no container was removed\n' >&2
+    fi
   fi
   return "$status"
 }
@@ -119,7 +158,9 @@ trap cleanup_unit_probe EXIT
 
 if unit_probe_id="$(
   timeout --signal=TERM --kill-after=5s 30s docker run --detach \
-    --name="$unit_probe_name" --cgroup-parent="$probe_parent" \
+    --name="$unit_probe_name" \
+    --label="io.assay.cgroup-parent.owner=$unit_probe_owner" \
+    --cgroup-parent="$probe_parent" \
     --cgroupns=private --network=none --cpus=0.25 --memory=128m \
     --memory-swap=128m --pids-limit=64 --read-only --cap-drop=ALL \
     --security-opt=no-new-privileges --user=1003:1003 \
@@ -143,6 +184,8 @@ else
 fi
 [[ "$unit_probe_id" =~ ^[0-9a-f]{64}$ ]] \
   || die 'Docker-host systemd query did not return one container ID'
+unit_probe_id="$(inspect_owned_unit_probe "$unit_probe_id")" \
+  || die 'Docker-host systemd query container identity does not match its generated name and ownership label'
 
 if unit_probe_exit_status="$(
   timeout --signal=TERM --kill-after=5s 30s docker wait "$unit_probe_id"
@@ -160,13 +203,7 @@ else
   logs_status=$?
   die "could not read Docker-host systemd query output (docker logs exit $logs_status)"
 fi
-if timeout --signal=TERM --kill-after=5s 30s docker rm "$unit_probe_id" >/dev/null; then
-  unit_probe_id=""
-  unit_probe_name=""
-else
-  rm_status=$?
-  die "could not remove Docker-host systemd query container (docker rm exit $rm_status)"
-fi
+remove_owned_unit_probe "$unit_probe_id"
 [[ "$unit_probe_exit_status" =~ ^[0-9]+$ ]] \
   || die "Docker-host systemd query returned an invalid container exit status \"$unit_probe_exit_status\""
 [[ "$unit_probe_exit_status" == 0 ]] \

@@ -3252,9 +3252,10 @@ survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
 that candidate. A v12, v13, or v14 verdict is a cold start under v15: `assay plan`
 marks its evidence unproven and `assay run` runs every candidate fully after
-the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist, custom test loops,
-or uncertain pytest hooks also use full runs. `--reuse-from` cannot be combined
-with `--shard`, because the feature returns a complete unsharded campaign.
+the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist,
+nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
+full runs. `--reuse-from` cannot be combined with `--shard`, because the
+feature returns a complete unsharded campaign.
 The [B106 design](DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
 explains the receipt fields and fallback rule.
 

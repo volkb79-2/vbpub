@@ -189,8 +189,9 @@ assay exists to close that gap mechanically, not by policy:
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
-  runs the candidate's full suite. A v12, v13, or v14 verdict is a cold start
-  under v15, and `assay verify` rejects all three. See the
+  runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
+  replay because it can override configured addopts. A v12, v13, or v14 verdict
+  is a cold start under v15, and `assay verify` rejects all three. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A

@@ -616,7 +616,9 @@ def supports_sequential_pytest(
 
     Runtime callers also inspect the project config and effective environment,
     while ``assay plan`` uses the same facts to avoid claiming replay when
-    pytest configuration adds xdist behind the declared argv.
+    pytest configuration adds xdist behind the declared argv. Any nonempty
+    ``PYTEST_ADDOPTS`` is refused because ``-o`` can replace config addopts in
+    forms this bounded parser cannot safely classify.
     """
     tokens = tuple(argv)
     if not tokens:
@@ -640,10 +642,7 @@ def supports_sequential_pytest(
     environment = os.environ if env is None else env
     if environment.get("PYTEST_PLUGINS"):
         return False
-    try:
-        if _contains_xdist_option(shlex.split(environment.get("PYTEST_ADDOPTS", ""))):
-            return False
-    except ValueError:
+    if environment.get("PYTEST_ADDOPTS", ""):
         return False
     if cwd is not None and not _pytest_configs_allow_sequential(Path(cwd), pytest_args):
         return False
@@ -1047,12 +1046,12 @@ def cold_shape_refusal(
             pytest_args = ()
         if _contains_override_ini_option(pytest_args):
             return "pytest override"
-    if not supports_sequential_pytest(full_argv, env=env):
-        return "not a sequential pytest command"
     if env.get("PYTEST_ADDOPTS", ""):
         return "pytest environment option"
     if "PYTEST_PLUGINS" in env:
         return "pytest environment option"
+    if not supports_sequential_pytest(full_argv, env=env):
+        return "not a sequential pytest command"
     if any(env.get(name, "") for name in ("COVERAGE_PROCESS_START", "COVERAGE_PROCESS_CONFIG")):
         return "coverage re-enabled by environment"
 

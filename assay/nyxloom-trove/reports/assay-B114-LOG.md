@@ -467,3 +467,26 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   B114 evidence. The registered-gate slot is now idle. B087 may run its
   non-registered uncovered-line canary; its registered gate and merge remain
   held until B114 acceptance.
+
+## 2026-10-08 — third Sol xhigh follow-up repairs
+
+- The exact-diff review of `6086d4c9..e97156e3` found two P2s: a failed Docker
+  probe launch could make the EXIT trap force-remove a pre-existing container
+  with the generated name, and `PYTEST_ADDOPTS="-o addopts=-n2"` could enable
+  xdist while sequential replay admission still accepted the command.
+- The systemd probe now carries a per-invocation ownership label. Before any
+  removal, cleanup reconciles its Docker ID, exact generated name, and owner
+  label, then removes by ID. Ambiguous or foreign containers are left alone.
+  Fake-Docker regressions cover a name collision and a container created before
+  the launch command reports failure.
+- Sequential replay now declines any nonempty `PYTEST_ADDOPTS`; the cold-witness
+  refusal still reports the environment-specific reason. README,
+  DESIGN-GUIDE, and CONSUMERS describe the restriction. Added replay tests for
+  direct `-n`, `-o addopts=-n2`, and `--override-ini=addopts=-n2` environment
+  values.
+- Focused results: mutation-witness and B106 reuse tests **177 passed**;
+  cgroup-parent tests **23 passed**; docs examples/vocabulary **55 passed**.
+  Ruff `E4,E7,E9,F`, `bash -n`, `shellcheck -e SC2016`, and `git diff --check`
+  passed. No registered gate or R2 campaign ran on this repair diff. The next
+  step is a fresh exact-tip Sol xhigh review, followed by provisional merge and
+  all three registered B114 acceptance lanes on the merged commit.
