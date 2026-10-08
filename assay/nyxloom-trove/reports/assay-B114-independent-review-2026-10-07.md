@@ -143,3 +143,13 @@ installed Assay lacks the wheel provenance required by this fixture's CLI
 preflight. The registered tester-unified lane builds and installs the wheel,
 so it remains the required oracle environment. Ruff and `git diff --check`
 pass. Exact-tip review and registered gate remain pending.
+
+## Follow-up review of `466a94eeb`
+
+The Sol xhigh review of the correction from `e2f5109f3` reported **no
+findings**. The candidate-only `mutation.ReceiptCapture` seam leaves the
+runner's coverage-baseline capture untouched and fails explicitly if the
+candidate call site is not reached. `HEAD` was
+`466a94eebb1028023237adf9f2dba09eaef8d811` and status was clean before and
+after the `.codex2` read-only review. A corrected-tip registered gate remains
+pending.
