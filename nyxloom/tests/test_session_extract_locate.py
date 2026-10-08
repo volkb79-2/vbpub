@@ -198,6 +198,17 @@ def test_a_preferred_claude_match_and_another_claude_match_are_ambiguous(home):
     assert message.index(str(preferred)) < message.index(str(other))
 
 
+def test_claude_project_symlink_alias_is_not_a_false_ambiguity(home):
+    expected = _claude_session(home, "-workspaces-actual", _UUID)
+    projects = home / ".claude" / "projects"
+    (projects / "-workspaces-alias").symlink_to(
+        projects / "-workspaces-actual", target_is_directory=True,
+    )
+
+    resolved = resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+    assert resolved.path.resolve() == expected.resolve()
+
+
 def test_a_preferred_claude_match_and_a_codex_match_are_ambiguous(home):
     preferred = _claude_session(home, "-workspaces-vbpub", _UUID)
     other = _codex_rollout(home, _UUID)
@@ -269,6 +280,23 @@ def test_same_uuid_in_two_codex_homes_is_ambiguous(home):
     assert str(default) in message and str(alternate) in message
 
 
+def test_codex_symlinked_home_is_searched_once(home):
+    expected = _codex_rollout(home, _UUID)
+    (home / ".codex2").symlink_to(home / ".codex", target_is_directory=True)
+
+    roots = locate._codex_sessions_roots()
+    assert roots == [home / ".codex" / "sessions"]
+    assert locate._codex_matches(_UUID) == [expected]
+
+
+def test_codex_directory_symlink_cycle_does_not_repeat_a_rollout(home):
+    expected = _codex_rollout(home, _UUID)
+    sessions = home / ".codex" / "sessions"
+    (sessions / "loop").symlink_to(sessions, target_is_directory=True)
+
+    assert locate._codex_matches(_UUID) == [expected]
+
+
 def test_no_match_errors_and_names_where_it_looked(home):
     _claude_session(home, "-workspaces-vbpub", _OTHER_UUID)
     with pytest.raises(LocateError) as e:
@@ -288,6 +316,17 @@ def test_opencode_session_id_resolves_to_its_store_and_carries_the_id(home):
     ref = resolve_session_ref(sid, Path("/workspaces/vbpub"))
     assert ref.path == db
     assert ref.session_id == sid
+
+
+def test_opencode_database_symlink_alias_is_not_a_false_ambiguity(
+    home, tmp_path, monkeypatch,
+):
+    db = _opencode_db(tmp_path / "opencode.db", [_OPENCODE_SID])
+    alias = tmp_path / "opencode-alias.db"
+    alias.symlink_to(db)
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db, alias])
+
+    assert locate._opencode_matches(_OPENCODE_SID) == [db]
 
 
 def test_opencode_lookup_honors_xdg_data_home(home, tmp_path, monkeypatch):
@@ -528,6 +567,112 @@ def test_codex_match_scan_ignores_a_non_directory_non_file_entry(
     monkeypatch.setattr(locate, "_codex_sessions_root", lambda: root)
     monkeypatch.setattr(locate, "_entry_mode", fake_entry_mode)
     assert locate._codex_matches(_UUID) == []
+
+
+def test_codex_root_alias_discovery_refuses_stat_errors(home, monkeypatch):
+    root = home / ".codex" / "sessions"
+    monkeypatch.setattr(locate, "_codex_sessions_root", lambda: root)
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == root:
+            raise PermissionError("root metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*root metadata denied"):
+        locate._codex_sessions_roots()
+
+
+def test_physical_path_dedupe_preserves_missing_paths_and_refuses_indeterminate_paths(
+    tmp_path, monkeypatch,
+):
+    missing = tmp_path / "missing.jsonl"
+    assert locate._unique_physical_paths([missing, missing]) == [missing]
+
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == missing:
+            raise PermissionError("file metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*file metadata denied"):
+        locate._unique_physical_paths([missing])
+
+
+def test_codex_match_scan_handles_root_types_and_unreadable_roots(
+    home, tmp_path, monkeypatch,
+):
+    regular = tmp_path / "not-a-directory"
+    regular.touch()
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [regular])
+    assert locate._codex_matches(_UUID) == []
+
+    root = tmp_path / "denied-root"
+    root.mkdir()
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [root])
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == root:
+            raise PermissionError("root stat denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*root stat denied"):
+        locate._codex_matches(_UUID)
+
+
+def test_codex_match_scan_refuses_a_child_that_disappears_during_descent(
+    home, tmp_path, monkeypatch,
+):
+    root = tmp_path / "sessions"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [root])
+    original_stat = Path.stat
+    nested_stat_calls = 0
+
+    def disappear_on_descent(path, *args, **kwargs):
+        nonlocal nested_stat_calls
+        if path == nested:
+            nested_stat_calls += 1
+            if nested_stat_calls == 2:
+                raise FileNotFoundError("child disappeared")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", disappear_on_descent)
+    with pytest.raises(LocateError, match="could not inspect.*nested"):
+        locate._codex_matches(_UUID)
+
+
+def test_codex_match_scan_deduplicates_physical_file_aliases_and_reports_stat_failure(
+    home, tmp_path, monkeypatch,
+):
+    root = tmp_path / "sessions"
+    transcript = _codex_rollout(home, _UUID, codex_home=root.parent)
+    alias = root / f"rollout-alias-{_UUID}.jsonl"
+    alias.symlink_to(transcript)
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [root])
+    matches = locate._codex_matches(_UUID)
+    assert len(matches) == 1
+
+    original_stat = Path.stat
+    calls = 0
+
+    def fail_matching_stat(path, *args, **kwargs):
+        nonlocal calls
+        if path == transcript:
+            calls += 1
+            if calls == 2:
+                raise PermissionError("rollout stat denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_matching_stat)
+    with pytest.raises(LocateError, match="could not inspect.*rollout stat denied"):
+        locate._codex_matches(_UUID)
 
 
 def test_opencode_lookup_reports_a_database_open_failure_as_indeterminate(home, monkeypatch):

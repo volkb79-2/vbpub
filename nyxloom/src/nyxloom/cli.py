@@ -1484,7 +1484,32 @@ def cmd_search(args) -> int:
     from .harness_search import search_sessions
 
     query = " ".join(args.words)
-    results = search_sessions(query, client=args.client, sort_by=args.sort_by)
+    runtime = getattr(args, "runtime", None)
+    progress = runtime.progress() if runtime is not None else None
+    if progress is None:
+        results = search_sessions(
+            query,
+            client=args.client,
+            sort_by=args.sort_by,
+            source_roots=args.source_root,
+            word_match=args.word_match,
+            term_match=args.term_match,
+        )
+    else:
+        with progress:
+            progress.update("Preparing local session search")
+            results = search_sessions(
+                query,
+                client=args.client,
+                sort_by=args.sort_by,
+                source_roots=args.source_root,
+                word_match=args.word_match,
+                term_match=args.term_match,
+                progress=lambda message, current, total: progress.update(
+                    message, current=current, total=total,
+                ),
+            )
+            progress.finish("Session search complete")
     if not results:
         print("No matching sessions.")
         return 0

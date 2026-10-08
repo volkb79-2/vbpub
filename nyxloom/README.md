@@ -144,9 +144,14 @@ opencode session logs without an LLM call. `extract` produces a compact
 resumable brief; `extract-lossless` preserves the adapter's prose and available
 thinking blocks. `extract-sessions` discovers Claude Code, Codex, and opencode
 families; `extract-report` reports cost/timeline data for those formats.
-`search` ranks locally stored Claude Code, Codex, and OpenCode sessions by
-query words and prints session IDs plus matching metadata, never transcript
-text. `extract --help` groups its controls by source, selection, content,
+`search` scans locally stored Claude Code, Codex, and OpenCode sessions for
+query words, reports progress, and prints session IDs plus matching metadata,
+never transcript text. It uses ripgrep when available and keeps no index.
+Clients and source roots can be limited; any/all query words and exact/prefix
+matching are selectable. See the
+[search design](docs/DESIGN-GUIDE.md#local-session-search) and
+[worked examples](docs/CONSUMERS.md#search-local-session-history).
+`extract --help` groups its controls by source, selection, content,
 output, redaction/task, and live-follow use; see the
 [help rationale](docs/DESIGN-GUIDE.md#cli-identity-help-and-bootstrap). The
 `SESSION_LOG` argument accepts either a full path or a session ID when nyxloom

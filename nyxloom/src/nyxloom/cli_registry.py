@@ -199,6 +199,7 @@ def _leaf(
     interactive: bool = False,
     expensive: bool = False,
     include_json: bool = False,
+    include_progress: bool = False,
     validate: Callable[[Any], None] | None = None,
     examples: Sequence[str] = (),
 ) -> VerbSpec:
@@ -215,6 +216,7 @@ def _leaf(
         interactive=interactive,
         expensive=expensive,
         include_json=include_json,
+        include_progress=include_progress,
         validate=validate,
         examples=examples,
     )
@@ -860,7 +862,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
     registry.register(_leaf(
         "nyxloom-harness",
         "search",
-        "Search locally available Claude Code, Codex, and OpenCode sessions by transcript words. Prints matching session ids, best matches first by default; no transcript text is emitted.",
+        "Search Claude Code, Codex, and OpenCode session transcripts. Prints matching session ids and metadata, never transcript text.",
         cli.cmd_search,
         arguments=(
             _arg(
@@ -870,7 +872,16 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
         ),
         options=(
             _opt("--sort-by", "Result order", group="RESULT ORDER", choices=("best", "date"), default="best"),
-            _opt("--client", "Limit search to one harness client", group="SESSION SOURCE", choices=("codex", "claude", "opencode"), default=None),
+            _opt("--word-match", "Require any or all query words", group="WORD MATCH", choices=("any", "all"), default="any"),
+            _opt("--term-match", "Match exact words or words beginning with each query word", group="WORD MATCH", choices=("exact", "prefix"), default="exact"),
+            _opt("--client", "Limit search to a harness client; repeat to select several", group="SESSION SOURCE", choices=("codex", "claude", "opencode"), action="append", default=None),
+            _opt("--source-root", "Search this harness data directory or OpenCode database; repeat to add roots", group="SESSION SOURCE", metavar="PATH", action="append", default=None),
+        ),
+        include_progress=True,
+        examples=(
+            "nyxloom-harness search debian iso cloud qcow",
+            "nyxloom-harness search debian iso cloud qcow --term-match prefix --word-match all",
+            "nyxloom-harness search debian iso cloud qcow --client codex --source-root ~/.codex/sessions",
         ),
     ))
     lossless_options = (
