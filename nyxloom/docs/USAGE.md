@@ -220,17 +220,20 @@ To locate sessions by remembered content, search the local stores. The best
 matches are listed first, and only identifiers and metadata are printed:
 
 ```bash
-nyxloom-harness search 'cli-extended gate backlog'
-nyxloom-harness search 'cli-extended gate backlog' --sort-by date --client codex
+nyxloom-harness search debian iso cloud qcow
+nyxloom-harness search debian iso cloud qcow --term-match prefix --word-match all
+nyxloom-harness search debian iso cloud qcow --client codex --source-root ~/.codex/sessions --term-match prefix
 ```
 
 See the [search design](DESIGN-GUIDE.md#local-session-search) for matching
 and ranking behavior and [the consumer recipe](CONSUMERS.md#search-local-session-history)
-for result fields and options.
+for source selection and progress controls. Exact word matching and any query
+word are the defaults; `prefix` matches `qcow` in `qcow2`, and `all` requires
+every query word.
 
 | Command | Purpose |
 |---|---|
-| `nyxloom-harness search WORD...` | Rank local Claude Code, Codex, and OpenCode sessions matching query words. |
+| `nyxloom-harness search WORD...` | Search local Claude Code, Codex, and OpenCode sessions; choose word matching, client list, and source roots. |
 | `nyxloom-harness extract SESSION_LOG` | Produce a compact, classified brief with operator text, Q&A pairs, and selected checkpoints. |
 | `nyxloom-harness extract-lossless SESSION_LOG` | Dump every recoverable prose/thinking block, dropping only tool calls and harness bookkeeping. |
 | `nyxloom-harness extract-debug SESSION_LOG` | Compare the lossless dump with what `extract` keeps, including drop reasons. |

@@ -480,7 +480,9 @@ def test_mutation_rejects_witness_execution_outside_the_killed_bucket():
 def test_mutation_rejects_duplicate_candidate_ids_across_distinct_outcomes(
     monkeypatch,
 ):
-    constant_identity = lambda **_kwargs: "c" * 64
+    def constant_identity(**_kwargs):
+        return "c" * 64
+
     monkeypatch.setattr(candidate_identity, "candidate_id_from_fields", constant_identity)
     monkeypatch.setattr(verdict, "candidate_id_from_fields", constant_identity)
     killed = _valid_native_outcome("a.py")
@@ -577,10 +579,14 @@ def test_pytest_xdist_from_ini_addopts_is_not_plan_replayable(tmp_path: Path):
     )
 
 
-def test_pytest_parallelism_from_effective_environment_is_not_replayable():
+@pytest.mark.parametrize(
+    "addopts",
+    ["-n 2", "-o addopts=-n2", "--override-ini=addopts=-n2"],
+)
+def test_pytest_parallelism_from_effective_environment_is_not_replayable(addopts):
     assert not supports_sequential_pytest(
         (sys.executable, "-m", "pytest", "tests"),
-        env={"PYTEST_ADDOPTS": "-n 2"},
+        env={"PYTEST_ADDOPTS": addopts},
     )
 
 

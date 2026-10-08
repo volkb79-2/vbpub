@@ -222,6 +222,42 @@ query words, dates, and scores; it does not print transcript excerpts or send
 session content to a service. Matching is case-insensitive and punctuation
 splits words, so `cli-extended` searches for both `cli` and `extended`.
 
+The default is an **any-word** search with exact token matches.
+`--word-match all` requires every query token; `--term-match prefix` lets a
+query token match the beginning of a longer token (`qcow` matches `qcow2`). These are
+separate choices because “which sessions mention any of these clues?” and
+“which sessions mention every clue?” are different operator questions.
+Repeated `--client` values form the selected harness list. Repeated
+`--source-root` values form the locations searched by each selected client.
+Codex and Claude Code use directory roots; OpenCode uses a database file or a
+directory containing `opencode.db`. Roots with a different path type are
+ignored for clients not explicitly selected. If `--client` names a format,
+the roots must include a compatible path for every selected client. With no
+source roots, each adapter uses its existing configured/default store
+discovery.
+
+Search does not build or maintain an index. It retains counts only for the
+requested words, and uses ripgrep's native parallel scanner, when installed,
+to stream only candidate JSONL records into Python. The Python side checks
+each record against the normal text-field and token rules; Unicode case-fold
+expansions and JSON-escaped query letters are included in the candidate
+filter. Without ripgrep, fixed-size reads and a raw-line filter provide the
+same search semantics while keeping memory bounded. OpenCode rows use a raw
+candidate check before JSON decoding. Exact activity timestamps are read from
+the end only for transcripts that match. Progress uses cli-extended's existing
+renderer on stderr with the standard `--progress` modes; the search command
+does not add a second progress API.
+
+Codex homes can be aliases of one another (for example, `~/.codex2/sessions`
+symlinked to `~/.codex/sessions`). Search and bare-ID resolution compare
+physical file/directory identities so aliases and directory-link cycles do
+not create duplicate work or false ambiguity. The resolver applies the same
+deduplication to Claude project candidates and OpenCode database aliases,
+where duplicate physical candidates would otherwise look ambiguous. A
+single-root `extract-sessions` walk does not union the default Codex homes, so
+it does not need this particular root-alias check; file aliases inside one
+selected tree remain a possible separate cleanup if that layout appears.
+
 The default `best` order favors sessions matching more distinct query words,
 then weights rare terms more heavily and modestly rewards repeats. `date` puts
 newer recorded activity first. Results include the exact source path so a

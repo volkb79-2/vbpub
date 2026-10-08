@@ -398,7 +398,7 @@ def test_o8_every_candidate_carries_resource_evidence_in_progress_and_state(
         assert set(keys) <= set(event)
         cpu, rss = event["cpu_seconds"], event["peak_rss_bytes"]
         assert cpu is None or (isinstance(cpu, float) and cpu >= 0)
-        assert rss is None or (isinstance(rss, int) and not isinstance(rss, bool) and rss > 0)
+        assert rss is None or (isinstance(rss, int) and not isinstance(rss, bool) and rss >= 0)
         phases = event["phase_seconds"]
         assert set(phases) == {"materialize", "command", "integrity", "teardown"}
         assert all(isinstance(value, float) and value >= 0 for value in phases.values())

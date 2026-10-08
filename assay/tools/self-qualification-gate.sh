@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # B105's separately invoked full-source R0-R3 qualification gate.
-# run-gate-project owns tester-unified, cgroup placement, and worktree mounts;
-# this inner driver builds the selected committed source as a wheel, runs the
-# declared lane against its isolated snapshots, and verifies the retained
+# run-gate owns admission and artifacts; self-qualification-container.sh owns
+# the bounded, cgroup-visible tester-unified container and exact worktree
+# mounts. This inner driver builds that selected committed source as a wheel,
+# runs the declared lane against isolated snapshots, and verifies the retained
 # verdict before reporting success.
 # A full B105 run reuses one persisted campaign deadline across preflight and
 # R2. To deliberately restart the same commit after expiry, move that deadline
@@ -38,6 +39,14 @@ source_commit="$(assay_git rev-parse HEAD)"
 source_tree="$(assay_git rev-parse 'HEAD^{tree}')"
 [[ "$(assay_git rev-parse "${source_commit}^{tree}")" == "$source_tree" ]] \
   || die "captured source commit does not resolve to the captured tree"
+expected_commit="${ASSAY_B105_GATE_EXPECTED_COMMIT:-}"
+expected_tree="${ASSAY_B105_GATE_EXPECTED_TREE:-}"
+[[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] \
+  || die 'outer runner did not provide a full expected source commit'
+[[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] \
+  || die 'outer runner did not provide a full expected source tree'
+[[ "$source_commit" == "$expected_commit" && "$source_tree" == "$expected_tree" ]] \
+  || die 'inner source commit/tree differs from the outer runner launch record'
 ensure_source_unchanged() {
   local worktree_status
   [[ "$(assay_git rev-parse HEAD)" == "$source_commit" ]] \

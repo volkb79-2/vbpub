@@ -95,11 +95,18 @@ recipe above for any state that already lives on the host.
 
 ## initialize_container_environment.py — host bootstrap (why it exists)
 `devcontainer.json` wires `"initializeCommand": "python3 .devcontainer/initialize_container_environment.py"`. It runs **on the
-host, before the container is created**, and prepares `$HOME` bind-mount sources. It is stdlib-only,
-idempotent, and **derives its source list from the mounts** in the same file. Existing regular files
-and directories are recognized by their actual host filesystem type, independent of their names or
-suffixes. Under the default policy, MDT creates its known directory sources. Secret directories
-(`.ssh`/`.gnupg`/`.minisign`) get mode `0700`.
+host, before the container is created**, first verifying the cgroup slices declared by `containerEnv`
+and `runArgs`, then preparing `$HOME` bind-mount sources. It is stdlib-only and idempotent. The source
+list is derived from the mounts in the same file. Existing regular files and directories are recognized
+by their actual host filesystem type, independent of their names or suffixes. Under the default policy,
+MDT creates its known directory sources. Secret directories (`.ssh`/`.gnupg`/`.minisign`) get mode
+`0700`.
+
+The cgroup check requires each declared tier to be `LoadState=loaded` from an installed unit file.
+Missing, runtime-generated, or unqueryable slices stop startup before Docker can create a transient,
+unlimited parent. It parses Docker's `runArgs` option/value boundaries and refuses a cgroup-parent
+token consumed as another option's value or any option syntax it cannot classify. Install and verify the MDT host setup before rebuilding; see the
+[consumer steps](../docs/CONSUMERS.md#host-cgroup-preflight).
 
 The host bootstrap classifies existing sources by their actual type. For a missing source, the
 default `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=create-by-spelling` interprets a trailing `/` as a

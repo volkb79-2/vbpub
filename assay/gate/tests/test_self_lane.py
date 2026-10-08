@@ -78,15 +78,26 @@ def test_assays_own_lane_file_loads():
     assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID, "analysis"]
 
 
-def test_b105_run_gate_lanes_provide_observer_to_nested_r2_tests():
+def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
     lanes = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"]
+    wrapper = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(
+        encoding="utf-8"
+    )
 
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
         lane = lanes[lane_id]
         assert lane["kind"] == "command"
-        assert lane["environment"] == "tester-unified"
-        assert lane["resource_observer"] == "cgprofile"
+        assert lane["environment"] == "bare-host"
+        assert lane["argv"][:2] == ["bash", "{worktree}/assay/tools/self-qualification-container.sh"]
+        assert lane["resources"] == {"shared": ["assay-self-qualification"]}
+        assert lane["exit_map"] == {"3": "ERROR"}
 
+    assert 'resource_observer_gid() {' in wrapper
+    assert "--cgroupns=private" in wrapper
+    assert "--cgroupns=host" not in wrapper
+    assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"' in wrapper
+    assert 'dst=$RESOURCE_OBSERVER_TARGET,readonly' in wrapper
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
         assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
@@ -135,6 +146,8 @@ def test_inner_tester_budget_leaves_time_for_the_outer_sql_witness():
     assert lane.budget_seconds == 60 * 60
     assert load_lane_file(SELF_LANE_FILE).lane("analysis").budget_seconds == 60 * 60
     assert run_gate["budget"] == "5h"
+    assert run_gate["resources"] == {"shared": ["assay-self-qualification"]}
+    assert run_gate["exit_map"] == {"3": "ERROR"}
     assert gate["timeout_seconds"] == 6 * 60 * 60
 
 
@@ -421,6 +434,9 @@ def test_b105_builds_a_commit_deterministic_wheel_and_checks_deadline_before_lan
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(
         encoding="utf-8"
     )
+    assert "ASSAY_B105_GATE_EXPECTED_COMMIT" in script
+    assert "ASSAY_B105_GATE_EXPECTED_TREE" in script
+    assert "differs from the outer runner launch record" in script
 
     assert (
         'source_epoch="$(assay_git -C "$scratch/source" '
@@ -710,25 +726,20 @@ def test_the_option_files_the_opt_in_qualification_tests_read_exist():
     assert (test_go_r1_real._PROJECT_ROOT / "pyproject.toml").is_file()
 
 
-def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
+def test_self_qualification_run_gate_uses_cgroup_visible_wrapper_and_verifies_report():
     run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))
     lane = run_gate["lanes"][QUALIFICATION_ID]
     assert lane["kind"] == "command"
-    assert lane["environment"] == "tester-unified"
-    assert lane["resource_observer"] == "cgprofile"
+    assert lane["environment"] == "bare-host"
     assert lane["clean_tree"] is True
     assert lane["argv"] == [
-        "timeout",
-        "--verbose",
-        "--signal=TERM",
-        "--kill-after=30s",
-        "7h30m",
         "bash",
-        "{worktree}/assay/tools/self-qualification-gate.sh",
+        "{worktree}/assay/tools/self-qualification-container.sh",
         "{worktree}",
         "self-qualification",
     ]
-    assert lane["resources"]["cpus"] == "3"
+    assert lane["resources"] == {"shared": ["assay-self-qualification"]}
+    assert lane["exit_map"] == {"3": "ERROR"}
     assert lane["artifacts"] == [
         ".assay/verdict-self-qualification.json",
         ".assay/progress-self-qualification.jsonl",
@@ -740,11 +751,17 @@ def test_self_qualification_run_gate_uses_tester_unified_and_verifies_report():
 
     preflight = run_gate["lanes"][PREFLIGHT_ID]
     assert preflight["kind"] == "command"
-    assert preflight["environment"] == "tester-unified"
-    assert preflight["resource_observer"] == "cgprofile"
+    assert preflight["environment"] == "bare-host"
     assert preflight["clean_tree"] is True
-    assert preflight["budget"] == "60m"
-    assert PREFLIGHT_ID in preflight["argv"][-1]
+    assert preflight["budget"] == "75m"
+    assert preflight["argv"] == [
+        "bash",
+        "{worktree}/assay/tools/self-qualification-container.sh",
+        "{worktree}",
+        PREFLIGHT_ID,
+    ]
+    assert preflight["resources"] == {"shared": ["assay-self-qualification"]}
+    assert preflight["exit_map"] == {"3": "ERROR"}
     assert preflight["artifacts"] == [
         ".assay/verdict-self-qualification-preflight.json",
         ".assay/progress-self-qualification-preflight.jsonl",
@@ -799,9 +816,19 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     ]
     assert gate["timeout_seconds"] == 8 * 60 * 60
     assert run_gate["budget"] == "8h"
-    assert run_gate["argv"][:5] == [
-        "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m"
+    assert run_gate["argv"] == [
+        "bash",
+        "{worktree}/assay/tools/self-qualification-container.sh",
+        "{worktree}",
+        QUALIFICATION_ID,
     ]
+    container_script = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'wait_timeout_label=7h40m' in container_script
+    assert 'wait_timeout_seconds=27600' in container_script
+    assert 'timeout --verbose --signal=TERM --kill-after=30s 27000s' in container_script
+    assert run_gate["budget"] == "8h"
 
     assay_lane = load_lane_file(SELF_LANE_FILE).lane(QUALIFICATION_ID)
     assert assay_lane.budget == "5h"
@@ -812,8 +839,8 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     preflight_run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))[
         "lanes"
     ][PREFLIGHT_ID]
-    assert preflight_gate["timeout_seconds"] == 3600
-    assert preflight_run_gate["budget"] == "60m"
+    assert preflight_gate["timeout_seconds"] == 90 * 60
+    assert preflight_run_gate["budget"] == "75m"
 
 
 def test_preflight_measures_the_same_complete_source_inventory_before_r2():

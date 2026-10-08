@@ -157,7 +157,10 @@ series       = "nyxloom-trove/handoffs/README.md"
 # the final marker. The receipt is removed at every launch, and the full
 # `self-qualification` lane refuses to start without one for its own commit and
 # tree. A host with another `run-gate-*` container running makes the gate exit 3
-# (`ASSAY_GATE_INCONCLUSIVE=host busy`), which always means "rerun".
+# (`ASSAY_GATE_INCONCLUSIVE=host busy`); run-gate records that as an
+# infrastructure ERROR, which always means "rerun". The registered
+# `tester-unified`, `self-qualification`, and standalone preflight lanes share
+# one run-gate lock, so those Assay lanes cannot race each other's host check.
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_GATES and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
@@ -183,9 +186,11 @@ environment = "tester-unified"
 
 [gates.self-qualification]
 # B105's deliberately invoked full-source R0-R3 campaign is separate from the
-# ordinary R0 release gate above. run-gate places it in tester-unified and the
-# inner driver verifies the exact verdict before reporting success.
-# The in-container B105 driver command has a 7h30m timeout, which excludes
+# ordinary R0 release gate above. Its run-gate lane runs the Assay-owned
+# bare-host launcher, which verifies and starts the detached tester-unified
+# container with host cgroup visibility; the inner driver verifies the exact
+# verdict before reporting success. The in-container B105 driver command has a
+# 7h30m timeout, which excludes
 # run-gate/container startup and outer evidence collection. Assay's 5-hour
 # lane budget follows its separate 60-minute preflight. Nyxloom's 8-hour
 # controller timeout is an outer failsafe, not a campaign-wide deadline.
@@ -198,12 +203,14 @@ environment = "tester-unified"
 
 [gates.self-qualification-preflight]
 # R0/R1-only diagnosis of the exact source inventory and branch floor. The
-# full B105 gate runs this first and does not begin native mutation if the
-# baseline suite or whole-source coverage is red.
+# full B105 gate runs this first in the same Assay-owned, cgroup-visible
+# tester-unified container and does not begin native mutation if the baseline
+# suite or whole-source coverage is red.
 argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} self-qualification-preflight"]
 phase = "implementation"
 asserts = ["tests-pass"]
-timeout_seconds = 3600
+# 75m run-gate budget plus 15m for admission/startup and evidence collection.
+timeout_seconds = 5400
 environment = "tester-unified"
 
 [mutexes.merge-lane]

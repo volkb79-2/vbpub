@@ -2,9 +2,10 @@
 """mdt devcontainer host bootstrap ("get.py").
 
 Runs ON THE HOST (wired via devcontainer.json `initializeCommand`) BEFORE the
-container is created, so every `$HOME` bind-mount source is prepared with sane
-permissions. Docker's `--mount` form refuses a missing source; this script
-applies MDT's configured policy before Docker starts.
+container is created. It first verifies the declared host cgroup slices are
+loaded from installed unit files, then prepares every `$HOME` bind-mount source
+with sane permissions. Docker's `--mount` form refuses a missing source; this
+script applies MDT's configured policy before Docker starts.
 
 Layout (grouped persistence):
 - Devcontainer-persisted state is grouped under `~/mdt--mounted-folders/` so a rebuild never
@@ -35,8 +36,10 @@ rebuild, e.g.:  for d in .claude .claudelink .codex .config .gnupg .local .minis
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -59,6 +62,50 @@ MISSING_SOURCE_POLICY_KEY = "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY"
 DEFAULT_MISSING_SOURCE_POLICY = "create-by-spelling"
 MISSING_SOURCE_POLICIES = {DEFAULT_MISSING_SOURCE_POLICY, "fail"}
 HOST_CONFIG_PATH = Path("/etc/mdt/host-setup.env")
+CGROUP_ENV_KEYS = (
+    "CGROUP_PARENT_DEV_INTERACTIVE",
+    "CGROUP_PARENT_DEV_BACKGROUND",
+    "CGROUP_PARENT_DEV_GATES",
+)
+
+# Docker's `run` options. `runArgs` is passed as argv, so a string that looks
+# like `--cgroup-parent` can be consumed as the value of an earlier option
+# (for example `--label --cgroup-parent=...`). Keep the parser fail-closed for
+# options it cannot classify rather than certifying a decoy token.
+DOCKER_RUN_VALUE_OPTIONS = frozenset(
+    {
+        "--add-host", "--annotation", "--attach", "--blkio-weight",
+        "--blkio-weight-device", "--cap-add", "--cap-drop", "--cgroup-parent",
+        "--cgroupns", "--cidfile", "--cpu-period", "--cpu-quota",
+        "--cpu-rt-period", "--cpu-rt-runtime", "--cpu-shares", "--cpus",
+        "--cpuset-cpus", "--cpuset-mems", "--detach-keys", "--device",
+        "--device-cgroup-rule", "--device-read-bps", "--device-read-iops",
+        "--device-write-bps", "--device-write-iops", "--dns", "--dns-option",
+        "--dns-search", "--domainname", "--entrypoint", "--env", "--env-file",
+        "--expose", "--gpus", "--group-add", "--health-cmd",
+        "--health-interval", "--health-retries", "--health-start-interval",
+        "--health-start-period", "--health-timeout", "--hostname", "--ip",
+        "--ip6", "--ipc", "--isolation", "--label", "--label-file", "--link",
+        "--link-local-ip", "--log-driver", "--log-opt", "--mac-address",
+        "--memory", "--memory-reservation", "--memory-swap",
+        "--memory-swappiness", "--mount", "--name", "--network",
+        "--network-alias", "--oom-score-adj", "--pid", "--pids-limit",
+        "--platform", "--publish", "--pull", "--restart", "--runtime",
+        "--security-opt", "--shm-size", "--stop-signal", "--stop-timeout",
+        "--storage-opt", "--sysctl", "--tmpfs", "--ulimit", "--umask",
+        "--user", "--userns", "--uts", "--volume", "--volume-driver",
+        "--volumes-from", "--workdir",
+    }
+)
+DOCKER_RUN_VALUE_SHORT_OPTIONS = frozenset({"a", "c", "e", "h", "l", "m", "p", "u", "v", "w"})
+DOCKER_RUN_BOOLEAN_OPTIONS = frozenset(
+    {
+        "--detach", "--help", "--init", "--interactive", "--no-healthcheck",
+        "--oom-kill-disable", "--privileged", "--publish-all", "--quiet",
+        "--read-only", "--rm", "--sig-proxy", "--tty", "--use-api-socket",
+    }
+)
+DOCKER_RUN_BOOLEAN_SHORT_OPTIONS = frozenset({"d", "i", "P", "q", "t"})
 
 HOME = Path(os.path.expanduser("~"))
 # Matches the devcontainer mount string: "source=...,target=...,type=bind[,...]"
@@ -76,6 +123,205 @@ def host_bind_sources(dc_path: Path) -> list:
     except OSError:
         return []
     return sources
+
+
+def host_cgroup_slices(dc_path: Path) -> tuple[str, ...]:
+    """Derive required host tiers from the vendored devcontainer declaration."""
+    try:
+        text = dc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"could not read devcontainer template {dc_path}: {exc}") from exc
+
+    try:
+        document = _parse_jsonc_object(text)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not parse devcontainer template {dc_path}: {exc}") from exc
+
+    environment = document.get("containerEnv")
+    run_args = document.get("runArgs")
+    if not isinstance(environment, dict):
+        raise ValueError(f"{dc_path} must declare containerEnv as an object")
+    if not isinstance(run_args, list) or any(not isinstance(arg, str) for arg in run_args):
+        raise ValueError(f"{dc_path} must declare runArgs as an array of strings")
+    environment = {
+        key: value for key, value in environment.items() if key in CGROUP_ENV_KEYS
+    }
+    if any(not isinstance(value, str) for value in environment.values()):
+        raise ValueError(f"{dc_path} cgroup environment values must be strings")
+
+    run_parents = _docker_run_cgroup_parents(run_args, dc_path)
+
+    if set(environment) != set(CGROUP_ENV_KEYS):
+        raise ValueError(
+            f"{dc_path} must declare exactly {', '.join(CGROUP_ENV_KEYS)} in containerEnv"
+        )
+    if len(run_parents) != 1:
+        raise ValueError(f"{dc_path} must declare exactly one --cgroup-parent runArg")
+    if run_parents[0] != environment["CGROUP_PARENT_DEV_INTERACTIVE"]:
+        raise ValueError(
+            f"{dc_path} --cgroup-parent runArg does not match "
+            "CGROUP_PARENT_DEV_INTERACTIVE"
+        )
+
+    slices = tuple(environment[key] for key in CGROUP_ENV_KEYS)
+    if len(set(slices)) != len(slices) or any(
+        re.fullmatch(r"[A-Za-z0-9_.@-]+\.slice", item) is None for item in slices
+    ):
+        raise ValueError(f"{dc_path} has invalid or duplicate dev-tier slice names")
+    return slices
+
+
+def _docker_run_cgroup_parents(run_args: list[str], dc_path: Path) -> list[str]:
+    """Read effective cgroup-parent values from Docker's run option argv."""
+    parents: list[str] = []
+    index = 0
+    while index < len(run_args):
+        argument = run_args[index]
+        index += 1
+        if argument == "--" or not argument.startswith("-") or argument == "-":
+            raise ValueError(f"{dc_path} has an unrecognized positional runArg {argument!r}")
+
+        if argument.startswith("--"):
+            option, separator, inline_value = argument.partition("=")
+            if option in DOCKER_RUN_VALUE_OPTIONS:
+                if separator:
+                    value = inline_value
+                else:
+                    if index >= len(run_args):
+                        raise ValueError(f"{dc_path} has an incomplete {option} runArg")
+                    value = run_args[index]
+                    index += 1
+                if not value:
+                    raise ValueError(f"{dc_path} has an empty {option} runArg")
+                if option == "--cgroup-parent":
+                    parents.append(value)
+                continue
+            if option in DOCKER_RUN_BOOLEAN_OPTIONS:
+                if separator and inline_value.lower() not in {"1", "0", "true", "false"}:
+                    raise ValueError(f"{dc_path} has an invalid boolean {option} runArg")
+                continue
+            raise ValueError(f"{dc_path} has an unsupported Docker runArg {argument!r}")
+
+        # Docker's short options may be bundled (for example `-it`) or may
+        # carry a value directly after the option (`-lkey=value`).
+        short_options = argument[1:]
+        short_index = 0
+        while short_index < len(short_options):
+            option = short_options[short_index]
+            short_index += 1
+            if option in DOCKER_RUN_VALUE_SHORT_OPTIONS:
+                value = short_options[short_index:]
+                if value.startswith("="):
+                    value = value[1:]
+                if not value:
+                    if index >= len(run_args):
+                        raise ValueError(f"{dc_path} has an incomplete -{option} runArg")
+                    value = run_args[index]
+                    index += 1
+                if not value:
+                    raise ValueError(f"{dc_path} has an empty -{option} runArg")
+                break
+            if option not in DOCKER_RUN_BOOLEAN_SHORT_OPTIONS:
+                raise ValueError(f"{dc_path} has an unsupported Docker runArg {argument!r}")
+    return parents
+
+
+def _parse_jsonc_object(text: str) -> dict:
+    """Parse JSONC while rejecting duplicate keys and preserving string contents."""
+    uncommented = _remove_jsonc_comments(text)
+    cleaned = _remove_jsonc_trailing_commas(uncommented)
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSONC object key {key!r}")
+            result[key] = value
+        return result
+
+    document = json.loads(cleaned, object_pairs_hook=unique_object)
+    if not isinstance(document, dict):
+        raise ValueError("devcontainer root must be an object")
+    return document
+
+
+def _remove_jsonc_comments(text: str) -> str:
+    """Replace JSONC comments with whitespace without touching quoted text."""
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            output.append(char)
+            index += 1
+            continue
+        if text.startswith("//", index):
+            while index < len(text) and text[index] not in "\r\n":
+                output.append(" ")
+                index += 1
+            continue
+        if text.startswith("/*", index):
+            output.extend((" ", " "))
+            index += 2
+            while index < len(text) and not text.startswith("*/", index):
+                output.append("\n" if text[index] == "\n" else " ")
+                index += 1
+            if index >= len(text):
+                raise ValueError("unterminated JSONC block comment")
+            output.extend((" ", " "))
+            index += 2
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def _remove_jsonc_trailing_commas(text: str) -> str:
+    """Remove trailing commas outside JSON strings."""
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            output.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(text) and text[lookahead] in "}]":
+                index += 1
+                continue
+        output.append(char)
+        index += 1
+    return "".join(output)
 
 
 def to_home_dir(source: str):
@@ -157,6 +403,67 @@ def load_missing_source_policy(config_path: Path | None = None) -> str:
             f"{MISSING_SOURCE_POLICY_KEY} in {config_path} must be {choices}; found {policy!r}"
         )
     return policy
+
+
+def verify_host_cgroup_slices(slices: tuple[str, ...], *, runner=None) -> bool:
+    """Require the template's declared host slices before Docker creates a cockpit.
+
+    systemd accepts an unknown Docker cgroup parent by creating a transient,
+    unlimited slice. This host-side initializeCommand runs before that first
+    container exists, so it is the only safe point to prove these units are
+    already loaded from installed unit files.
+    """
+    run = subprocess.run if runner is None else runner
+    for unit in slices:
+        try:
+            result = run(
+                [
+                    "systemctl",
+                    "show",
+                    unit,
+                    "--property=Id,LoadState,FragmentPath",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(
+                f"[mdt-bootstrap] ERROR cannot verify host cgroup slice {unit}: {exc}",
+                file=sys.stderr,
+            )
+            return False
+
+        facts: dict[str, str] = {}
+        malformed = False
+        for line in result.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key not in {"Id", "LoadState", "FragmentPath"} or key in facts:
+                malformed = True
+                break
+            facts[key] = value
+        unit_id = facts.get("Id", "")
+        load_state = facts.get("LoadState", "")
+        fragment_path = facts.get("FragmentPath", "")
+        if (
+            result.returncode != 0
+            or malformed
+            or unit_id != unit
+            or load_state != "loaded"
+            or not fragment_path.startswith("/")
+            or fragment_path.startswith("/run/systemd/")
+            or not Path(fragment_path).is_file()
+        ):
+            print(
+                f"[mdt-bootstrap] ERROR host cgroup slice {unit} must be loaded from an installed unit "
+                f"(exit={result.returncode}, Id={unit_id!r}, LoadState={load_state!r}, "
+                f"FragmentPath={fragment_path!r}); refusing to create the devcontainer.",
+                file=sys.stderr,
+            )
+            return False
+    return True
 
 
 def ensure(
@@ -304,8 +611,15 @@ def main() -> int:
         print(f"[mdt-bootstrap] ERROR {exc}", file=sys.stderr)
         return 1
     print(f"[mdt-bootstrap] missing bind-source policy: {missing_policy}")
-
     dc = Path(__file__).resolve().parent / "devcontainer.json"
+    try:
+        cgroup_slices = host_cgroup_slices(dc)
+    except ValueError as exc:
+        print(f"[mdt-bootstrap] ERROR {exc}", file=sys.stderr)
+        return 1
+    if not verify_host_cgroup_slices(cgroup_slices):
+        return 1
+
     requested: dict[Path, str] = {}
     conflicted: set[Path] = set()
     failed = False

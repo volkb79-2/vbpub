@@ -427,6 +427,17 @@ def test_oom_counter_reads_only_one_valid_nonnegative_value(tmp_path: Path):
     assert liveness.oom_kill_count(events) is None
 
 
+def test_oom_counter_reports_unreadable_or_non_ascii_events_as_unavailable(
+    tmp_path: Path,
+):
+    missing = tmp_path / "missing-memory.events"
+    assert liveness.oom_kill_count(missing) is None
+
+    events = tmp_path / "memory.events"
+    events.write_bytes(b"oom_kill \xff\n")
+    assert liveness.oom_kill_count(events) is None
+
+
 def _proc_state_and_start_time(pid: int) -> tuple[str, str] | None:
     try:
         record = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")

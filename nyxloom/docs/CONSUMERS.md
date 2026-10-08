@@ -68,6 +68,9 @@ catalog for the installed version.
 | `nyxloom-harness extract-sessions --recurse` | `true`, `false` |
 | `nyxloom-harness search --sort-by` | `best`, `date` |
 | `nyxloom-harness search --client` | `codex`, `claude`, `opencode` |
+| `nyxloom-harness search --word-match` | `any`, `all` |
+| `nyxloom-harness search --term-match` | `exact`, `prefix` |
+| `nyxloom-harness search --progress` | `auto`, `tty`, `plain`, `quiet`, `rawjson` |
 | `nyxloomctl intake-bridge poll --transport` | `mmctl`, `rest` |
 | `nyxloomctl finding record/list --kind` | `generic`, `model_near_equivalent`, `cost_crossover` |
 | `nyxloomctl finding record --severity` | `info`, `note`, `important` |
@@ -157,22 +160,34 @@ following.
 ## Search local session history
 
 Search across discovered Claude Code, Codex, and OpenCode stores. The command
-matches any query word, ranks sessions by the number and rarity of their
-matches, and prints session IDs with client, activity date, score, matched
-words, and source path. It never prints transcript text:
+matches any query word by default, ranks sessions by the number and rarity of
+their matches, and prints session IDs with client, activity date, score,
+matched words, and source path. It never prints transcript text:
 
 ```bash
-nyxloom-harness search 'cli-extended gate backlog'
-nyxloom-harness search 'cli-extended gate backlog' --sort-by date
-nyxloom-harness search 'cli-extended gate backlog' --client codex
+nyxloom-harness search debian iso cloud qcow
+nyxloom-harness search debian iso cloud qcow --term-match prefix
+nyxloom-harness search debian iso cloud qcow --client codex --source-root ~/.codex/sessions --term-match prefix --word-match all
+nyxloom-harness search 'cli-extended gate backlog' --sort-by date --client codex --client claude
 ```
 
 `--sort-by best` is the default and puts sessions matching more distinct
 query words first; `date` puts the newest recorded activity first.
-`--client` limits the search to one local harness store. Search words are
-case-insensitive and punctuation-delimited, so a hyphenated term contributes
-each of its component words. Pass a result's session ID to `nyxloom-harness
-extract`; use the printed source path if same-ID results need disambiguation.
+Repeat `--client` to select a list of harnesses. Repeat `--source-root` to
+limit the scan to listed locations; each selected client looks for its own
+format in each root. Claude Code and Codex use directory roots. OpenCode
+accepts an `opencode.db` file or a directory containing that file. Roots with
+an incompatible path type are ignored when `--client` is omitted; if clients
+are explicitly selected, provide a compatible root for each one. Without
+`--source-root`, configured/default harness stores are used. `--word-match all`
+requires every query word, and `--term-match prefix` lets `qcow` match `qcow2`;
+defaults are `any` and `exact`. Search words are case-insensitive and
+punctuation-delimited, so a hyphenated term contributes each component word.
+Search reports progress on stderr and creates no index; when ripgrep is
+installed, it uses ripgrep to stream candidate records, and otherwise uses a
+bounded-memory Python scan. `--progress quiet` suppresses progress. Pass a
+result's session ID to `nyxloom-harness extract`; use the printed source path
+if same-ID results need disambiguation.
 
 Start with a normal compact brief:
 
