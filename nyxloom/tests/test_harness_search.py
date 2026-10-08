@@ -180,10 +180,32 @@ def test_claude_discovery_filters_transcripts_and_names_subagents(tmp_path):
     assert search._claude_sessions(root / "absent") == []
 
 
+def test_claude_discovery_deduplicates_physical_transcript_aliases(tmp_path):
+    root = tmp_path / "projects"
+    original = _write_jsonl(
+        root / "project" / "session.jsonl",
+        {"sessionId": "session", "parentUuid": None},
+    )
+    (original.parent / "alias.jsonl").symlink_to(original)
+    found = search._claude_sessions(root)
+    assert len(found) == 1
+    assert found[0].source in {str(original), str(original.parent / "alias.jsonl")}
+
+
 def test_claude_signature_scan_stops_at_its_fifty_line_bound(tmp_path):
     path = tmp_path / "large.jsonl"
     path.write_text(
         "{}\n" * 50 + json.dumps({"sessionId": "late", "parentUuid": None}) + "\n",
+        encoding="utf-8",
+    )
+    assert search._is_claude_transcript(path) is False
+
+
+def test_claude_signature_scan_skips_bad_and_non_mapping_signature_records(tmp_path):
+    path = tmp_path / "invalid.jsonl"
+    path.write_text(
+        '{"sessionId":"broken","parentUuid":,}\n'
+        '["sessionId","parentUuid"]\n',
         encoding="utf-8",
     )
     assert search._is_claude_transcript(path) is False
@@ -266,6 +288,7 @@ def test_codex_metadata_handles_bad_records_and_refuses_read_errors(tmp_path, mo
     path = tmp_path / "rollout.jsonl"
     path.write_text(
         "not json\n[]\n{\"type\":\"other\"}\n"
+        "{\"type\":\"session_meta\",\"payload\":}\n"
         "{\"type\":\"session_meta\",\"payload\":[]}\n",
         encoding="utf-8",
     )
@@ -280,6 +303,20 @@ def test_codex_metadata_handles_bad_records_and_refuses_read_errors(tmp_path, mo
     monkeypatch.setattr(Path, "open", fail_open)
     with pytest.raises(search.SearchError, match="could not inspect Codex session"):
         search._codex_metadata(path)
+
+
+def test_codex_metadata_skips_json_records_that_are_not_session_metadata(tmp_path):
+    path = _write_jsonl(
+        tmp_path / "rollout.jsonl",
+        ["session_meta"],
+        {"type": "other", "session_meta": True},
+        {"type": "session_meta", "payload": {
+            "session_id": "thread", "cli_version": "1",
+        }},
+    )
+    assert search._codex_metadata(path) == {
+        "session_id": "thread", "cli_version": "1",
+    }
 
 
 def test_codex_metadata_stops_at_the_adapter_scan_limit(tmp_path):
@@ -345,6 +382,41 @@ def test_opencode_store_resolution_and_listing_errors_are_reported(tmp_path, mon
         search._store_sessions("opencode")
 
 
+def test_opencode_store_resolution_oserror_is_indeterminate(tmp_path, monkeypatch):
+    database = _opencode_db(tmp_path / "opencode.db")
+    original_resolve = Path.resolve
+
+    def fail_resolve(path, *args, **kwargs):
+        if path == database:
+            raise PermissionError("forced resolve failure")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    with pytest.raises(search.SearchError, match="indeterminate.*forced resolve failure"):
+        search._store_sessions("opencode", source_roots=(database,))
+
+
+def test_opencode_explicit_alias_stores_are_scanned_once_with_progress(
+    tmp_path, monkeypatch,
+):
+    database = _opencode_db(tmp_path / "opencode.db")
+    alias = tmp_path / "alias.db"
+    alias.symlink_to(database)
+    monkeypatch.setattr(search, "_opencode_stores", lambda _roots: (database, alias))
+    calls = []
+    monkeypatch.setattr(
+        search.opencode,
+        "list_agents",
+        lambda store: calls.append(store) or [],
+    )
+    progress = []
+    assert search._store_sessions(
+        "opencode", source_roots=(database,), progress=lambda *event: progress.append(event),
+    ) == []
+    assert calls == [database.resolve()]
+    assert progress and "Discovering OpenCode sessions" in progress[0][0]
+
+
 def test_text_collection_skips_metadata_and_counts_unicode_words():
     record = {
         "role": "assistant",
@@ -372,6 +444,16 @@ def test_targeted_text_counts_only_requested_ascii_terms_and_keeps_prefixes():
 
     assert exact == Counter(qcow=3)
     assert prefix == Counter(qcow=4, qc=4)
+
+    overlapping = Counter()
+    search._add_text(overlapping, {"content": "qc"}, ("qcow", "qc"), "prefix")
+    assert overlapping == Counter(qc=1)
+
+    nonmatching_unicode = Counter()
+    search._add_text(
+        nonmatching_unicode, {"content": "ordinary café"}, ("qcow",), "exact",
+    )
+    assert nonmatching_unicode == Counter()
 
 
 def test_jsonl_content_skips_bad_lines_and_keeps_latest_string_timestamp(tmp_path):
@@ -811,3 +893,632 @@ def test_search_cli_routes_query_options_and_prints_only_result_metadata(
     assert "Fixture progress (1/1)" in captured.err
     assert expected_text in output
     assert "confidential transcript body" not in output
+
+
+def test_cmd_search_without_a_progress_renderer_keeps_search_options(
+    monkeypatch, capsys, tmp_path,
+):
+    from nyxloom.cli import cmd_search
+
+    calls = []
+    result = search.SearchResult("codex", "id", "/tmp/rollout.jsonl", None, ("qcow",), 1.0)
+    monkeypatch.setattr(
+        search,
+        "search_sessions",
+        lambda query, **kwargs: calls.append((query, kwargs)) or [result],
+    )
+    args = SimpleNamespace(
+        words=["debian", "qcow"], client=["codex"], sort_by="best",
+        source_root=[str(tmp_path)], word_match="all", term_match="prefix",
+        runtime=None,
+    )
+
+    assert cmd_search(args) == 0
+    assert calls == [(
+        "debian qcow",
+        {
+            "client": ["codex"], "sort_by": "best", "source_roots": [str(tmp_path)],
+            "word_match": "all", "term_match": "prefix",
+        },
+    )]
+    assert "id" in capsys.readouterr().out
+
+
+def test_explicit_root_validation_covers_empty_special_and_unreadable_paths(
+    tmp_path, monkeypatch,
+):
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(search.SearchError, match="not a regular file or directory"):
+        search._source_roots((fifo,))
+    with pytest.raises(search.SearchError, match="at least one --source-root"):
+        search._source_roots(())
+
+    regular = tmp_path / "ordinary.txt"
+    regular.write_text("not a store", encoding="utf-8")
+    assert search._directory_roots((regular,), "codex", required=False) == ()
+    with pytest.raises(search.SearchError, match="codex requires at least one directory"):
+        search._directory_roots((regular,), "codex", required=True)
+
+    original_stat = Path.stat
+
+    def fail_root_stat(path, *args, **kwargs):
+        if path == regular:
+            raise PermissionError("forced explicit-root failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_root_stat)
+    with pytest.raises(search.SearchError, match="could not inspect explicit source root"):
+        search._directory_roots((regular,), "codex", required=False)
+    with pytest.raises(search.SearchError, match="could not inspect explicit source root"):
+        search._opencode_stores((regular,))
+
+
+def test_explicit_opencode_roots_accept_db_files_and_directories_only(tmp_path):
+    database = tmp_path / "opencode.db"
+    database.touch()
+    unrelated_file = tmp_path / "notes.txt"
+    unrelated_file.write_text("ignore", encoding="utf-8")
+    directory = tmp_path / "store-dir"
+    directory.mkdir()
+
+    assert search._opencode_stores((database, unrelated_file, directory)) == (
+        database, directory / "opencode.db",
+    )
+    assert search._store_sessions(
+        "claude", source_roots=(unrelated_file,), require_compatible_roots=False,
+    ) == []
+    assert search._store_sessions(
+        "codex", source_roots=(unrelated_file,), require_compatible_roots=False,
+    ) == []
+
+    fifo = tmp_path / "not-a-store-type"
+    os.mkfifo(fifo)
+    assert search._opencode_stores((fifo,)) == ()
+
+
+def test_claude_default_root_type_missing_and_stat_errors(tmp_path, monkeypatch):
+    regular = tmp_path / "not-a-directory"
+    regular.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(search, "_claude_projects_root", lambda: regular)
+    assert search._store_sessions("claude") == []
+
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(search, "_claude_projects_root", lambda: missing)
+    assert search._store_sessions("claude") == []
+
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == missing:
+            raise PermissionError("forced Claude root failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(search.SearchError, match="could not inspect Claude Code session root"):
+        search._store_sessions("claude")
+
+
+def test_claude_progress_reports_discovery_and_file_walk(tmp_path):
+    root = tmp_path / "projects"
+    _write_jsonl(
+        root / "project" / "session.jsonl",
+        {"sessionId": "session", "parentUuid": None, "content": "needle"},
+    )
+    progress = []
+    assert search._store_sessions(
+        "claude", source_roots=(root,), progress=lambda *event: progress.append(event),
+    )
+    assert any("Discovering Claude Code sessions" in event[0] for event in progress)
+    assert any("Walking" in event[0] for event in progress)
+
+
+def test_walk_progress_and_physical_directory_cycle_are_deduplicated(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    for index in range(501):
+        (root / f"{index}.txt").touch()
+    progress = []
+    assert len(list(search._walk_files(root, progress=lambda *event: progress.append(event)))) == 501
+    assert sum("Walking" in event[0] for event in progress) == 2
+
+    normal_identity = search._path_identity
+
+    def alias_root_and_nested(path):
+        if path in (root, nested):
+            return (101, 202)
+        return normal_identity(path)
+
+    monkeypatch.setattr(search, "_path_identity", alias_root_and_nested)
+    assert len(list(search._walk_files(root))) == 501
+
+
+def test_claude_transcript_physical_aliases_and_unknown_identity(tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    original = _write_jsonl(
+        root / "project" / "session.jsonl",
+        {"sessionId": "session", "parentUuid": None},
+    )
+    alias = original.with_name("alias.jsonl")
+    alias.symlink_to(original)
+    original_identity = search._path_identity
+
+    def no_alias_identity(path):
+        if path == alias:
+            return None
+        return original_identity(path)
+
+    monkeypatch.setattr(search, "_path_identity", no_alias_identity)
+    found = search._claude_sessions(root)
+    assert {row.source for row in found} == {str(original), str(alias)}
+
+
+def test_codex_search_skips_non_directory_roots_and_deduplicates_aliases(
+    tmp_path, monkeypatch,
+):
+    regular = tmp_path / "regular"
+    regular.touch()
+    assert search._codex_sessions((regular,)) == []
+
+    root = tmp_path / "sessions"
+    transcript = _write_jsonl(
+        root / "rollout-session.jsonl",
+        {"type": "session_meta", "payload": {
+            "id": "stable-id", "session_id": "thread", "cli_version": "1",
+        }},
+    )
+    file_alias = root / "rollout-alias.jsonl"
+    file_alias.symlink_to(transcript)
+    root_alias = tmp_path / "sessions-alias"
+    root_alias.symlink_to(root, target_is_directory=True)
+    dedupe = search._dedupe_paths
+    monkeypatch.setattr(search, "_dedupe_paths", lambda paths: tuple(paths))
+    monkeypatch.setattr(search, "_codex_sessions_roots", lambda: (root, root_alias))
+    found = search._codex_sessions((root, root_alias))
+    assert len(found) == 1
+    assert found[0].session_id == "stable-id"
+    monkeypatch.setattr(search, "_dedupe_paths", dedupe)
+
+
+def test_codex_discovery_root_stat_errors_and_missing_identity_fallback(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "sessions"
+    path = _write_jsonl(
+        root / "rollout-session.jsonl",
+        {"type": "session_meta", "payload": {
+            "session_id": "thread", "cli_version": "1",
+        }},
+    )
+    original_identity = search._path_identity
+
+    def no_identity(candidate):
+        if candidate == path or candidate == root:
+            return None
+        return original_identity(candidate)
+
+    monkeypatch.setattr(search, "_path_identity", no_identity)
+    found = search._codex_sessions((root,))
+    assert found == [search._DiscoveredSession("codex", str(path), str(path))]
+
+    def roots_without_identity(paths):
+        return tuple(paths)
+
+    monkeypatch.setattr(search, "_dedupe_paths", roots_without_identity)
+    original_stat = Path.stat
+
+    def fail_stat(candidate, *args, **kwargs):
+        if candidate == root:
+            raise PermissionError("forced Codex root failure")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(search.SearchError, match="could not inspect Codex session root"):
+        search._codex_sessions((root,))
+
+
+def test_codex_metadata_uses_source_path_when_session_id_is_missing(tmp_path):
+    root = tmp_path / "sessions"
+    path = _write_jsonl(
+        root / "rollout-without-id.jsonl",
+        {"type": "session_meta", "payload": {
+            "session_id": "thread", "cli_version": "1",
+        }},
+    )
+    assert search._codex_sessions((root,)) == [
+        search._DiscoveredSession("codex", str(path), str(path)),
+    ]
+
+
+def test_unique_physical_paths_keeps_missing_lexical_paths_and_refuses_stat_errors(
+    tmp_path, monkeypatch,
+):
+    missing = tmp_path / "missing.jsonl"
+    from nyxloom.session_extract import locate
+
+    assert locate._unique_physical_paths([missing, missing]) == [missing]
+
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == missing:
+            raise PermissionError("forced physical-path failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*missing.jsonl"):
+        locate._unique_physical_paths([missing])
+
+
+def test_non_ascii_query_uses_the_python_streaming_fallback(tmp_path, monkeypatch):
+    path = tmp_path / "unicode.jsonl"
+    path.write_text(json.dumps({"content": "café"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    terms = ("café",)
+    assert search._query_text_pattern(terms, "exact") is None
+    assert search._query_bytes_pattern(terms, "exact") is None
+    assert search._candidate_bytes_pattern(terms, "exact") is None
+    assert search._raw_bytes_may_match(b"no literal query here", terms, "exact")
+    assert search._filtered_jsonl_counts(path, terms, "exact") is None
+    assert search._jsonl_content(path, terms)[0] == Counter({"café": 1})
+
+
+def test_filtered_jsonl_handles_empty_invalid_incomplete_and_large_progress_files(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "records.jsonl"
+    path.touch()
+    assert search._filtered_jsonl_counts(path, ("qcow",), "exact") == Counter()
+
+    path.write_bytes(b"qcow\n" + b'{"content":"qcow"}')
+    progress = []
+    assert search._filtered_jsonl_counts(
+        path, ("qcow",), "exact", progress=lambda *event: progress.append(event),
+    ) == Counter(qcow=1)
+
+    monkeypatch.setattr(search, "_JSONL_CHUNK_SIZE", 16)
+    path.write_bytes(b'{"content":"qcow' + b' and more"}\n')
+    assert search._filtered_jsonl_counts(path, ("qcow",), "exact") == Counter(qcow=1)
+    path.write_bytes(b'{"content":"qcow"}')
+    assert search._filtered_jsonl_counts(path, ("qcow",), "exact") == Counter(qcow=1)
+
+    path.write_bytes(
+        b'{"content":"qcow"}\n' * 4096
+    )
+    progress.clear()
+    assert search._filtered_jsonl_counts(
+        path, ("qcow",), "exact", progress=lambda *event: progress.append(event),
+    ) == Counter(qcow=4096)
+    assert any("candidate records" in event[0] for event in progress)
+
+    monkeypatch.setattr(search, "_PROGRESS_FILE_THRESHOLD", 8)
+    monkeypatch.setattr(search, "_PROGRESS_BYTE_STEP", 8)
+    path.write_bytes(b"ordinary text without the query\n" * 8)
+    progress.clear()
+    assert search._filtered_jsonl_counts(
+        path, ("qcow",), "exact", progress=lambda *event: progress.append(event),
+    ) == Counter()
+    assert len(progress) >= 2
+
+    path.unlink()
+    path.mkdir()
+    with pytest.raises(search.SearchError, match="could not scan session transcript"):
+        search._filtered_jsonl_counts(path, ("qcow",), "exact")
+
+
+def test_filtered_jsonl_retries_candidate_matches_in_incomplete_chunks(tmp_path, monkeypatch):
+    monkeypatch.setattr(search, "_JSONL_CHUNK_SIZE", 16)
+    path = tmp_path / "incomplete.jsonl"
+    path.write_bytes(b'{"content":"qcow and more"}\n')
+    assert search._filtered_jsonl_counts(path, ("qcow",), "exact") == Counter(qcow=1)
+
+
+def test_ripgrep_candidate_process_handles_unavailable_startup_bad_output_and_exit_status(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "session.jsonl"
+    monkeypatch.setattr(search.shutil, "which", lambda _name: None)
+    assert search._ripgrep_jsonl_counts((path,), ("qcow",), "exact", client="codex") is None
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    assert search._ripgrep_jsonl_counts((path,), ("café",), "exact", client="codex") is None
+
+    def fail_start(*_args, **_kwargs):
+        raise OSError("forced rg startup failure")
+
+    monkeypatch.setattr(search.subprocess, "Popen", fail_start)
+    with pytest.raises(search.SearchError, match="could not start ripgrep"):
+        search._ripgrep_jsonl_counts((path,), ("qcow",), "exact", client="codex")
+
+    class Process:
+        def __init__(self, output=b"", code=0, running=False):
+            self.stdout = io.BytesIO(output)
+            self.code = code
+            self.running = running
+            self.terminated = False
+            self.waited = False
+
+        def poll(self):
+            return None if self.running and not self.terminated else self.code
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self):
+            self.waited = True
+            return self.code
+
+    process = Process(b"malformed output", running=True)
+    monkeypatch.setattr(search.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(search.SearchError, match="malformed candidate"):
+        search._ripgrep_jsonl_counts((path,), ("qcow",), "exact", client="codex")
+    assert process.terminated and process.waited and process.stdout.closed
+
+    process = Process(code=1)
+    monkeypatch.setattr(search.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    assert search._ripgrep_jsonl_counts((path,), ("qcow",), "exact", client="codex") == {}
+
+    def fail_exit(args, **kwargs):
+        kwargs["stderr"].write(b"rg rejected input")
+        return Process(code=2)
+
+    monkeypatch.setattr(search.subprocess, "Popen", fail_exit)
+    with pytest.raises(search.SearchError, match="rg rejected input"):
+        search._ripgrep_jsonl_counts((path,), ("qcow",), "exact", client="codex")
+
+
+def test_ripgrep_candidate_stream_skips_nonmatching_and_bad_records_and_reports_progress(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "session.jsonl"
+    rows = [
+        os.fsencode(path) + b"\0" + b"ordinary caf\xc3\xa9\n",
+        os.fsencode(path) + b"\0" + b"qcow not-json\n",
+    ]
+    rows.extend(
+        os.fsencode(path) + b"\0" + b'{"content":"qcow"}\n'
+        for _ in range(4096)
+    )
+
+    class Process:
+        def __init__(self, output):
+            self.stdout = io.BytesIO(output)
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("a completed ripgrep process should not be terminated")
+
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(
+        search.subprocess, "Popen", lambda *_args, **_kwargs: Process(b"".join(rows)),
+    )
+    progress = []
+    result = search._ripgrep_jsonl_counts(
+        (path,), ("qcow",), "exact", client="codex",
+        progress=lambda *event: progress.append(event),
+    )
+    assert result == {str(path): Counter(qcow=4096)}
+    assert any("candidate records" in event[0] for event in progress)
+
+
+def test_ripgrep_batches_paths_by_argument_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(search, "_RG_ARGV_PATH_BUDGET", 10)
+    paths = tuple(tmp_path / f"{index}.jsonl" for index in range(3))
+    batches = tuple(search._ripgrep_path_batches(paths))
+    assert batches == tuple((path,) for path in paths)
+
+
+def test_jsonl_fallback_counts_unicode_and_reports_full_scan_progress(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(search, "_candidate_bytes_pattern", lambda *_args: None)
+    path = tmp_path / "unicode.jsonl"
+    path.write_text(
+        json.dumps({"content": "café"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    counts, activity = search._jsonl_content(path, ("café",))
+    assert counts == Counter({"café": 1})
+    assert activity is None
+
+    path.write_text("{}\n" * 4096, encoding="utf-8")
+    progress = []
+    search._jsonl_content(
+        path, progress=lambda *event: progress.append(event),
+    )
+    assert any("4,096 records" in event[0] for event in progress)
+
+
+def test_jsonl_last_activity_reads_unterminated_records_and_reports_long_scans(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "activity.jsonl"
+    path.write_text('{"timestamp":"2026-01-01"}', encoding="utf-8")
+    assert search._jsonl_last_activity(path) == "2026-01-01"
+    path.write_text('{}\n{"timestamp":"2026-01-02"}\n', encoding="utf-8")
+    assert search._jsonl_last_activity(path) == "2026-01-02"
+    path.write_text("", encoding="utf-8")
+    assert search._jsonl_last_activity(path) is None
+
+    monkeypatch.setattr(search, "_PROGRESS_BYTE_STEP", 1024 * 1024)
+    with path.open("wb") as output:
+        output.truncate(2 * 1024 * 1024)
+    progress = []
+    assert search._jsonl_last_activity(
+        path, progress=lambda *event: progress.append(event),
+    ) is None
+    assert progress
+
+    path.unlink()
+    path.mkdir()
+    with pytest.raises(search.SearchError, match="could not read session activity"):
+        search._jsonl_last_activity(path)
+
+
+def test_opencode_targeted_counts_skip_raw_misses_and_report_large_result_sets(tmp_path):
+    messages = tuple(
+        (f"m{index}", "s", json.dumps({"content": "ordinary text"}))
+        for index in range(4999)
+    ) + (("hit", "s", json.dumps({"content": "qcow qcow2"})),)
+    database = _opencode_db(tmp_path / "opencode.db", messages=messages)
+    progress = []
+    counts = search._opencode_term_counts(
+        database, ("qcow",), progress=lambda *event: progress.append(event),
+    )
+    assert counts == {"s": Counter(qcow=1)}
+    assert any("5,000 records" in event[0] for event in progress)
+
+
+def test_documents_fallback_and_ripgrep_identity_failures(tmp_path, monkeypatch):
+    path = _write_jsonl(tmp_path / "rollout.jsonl", {"content": "needle"})
+    session = search._DiscoveredSession("codex", "id", str(path))
+    monkeypatch.setattr(search, "_store_sessions", lambda *_args, **_kwargs: [session])
+    monkeypatch.setattr(search, "_ripgrep_jsonl_counts", lambda *_args, **_kwargs: None)
+    assert search._documents("codex", ("needle",))[0].term_counts == Counter(needle=1)
+
+    original_identity = search._path_identity
+
+    def no_identity(candidate):
+        if candidate == path:
+            return None
+        return original_identity(candidate)
+
+    monkeypatch.setattr(search, "_path_identity", no_identity)
+    monkeypatch.setattr(search, "_jsonl_content", lambda *_args, **_kwargs: (Counter(), None))
+    assert search._documents("codex", ("needle",))[0].term_counts == Counter()
+
+    monkeypatch.setattr(search, "_path_identity", original_identity)
+    monkeypatch.setattr(
+        search, "_ripgrep_jsonl_counts",
+        lambda *_args, **_kwargs: {str(path.resolve()): Counter(needle=1)},
+    )
+    monkeypatch.setattr(search, "_jsonl_last_activity", lambda *_args, **_kwargs: None)
+    assert search._documents("codex", ("needle",))[0].term_counts == Counter(needle=1)
+
+    monkeypatch.setattr(
+        search, "_ripgrep_jsonl_counts",
+        lambda *_args, **_kwargs: {str(tmp_path / "missing.jsonl"): Counter(needle=1)},
+    )
+    with pytest.raises(search.SearchError, match="transcript that disappeared"):
+        search._documents("codex", ("needle",))
+
+    monkeypatch.setattr(
+        search, "_ripgrep_jsonl_counts",
+        lambda *_args, **_kwargs: {str(tmp_path / "unexpected.jsonl"): Counter(needle=1)},
+    )
+    unexpected = tmp_path / "unexpected.jsonl"
+    unexpected.touch()
+    with pytest.raises(search.SearchError, match="unexpected codex transcript"):
+        search._documents("codex", ("needle",))
+
+
+def test_documents_memoizes_activity_for_duplicate_physical_sources(tmp_path, monkeypatch):
+    path = _write_jsonl(tmp_path / "rollout.jsonl", {"content": "needle"})
+    sessions = [
+        search._DiscoveredSession("codex", f"id-{index}", str(path))
+        for index in range(25)
+    ]
+    monkeypatch.setattr(search, "_store_sessions", lambda *_args, **_kwargs: sessions)
+    monkeypatch.setattr(
+        search, "_ripgrep_jsonl_counts",
+        lambda *_args, **_kwargs: {str(path): Counter(needle=1)},
+    )
+    activity_calls = []
+
+    def activity(*_args, **_kwargs):
+        activity_calls.append(True)
+        return "2026-01-01"
+
+    monkeypatch.setattr(search, "_jsonl_last_activity", activity)
+    progress = []
+    documents = search._documents(
+        "codex", ("needle",), progress=lambda *event: progress.append(event),
+    )
+    assert len(documents) == 25
+    assert len(activity_calls) == 1
+    assert any("25/25" in event[0] for event in progress)
+
+
+def test_source_root_file_errors_are_reported_without_silent_empty_results(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "unreadable"
+    root.mkdir()
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == root:
+            raise PermissionError("forced root inspection failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(search.SearchError, match="could not inspect explicit source root"):
+        search._source_roots((root,))
+
+
+def test_ripgrep_candidate_stream_accepts_final_records_without_a_newline(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "session.jsonl"
+    output = os.fsencode(path) + b'\0{"content":"qcow"}'
+
+    class Process:
+        def __init__(self):
+            self.stdout = io.BytesIO(output)
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("completed stream must not be terminated")
+
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    assert search._ripgrep_jsonl_counts(
+        (path,), ("qcow",), "exact", client="codex",
+    ) == {str(path): Counter(qcow=1)}
+
+
+def test_targeted_fallback_skips_raw_nonmatches_and_invalid_timestamp_records(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(search, "_candidate_bytes_pattern", lambda *_args: None)
+    path = tmp_path / "fallback.jsonl"
+    path.write_text(
+        '{"content":"ordinary text"}\n{"type":"needle"}\n',
+        encoding="utf-8",
+    )
+    decodes = []
+    original_loads = search.json.loads
+
+    def track_loads(raw, *args, **kwargs):
+        decodes.append(raw)
+        return original_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(search.json, "loads", track_loads)
+    counts, activity = search._jsonl_content(path, ("needle",))
+    assert counts == Counter()
+    assert activity is None
+    assert decodes == ['{"type":"needle"}\n']
+
+    path.write_text(
+        '{}\n{"timestamp": }\n{"timestamp":12}\n',
+        encoding="utf-8",
+    )
+    assert search._jsonl_last_activity(path) is None
+
+
+def test_unicode_raw_filters_can_have_no_special_case_patterns(monkeypatch):
+    monkeypatch.setattr(search, "_ripgrep_casefold_chars", lambda _terms: ())
+    search._query_casefold_bytes_pattern.cache_clear()
+    assert search._query_casefold_bytes_pattern(("needle",)) is None
+    monkeypatch.setattr(search, "_ripgrep_escape_literals", lambda _terms: ())
+    search._query_escape_bytes_pattern.cache_clear()
+    assert search._query_escape_bytes_pattern(("needle",)) is None

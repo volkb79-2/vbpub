@@ -569,6 +569,112 @@ def test_codex_match_scan_ignores_a_non_directory_non_file_entry(
     assert locate._codex_matches(_UUID) == []
 
 
+def test_codex_root_alias_discovery_refuses_stat_errors(home, monkeypatch):
+    root = home / ".codex" / "sessions"
+    monkeypatch.setattr(locate, "_codex_sessions_root", lambda: root)
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == root:
+            raise PermissionError("root metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*root metadata denied"):
+        locate._codex_sessions_roots()
+
+
+def test_physical_path_dedupe_preserves_missing_paths_and_refuses_indeterminate_paths(
+    tmp_path, monkeypatch,
+):
+    missing = tmp_path / "missing.jsonl"
+    assert locate._unique_physical_paths([missing, missing]) == [missing]
+
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == missing:
+            raise PermissionError("file metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*file metadata denied"):
+        locate._unique_physical_paths([missing])
+
+
+def test_codex_match_scan_handles_root_types_and_unreadable_roots(
+    home, tmp_path, monkeypatch,
+):
+    regular = tmp_path / "not-a-directory"
+    regular.touch()
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [regular])
+    assert locate._codex_matches(_UUID) == []
+
+    root = tmp_path / "denied-root"
+    root.mkdir()
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [root])
+    original_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == root:
+            raise PermissionError("root stat denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect.*root stat denied"):
+        locate._codex_matches(_UUID)
+
+
+def test_codex_match_scan_refuses_a_child_that_disappears_during_descent(
+    home, tmp_path, monkeypatch,
+):
+    root = tmp_path / "sessions"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [root])
+    original_stat = Path.stat
+    nested_stat_calls = 0
+
+    def disappear_on_descent(path, *args, **kwargs):
+        nonlocal nested_stat_calls
+        if path == nested:
+            nested_stat_calls += 1
+            if nested_stat_calls == 2:
+                raise FileNotFoundError("child disappeared")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", disappear_on_descent)
+    with pytest.raises(LocateError, match="could not inspect.*nested"):
+        locate._codex_matches(_UUID)
+
+
+def test_codex_match_scan_deduplicates_physical_file_aliases_and_reports_stat_failure(
+    home, tmp_path, monkeypatch,
+):
+    root = tmp_path / "sessions"
+    transcript = _codex_rollout(home, _UUID, codex_home=root.parent)
+    alias = root / f"rollout-alias-{_UUID}.jsonl"
+    alias.symlink_to(transcript)
+    monkeypatch.setattr(locate, "_codex_sessions_roots", lambda: [root])
+    matches = locate._codex_matches(_UUID)
+    assert len(matches) == 1
+
+    original_stat = Path.stat
+    calls = 0
+
+    def fail_matching_stat(path, *args, **kwargs):
+        nonlocal calls
+        if path == transcript:
+            calls += 1
+            if calls == 2:
+                raise PermissionError("rollout stat denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_matching_stat)
+    with pytest.raises(LocateError, match="could not inspect.*rollout stat denied"):
+        locate._codex_matches(_UUID)
+
+
 def test_opencode_lookup_reports_a_database_open_failure_as_indeterminate(home, monkeypatch):
     db = home / ".local" / "share" / "opencode" / "opencode.db"
     db.parent.mkdir(parents=True)

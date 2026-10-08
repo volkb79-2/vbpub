@@ -36,6 +36,8 @@ TERM_MATCHES = ("exact", "prefix")
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _NONASCII_BYTES = re.compile(rb"[\x80-\xff]")
 _JSONL_CHUNK_SIZE = 8 * 1024 * 1024
+_PROGRESS_FILE_THRESHOLD = 64 * 1024 * 1024
+_PROGRESS_BYTE_STEP = 16 * 1024 * 1024
 _RG_ARGV_PATH_BUDGET = 128 * 1024
 _METADATA_KEYS = {
     "agent",
@@ -608,7 +610,7 @@ def _filtered_jsonl_counts(
             source.seek(0)
             if file_size == 0:
                 return counts
-            if progress is not None and file_size >= 64 * 1024 * 1024:
+            if progress is not None and file_size >= _PROGRESS_FILE_THRESHOLD:
                 _report(
                     progress,
                     f"Searching {client or 'session'} transcript {path.name}",
@@ -634,8 +636,6 @@ def _filtered_jsonl_counts(
                     line_start = data.rfind(b"\n", 0, match.start()) + 1
                     line_end = data.find(b"\n", match.end())
                     if line_end < 0:
-                        if not eof:
-                            break
                         line_end = complete_end
                     raw_line = data[line_start:line_end]
                     try:
@@ -660,8 +660,8 @@ def _filtered_jsonl_counts(
                 bytes_read += len(block)
                 if (
                     progress is not None
-                    and file_size >= 64 * 1024 * 1024
-                    and bytes_read - last_progress >= 16 * 1024 * 1024
+                    and file_size >= _PROGRESS_FILE_THRESHOLD
+                    and bytes_read - last_progress >= _PROGRESS_BYTE_STEP
                 ):
                     _report(
                         progress,
@@ -810,6 +810,8 @@ def _ripgrep_jsonl_counts(
                     f"could not start ripgrep for {client} session search: {exc}"
                 ) from exc
             assert process.stdout is not None
+            completed = False
+            return_code = None
             try:
                 for output_line in process.stdout:
                     raw_path, separator, raw_record = output_line.partition(b"\0")
@@ -835,14 +837,12 @@ def _ripgrep_jsonl_counts(
                             candidates_seen,
                             None,
                         )
-            except BaseException:
-                if process.poll() is None:
-                    process.terminate()
-                process.wait()
-                raise
+                completed = True
             finally:
                 process.stdout.close()
-            return_code = process.wait()
+                if not completed and process.poll() is None:
+                    process.terminate()
+                return_code = process.wait()
             if return_code not in (0, 1):
                 stderr_file.seek(0)
                 details = stderr_file.read().decode("utf-8", errors="replace").strip()
@@ -968,7 +968,7 @@ def _jsonl_last_activity(
 ) -> str | None:
     """Read the newest source-order root timestamp after a query match."""
     chunk_size = 1024 * 1024
-    progress_step = 16 * chunk_size
+    progress_step = _PROGRESS_BYTE_STEP
     try:
         with path.open("rb") as source:
             source.seek(0, 2)
