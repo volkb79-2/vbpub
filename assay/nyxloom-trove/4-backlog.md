@@ -11798,7 +11798,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: IN PROGRESS (plan `reports/assay-B131-PLAN-2026-10-09.md`; stage 1 adds a separate analysis R2 lane and bounded analysis-specific pilot).** The analysis package (A-478) has an R0+R1 whole-target lane. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its pilot selector and checker. Measure the actual candidate plan and pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default.
+**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and now has a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 

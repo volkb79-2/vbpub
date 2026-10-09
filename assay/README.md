@@ -31,9 +31,16 @@ and `assay verify`, and adds no runtime dependencies. The code lives in its own
 top-level package, `assay_analysis` (`analysis/src/assay_analysis/`), which the
 CLI loads only when you run `assay analyze`; the judge (`src/assay`) never
 imports it, and B105 scores only `src/assay`. The analysis package has its own
-R0+R1 lane and tests (`analysis/tests/`). A source checkout needs both `src`
-and `analysis/src` on the path for `analyze`; an installed wheel or zipapp
-needs nothing extra:
+R0+R1 lane and tests (`analysis/tests/`), plus a separate native `analysis-r2`
+lane and a registered `analysis-r2-pilot` gate. The pilot targets a sample of up to 40
+mutants across candidate-bearing file/operator strata and includes every
+`python:falsy-swap` candidate. Its success means that the bounded measurement
+completed; it is not a full R2 qualification or a release gate. A full analysis
+R2 claim awaits a separate decision based on measured pilot results. See the
+[B131 design](docs/DESIGN-GUIDE.md#analysis-package-r2-pilot-b131) and
+[pilot procedure](docs/CONSUMERS.md#run-the-analysis-package-r2-pilot-b131).
+A source checkout needs both `src` and `analysis/src` on the path for `analyze`;
+an installed wheel or zipapp needs nothing extra:
 
 - `record` captures an explicit command, before/after Git identities and
   cleanliness, merged job output, and the actual job exit.
@@ -352,6 +359,11 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ⚠️ **implemented, not registered** — the canary injection methods are real code, not stubs, but no producer path is wired into the CLI's closed registry yet |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
+
+The matrix describes language capability, not a qualification claim for every
+package. B131 declares a separate whole-target `analysis-r2` lane, but its
+registered gate currently runs only the bounded non-qualifying pilot. The
+analysis package is not yet qualified over its full R2 plan.
 
 Three genuinely different states, worth keeping distinct:
 

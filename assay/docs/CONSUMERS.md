@@ -4964,3 +4964,34 @@ request needs `--request-base`.
   reported as `artifact_status: missing`; a missing parent directory is an
   evidence error (create it); a supplied `--coverage` path that is not the
   declared one is an evidence error.
+
+### Run the analysis-package R2 pilot (B131)
+
+The bounded pilot measures the separate `analysis-r2` lane before anyone
+chooses a full-run budget or qualification policy. It must run from a clean,
+committed worktree with B131's lane and selector in that commit. For an in-repo
+checkout, run the registered gate from the Assay project directory:
+
+```bash
+WORKTREE=/workspaces/vbpub/.worktrees/assay-analysis-r2
+cd "$WORKTREE/assay"
+./run-gate.py --worktree "$WORKTREE" analysis-r2-pilot
+```
+
+The gate builds Assay from that exact worktree commit, then uses the detached,
+cgroup-visible `tester-unified` child. It plans the whole `analysis-r2` lane,
+then selects a deterministic bounded sample: one candidate for every
+candidate-bearing source-file/operator pair, all `python:falsy-swap`
+candidates, and ranked fill to up to 40 candidates by default. The gate verifies the
+source, plan, selected ids, pilot state/progress, cold-witness evidence,
+resource counters and actual exit before returning success.
+
+Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
+operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`
+for the completed sample; and `.assay/progress-analysis-r2-pilot.jsonl` plus
+`.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
+gate means only that the sample completed and its evidence verified. It does
+not create a verdict or qualify the full plan. A timeout, partial sample,
+host-busy refusal or cgroup resource event is not a successful measurement.
+Use the [B131 design and decision boundary](DESIGN-GUIDE.md#analysis-package-r2-pilot-b131)
+before proposing a full analysis R2 run.

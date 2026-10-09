@@ -243,6 +243,18 @@ if args and args[0] == "logs":
             # A complete survivor screen is valid even though assay run returns 1.
             print("B110_SCREEN_EXIT=1")
             print("B110_SCREEN_VERIFIED=1")
+    elif lane == "analysis-r2-pilot":
+        if mode == "analysis-pilot-incomplete":
+            print("ANALYSIS_R2_PILOT_EXIT=4")
+        elif mode == "analysis-pilot-b110-marker":
+            print("ANALYSIS_R2_PILOT_EXIT=6")
+            print("ANALYSIS_R2_PILOT_VERIFIED=1")
+            print("B110_PILOT_COMPLETED=1")
+        elif mode == "analysis-pilot-unverified":
+            print("ANALYSIS_R2_PILOT_EXIT=6")
+        else:
+            print("ANALYSIS_R2_PILOT_EXIT=6")
+            print("ANALYSIS_R2_PILOT_VERIFIED=1")
     raise SystemExit(0)
 if args and args[0] == "stop":
     if mode in {"stop-fails", "force-remove-fails"}:
@@ -453,6 +465,13 @@ def host_workspace_root(worktree: Path) -> str:
             "B110_SCREEN_VERIFIED=1",
             None,
         ),
+        (
+            "analysis-r2-pilot",
+            "2h15m",
+            None,
+            "ANALYSIS_R2_PILOT_VERIFIED=1",
+            None,
+        ),
     ],
 )
 def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_status(
@@ -476,6 +495,9 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     if lane.startswith("b110-"):
         assert "ASSAY_B110_GATE_CONTAINER_EXIT=0" in proc.stdout
         assert f"ASSAY_B110_GATE_COMPLETE={lane}" in proc.stdout
+    elif lane == "analysis-r2-pilot":
+        assert "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=0" in proc.stdout
+        assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" in proc.stdout
     else:
         assert "ASSAY_B105_GATE_CONTAINER_EXIT=0" in proc.stdout
         assert f"ASSAY_B105_GATE_COMPLETE={lane}" in proc.stdout
@@ -505,7 +527,12 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         assert "timeout" in launch and inner_budget in launch
     else:
         assert "timeout" not in launch
-    assert f"ASSAY_B105_GATE_WAIT_TIMEOUT={wait_budget}" in proc.stdout
+    wait_marker_prefix = (
+        "ASSAY_ANALYSIS_R2_PILOT_GATE"
+        if lane == "analysis-r2-pilot"
+        else "ASSAY_B105_GATE"
+    )
+    assert f"{wait_marker_prefix}_WAIT_TIMEOUT={wait_budget}" in proc.stdout
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
     state = json.loads((tmp_path / "docker-state.json").read_text(encoding="utf-8"))
     env = state["env"]
@@ -536,6 +563,9 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         ("b110-screen", "screen-malformed-exit", "run exit status"),
         ("b110-screen", "screen-wrong-marker", "pilot-mode marker"),
         ("b110-pilot", "pilot-wrong-marker", "screen-mode marker"),
+        ("analysis-r2-pilot", "analysis-pilot-incomplete", "complete exit status (6)"),
+        ("analysis-r2-pilot", "analysis-pilot-b110-marker", "B110-mode marker"),
+        ("analysis-r2-pilot", "analysis-pilot-unverified", "evidence verification marker"),
     ],
 )
 def test_b110_child_evidence_is_required_before_outer_completion(
@@ -546,10 +576,12 @@ def test_b110_child_evidence_is_required_before_outer_completion(
     assert proc.returncode != 0
     assert expected_error in proc.stderr
     assert "ASSAY_B110_GATE_COMPLETE" not in proc.stdout
+    assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE" not in proc.stdout
 
 
 @pytest.mark.parametrize(("lane", "wait_seconds"), [
     ("b110-pilot", 2 * 60 * 60 + 15 * 60),
+    ("analysis-r2-pilot", 2 * 60 * 60 + 15 * 60),
     ("b110-screen", 7 * 60 * 60 + 15 * 60),
 ])
 def test_b110_container_wait_and_log_follow_include_the_exact_bounds(
@@ -699,6 +731,64 @@ def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
     assert progress.read_text(encoding="utf-8") == '{"event":"resume evidence"}\n'
     assert deadline.exists()
     assert mutation_state.read_text(encoding="utf-8") == "state identity\n"
+
+
+def test_b131_pilot_clears_attempt_outputs_but_preserves_resume_evidence_before_host_admission(
+    tmp_path: Path, committed_worktree: Path
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    stale_outputs = (
+        "analysis-r2-pilot-plan.json",
+        "analysis-r2-pilot-candidates.txt",
+        "analysis-r2-pilot-selection.json",
+        "analysis-r2-pilot-summary.json",
+        "analysis-r2-pilot-run.log",
+    )
+    for name in stale_outputs:
+        (state / name).write_text("stale attempt\n", encoding="utf-8")
+    progress = state / "progress-analysis-r2-pilot.jsonl"
+    progress.write_text('{"event":"resume evidence"}\n', encoding="utf-8")
+    deadline = state / "campaign-deadline-analysis-r2-pilot-test.json"
+    deadline.write_text('{"expires_at_utc":"2030-01-01T00:00:00Z"}\n', encoding="utf-8")
+    mutation_state = state / "analysis-r2-pilot-state" / "PILOT-STATE"
+    mutation_state.parent.mkdir()
+    mutation_state.write_text("state identity\n", encoding="utf-8")
+
+    proc, _calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="analysis-r2-pilot",
+        mode="busy",
+    )
+
+    assert proc.returncode == 3
+    assert "host busy" in proc.stderr
+    assert all(not (state / name).exists() for name in stale_outputs)
+    assert progress.read_text(encoding="utf-8") == '{"event":"resume evidence"}\n'
+    assert deadline.exists()
+    assert mutation_state.read_text(encoding="utf-8") == "state identity\n"
+
+
+def test_b131_pilot_refuses_to_remove_a_preexisting_analysis_verdict(
+    tmp_path: Path, committed_worktree: Path
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    verdict = state / "verdict-analysis-r2.json"
+    verdict.write_text("prior verified result\n", encoding="utf-8")
+
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="analysis-r2-pilot",
+        mode="busy",
+    )
+
+    assert proc.returncode == 2
+    assert "pre-existing analysis-r2 verdict" in proc.stderr
+    assert verdict.read_text(encoding="utf-8") == "prior verified result\n"
+    assert not any(call[:2] == ["run", "-d"] for call in calls)
 
 
 @pytest.mark.parametrize(

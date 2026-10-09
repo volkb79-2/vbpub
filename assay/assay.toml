@@ -295,7 +295,7 @@ artifact = ".assay/coverage-self-qualification-preflight.json"
 # (A-478) The analysis package's own R0+R1 whole-target lane. `assay analyze`
 # lives in `analysis/src/assay_analysis`, outside the B105 source root
 # `src/assay`, and is measured by its own tests only. A lane has one
-# `judge.mode`, so there is no R2 lane (CD17; analysis R2 is B131).
+# `judge.mode`; B131 adds the independent `analysis-r2` lane below.
 [lanes.analysis]
 scope = "S1"
 rigor = ["R0", "R1"]

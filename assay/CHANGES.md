@@ -11,6 +11,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   repin Assay before relying on v15 verdict fields.
 
 ### Added
+- Add the separate native `analysis-r2` lane and the registered
+  `analysis-r2-pilot` measurement gate. The deterministic sample covers every
+  candidate-bearing file/operator stratum and the full rare-operator census;
+  verified completion is non-qualifying and writes no verdict. The full
+  analysis R2 budget and GO policy remain a later decision based on pilot data.
 - Add registered B110 `b110-pilot` and `b110-screen` gate modes. The pilot
   requires a complete exit-6 measurement; the full-plan survivor screen must
   pass Assay verification and bind its native mutation inventory to the

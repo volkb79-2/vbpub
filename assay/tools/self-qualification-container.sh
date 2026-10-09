@@ -15,14 +15,14 @@ assay_git() {
 }
 
 usage() {
-  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen'
+  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot'
 }
 
 [[ $# -eq 2 ]] || usage
 worktree="$1"
 lane="$2"
 case "$lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
+  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) usage ;;
 esac
 
@@ -74,7 +74,7 @@ fi
 # protects a live screen from verdict cleanup and prevents pilot output cleanup
 # from racing another caller. The run-gate artifact paths must not expose a
 # previous result as this attempt's when host or Docker admission refuses.
-if [[ "$lane" == b110-screen || "$lane" == b110-pilot ]]; then
+if [[ "$lane" == b110-screen || "$lane" == b110-pilot || "$lane" == analysis-r2-pilot ]]; then
   assay_state_dir="$project/.assay"
   [[ ! -L "$assay_state_dir" ]] \
     || die 'B110 state directory is a symlink; refusing stale-artifact cleanup'
@@ -88,7 +88,7 @@ if [[ "$lane" == b110-screen || "$lane" == b110-pilot ]]; then
         "$assay_state_dir/b110-screen-plan.json" \
         "$assay_state_dir/b110-screen-run.log" \
         || die 'cannot clear prior B110 screen outputs before launcher admission'
-    else
+    elif [[ "$lane" == b110-pilot ]]; then
       rm -f -- \
         "$assay_state_dir/b110-pilot-plan.json" \
         "$assay_state_dir/b110-pilot-candidates.txt" \
@@ -96,6 +96,19 @@ if [[ "$lane" == b110-screen || "$lane" == b110-pilot ]]; then
         "$assay_state_dir/b110-pilot-summary.json" \
         "$assay_state_dir/b110-pilot-run.log" \
         || die 'cannot remove prior B110 pilot outputs before launcher admission'
+    else
+      if [[ -e "$assay_state_dir/verdict-analysis-r2.json" \
+        || -L "$assay_state_dir/verdict-analysis-r2.json" ]]; then
+        printf '%s\n' 'B131 refuses to overwrite a pre-existing analysis-r2 verdict; preserve or archive it first' >&2
+        exit 2
+      fi
+      rm -f -- \
+        "$assay_state_dir/analysis-r2-pilot-plan.json" \
+        "$assay_state_dir/analysis-r2-pilot-candidates.txt" \
+        "$assay_state_dir/analysis-r2-pilot-selection.json" \
+        "$assay_state_dir/analysis-r2-pilot-summary.json" \
+        "$assay_state_dir/analysis-r2-pilot-run.log" \
+        || die 'cannot remove prior B131 pilot outputs before launcher admission'
     fi
   fi
 fi
@@ -317,6 +330,11 @@ case "$lane" in
     wait_timeout_seconds=8100
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
     ;;
+  analysis-r2-pilot)
+    wait_timeout_label=2h15m
+    wait_timeout_seconds=8100
+    inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
   b110-screen)
     wait_timeout_label=7h15m
     wait_timeout_seconds=26100
@@ -324,8 +342,13 @@ case "$lane" in
     ;;
 esac
 
-printf 'ASSAY_B105_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
-printf 'ASSAY_B105_GATE_CONTAINER=%s\n' "$container_name"
+if [[ "$lane" == analysis-r2-pilot ]]; then
+  printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
+  printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER=%s\n' "$container_name"
+else
+  printf 'ASSAY_B105_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
+  printf 'ASSAY_B105_GATE_CONTAINER=%s\n' "$container_name"
+fi
 launch_attempted=1
 launch_output="$scratch/docker.run.stdout"
 launch_error="$scratch/docker.run.stderr"
@@ -488,6 +511,24 @@ case "$lane" in
       || die 'B110 pilot exited 6 without its completion marker'
     marker=B110_PILOT_COMPLETED=1
     ;;
+  analysis-r2-pilot)
+    if grep -Eq '^B110_(SCREEN|PILOT)_' "$scratch/container.log"; then
+      die 'B131 pilot log contains a B110-mode marker'
+    fi
+    if grep -Fxq 'ANALYSIS_R2_PILOT_INIT_REFUSED=1' "$scratch/container.log"; then
+      die 'B131 pilot campaign initialization was refused'
+    fi
+    if grep -Fxq 'ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1' "$scratch/container.log"; then
+      die 'B131 pilot exceeded its campaign failsafe'
+    fi
+    mapfile -t analysis_pilot_exit_markers < <(grep -E '^ANALYSIS_R2_PILOT_EXIT=(0|[1-9][0-9]{0,2})$' "$scratch/container.log" || true)
+    [[ ${#analysis_pilot_exit_markers[@]} -eq 1 && "${analysis_pilot_exit_markers[0]}" == 'ANALYSIS_R2_PILOT_EXIT=6' ]] \
+      || die 'B131 pilot did not report exactly one complete exit status (6)'
+    mapfile -t analysis_pilot_completion_markers < <(grep -Fx 'ANALYSIS_R2_PILOT_VERIFIED=1' "$scratch/container.log" || true)
+    [[ ${#analysis_pilot_completion_markers[@]} -eq 1 ]] \
+      || die 'B131 pilot exit 6 lacks its source-bound evidence verification marker'
+    marker=ANALYSIS_R2_PILOT_VERIFIED=1
+    ;;
   b110-screen)
     if grep -Eq '^B110_PILOT_(EXIT|COMPLETED|TIMEOUT_FAILSAFE|INIT_REFUSED|SUMMARY)=' "$scratch/container.log"; then
       die 'B110 screen log contains a pilot-mode marker'
@@ -523,6 +564,10 @@ case "$lane" in
   b110-pilot|b110-screen)
     printf 'ASSAY_B110_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
     printf 'ASSAY_B110_GATE_COMPLETE=%s\n' "$lane"
+    ;;
+  analysis-r2-pilot)
+    printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+    printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=%s\n' "$lane"
     ;;
   *)
     printf 'ASSAY_B105_GATE_CONTAINER_EXIT=%s\n' "$wait_status"

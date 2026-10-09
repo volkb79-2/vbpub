@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# B105 and B110's separately invoked full-source R0-R3 gate modes.
+# B105/B110 qualification modes and B131's separate analysis R2 pilot.
 # run-gate owns admission and artifacts; self-qualification-container.sh owns
 # the bounded, cgroup-visible tester-unified container and exact worktree
 # mounts. This inner driver builds that selected committed source as a wheel,
@@ -24,6 +24,7 @@ worktree="${1:?usage: self-qualification-gate.sh WORKTREE}"
 requested_lane="${2:-self-qualification}"
 project="$worktree/assay"
 tester_python=/opt/tester-venv/bin/python
+gate_started_s=$SECONDS
 
 pilot_invocation_remaining_s() {
   local started_s="$1" cap_s="$2" now_s="${3:-$SECONDS}"
@@ -141,6 +142,158 @@ run_b110_pilot() {
   return 0
 }
 
+run_analysis_r2_pilot() {
+  local pilot_campaign="$campaign" pilot_deadline="$deadline"
+  local pilot_started_s=$SECONDS pilot_cap_s=$((90 * 60))
+  local pilot_step_budget_s campaign_budget_s remaining_s pilot_status
+  local pilot_plan_status pilot_selection_status checker_status pilot_init_status
+  local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
+  local state_dir=.assay/analysis-r2-pilot-state
+  local plan_path=.assay/analysis-r2-pilot-plan.json
+  local candidates_path=.assay/analysis-r2-pilot-candidates.txt
+  local selection_path=.assay/analysis-r2-pilot-selection.json
+  local summary_path=.assay/analysis-r2-pilot-summary.json
+  local run_log_path=.assay/analysis-r2-pilot-run.log
+  local progress_path=.assay/progress-analysis-r2-pilot.jsonl
+  local verdict_path=.assay/verdict-analysis-r2.json
+
+  rm -f -- "$plan_path" "$candidates_path" "$selection_path" \
+    "$summary_path" "$run_log_path" \
+    || { echo "ANALYSIS_R2_PILOT_OUTPUT_CLEANUP_FAILED=1" >&2; return 1; }
+  if [[ -e "$verdict_path" || -L "$verdict_path" ]]; then
+    echo "ANALYSIS_R2_PILOT_PREEXISTING_VERDICT=1" >&2
+    return 2
+  fi
+
+  if [[ ! -f "$pilot_deadline" ]]; then
+    pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+    pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+    if (( pilot_step_budget_s <= 0 )); then
+      echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+      return 124
+    fi
+    set +e
+    timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+      "$assay_bin" campaign init --file assay.toml \
+        --campaign "$campaign" --lane analysis-r2 --hours 2 \
+        --state-dir "$state_dir" --wheel-sha256 "$wheel_digest"
+    pilot_init_status=$?
+    set -e
+    if (( pilot_init_status != 0 )); then
+      (( pilot_init_status < 124 )) || echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+      echo "ANALYSIS_R2_PILOT_INIT_REFUSED=1"
+      return 0
+    fi
+  fi
+
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_step_budget_s=$((pilot_step_budget_s < campaign_budget_s ? pilot_step_budget_s : campaign_budget_s))
+  if (( pilot_step_budget_s <= 0 )); then
+    echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+    "$assay_bin" plan analysis-r2 --file assay.toml --cold-witness > "$plan_path"
+  pilot_plan_status=$?
+  set -e
+  if (( pilot_plan_status != 0 )); then
+    (( pilot_plan_status < 124 )) || echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    echo "ANALYSIS_R2_PILOT_PLAN_EXIT=$pilot_plan_status" >&2
+    return "$pilot_plan_status"
+  fi
+
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_step_budget_s=$((pilot_step_budget_s < campaign_budget_s ? pilot_step_budget_s : campaign_budget_s))
+  if (( pilot_step_budget_s <= 0 )); then
+    echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+    "$scratch/run-venv/bin/python" \
+    "$scratch/source/assay/tools/analysis_r2_pilot_select.py" \
+      --plan "$plan_path" --repo-root "$worktree" \
+      --out "$candidates_path" --report "$selection_path"
+  pilot_selection_status=$?
+  set -e
+  if (( pilot_selection_status != 0 )); then
+    (( pilot_selection_status < 124 )) || echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    echo "ANALYSIS_R2_PILOT_SELECTION_EXIT=$pilot_selection_status" >&2
+    return "$pilot_selection_status"
+  fi
+
+  remaining_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  pilot_run_timeout_s=$((remaining_s < pilot_step_budget_s ? remaining_s : pilot_step_budget_s))
+  if (( pilot_run_timeout_s <= 0 )); then
+    echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  pilot_run_started_s=$SECONDS
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
+    "$assay_bin" run analysis-r2 --file assay.toml \
+      --candidates-file "$candidates_path" --cold-witness --resume \
+      --state-dir "$state_dir" --progress "$progress_path" \
+      --campaign-deadline "$pilot_deadline" \
+      > "$summary_path" 2> "$run_log_path"
+  pilot_status=$?
+  set -e
+  campaign_remaining_after_run_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  if (( PILOT_INVOCATION_REMAINING_S <= 0 || campaign_remaining_after_run_s <= 0 )); then
+    pilot_status=124
+  fi
+  echo "ANALYSIS_R2_PILOT_EXIT=$pilot_status"
+  echo "ANALYSIS_R2_PILOT_SETUP_SECONDS=$((pilot_started_s - gate_started_s))"
+  echo "ANALYSIS_R2_PILOT_RUN_SECONDS=$((SECONDS - pilot_run_started_s))"
+  [[ $pilot_status -ge 124 ]] && echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1"
+  if (( pilot_status != 6 )); then
+    echo "ANALYSIS_R2_PILOT_INCOMPLETE=1" >&2
+    return 1
+  fi
+
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_step_budget_s=$((pilot_step_budget_s < campaign_budget_s ? pilot_step_budget_s : campaign_budget_s))
+  if (( pilot_step_budget_s <= 0 )); then
+    echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+    "$scratch/run-venv/bin/python" \
+    "$scratch/source/assay/tools/analysis_r2_pilot_check.py" \
+      --plan "$plan_path" --selection "$selection_path" \
+      --candidates "$candidates_path" --summary "$summary_path" \
+      --progress "$progress_path" --deadline "$pilot_deadline" \
+      --state-dir "$state_dir" --verdict "$verdict_path" \
+      --repo-root "$worktree" --expected-commit "$source_commit" \
+      --expected-tree "$source_tree" --expected-wheel-sha256 "$wheel_digest" \
+      --expected-exit-code "$pilot_status"
+  checker_status=$?
+  set -e
+  if (( checker_status != 0 )); then
+    echo "ANALYSIS_R2_PILOT_CHECKER_EXIT=$checker_status" >&2
+    return "$checker_status"
+  fi
+  ensure_source_unchanged
+  campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  if (( PILOT_INVOCATION_REMAINING_S <= 0 || campaign_budget_s <= 0 )); then
+    echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  echo "ANALYSIS_R2_PILOT_VERIFIED=1"
+}
+
 run_b110_screen() {
   reuse_args=()
   # A prior commit's screen verdict is passed explicitly for witness replay.
@@ -185,7 +338,7 @@ run_b110_screen() {
 }
 
 case "$requested_lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
+  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) die "unsupported self-qualification lane: $requested_lane" ;;
 esac
 
@@ -331,6 +484,9 @@ elif [[ "$requested_lane" == "self-qualification-preflight" ]]; then
 elif [[ "$requested_lane" == "b110-pilot" ]]; then
   campaign="b110-pilot-${source_commit:0:12}"
   deadline=".assay/campaign-deadline-$campaign.json"
+elif [[ "$requested_lane" == "analysis-r2-pilot" ]]; then
+  campaign="analysis-r2-pilot-${source_commit:0:12}"
+  deadline=".assay/campaign-deadline-$campaign.json"
 fi
 
 check_campaign_wheel_digest() {
@@ -381,6 +537,7 @@ assay_bin="$scratch/run-venv/bin/assay"
 
 case "$requested_lane" in
   b110-pilot) run_b110_pilot; exit 0 ;;
+  analysis-r2-pilot) run_analysis_r2_pilot; exit 0 ;;
   b110-screen) run_b110_screen || exit $?; exit 0 ;;
 esac
 

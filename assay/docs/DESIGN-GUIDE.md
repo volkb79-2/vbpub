@@ -4237,10 +4237,12 @@ protecting any verdict.
   R3 targets lie outside `src/assay/`, or that names an analysis target; an
   accepted report says
   `scope=src/assay out_of_scope=analysis/src/assay_analysis:A-478`.
-- **Own lane, no R2.** Analysis has an R0+R1 whole-target lane
-  (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
-  analysis is deliberately not claimed in this change; it is a follow-up
-  (B131).
+- **Own lane, staged R2 claim.** Analysis keeps its R0+R1 whole-target lane
+  (`analysis`, tests in `analysis/tests/`, 100% line and branch) and adds a
+  separate `analysis-r2` whole-target lane. B131's registered gate runs only a
+  bounded non-qualifying pilot; a full analysis R2 qualification remains a
+  later stage decided from measured pilot data. See
+  [the B131 pilot design](#analysis-package-r2-pilot-b131).
 - **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
 - The undocumented `import assay.analysis` is removed. A source checkout
   needs both `src` and `analysis/src` on `PYTHONPATH`.
@@ -4302,3 +4304,30 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   summary whose `projection (diagnostic)` line appears only with `--project`.
   Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
   `--limit`) and always carry `matching_total` and `next_offset`.
+
+### Analysis-package R2 pilot (B131)
+
+The analysis package has a separate `analysis-r2` lane because B105 judges
+`src/assay`, not `analysis/src/assay_analysis`. Keep the existing `analysis`
+R0/R1 lane and B105's target scope unchanged. B131 first adds a bounded,
+non-qualifying pilot; it does not make full analysis R2 a release requirement.
+
+The pilot derives its inventory from the exact unsharded `assay plan
+analysis-r2` result. Its deterministic selector chooses one candidate from
+every candidate-bearing file/operator stratum, includes the full census of the
+rare `python:falsy-swap` operator, then fills to a default sample of up to 40 from
+the ranked remainder in plan order. If the selected size cannot cover the
+required strata and rare-operator census, the selector refuses instead of
+silently reducing coverage. It never reuses B105's candidate count or GO
+thresholds.
+
+The registered `analysis-r2-pilot` gate runs the selected sample with cold
+witnesses, resumable state, a progress stream and one persisted campaign
+deadline. The host binds the selection and completed exit-6 summary to the
+clean source commit/tree, plan bytes, wheel identity, candidate file, state,
+progress and B145 resource evidence. No verdict is written: a completed sample
+is a measurement, while timeout, partial state, host refusal or resource limit
+is incomplete. Only measurements from this pilot may set an analysis-specific
+worker envelope, full-run budget and GO policy; a separate stage must add and
+qualify a full-plan gate if the pilot justifies one. The pasteable in-repo
+invocation is in [CONSUMERS.md](CONSUMERS.md#run-the-analysis-package-r2-pilot-b131).

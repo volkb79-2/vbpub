@@ -111,6 +111,27 @@ artifacts = [
   ".assay/progress-b110-pilot.jsonl",
 ]
 
+# B131 measures analysis-package R2 independently from B105. The selector,
+# state store and report checker bind the bounded sample to the exact plan,
+# commit, tree, wheel, campaign deadline and cold-witness/resource evidence.
+[lanes.analysis-r2-pilot]
+kind = "command"
+environment = "bare-host"
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "analysis-r2-pilot"]
+exit_map = { "3" = "ERROR" }
+resources = { shared = ["assay-self-qualification"] }
+clean_tree = true
+budget = "140m"
+artifacts = [
+  ".assay/analysis-r2-pilot-plan.json",
+  ".assay/analysis-r2-pilot-candidates.txt",
+  ".assay/analysis-r2-pilot-selection.json",
+  ".assay/analysis-r2-pilot-summary.json",
+  ".assay/analysis-r2-pilot-run.log",
+  ".assay/progress-analysis-r2-pilot.jsonl",
+  ".assay/analysis-r2-pilot-state",
+]
+
 # Non-qualifying survivor screen (B110 plan §9.1). It is never B105 evidence
 # except through the B119 import path; use for pre-deadline records awaits the
 # operator's D7 answer (C8). The Assay lane itself has a 5h budget; the 7h10m
