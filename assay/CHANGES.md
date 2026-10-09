@@ -52,6 +52,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - Leave a candidate unclassified and out of resume state when lane or campaign
   termination interrupts its post-command snapshot integrity check (B117).
+- Require the B105 and B110 report checkers to validate one bounded parsed
+  report snapshot and account for every planned candidate exactly once across
+  all six terminal outcome buckets. A separate verifier read or matching
+  aggregate counts no longer certify a different or incomplete report.
+- Keep the previous resumable candidate record until its replacement is
+  durable, roll back failed state commits, and refuse to return a completed
+  mutation result when deadline expiry occurs during final aggregation.
 - Refuse native R2 before R0 when B145's full cgroup hierarchy is unavailable
   for a selected candidate set within the mutation cap; expose the same
   capability and selection applicability in `assay plan` (B148).

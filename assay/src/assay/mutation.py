@@ -1475,6 +1475,7 @@ def _write_mutation_state_record(
     payload: Mapping[str, Any],
     *,
     state_root_fd: int | None = None,
+    commit_guard: Callable[[], None] | None = None,
 ) -> None:
     """(B066) Write one record into *state_root*, whatever root that is.
 
@@ -1503,23 +1504,119 @@ def _write_mutation_state_record(
             0o600,
             dir_fd=state_root_fd,
         )
+    backup_name: str | None = None
+    published = False
+    commit_accepted = False
+
+    def sync_state_directory() -> None:
+        if state_root_fd is not None:
+            os.fsync(state_root_fd)
+            return
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def link_previous_record(name: str) -> None:
+        if state_root_fd is None:
+            os.link(
+                parent / destination_name,
+                parent / name,
+                follow_symlinks=False,
+            )
+        else:
+            os.link(
+                destination_name,
+                name,
+                src_dir_fd=state_root_fd,
+                dst_dir_fd=state_root_fd,
+                follow_symlinks=False,
+            )
+
+    def replace_state_name(source: str, destination: str) -> None:
+        if state_root_fd is None:
+            os.replace(parent / source, parent / destination)
+        else:
+            os.replace(
+                source,
+                destination,
+                src_dir_fd=state_root_fd,
+                dst_dir_fd=state_root_fd,
+            )
+
+    def unlink_state_name(name: str) -> None:
+        if state_root_fd is None:
+            os.unlink(parent / name)
+        else:
+            os.unlink(name, dir_fd=state_root_fd)
+
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(dict(payload), stream, sort_keys=True, separators=(",", ":"))
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        if state_root_fd is None:
-            os.replace(temporary_name, parent / destination_name)
+        # The record becomes reusable at the atomic replacement below. Check
+        # after serialization and fsync so a deadline or termination during
+        # the write cannot commit a candidate outcome.
+        if commit_guard is not None:
+            commit_guard()
+        backup_candidate = f".state-backup-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        try:
+            link_previous_record(backup_candidate)
+        except FileNotFoundError:
+            pass
         else:
-            os.replace(
-                temporary_name,
-                destination_name,
-                src_dir_fd=state_root_fd,
-                dst_dir_fd=state_root_fd,
-            )
-            os.fsync(state_root_fd)
-    except BaseException:
+            backup_name = backup_candidate
+        # Preserve the previous state until the replacement is durable even
+        # when no deadline guard was requested. Backup creation can itself
+        # take time, so guarded commits recheck immediately before replace.
+        if commit_guard is not None:
+            commit_guard()
+
+        replace_state_name(temporary_name, destination_name)
+        published = True
+        sync_state_directory()
+        if commit_guard is not None:
+            commit_guard()
+        commit_accepted = True
+
+        if backup_name is not None:
+            unlink_state_name(backup_name)
+            backup_name = None
+            sync_state_directory()
+    except BaseException as write_error:
+        if not commit_accepted:
+            try:
+                if published:
+                    if backup_name is None:
+                        try:
+                            unlink_state_name(destination_name)
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        replace_state_name(backup_name, destination_name)
+                        backup_name = None
+                    sync_state_directory()
+                elif backup_name is not None:
+                    unlink_state_name(backup_name)
+                    backup_name = None
+                    sync_state_directory()
+            except OSError as rollback_error:
+                raise MutationStateError(
+                    "Assay could not roll back a candidate state record after "
+                    "its commit failed"
+                ) from rollback_error
+        elif backup_name is not None:
+            # The new record passed its deadline guard and is durable. A
+            # leftover hidden hard link is not a resumable record; try to
+            # remove it without undoing the accepted record.
+            try:
+                unlink_state_name(backup_name)
+                sync_state_directory()
+            except OSError:
+                pass
         try:
             if state_root_fd is None:
                 os.unlink(temporary_name)
@@ -3651,7 +3748,10 @@ def run_mutation(
                 }
             )
 
-        result_payload = _execute_mutation_jobs(
+        # Keep the executor's partial-campaign fact separate from its outcome
+        # buckets: a terminal per-candidate timeout belongs in
+        # `budget_exceeded` without making the campaign incomplete.
+        result_payload, complete_campaign = _execute_mutation_jobs(
             job_list=pending_jobs,
             deadline=deadline,
             jobs=jobs,
@@ -3695,8 +3795,14 @@ def run_mutation(
 
         if resumed_records:
             result_payload = merge_mutations(result_payload, resumed_records)
+        if complete_campaign:
+            # `_execute_mutation_jobs` has returned by now; resume merging can
+            # still take time and must remain inside the persisted deadline.
+            deadline.remaining()
         if write_progress is not None and resumed_records:
             write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
+            if complete_campaign:
+                deadline.remaining()
         if selected_jobs or not shard_specified:
             #
             # B031/A-320: `mutation.candidate_ids` has existed in the
@@ -3730,6 +3836,8 @@ def run_mutation(
                 result_payload,
                 budget_per_candidate_derived_s=budget_per_candidate_seconds,
             )
+        if complete_campaign:
+            deadline.remaining()
         if write_progress is not None:
             # (B065) The sweep's own terminal. Without it a reader cannot
             # tell a finished sweep from one whose process died between two
@@ -3750,6 +3858,8 @@ def run_mutation(
                 reason=None,
                 total=total,
             )
+            if complete_campaign:
+                deadline.remaining()
         return result_payload
 
 
@@ -3807,7 +3917,7 @@ def _execute_mutation_jobs(
     r2_facts: ReceiptFacts | None = None,
     coverage_facts: ReceiptFacts | None = None,
     manifest_node_ids: Sequence[str] = (),
-) -> Mutation:
+) -> tuple[Mutation, bool]:
 
     if job_list:
         _read_candidate_resource_counters()
@@ -4120,6 +4230,10 @@ def _execute_mutation_jobs(
                 raise dirt
             if decode_error is not None:
                 raise decode_error
+        # Snapshot teardown owns filesystem cleanup and may outlive the last
+        # in-snapshot deadline check. A result is not eligible for a terminal
+        # bucket until cleanup has completed within the lane budget.
+        deadline.remaining()
         teardown_finished_monotonic = time.monotonic()
         run = _MutantRun(
             result=result,
@@ -4398,9 +4512,16 @@ def _execute_mutation_jobs(
         )
 
     def _record_candidate(position: int, run: _MutantRun) -> Mapping[str, Any]:
+        # Futures can finish before the deadline and sit ready while the
+        # main thread is busy draining earlier results. Check at the actual
+        # classification boundary, not only in the worker.
+        deadline.remaining()
         # The same classifier decides whether a witness is reusable and which
         # terminal bucket this complete campaign records.
         outcome_bucket = _classified_bucket(run)
+        # Classification itself is main-thread work and can cross the lane
+        # boundary. Refuse before staging a candidate progress event or state.
+        deadline.remaining()
         # B111: diagnostic evidence only (never a classification input), built
         # once so progress and state carry the identical resources object.
         resources = {
@@ -4464,64 +4585,70 @@ def _execute_mutation_jobs(
                 if kill_signal_artifact is not None
                 else None
             )
+            record = {
+                **_progress_event(
+                    candidate_index=position,
+                    candidate_total=total,
+                    job=job_list[position],
+                ),
+                "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+                "judge_sha256": judge,
+                "source_sha256": hashlib.sha256(
+                    job_list[position].original_text.encode("utf-8")
+                ).hexdigest(),
+                "replacement_sha256": job_list[position].site.replacement_sha256,
+                "lineno": job_list[position].site.lineno,
+                "description": job_list[position].site.description,
+                "outcome_bucket": outcome_bucket,
+                **(
+                    {"forced_bucket": run.forced_bucket}
+                    if run.forced_bucket is not None
+                    else {}
+                ),
+                "terminal_result": {
+                    "outcome": run.result.outcome.value,
+                    "reason_code": (
+                        run.result.reason_code.value
+                        if run.result.reason_code is not None
+                        else None
+                    ),
+                    "returncode": run.result.returncode,
+                },
+                "execution": run.execution.to_dict(),
+                "evidence": run.evidence.to_dict() if run.evidence is not None else None,
+                "resources": resources,
+                "resource_limit_evidence": resource_limit_evidence.to_dict(),
+                **(
+                    {"liveness_resource_evidence": run.liveness_resource_evidence}
+                    if run.liveness_resource_evidence is not None
+                    else {}
+                ),
+                **(
+                    {"campaign_deadline_sha256": campaign_deadline_sha256}
+                    if campaign_deadline_sha256 is not None
+                    else {}
+                ),
+                **(
+                    {"equivalence_evidence": equivalence_record_evidence}
+                    if equivalence_record_evidence is not None
+                    else {}
+                ),
+                **(
+                    {"kill_signal_evidence": kill_signal_record_evidence}
+                    if kill_signal_record_evidence is not None
+                    else {}
+                ),
+                **_crash_diagnostic_tails(outcome_bucket, run.result),
+            }
+            # Keep the last check directly at the persistence boundary. If
+            # deadline expiry or termination arrived while the record was
+            # assembled, leave this candidate unclassified for resume.
+            deadline.remaining()
             _write_mutation_state_record(
                 Path(state_root),
-                {
-                    **_progress_event(
-                        candidate_index=position,
-                        candidate_total=total,
-                        job=job_list[position],
-                    ),
-                    "schema_version": MUTATION_STATE_SCHEMA_VERSION,
-                    "judge_sha256": judge,
-                    "source_sha256": hashlib.sha256(
-                        job_list[position].original_text.encode("utf-8")
-                    ).hexdigest(),
-                    "replacement_sha256": job_list[position].site.replacement_sha256,
-                    "lineno": job_list[position].site.lineno,
-                    "description": job_list[position].site.description,
-                    "outcome_bucket": outcome_bucket,
-                    **(
-                        {"forced_bucket": run.forced_bucket}
-                        if run.forced_bucket is not None
-                        else {}
-                    ),
-                    "terminal_result": {
-                        "outcome": run.result.outcome.value,
-                        "reason_code": (
-                            run.result.reason_code.value
-                            if run.result.reason_code is not None
-                            else None
-                        ),
-                        "returncode": run.result.returncode,
-                    },
-                    "execution": run.execution.to_dict(),
-                    "evidence": run.evidence.to_dict() if run.evidence is not None else None,
-                    "resources": resources,
-                    "resource_limit_evidence": resource_limit_evidence.to_dict(),
-                    **(
-                        {"liveness_resource_evidence": run.liveness_resource_evidence}
-                        if run.liveness_resource_evidence is not None
-                        else {}
-                    ),
-                    **(
-                        {"campaign_deadline_sha256": campaign_deadline_sha256}
-                        if campaign_deadline_sha256 is not None
-                        else {}
-                    ),
-                    **(
-                        {"equivalence_evidence": equivalence_record_evidence}
-                        if equivalence_record_evidence is not None
-                        else {}
-                    ),
-                    **(
-                        {"kill_signal_evidence": kill_signal_record_evidence}
-                        if kill_signal_record_evidence is not None
-                        else {}
-                    ),
-                    **_crash_diagnostic_tails(outcome_bucket, run.result),
-                },
+                record,
                 state_root_fd=state_root_fd,
+                commit_guard=deadline.remaining,
             )
         # State is committed as soon as the future completes. Candidate
         # progress is staged and emitted in order by the caller below.
@@ -4637,6 +4764,7 @@ def _execute_mutation_jobs(
         if any(budget_exceeded_mask)
         else None
     )
+    complete_campaign = not any(budget_exceeded_mask)
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
         # and `collect_mutation_sites` guarantees that list is
@@ -4653,12 +4781,16 @@ def _execute_mutation_jobs(
                 )
             )
             continue
+        if complete_campaign:
+            deadline.remaining()
         run = results[position]
         assert run is not None
         # `_classified_bucket` preserves O8's exact legacy classifier when
         # no equivalence artifact is declared, and applies the declared
         # artifact/signal rules on the extended path.
         bucket = _classified_bucket(run)
+        if complete_campaign:
+            deadline.remaining()
         assert run.resource_limit_evidence is not None
         kill_signal = run.kill_signal if bucket == "killed" else None
         buckets[bucket].append(
@@ -4671,11 +4803,14 @@ def _execute_mutation_jobs(
             )
         )
 
-    return Mutation(
+    mutation = Mutation(
         candidate_count=candidate_count,
         total=total,
         **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
     )
+    if complete_campaign:
+        deadline.remaining()
+    return mutation, complete_campaign
 
 
 #: (B046) The upstream `MutantStatus` -> assay-bucket map, each direction

@@ -427,6 +427,13 @@ def _run_checker(
             if deadline_raw is not None
             else _deadline_bytes(document, commit, tree, repo_root=repo_root)
         )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (
+            str(PROJECT_ROOT / "src"),
+            str(PROJECT_ROOT / "analysis" / "src"),
+        )
+    )
     return subprocess.run(
         [
             sys.executable,
@@ -456,6 +463,7 @@ def _run_checker(
             str(producer_exit),
         ],
         cwd=repo_root,
+        env=environment,
         check=False,
         capture_output=True,
         text=True,
@@ -511,6 +519,31 @@ def test_accepts_only_exact_pass_for_both_registered_lanes(
 
     assert result.returncode == 0, result.stderr
     assert f"B105_REPORT_ACCEPTED={lane}" in result.stdout
+
+
+def test_report_checker_verifies_the_exact_parsed_snapshot_after_file_replacement(
+    tmp_path,
+):
+    lane = "self-qualification-preflight"
+    rigor = ("R0", "R1")
+    verified_document = _verifier_valid_report(lane, rigor)
+    _verify_with_assay_cli(tmp_path, verified_document)
+
+    replacement = deepcopy(verified_document)
+    replacement["schema_version"] = 1
+    report_path = tmp_path / "replaced-after-assay-verify.json"
+    report_path.write_text(json.dumps(replacement), encoding="utf-8")
+    result = _run_checker(
+        tmp_path,
+        verified_document,
+        lane=lane,
+        rigor=rigor,
+        report_file=report_path,
+    )
+
+    assert result.returncode == 2
+    assert "Assay verifier rejected the parsed verdict snapshot" in result.stderr
+    assert "schema_version" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1234,6 +1267,22 @@ def test_o11_refusal_7_the_report_ids_must_be_exactly_the_plan_ids(tmp_path, cha
     else:
         mutation["candidate_ids"] = mutation["candidate_ids"][:1] + ["d" * 64]
     _refused_by_scope(tmp_path, document, plan, "R2 candidate_ids differ from the plan")
+
+
+def test_o11_refusal_8_every_planned_candidate_must_have_one_bucket_outcome(tmp_path):
+    document, plan = _r2_case()
+    mutation = next(
+        claim["mutation"] for claim in document["claims"] if claim["rigor"] == "R2"
+    )
+    first, second = mutation["killed"]
+    first["candidate_id"] = second["candidate_id"]
+
+    _refused_by_scope(
+        tmp_path,
+        document,
+        plan,
+        "bucket outcomes contain duplicate candidate_ids",
+    )
 
 
 def test_deadline_plan_digest_binds_the_ordered_plan_and_report_inventory(tmp_path):

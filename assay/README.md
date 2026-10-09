@@ -1173,7 +1173,13 @@ you're changing assay itself:
   and manifest as bounded no-follow regular files. The limits for report,
   plan and receipt are 64 MiB, 16 MiB and 4 KiB. It checks plan-independent
   campaign deadlines before parsing an R2 plan, then binds the selected
-  ordered-plan digest. The full lane judges
+  ordered-plan digest. B105 and B110 report checkers run the shipped
+  `assay verify` document validation on the same bounded JSON object they
+  inspect for source and candidate provenance; a separate `assay verify`
+  invocation cannot certify a later independent read. They also require all
+  six terminal outcome buckets to contain every planned candidate exactly
+  once, so matching counts cannot hide a missing, duplicate or foreign result.
+  The full lane judges
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).

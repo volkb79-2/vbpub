@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import subprocess
 import json
+import os
+import stat
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -25,6 +27,7 @@ import pytest
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
+from assay import isolation as isolation_module
 from assay import mutation as mutation_module, runner as runner_module
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationTarget, candidate_id, collect_mutation_sites, run_mutation
@@ -405,6 +408,9 @@ def _run_queue_case(
     equivalence_artifact: str | None = None,
     baseline_equivalence: bytes | None = None,
     oom_counter=None,
+    deadline=None,
+    state_root_guard=None,
+    state_root_fd=None,
     return_repo: bool = False,
 ):
     # Queue tests prove ordering and submission behavior; resource-limit
@@ -425,7 +431,7 @@ def _run_queue_case(
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
     plan = make_plan(lane)
-    deadline = make_deadline()
+    deadline = make_deadline() if deadline is None else deadline
     progress_stream = None
     if progress_events is not None:
         progress_stream = mutation_module.ProgressStream(
@@ -447,6 +453,8 @@ def _run_queue_case(
             clock=lambda: datetime.now(timezone.utc),
             executor_factory=executor_factory or mutation_module._default_executor_factory,
             state_root=state_root,
+            state_root_fd=state_root_fd,
+            state_root_guard=state_root_guard,
             resume=resume,
             expected_plan_sha256=expected_plan_sha256,
             campaign_deadline_sha256=campaign_deadline_sha256,
@@ -686,6 +694,461 @@ def test_oom_during_candidate_execution_is_unclassified_and_unrecorded(
     assert list(state_root.glob("*.json")) == []
 
 
+def test_deadline_expiring_during_snapshot_cleanup_leaves_candidate_unclassified(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    remove_owned_tree = isolation_module._remove_owned_tree
+    expired = False
+
+    def cleanup_then_expire(root):
+        nonlocal expired
+        remove_owned_tree(root)
+        if not expired:
+            expired = True
+            now[0] = 11.0
+
+    monkeypatch.setattr(isolation_module, "_remove_owned_tree", cleanup_then_expire)
+    state_root = tmp_path / "cleanup-deadline-state"
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="cleanup-deadline",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {}),
+        state_root=state_root,
+        deadline=deadline,
+    )
+
+    assert len(result.budget_exceeded) == 3
+    assert not result.killed
+    assert not result.survived
+    assert list(state_root.glob("*.json")) == []
+
+
+def test_deadline_is_rechecked_on_the_main_thread_before_candidate_state_commit(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    real_wait = mutation_module.wait
+    expired = False
+
+    def wait_then_expire(futures, *, return_when):
+        nonlocal expired
+        done, pending = real_wait(futures, return_when=return_when)
+        if done and not expired:
+            expired = True
+            now[0] = 11.0
+        return done, pending
+
+    monkeypatch.setattr(mutation_module, "wait", wait_then_expire)
+    state_root = tmp_path / "main-thread-deadline-state"
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="main-thread-deadline",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            state_root=state_root,
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert list(state_root.glob("*.json")) == []
+
+
+def test_deadline_is_rechecked_after_state_guard_before_persisting_candidate(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    guard_calls = 0
+
+    def expire_on_candidate_guard():
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            now[0] = 11.0
+
+    state_root = tmp_path / "state-guard-deadline-state"
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="state-guard-deadline",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            state_root=state_root,
+            deadline=deadline,
+            state_root_guard=expire_on_candidate_guard,
+        )
+
+    assert guard_calls == 2
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert list(state_root.glob("*.json")) == []
+
+
+def test_deadline_expiring_during_state_serialization_does_not_commit_candidate(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    state_root = tmp_path / "serialization-deadline-state"
+    real_dump = mutation_module.json.dump
+
+    def dump_then_expire(document, stream, **kwargs):
+        real_dump(document, stream, **kwargs)
+        if isinstance(document, dict) and "candidate_id" in document:
+            now[0] = 11.0
+
+    monkeypatch.setattr(mutation_module.json, "dump", dump_then_expire)
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="serialization-deadline",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            state_root=state_root,
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert list(state_root.glob("*.json")) == []
+    assert list(state_root.glob(".state-*")) == []
+
+
+def test_deadline_expiring_after_state_replace_removes_candidate_record(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    state_root = tmp_path / "replace-deadline-state"
+    real_replace = mutation_module.os.replace
+
+    def replace_then_expire(source, destination, *args, **kwargs):
+        result = real_replace(source, destination, *args, **kwargs)
+        if Path(destination).parent == state_root:
+            now[0] = 11.0
+        return result
+
+    monkeypatch.setattr(mutation_module.os, "replace", replace_then_expire)
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="replace-deadline",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            state_root=state_root,
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert list(state_root.glob("*.json")) == []
+    assert list(state_root.glob(".state-*")) == []
+
+
+@pytest.mark.parametrize("descriptor_relative", [False, True])
+def test_directory_sync_failure_rolls_back_new_candidate_record(
+    tmp_path, monkeypatch, descriptor_relative
+):
+    state_root = tmp_path / f"directory-sync-state-{descriptor_relative}"
+    state_root.mkdir()
+    state_root_fd = (
+        os.open(state_root, os.O_RDONLY | os.O_DIRECTORY)
+        if descriptor_relative
+        else None
+    )
+    real_fsync = mutation_module.os.fsync
+    failed = False
+
+    def fail_first_directory_sync(fd):
+        nonlocal failed
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and not failed:
+            failed = True
+            raise OSError("injected directory sync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(mutation_module.os, "fsync", fail_first_directory_sync)
+    try:
+        with pytest.raises(OSError, match="injected directory sync failure"):
+            _run_queue_case(
+                tmp_path,
+                monkeypatch,
+                name=f"directory-sync-{descriptor_relative}",
+                targets=_TARGETS3,
+                text=_TEXT3,
+                jobs=1,
+                process_runner=_decide5(tmp_path, {}),
+                state_root=state_root,
+                state_root_fd=state_root_fd,
+            )
+    finally:
+        if state_root_fd is not None:
+            os.close(state_root_fd)
+
+    assert failed
+    assert list(state_root.glob("*.json")) == []
+    assert list(state_root.glob(".state-*")) == []
+    assert list(state_root.glob(".state-backup-*")) == []
+
+
+@pytest.mark.parametrize("descriptor_relative", [False, True])
+def test_guard_refusal_restores_preexisting_candidate_record(
+    tmp_path, monkeypatch, descriptor_relative
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    state_root = tmp_path / f"existing-record-state-{descriptor_relative}"
+    state_root.mkdir()
+    one_target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+    )
+    _, repo = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name=f"existing-record-seed-{descriptor_relative}",
+        targets=one_target,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {}),
+        state_root=state_root,
+        return_repo=True,
+    )
+    existing_records = list(state_root.glob("*.json"))
+    assert len(existing_records) == 1
+    old_record_path = existing_records[0]
+    old_record = old_record_path.read_bytes()
+    state_root_fd = (
+        os.open(state_root, os.O_RDONLY | os.O_DIRECTORY)
+        if descriptor_relative
+        else None
+    )
+    real_replace = mutation_module.os.replace
+
+    def replace_then_expire(source, destination, *args, **kwargs):
+        result = real_replace(source, destination, *args, **kwargs)
+        if Path(os.fspath(source)).name.startswith(".state-") and Path(
+            os.fspath(destination)
+        ).suffix == ".json":
+            now[0] = 11.0
+        return result
+
+    monkeypatch.setattr(mutation_module.os, "replace", replace_then_expire)
+    try:
+        with pytest.raises(AssayError) as caught:
+            _run_queue_case(
+                tmp_path,
+                monkeypatch,
+                name=f"existing-record-rewrite-{descriptor_relative}",
+                targets=one_target,
+                text=_TEXT3,
+                jobs=1,
+                process_runner=_decide5(tmp_path, {}),
+                repo=repo,
+                state_root=state_root,
+                state_root_fd=state_root_fd,
+                deadline=deadline,
+            )
+    finally:
+        if state_root_fd is not None:
+            os.close(state_root_fd)
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert old_record_path.read_bytes() == old_record
+    assert list(state_root.glob(".state-backup-*")) == []
+
+
+def test_deadline_expiring_during_resume_merge_does_not_return_completed_result(
+    tmp_path, monkeypatch
+):
+    state_root = tmp_path / "resume-merge-deadline-state"
+    one_target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+    )
+    timeout_candidate = _candidate_names(one_target)[0]
+
+    def candidate_timeout(argv, cwd):
+        del cwd
+        raise subprocess.TimeoutExpired(list(argv), timeout=1.0, output=b"partial")
+
+    seeded, repo = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="resume-merge-seed",
+        targets=one_target,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {timeout_candidate: candidate_timeout}),
+        state_root=state_root,
+        budget_per_candidate_seconds=1.0,
+        return_repo=True,
+    )
+    assert len(seeded.budget_exceeded) == 1
+    assert len(list(state_root.glob("*.json"))) == 1
+
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    merge = mutation_module.merge_mutations
+    calls = 0
+
+    def merge_then_expire(payload, records):
+        nonlocal calls
+        assert len(records) == 1
+        assert records[0]["outcome_bucket"] == "budget_exceeded"
+        result = merge(payload, records)
+        calls += 1
+        now[0] = 11.0
+        return result
+
+    monkeypatch.setattr(mutation_module, "merge_mutations", merge_then_expire)
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="resume-merge-after-seed",
+            targets=one_target,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            repo=repo,
+            state_root=state_root,
+            resume=True,
+            budget_per_candidate_seconds=1.0,
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls == 1
+
+
+def test_deadline_expiring_during_candidate_classification_emits_no_progress(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    one_target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+    )
+    classify = mutation_module._classify_mutant_result
+    progress_events = []
+
+    def classify_then_expire(result):
+        bucket = classify(result)
+        now[0] = 11.0
+        return bucket
+
+    monkeypatch.setattr(mutation_module, "_classify_mutant_result", classify_then_expire)
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="candidate-classification-deadline",
+            targets=one_target,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            progress_events=progress_events,
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert not any(event.get("event") == "candidate" for event in progress_events)
+
+
+def test_deadline_expiring_during_final_bucket_does_not_return_completed_result(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    one_target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+    )
+    classify = mutation_module._classify_mutant_result
+    calls = 0
+
+    def classify_then_expire(result):
+        nonlocal calls
+        bucket = classify(result)
+        calls += 1
+        if calls == 2:
+            now[0] = 11.0
+        return bucket
+
+    monkeypatch.setattr(mutation_module, "_classify_mutant_result", classify_then_expire)
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="final-bucket-deadline",
+            targets=one_target,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls == 2
+
+
+def test_termination_during_final_bucket_does_not_return_completed_result(
+    tmp_path, monkeypatch
+):
+    termination = [False]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: 0.0)
+    one_target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+    )
+    classify = mutation_module._classify_mutant_result
+    calls = 0
+
+    def classify_then_request_termination(result):
+        nonlocal calls
+        bucket = classify(result)
+        calls += 1
+        if calls == 2:
+            termination[0] = True
+        return bucket
+
+    monkeypatch.setattr(
+        runner_module, "termination_requested", lambda: termination[0]
+    )
+    monkeypatch.setattr(
+        mutation_module,
+        "_classify_mutant_result",
+        classify_then_request_termination,
+    )
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="final-bucket-termination",
+            targets=one_target,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(tmp_path, {}),
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls == 2
+
+
 class _OutstandingExecutor:
     def __init__(self, jobs: int, state: dict) -> None:
         self.jobs = jobs
@@ -839,8 +1302,8 @@ def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_orde
     def complete_one(argv, cwd):
         return subprocess.CompletedProcess(list(argv), 1, "", "")
 
-    def release_zero_after_one_is_recorded(root, payload):
-        real_write(root, payload)
+    def release_zero_after_one_is_recorded(root, payload, **kwargs):
+        real_write(root, payload, **kwargs)
         if payload["candidate_id"] == position_one_id:
             release_zero.set()
 
