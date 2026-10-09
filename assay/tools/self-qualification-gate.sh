@@ -20,10 +20,37 @@ assay_git() {
     "$@"
 }
 
-worktree="${1:?usage: self-qualification-gate.sh WORKTREE}"
-requested_lane="${2:-self-qualification}"
-project="$worktree/assay"
+worktree=""
+requested_lane=""
+project=""
 tester_python=/opt/tester-venv/bin/python
+assay_state_fd=""
+assay_state_root=""
+
+pin_b110_assay_state() {
+  local expected_identity visible_identity opened_identity
+  [[ "${ASSAY_B110_ASSAY_STATE_DEVICE:-}" =~ ^[0-9]+$ \
+    && "${ASSAY_B110_ASSAY_STATE_INODE:-}" =~ ^[1-9][0-9]*$ ]] \
+    || die 'host launcher did not provide a valid .assay identity'
+  expected_identity="$ASSAY_B110_ASSAY_STATE_DEVICE:$ASSAY_B110_ASSAY_STATE_INODE"
+  [[ -d .assay && ! -L .assay ]] || die '.assay is not a real directory after host admission'
+  visible_identity="$(stat -c '%d:%i' -- .assay)" \
+    || die 'cannot inspect .assay after host admission'
+  [[ "$visible_identity" == "$expected_identity" ]] \
+    || die '.assay identity changed after host admission'
+  exec {assay_state_fd}< .assay || die 'cannot pin the admitted .assay directory'
+  opened_identity="$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$assay_state_fd")" \
+    || die 'cannot inspect the pinned .assay directory'
+  [[ "$opened_identity" == "$expected_identity" ]] \
+    || die 'pinned .assay identity differs from host admission'
+  [[ -d .assay && ! -L .assay ]] \
+    || die '.assay path changed while the gate pinned its state directory'
+  visible_identity="$(stat -c '%d:%i' -- .assay)" \
+    || die 'cannot recheck .assay after pinning its state directory'
+  [[ "$visible_identity" == "$expected_identity" ]] \
+    || die '.assay path changed while the gate pinned its state directory'
+  assay_state_root="/proc/$BASHPID/fd/$assay_state_fd"
+}
 
 pilot_invocation_remaining_s() {
   local started_s="$1" cap_s="$2" now_s="${3:-$SECONDS}"
@@ -35,7 +62,9 @@ pilot_campaign_remaining_s() {
   "$1" -c 'import json,sys,math,datetime as d; e=d.datetime.strptime(json.load(open(sys.argv[1]))["expires_at_utc"],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc); print(max(0, math.floor((e-d.datetime.now(d.timezone.utc)).total_seconds())))' "$2"
 }
 
-run_b110_pilot() {
+run_b110_pilot_inner() {
+  [[ "$assay_state_root" =~ ^/proc/[0-9]+/fd/[0-9]+$ && "$assay_state_fd" =~ ^[0-9]+$ ]] \
+    || die 'B110 pilot worker has no pinned .assay directory'
   pilot_campaign="$campaign"
   pilot_deadline="$deadline"
   pilot_cap_s=$((90 * 60))
@@ -43,11 +72,12 @@ run_b110_pilot() {
   # These outputs describe this attempt. Preserve only the campaign deadline,
   # mutation state and append-only progress stream needed for a safe resume.
   rm -f -- \
-    .assay/b110-pilot-plan.json \
-    .assay/b110-pilot-candidates.txt \
-    .assay/b110-pilot-selection.json \
-    .assay/b110-pilot-summary.json \
-    .assay/b110-pilot-run.log
+    "$assay_state_root/b110-pilot-plan.json" \
+    "$assay_state_root/b110-pilot-candidates.txt" \
+    "$assay_state_root/b110-pilot-selection.json" \
+    "$assay_state_root/b110-pilot-summary.json" \
+    "$assay_state_root/b110-pilot-run.log" \
+    "$assay_state_root/b110-pilot-artifacts.sha256"
   # P7R2-4: init FIRST, so `assay plan` and the selector run inside the 2 h campaign
   # and the outer failsafe only has to cover the build plus the campaign.
   if [[ ! -f "$pilot_deadline" ]]; then
@@ -61,7 +91,8 @@ run_b110_pilot() {
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
       "$assay_bin" campaign init --file assay.toml \
         --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
-        --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"
+        --out "$pilot_deadline" \
+        --state-dir "$assay_state_root/b110-pilot-state" --wheel-sha256 "$wheel_digest"
     pilot_init_status=$?
     set -e
     if (( pilot_init_status != 0 )); then
@@ -82,8 +113,13 @@ run_b110_pilot() {
     return 124
   fi
   set +e
-  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-    "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
+  python3 "$project/tools/b110_pilot_safe_output.py" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --output b110-pilot-plan.json -- \
+    timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+      "$assay_bin" plan self-qualification --file assay.toml
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -102,8 +138,9 @@ run_b110_pilot() {
   set +e
   timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
     "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_pilot_select.py" \
-    --plan .assay/b110-pilot-plan.json --repo-root "$worktree" \
-    --out .assay/b110-pilot-candidates.txt --report .assay/b110-pilot-selection.json
+    --plan "$assay_state_root/b110-pilot-plan.json" --repo-root "$worktree" \
+    --out "$assay_state_root/b110-pilot-candidates.txt" \
+    --report "$assay_state_root/b110-pilot-selection.json"
   pilot_selection_status=$?
   set -e
   if (( pilot_selection_status != 0 )); then
@@ -120,12 +157,16 @@ run_b110_pilot() {
     return 124
   fi
   set +e
-  timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
-    "$assay_bin" run self-qualification --file assay.toml \
-    --candidates-file .assay/b110-pilot-candidates.txt --pilot-jobs 3 --cold-witness --resume \
-    --state-dir .assay/b110-pilot-state --progress .assay/progress-b110-pilot.jsonl \
-    --campaign-deadline "$pilot_deadline" \
-    > .assay/b110-pilot-summary.json 2> .assay/b110-pilot-run.log
+  python3 "$project/tools/b110_pilot_safe_output.py" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --output b110-pilot-summary.json --stderr b110-pilot-run.log -- \
+    timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
+      "$assay_bin" run self-qualification --file assay.toml \
+      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 3 --cold-witness --resume \
+      --state-dir "$assay_state_root/b110-pilot-state" --progress "$assay_state_root/progress-b110-pilot.jsonl" \
+      --campaign-deadline "$pilot_deadline"
   pilot_status=$?
   set -e
   campaign_remaining_after_run_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
@@ -133,30 +174,119 @@ run_b110_pilot() {
   if (( PILOT_INVOCATION_REMAINING_S <= 0 || campaign_remaining_after_run_s <= 0 )); then
     pilot_status=124
   fi
-  echo "B110_PILOT_EXIT=$pilot_status"
+  if (( pilot_status != 6 )); then
+    echo "B110_PILOT_EXIT=$pilot_status"
+    echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
+    # Any status >= 124 (124, 125-127, 137 after --kill-after) is the failsafe.
+    [[ $pilot_status -ge 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"
+    return 0
+  fi
+
+  echo "B110_PHASE=verify-complete-pilot-artifacts"
+  checker_output="$("$scratch/run-venv/bin/python" \
+    "$scratch/source/assay/tools/b110_pilot_report_check.py" \
+    --repo-root "$worktree" \
+    --project-root "$project" \
+    --artifact-dir "$assay_state_root" \
+    --state-dir "$assay_state_root/b110-pilot-state" \
+    --deadline "$deadline" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --campaign "$pilot_campaign" \
+    --expected-commit "$source_commit" \
+    --expected-tree "$source_tree" \
+    --expected-wheel-sha256 "$wheel_digest")" \
+    || { echo "B110_PILOT_VERIFICATION_FAILED=1" >&2; return 1; }
+  [[ "$(printf '%s\n' "$checker_output" | tail -n 1)" =~ ^B110_PILOT_ATTESTATION_SHA256=[0-9a-f]{64}$ ]] \
+    || { echo "B110_PILOT_VERIFICATION_FAILED=1" >&2; return 1; }
+  grep -Fxq 'B110_PILOT_VERIFIED=1' <<<"$checker_output" \
+    || { echo "B110_PILOT_VERIFICATION_FAILED=1" >&2; return 1; }
+
+  # The checker and these final identity/deadline checks remain inside the
+  # enclosing 90-minute timeout. Only a fully checked run writes completion.
+  ensure_source_unchanged
+  campaign_remaining_after_check_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  if (( PILOT_INVOCATION_REMAINING_S <= 0 || campaign_remaining_after_check_s <= 0 )); then
+    echo "B110_PILOT_EXIT=124"
+    echo "B110_PILOT_TIMEOUT_FAILSAFE=1"
+    return 0
+  fi
   echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
-  # Any status >= 124 (124, 125-127, 137 after --kill-after) is the failsafe.
-  [[ $pilot_status -ge 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"
-  [[ $pilot_status -eq 6 ]] && echo "B110_PILOT_COMPLETED=1"
+  echo "B110_PILOT_EXIT=6"
+  echo "$checker_output"
+  echo "B110_PILOT_COMPLETED=1"
   return 0
 }
 
+run_b110_pilot() {
+  [[ "$assay_state_root" =~ ^/proc/[0-9]+/fd/[0-9]+$ && "$assay_state_fd" =~ ^[0-9]+$ ]] \
+    || die 'B110 pilot wrapper has no pinned .assay directory'
+  # One outer cap covers campaign init, planning, selection, Assay, report
+  # checking, final identity/deadline checks, and the completion markers.
+  rm -f -- "$assay_state_root/b110-pilot-attempt.log"
+  python3 "$project/tools/b110_pilot_attempt_window.py" "$campaign" "$source_commit" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE"
+  set +e
+  python3 "$project/tools/b110_pilot_safe_output.py" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --output b110-pilot-attempt.log --stderr-to-stdout -- \
+    timeout --verbose --signal=TERM --kill-after=30s 5400s \
+      bash "$project/tools/self-qualification-gate.sh" \
+      --internal-b110-pilot \
+      "$worktree" "$scratch" "$campaign" "$deadline" "$wheel_digest" \
+      "$source_commit" "$source_tree" "$assay_bin"
+  worker_status=$?
+  set -e
+  python3 "$project/tools/b110_pilot_safe_output.py" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --read b110-pilot-attempt.log \
+    || { echo "B110_PILOT_ATTEMPT_LOG_READ_FAILED=1" >&2; return 1; }
+  if (( worker_status >= 124 )); then
+    echo "B110_PILOT_EXIT=$worker_status"
+    echo "B110_PILOT_TIMEOUT_FAILSAFE=1"
+    return 0
+  fi
+  return "$worker_status"
+}
+
 run_b110_screen() {
+  [[ "$assay_state_root" =~ ^/proc/[0-9]+/fd/[0-9]+$ && "$assay_state_fd" =~ ^[0-9]+$ ]] \
+    || die 'B110 screen has no pinned .assay directory'
   reuse_args=()
   # A prior commit's screen verdict is passed explicitly for witness replay.
-  [[ -f .assay/verdict-b110-screen-prev.json ]] \
-    && reuse_args=(--reuse-from .assay/verdict-b110-screen-prev.json)
-  rm -f -- .assay/verdict-b110-screen.json \
+  [[ -f "$assay_state_root/verdict-b110-screen-prev.json" ]] \
+    && reuse_args=(--reuse-from "$assay_state_root/verdict-b110-screen-prev.json")
+  rm -f -- "$assay_state_root/verdict-b110-screen.json" \
+    "$assay_state_root/b110-screen-plan.json" \
+    "$assay_state_root/b110-screen-run.log" \
     || { echo "B110_SCREEN_VERDICT_CLEANUP_FAILED=1" >&2; return 1; }
-  "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-screen-plan.json \
+  python3 "$project/tools/b110_pilot_safe_output.py" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --output b110-screen-plan.json -- \
+    "$assay_bin" plan self-qualification --file assay.toml \
     || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
   set +e
-  timeout --verbose --signal=TERM --kill-after=30s 7h10m \
-    "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
-    "${reuse_args[@]}" \
-    --state-dir .assay/b110-screen-state --progress .assay/progress-b110-screen.jsonl \
-    --verdict-json .assay/verdict-b110-screen.json \
-    > .assay/b110-screen-run.log 2>&1
+  python3 "$project/tools/b110_pilot_safe_output.py" \
+    --assay-fd "$assay_state_fd" \
+    --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
+    --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
+    --output b110-screen-run.log --stderr-to-stdout -- \
+    timeout --verbose --signal=TERM --kill-after=30s 7h10m \
+      "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
+      "${reuse_args[@]}" \
+      --state-dir "$assay_state_root/b110-screen-state" \
+      --progress "$assay_state_root/progress-b110-screen.jsonl" \
+      --verdict-json "$assay_state_root/verdict-b110-screen.json"
   screen_status=$?
   set -e
   echo "B110_SCREEN_EXIT=$screen_status" || return 1
@@ -167,11 +297,11 @@ run_b110_screen() {
   if [[ $screen_status -ge 124 ]]; then
     return 0
   fi
-  "$assay_bin" verify .assay/verdict-b110-screen.json \
+  "$assay_bin" verify "$assay_state_root/verdict-b110-screen.json" \
     || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }
   screen_checker_output="$("$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_screen_report_check.py" \
-    --plan .assay/b110-screen-plan.json \
-    --verdict .assay/verdict-b110-screen.json \
+    --plan "$assay_state_root/b110-screen-plan.json" \
+    --verdict "$assay_state_root/verdict-b110-screen.json" \
     --expected-commit "$source_commit" --expected-tree "$source_tree" \
     --expected-exit-code "$screen_status")" \
     || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }
@@ -184,28 +314,6 @@ run_b110_screen() {
   return 0
 }
 
-case "$requested_lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
-  *) die "unsupported self-qualification lane: $requested_lane" ;;
-esac
-
-[[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
-[[ -f "$project/pyproject.toml" ]] || die "selected worktree has no assay/pyproject.toml: $project"
-
-cd "$project"
-mkdir -p .assay
-source_commit="$(assay_git rev-parse HEAD)"
-source_tree="$(assay_git rev-parse 'HEAD^{tree}')"
-[[ "$(assay_git rev-parse "${source_commit}^{tree}")" == "$source_tree" ]] \
-  || die "captured source commit does not resolve to the captured tree"
-expected_commit="${ASSAY_B105_GATE_EXPECTED_COMMIT:-}"
-expected_tree="${ASSAY_B105_GATE_EXPECTED_TREE:-}"
-[[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] \
-  || die 'outer runner did not provide a full expected source commit'
-[[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] \
-  || die 'outer runner did not provide a full expected source tree'
-[[ "$source_commit" == "$expected_commit" && "$source_tree" == "$expected_tree" ]] \
-  || die 'inner source commit/tree differs from the outer runner launch record'
 ensure_source_unchanged() {
   local worktree_status
   [[ "$(assay_git rev-parse HEAD)" == "$source_commit" ]] \
@@ -218,6 +326,62 @@ ensure_source_unchanged() {
     || die "worktree files changed during B105 qualification"
 }
 
+if [[ "${1:-}" == --internal-b110-pilot ]]; then
+  [[ $# -eq 9 ]] || die 'internal B110 pilot mode received the wrong argument count'
+  worktree="$2"
+  scratch="$3"
+  campaign="$4"
+  deadline="$5"
+  wheel_digest="$6"
+  source_commit="$7"
+  source_tree="$8"
+  assay_bin="$9"
+  project="$worktree/assay"
+  [[ -d "$project" && -x "$assay_bin" ]] || die 'internal B110 pilot paths are invalid'
+  cd "$project"
+  pin_b110_assay_state
+  [[ "${deadline##*/}" == "campaign-deadline-$campaign.json" ]] \
+    || die 'internal B110 pilot deadline path does not match the campaign'
+  deadline="$assay_state_root/campaign-deadline-$campaign.json"
+  [[ "$(assay_git rev-parse HEAD)" == "$source_commit" ]] \
+    || die 'internal B110 pilot commit differs from the launcher record'
+  [[ "$(assay_git rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
+    || die 'internal B110 pilot tree differs from the launcher record'
+  ensure_source_unchanged
+  run_b110_pilot_inner
+  exit 0
+fi
+
+worktree="${1:?usage: self-qualification-gate.sh WORKTREE}"
+requested_lane="${2:-self-qualification}"
+project="$worktree/assay"
+
+case "$requested_lane" in
+  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
+  *) die "unsupported self-qualification lane: $requested_lane" ;;
+esac
+
+[[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
+[[ -f "$project/pyproject.toml" ]] || die "selected worktree has no assay/pyproject.toml: $project"
+
+cd "$project"
+if [[ "$requested_lane" == b110-pilot || "$requested_lane" == b110-screen ]]; then
+  pin_b110_assay_state
+else
+  mkdir -p .assay
+fi
+source_commit="$(assay_git rev-parse HEAD)"
+source_tree="$(assay_git rev-parse 'HEAD^{tree}')"
+[[ "$(assay_git rev-parse "${source_commit}^{tree}")" == "$source_tree" ]] \
+  || die "captured source commit does not resolve to the captured tree"
+expected_commit="${ASSAY_B105_GATE_EXPECTED_COMMIT:-}"
+expected_tree="${ASSAY_B105_GATE_EXPECTED_TREE:-}"
+[[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] \
+  || die 'outer runner did not provide a full expected source commit'
+[[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] \
+  || die 'outer runner did not provide a full expected source tree'
+[[ "$source_commit" == "$expected_commit" && "$source_tree" == "$expected_tree" ]] \
+  || die 'inner source commit/tree differs from the outer runner launch record'
 echo "B105_SOURCE_COMMIT=$source_commit"
 echo "B105_SOURCE_TREE=$source_tree"
 
@@ -330,7 +494,7 @@ elif [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   deadline=".assay/campaign-deadline-$campaign.json"
 elif [[ "$requested_lane" == "b110-pilot" ]]; then
   campaign="b110-pilot-${source_commit:0:12}"
-  deadline=".assay/campaign-deadline-$campaign.json"
+  deadline="$assay_state_root/campaign-deadline-$campaign.json"
 fi
 
 check_campaign_wheel_digest() {

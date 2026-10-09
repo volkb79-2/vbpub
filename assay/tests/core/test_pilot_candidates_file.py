@@ -439,6 +439,12 @@ def test_T3_T5_single_killed_candidate_is_completed_and_persisted(git_repo: GitR
     assert code == 6, stderr
     summary = json.loads(stdout)
     assert summary["qualifying"] is False and summary["completed"] is True
+    current_judge = next(
+        event["judge_sha256"]
+        for event in _events(progress)
+        if event["event"] == "candidates"
+    )
+    assert summary["judge_sha256"] == current_judge
     assert summary["requested"] == 1
     assert [row["id"] for row in summary["candidates"]] == [selected]
     assert summary["buckets"]["killed"] == 1

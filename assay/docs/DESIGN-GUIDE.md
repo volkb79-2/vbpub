@@ -2562,17 +2562,93 @@ and its verified, detached `tester-unified` child so they retain the host
 cgroup visibility required by selected native candidates.
 
 The pilot initializes its two-hour campaign after exact-source wheel setup and
-before planning or selection. Campaign initialization, planning, selection and
-Assay execution share a hard 90-minute per-invocation cap; planning and
-selection are also bounded by the remaining campaign deadline. Assay execution
-uses only the remaining cap, followed by at most 30 seconds for termination.
+before planning or selection. Campaign initialization, planning, selection,
+Assay execution, report checking, final source/deadline checks and completion
+markers share a hard 90-minute per-invocation cap. Planning and selection are
+also bounded by the remaining campaign deadline. Assay execution and evidence
+checks use only the time left after setup and selection; a timeout allows at
+most 30 seconds for process termination.
 The persisted two-hour campaign remains the absolute bound across retries. The
 selector binds the chosen subset to the current plan, commit, tree and source
 bytes. The run uses three pilot jobs, cold witnesses, resume and the
-pilot-specific state directory; exit 6 plus the completion marker means every
-selected candidate has a disposition. Survivors and other non-passing outcomes
-remain measurement results. A campaign refusal, timeout failsafe or incomplete
-exit cannot be certified by the wrapper. The run-gate 2h20m outer bound
+pilot-specific state directory. Exit 6 alone is not completion evidence: an
+independent checker recomputes the selection and validates the source-bound
+summary, per-candidate state, progress stream, resumed dispositions, two-hour
+campaign deadline, 90-minute attempt window, wheel identity and resource-limit
+evidence. The summary records the current sweep's `judge_sha256` captured in
+memory; the checker requires the candidates progress event and every state
+record to match it. It writes a SHA-256 manifest over the validated files. The
+host copies those bytes into
+`.assay/b110-pilot-evidence/`, checks the exact inventory and content digests,
+and atomically publishes that directory as the retained evidence snapshot.
+Files and directories in the snapshot are made read-only. A separate
+`.assay/b110-pilot-evidence.receipt.json` binds the source, manifest and
+snapshot-index digests. After validating a successful run-gate transcript, the
+host writes `.assay/b110-pilot-evidence.attestation.json`, binding the snapshot
+digest to the transcript run ID and content digest. This durable success
+binding remains usable after run-gate replaces a same-commit pass history entry
+with a later completed failure. A pending receipt is written before the
+snapshot is published and removed only after the snapshot and final receipt
+verify. If the process stops in between, the next attempt moves the pending
+marker, snapshot, receipt, attestation and any staging directory under
+`.assay/b110-pilot-evidence-incomplete/`; none of that material enters the
+validated archive. After writing all completion markers, the host reopens the
+published snapshot, rechecks its contents and identities, and checks both
+deadlines again. Marker text, including the gate-completion line, is
+provisional; a post-marker expiry or changed snapshot returns a failed gate,
+and the registered command's exit status remains the pass signal. The original
+files remain resume state and are not authoritative evidence after
+publication. On retry, a persisted success attestation is checked against the
+owner-only run-gate transcript outside the judged worktree. This lets the host
+recover the successful transcript even after a later same-commit failure
+replaces run-gate's latest-history entry. A retry checks and archives prior
+evidence before source-cleanliness and later host-admission checks, so those
+refusals cannot replace the pass before the host secures its transcript
+binding. Any earlier host refusal exits 3, which the lane maps to
+`ERROR`/history-ineligible; an eligible pass therefore remains available for
+retry. Once prior evidence is archived or quarantined, later refusals can be
+recorded without losing that evidence. Before that sidecar exists, the host opens and validates one bounded
+snapshot of `.run-gate/history.json`, then searches its `b110-pilot` records
+for an eligible successful lane record for the same commit and worktree. A
+well-formed ineligible latest record with `commit: null` is ignored as a
+candidate while earlier eligible history remains usable. It does not reopen
+the mutable store through the
+`run-gate history` verb: the transcript lookup uses exactly the bytes that
+passed preflight. The host compares the receipt's snapshot digest with the
+owner-only transcript. The transcript must contain both the provisional
+snapshot digest and a host-generated digest marker emitted only after the
+final snapshot check. After this check, the host saves the durable attestation
+before attempting to archive the snapshot. It stages the snapshot, receipt,
+attestation and a read-only copy of the exact verified transcript together
+under `.assay/b110-pilot-evidence-incomplete/`. The version-2 attestation names
+that copy as `b110-pilot-run-gate.log` and binds its content digest. The host
+checks the staged copy immediately before publishing the set into
+`.assay/b110-pilot-evidence-archive/<entry>/` with one atomic no-replace
+directory rename. If a failed post-publication check cannot use the incomplete
+area, the unverified bundle moves under the private
+`.assay/b110-pilot-evidence-unverified/` fallback or a private
+collision-resistant sibling. This
+makes the archive independent of later changes to the external log path while
+keeping the transcript and attestation visible together. If the history store
+or transcript cannot be read or validated before the attestation exists, the
+host leaves the live evidence untouched and returns exit 3. An explicit
+absence of a successful transcript,
+a valid successful transcript that proves a different digest, an invalid
+receipt, or an interrupted publication is preserved in the incomplete
+directory before a fresh attempt. If that path is unavailable or unsafe, prior
+evidence quarantine and archive withdrawal use the private unverified-evidence
+fallback or a private collision-resistant sibling; the quarantine marker names
+the selected destination. The host bounds history output, transcript reads,
+snapshot hashing and copying. The transcript protects this comparison from the nested
+tester container, which cannot rewrite the host's external evidence directory;
+it is not a cryptographic signature against a host user with access to that
+directory. Quarantine checks the moved device and inode for files and
+symlinks as well as directories; a replacement race fails closed. The outer
+attempt log is retained as diagnostics and is not in the evidence manifest.
+Survivors and
+other non-passing outcomes remain measurement results. A campaign refusal,
+timeout failsafe, resource-limit event or incomplete exit cannot be certified
+by the wrapper. The run-gate 2h20m outer bound
 includes a planned build/venv allowance of at most 10 minutes, pending
 measurement by the registered gate, plus the campaign and timeout cleanup
 margins.

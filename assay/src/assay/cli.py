@@ -1368,6 +1368,10 @@ def _build_pilot_summary(
         "jobs": lane.judge.mutation.jobs,
         "requested": len(selected_ids),
         "selection_sha256": selection_sha256,
+        # Captured from the current mutation sweep in memory, independently
+        # of the persisted progress stream. The external pilot checker binds
+        # progress and state records to this identity.
+        "judge_sha256": judge_sha256,
         "candidates_file_sha256": candidates_file_sha256,
         "state_dir": str(state_dir),
         "r0": None if "R0" not in claims else claims["R0"].status.value,
