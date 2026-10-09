@@ -427,20 +427,8 @@ def test_peer_thread_enumeration_refuses_errors_and_empty_sets(tmp_path, monkeyp
         _observe(kwargs)
 
 
-def test_peer_thread_disappearance_and_start_time_race_refuse(tmp_path, monkeypatch):
+def test_peer_start_time_race_refuses(tmp_path, monkeypatch):
     kwargs = _fixture(tmp_path)
-    resolve_task = resource_observer._task_facts
-
-    def disappeared(task_dir):
-        if task_dir.name == "4250":
-            raise FileNotFoundError("gone")
-        return resolve_task(task_dir)
-
-    monkeypatch.setattr(resource_observer, "_task_facts", disappeared)
-    with pytest.raises(resource_observer.ResourceObserverError, match="thread disappeared"):
-        _observe(kwargs)
-
-    monkeypatch.setattr(resource_observer, "_task_facts", resolve_task)
     start_ticks = resource_observer._proc_start_ticks
     calls = 0
 
@@ -550,6 +538,88 @@ def test_proc_fact_readers_refuse_unreadable_or_malformed_records(tmp_path, monk
     cgroup_path.write_text("0::/foo/./bar\n", encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="not canonical"):
         resource_observer._task_facts(task_dir)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "relative_path"),
+    [
+        ("read_text", "4242/stat"),
+        ("iterdir", "4242/task"),
+        ("read_text", "4242/task/4242/status"),
+        ("read_text", "4242/task/4242/cgroup"),
+    ],
+)
+def test_observation_retries_a_peer_procfs_entry_that_disappears_once(
+    tmp_path, monkeypatch, method_name, relative_path
+):
+    kwargs = _fixture(tmp_path)
+    vanished_path = Path(kwargs["proc_root"]) / relative_path
+    original = getattr(Path, method_name)
+    vanished = False
+
+    def disappear_once(path, *args, **call_kwargs):
+        nonlocal vanished
+        if path == vanished_path and not vanished:
+            vanished = True
+            raise FileNotFoundError(errno.ENOENT, "transient procfs race", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, method_name, disappear_once)
+
+    result = _observe(kwargs)
+
+    assert result["thread_id"] == kwargs["thread_id"]
+    assert vanished
+
+
+def test_observation_fails_closed_after_repeated_peer_procfs_disappearance(
+    tmp_path, monkeypatch
+):
+    kwargs = _fixture(tmp_path)
+    vanished_path = Path(kwargs["proc_root"]) / "4242/task/4242/status"
+    original = Path.read_text
+    reads = 0
+
+    def always_missing(path, *args, **call_kwargs):
+        nonlocal reads
+        if path == vanished_path:
+            reads += 1
+            raise FileNotFoundError(errno.ENOENT, "persistent procfs race", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, "read_text", always_missing)
+
+    with pytest.raises(
+        resource_observer.ResourceObserverError,
+        match="peer process or thread disappeared during identity verification",
+    ):
+        _observe(kwargs)
+
+    assert 1 < reads <= resource_observer._PEER_SNAPSHOT_ATTEMPTS
+
+
+def test_observation_reports_status_permission_failure_without_retry(tmp_path, monkeypatch):
+    kwargs = _fixture(tmp_path)
+    denied_path = Path(kwargs["proc_root"]) / "4242/task/4242/status"
+    original = Path.read_text
+    reads = 0
+
+    def denied(path, *args, **call_kwargs):
+        nonlocal reads
+        if path == denied_path:
+            reads += 1
+            raise PermissionError(errno.EACCES, "denied", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+
+    with pytest.raises(
+        resource_observer.ResourceObserverError,
+        match=r"cannot read peer thread status \(PermissionError, errno=13\)",
+    ):
+        _observe(kwargs)
+
+    assert reads == 1
 
 
 def test_mount_reader_refuses_unreadable_truncated_invalid_and_ambiguous_mounts(tmp_path):

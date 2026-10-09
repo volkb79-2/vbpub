@@ -22,9 +22,16 @@ class ResourceObserverError(RuntimeError):
     """The peer identity or its complete cgroup ancestry is unprovable."""
 
 
+class _PeerSnapshotChanged(ResourceObserverError):
+    """A procfs identity file vanished while a peer snapshot was read."""
+
+
 _PIDS_EVENTS = frozenset({"max"})
 _MEMORY_EVENTS = frozenset({"max", "oom", "oom_kill", "oom_group_kill"})
 _CAPS_THAT_CAN_BYPASS_CGROUP_DAC = sum(1 << bit for bit in (0, 1, 3, 6, 7, 21))
+_PEER_SNAPSHOT_ATTEMPTS = 3
+
+
 def observe_peer_cgroup(
     *,
     peer_pid: int | None,
@@ -84,6 +91,19 @@ def observe_peer_cgroup(
 
 
 def _resolve_peer(peer_pid: int, peer_uid: int, thread_id: int, proc_root: str) -> dict[str, Any]:
+    for _attempt in range(_PEER_SNAPSHOT_ATTEMPTS):
+        try:
+            return _resolve_peer_snapshot(peer_pid, peer_uid, thread_id, proc_root)
+        except _PeerSnapshotChanged:
+            continue
+    raise ResourceObserverError(
+        "peer process or thread disappeared during identity verification"
+    ) from None
+
+
+def _resolve_peer_snapshot(
+    peer_pid: int, peer_uid: int, thread_id: int, proc_root: str
+) -> dict[str, Any]:
     peer_dir = Path(proc_root) / str(peer_pid)
     start_ticks = _proc_start_ticks(peer_dir / "stat")
     task_root = peer_dir / "task"
@@ -92,6 +112,8 @@ def _resolve_peer(peer_pid: int, peer_uid: int, thread_id: int, proc_root: str) 
             (entry for entry in task_root.iterdir() if entry.name.isdecimal()),
             key=lambda entry: int(entry.name),
         )
+    except FileNotFoundError as exc:
+        raise _PeerSnapshotChanged("peer thread directory disappeared") from exc
     except OSError as exc:
         raise ResourceObserverError("cannot enumerate authenticated peer threads") from exc
     if not tasks:
@@ -100,10 +122,7 @@ def _resolve_peer(peer_pid: int, peer_uid: int, thread_id: int, proc_root: str) 
     selected: list[dict[str, Any]] = []
     task_facts: list[dict[str, Any]] = []
     for task_dir in tasks:
-        try:
-            facts = _task_facts(task_dir)
-        except FileNotFoundError:
-            raise ResourceObserverError("peer thread disappeared during identity verification") from None
+        facts = _task_facts(task_dir)
         if facts["native_tid"] == thread_id:
             selected.append(facts)
         task_facts.append(facts)
@@ -139,6 +158,8 @@ def _resolve_peer(peer_pid: int, peer_uid: int, thread_id: int, proc_root: str) 
 def _proc_start_ticks(path: Path) -> int:
     try:
         text = path.read_text(encoding="ascii")
+    except FileNotFoundError as exc:
+        raise _PeerSnapshotChanged("peer process stat file disappeared") from exc
     except (OSError, UnicodeError) as exc:
         raise ResourceObserverError("cannot read authenticated peer process identity") from exc
     closing = text.rfind(")")
@@ -158,6 +179,8 @@ def _task_facts(task_dir: Path) -> dict[str, Any]:
     cgroup_file = task_dir / "cgroup"
     try:
         cgroup_text = cgroup_file.read_text(encoding="ascii")
+    except FileNotFoundError as exc:
+        raise _PeerSnapshotChanged("peer thread cgroup file disappeared") from exc
     except (OSError, UnicodeError) as exc:
         raise ResourceObserverError("cannot read peer thread cgroup identity") from exc
     cgroup = targets._unified_cgroup_path(cgroup_text)
@@ -192,8 +215,11 @@ def _task_facts(task_dir: Path) -> dict[str, Any]:
 def _read_status(path: Path) -> dict[str, Any]:
     try:
         lines = path.read_text(encoding="ascii").splitlines()
+    except FileNotFoundError as exc:
+        raise _PeerSnapshotChanged("peer thread status file disappeared") from exc
     except (OSError, UnicodeError) as exc:
-        raise ResourceObserverError("cannot read peer thread status") from exc
+        detail = f"{type(exc).__name__}, errno={getattr(exc, 'errno', None)}"
+        raise ResourceObserverError(f"cannot read peer thread status ({detail})") from exc
     raw: dict[str, str] = {}
     for line in lines:
         key, separator, value = line.partition(":")
