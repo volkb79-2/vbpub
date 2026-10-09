@@ -8463,3 +8463,14 @@ expects the exact newline-free dispatch payload and still asserts the 4097-byte
 request is refused without dispatch. Run-Gate history and the preserved log
 record the failed run; no container remains active. Re-run `r0-r1` on a new
 quiet commit, then `r3`; do not reuse this failed receipt as a pass.
+
+### RW-528 — 2026-10-09 03:45:17 UTC — correct the generated DAMON_STAT anchor
+
+The registered `r0-r1` lane on exact tree `178552d0b14cd45dfe62425f0f5633ff8d099113`
+finished in 130.89 seconds with exit 1: 2,476 passed and one failed. The
+remaining failure was only the docs-link checker: its anchor generator keeps
+the underscore from the exact heading `Host DAMON_STAT exclusivity`, yielding
+`host-damon_stat-exclusivity`. README and DESIGN-GUIDE now target that exact
+anchor. The observer tests and all other suite tests passed. The gate container
+has exited; rerun `r0-r1` on the next quiet commit before treating the short
+gate as green.

@@ -333,7 +333,7 @@ not establish that the host DAMON facility was free. cgprofile does not
 disable or reconfigure `DAMON_STAT`: that would silently change host-wide
 monitoring outside the lane's authority. It marks DAMON unavailable and
 continues ordinary profiling under R-36h. See
-[`CONSUMERS.md`'s host troubleshooting note](CONSUMERS.md#host-damonstat-exclusivity)
+[`CONSUMERS.md`'s host troubleshooting note](CONSUMERS.md#host-damon_stat-exclusivity)
 for read-only checks and the operator procedure.
 
 Each newly reserved `state` node is held open as an identity pin. The kernel's
