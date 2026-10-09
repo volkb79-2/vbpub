@@ -11459,7 +11459,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 ## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
-**Status: OPEN (filed 2026-09-28; resumed 2026-10-07; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-cold-witness`; v15 replaces the already shipped v14 target).**
+**Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-evidence-deadline-20261009`; v15 replaces the already shipped v14 target).**
 
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
@@ -11469,7 +11469,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - per-candidate `evidence`;
 - `witness-cold` and `ledger` execution modes;
 - `judgment.r2.{cold_witness_kills, r2_command, liveness.cpu_window_s/idle_floor_s, equivalence_ledger}`;
-- judge identity `/8` (current `/7` after B145; mutation-state schema remains 1);
+- judge identity `/9` (including the B145 and B114 evidence changes; mutation-state schema remains 1);
 - lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
 - B105 gate flag and source-bound report binding;
 - B117/P6 persisted deadline and process-group termination as a direct prerequisite;
@@ -11514,6 +11514,11 @@ inputs. The 3,760-candidate positive fixture must pass `assay verify` with its
 inventory equal to the complete outcome buckets, then pass the checker with a
 matching plan and deadline.
 
+The B105 and B110 report checkers also run `assay verify` against the same
+bounded parsed snapshot they accept, and require all six outcome buckets to
+cover the full ordered plan exactly once; duplicate, missing, and partial
+inventories refuse.
+
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
@@ -11529,9 +11534,16 @@ matching plan and deadline.
   and trailing bytes refuse proof. The parent receipt reader cannot block on a
   FIFO, and the ordered manifest is read as a bounded no-follow regular file.
   A post-session hook cannot rewrite a completed receipt into a call failure.
-- [ ] Recheck the lane deadline immediately after a successful snapshot
-  integrity return; expiry at that boundary leaves the candidate unclassified
-  and absent from resume state and candidate progress.
+- [ ] Recheck the lane deadline after snapshot cleanup, before and after
+      main-thread candidate classification, at the atomic state commit
+      boundary, after resume aggregation, around final progress/bucketing, and
+      before return. Expiry or termination during snapshot integrity, cleanup,
+      state serialization or commit leaves that candidate unclassified and
+      absent from resume state and candidate progress. Campaign incompleteness
+      comes from the executor's unscheduled-candidate fact, not from the
+      `budget_exceeded` bucket, which also contains terminal per-candidate
+      timeouts. A campaign that does not finish before its deadline cannot
+      return a completed mutation result.
 - [ ] Assay `tester-unified` and `self-qualification-preflight`, plus MDT `smoke`, PASS on the final reviewed merge commit; MDT smoke covers the host initializer regression and the Assay gates cover the verdict/cold-witness implementation.
 
 ## B115 — B110 P4: bounded work-queue mutation executor

@@ -16,7 +16,6 @@ _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PLAN_BYTES = 16 * 1024 * 1024
 _MAX_VERDICT_BYTES = 64 * 1024 * 1024
-_BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung")
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -158,32 +157,24 @@ def verify_screen(
         raise ValueError("R2 mutation discovery did not produce a campaign")
     if r2.get("reason_code") == "LANE_TIMEOUT":
         raise ValueError("R2 claim ended with LANE_TIMEOUT")
-    candidate_count = mutation.get("candidate_count")
-    total = mutation.get("total")
-    if type(candidate_count) is not int or candidate_count != len(planned_ids):
-        raise ValueError("R2 mutation candidate_count differs from the full plan")
-    if type(total) is not int or total < 0:
-        raise ValueError("R2 mutation total is not a non-negative integer")
-    bucket_total = 0
-    for bucket in _BUCKETS:
-        values = mutation.get(bucket)
-        if not isinstance(values, list):
-            raise ValueError(f"R2 mutation.{bucket} is missing or not an array")
-        bucket_total += len(values)
-    if total != bucket_total:
-        raise ValueError("R2 mutation total differs from its bucket inventory")
-    identities = mutation.get("candidate_ids")
-    if not isinstance(identities, list) or any(
-        not isinstance(identity, str) or not _HEX64.fullmatch(identity)
-        for identity in identities
-    ):
-        raise ValueError("R2 mutation candidate_ids is missing or malformed")
-    if len(identities) != len(set(identities)):
-        raise ValueError("R2 mutation candidate_ids contains duplicates")
-    if identities != planned_ids:
-        raise ValueError("R2 mutation candidate_ids differ from the ordered full plan")
-    if candidate_count < total:
-        raise ValueError("R2 mutation candidate_count is smaller than attempted total")
+    from assay._mutation_inventory import verify_complete_mutation_inventory
+
+    verify_complete_mutation_inventory(
+        mutation,
+        planned_ids,
+        context="B110 screen R2",
+    )
+
+    # Verify the exact bounded snapshot parsed above after the independent
+    # screen checks. A prior `assay verify` process reads the file separately.
+    from assay.verify import verify_document
+
+    verifier_failures = verify_document(verdict)
+    if verifier_failures:
+        raise ValueError(
+            "Assay verifier rejected the parsed verdict snapshot: "
+            + "; ".join(verifier_failures)
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -195,6 +195,13 @@ def check_campaign_scope(
             "R2 candidate_ids differ from the plan: report inventory must match "
             "the ordered plan exactly"
         )
+    from assay._mutation_inventory import verify_complete_mutation_inventory
+
+    verify_complete_mutation_inventory(
+        mutation,
+        planned,
+        context="B105 R2",
+    )
 
 
 def _ordered_plan_sha256(candidate_ids: list[str]) -> str:
@@ -1047,6 +1054,17 @@ def verify_report_document(
         deadline_plan_sha256=deadline_plan_sha256,
     )
 
+    # Verify the exact bounded snapshot parsed by this checker. The shell
+    # also runs `assay verify`, but its separate file read cannot bind these
+    # independent source/plan checks to the same bytes.
+    from assay.verify import verify_document
+
+    verifier_failures = verify_document(document)
+    if verifier_failures:
+        raise ValueError(
+            "Assay verifier rejected the parsed verdict snapshot: "
+            + "; ".join(verifier_failures)
+        )
 
 #: The lane whose receipt the full B105 qualification requires (S1, B123).
 RECEIPT_LANE = "tester-unified"
