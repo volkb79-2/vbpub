@@ -2,7 +2,8 @@
 
 **Base:** `3589a57f1cf462f82aab0683a05dc0bda6be2c3c`  
 **P7a branch:** `assay-b118-p7-pilot`  
-**P7a commit:** pending  
+**P7a commit:** `7b7143d68`
+
 **P7b commit:** pending
 
 ## Status
@@ -278,5 +279,6 @@ Round 23 Sol xhigh review returned **ACCEPT — no findings**. The report is
 `3589a57f1cf462f82aab0683a05dc0bda6be2c3c`, and the status snapshots were
 identical. The reviewer confirmed the TMPDIR-independent path lock and
 two-process parent-replacement oracle, consistent docs, and bounded cleanup
-for both selector subprocess tests. P7a is ready to commit; the registered
-gate remains pending while the separate cgroup-profiler R2 container runs.
+for both selector subprocess tests. The P7a implementation is committed as
+`7b7143d68`. The registered gate remains pending while the separate
+cgroup-profiler R2 container runs.
