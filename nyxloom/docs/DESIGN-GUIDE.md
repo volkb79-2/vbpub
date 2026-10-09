@@ -254,6 +254,26 @@ activity timestamps are read from the end only for transcripts that match.
 Progress uses cli-extended's existing renderer on stderr with the standard
 `--progress` modes; the search command does not add a second progress API.
 
+`--fast` is an opt-in approximate path for raw JSONL stores. It requires
+ripgrep, ASCII query words, and an explicit `--client codex` and/or
+`--client claude`; it refuses OpenCode and refuses the all-client default
+instead of silently omitting a client. Ripgrep emits only complete matching
+tokens with `--only-matching`; Nyxloom counts those occurrences directly and
+does not parse candidate transcript records for matching or read matched-file
+tails. The 64-hit cap,
+any/all filter, exact/prefix matching, and relevance ranking still apply. File
+modification time supplies the date sort and is labeled `FILE MTIME (UTC)`;
+it is a filesystem proxy for activity, not the transcript's recorded last
+activity.
+
+Raw mode searches serialized JSON, including keys and metadata, so a match may
+come from text the regular search deliberately excludes. Escaped query letters
+and Unicode case-fold expansions may be missed. Those tradeoffs are why raw
+mode is opt-in. Session discovery still reads the small identifying metadata
+needed to map source paths to session IDs and deduplicate aliases; the match
+counting pass itself uses only ripgrep's returned tokens. For the precise
+text-field behavior, use the default search path.
+
 Codex homes can be aliases of one another (for example, `~/.codex2/sessions`
 symlinked to `~/.codex/sessions`). Search and bare-ID resolution compare
 physical file/directory identities so aliases and directory-link cycles do

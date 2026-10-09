@@ -874,6 +874,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt("--sort-by", "Result order", group="RESULT ORDER", choices=("best", "date"), default="best"),
             _opt("--word-match", "Require any or all query words", group="WORD MATCH", choices=("any", "all"), default="any"),
             _opt("--term-match", "Match exact words or words beginning with each query word", group="WORD MATCH", choices=("exact", "prefix"), default="exact"),
+            _opt("--fast", "Use approximate raw ripgrep tokens; requires ASCII queries and explicit Codex/Claude selection", group="SEARCH MODE", action="store_true"),
             _opt("--client", "Limit search to a harness client; repeat to select several", group="SESSION SOURCE", choices=("codex", "claude", "opencode"), action="append", default=None),
             _opt("--source-root", "Search this harness data directory or OpenCode database; repeat to add roots", group="SESSION SOURCE", metavar="PATH", action="append", default=None),
         ),
@@ -882,6 +883,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             "nyxloom-harness search debian iso cloud qcow",
             "nyxloom-harness search debian iso cloud qcow --term-match prefix --word-match all",
             "nyxloom-harness search debian iso cloud qcow --client codex --source-root ~/.codex/sessions",
+            "nyxloom-harness search debian iso cloud qcow --fast --client codex",
         ),
     ))
     lossless_options = (

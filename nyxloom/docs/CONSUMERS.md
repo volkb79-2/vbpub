@@ -169,6 +169,7 @@ nyxloom-harness search debian iso cloud qcow
 nyxloom-harness search debian iso cloud qcow --term-match prefix
 nyxloom-harness search debian iso cloud qcow --client codex --source-root ~/.codex/sessions --term-match prefix --word-match all
 nyxloom-harness search 'cli-extended gate backlog' --sort-by date --client codex --client claude
+nyxloom-harness search debian iso cloud qcow --fast --client codex --source-root ~/.codex/sessions
 ```
 
 `--sort-by best` is the default and puts sessions matching more distinct
@@ -190,6 +191,17 @@ installed, it uses ripgrep to stream candidate records, and otherwise uses a
 bounded-memory Python scan. `--progress quiet` suppresses progress. Pass a
 result's session ID to `nyxloom-harness extract`; use the printed source path
 if same-ID results need disambiguation.
+
+`--fast` is an approximate raw-text mode for ASCII queries against Codex or
+Claude JSONL. It requires ripgrep and an explicit `--client codex` and/or
+`--client claude`; it refuses OpenCode and the default all-client selection.
+It counts whole tokens emitted by ripgrep without parsing candidate transcript
+records for matching or reading matched-file tails. Since it scans serialized
+JSON, keys and metadata can match, while JSON-escaped query letters or Unicode
+case-fold equivalents can be missed. Its date column is `FILE MTIME (UTC)`, a
+filesystem proxy.
+Session discovery still reads identifying metadata. Use the default mode when
+matching only the usual text-bearing fields matters.
 
 Start with a normal compact brief:
 
