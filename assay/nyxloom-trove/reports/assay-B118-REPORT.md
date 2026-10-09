@@ -381,6 +381,6 @@ state and progress together and analyzes matching pairs.
 After those fixes, the focused regression suite passed 151 tests in 54.17s;
 the two directly changed documentation oracles passed, `bash -n` passed for
 both B110 shell drivers, and `git diff --check` passed. No registered gate,
-B105 R2 campaign, or B110 pilot has started from this worktree. P7b is ready
-for merge; same-tip `tester-unified` and registered-gate acceptance remain
-pending.
+B105 R2 campaign, or B110 pilot has started from this worktree. P7b was
+committed as `f0814096c` and merged without fast-forward as `cbd605445`.
+Same-tip `tester-unified` and registered-gate acceptance remain pending.

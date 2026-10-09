@@ -77,7 +77,13 @@ def test_assays_own_lane_file_loads():
 
     assert lane_file.schema_version == 2
     assert lane_file.project_root == PROJECT_ROOT
-    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID, "analysis"]
+    assert list(lane_file.lanes) == [
+        GATE_ID,
+        QUALIFICATION_ID,
+        PREFLIGHT_ID,
+        "analysis",
+        "analysis-r2",
+    ]
 
 
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
@@ -120,6 +126,44 @@ def test_inner_tester_budget_leaves_time_for_the_outer_sql_witness():
     assert run_gate["resources"] == {"shared": ["assay-self-qualification"]}
     assert run_gate["exit_map"] == {"3": "ERROR"}
     assert gate["timeout_seconds"] == 6 * 60 * 60
+
+
+def test_analysis_r2_is_a_bounded_separate_whole_target_lane():
+    lane_file = load_lane_file(SELF_LANE_FILE)
+    lane = lane_file.lane("analysis-r2")
+    baseline = lane_file.lane("analysis")
+    judge = lane.judge
+
+    assert lane.scope == "S1"
+    assert lane.rigor == ("R0", "R1", "R2")
+    assert lane.enforcement == "gate"
+    assert lane.budget_seconds == 60 * 60
+    assert lane.argv == baseline.argv[:-1] + (
+        "--cov-report=json:.assay/coverage-analysis-r2.json",
+    )
+    assert judge is not None
+    assert judge.mode == "whole_target"
+    assert judge.source_roots == ("analysis/src/assay_analysis",)
+    assert judge.targets == (
+        "analysis/src/assay_analysis/__init__.py",
+        "analysis/src/assay_analysis/campaign.py",
+        "analysis/src/assay_analysis/cli.py",
+        "analysis/src/assay_analysis/evidence.py",
+        "analysis/src/assay_analysis/plan_estimate.py",
+    )
+    assert not set(judge.targets) & {target for target in lane_file.lane(QUALIFICATION_ID).judge.targets}
+    assert judge.mutation is not None
+    assert judge.mutation.jobs == 1
+    assert judge.mutation.max_mutants == 10000
+    assert judge.mutation.operators == (
+        "python:compare-swap",
+        "python:boolop-swap",
+        "python:bool-const-flip",
+        "python:falsy-swap",
+    )
+    assert judge.mutation.budget_per_candidate == "auto"
+    assert judge.coverage is not None
+    assert judge.coverage.artifact == ".assay/coverage-analysis-r2.json"
 
 
 def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
