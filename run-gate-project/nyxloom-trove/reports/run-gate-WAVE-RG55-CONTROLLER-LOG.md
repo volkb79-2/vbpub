@@ -8550,3 +8550,21 @@ of exactly 4096 bytes without a newline followed by EOF: the handler should
 ignore the incomplete request, send no response, and close the peer. Re-run
 the registered lane on a committed quiet tree and require 100% line and branch
 coverage before R3 or R2.
+
+### RW-533 — 2026-10-09 04:04:31 UTC — request-size edge and short gates pass
+
+On exact committed tree `b5804ee6dbb654d0f9745a0f15d4def8c831e57e`, the
+registered `r0-r1` lane passed in 127.06 seconds: 2,478 tests, 100% line
+coverage and 100% branch coverage, including the under-limit partial-request
+EOF edge added for RW-532. The separately read `run-gate history` records
+PASS, exit 0, and the lane log is
+`/tmp/run-gate/lanes/r0-r1/6b81680676ce2a557829c9148d2d0c6d.log`.
+
+The registered `r3` lane also passed on that exact tree in 10.9 seconds; all
+seven real canaries were rejected, none survived. Its separately read history
+records PASS, exit 0. The `r3` profile's DAMON attempt was unavailable with
+`EBUSY` because the restored host-wide `DAMON_STAT` policy is `Y`; the
+operator-approved isolated live probe in RW-531 independently demonstrated
+successful DAMON collection when that conflict was temporarily removed.
+`docker ps` showed no remaining `cgprofile-gate-*` containers. These receipts
+are for `b5804ee6`; any later commit requires fresh exact-tree gates.
