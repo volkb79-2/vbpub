@@ -497,3 +497,113 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   and after; the review ran no tests, gates, or containers. A full-base
   `git diff --check` then identified a trailing blank line in
   `test_verify_b114_coverage.py`, removed as a whitespace-only follow-up.
+
+## 2026-10-09 — Sol xhigh review round 2 deadline and report-check repairs
+
+- A read-only GPT-6-Sol xhigh review ran from the preferred `.codex` home on
+  the uncommitted diff at `cbd6054450610c2c57d51ea35d1e914a391c5177`.
+  Before/after HEAD and status matched. It ran no tests, gates, or containers;
+  the findings are retained in `reports/assay-B114-REVIEW-2026-10-09-round2.md`.
+- The review found two P1s: deadline/termination could arrive during state
+  serialization or replacement, and final bucketing could return a completed
+  mutation after expiry when no state store was in use.
+- State persistence now checks the deadline after serializing/fsyncing the
+  temporary record and after atomic replacement/directory sync. If the latter
+  check refuses, it removes and syncs the candidate record before propagating
+  the timeout. Main-thread classification is checked before and after, and a
+  complete campaign is checked around final bucketing and before return;
+  incomplete budget-exceeded results retain their existing behavior.
+- B105 and B110 report checkers invoke `assay verify` on the same bounded
+  parsed document they accept and require the six terminal buckets to cover
+  the full ordered plan exactly once. Regression tests cover changed report
+  bytes, duplicate/partial inventories, deadline during serialization and
+  post-replacement cleanup, and expiry/termination at candidate and final
+  classification.
+- Current focused results: the eight deadline/classification boundary cases
+  passed; the complete B105/B110 checker and mutation-executor selection
+  passed **183 tests in 61.55 seconds**. `git diff --check` passed. No
+  registered gate or R2 campaign has run on this repair diff.
+- Next: a fresh exact-tip independent review; after acceptance, commit and
+  provisionally merge, then run the registered B114 acceptance gates on the
+  merged tree.
+
+## 2026-10-09 — Sol xhigh review round 3 repair pass
+
+- The exact-tip review found four remaining gaps: rollback after directory
+  sync failure, deadline expiry during resumed-result aggregation, preserving
+  an older valid state record on aborted replacement, and missing user-facing
+  documentation for same-snapshot verification/full bucket accounting. The
+  read-only report is retained as
+  `reports/assay-B114-REVIEW-2026-10-09-round3.md`.
+- State writes now preserve an existing record until the replacement has
+  passed its directory sync and commit guard; a failed new-record write removes
+  its publication, while an aborted replacement restores the prior record.
+  Rollback also covers directory-sync errors and runs for guarded and ordinary
+  state writes. Completed campaigns check the deadline after resume merging,
+  metadata/progress finalization, and immediately before return. Partial
+  `budget_exceeded` campaigns preserve their incomplete-result behavior.
+- README, DESIGN-GUIDE, CONSUMERS, and CHANGES now state that B105/B110
+  checkers validate the same bounded parsed report snapshot used for provenance
+  checks and require the six terminal buckets to account for the full plan
+  exactly once. B114 backlog scope now records the current judge identity `/9`.
+- Targeted state/deadline regressions: **6 passed**. Full B105/B110 checker and
+  mutation-executor focused suite: **188 passed in 64.38s**. Documentation
+  examples/vocabulary: **55 passed**. `git diff --check` passed before the
+  final log/changelog edits; it will be rerun before review. No registered gate
+  or mutation campaign has run on this repair diff.
+- Next: run the exact-tip read-only Sol xhigh review from `.codex` (fall back
+  to `.codex2` only on route failure); then commit, provisionally merge, and
+  run the registered B114 acceptance gates on the merged tree.
+
+## 2026-10-09 — Sol xhigh review round 4 refusal-order finding
+
+- The exact-tip review reported one P3: it preferred running
+  `verify_document` before B105/B110 source and plan comparisons. The review
+  report is retained at `reports/assay-B114-REVIEW-2026-10-09-round4.md`.
+- I tested that ordering and the focused suite reported 33 failures: existing
+  tests assert B105's documented structural/plan/report refusal order and
+  B110's specific R0/R1, inventory, and bucket refusals. The earlier checks
+  all fail closed; when they pass, each checker still calls
+  `verify_document` on the same bounded parsed object before accepting. Thus
+  moving the verifier earlier changes refusal precedence, not the accepted
+  report set or the same-snapshot guarantee. I restored the established order
+  and removed the temporary precedence tests/docs.
+- A fresh exact-tip review will explicitly assess the acceptance set and
+  check for any path that could accept without verifying the parsed snapshot;
+  refusal precedence remains the existing documented contract.
+
+## 2026-10-09 — Sol xhigh review round 5 deadline-completion repair
+
+- The review found that `run_mutation` inferred campaign completeness from
+  whether `Mutation.budget_exceeded` was empty. That bucket also contains valid
+  terminal per-candidate timeouts, so deadline checks could be skipped after
+  those outcomes. The same review noted DESIGN-GUIDE's B105 verifier-order
+  sentence did not match the established refusal precedence.
+- `_execute_mutation_jobs` now returns its actual campaign-completion flag
+  separately from the verdict payload. The flag comes from its
+  lane-deadline/unsubmitted-candidate mask; `run_mutation` preserves it across
+  resume merging and final progress writes. The guide now documents that
+  source bindings are checked before the verifier validates the same parsed
+  snapshot, with both required before acceptance.
+- Extended `test_deadline_expiring_during_resume_merge_does_not_return_completed_result`
+  to seed a recorded per-candidate timeout, expire the lane deadline during
+  merge, and require `LANE_TIMEOUT`. Direct executor boundary tests assert the
+  returned completion flag. The focused B105/B110 checker, mutation executor,
+  mutation boundary, and documentation suite passed: **312 tests in 63.76s**.
+  `git diff --check` passed. No registered gate or mutation campaign has run
+  on this repair diff.
+- Next: exact-tip Sol xhigh review from `.codex`; on acceptance, commit and
+  provisionally merge, then run registered acceptance gates on the merged
+  tree.
+
+## 2026-10-09 — final Sol xhigh review
+
+- The read-only GPT-6-Sol xhigh review from the preferred `.codex` home found
+  no actionable issues in the current diff. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round6.md`; exit was 0, and HEAD plus
+  worktree-status snapshots matched before and after.
+- The reviewed tree passed the focused B105/B110 checker, mutation-executor,
+  mutation-boundary, and docs-contract suite (**312 passed in 63.76s**) and
+  `git diff --check`. No registered gate or mutation campaign has run yet.
+- Next: commit and provisionally merge this package; run the registered B114
+  acceptance gates on the merged commit.

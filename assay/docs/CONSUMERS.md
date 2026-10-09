@@ -263,6 +263,11 @@ tester-unified receipt, deadline and manifest through bounded no-follow
 regular-file descriptors. Report, plan and receipt limits are 64 MiB, 16 MiB
 and 4 KiB; final-component symlinks and special files are refused. It validates
 D1-D4 before parsing the R2 plan, then checks the selected ordered-plan digest.
+The checker validates the shipped report schema on the same parsed JSON object
+it uses for source and plan checks; a separate `assay verify` run cannot certify
+a later read of the report. For a complete R2 result, all six terminal outcome
+buckets must contain every candidate in the ordered plan exactly once. Missing,
+duplicate or foreign outcomes are refused even when their aggregate counts match.
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing
@@ -1073,6 +1078,10 @@ current commit/tree, no R2 `LANE_TIMEOUT`, and a completed R2 `PASS` or `FAIL`
 outcome. R2 `ERROR`, `BUDGET_EXCEEDED` and `INCONCLUSIVE` outcomes are not a
 completed screen. An R0 or R1 failure, partial inventory, timeout or stale
 verdict cannot emit the screen completion marker.
+The screen checker validates the report schema and its lane, exit status and
+plan against that same parsed snapshot. Its six terminal outcome buckets must
+account for every planned candidate exactly once; counts alone do not establish
+complete classification.
 The lane's report is never B105 evidence except through the B119 import path;
 using it for pre-deadline records awaits the D7 decision.
 

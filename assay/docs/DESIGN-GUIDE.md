@@ -2455,6 +2455,15 @@ snapshot cannot resolve `HEAD~1` (an R2 mutant or R3 canary child's `HEAD~1`
 is the judged commit itself). Snapshot refs and tags are intentionally not
 copied.
 
+The checker parses its bounded report once, checks B105's source bindings, and
+then applies the shipped `verify_document` validation to that same object
+before acceptance. This avoids treating an earlier `assay verify` read as
+evidence for different bytes read later by the checker. A complete R2 result
+also requires the six terminal outcome buckets to contain every candidate in
+the ordered plan exactly once. Candidate counts alone cannot distinguish
+complete classification from a missing result paired with a duplicate or
+foreign one.
+
 **S1: the same-commit `tester-unified` receipt.** The full lane refuses to
 start unless the registered `tester-unified` gate passed at the very commit and
 tree it is about to judge. After a green container, and only if HEAD and its
@@ -2583,6 +2592,11 @@ no R2 `LANE_TIMEOUT`, and an R2 status of `PASS` or `FAIL`. An R2 `ERROR`,
 `BUDGET_EXCEEDED` or `INCONCLUSIVE` status cannot complete the screen. A
 complete screen may contain survivors and may therefore retain a nonzero Assay
 run exit; the outer gate records completion of the measurement, not an R2 pass.
+The screen checker applies `verify_document` to the same bounded report object
+it uses for the lane, exit-status and plan checks, and requires all six
+terminal outcome buckets to cover the current plan exactly once. This binds
+the report's structural validity and its full candidate accounting to one
+snapshot of the file.
 The screen is not B105 evidence except through B119's import path, whose use
 for pre-deadline records awaits the operator's D7 decision. See the [registered consumer commands and
 artifacts](CONSUMERS.md#registered-pilot-and-survivor-screen-gates).

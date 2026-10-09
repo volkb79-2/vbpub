@@ -508,7 +508,7 @@ def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrup
     plan = make_plan(make_lane(argv=("check",)))
 
     with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
-        result = mutation._execute_mutation_jobs(
+        result, campaign_complete = mutation._execute_mutation_jobs(
             job_list=(job,),
             deadline=make_deadline(),
             jobs=1,
@@ -526,6 +526,7 @@ def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrup
         )
 
     assert isinstance(result, Mutation)
+    assert campaign_complete is False
     assert len(result.budget_exceeded) == 1
     assert not result.killed and not result.survived and not result.crashed
     assert integrity_checks == [True]
@@ -571,7 +572,7 @@ def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
     plan = make_plan(make_lane(argv=("check",)))
 
     with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
-        result = mutation._execute_mutation_jobs(
+        result, campaign_complete = mutation._execute_mutation_jobs(
             job_list=(job,),
             deadline=deadline,
             jobs=1,
@@ -591,6 +592,7 @@ def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
         )
 
     assert isinstance(result, Mutation)
+    assert campaign_complete is False
     assert len(result.budget_exceeded) == 1
     assert not result.killed and not result.survived and not result.crashed
     assert not list(state_root.glob("*.json"))

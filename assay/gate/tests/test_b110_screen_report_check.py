@@ -11,6 +11,7 @@ import pytest
 
 from gate.tests.support import PROJECT_ROOT
 from assay.verify import verify_document
+from assay._mutation_inventory import verify_complete_mutation_inventory
 
 
 def _checker():
@@ -68,6 +69,14 @@ def test_complete_survivor_screen_is_verified_even_with_nonzero_exit():
 
     assert verify_document(verdict) == []
     _verify(plan, verdict)
+
+
+def test_verdict_snapshot_is_checked_by_assay_verifier_inside_screen_checker():
+    plan, verdict = _documents()
+    verdict["schema_version"] = 1
+
+    with pytest.raises(ValueError, match="Assay verifier rejected the parsed verdict snapshot"):
+        _verify(plan, verdict)
 
 
 def test_verdict_exit_code_must_match_the_assay_run_process_status():
@@ -141,6 +150,38 @@ def test_incomplete_or_duplicate_candidate_inventory_is_refused():
     verdict["claims"][2]["mutation"]["candidate_ids"] = [candidate_ids[0], candidate_ids[0]]
     with pytest.raises(ValueError, match="contains duplicates"):
         _verify(plan, verdict)
+
+
+def test_each_full_plan_candidate_must_appear_once_in_a_terminal_bucket():
+    plan, verdict = _documents()
+    mutation = verdict["claims"][2]["mutation"]
+    mutation["killed"][0]["candidate_id"] = mutation["survived"][0]["candidate_id"]
+
+    with pytest.raises(ValueError, match="bucket outcomes contain duplicate candidate_ids"):
+        _verify(plan, verdict)
+
+
+def test_complete_inventory_check_rejects_bucket_duplicate_and_partial_total():
+    plan, verdict = _documents()
+    mutation = verdict["claims"][2]["mutation"]
+    planned_ids = plan["candidates"]
+    mutation["killed"][0]["candidate_id"] = mutation["survived"][0]["candidate_id"]
+    with pytest.raises(ValueError, match="bucket outcomes contain duplicate candidate_ids"):
+        verify_complete_mutation_inventory(
+            mutation,
+            [row["id"] for row in planned_ids],
+            context="test",
+        )
+
+    plan, verdict = _documents()
+    mutation = verdict["claims"][2]["mutation"]
+    mutation["total"] = 1
+    with pytest.raises(ValueError, match="total differs from the complete candidate_count"):
+        verify_complete_mutation_inventory(
+            mutation,
+            [row["id"] for row in plan["candidates"]],
+            context="test",
+        )
 
 
 def test_r2_lane_timeout_is_refused_even_with_complete_inventory():
