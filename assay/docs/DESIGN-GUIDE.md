@@ -1373,6 +1373,69 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Non-qualifying candidate pilots (B118)
+
+`assay run --candidates-file` measures a selected subset of a native R2 plan.
+That subset cannot support the lane's normal qualification claim, so pilot mode
+prints a separate JSON summary and never writes a verdict artifact. A standard
+verdict is the input to verification and downstream release decisions; omitting
+it prevents a partial candidate inventory from being mistaken for a complete
+PASS. The summary says `qualifying: false` and reports each bucket, selected
+candidate, and any unresolved ID.
+
+Exit code **6** is intentionally outside the ordinary `EXIT_CODES` map. It
+means the selected pilot inventory completed, regardless of whether R2 passed
+or found survivors. It does not change the lane's verdict vocabulary or turn a
+survivor into a pass. Incomplete pilots return the underlying refusal or
+failure code, and a non-completed PASS is converted to ERROR.
+
+Pilot runs omit R3 because the selected R2 sample is exploratory; it cannot
+establish the lane-wide canary claim. They do persist one ordinary mutation
+state record per completed candidate, so an interrupted sample can resume.
+The `PILOT-STATE` sentinel binds that store to the plan-ordered selection and
+lane. A different selection, lane, or pre-existing non-pilot store refuses.
+Keep pilot state separate from qualifying campaign state; the later state
+import workflow refuses this sentinel. The standalone selector bounds seeds
+to 128 printable ASCII characters and checks that its output fits the same
+1 MiB limit the run command accepts. Assay takes a nonblocking exclusive
+`flock` on the admitted state-directory descriptor from preflight through the
+run. It also takes a path lock under a private directory in the system `/tmp`,
+independent of `TMPDIR`, so processes using different temporary-directory
+settings still lock the same requested state path. This lock survives
+replacement of the store's parent. The descriptor `flock` coordinates callers
+that reach the same directory inode through independent clones or path aliases.
+If the store or its parent is renamed, the open descriptor keeps the old store
+locked; the path identity check refuses certification if the requested path
+now names a different directory. All state-record reads and writes use that
+admitted descriptor. After building a pilot summary, Assay re-reads and
+validates `PILOT-STATE`, then checks the path identity immediately before
+printing the result. Progress output cannot name the sentinel, a mutation
+record, or another link to a state file.
+
+The standalone selector runs Git with a closed configuration environment and
+checks that Git reports the supplied repository root. It requires a clean
+checkout, verifies the plan's commit and tree, reads candidate source bytes
+from those immutable Git objects, and checks the source hashes before
+selection. It pins both output parent directories before collision checks;
+atomic writes stay relative to those descriptors even if a parent symlink is
+later redirected. The selector stages both outputs, rechecks commit, tree and
+status immediately before publishing, replaces the candidates file first,
+then publishes the digest-bound report as the commit marker. Each row's
+`source_sha256` and each known-hard scanner span are checked against the exact
+committed bytes and declared function/operator. A candidate with any bucket
+can be resumed only when its terminal command facts agree with that bucket;
+legacy or contradictory records are re-executed. The selector takes
+nonblocking `flock` locks on both pinned output-parent directory descriptors,
+ordered by device and inode. A selector writing in either directory refuses
+until the current publication finishes. Directory-inode locks coordinate
+symlink aliases and do not depend on `TMPDIR`. It checks the requested parent
+identity before and after publishing. A parent retarget that is still present
+at either check returns an error; a transient retarget restored before the
+post-check can complete with the pair written through the pinned descriptors.
+Exit 2 can occur after a complete pair was written, so consumers use the pair
+only after exit 0. See the [pilot command and
+summary example](CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+
 ### Selective reuse replays a current failure witness (B106)
 
 `--resume` and `--reuse-from` answer different questions. Resume may reuse a

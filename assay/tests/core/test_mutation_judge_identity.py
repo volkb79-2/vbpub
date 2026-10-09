@@ -523,6 +523,32 @@ def _record(job, *, judge: str, **overrides) -> dict:
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
     }
     payload.update(overrides)
+    if "terminal_result" not in overrides:
+        terminal_by_bucket = {
+            "killed": ("FAIL", "COMMAND_FAILED", 1),
+            "survived": ("PASS", None, 0),
+            "hung": ("BUDGET_EXCEEDED", "CANDIDATE_HUNG", None),
+            "budget_exceeded": ("BUDGET_EXCEEDED", "LANE_TIMEOUT", None),
+            "crashed": ("ERROR", "EXEC_FAILED", None),
+            "equivalent": ("PASS", None, 0),
+        }
+        outcome, reason_code, returncode = terminal_by_bucket[
+            payload["outcome_bucket"]
+        ]
+        payload["terminal_result"] = {
+            "outcome": outcome,
+            "reason_code": reason_code,
+            "returncode": returncode,
+        }
+    if (
+        payload["outcome_bucket"] == "equivalent"
+        and "equivalence_evidence" not in overrides
+    ):
+        payload["equivalence_evidence"] = {
+            "artifact": ".assay/schema-dump.sql",
+            "baseline_sha256": "a" * 64,
+            "observed_sha256": "a" * 64,
+        }
     return payload
 
 
@@ -1035,6 +1061,87 @@ def test_a_matching_judge_resumes_the_record(tmp_path: Path):
     assert loaded is not None and loaded["outcome_bucket"] == "survived"
 
 
+def test_equivalent_record_requires_matching_declared_artifact_evidence(
+    tmp_path: Path,
+):
+    job = _job()
+    root = _store(
+        tmp_path,
+        job,
+        _record(job, judge="j" * 64, outcome_bucket="equivalent"),
+    )
+
+    loaded = mutation._load_validated_state_record(
+        root,
+        job,
+        judge="j" * 64,
+        equivalence_artifact=".assay/schema-dump.sql",
+        baseline_equivalence_sha256="a" * 64,
+    )
+    assert loaded is not mutation._RECORD_REJECTED
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
+    assert (
+        mutation._load_validated_state_record(
+            root,
+            job,
+            judge="j" * 64,
+            equivalence_artifact=".assay/other.sql",
+            baseline_equivalence_sha256="a" * 64,
+        )
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_forced_crash_cannot_be_relabelled_as_killed(tmp_path: Path):
+    job = _job()
+    payload = _record(
+        job,
+        judge="j" * 64,
+        outcome_bucket="crashed",
+        forced_bucket="crashed",
+        terminal_result={
+            "outcome": "FAIL",
+            "reason_code": "COMMAND_FAILED",
+            "returncode": 1,
+        },
+    )
+    root = _store(tmp_path, job, payload)
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    assert isinstance(loaded, dict) and loaded["outcome_bucket"] == "crashed"
+
+    payload["outcome_bucket"] = "killed"
+    root = _store(tmp_path / "relabelled", job, payload)
+    assert mutation._load_validated_state_record(
+        root, job, judge="j" * 64
+    ) is mutation._RECORD_REJECTED
+
+
+@pytest.mark.parametrize(
+    "terminal_result",
+    [
+        {"outcome": "PASS", "reason_code": None},
+        {"outcome": 1, "reason_code": None, "returncode": 0},
+        {"outcome": "PASS", "reason_code": None, "returncode": True},
+    ],
+)
+def test_present_malformed_terminal_evidence_is_corruption(
+    tmp_path: Path,
+    terminal_result: dict,
+):
+    job = _job()
+    root = _store(
+        tmp_path,
+        job,
+        _record(job, judge="j" * 64, terminal_result=terminal_result),
+    )
+
+    with pytest.raises(MutationStateError, match="invalid terminal evidence"):
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+
 def test_a_resource_limited_candidate_record_is_never_reused(tmp_path: Path):
     job = _job()
     evidence = {
@@ -1128,8 +1235,8 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b114_advances_the_judge_identity_label():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/8"
+def test_b118_advances_the_judge_identity_label_for_outcome_evidence():
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/9"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
@@ -1285,6 +1392,48 @@ def _seed(repo: GitRepo, judge: str, lane: str = _LANE) -> None:
     repo.commit_all("restore flag")
 
 
+def _seed_sql_equivalence_repo(repo: GitRepo, judge: str) -> None:
+    repo.write(".gitignore", ".assay/\n")
+    repo.write("src/schema.sql", "CREATE TABLE t (a INT);\n")
+    base = repo.commit_all("add base SQL schema")
+    repo.write(
+        "src/schema.sql",
+        "CREATE TABLE t (a INT, CONSTRAINT ck CHECK (a > 0));\n",
+    )
+    repo.write("tests/judge.sh", judge)
+    repo.write(
+        "assay.toml",
+        f'''\
+schema_version = 2
+
+[lanes.unit]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "tests/judge.sh"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+
+[lanes.unit.judge]
+language = "sql"
+source_roots = ["src"]
+base = "{base}"
+
+[lanes.unit.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["sql:drop-check"]
+equivalence_artifact = ".assay/dump.txt"
+''',
+    )
+    repo.commit_all("add SQL equivalence lane")
+
+
 def _events(destination: Path) -> list[dict]:
     return [
         json.loads(line) for line in destination.read_text(encoding="utf-8").splitlines()
@@ -1375,6 +1524,94 @@ def test_an_unchanged_suite_resumes_exactly_as_before(git_repo: GitRepo, tmp_pat
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
     assert _resumed(second) == 1
     assert _candidates(second) == [], "an unchanged suite must re-execute nothing"
+
+
+def test_relabelled_survivor_without_equivalence_artifact_reexecutes(
+    git_repo: GitRepo,
+    tmp_path: Path,
+):
+    """A persisted PASS cannot become an ``equivalent`` disposition by relabeling."""
+    _seed(git_repo, _BLIND_JUDGE)
+    state_dir = tmp_path / "state"
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert [event["outcome_bucket"] for event in _candidates(first)] == ["survived"]
+
+    record_path = next(state_dir.glob("*.json"))
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["outcome_bucket"] = "equivalent"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["resumed_total"] == 0
+    assert resume["rejected_total"] == 1
+    assert [event["outcome_bucket"] for event in _candidates(second)] == ["survived"]
+    assert _records(state_dir)[0]["outcome_bucket"] == "survived"
+
+
+@pytest.mark.parametrize(
+    ("judge", "initial_bucket", "relabelled_bucket", "artifact_relation"),
+    [
+        (
+            "mkdir -p .assay\nprintf 'stable\\n' > .assay/dump.txt\n"
+            "grep -q 'CHECK (a > 0)' src/schema.sql\n",
+            "equivalent",
+            "killed",
+            "equal",
+        ),
+        (
+            "grep -q 'CHECK (a > 0)' src/schema.sql || exit 1\n"
+            "mkdir -p .assay\nprintf 'stable\\n' > .assay/dump.txt\n",
+            "crashed",
+            "killed",
+            "missing",
+        ),
+        (
+            "mkdir -p .assay\ncp src/schema.sql .assay/dump.txt\n"
+            "grep -q 'CHECK (a > 0)' src/schema.sql\n",
+            "killed",
+            "crashed",
+            "different",
+        ),
+    ],
+)
+def test_relabelled_sql_failure_is_reexecuted(
+    git_repo: GitRepo,
+    tmp_path: Path,
+    judge: str,
+    initial_bucket: str,
+    relabelled_bucket: str,
+    artifact_relation: str,
+):
+    """SQL FAIL records retain enough artifact facts to reject relabeling."""
+    _seed_sql_equivalence_repo(git_repo, judge)
+    state_dir = tmp_path / "state"
+
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert [event["outcome_bucket"] for event in _candidates(first)] == [initial_bucket]
+    record_path = next(state_dir.glob("*.json"))
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["outcome_bucket"] == initial_bucket
+    assert record["terminal_result"]["outcome"] == "FAIL"
+    evidence = record["equivalence_evidence"]
+    assert evidence["artifact"] == ".assay/dump.txt"
+    if artifact_relation == "equal":
+        assert evidence["observed_sha256"] == evidence["baseline_sha256"]
+    elif artifact_relation == "different":
+        assert evidence["observed_sha256"] is not None
+        assert evidence["observed_sha256"] != evidence["baseline_sha256"]
+    else:
+        assert evidence["observed_sha256"] is None
+
+    record["outcome_bucket"] = relabelled_bucket
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    resume = next(event for event in second if event.get("event") == "resume")
+    assert resume["rejected_total"] == 1
+    assert resume["resumed_total"] == 0
+    assert [event["outcome_bucket"] for event in _candidates(second)] == [initial_bucket]
+    assert _records(state_dir)[0]["outcome_bucket"] == initial_bucket
 
 
 def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(

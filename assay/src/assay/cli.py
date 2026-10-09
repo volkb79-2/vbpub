@@ -58,6 +58,7 @@ code *is* the verdict (§6), and stdout is for humans.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -65,16 +66,18 @@ import os
 import re
 import shlex
 import signal
+import stat
 import sys
 import tempfile
 import threading
 import time
+from contextlib import ExitStack
 from dataclasses import replace
 from .records import record
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import Counter
-from typing import Any, Callable, Literal, Sequence, TextIO, TypedDict
+from typing import Any, Callable, Literal, Mapping, Sequence, TextIO, TypedDict
 
 from . import __version__
 from . import (
@@ -132,14 +135,20 @@ class AssayArgumentParser(argparse.ArgumentParser):
         self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
         self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
         self.exit(2)
-from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .errors import EXIT_CODES, AssayError, LaneConfigError, Outcome, ReasonCode
 from .output import (
     VerdictOutput,
     reserve_verdict_output,
     resolve_state_directory,
     validate_progress_destination,
 )
-from .verdict import CampaignBinding, Evidence, EvidenceDeclaration, Verdict
+from .verdict import (
+    MUTATION_BUCKETS,
+    CampaignBinding,
+    Evidence,
+    EvidenceDeclaration,
+    Verdict,
+)
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
@@ -266,14 +275,30 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         help="execute a declared lane's argv and emit its verdict",
         description=(
-            "Execute exactly the named lane's declared argv (plus anything "
-            "appended after a literal `--`, if the lane permits it) and emit "
-            "a verdict. Runs the command once; does not discover, select, "
-            "order or retry anything. This build evaluates R0, Python R1, "
+            "Execute the named lane's declared argv and emit a verdict. "
+            "Ordinary runs do not discover, select, order or retry anything; "
+            "the explicit non-qualifying --candidates-file pilot mode selects "
+            "a bounded native R2 subset and emits no verdict. This build evaluates R0, Python R1, "
             "Python R2, Python R3, JavaScript R1, Go R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
+    run.add_argument(
+        "--candidates-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "run a non-qualifying native R2 pilot over the listed candidate IDs; "
+            "requires --state-dir and never writes a verdict"
+        ),
+    )
+    run.add_argument(
+        "--pilot-jobs",
+        default=None,
+        metavar="N",
+        help="pilot-only worker override (1..8); requires --candidates-file",
+    )
     run.add_argument(
         "--file",
         type=Path,
@@ -645,6 +670,734 @@ def _split_appended_argv(raw: list[str]) -> tuple[list[str], list[str]]:
 
 def _resolve_lane_file(path: Path | None) -> LaneFile:
     return load_lane_file(find_lane_file() if path is None else path)
+
+
+_CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
+_PILOT_RECORD_NAME_RE = re.compile(r"[0-9a-f]{64}\.json\Z")
+_PILOT_CANDIDATE_FILE_LIMIT = 1024 * 1024
+_PILOT_STATE_LIMIT = 4096
+
+
+class PilotStateError(LaneConfigError):
+    """A pilot state store cannot be used for the requested run."""
+
+
+def _parse_candidates_file(path: Path, *, max_mutants: int) -> tuple[frozenset[str], str]:
+    """Read a bounded pilot selection file and return IDs plus its raw digest."""
+    absolute = Path(os.path.normpath(os.path.abspath(os.path.expanduser(str(path)))))
+    try:
+        raw = safeio.read_bounded_input(
+            absolute.parent,
+            absolute.name,
+            limit=_PILOT_CANDIDATE_FILE_LIMIT,
+        )
+    except AssayError as exc:
+        raise LaneConfigError(
+            f"cannot read --candidates-file {absolute}: {exc}"
+        ) from exc
+    if raw is None:
+        raise LaneConfigError(f"--candidates-file does not exist: {absolute}")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise LaneConfigError(
+            f"--candidates-file {absolute} is not valid UTF-8"
+        ) from exc
+    selected: list[str] = []
+    seen: set[str] = set()
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line == "" or line.startswith("#"):
+            continue
+        if _CANDIDATE_ID_RE.fullmatch(line) is None:
+            raise LaneConfigError(
+                f"--candidates-file line {number} is not a 64-hex candidate id"
+            )
+        if line in seen:
+            raise LaneConfigError(
+                f"--candidates-file candidate id {line} appears more than once"
+            )
+        seen.add(line)
+        selected.append(line)
+        if len(selected) > max_mutants:
+            raise LaneConfigError(
+                f"--candidates-file selects more than judge.mutation.max_mutants ({max_mutants}) candidates"
+            )
+    if not selected:
+        raise LaneConfigError("--candidates-file selects no candidates")
+    return frozenset(selected), hashlib.sha256(raw).hexdigest()
+
+
+def _parse_pilot_jobs(raw: str | None, *, candidates_file: bool) -> int | None:
+    if raw is None:
+        return None
+    if not candidates_file:
+        raise LaneConfigError("--pilot-jobs requires --candidates-file")
+    if re.fullmatch(r"[0-9]+", raw) is None:
+        raise LaneConfigError("--pilot-jobs must be an integer from 1 through 8")
+    normalized = raw.lstrip("0")
+    if normalized not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
+        raise LaneConfigError("--pilot-jobs must be an integer from 1 through 8")
+    return int(normalized)
+
+
+def _read_pilot_state_document(
+    root: Path,
+    root_fd: int,
+    *,
+    require_sentinel_for_records: bool,
+) -> dict[str, Any] | None:
+    try:
+        descriptor = os.open(
+            "PILOT-STATE",
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=root_fd,
+        )
+    except FileNotFoundError:
+        raw = None
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            raw = None
+        else:
+            raise PilotStateError(f"PILOT-STATE cannot be read safely: {exc}") from exc
+    else:
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise PilotStateError(
+                    "PILOT-STATE is not a single-link regular file"
+                )
+            if info.st_size > _PILOT_STATE_LIMIT:
+                raise PilotStateError(
+                    f"PILOT-STATE exceeds the {_PILOT_STATE_LIMIT}-byte limit"
+                )
+            chunks = bytearray()
+            while len(chunks) <= _PILOT_STATE_LIMIT:
+                piece = os.read(
+                    descriptor,
+                    min(64 * 1024, _PILOT_STATE_LIMIT + 1 - len(chunks)),
+                )
+                if not piece:
+                    break
+                chunks.extend(piece)
+            if len(chunks) > _PILOT_STATE_LIMIT:
+                raise PilotStateError(
+                    f"PILOT-STATE exceeds the {_PILOT_STATE_LIMIT}-byte limit"
+                )
+            raw = bytes(chunks)
+        except PilotStateError:
+            raise
+        except OSError as exc:
+            raise PilotStateError(f"PILOT-STATE cannot be read safely: {exc}") from exc
+        finally:
+            os.close(descriptor)
+    if raw is None:
+        existing_records = sorted(
+            name for name in os.listdir(root_fd) if _PILOT_RECORD_NAME_RE.fullmatch(name)
+        )
+        if require_sentinel_for_records and existing_records:
+            raise PilotStateError(
+                "PILOT-STATE is absent but the state directory already contains "
+                f"mutation records (for example {existing_records[0]!r}); use a new --state-dir"
+            )
+        return None
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise PilotStateError(f"PILOT-STATE is malformed: {exc}") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema", "selection_sha256", "lane"}
+        or document.get("schema") != "assay-pilot-state/1"
+        or not isinstance(document.get("selection_sha256"), str)
+        or _CANDIDATE_ID_RE.fullmatch(document["selection_sha256"]) is None
+        or not isinstance(document.get("lane"), str)
+    ):
+        raise PilotStateError("PILOT-STATE is malformed")
+    return document
+
+
+def _acquire_state_path_lock(raw_root: Path) -> int:
+    """Lock a normalized requested state path in a shared per-user directory.
+
+    The path lock survives replacement of the state directory's parent.
+    Directory-inode locks alone split in that case: the old run retains the
+    moved inode while a second run can lock the replacement inode at the same
+    requested path. The separate inode lock in
+    :func:`_acquire_state_directory_lock` still coordinates symlink aliases
+    that name the same store.
+    """
+    lock_parent_fd: int | None = None
+    lock_root_fd: int | None = None
+    lock_fd: int | None = None
+    try:
+        # `gettempdir()` honors TMPDIR, which can differ between processes
+        # sharing a state path. A path lock in each process's private temp root
+        # would split if the requested path's parent were replaced. Use the
+        # canonical system temp root so those processes contend on one file.
+        temp_root = Path("/tmp").resolve(strict=True)
+        lock_parent_fd = os.open(
+            temp_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        lock_root_name = f"assay-state-locks-{os.geteuid()}"
+        try:
+            os.mkdir(lock_root_name, 0o700, dir_fd=lock_parent_fd)
+        except FileExistsError:
+            pass
+        lock_root_fd = os.open(
+            lock_root_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=lock_parent_fd,
+        )
+        root_stat = os.fstat(lock_root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or root_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise PilotStateError(
+                f"state lock directory {temp_root / lock_root_name} is not a private directory owned by this user"
+            )
+        lock_name = hashlib.sha256(os.fsencode(raw_root)).hexdigest() + ".lock"
+        lock_fd = os.open(
+            lock_name,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=lock_root_fd,
+        )
+        lock_stat = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(lock_stat.st_mode) != 0o600
+            or lock_stat.st_nlink != 1
+        ):
+            raise PilotStateError(
+                f"state path lock {temp_root / lock_root_name / lock_name} is not a private regular file owned by this user"
+            )
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd
+    except BlockingIOError as exc:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        raise PilotStateError(
+            f"mutation state directory {raw_root} is already in use by another "
+            "assay run; retry after it finishes"
+        ) from exc
+    except PilotStateError:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        raise
+    except OSError as exc:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        raise PilotStateError(
+            f"cannot lock requested mutation state path {raw_root}: {exc}"
+        ) from exc
+    finally:
+        if lock_root_fd is not None:
+            os.close(lock_root_fd)
+        if lock_parent_fd is not None:
+            os.close(lock_parent_fd)
+
+
+def _acquire_state_directory_lock(
+    state_dir: Path,
+) -> tuple[int, tuple[int, ...], Path]:
+    """Lock both the requested path and its admitted store inode.
+
+    The stable requested-path lock prevents a concurrent run from entering
+    through a replacement parent at the same spelling. The directory inode
+    lock coordinates independent path aliases that resolve to one store. The
+    returned directory descriptor also anchors every state read and write;
+    callers verify that the supplied path still names this inode before
+    certifying a result.
+    """
+    raw_root = Path(os.path.normpath(os.path.abspath(os.fspath(state_dir))))
+    path_lock_fd = _acquire_state_path_lock(raw_root)
+    root_fd: int | None = None
+    try:
+        raw_root.parent.mkdir(parents=True, exist_ok=True)
+        root = raw_root.parent.resolve(strict=True) / raw_root.name
+        if root == root.parent:
+            raise PilotStateError("mutation state directory must not be a filesystem root")
+        root.mkdir(parents=True, exist_ok=True)
+        root_fd = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except PilotStateError:
+        if root_fd is not None:
+            os.close(root_fd)
+        os.close(path_lock_fd)
+        raise
+    except OSError as exc:
+        if root_fd is not None:
+            os.close(root_fd)
+        os.close(path_lock_fd)
+        raise PilotStateError(f"cannot open mutation state directory {raw_root}: {exc}") from exc
+
+    assert root_fd is not None
+
+    try:
+        fcntl.flock(root_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return root_fd, (path_lock_fd,), root
+    except BlockingIOError as exc:
+        os.close(root_fd)
+        os.close(path_lock_fd)
+        raise PilotStateError(
+            f"mutation state directory {root} is already in use by another "
+            "assay run; retry after it finishes"
+        ) from exc
+    except PilotStateError:
+        os.close(root_fd)
+        os.close(path_lock_fd)
+        raise
+    except OSError as exc:
+        os.close(root_fd)
+        os.close(path_lock_fd)
+        raise PilotStateError(f"cannot lock mutation state directory {root}: {exc}") from exc
+    except BaseException:
+        os.close(root_fd)
+        os.close(path_lock_fd)
+        raise
+
+
+def _verify_state_directory_identity(
+    state_dir: Path,
+    root_fd: int,
+    *,
+    requested_path: Path | None = None,
+) -> None:
+    """Refuse a result if either the canonical or supplied path moved.
+
+    ``_acquire_state_directory_lock`` opens the canonical store inode. Keep
+    checking the original spelling too: a symlinked parent may be retargeted
+    while the run continues to hold the old directory descriptor.
+    """
+    root_stat = os.fstat(root_fd)
+    checks = [(state_dir, False)]
+    if requested_path is not None and requested_path != state_dir:
+        checks.append((requested_path, True))
+    for path, follow_parent_alias in checks:
+        try:
+            path_stat = os.stat(path, follow_symlinks=follow_parent_alias)
+        except OSError as exc:
+            raise PilotStateError(
+                f"mutation state directory {path} changed while locked: {exc}"
+            ) from exc
+        if (
+            not stat.S_ISDIR(path_stat.st_mode)
+            or (path_stat.st_dev, path_stat.st_ino)
+            != (root_stat.st_dev, root_stat.st_ino)
+        ):
+            raise PilotStateError(
+                f"mutation state directory {path} changed while locked; refusing to certify this run"
+            )
+
+
+def _release_state_directory_lock(root_fd: int, lock_fds: tuple[int, ...]) -> None:
+    try:
+        fcntl.flock(root_fd, fcntl.LOCK_UN)
+    finally:
+        try:
+            for lock_fd in lock_fds:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(lock_fd)
+        finally:
+            os.close(root_fd)
+
+
+def _preflight_state_directory(
+    state_dir: Path | None,
+    *,
+    lane: str,
+    pilot: bool,
+    lock_held: bool = False,
+    locked_root_fd: int | None = None,
+) -> None:
+    """Refuse cross-mode state reuse before progress or lane execution."""
+    if state_dir is None:
+        return
+    root = Path(state_dir)
+    owned_lock: tuple[int, tuple[int, ...], Path] | None = None
+    owns_root_fd = False
+    try:
+        if lock_held:
+            root_fd = (
+                os.dup(locked_root_fd)
+                if locked_root_fd is not None
+                else os.open(
+                    root,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                )
+            )
+            owns_root_fd = True
+        else:
+            owned_lock = _acquire_state_directory_lock(root)
+            root_fd, _lock_fds, root = owned_lock
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise PilotStateError(f"cannot open pilot state directory {root}: {exc}") from exc
+    try:
+        document = _read_pilot_state_document(
+            root,
+            root_fd,
+            require_sentinel_for_records=pilot,
+        )
+        if document is not None:
+            if not pilot:
+                raise PilotStateError(
+                    "PILOT-STATE marks this directory as non-qualifying pilot state; "
+                    "use a separate --state-dir for a qualifying run"
+                )
+            if document["lane"] != lane:
+                raise PilotStateError(
+                    f"PILOT-STATE belongs to lane {document['lane']!r}, not {lane!r}"
+                )
+    except OSError as exc:
+        raise PilotStateError(
+            f"cannot inspect pilot state directory {root}: {exc}"
+        ) from exc
+    finally:
+        if owned_lock is not None:
+            _release_state_directory_lock(owned_lock[0], owned_lock[1])
+        elif owns_root_fd:
+            os.close(root_fd)
+
+
+def _ensure_pilot_state(
+    state_dir: Path,
+    *,
+    lane: str,
+    selection_sha256: str,
+    lock_held: bool = False,
+    locked_root_fd: int | None = None,
+) -> None:
+    """Validate or atomically create the pilot-only sentinel in a state root."""
+    root = Path(state_dir)
+    owned_lock: tuple[int, tuple[int, ...], Path] | None = None
+    owns_root_fd = False
+    try:
+        if lock_held:
+            if locked_root_fd is None:
+                root.mkdir(parents=True, exist_ok=True)
+                root_fd = os.open(
+                    root,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                )
+            else:
+                root_fd = os.dup(locked_root_fd)
+            owns_root_fd = True
+        else:
+            owned_lock = _acquire_state_directory_lock(root)
+            root_fd, _lock_fds, root = owned_lock
+    except OSError as exc:
+        raise PilotStateError(f"cannot open pilot state directory {root}: {exc}") from exc
+    temporary_name: str | None = None
+    try:
+        document = _read_pilot_state_document(
+            root, root_fd, require_sentinel_for_records=True
+        )
+        if document is not None:
+            if document["selection_sha256"] != selection_sha256:
+                raise PilotStateError(
+                    "PILOT-STATE names a different candidate selection; use a new --state-dir"
+                )
+            if document["lane"] != lane:
+                raise PilotStateError(
+                    f"PILOT-STATE belongs to lane {document['lane']!r}, not {lane!r}"
+                )
+            return
+
+        document_bytes = (
+            json.dumps(
+                {
+                    "schema": "assay-pilot-state/1",
+                    "selection_sha256": selection_sha256,
+                    "lane": lane,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        temporary_name = f".PILOT-STATE-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=root_fd,
+        )
+        with os.fdopen(temporary_fd, "wb") as stream:
+            stream.write(document_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.stat("PILOT-STATE", dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise PilotStateError(
+                "PILOT-STATE appeared while the pilot state was being created"
+            )
+        os.replace(
+            temporary_name,
+            "PILOT-STATE",
+            src_dir_fd=root_fd,
+            dst_dir_fd=root_fd,
+        )
+        temporary_name = None
+        os.fsync(root_fd)
+    except PilotStateError:
+        raise
+    except OSError as exc:
+        raise PilotStateError(f"cannot create PILOT-STATE safely: {exc}") from exc
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=root_fd)
+            except FileNotFoundError:
+                pass
+        if owned_lock is not None:
+            _release_state_directory_lock(owned_lock[0], owned_lock[1])
+        elif owns_root_fd:
+            os.close(root_fd)
+
+
+def _pilot_has_budget_record(
+    state_dir: Path,
+    job: mutation.MutantJob,
+    *,
+    judge_sha256: str | None,
+    campaign_deadline_sha256: str | None,
+    cold_witness: bool,
+    state_root_fd: int | None = None,
+) -> bool:
+    if judge_sha256 is None or _CANDIDATE_ID_RE.fullmatch(judge_sha256) is None:
+        return False
+    try:
+        record = mutation._load_validated_state_record(
+            state_dir,
+            job,
+            judge=judge_sha256,
+            campaign_deadline_sha256=campaign_deadline_sha256,
+            cold_witness=cold_witness,
+            state_root_fd=state_root_fd,
+        )
+    except mutation.MutationTerminalEvidenceError:
+        # A present malformed terminal record is corruption, not an ordinary
+        # unresolved budget candidate. Preserve the state error so the pilot
+        # refuses before printing a summary that could hide it.
+        raise
+    except (AssayError, OSError, TypeError, ValueError):
+        return False
+    expected_identity = mutation.candidate_identity_fields(job)
+    terminal_result = record.get("terminal_result") if isinstance(record, dict) else None
+    return (
+        isinstance(record, dict)
+        and record.get("outcome_bucket") == "budget_exceeded"
+        and all(record.get(name) == value for name, value in expected_identity.items())
+        and record.get("campaign_deadline_sha256") == campaign_deadline_sha256
+        and isinstance(record.get("execution"), dict)
+        and "evidence" in record
+        and isinstance(terminal_result, Mapping)
+        and set(terminal_result) == {"outcome", "reason_code", "returncode"}
+        and terminal_result.get("outcome") == Outcome.BUDGET_EXCEEDED.value
+        and terminal_result.get("reason_code") == ReasonCode.LANE_TIMEOUT.value
+        and terminal_result.get("returncode") is None
+    )
+
+
+def _capture_pilot_judge_identity(
+    write: Callable[[dict[str, Any]], None] | None,
+    captured: list[str | None],
+) -> Callable[[dict[str, Any]], None]:
+    """Capture the current sweep digest while preserving any progress sink."""
+    def observe(event: dict[str, Any]) -> None:
+        if event.get("event") == "candidates":
+            digest = event.get("judge_sha256")
+            if not isinstance(digest, str) or _CANDIDATE_ID_RE.fullmatch(digest) is None:
+                captured[0] = ""
+            elif captured[0] is None:
+                captured[0] = digest
+            elif captured[0] != digest:
+                captured[0] = ""
+        if write is not None:
+            write(event)
+
+    return observe
+
+
+class _DeferredProgressWriter:
+    """Buffer pilot preflight events until its sentinel is accepted."""
+
+    def __init__(
+        self,
+        stack: ExitStack,
+        path: Path,
+        *,
+        parent_guard: Callable[[int], None] | None = None,
+        open_guard: Callable[[int, int], None] | None = None,
+    ) -> None:
+        self._stack = stack
+        self._path = path
+        self._parent_guard = parent_guard
+        self._open_guard = open_guard
+        self._raw_write: Callable[[dict[str, Any]], None] | None = None
+        self._pending: list[dict[str, Any]] = []
+
+    def write(self, event: dict[str, Any]) -> None:
+        if self._raw_write is None:
+            self._pending.append(dict(event))
+            return
+        self._raw_write(event)
+
+    def enable(self) -> None:
+        if self._raw_write is not None:
+            return
+        self._raw_write = self._stack.enter_context(
+            mutation.progress_writer(
+                self._path,
+                parent_guard=self._parent_guard,
+                open_guard=self._open_guard,
+            )
+        )
+        for event in self._pending:
+            self._raw_write(event)
+        self._pending.clear()
+
+
+def _pilot_completed(
+    verdict: Verdict,
+    selected_ids: frozenset[str],
+    *,
+    unresolved: list[str],
+) -> bool:
+    r2_claim = next((claim for claim in verdict.claims if claim.rigor == "R2"), None)
+    if r2_claim is None or r2_claim.mutation is None:
+        return False
+    if r2_claim.reason_code is ReasonCode.LANE_TIMEOUT:
+        return False
+    bucket_ids = {
+        outcome.candidate_id
+        for bucket in MUTATION_BUCKETS
+        for outcome in getattr(r2_claim.mutation, bucket)
+    }
+    return bucket_ids == set(selected_ids) and not unresolved
+
+
+def _build_pilot_summary(
+    verdict: Verdict,
+    *,
+    lane: Lane,
+    selected_ids: frozenset[str],
+    selection_order: tuple[str, ...],
+    selection_sha256: str | None,
+    candidates_file_sha256: str,
+    state_dir: Path,
+    pilot_jobs: dict[str, mutation.MutantJob],
+    judge_sha256: str | None,
+    campaign_deadline_sha256: str | None,
+    cold_witness: bool,
+    state_root_fd: int | None,
+    completed: bool,
+) -> dict[str, Any]:
+    claims = {claim.rigor: claim for claim in verdict.claims}
+    r2_claim = claims.get("R2")
+    r2_mutation = None if r2_claim is None else r2_claim.mutation
+    bucket_counts = (
+        None
+        if r2_mutation is None
+        else {name: len(getattr(r2_mutation, name)) for name in MUTATION_BUCKETS}
+    )
+    outcome_rows: dict[str | None, dict[str, Any]] = {}
+    if r2_mutation is not None:
+        for bucket in MUTATION_BUCKETS:
+            for outcome in getattr(r2_mutation, bucket):
+                outcome_rows[outcome.candidate_id] = {
+                    "id": outcome.candidate_id,
+                    "path": outcome.path,
+                    "operator": outcome.operator,
+                    "bucket": bucket,
+                    "execution_mode": outcome.execution.mode,
+                }
+    candidates = [
+        outcome_rows[candidate]
+        for candidate in selection_order
+        if candidate in outcome_rows
+    ]
+    unresolved: list[str] = []
+    for candidate in selection_order:
+        row = outcome_rows.get(candidate)
+        if row is None:
+            unresolved.append(candidate)
+        elif row["bucket"] == "budget_exceeded" and not (
+            (job := pilot_jobs.get(candidate)) is not None
+            and _pilot_has_budget_record(
+                state_dir,
+                job,
+                judge_sha256=judge_sha256,
+                campaign_deadline_sha256=campaign_deadline_sha256,
+                cold_witness=cold_witness,
+                state_root_fd=state_root_fd,
+            )
+        ):
+            unresolved.append(candidate)
+    r2_summary = (
+        None
+        if r2_mutation is None or r2_claim is None
+        else {
+            "status": r2_claim.status.value,
+            "reason_code": (
+                r2_claim.reason_code.value
+                if r2_claim.reason_code is not None
+                else None
+            ),
+        }
+    )
+    summary: dict[str, Any] = {
+        "schema": "assay-pilot-summary/1",
+        "qualifying": False,
+        "completed": completed,
+        "lane": lane.name,
+        "commit": verdict.commit,
+        "jobs": lane.judge.mutation.jobs,
+        "requested": len(selected_ids),
+        "selection_sha256": selection_sha256,
+        "candidates_file_sha256": candidates_file_sha256,
+        "state_dir": str(state_dir),
+        "r0": None if "R0" not in claims else claims["R0"].status.value,
+        "r1": None if "R1" not in claims else claims["R1"].status.value,
+        "r2": r2_summary,
+        "r3": "not-run: pilot",
+        "buckets": bucket_counts,
+        "candidates": candidates,
+        "unresolved": unresolved,
+    }
+    if r2_mutation is None:
+        summary["refusal"] = {
+            "status": verdict.outcome.value,
+            "reason_code": (
+                verdict.reason_code.value if verdict.reason_code is not None else None
+            ),
+        }
+    return summary
+
+
+def _pilot_exit_code(verdict: Verdict, *, completed: bool, err: TextIO) -> int:
+    if completed:
+        return 6
+    if verdict.exit_code == 0:
+        print(
+            "assay: pilot: a non-completed selection produced a PASS verdict; reporting ERROR",
+            file=err,
+        )
+        return EXIT_CODES[Outcome.ERROR]
+    return verdict.exit_code
 
 
 def _built_in_registry() -> registry.Registry:
@@ -1224,6 +1977,55 @@ def _cmd_run(
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
+    candidates_path = getattr(args, "candidates_file", None)
+    pilot_selection: frozenset[str] | None = None
+    candidates_file_sha256: str | None = None
+    pilot_jobs_override = _parse_pilot_jobs(
+        getattr(args, "pilot_jobs", None), candidates_file=candidates_path is not None
+    )
+    if candidates_path is not None:
+        conflicts = []
+        if getattr(args, "verdict_json", None) is not None:
+            conflicts.append("--verdict-json")
+        if getattr(args, "shard", None) is not None:
+            conflicts.append("--shard")
+        if getattr(args, "reuse_from", None) is not None:
+            conflicts.append("--reuse-from")
+        if getattr(args, "rejudge", None) is not None:
+            conflicts.append("--rejudge")
+        if getattr(args, "rejudge_outcome", None) is not None:
+            conflicts.append("--rejudge-outcome")
+        if conflicts:
+            raise LaneConfigError(
+                "--candidates-file cannot be combined with " + ", ".join(conflicts)
+            )
+        if getattr(args, "state_dir", None) is None:
+            raise LaneConfigError("--candidates-file requires --state-dir")
+        if (
+            "R2" not in lane.rigor
+            or lane.judge is None
+            or lane.judge.mutation is None
+            or lane.judge.mutation.is_ingested
+        ):
+            raise LaneConfigError(
+                "--candidates-file requires a native R2 mutation lane"
+            )
+        pilot_selection, candidates_file_sha256 = _parse_candidates_file(
+            candidates_path,
+            max_mutants=lane.judge.mutation.max_mutants,
+        )
+        effective_jobs = (
+            lane.judge.mutation.jobs
+            if pilot_jobs_override is None
+            else pilot_jobs_override
+        )
+        pilot_mutation = replace(lane.judge.mutation, jobs=effective_jobs)
+        pilot_judge = replace(lane.judge, mutation=pilot_mutation)
+        lane = replace(
+            lane,
+            rigor=tuple(rigor for rigor in lane.rigor if rigor != "R3"),
+            judge=pilot_judge,
+        )
     r2_manifest = _resolve_r2_manifest(args, lane_file.project_root)
     campaign_deadline = (
         _parse_campaign_deadline(campaign_deadline_arg, lane=lane.name)
@@ -1294,6 +2096,7 @@ def _cmd_run(
     destination: VerdictOutput | None = None
     if args.verdict_json is not None:
         destination = reserve_verdict_output(args.verdict_json, stdout=out)
+    state_lock_stack = ExitStack()
     try:
         # (B064) The stream is opened HERE, around BOTH `_run_reserved`'s
         # `run_lane` call and its own `write_verdict`, because
@@ -1308,13 +2111,162 @@ def _cmd_run(
         # once the lane is already running.
         heartbeat_seconds = _resolve_progress_heartbeat(args)
         state_dir = _resolve_state_dir(args, lane_file.project_root)
+        pilot_state_dir = state_dir if pilot_selection is not None else None
+        preflight_state_dir = state_dir
+        if preflight_state_dir is None and pilot_selection is None and (
+            getattr(args, "resume", False)
+            or getattr(args, "shard", None) is not None
+        ):
+            # These qualifying paths use mutation.default_state_root when the
+            # caller omits --state-dir. Inspect the effective store too, or a
+            # pilot can be resumed through that implicit spelling.
+            preflight_state_dir = mutation.default_state_root(
+                lane_file.project_root
+            )
+        state_store_path = None
+        if pilot_selection is not None:
+            state_store_path = pilot_state_dir
+        elif state_dir is not None:
+            state_store_path = state_dir
+        elif getattr(args, "resume", False) or getattr(args, "shard", None) is not None:
+            state_store_path = preflight_state_dir
+        state_lock_held = state_store_path is not None
+        state_store_requested_path = (
+            Path(
+                os.path.normpath(
+                    os.path.abspath(
+                        os.path.expanduser(os.fspath(state_store_path))
+                    )
+                )
+            )
+            if state_store_path is not None
+            else None
+        )
+        state_lock_root_fd: int | None = None
+        state_lock_file_fds: tuple[int, ...] = ()
+        if state_store_path is not None:
+            (
+                state_lock_root_fd,
+                state_lock_file_fds,
+                state_store_path,
+            ) = _acquire_state_directory_lock(
+                state_store_path
+            )
+            state_lock_stack.callback(
+                _release_state_directory_lock,
+                state_lock_root_fd,
+                state_lock_file_fds,
+            )
+            state_dir = state_store_path
+            preflight_state_dir = state_store_path
+            if pilot_selection is not None:
+                pilot_state_dir = state_store_path
+            _verify_state_directory_identity(
+                state_store_path,
+                state_lock_root_fd,
+                requested_path=state_store_requested_path,
+            )
+
+        if (
+            (progress_arg := getattr(args, "progress", None)) is not None
+            and state_store_path is not None
+            and state_lock_root_fd is not None
+        ):
+            _refuse_progress_state_collision(
+                progress_arg,
+                state_store_path,
+                state_lock_root_fd,
+            )
+
+        def verify_state_store_path() -> None:
+            if state_store_path is not None and state_lock_root_fd is not None:
+                _verify_state_directory_identity(
+                    state_store_path,
+                    state_lock_root_fd,
+                    requested_path=state_store_requested_path,
+                )
+
+        _preflight_state_directory(
+            preflight_state_dir,
+            lane=lane.name,
+            pilot=pilot_selection is not None,
+            lock_held=state_lock_held,
+            locked_root_fd=state_lock_root_fd,
+        )
+        verify_state_store_path()
+        pilot_judge_sha256: list[str | None] | None = None
+        if pilot_selection is not None:
+            assert pilot_state_dir is not None
+            pilot_judge_sha256 = [None]
+
+        def _progress_stream(raw_write=None):
+            if pilot_judge_sha256 is not None:
+                raw_write = _capture_pilot_judge_identity(
+                    raw_write, pilot_judge_sha256
+                )
+            return mutation.ProgressStream(raw_write, clock=runner._utc_now)
+
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
             _refuse_a_visible_progress_destination(
                 progress_arg, lane_file.project_root
             )
+            progress_path = Path(progress_arg).expanduser()
+            progress_parent_guard = None
+            progress_open_guard = None
+            if state_store_path is not None and state_lock_root_fd is not None:
+                def progress_parent_guard(parent_fd: int) -> None:
+                    _refuse_progress_parent_in_state(
+                        progress_arg,
+                        state_store_path,
+                        parent_fd,
+                        state_lock_root_fd,
+                    )
+
+                def progress_open_guard(parent_fd: int, progress_fd: int) -> None:
+                    _refuse_progress_state_fd_collision(
+                        progress_arg,
+                        state_store_path,
+                        parent_fd,
+                        progress_fd,
+                        state_lock_root_fd,
+                    )
+
+            if pilot_judge_sha256 is not None:
+                with ExitStack() as stack:
+                    deferred = _DeferredProgressWriter(
+                        stack,
+                        progress_path,
+                        parent_guard=progress_parent_guard,
+                        open_guard=progress_open_guard,
+                    )
+                    return _run_reserved(
+                        args,
+                        lane,
+                        lane_file,
+                        appended,
+                        destination,
+                        out,
+                        err,
+                        label_grace_seconds=label_grace_seconds,
+                        progress_stream=_progress_stream(deferred.write),
+                        progress_heartbeat_seconds=heartbeat_seconds,
+                        state_dir=state_dir,
+                        r2_manifest=r2_manifest,
+                        campaign_deadline=campaign_deadline,
+                        pilot_selection=pilot_selection,
+                        candidates_file_sha256=candidates_file_sha256,
+                        pilot_state_dir=pilot_state_dir,
+                        pilot_judge_sha256=pilot_judge_sha256,
+                        pilot_preflight_complete=deferred.enable,
+                        pilot_state_lock_held=state_lock_held,
+                        state_store_root_fd=state_lock_root_fd,
+                        state_lock_guard=verify_state_store_path,
+                    )
             with mutation.progress_writer(
-                Path(progress_arg).expanduser()
+                progress_path,
+                parent_guard=progress_parent_guard,
+                open_guard=progress_open_guard,
             ) as raw_write:
                 return _run_reserved(
                     args,
@@ -1325,13 +2277,18 @@ def _cmd_run(
                     out,
                     err,
                     label_grace_seconds=label_grace_seconds,
-                    progress_stream=mutation.ProgressStream(
-                        raw_write, clock=runner._utc_now
-                    ),
+                    progress_stream=_progress_stream(raw_write),
                     progress_heartbeat_seconds=heartbeat_seconds,
                     state_dir=state_dir,
                     r2_manifest=r2_manifest,
                     campaign_deadline=campaign_deadline,
+                    pilot_selection=pilot_selection,
+                    candidates_file_sha256=candidates_file_sha256,
+                    pilot_state_dir=pilot_state_dir,
+                    pilot_judge_sha256=pilot_judge_sha256,
+                    pilot_state_lock_held=state_lock_held,
+                    state_store_root_fd=state_lock_root_fd,
+                    state_lock_guard=verify_state_store_path,
                 )
         return _run_reserved(
             args,
@@ -1342,12 +2299,25 @@ def _cmd_run(
             out,
             err,
             label_grace_seconds=label_grace_seconds,
+            progress_stream=(
+                _progress_stream()
+                if pilot_judge_sha256 is not None
+                else None
+            ),
             progress_heartbeat_seconds=heartbeat_seconds,
             state_dir=state_dir,
             r2_manifest=r2_manifest,
             campaign_deadline=campaign_deadline,
+            pilot_selection=pilot_selection,
+            candidates_file_sha256=candidates_file_sha256,
+            pilot_state_dir=pilot_state_dir,
+            pilot_judge_sha256=pilot_judge_sha256,
+            pilot_state_lock_held=state_lock_held,
+            state_store_root_fd=state_lock_root_fd,
+            state_lock_guard=verify_state_store_path,
         )
     finally:
+        state_lock_stack.close()
         if destination is not None:
             destination.close()
 
@@ -1438,6 +2408,131 @@ def _refuse_a_visible_progress_destination(raw: str, project_root: Path) -> None
             root=root,
             probe=relative,
         )
+
+
+def _refuse_progress_state_collision(
+    raw: str,
+    state_dir: Path,
+    state_root_fd: int,
+) -> None:
+    """Refuse progress output that aliases any admitted mutation-state file."""
+    destination = Path(
+        os.path.normpath(os.path.abspath(os.path.expanduser(raw)))
+    )
+    state_root = state_dir.resolve(strict=True)
+    resolved = _resolve_through_existing_prefix(destination)
+    for candidate in {destination, resolved}:
+        try:
+            candidate.relative_to(state_root)
+        except ValueError:
+            continue
+        raise LaneConfigError(
+            f"--progress {raw!r} resolves inside the mutation state directory "
+            f"{state_root}; progress must use a separate file"
+        )
+
+    try:
+        destination_stat = os.stat(destination, follow_symlinks=True)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise LaneConfigError(
+            f"--progress {raw!r} cannot be checked against mutation state: {exc}"
+        ) from exc
+    for name in os.listdir(state_root_fd):
+        try:
+            state_stat = os.stat(name, dir_fd=state_root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISREG(state_stat.st_mode)
+            and (destination_stat.st_dev, destination_stat.st_ino)
+            == (state_stat.st_dev, state_stat.st_ino)
+        ):
+            raise LaneConfigError(
+                f"--progress {raw!r} is another link to mutation-state file "
+                f"{name!r}; progress must use a separate file"
+            )
+
+
+def _refuse_progress_parent_in_state(
+    raw: str,
+    state_dir: Path,
+    progress_parent_fd: int,
+    state_root_fd: int,
+) -> None:
+    """Reject a pinned progress parent located inside the mutation store."""
+    state_stat = os.fstat(state_root_fd)
+    current_fd = os.dup(progress_parent_fd)
+    try:
+        for _ in range(256):
+            current_stat = os.fstat(current_fd)
+            if (current_stat.st_dev, current_stat.st_ino) == (
+                state_stat.st_dev,
+                state_stat.st_ino,
+            ):
+                raise LaneConfigError(
+                    f"--progress {raw!r} resolves inside the mutation state directory "
+                    f"{state_dir}; progress must use a separate file"
+                )
+            parent_fd = os.open(
+                "..",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+                dir_fd=current_fd,
+            )
+            parent_stat = os.fstat(parent_fd)
+            if (parent_stat.st_dev, parent_stat.st_ino) == (
+                current_stat.st_dev,
+                current_stat.st_ino,
+            ):
+                os.close(parent_fd)
+                return
+            os.close(current_fd)
+            current_fd = parent_fd
+        raise LaneConfigError(
+            f"cannot prove that --progress {raw!r} is outside the mutation state directory"
+        )
+    except OSError as exc:
+        raise LaneConfigError(
+            f"cannot check the opened --progress parent for {raw!r}: {exc}"
+        ) from exc
+    finally:
+        os.close(current_fd)
+
+
+def _refuse_progress_state_fd_collision(
+    raw: str,
+    state_dir: Path,
+    progress_parent_fd: int,
+    progress_fd: int,
+    state_root_fd: int,
+) -> None:
+    """Validate the exact progress inode after its parent and file are pinned."""
+    _refuse_progress_parent_in_state(
+        raw,
+        state_dir,
+        progress_parent_fd,
+        state_root_fd,
+    )
+    progress_stat = os.fstat(progress_fd)
+    if not stat.S_ISREG(progress_stat.st_mode):
+        raise LaneConfigError(
+            f"--progress {raw!r} did not open a regular file"
+        )
+    for name in os.listdir(state_root_fd):
+        try:
+            state_stat = os.stat(name, dir_fd=state_root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISREG(state_stat.st_mode)
+            and (progress_stat.st_dev, progress_stat.st_ino)
+            == (state_stat.st_dev, state_stat.st_ino)
+        ):
+            raise LaneConfigError(
+                f"--progress {raw!r} is another link to mutation-state file "
+                f"{name!r}; progress must use a separate file"
+            )
 
 
 def _containments(target: Path, project_root: Path) -> "list[tuple[Path, Path]]":
@@ -1690,7 +2785,16 @@ def _run_reserved(
     state_dir: "Path | None" = None,
     r2_manifest: "Path | None" = None,
     campaign_deadline: tuple[dict[str, Any], bytes, datetime] | None = None,
+    pilot_selection: frozenset[str] | None = None,
+    candidates_file_sha256: str | None = None,
+    pilot_state_dir: Path | None = None,
+    pilot_judge_sha256: list[str | None] | None = None,
+    pilot_preflight_complete: Callable[[], None] | None = None,
+    pilot_state_lock_held: bool = False,
+    state_store_root_fd: int | None = None,
+    state_lock_guard: Callable[[], None] | None = None,
 ) -> int:
+    campaign_deadline_sha256: str | None = None
     campaign_binding = None
     if campaign_deadline is not None:
         campaign_document, campaign_bytes, _ = campaign_deadline
@@ -1739,6 +2843,16 @@ def _run_reserved(
         lane_file.project_root / "ciu.global.toml" if lane.infrastructure else None
     )
     infrastructure_environment = os.environ if lane.infrastructure else None
+    selection_order = (
+        tuple(sorted(pilot_selection)) if pilot_selection is not None else ()
+    )
+    selection_sha256: str | None = None
+    pilot_jobs_by_id: dict[str, mutation.MutantJob] = {}
+    pilot_state_accepted = False
+    if pilot_selection is not None and (
+        candidates_file_sha256 is None or pilot_state_dir is None
+    ):
+        raise ValueError("pilot selection requires its file digest and resolved state directory")
     # Pure, and independent of every Git fact -- resolved BEFORE the first
     # deadline-bounded call so the timeout refusal below can render the
     # lane's declared evidence identities exactly as A-213's does.
@@ -1764,7 +2878,12 @@ def _run_reserved(
                 ),
             )
 
-    def _emit_verdict_written(final: Verdict) -> None:
+    def _emit_verdict_written(
+        final: Verdict,
+        *,
+        effective_exit_code: int | None = None,
+        pilot: bool = False,
+    ) -> None:
         """(B064) The R0/R1 stream's TERMINAL record, and the reason the
         stream is opened in `_cmd_run` rather than inside `run_lane`.
 
@@ -1786,22 +2905,82 @@ def _run_reserved(
                     if final.reason_code is not None
                     else None
                 ),
-                "exit_code": final.exit_code,
+                "exit_code": (
+                    final.exit_code
+                    if effective_exit_code is None
+                    else effective_exit_code
+                ),
                 "destination": (
                     getattr(args, "verdict_json", None)
-                    if destination is not None
+                    if destination is not None and not pilot
                     else None
                 ),
             }
         )
 
-    def _deliver_verdict(verdict: Verdict) -> int:
+    def _finish(verdict: Verdict) -> int:
         """(B129) Write the artifact (when one was asked for), close the
         stream, print the summary, and return the exit code. Nested, because
         it closes over `destination`, `args`, `out` and `_emit_verdict_written`.
         """
+        if state_lock_guard is not None:
+            state_lock_guard()
+        if pilot_preflight_complete is not None:
+            # A lane refusal can finish before plan discovery reaches the
+            # sentinel check. Keep its ordinary terminal progress record;
+            # PILOT-STATE refusals bypass _finish and stay stderr-only.
+            pilot_preflight_complete()
         if campaign_binding is not None and verdict.campaign is None:
             verdict = replace(verdict, campaign=campaign_binding)
+        if pilot_selection is not None:
+            assert candidates_file_sha256 is not None and pilot_state_dir is not None
+            summary = _build_pilot_summary(
+                verdict,
+                lane=lane,
+                selected_ids=pilot_selection,
+                selection_order=selection_order,
+                selection_sha256=selection_sha256,
+                candidates_file_sha256=candidates_file_sha256,
+                state_dir=pilot_state_dir,
+                pilot_jobs=pilot_jobs_by_id,
+                judge_sha256=(
+                    None if pilot_judge_sha256 is None else pilot_judge_sha256[0]
+                ),
+                campaign_deadline_sha256=campaign_deadline_sha256,
+                cold_witness=getattr(args, "cold_witness", False),
+                state_root_fd=state_store_root_fd,
+                completed=False,
+            )
+            completed = _pilot_completed(
+                verdict,
+                pilot_selection,
+                unresolved=summary["unresolved"],
+            )
+            summary["completed"] = completed
+            exit_code = _pilot_exit_code(verdict, completed=completed, err=err)
+            if pilot_state_accepted:
+                assert state_store_root_fd is not None
+                sentinel = _read_pilot_state_document(
+                    pilot_state_dir,
+                    state_store_root_fd,
+                    require_sentinel_for_records=True,
+                )
+                if (
+                    sentinel is None
+                    or sentinel["lane"] != lane.name
+                    or sentinel["selection_sha256"] != selection_sha256
+                ):
+                    raise PilotStateError(
+                        "PILOT-STATE changed while the pilot summary was being built; "
+                        "refusing to publish a completion result"
+                    )
+            if state_lock_guard is not None:
+                state_lock_guard()
+            print(json.dumps(summary, indent=2, sort_keys=True), file=out)
+            _emit_verdict_written(
+                verdict, effective_exit_code=exit_code, pilot=True
+            )
+            return exit_code
         if destination is not None:
             # Exactly once, and the summary is printed only after it succeeded:
             # a run that could not deliver the artifact it was asked for must not
@@ -1813,14 +2992,27 @@ def _run_reserved(
         return verdict.exit_code
 
     def _deliver_refusal(exc: AssayError) -> int:
+        if isinstance(exc, PilotStateError):
+            runner.announce_refusal(exc, diagnostics=err)
+            return exc.exit_code
         detail = runner.announce_refusal(exc, diagnostics=err)
         refusal_evidence = (
             _timed_out_evidence(declared_evidence, exc)
             if exc.reason_code is ReasonCode.LANE_TIMEOUT
             else evidence
         )
+        refusal_lane = lane
+        if (
+            pilot_selection is not None
+            and exc.reason_code is ReasonCode.MUTATION_DISCOVERY_FAILED
+        ):
+            # Mutation discovery is an R2-only terminal. This preflight has
+            # not run R0/R1; preserve the precise reason on an R2-only refusal
+            # instead of assigning it to every declared rigor and violating
+            # Claim's reason-code ownership rule.
+            refusal_lane = replace(lane, rigor=("R2",))
         verdict = runner.refuse_lane(
-            lane,
+            refusal_lane,
             commit=commit,
             status=exc.outcome,
             reason_code=exc.reason_code,
@@ -1833,7 +3025,7 @@ def _run_reserved(
             evidence=refusal_evidence,
             declared_evidence=declared_evidence,
         )
-        return _deliver_verdict(verdict)
+        return _finish(verdict)
 
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
@@ -1919,7 +3111,7 @@ def _run_reserved(
             declared_evidence=declared_evidence,
         )
         _emit_run_header(commit)
-        return _deliver_verdict(verdict)
+        return _finish(verdict)
 
     # (B064) The commit label exists from here on, so the stream gets its
     # header before any further work -- attestation, adapter resolution and
@@ -1928,7 +3120,6 @@ def _run_reserved(
     _emit_run_header(commit)
 
     expected_plan_sha256: str | None = None
-    campaign_deadline_sha256: str | None = None
     if campaign_deadline is not None:
         campaign_doc, campaign_raw, expires_at_utc = campaign_deadline
         expected_plan_sha256 = campaign_doc["plan_sha256"][lane.name]
@@ -1958,7 +3149,7 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            return _deliver_verdict(verdict)
+            return _finish(verdict)
 
         identity_mismatches: list[str] = []
         if campaign_doc["commit"] != commit:
@@ -1996,7 +3187,7 @@ def _run_reserved(
                 evidence=_unresolved_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            return _deliver_verdict(verdict)
+            return _finish(verdict)
 
         # Convert UTC to monotonic exactly once, after identity checks so an
         # expired document for a different tree remains an identity refusal.
@@ -2082,7 +3273,7 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            return _deliver_verdict(verdict)
+            return _finish(verdict)
         else:
             # Merge back into the lane's own declared order -- see the
             # comment above this block for why concatenation alone is not
@@ -2149,6 +3340,64 @@ def _run_reserved(
         # attestation-timeout verdict carries. The one thing it cannot carry
         # is a `CommandResult` -- the command never ran, which is what
         # `NO_MEASUREMENT`/`LANE_TIMEOUT` says.
+        if pilot_selection is not None:
+            try:
+                assert pilot_state_dir is not None
+                mutation_config = lane.judge.mutation
+                if mutation_config is None:
+                    raise LaneConfigError(
+                        "--candidates-file requires a native R2 mutation lane"
+                    )
+                base_declaration = runner.resolve_base_declaration(
+                    lane, getattr(args, "request_base", None)
+                )
+                discovered = _discover_plan_jobs(
+                    lane_file,
+                    lane,
+                    adapter=adapter,
+                    base_declaration=base_declaration,
+                    operators=mutation_config.operators,
+                    allow_dirty=getattr(args, "allow_dirty", False),
+                    resolve_reuse_command=False,
+                    deadline=deadline,
+                    expected_commit=commit,
+                )
+                if discovered.jobs == mutation.UNSUPPORTED:
+                    raise LaneConfigError(
+                        "the native R2 adapter cannot enumerate candidates for this pilot"
+                    )
+                if len(discovered.jobs) > mutation_config.max_mutants:
+                    raise LaneConfigError(
+                        "the full native R2 plan exceeds judge.mutation.max_mutants; "
+                        "cannot select from an incomplete plan"
+                    )
+                plan_ids = tuple(mutation.candidate_id(job) for job in discovered.jobs)
+                pilot_jobs_by_id = {
+                    identity: job
+                    for identity, job in zip(plan_ids, discovered.jobs, strict=True)
+                }
+                known_order = tuple(
+                    identity for identity in plan_ids if identity in pilot_selection
+                )
+                unknown = pilot_selection - set(plan_ids)
+                selection_order = known_order + tuple(sorted(unknown))
+                if not unknown:
+                    selection_sha256 = mutation.plan_sha256(known_order)
+                    if state_lock_guard is not None:
+                        state_lock_guard()
+                    _ensure_pilot_state(
+                        pilot_state_dir,
+                        lane=lane.name,
+                        selection_sha256=selection_sha256,
+                        lock_held=pilot_state_lock_held,
+                        locked_root_fd=state_store_root_fd,
+                    )
+                    pilot_state_accepted = True
+                if pilot_preflight_complete is not None:
+                    pilot_preflight_complete()
+            except AssayError as exc:
+                return _deliver_refusal(exc)
+
         if _has_native_r2(lane):
             capability = resource_limits.inspect_current_cgroup_observation()
             if not capability.available:
@@ -2245,6 +3494,8 @@ def _run_reserved(
                 deadline=deadline,
                 resume=getattr(args, "resume", False),
                 shard=getattr(args, "shard", None),
+                candidate_selection=pilot_selection,
+                expected_selection_sha256=selection_sha256,
                 rejudge=getattr(args, "rejudge", None),
                 rejudge_outcome=getattr(args, "rejudge_outcome", None),
                 infrastructure_source=infrastructure_source,
@@ -2262,6 +3513,8 @@ def _run_reserved(
                 progress_stream=progress_stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                state_root_fd=state_store_root_fd,
+                state_root_guard=state_lock_guard,
                 cold_witness=getattr(args, "cold_witness", False),
                 r2_manifest=r2_manifest,
                 reuse_from=getattr(args, "reuse_from", None),
@@ -2299,7 +3552,7 @@ def _run_reserved(
                 evidence=evidence,
                 declared_evidence=declared_evidence,
             )
-    return _deliver_verdict(verdict)
+    return _finish(verdict)
 
 
 def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
@@ -2395,13 +3648,24 @@ def _discover_plan_jobs(
     allow_dirty: bool,
     resolve_reuse_command: bool,
     deadline: runner.LaneDeadline | None = None,
+    expected_commit: str | None = None,
 ) -> _PlanDiscovery:
     """Single planner-jobs extraction (C29); P6 reuses it."""
     if deadline is None:
         deadline = runner.LaneDeadline.start(
             budget_seconds=lane.budget_seconds, monotonic=time.monotonic
         )
-    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+    observed_commit = git.head_rev(
+        lane_file.project_root, remaining=deadline.remaining
+    )
+    if expected_commit is not None and observed_commit != expected_commit:
+        raise AssayError(
+            "HEAD changed while Assay prepared the pilot candidate selection: "
+            f"expected {expected_commit}, observed {observed_commit}",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.HEAD_CHANGED,
+        )
+    commit = observed_commit
     tree = git.run(
         lane_file.project_root,
         "rev-parse",

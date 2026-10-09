@@ -794,6 +794,35 @@ a gitignored path), since a progress file inside the work tree makes the next
 run of the same lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. The verdict does not
 record the destination, exactly as it does not record `--verdict-json`'s.
 
+**Non-qualifying pilot runs** can use `assay run LANE --candidates-file PATH`
+to execute a bounded selection from a native R2 plan; `--pilot-jobs` can set
+1–8 workers for that run. A pilot skips R3, writes no verdict, and returns exit
+code 6 only when every selected candidate has a completed disposition. Exit 6
+means “pilot measurement completed,” never “the lane passed”; use the JSON
+summary and its mutation buckets to read the result. Pilot state is tied to one
+selection and lane and must stay separate from qualifying campaign state. See
+[why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
+and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+An invocation takes a path lock under a private directory in the system
+`/tmp` (independent of `TMPDIR`) and locks the admitted state-directory inode
+through the run. The path lock survives replacement of the store's parent;
+the inode lock makes independent path aliases of the same store coordinate.
+A second run refuses promptly and can be retried after the first finishes.
+The selector requires a clean Git checkout whose HEAD commit and
+tree match the plan, reads source bytes from that immutable tree, and checks
+each known-hard byte span on its declared line. It pins output directories,
+rechecks repository identity before publishing, and writes the digest-bound
+selection report last, so path redirection or a stale checkout cannot produce
+a report that describes different candidate bytes. It rechecks the requested
+output parents before and after publication. It locks both pinned output
+directories through publication; a concurrent selector writing in either
+directory refuses promptly, so the two-file result cannot be interleaved. The
+locks use the directory descriptors themselves, so symlink aliases and
+different `TMPDIR` settings still coordinate on the same directory.
+Only exit 0 certifies the pair for use. Exit 2 can leave temporary files or a
+complete pair in the pinned directories after an identity or cleanup error;
+do not continue with the candidate file after a nonzero selector exit.
+
 Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
 `derived:` sources. Assay resolves them in the invoking context before any
 snapshot work and injects the values into the isolated command.

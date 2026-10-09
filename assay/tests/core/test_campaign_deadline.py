@@ -492,19 +492,33 @@ def test_default_runner_timeout_kills_and_reaps_its_inherited_pipe_group(
         "'child_start':stat(os.getpid()),'grandchild':child.pid,"
         "'grandchild_start':stat(child.pid)})); time.sleep(600)"
     )
+    observed: dict[str, int | str] = {}
+
+    def read_process_record() -> dict[str, int | str] | None:
+        try:
+            payload = json.loads(pid_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        required = {"child", "child_start", "grandchild", "grandchild_start"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            return None
+        return payload
 
     def timeout_after_launch(proc, timeout):
         end = time.monotonic() + 5
-        while not pid_file.is_file() and time.monotonic() < end:
+        while time.monotonic() < end:
+            payload = read_process_record()
+            if payload is not None:
+                observed.update(payload)
+                break
             time.sleep(0.01)
-        if not pid_file.is_file():
+        else:
             raise AssertionError("runner child did not start its grandchild")
         raise subprocess.TimeoutExpired(
             proc.args, timeout, output=b"partial-out", stderr=b"partial-err"
         )
 
     monkeypatch.setattr(runner, "_wait_child", timeout_after_launch)
-    observed: dict[str, int | str] = {}
     try:
         with pytest.raises(subprocess.TimeoutExpired) as caught:
             runner.default_process_runner(
@@ -513,7 +527,9 @@ def test_default_runner_timeout_kills_and_reaps_its_inherited_pipe_group(
                 cwd=tmp_path,
                 timeout=5.0,
             )
-        observed = json.loads(pid_file.read_text(encoding="utf-8"))
+        record = read_process_record()
+        assert record is not None, "runner child launch record was not fully written"
+        observed.update(record)
         assert caught.value.output == b"partial-out"
         assert caught.value.stderr == b"partial-err"
         assert _proc_state_and_start_time(int(observed["child"])) is None
@@ -521,8 +537,6 @@ def test_default_runner_timeout_kills_and_reaps_its_inherited_pipe_group(
         assert _proc_state_and_start_time(int(observed["grandchild"])) is None
         assert int(observed["child"]) not in liveness._LIVE_GROUPS
     finally:
-        if not observed and pid_file.is_file():
-            observed = json.loads(pid_file.read_text(encoding="utf-8"))
         if observed:
             _reap_adopted_child(int(observed["grandchild"]))
         _set_child_subreaper(previous_subreaper)
