@@ -131,3 +131,17 @@ def test_requires_each_terminal_bucket(missing_bucket):
         verify_complete_mutation_inventory(
             mutation, (_ID_A,), context="analysis R2"
         )
+
+
+@pytest.mark.parametrize("non_array_bucket", _BUCKETS)
+def test_requires_each_terminal_bucket_to_be_a_list(non_array_bucket):
+    mutation = _payload((_ID_A,))
+    mutation[non_array_bucket] = ({"candidate_id": _ID_A},)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"mutation\.{non_array_bucket} is missing or not an array",
+    ):
+        verify_complete_mutation_inventory(
+            mutation, (_ID_A,), context="analysis R2"
+        )

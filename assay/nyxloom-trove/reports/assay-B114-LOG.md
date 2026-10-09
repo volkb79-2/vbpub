@@ -647,3 +647,16 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   (41 statements, 30 branches), and `git diff --check` passed.
 - Next: exact-tip Sol xhigh review of the strengthened test, then proceed to
   the serial merge if accepted.
+
+## 2026-10-09 — Sol xhigh integration review round 8
+
+- The read-only GPT-6-Sol xhigh review from `.codex` returned **REVISE** with
+  one P3: tests needed to distinguish a missing bucket from a present
+  non-array bucket value. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round8.md`; before/after HEAD and status
+  snapshots matched at `046f4831cde74fe587f29a14443320809734cdd9` with a clean
+  worktree. The reviewer ran no tests or gates.
+- Added a tuple-valued outcome case for each of the six buckets. Focused
+  verification passed **84 tests**, and the helper remained at **100%** branch
+  coverage (41 statements, 30 branches). `git diff --check` passed.
+- Next: exact-tip Sol xhigh review of the new non-array refusal cases.
