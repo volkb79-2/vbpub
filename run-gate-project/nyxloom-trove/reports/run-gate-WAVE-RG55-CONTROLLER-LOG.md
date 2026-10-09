@@ -8447,3 +8447,19 @@ That makes DAMON_STAT the strongest supported explanation, though not a
 toggle-and-retest proof. Do not disable or reconfigure host-wide DAMON_STAT
 without an explicit operator decision; it is not required for the daemon's
 ordinary sampling path.
+
+### RW-527 — 2026-10-09 03:41:38 UTC — repair two R0-R1 failures on the new observer diff
+
+The registered `r0-r1` lane on exact tree `75d286dab79ef3236ab4ec5acc00e94083fcff18`
+finished in 135.62 seconds with exit 1: 2,475 passed and two failed. The docs
+link checker found that DESIGN-GUIDE linked to the planned
+`CONSUMERS.md#host-damonstat-exclusivity` anchor before that section existed;
+the README and CONSUMERS now explain the observable DAMON_STAT/`EBUSY`
+limitation and give read-only host checks plus the operator boundary. The
+observer boundary behavior itself passed; its test incorrectly expected the
+newline delimiter to reach `_observer_dispatch`, although the server correctly
+strips it after counting it toward the 4096-byte wire limit. The oracle now
+expects the exact newline-free dispatch payload and still asserts the 4097-byte
+request is refused without dispatch. Run-Gate history and the preserved log
+record the failed run; no container remains active. Re-run `r0-r1` on a new
+quiet commit, then `r3`; do not reuse this failed receipt as a pass.

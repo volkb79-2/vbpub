@@ -84,6 +84,10 @@ command continue. See the
 The one-shot collector follows the same zero-baseline and optional-evidence
 rules: it still becomes ready and launches the wrapped command if DAMON cannot
 start or later stops collecting.
+On hosts where a special-purpose kernel module such as DAMON_STAT is active,
+the kernel may refuse a DAMON start with `EBUSY` even when the sysfs
+`nr_kdamonds` count is zero; ordinary profiling still works. See the
+[host troubleshooting note](docs/CONSUMERS.md#host-damonstat-exclusivity).
 The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.

@@ -59,6 +59,37 @@ at `/tmp/cgprofile-damon.lock`, not the control socket. If another cgprofile
 writer holds the lock, the optional DAMON series is refused rather than
 waiting or racing; ordinary profiling proceeds.
 
+## Host DAMON_STAT exclusivity
+
+`ctl version`'s `damon: available` reports that the interface exists; it does
+not prove the kernel will grant a new monitoring session. Linux's
+special-purpose DAMON modules, including DAMON_STAT, are mutually exclusive
+with other DAMON starts. DAMON_STAT can own the kernel facility without
+appearing in the sysfs `nr_kdamonds` registry, so `nr_kdamonds=0` alone does
+not prove the facility is free. Check both facts read-only from the cockpit:
+
+```bash
+docker exec cgprofile-host-daemon sh -c '
+  if [ -r /sys/module/damon_stat/parameters/enabled ]; then
+    printf "damon_stat.enabled="
+    cat /sys/module/damon_stat/parameters/enabled
+  else
+    echo "damon_stat.enabled=not-exposed"
+  fi
+  printf "nr_kdamonds="
+  cat /sys/kernel/mm/damon/admin/kdamonds/nr_kdamonds
+'
+```
+
+If DAMON_STAT is enabled, `ctl start` can return `ok: true` with
+`damon: unavailable:OSError: [Errno 16] Device or resource busy`; the
+session can still collect ordinary resource samples and stop normally. Treat
+that as unavailable DAMON evidence, not as a hot-set measurement. To require
+a DAMON series, the host operator must deliberately decide whether to stop or
+disable host-wide DAMON_STAT using the host's supported configuration, then
+run a fresh real start/stop probe and confirm persisted DAMON samples. A lane
+or cgprofile must not change that host-wide monitoring policy implicitly.
+
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development
