@@ -1016,3 +1016,9 @@ actionable findings**. The `.codex` GPT-6-Sol xhigh invocation recorded the
 same HEAD (`5bf6db82`) and worktree status before and after. The focused suite
 and static checks are green; registered `tester-unified` at the committed
 P7c tip remains pending. No B110 pilot ran.
+
+## Controller follow-up — first registered gate attempt and lint repair (2026-10-09)
+
+Registered `./run-gate.py tester-unified` at commit `012293e04a46e26eb7be10d0310d64748b822085` completed with `GATE_EXIT=1`. The exact runner log is `/tmp/assay-b118-tester-unified-012293e0.log`; run-gate recorded `/tmp/run-gate/lanes/tester-unified/913713f8617a60adfe98aa647e6149a1.log`. Its R0 suite reported **8,502 passed, 11 skipped, 1 failed** in 768.00 seconds. The sole failure was the shipped-source pyflakes oracle, which found three unused test locals: `_records`, a stale `receipt` binding, and an unused `state` binding. The B145 probes, container startup, and other test phases passed; no gate container remains.
+
+The three unused bindings were removed or replaced with direct calls, preserving the existing behavioral assertions. The exact pyflakes oracle now passes (1 test in 8.01 seconds), and the three affected behavior tests pass (3 tests in 6.33 seconds). Shell syntax and `git diff --check` pass. A same-tip registered `tester-unified` rerun is still required; no B110 pilot ran.

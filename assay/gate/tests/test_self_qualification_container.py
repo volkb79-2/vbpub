@@ -969,7 +969,7 @@ def test_pilot_retry_archives_prior_snapshot_before_publishing_new_one(
     )
 
     assert first.returncode == 0, first.stderr
-    receipt = record_run_gate_success(committed_worktree)
+    record_run_gate_success(committed_worktree)
     prior_snapshot = project / ".assay" / "b110-pilot-evidence"
     prior_index = (prior_snapshot / "snapshot.sha256").read_bytes()
     receipt_path = project / ".assay" / "b110-pilot-evidence.receipt.json"
@@ -2387,7 +2387,6 @@ def test_archive_refuses_to_report_a_renamed_assay_ancestor(
     assert first.returncode == 0, first.stderr
     receipt = record_run_gate_success(committed_worktree)
     project = committed_worktree / "assay"
-    state = project / ".assay"
     monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(gate_evidence_root(committed_worktree)))
     spec = importlib.util.spec_from_file_location(
         "b110_pilot_host_check_archive_assay_ancestor_race_test", PILOT_HOST_CHECK

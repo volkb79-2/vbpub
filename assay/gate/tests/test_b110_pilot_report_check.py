@@ -506,7 +506,7 @@ def test_pilot_state_rejects_hung_candidate_without_liveness_trace(tmp_path: Pat
 def test_pilot_state_accepts_hung_candidate_with_complete_liveness_trace(tmp_path: Path):
     fixture = _fixture(tmp_path)
 
-    _records = _verify_fixture_with_first_hung(fixture, include_trace=True)
+    _verify_fixture_with_first_hung(fixture, include_trace=True)
 
 
 def test_hung_progress_must_carry_the_validated_liveness_trace(tmp_path: Path):

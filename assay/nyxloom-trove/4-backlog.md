@@ -215,7 +215,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B115 — P4 work-queue executor — OPEN
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
 - B117 — P6 persisted campaign deadline + process-group termination — OPEN
-- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a/P7b merged; P7c artifact-attestation, archive publication, round-24 judge/quarantine fixes, and round-28/29 descriptor/path/permission repairs are implemented on `assay-b118-p7c-artifact-attestation-20261009`. The B110 container tests pass 100; candidate-file tests pass 44; post-helper shell/report-check tests pass 9. Fresh exact-diff review and same-tip registered gates remain. B131 will run its own measured sample after integration.)
+- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a/P7b merged; P7c artifact-attestation and archive publication are on `assay-b118-p7c-artifact-attestation-20261009`. Sol xhigh accepted the exact diff in review round 33. Registered `tester-unified` at `012293e0` ran 8,502 tests and skipped 11, then failed its pyflakes cleanliness check on three unused test locals. Those locals are removed without changing test assertions; the exact lint oracle and three affected tests pass locally. Same-tip registered gate rerun remains pending. B131 will run its own measured sample after integration.)
 - B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
 - B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
 - B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
