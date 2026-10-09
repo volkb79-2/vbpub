@@ -8265,3 +8265,27 @@ records remain bound to the old tree and are not evidence for this repair; a
 fresh exact-tree qualification is required before resuming mutation. No
 registered gate, live daemon probe, review, merge, or release has passed on
 this fix.
+
+### RW-519 — 2026-10-09 01:09:05 UTC — triage remaining observed input-boundary survivors
+
+The first registered `r0-r1` after the procfs-race repair passed on tree
+`ab8d7cbc0b197dbef5d7375ac4e72ca29895f171`: 2,470 tests, 100% line and branch
+coverage across all modules, exit 0 in 125.01 seconds. It predates the new
+survivor tests below, so it is not the final short-gate result. The test
+container was `cgprofile-gate-2081306-1791507949`, placed in `dev-gates.slice`
+and capped at 3 CPUs.
+
+Further triage of the incomplete old-tree R2 result found four actionable
+oracles: positive non-integer peer PID and UID values bypass the respective
+`type(...) is int` guard if its first `or` is changed to `and`; the explicit
+nonnegative UID policy admits UID 0, so `< 0` versus `<= 0` must be tested at
+that boundary; and a valid nonempty NSpid with a three-field UID tuple must be
+rejected independently. Add these cases. The line-156 type/empty-tuple
+`Or->And` remains equivalent because `_read_status` returns only a non-empty
+tuple or raises; this proof remains provisional pending a completed R2 run.
+
+The updated focused observer plus socket-endpoint suite passes 92 tests with
+100% line and branch coverage for `resource_observer.py` (290 statements,
+126 branches); Ruff, compilation, and whitespace checks pass. These tests and
+the new oracles are not yet registered-gate or mutation evidence. Rerun both
+short lanes on the committed report-bearing tree before starting fresh R2.

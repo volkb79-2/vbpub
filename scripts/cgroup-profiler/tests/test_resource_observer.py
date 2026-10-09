@@ -39,6 +39,7 @@ def _fixture(
     cgroup: str = LEAF,
     proc_cgroup: str | None = None,
     mount_root: str = "/",
+    peer_uid: int = 4242,
 ):
     proc_root = tmp_path / "proc"
     peer = proc_root / "4242"
@@ -48,7 +49,7 @@ def _fixture(
     for host_tid, native_tid in ((4242, 42), (4250, 50)):
         task = peer / "task" / str(host_tid)
         (task / "status").write_text(
-            _status(native_tid, host_tid=host_tid), encoding="ascii"
+            _status(native_tid, host_tid=host_tid, uid=peer_uid), encoding="ascii"
         )
         (task / "cgroup").write_text(
             f"0::{proc_cgroup or cgroup}\n", encoding="ascii"
@@ -79,7 +80,7 @@ def _fixture(
         "cgroup_root": str(cgroup_root),
         "mountinfo_path": str(mountinfo),
         "peer_pid": 4242,
-        "peer_uid": 4242,
+        "peer_uid": peer_uid,
         "thread_id": 50,
         "gates_slice_name": "dev-gates.slice",
     }
@@ -151,8 +152,10 @@ def test_private_daemon_namespace_refuses_unmatched_path_mapping(
     [
         ("peer_pid", None, "host-visible peer PID"),
         ("peer_pid", 0, "host-visible peer PID"),
+        ("peer_pid", 1.5, "host-visible peer PID"),
         ("peer_uid", None, "valid peer UID"),
         ("peer_uid", -1, "valid peer UID"),
+        ("peer_uid", 1.5, "valid peer UID"),
         ("thread_id", True, "positive native TID"),
         ("thread_id", 0, "positive native TID"),
     ],
@@ -162,6 +165,12 @@ def test_observation_rejects_missing_or_invalid_identity(tmp_path, field, value,
     kwargs[field] = value
     with pytest.raises(resource_observer.ResourceObserverError, match=message):
         _observe(kwargs)
+
+
+def test_observation_accepts_peer_uid_zero(tmp_path):
+    result = _observe(_fixture(tmp_path, peer_uid=0))
+
+    assert result["thread_id"] == 50
 
 
 def test_observation_rejects_relative_configured_cgroup_root(tmp_path):
@@ -475,6 +484,10 @@ def test_status_reader_rejects_duplicate_malformed_and_out_of_range_facts(tmp_pa
         resource_observer._read_status(path)
 
     path.write_text(valid.replace("NSpid:\t4250 50", "NSpid:\t"), encoding="ascii")
+    with pytest.raises(resource_observer.ResourceObserverError, match="out-of-range"):
+        resource_observer._read_status(path)
+
+    path.write_text(valid.replace("Uid:\t4242 4242 4242 4242", "Uid:\t4242 4242 4242"), encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="out-of-range"):
         resource_observer._read_status(path)
 
