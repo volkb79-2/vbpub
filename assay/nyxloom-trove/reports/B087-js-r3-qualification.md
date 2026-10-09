@@ -6,12 +6,14 @@
 
 **Historical qualification:** operator-reported PASS for both JavaScript R3 mechanisms; the detailed verdicts and verifier results were not retained.
 
-**Current status (2026-10-08):** both current JavaScript R3 canaries passed
+**Current status (2026-10-09):** both current JavaScript R3 canaries passed
 against dstdns using the pinned Assay candidate below. Full schema-v15
 verdicts, separate `assay verify` transcripts, progress streams, and run-gate
-logs are retained. The real-consumer qualification is complete for this
-candidate; the registered Assay `tester-unified` gate and merge remain on hold
-pending the controller's B114 release.
+logs are retained. The JavaScript adapter and registry code are unchanged
+between that candidate and B087 tip `47fbaac6`. B087 is provisionally merged
+into integration branch `assay-b131-r2` at `1b5f61a9`; the integrated
+`tester-unified` gate and final exact-tip review are pending. No release has
+been made.
 
 ## Current requalification (2026-10-08)
 
@@ -131,4 +133,4 @@ logs.
 
 This section records only the original attempt and its evidence gaps. The
 current qualification above supersedes its acceptance status. B087 remains
-unmerged and unreleased while the registered Assay gate is held.
+unreleased pending the integrated registered Assay gate and exact-tip review.

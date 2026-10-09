@@ -190,7 +190,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
-- B087 — JavaScript/TypeScript canary (R3) — REGISTERED on `assay-b087-js-canary`; both dstdns R3 canaries now PASS with retained schema-v15 verdicts and verifier transcripts; registered Assay gate pending controller release; no merge/release yet
+- B087 — JavaScript/TypeScript canary (R3) — provisionally merged into `assay-b131-r2` at `1b5f61a9`; both dstdns R3 canaries PASS with retained schema-v15 verdicts and verifier transcripts; integrated `tester-unified` gate and exact-tip review pending; unreleased
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
