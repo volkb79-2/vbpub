@@ -84,10 +84,6 @@ command continue. See the
 The one-shot collector follows the same zero-baseline and optional-evidence
 rules: it still becomes ready and launches the wrapped command if DAMON cannot
 start or later stops collecting.
-On hosts where a special-purpose kernel module such as DAMON_STAT is active,
-the kernel may refuse a DAMON start with `EBUSY` even when the sysfs
-`nr_kdamonds` count is zero; ordinary profiling still works. See the
-[host troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
 The daemon control contract is major version 1, and `ctl` refuses
 to print a response whose object, major, `ok`, or verb-specific shape is not
 valid.
@@ -228,7 +224,7 @@ mean the kernel accepted a configured monitoring context. Check each session's
 [design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
 One possible host-level refusal is an active, mutually exclusive kernel DAMON
 consumer such as `DAMON_STAT`; see the
-[consumer troubleshooting note](docs/CONSUMERS.md#host-damonstat-exclusivity).
+[consumer troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
 
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the

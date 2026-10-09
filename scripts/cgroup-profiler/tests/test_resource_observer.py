@@ -541,6 +541,21 @@ def test_proc_fact_readers_refuse_unreadable_or_malformed_records(tmp_path, monk
 
     task_dir = tmp_path / "4242"
     task_dir.mkdir()
+    (task_dir / "cgroup").write_text("0::/workload\n", encoding="ascii")
+    malformed_status = {
+        "NSpid": [4242, 42],
+        "Uid": (1, 1, 1, 1),
+        "Gid": (1, 1, 1, 1),
+        "Groups": (),
+        "CapEff": 0,
+        "CapPrm": 0,
+    }
+    monkeypatch.setattr(
+        resource_observer, "_read_status", lambda _path: malformed_status
+    )
+    with pytest.raises(resource_observer.ResourceObserverError, match="no valid NSpid"):
+        resource_observer._task_facts(task_dir)
+
     monkeypatch.setattr(resource_observer, "_read_status", lambda _path: {})
     with pytest.raises(resource_observer.ResourceObserverError, match="no valid NSpid"):
         resource_observer._task_facts(task_dir)

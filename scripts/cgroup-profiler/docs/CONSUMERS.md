@@ -59,37 +59,6 @@ at `/tmp/cgprofile-damon.lock`, not the control socket. If another cgprofile
 writer holds the lock, the optional DAMON series is refused rather than
 waiting or racing; ordinary profiling proceeds.
 
-## Host DAMON_STAT exclusivity
-
-`ctl version`'s `damon: available` reports that the interface exists; it does
-not prove the kernel will grant a new monitoring session. Linux's
-special-purpose DAMON modules, including DAMON_STAT, are mutually exclusive
-with other DAMON starts. DAMON_STAT can own the kernel facility without
-appearing in the sysfs `nr_kdamonds` registry, so `nr_kdamonds=0` alone does
-not prove the facility is free. Check both facts read-only from the cockpit:
-
-```bash
-docker exec cgprofile-host-daemon sh -c '
-  if [ -r /sys/module/damon_stat/parameters/enabled ]; then
-    printf "damon_stat.enabled="
-    cat /sys/module/damon_stat/parameters/enabled
-  else
-    echo "damon_stat.enabled=not-exposed"
-  fi
-  printf "nr_kdamonds="
-  cat /sys/kernel/mm/damon/admin/kdamonds/nr_kdamonds
-'
-```
-
-If DAMON_STAT is enabled, `ctl start` can return `ok: true` with
-`damon: unavailable:OSError: [Errno 16] Device or resource busy`; the
-session can still collect ordinary resource samples and stop normally. Treat
-that as unavailable DAMON evidence, not as a hot-set measurement. To require
-a DAMON series, the host operator must deliberately decide whether to stop or
-disable host-wide DAMON_STAT using the host's supported configuration, then
-run a fresh real start/stop probe and confirm persisted DAMON samples. A lane
-or cgprofile must not change that host-wide monitoring policy implicitly.
-
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development
@@ -326,17 +295,28 @@ In particular, Linux's special-purpose `DAMON_STAT` module can be enabled
 while `nr_kdamonds` is `0`; the kernel documents special-purpose DAMON
 modules as exclusive, so another start request can fail with `EBUSY`. This
 does not make the cgprofile daemon's control socket or ordinary resource
-sampling unusable. The start response should record DAMON as
-`unavailable:OSError: [Errno 16] ...`, and the session should continue without
-DAMON under R-36h. See the [kernel DAMON design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html)
-and [DAMON_STAT documentation](https://docs.kernel.org/admin-guide/mm/damon/stat.html).
+sampling unusable. `ctl version`'s `damon: available` is only a capability
+probe; it does not mean the kernel accepted a session. The start response may
+record DAMON as `unavailable:OSError: [Errno 16] ...`, and the session should
+continue without DAMON under R-36h. Confirm the actual `ctl start` result and
+persisted `damon.jsonl` series before claiming DAMON samples or overhead. See
+the [kernel DAMON design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html)
+and [DAMON_STAT documentation](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html).
 
 Check the host-visible state through the daemon's existing read-only sysfs
 bind, without changing it:
 
 ```bash
-docker exec cgprofile-host-daemon sh -c \
-  'cat /sys/module/damon_stat/parameters/enabled; cat /sys/kernel/mm/damon/admin/kdamonds/nr_kdamonds'
+docker exec cgprofile-host-daemon sh -c '
+  if [ -r /sys/module/damon_stat/parameters/enabled ]; then
+    printf "damon_stat.enabled="
+    cat /sys/module/damon_stat/parameters/enabled
+  else
+    echo "damon_stat.enabled=not-exposed"
+  fi
+  printf "nr_kdamonds="
+  cat /sys/kernel/mm/damon/admin/kdamonds/nr_kdamonds
+'
 ```
 
 On the RG-55 host the observed values were `Y` and `0`, respectively, while

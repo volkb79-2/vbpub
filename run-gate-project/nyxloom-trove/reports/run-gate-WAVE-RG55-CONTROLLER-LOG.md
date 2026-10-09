@@ -8474,3 +8474,26 @@ the underscore from the exact heading `Host DAMON_STAT exclusivity`, yielding
 anchor. The observer tests and all other suite tests passed. The gate container
 has exited; rerun `r0-r1` on the next quiet commit before treating the short
 gate as green.
+
+### RW-529 — 2026-10-09 03:49:56 UTC — consolidate DAMON_STAT docs and close the R2 NSpid survivor
+
+The registered `r0-r1` lane on exact tree `868ff7c6457ead88d3c443aadeda0acbd612f01d`
+finished in 135.03 seconds with exit 1: 2,476 passed and one failed. The
+remaining stale link was a README reference at a second location; the earlier
+edit had corrected only the newly added link. Inspection also found that
+RW-523 had already added the `Host DAMON_STAT exclusivity` section, so the
+additional section from RW-527 duplicated it. The duplicate is removed; the
+existing consumer section now carries the capability-versus-readiness
+explanation and robust read-only check, and every README/DESIGN-GUIDE
+reference uses the actual `host-damon_stat-exclusivity` anchor.
+
+RW-525's line-177 equivalence disposition is also superseded. Although
+`_read_status` currently guarantees a nonempty tuple, the declared R2 policy
+has no equivalence ledger; accepting this survivor would leave the campaign
+red. The consumer-side type check is retained as an internal contract with
+`_read_status`, and a regression test now feeds `_task_facts` a nonempty list
+to prove the consumer rejects malformed producer output. Under the `Or->And`
+mutant that value would pass the check and be returned as a native ID, so the
+mutant must be killed by an assertion rather than waved away as equivalent.
+Verify this in the next selective R2 run. The failed gate log is preserved;
+no gate remains active.
