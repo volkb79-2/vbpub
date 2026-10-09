@@ -8316,3 +8316,16 @@ rejected, zero survived, exit 0 (log
 reported DAMON unavailable because the host interface returned `EBUSY`; no
 overhead evidence is claimed. Both results precede this log-only commit, so
 rerun the short lanes on the new report-bearing HEAD before fresh R2.
+
+### RW-522 — 2026-10-09 01:22:16 UTC — final short-gate receipts on report-bearing tree
+
+The registered `r0-r1` lane passed on exact tree
+`9787211a9df2550e1a7c0ddeac3cf27386f28abe`: 2,473 tests, 100% line and
+branch coverage across all modules, exit 0 in 134.73 seconds. The registered
+`r3` lane passed on the same tree: all seven canaries rejected, zero survived,
+exit 0 in 10.99 seconds. Run-Gate's history records both exact-tree receipts.
+The R0-R1 profile reports peak memory 5,086 MiB and DAMON unavailable because
+there were no pids to monitor; R3 reports DAMON unavailable (`EBUSY`). Neither
+run supplies DAMON-overhead evidence. This ruling is a log-only commit. Start a
+fresh R2 against its resulting exact tree and keep that tree quiet until the
+campaign has a terminal verdict.
