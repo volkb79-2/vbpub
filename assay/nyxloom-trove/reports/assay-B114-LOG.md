@@ -660,3 +660,17 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   verification passed **84 tests**, and the helper remained at **100%** branch
   coverage (41 statements, 30 branches). `git diff --check` passed.
 - Next: exact-tip Sol xhigh review of the new non-array refusal cases.
+
+## 2026-10-09 — Sol xhigh integration review round 9
+
+- The read-only GPT-6-Sol xhigh review from `.codex` returned **ACCEPT**, with
+  no actionable P0–P3 findings. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round9.md`; before/after HEAD and status
+  snapshots matched at `6133f78d66cd9f2499f52df5c6fed7855f39a01c` with a clean
+  worktree. The reviewer ran no tests or gates.
+- The reviewer confirmed the six-bucket success case, missing-key and
+  non-array refusal cases for all buckets, exact source inventories, current
+  exclusion lines, and behavior-preserving source edits. The controller's
+  focused suite passed **84 tests** with **100%** helper branch coverage.
+- Next: merge serially and rerun registered `tester-unified` on the repaired
+  main tip.
