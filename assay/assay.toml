@@ -116,6 +116,7 @@ source_roots = ["src/assay"]
 mode = "whole_target"
 targets = [
   "src/assay/__init__.py",
+  "src/assay/_mutation_inventory.py",
   "src/assay/adapters/__init__.py",
   "src/assay/adapters/base.py",
   "src/assay/adapters/go.py",
@@ -228,6 +229,7 @@ source_roots = ["src/assay"]
 mode = "whole_target"
 targets = [
   "src/assay/__init__.py",
+  "src/assay/_mutation_inventory.py",
   "src/assay/adapters/__init__.py",
   "src/assay/adapters/base.py",
   "src/assay/adapters/go.py",
