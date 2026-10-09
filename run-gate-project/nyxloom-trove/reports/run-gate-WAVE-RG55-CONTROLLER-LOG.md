@@ -8240,3 +8240,28 @@ assignment; no test behavior changes. On the resulting worktree diff, Ruff
 resource-observer suite still passes 53 tests, with 100% line and branch
 coverage for `lib/resource_observer.py` (275 statements, 124 branches). These
 remain bounded cockpit checks, not registered gate evidence.
+
+### RW-518 — 2026-10-09 01:02:13 UTC — preserve failed R2 accounting and repair procfs snapshot races
+
+The R2 run on exact tree `5c43550b116203db0037c30d150d079b14b77bd4` ended
+at 2026-10-08 22:05:39 UTC with `ERROR/EXEC_FAILED`, not a mutation verdict:
+46/120 candidates completed (38 killed, 8 survived); candidate 47 never
+received a bucket. The observer error was `cannot read peer thread status`.
+That run's error serialization dropped the underlying OSError type and errno,
+so the original cause is not proven. Source inspection found that `_read_status`
+wrapped `FileNotFoundError` as a generic `ResourceObserverError` before the
+caller could apply its intended disappearing-thread handling. A transient
+procfs task-file race is therefore a supported hypothesis, not a confirmed
+errno diagnosis.
+
+The separate integration worktree now commits `fa5e348a8`: retry the complete
+peer identity scan up to three times only when a procfs identity file vanishes;
+persistent disappearance still refuses, and other status-read failures remain
+immediate refusals with exception/errno detail. Focused observer plus socket
+endpoint tests pass (89); `resource_observer.py` has 100% line and branch
+coverage (290 statements, 126 branches). Ruff, compilation, and
+`git diff --check` pass. These are bounded cockpit tests only. The failed R2
+records remain bound to the old tree and are not evidence for this repair; a
+fresh exact-tree qualification is required before resuming mutation. No
+registered gate, live daemon probe, review, merge, or release has passed on
+this fix.
