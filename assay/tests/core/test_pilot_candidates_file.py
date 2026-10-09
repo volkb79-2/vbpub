@@ -1249,9 +1249,20 @@ def test_consumer_pilot_example_binds_the_full_plan_and_uses_cold_witness():
     document = (project_root / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     section = document.split("## Run a non-qualifying native-R2 pilot (B118)\n", 1)[1]
     example = section.split("## Resume and shard a long mutation lane", 1)[0]
+    manual_example = example.split("The local command sequence below", 1)[1]
     assert "assay campaign init" in example
-    assert "--lane self-qualification --hours 2 --state-dir .assay/b110-pilot-state" in example
+    assert 'manual_dir=".assay/manual-b110-pilot-${commit12}"' in example
+    assert 'campaign="manual-b110-pilot-${commit12}"' in example
+    assert 'deadline=".assay/campaign-deadline-${campaign}.json"' in example
+    assert '--state-dir "$pilot_state"' in example
+    assert '--progress "$pilot_progress"' in example
+    assert '> "$pilot_summary" 2> "$pilot_log"' in example
+    assert ".assay/b110-pilot-state" not in manual_example
+    assert ".assay/progress-b110-pilot.jsonl" not in manual_example
     assert "--cold-witness --resume --campaign-deadline \"$deadline\"" in example
+    assert 'timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_s}s"' in example
+    assert 'pilot_after_run_s="$(pilot_remaining_s "$SECONDS")"' in example
+    assert "pilot_status=124" in example
     assert "source_sha256" in section
     assert "current Git HEAD and tree" in section
     assert "dirty checkout" in section

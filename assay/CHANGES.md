@@ -11,6 +11,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   repin Assay before relying on v15 verdict fields.
 
 ### Added
+- Add registered B110 `b110-pilot` and `b110-screen` gate modes. The pilot
+  requires a complete exit-6 measurement; the full-plan survivor screen must
+  pass Assay verification and bind its native mutation inventory to the
+  current plan and actual producer exit status, with a completed R2 `PASS` or
+  `FAIL`, before it can report completion. R2 errors, budget exhaustion and
+  inconclusive results remain incomplete. The pilot caps each invocation at
+  90 minutes inside its persisted two-hour campaign; the screen's 5-hour Assay
+  lane budget is its effective work bound, with longer wrappers reserved for
+  cleanup.
 - Add non-qualifying native-R2 pilot selection with `--candidates-file` and
   `--pilot-jobs`, per-candidate resumable state, a selection-bound sentinel,
   and a deterministic stratified candidate selector with bounded, loader-safe

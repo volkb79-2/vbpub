@@ -8,7 +8,7 @@
 |---|---|
 | Backlog | **B118** (split from B110) |
 | Branch | `assay-b110-p7-pilot` off the integration line (the plan §11.1 / C18 reconciliation branch `assay-b110-integration`); P7b: `assay-b110-p7b-gate-modes` |
-| Depends on | **P0** (B111) for the per-candidate resource and phase fields.<br>**P6** (B117) for `mutation.plan_sha256`. P6 is its **single owner** (P7-7): import it and never redefine it.<br>**P7b** (Work step 9, the gate-script `b110-pilot` and `b110-screen` modes) also needs **P3b** (`--cold-witness`), **P6** (`campaign init`, `--campaign-deadline`, the gate's `remaining_s` rule, C3) and the whole v14 branch merged on its base. The controller dispatches it after those merge.<br>The screen's re-invocations depend on **P6's C3** change. Without it, a re-invocation would replay stale lane-timeout `budget_exceeded` records (P7-5). |
+| Depends on | **P0** (B111) for the per-candidate resource and phase fields.<br>**P6** (B117) for `mutation.plan_sha256`. P6 is its **single owner** (P7-7): import it and never redefine it.<br>**P7b** (Work step 9, the gate-script `b110-pilot` and `b110-screen` modes) also needs **P3b** (`--cold-witness`), **P6** (`campaign init`, `--campaign-deadline`, the gate's `remaining_s` rule, C3) and B114's v15 work on its base. The controller dispatches it after those merge.<br>The screen's re-invocations depend on **P6's C3** change. Without it, a re-invocation would replay stale lane-timeout `budget_exceeded` records (P7-5). |
 | Contract class | **2c**: bounded integration against fixed contracts |
 | Implementer | Sonnet (fresh session) |
 | Decisions | **A-474 (plan D10)**. Relevant: A-461 (the `candidate_ids` inventory is equal to the bucket IDs), A-464 (the pilot is measurement, never qualification). Round-1 carver decisions:<br>• **C5**: a selection enables the state root;<br>• **C6**: two-stage GO, so the pilot feeds only "Pilot GO";<br>• **C7**: no consolidation measurement in the pilot;<br>• **C15**: dataclass fixture.<br>Round-2 carver decisions:<br>• **C23**: the pinned `run_mutation` order. The selection is applied **after** P6's full-list digest check and after P10's ledger placement, and before resume lookup.<br>• **C27**: record assertions use `glob("*.json")`, so non-JSON store files (`PILOT-STATE`, P9's `.lock` and `CAMPAIGN-IDENTITY`) are tolerated.<br>• **C31**: any `timeout` exit ≥ 124 is a failsafe with no trusted output. |
@@ -347,10 +347,10 @@ Exit 0 only after both outputs are written, both requested parents still name th
 6. Run the focused tests serially: the two new files, `tests/test_cli_run.py`, `tests/test_b105_cli_boundaries.py`, `tests/test_mutation_resume_sharding.py`, `tests/test_mutation_progress_budget_plan.py` and `tests/test_b106_reuse_and_witness.py`.
 7. Update the docs (see Docs sync) and CHANGES.
 8. Write the REPORT, then commit (**P7a**).
-9. **P7b: a separate branch, `assay-b110-p7b-gate-modes`. It requires P6 and the whole v14 branch (P3b/P3d) merged on its base; the controller dispatches it after that.**
+9. **P7b: a separate branch, `assay-b110-p7b-gate-modes`. It requires P6 and B114's v15 work (P3b/P3d) on its base; the controller dispatches it after that.**
    - **Script structure (P7-4).** Today the `case` at `tools/self-qualification-gate.sh:16-19` only validates lane names, with empty `;;` arms, and the lane logic follows later. Change it to:
    - Extend the validation `case` to accept `b110-pilot|b110-screen`.
-     - Define **two shell functions**, `run_b110_pilot()` and `run_b110_screen()`. Each is declared with `name() {` at column 0 and closed by a lone `}` at column 0. Each holds exactly the body below.
+     - Define **two shell functions**, `run_b110_pilot()` and `run_b110_screen()`. Each is declared with `name() {` at column 0 and closed by a lone `}` at column 0. Follow the sequencing, bounds, marker and failure contracts below; these normative rules supersede earlier copied function bodies.
      - After the shared clone, build and venv steps (`:49-154`), add a dispatch: `case "$requested_lane" in b110-pilot) run_b110_pilot; exit 0 ;; b110-screen) run_b110_screen; exit 0 ;; esac`. It sits before the existing `self-qualification`/preflight flow, which stays unchanged.
    - **Mode-specific timeout and completion contract (P7R7-1).** The current container wrapper waits 65 minutes for every lane except `self-qualification`; merely adding the two names would therefore truncate both B110 modes. Update `tools/self-qualification-container.sh` with an exhaustive lane `case` for the inner argv and `docker wait` timeout, and pin each bound and its completion evidence in `gate/tests/test_self_qualification_container.py`:
 
@@ -358,16 +358,23 @@ Exit 0 only after both outputs are written, both requested parents still name th
      |---|---:|---:|---:|---|
      | `self-qualification` | existing persisted campaign and 7h30m failsafe | 7h40m | none / 8h | `ASSAY_SELF_QUALIFICATION_VERIFIED=1` |
      | `self-qualification-preflight` | remaining 1h campaign seconds + 120s, with 30s `timeout --kill-after` grace; maximum 62m30s | 65m | none / 75m | `ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1` |
-     | `b110-pilot` | remaining campaign seconds + 120s, with 30s `timeout --kill-after` grace; maximum 2h2m30s | 2h5m | 2h20m / 2h20m | `B110_PILOT_EXIT=6` and `B110_PILOT_COMPLETED=1`; reject init-refused, timeout-failsafe, absent or non-6 exit markers |
-     | `b110-screen` | 7h10m plus 30s `timeout --kill-after` grace | 7h15m | 7h30m / 8h | `assay verify` passes and `b110_screen_report_check.py` emits `B110_SCREEN_VERIFIED=1` only for the current commit/tree with R0/R1 PASS, a complete R2 mutation payload matching the current plan inventory, and no R2 `LANE_TIMEOUT`; the raw exit and a nonempty verdict alone never certify completion |
+     | `b110-pilot` | Campaign init, planning, selection and Assay execution share a hard 90m per-invocation cap; planning and selection are bounded by remaining campaign seconds; Assay run gets only the remaining cap, then at most 30s `timeout --kill-after`; campaign init follows the planned ≤10m build/venv allowance, pending registered-gate measurement | 2h15m | 2h20m command timeout / 140m run-gate budget (same duration; run-gate's budget grammar accepts one unit) | `B110_PILOT_EXIT=6` and `B110_PILOT_COMPLETED=1`; reject init-refused, timeout-failsafe, absent or non-6 exit markers |
+     | `b110-screen` | Assay lane's 5h budget; 7h10m timeout plus 30s `timeout --kill-after` is a failure-only failsafe | 7h15m | 7h30m / 8h | `assay verify` passes and `b110_screen_report_check.py` emits `B110_SCREEN_VERIFIED=1` only for the current commit/tree with R0/R1 PASS, a complete R2 mutation payload matching the current plan inventory, and R2 status `PASS` or `FAIL`; it refuses R2 `ERROR`, `BUDGET_EXCEEDED`, `INCONCLUSIVE` and `LANE_TIMEOUT`; verdict exit must match producer status; the raw exit and a nonempty verdict alone never certify completion |
 
      The wrapper's log-follow bound remains `docker wait` bound + 90s. Keep
      the existing self-qualification/preflight behavior unchanged. The pilot's
-     campaign deadline remains authoritative; its 120s inner grace and 30s
-     kill-after are already included in the 2h5m wrapper bound. The screen has
-     no campaign deadline; its explicit 7h10m timeout lets it resume on the
-     next invocation, while the wrapper and run-gate bounds leave time for
-     process/container cleanup. Print `ASSAY_B110_GATE_COMPLETE=<mode>` only
+     campaign deadline remains authoritative across retries. Campaign init,
+     planning, selection and Assay execution share the 90m per-invocation work
+     cap; planning and selection are also bounded by remaining campaign time.
+     The planned 10m build/venv allowance precedes campaign init and remains
+     unmeasured until the registered gate records its timing. The 2h15m wrapper
+     includes the planned ≤10m build/venv allowance, two-hour campaign, and
+     five-minute log/cleanup margin. The 2h20m run-gate timeout adds a further
+     five-minute outer margin. The
+     screen has no campaign deadline; its 5h Assay lane budget is the effective
+     work limit, while the explicit 7h10m timeout, 7h15m wait and 7h30m
+     run-gate timeout leave process/container cleanup time. Print
+     `ASSAY_B110_GATE_COMPLETE=<mode>` only
      after the mode-specific evidence is verified, alongside the verified
      container exit marker. A timeout or incomplete pilot is a failed gate
      invocation, not a completed measurement.
@@ -382,107 +389,52 @@ Exit 0 only after both outputs are written, both requested parents still name th
      successful check emits `B110_SCREEN_VERIFIED=1`; the wrapper requires
      that marker before emitting `ASSAY_B110_GATE_COMPLETE=b110-screen`.
      This accepts a genuine complete survivor screen with exit 1, while an R0
-     refusal with exit 1 and a nonempty verdict is rejected. The helper must
-     also allow complete non-qualifying R2 outcomes whose payload accounts
-     for the full plan, rather than using an exit-code allowlist as a proxy.
+     refusal with exit 1 and a nonempty verdict is rejected. The helper accepts
+     completed R2 `PASS` or `FAIL` outcomes whose payload accounts for the full
+     plan; R2 errors, budget exhaustion and inconclusive outcomes do not
+     complete the screen. It uses the R2 claim status rather than an exit-code
+     allowlist as a proxy.
 
      Tests must construct each legitimate mode and assert the exact selected
      wait/inner timeout (including the log-follow margin), marker allowlist,
      and refusal of timeout, missing-marker, wrong-mode-marker, and empty or
      malformed verdict cases. This prevents a timeout guard from passing on a
      mere marker-name substring or refusing an ordinary survivor screen.
-   - `run_b110_pilot()`:
-     ```bash
-     run_b110_pilot() {
-       pilot_campaign="b110-pilot-${source_commit:0:12}"
-       pilot_deadline=".assay/campaign-deadline-$pilot_campaign.json"
-       # P7R2-4: init FIRST, so `assay plan` and the selector run inside the 2 h campaign
-       # and the outer failsafe only has to cover the build plus the campaign.
-       if [[ ! -f "$pilot_deadline" ]]; then
-         if ! "$assay_bin" campaign init --file assay.toml \
-              --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
-              --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"; then
-           echo "B110_PILOT_INIT_REFUSED=1"
-           return 0      # read the marker; no pilot ran
-         fi
-       fi
-       "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
-       "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_pilot_select.py" \
-         --plan .assay/b110-pilot-plan.json --repo-root "$worktree" \
-         --out .assay/b110-pilot-candidates.txt --report .assay/b110-pilot-selection.json
-       # exactly P6's rule (P6 Flow 12): max(0, floor(expires_at_utc - now_utc)); never "floored at 1"
-       remaining_s="$("$scratch/run-venv/bin/python" -c 'import json,sys,math,datetime as d; e=d.datetime.strptime(json.load(open(sys.argv[1]))["expires_at_utc"],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc); print(max(0, math.floor((e-d.datetime.now(d.timezone.utc)).total_seconds())))' "$pilot_deadline")"
-       set +e
-       timeout --verbose --signal=TERM --kill-after=30s "$((remaining_s + 120))s" \
-         "$assay_bin" run self-qualification --file assay.toml \
-         --candidates-file .assay/b110-pilot-candidates.txt --pilot-jobs 3 --cold-witness --resume \
-           --state-dir .assay/b110-pilot-state --progress .assay/progress-b110-pilot.jsonl \
-           --campaign-deadline "$pilot_deadline" > .assay/b110-pilot-summary.json
-       pilot_status=$?
-       set -e
-       echo "B110_PILOT_EXIT=$pilot_status"
-       echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
-       # C31 / P7R2-3: any status >= 124 (124, 125-127, 137 after --kill-after) is the failsafe
-       [[ $pilot_status -ge 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"   # summary untrusted
-       [[ $pilot_status -eq 6 ]] && echo "B110_PILOT_COMPLETED=1"
-       return 0      # measurement: completeness is read from the markers, never from this exit
-     }
-     ```
+   - `run_b110_pilot()` follows this bounded sequence:
+     1. Start the 90-minute invocation clock before campaign initialization and clear only the current attempt's plan, selection, summary and run log. Preserve the campaign deadline, mutation state and progress stream for safe resume.
+     2. If the campaign deadline does not exist, initialize the two-hour campaign through `timeout --kill-after=30s`, bounded by the remaining invocation cap. An initialization refusal emits `B110_PILOT_INIT_REFUSED=1`; a timeout emits `B110_PILOT_TIMEOUT_FAILSAFE=1`.
+     3. Bound each of `assay plan`, `b110_pilot_select.py` and `assay run` by the smaller of the remaining 90-minute invocation cap and remaining persisted campaign time. Refuse a zero-second remainder; use `timeout --kill-after=30s` for each phase.
+     4. Run Assay with the selected candidate file, three pilot jobs, `--cold-witness --resume`, `.assay/b110-pilot-state`, `.assay/progress-b110-pilot.jsonl` and the persisted campaign deadline. Capture stdout in the summary and stderr in the run log.
+     5. After Assay exits, re-read both the invocation remainder and persisted campaign remainder. If either is exhausted, replace the process status with 124 before writing completion markers. Emit `B110_PILOT_COMPLETED=1` only for status 6; the wrapper rejects every other status and any timeout/refusal marker.
    - Add a `run-gate.toml` lane `[lanes.b110-pilot]` using the current B105 launcher topology:
      - `kind = "command"`, `environment = "bare-host"`; the run-gate lane calls `tools/self-qualification-container.sh`, which owns the bounded cgroup-visible tester-unified child. Do not run the inner script directly in a generic tester-unified run-gate container: it needs Docker access to launch and inspect that child.
      - `argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-pilot"]`;
-     - `clean_tree = true`, `budget = "2h20m"`;
+     - `clean_tree = true`, `budget = "140m"` (run-gate budget durations use one unit; the argv timeout remains `2h20m`);
      - `resources = { shared = ["assay-self-qualification"] }`; the wrapper owns the pilot child limits and host cgroup placement, using the same verified 3 CPU, 2 GiB memory, and 8 GiB memory-plus-swap envelope as the B105 lanes.
-     - `artifacts` = the `.assay/b110-pilot-*` files and `progress-b110-pilot.jsonl`;
-     - a comment citing A-474 and giving the **margin (P7-6, P7R2-4)**: `2h20m ≥ clone/build/venv (≤ 10 min measured bound, recorded in the REPORT from the gate log) + 2 h campaign + 120 s inner grace + 30 s kill-after`.
+     - `artifacts` = the `.assay/b110-pilot-*` files and `progress-b110-pilot.jsonl`, including `.assay/b110-pilot-run.log`;
+     - a comment citing A-474 and giving the **margin (P7-6, P7R2-4)**: `2h20m ≥ clone/build/venv (planned ≤ 10 min allowance, to be measured and recorded in the REPORT from the gate log) + 2 h campaign + 5 min wrapper/log/cleanup margin + 5 min run-gate margin`; Assay execution uses only the remaining 90m invocation cap, followed by at most 30s kill-after.
        - The campaign is initialised right **after the build and before** `assay plan` and the selector. So plan and selector time are inside the 2 h campaign, and the outer failsafe only has to add the build time.
-   - Add `tools/b110_screen_report_check.py` and `gate/tests/test_b110_screen_report_check.py`. Accept a valid complete survivor verdict with R0/R1 PASS; refuse an R0 failure that has exit 1 and a nonempty verdict, an R1 failure, a missing R2 payload, a wrong commit/tree, an incomplete or duplicate candidate inventory, and `LANE_TIMEOUT`.
-   - Extend the substring pins in `gate/tests/test_self_lane.py:176-200` with `b110-pilot`, `--candidates-file`, `B110_PILOT_EXIT=`, `B110_PILOT_TIMEOUT_FAILSAFE`, `B110_PILOT_INIT_REFUSED` and `-ge 124`. Extend `gate/tests/test_self_qualification_container.py` to prove both B110 modes use their exact bounds, are launched only through the verified child-container path, and emit the correct outer completion marker only after validating their mode-specific child evidence. In particular, prove that an R0 failure with exit 1 and a nonempty verdict cannot emit the screen completion marker.
+   - Add `tools/b110_screen_report_check.py` and `gate/tests/test_b110_screen_report_check.py`. Accept a valid complete survivor verdict with R0/R1 PASS and R2 `PASS` or `FAIL`; refuse a verifier-valid R2 `ERROR/EXEC_FAILED` crashed-mutant verdict, an R0 failure that has exit 1 and a nonempty verdict, an R1 failure, a missing R2 payload, a wrong commit/tree, an incomplete or duplicate candidate inventory, and `LANE_TIMEOUT`.
+   - Extend the substring and behavior pins in `gate/tests/test_self_lane.py` with the 90m pilot cap, prior-verdict removal before planning, checker/producer exit-code equality, redirected run output and failure propagation. Extend `gate/tests/test_self_qualification_container.py` to prove both B110 modes use their exact bounds, are launched only through the verified child-container path, and emit the correct outer completion marker only after validating their mode-specific child evidence. In particular, prove that an R0 failure with exit 1 and a nonempty verdict cannot emit the screen completion marker.
    - Pin that, inside `run_b110_pilot`'s body, `campaign init` precedes `plan self-qualification`.
-   - **Survivor-screen mode** (plan §9.1). `run_b110_screen()`:
-     ```bash
-     run_b110_screen() {
-       reuse_args=()
-       # plan §9.1 step 5: the controller renames the previous commit's screen verdict to
-       # verdict-b110-screen-prev.json before re-screening a new commit (B106 witness replay)
-       [[ -f .assay/verdict-b110-screen-prev.json ]] \
-         && reuse_args=(--reuse-from .assay/verdict-b110-screen-prev.json)
-       "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-screen-plan.json
-       rm -f -- .assay/verdict-b110-screen.json
-       set +e
-       timeout --verbose --signal=TERM --kill-after=30s 7h10m \
-         "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
-         "${reuse_args[@]}" \
-         --state-dir .assay/b110-screen-state --progress .assay/progress-b110-screen.jsonl \
-         --verdict-json .assay/verdict-b110-screen.json
-       screen_status=$?
-       set -e
-       echo "B110_SCREEN_EXIT=$screen_status"
-       echo "B110_SCREEN_VERDICT=.assay/verdict-b110-screen.json"
-       [[ $screen_status -ge 124 ]] && echo "B110_SCREEN_TIMEOUT_FAILSAFE=1"
-       if [[ $screen_status -lt 124 ]] \
-         && "$assay_bin" verify .assay/verdict-b110-screen.json \
-         && "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_screen_report_check.py" \
-              --plan .assay/b110-screen-plan.json \
-              --verdict .assay/verdict-b110-screen.json \
-              --expected-commit "$source_commit" --expected-tree "$source_tree"; then
-         echo "B110_SCREEN_VERIFIED=1"
-       fi
-       [[ ${#reuse_args[@]} -gt 0 ]] && echo "B110_SCREEN_REUSE_FROM=.assay/verdict-b110-screen-prev.json"
-       return 0      # non-qualifying: survivors are valid only with the verified completion marker
-     }
-     ```
-     - It passes **no** `--campaign-deadline`. The screen is non-qualifying (plan §9.1), so each invocation is bounded by the 7h10m inner timeout, the wrapper's 7h15m wait, and the run-gate 7h30m timeout / 8h budget. A re-invocation resumes `.assay/b110-screen-state`.
+   - **Survivor-screen mode** (plan §9.1). `run_b110_screen()` follows this order:
+     1. Preserve `.assay/verdict-b110-screen-prev.json` as an explicit `--reuse-from` source when present; remove the current verdict before planning or running.
+     2. Write a plan for the full current inventory, then run `assay run self-qualification --cold-witness --resume --state-dir .assay/b110-screen-state --progress .assay/progress-b110-screen.jsonl --verdict-json .assay/verdict-b110-screen.json` under the 7h10m timeout. Redirect the complete command output to `.assay/b110-screen-run.log`.
+     3. Capture and write the exact Assay process status. For a timeout failsafe, emit `B110_SCREEN_TIMEOUT_FAILSAFE=1` and return without any completion marker.
+     4. For other statuses, run `assay verify`, then `b110_screen_report_check.py` with the plan, verdict, current commit/tree and captured process status. The checker accepts only R0/R1 PASS plus an exact full-plan native R2 payload whose status is `PASS` or `FAIL`; an R2 error, budget exhaustion, inconclusive result, timeout or mismatched exit status fails.
+     5. Emit `B110_SCREEN_VERIFIED=1` only after both checks pass. Every output write must propagate failure because the dispatcher calls `run_b110_screen || exit $?`, which disables `errexit` inside the function. The outer wrapper emits `ASSAY_B110_GATE_COMPLETE=b110-screen` only after validating the child log and exit status.
+     - The launcher clears the current verdict, plan and run log under the shared Git-common-dir lock before ordinary host/Docker admission checks, so refused attempts cannot expose prior artifacts as current. It preserves `.assay/progress-b110-screen.jsonl`, `.assay/b110-screen-state` and the explicit previous-verdict reuse input.
+     - It passes **no** `--campaign-deadline`. The screen is non-qualifying (plan §9.1); Assay's `self-qualification` lane budget is 5h, and the 7h10m inner timeout, wrapper's 7h15m wait, run-gate 7h30m timeout and 8h budget are outer failure/cleanup bounds. A re-invocation resumes `.assay/b110-screen-state`.
      - It depends on **P6's C3**: a candidate the lane budget cut off is unrecorded and re-executes on the next invocation. So re-invocations make progress instead of replaying stale `budget_exceeded` records (P7-5).
      - It never passes `--candidates-file` or `--shard`. `--reuse-from` combined with `--resume` is accepted today, since only `--shard` is refused (`runner.py:5983-6050`). `"${reuse_args[@]}"` with an empty array under `set -u` needs bash ≥ 4.4, which tester-unified has; note it in the REPORT.
      - Add a `run-gate.toml` lane `[lanes.b110-screen]` with the same bare-host `self-qualification-container.sh` topology as `b110-pilot`, but:
        - `argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-screen"]`;
        - `clean_tree = true`, `budget = "8h"`;
        - `resources = { shared = ["assay-self-qualification"] }`;
-       - `artifacts` = `.assay/b110-screen-plan.json`, `.assay/verdict-b110-screen.json` and `.assay/progress-b110-screen.jsonl`;
+       - `artifacts` = `.assay/b110-screen-plan.json`, `.assay/verdict-b110-screen.json`, `.assay/b110-screen-run.log` and `.assay/progress-b110-screen.jsonl`;
        - a comment: "non-qualifying survivor screen (plan §9.1); never evidence for B105 except through the B119 import path, whose use for pre-deadline records awaits the operator's D7 answer (C8)".
      - Extend the `gate/tests/test_self_lane.py` pins with `b110-screen`, `B110_SCREEN_EXIT=` and `verdict-b110-screen-prev.json`, and extend the container-wrapper acceptance to bind the screen mode to its verified child container.
-     - **Static/body oracle (P7-4).** Extract each function body from the script text: from the line `run_b110_screen() {` to the next line that is exactly `}`, and the same for `run_b110_pilot`. Assert that the screen body contains `--cold-witness`, `--resume`, a call using `"$assay_bin" verify` (or an equivalent executable variable followed by the `verify` subcommand), `b110_screen_report_check.py`, and `B110_SCREEN_VERIFIED=1`, and contains neither `--campaign-deadline` nor `--candidates-file`. Assert it removes the prior verdict before the current `assay run`. Assert that the pilot body contains `--candidates-file` and `--campaign-deadline`. Assert that the dispatch `case` contains `run_b110_screen` and `run_b110_pilot`. A behavioral test must prove the verifier executes before the checker, stale verdicts are removed before an early run failure, and neither verification nor checker failure emits the marker.
+     - **Static/body oracle (P7-4).** Extract each function body from the script text: from the line `run_b110_screen() {` to the next line that is exactly `}`, and the same for `run_b110_pilot`. Assert that the screen body contains `--cold-witness`, `--resume`, a call using `"$assay_bin" verify` (or an equivalent executable variable followed by the `verify` subcommand), `b110_screen_report_check.py`, `B110_SCREEN_VERIFIED=1`, and a check that the R2 claim status is only `PASS` or `FAIL`; it contains neither `--campaign-deadline` nor `--candidates-file`. Assert it removes the prior verdict before the current `assay run`. Assert that the pilot body contains `--candidates-file`, `--campaign-deadline`, and post-run checks for both invocation and campaign expiry. Assert that the dispatch `case` contains `run_b110_screen` and `run_b110_pilot`. Behavioral tests must prove the verifier executes before the checker, stale screen artifacts are removed before host/Docker refusal while lock contention preserves an active attempt, neither verification nor checker failure emits the marker, and pilot status 6 is reclassified after either bound expires.
 
 ## Oracles
 
@@ -750,7 +702,7 @@ Do not merge.
 
 ## Pilot runbook (operator/controller)
 
-This mirrors plan §7. It is carried out only after all of these are on the integration line: P0–P8, the whole v14 branch (P3a–P3d; the pilot uses `--cold-witness`), and P7b. The controller must also have approved it.
+This mirrors plan §7. It is carried out only after all of these are on the integration line: P0–P8, B114's v15 work (P3a–P3d; the pilot uses `--cold-witness`), and P7b. The controller must also have approved it.
 
 **Preconditions:**
 - `docker ps` shows no gate container;
@@ -764,12 +716,12 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
    - The pilot's own deadline is 2 h, as P6 campaign `b110-pilot-<commit12>`, created inside the gate after the build.
    - Never run `campaign init` on the host.
 2. In a separate step: `grep -E "B110_PILOT_EXIT=|B110_PILOT_COMPLETED=|B110_PILOT_TIMEOUT_FAILSAFE=|B110_PILOT_INIT_REFUSED=|B105_SOURCE_COMMIT=" /tmp/b110-pilot.log`.
-   - `B110_PILOT_TIMEOUT_FAILSAFE=1` means the inner `timeout` fired (any status ≥ 124, C31). The summary is then untrusted, and the pilot must be re-planned, not interpreted.
+   - `B110_PILOT_TIMEOUT_FAILSAFE=1` means a timeout failsafe fired or the post-run check found that the 90-minute invocation cap or persisted campaign deadline had expired. A status discovered after Assay exits is normalized to `B110_PILOT_EXIT=124`; if no time remains before `assay run`, the wrapper can refuse before writing an exit marker. The summary is not a completed pilot. If only the invocation cap expired and the campaign deadline remains active, rerun the same registered lane to resume it. An expired campaign cannot be extended or reused as a completed measurement.
    - `B110_PILOT_INIT_REFUSED=1` means no pilot ran.
    - An outer run-gate exit ≥ 124 is likewise a failsafe with no trusted output.
 
-**Re-piloting on a new commit (P7R2-6).** The new commit gets a new deadline file name, `b110-pilot-<new commit12>`. But `.assay/b110-pilot-state` still holds the old commit's deadline-bound records and its `PILOT-STATE`: P6's `init` refuses the unbound records, and the sentinel refuses the new selection. So **before** re-piloting, move `.assay/b110-pilot-state` aside (for example to `.assay/b110-pilot-state-<old commit12>`), and retain it with the old pilot report. Never delete or edit its contents.
-3. Offline, on the host, under nice: run P8's `assay analyze campaign` over `.assay/progress-b110-pilot.jsonl` and `.assay/b110-pilot-state`, **with the exact flags from P8's brief**, including P8's required `--project-jobs 3` for the projection. Write the result to `/tmp/b110-pilot-analysis.json`.
+**Re-piloting on a new commit (P7R2-6).** The new commit gets a new deadline file name, `b110-pilot-<new commit12>`. But `.assay/b110-pilot-state` still holds the old commit's deadline-bound records and its `PILOT-STATE`: P6's `init` refuses the unbound records, and the sentinel refuses the new selection. The append-only `.assay/progress-b110-pilot.jsonl` also contains the previous run, and analysis must not combine progress from one commit with another commit's plan or state. So **before** re-piloting, move both files aside with the old report (for example, `.assay/b110-pilot-state-<old commit12>` and `.assay/progress-b110-pilot-<old commit12>.jsonl`). The new pilot then starts with fresh active paths. Preserve both archived files; never delete or edit their contents.
+3. Offline, on the host, under nice: run P8's `assay analyze campaign` over the matching progress and state pair: the active `.assay/progress-b110-pilot.jsonl` with `.assay/b110-pilot-state`, or, for an archived pilot, `.assay/progress-b110-pilot-<commit12>.jsonl` with `.assay/b110-pilot-state-<commit12>`. Use the exact flags from P8's brief, including P8's required `--project-jobs 3` for the projection. Write the result to `/tmp/b110-pilot-analysis.json`.
 4. Offline projection: use P8's projection output, with the plan §7/C19 strata fall-back (operator × file-size class → operator → all), p50 and p90, plus fixed overhead:
    - the coverage-baseline wall time;
    - the no-cov baseline `wall_s`;
@@ -781,7 +733,7 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
 
 **Stop rules:**
 - The pilot's campaign deadline (2 h) is authoritative.
-- An expiry gives `B110_PILOT_EXIT=4` and `completed: false`. The candidates in `unresolved` are **unresolved, never classified**: they are masked with no state record, and P6's C3 left any in-flight one unclassified. A `budget_exceeded` candidate **with** a record (its per-candidate budget) is a real outcome and is reported, not unresolved.
+- Assay returns exit 4 and writes a `completed: false` summary only if it observes campaign expiry and exits before the wrapper's GNU `timeout` fires. The wrapper bounds the run by the floored remaining campaign seconds, so its timeout can fire first; that produces exit 124 and may leave no usable summary. Either path is an incomplete pilot: the B110 gate reports `B110_PILOT_EXIT=124` and `B110_PILOT_TIMEOUT_FAILSAFE=1`, and no incomplete or missing summary is a result. If Assay writes a summary, candidates in `unresolved` are **unresolved, never classified**: they have no state record, and P6's C3 left any in-flight one unclassified. If GNU `timeout` fires first, any candidate without a state record is likewise unclassified even when no `unresolved` list was written. A `budget_exceeded` candidate **with** a record (its per-candidate budget) is a real outcome and is reported, not unresolved.
 - Never lengthen the deadline; re-running `campaign init` cannot extend it.
 
 ### Template: `reports/assay-B110-PILOT-REPORT.md`
@@ -823,7 +775,7 @@ Hash shards (N=3) replay of measured durations vs queue: makespan …. (Consolid
 | 8.1.1 projection | ≤ 5 h p90, ≤ 4 h p50 (strata operator × size_class, C26) | | |
 | 8.1.2 memory | cgroup `memory.peak` ≤ 1.6 GiB, stall ≤ 5 % | | |
 | 8.1.3 fixed overhead | ≤ 60 min (preflight + coverage and no-cov baselines + R3 estimate + consolidation/verify) | | |
-| 8.1.4 readiness | P0–P8, v14 (P3a–P3d), P7b merged, reviewed, gated; P8 analysis reports no evidence error | | |
+| 8.1.4 readiness | P0–P8, B114 v15 work (P3a–P3d), P7b merged, reviewed, gated; P8 analysis reports no evidence error | | |
 | (§8.2.1, Qualifying GO only) screen clean | complete screen at X*, 0/0/0/0 except audited ledger entries | not a Pilot GO input | — |
 
 Section 3's survivor-only elapsed p90 is the source for P10's ledger cap (OC17).

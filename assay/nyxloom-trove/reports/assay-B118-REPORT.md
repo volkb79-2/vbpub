@@ -4,7 +4,11 @@
 **P7a branch:** `assay-b118-p7-pilot`  
 **P7a commit:** `7b7143d68`
 
-**P7b commit:** pending
+**P7b branch:** `assay-b110-p7b-gate-modes`
+
+**P7b base:** `d3821b5fab3163abfea15e8b54be9245fc6d3e5a`
+
+**P7b commit:** pending; implementation and follow-up review are in progress
 
 ## Status
 
@@ -21,15 +25,95 @@ could alias and overwrite the plan, and because the P7b screen contract could
 mistake an R0 failure for a completed screen. The selector now refuses all
 resolved path collisions; P7b now requires a verified report bound to the
 current plan, successful R0/R1, and a complete R2 inventory. The round-9
-reviewer ran no tests or gates. P7b implementation has not started.
+reviewer ran no tests or gates. P7b implementation started on the branch above
+on 2026-10-09. Its first Sol xhigh review found that screen verification errors
+could be reported as complete, the verdict exit was not compared with the
+producer status, stale verdicts survived plan failures, the 90-minute pilot cap
+was missing, and the positive checker fixture did not pass `assay verify`.
+Those findings were addressed in code, tests and docs. A second Sol xhigh
+review found three remaining issues: plan/selection time escaped the
+90-minute invocation cap, launcher admission could leave an old screen verdict
+advertised, and the build allowance was described as measured before a
+registered gate had measured it. The current diff applies all three fixes:
+campaign init, planning, selection and Assay execution share the 90-minute cap;
+the screen launcher clears stale verdicts before host admission; and the
+10-minute build allowance is marked planned until measured by the gate report.
+The later review-5 follow-up and its corrections are recorded below.
 
-The registered gate and `self-qualification-preflight` have not run. At the
-2026-10-08 22:26 UTC process inventory, no `tester-unified` or run-gate process
-was active. The B087 qualification service stack was still running and was
-left untouched. The last gate cgroup reserve probe reported 1,567,969,280
-bytes available against the required 2 GiB; do not start resource-heavy gates
-until it passes. Gate/preflight log paths and marker lines will be filled in
-from their actual runs; none are claimed here.
+The updated P7b focused suite passed 93 tests
+(`/tmp/assay-p7b-focused-r4.log`), the docs contract suite passed 55
+(`/tmp/assay-p7b-docs-r3.log`), and shell syntax, Python compilation,
+`git diff --check` and `./run-gate.py --list` passed. The registered P7b gate and
+`self-qualification-preflight`
+have not run. At 2026-10-09 06:05 UTC, a separate registered RG-89 R2 campaign
+was active in `.worktrees/rg89-p1-r2-20261009` at 294/1,386 candidates; keep
+all registered gates serial until that run ends. No P7b gate evidence is
+claimed here.
+
+## Controller follow-up — 2026-10-09
+
+A later read-only Sol xhigh review (`/tmp/assay-p7b-review3.md`) found four
+additional P7b defects: Assay execution could run 120 seconds beyond the
+90-minute pilot cap; screen cleanup happened before cross-caller lock admission
+and the shared-host refusal could leave an old verdict; production dispatch
+could mask `assay plan` failure inside `run_b110_screen || exit $?`; and an
+early pilot refusal could leave prior attempt artifacts at registered paths.
+The fixes now use the remaining hard cap and enforce it again after Assay
+returns, clear screen/pilot outputs only after acquiring the Git-common-dir
+lock, preserve the actual planning failure status, and clear pilot attempt
+outputs before host/Docker admission while preserving deadline, state and
+progress. README, DESIGN-GUIDE, CONSUMERS, run-gate comments and the P7 brief
+now describe the hard cap and measured-versus-planned timing consistently.
+
+The final focused P7b suite passed 98 tests
+(`/tmp/assay-p7b-focused-final-r3.log`, `TEST_EXIT=0`); the docs contract suite
+passed 55 (`/tmp/assay-p7b-docs-final.log`, `TEST_EXIT=0`). Shell syntax,
+Python compilation, `git diff --check` and `./run-gate.py --list` passed after
+the changes. The prior RG-89 R2 campaign is no longer active; it ended with
+`ERROR/EXEC_FAILED` at 327/1,386 because the required cgroup observer could not
+read peer thread status, so it is not valid R2 evidence. P7b still needs a
+fresh independent review and registered `tester-unified` acceptance; no
+registered P7b gate result is claimed yet.
+
+## Controller follow-up after review 4 — 2026-10-09
+
+The final read-only Sol xhigh review (`/tmp/assay-p7b-review-final.md`) found
+four more issues. The launcher now acquires its Git-common-dir lock and clears
+the current B110 attempt outputs before source-cleanliness and Docker checks;
+cleanup still preserves the pilot state directory, deadline and progress
+stream. Every screen completion write now fails the function on an output
+error, including the optional reuse marker. The manual consumer example checks
+the same 90-minute boundary after Assay returns, and the P7 brief no longer
+shows the removed 120-second grace. A behavioral harness now runs a successful
+Assay status 6 with an exhausted post-run cap and proves the gate emits timeout
+instead of completion. The container tests exercise stale-artifact cleanup
+when the Docker executable is unavailable and preserve pilot state under
+refusal.
+
+After these corrections, the focused B110/P7b and documentation tests passed
+201 tests (`/tmp/assay-p7b-focused-final-r5.log`, `TEST_EXIT=0`), including the
+55-test docs contract suite. The checkout has not yet had a second independent
+review or registered gate run; no merge is claimed.
+
+## Controller follow-up after review 5 — 2026-10-09
+
+The independent Sol xhigh review (`/tmp/assay-p7b-review-final2.md`) found four
+remaining issues. The screen checker now refuses verifier-valid R2 `ERROR`,
+`BUDGET_EXCEEDED` and `INCONCLUSIVE` outcomes while still accepting complete
+`PASS` and survivor `FAIL` results; a regression fixture proves an
+`ERROR/EXEC_FAILED` crashed-mutant verdict passes `assay verify` but emits no
+screen marker. The pilot now checks the persisted campaign deadline after
+Assay returns as well as the invocation cap, and both late-expiry axes have a
+behavioral status-6 oracle. Screen launcher cleanup now removes the old plan,
+verdict and run log under the shared lock while preserving resume state and
+progress. The P7 brief replaces stale executable bodies with the current
+bounded sequencing and marker contract.
+
+The final focused P7b suite passed 203 tests in 54.70 seconds
+(`/tmp/assay-p7b-focused-review5-final.log`, `TEST_EXIT=0`). Shell syntax,
+Python compilation, `git diff --check` and `./run-gate.py --list` also passed.
+A fresh independent review and registered P7b gates remain pending; no merge
+or pilot result is claimed.
 
 ## Test traceability
 
@@ -282,3 +366,21 @@ two-process parent-replacement oracle, consistent docs, and bounded cleanup
 for both selector subprocess tests. The P7a implementation is committed as
 `7b7143d68`. The registered gate remains pending while the separate
 cgroup-profiler R2 container runs.
+
+## Controller sequence update (2026-10-09, B118 P7b final review)
+
+The current P7b diff received a read-only GPT-6-Sol xhigh **ACCEPT** from
+`CODEX_HOME=$HOME/.codex2` after the preferred `.codex` home reported its
+usage limit. The report is `/tmp/assay-p7b-review-final9-codex2.md`; the
+before/after HEAD snapshots both equal `d3821b5fab3163abfea15e8b54be9245fc6d3e5a`
+and the status snapshots match. The reviewer found no actionable correctness
+or evidence-handling issues and confirmed that the manual campaign paths are
+separate from registered pilot paths, while the operator runbook archives
+state and progress together and analyzes matching pairs.
+
+After those fixes, the focused regression suite passed 151 tests in 54.17s;
+the two directly changed documentation oracles passed, `bash -n` passed for
+both B110 shell drivers, and `git diff --check` passed. No registered gate,
+B105 R2 campaign, or B110 pilot has started from this worktree. P7b is ready
+for merge; same-tip `tester-unified` and registered-gate acceptance remain
+pending.

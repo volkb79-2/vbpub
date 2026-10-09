@@ -206,8 +206,43 @@ if args and args[0] == "logs":
         time.sleep(5)
     state = read_state()
     lane = state["inner"][-1]
-    marker = "ASSAY_SELF_QUALIFICATION_VERIFIED=1" if lane == "self-qualification" else "ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1"
-    print(marker)
+    if lane == "self-qualification":
+        print("ASSAY_SELF_QUALIFICATION_VERIFIED=1")
+    elif lane == "self-qualification-preflight":
+        print("ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1")
+    elif lane == "b110-pilot":
+        if mode == "pilot-init-refused":
+            print("B110_PILOT_INIT_REFUSED=1")
+        elif mode == "pilot-timeout":
+            print("B110_PILOT_EXIT=124")
+            print("B110_PILOT_TIMEOUT_FAILSAFE=1")
+        elif mode == "pilot-incomplete":
+            print("B110_PILOT_EXIT=4")
+        elif mode == "pilot-wrong-marker":
+            print("B110_PILOT_EXIT=6")
+            print("B110_PILOT_COMPLETED=1")
+            print("B110_SCREEN_VERIFIED=1")
+        else:
+            print("B110_PILOT_EXIT=6")
+            print("B110_PILOT_COMPLETED=1")
+    elif lane == "b110-screen":
+        if mode == "screen-r0-fail":
+            print("B110_SCREEN_EXIT=1")
+            print("B110_SCREEN_VERDICT=.assay/verdict-b110-screen.json")
+            print('{"R0":"FAIL","nonempty":true}')
+        elif mode == "screen-timeout":
+            print("B110_SCREEN_EXIT=124")
+            print("B110_SCREEN_TIMEOUT_FAILSAFE=1")
+        elif mode == "screen-malformed-exit":
+            print("B110_SCREEN_EXIT=unknown")
+            print("B110_SCREEN_VERIFIED=1")
+        elif mode == "screen-wrong-marker":
+            print("B110_SCREEN_EXIT=1")
+            print("B110_PILOT_COMPLETED=1")
+        else:
+            # A complete survivor screen is valid even though assay run returns 1.
+            print("B110_SCREEN_EXIT=1")
+            print("B110_SCREEN_VERIFIED=1")
     raise SystemExit(0)
 if args and args[0] == "stop":
     if mode in {"stop-fails", "force-remove-fails"}:
@@ -233,6 +268,7 @@ def committed_worktree():
     worktree = Path(tempfile.mkdtemp(prefix="assay-b105-launcher-", dir=worktrees_dir))
     project = worktree / "assay"
     (project / "tools").mkdir(parents=True)
+    (project / ".gitignore").write_text(".assay/\n", encoding="utf-8")
     (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\nversion='1.0'\n", encoding="utf-8")
     shutil.copy2(SCRIPT, project / "tools" / SCRIPT.name)
     shutil.copy2(CGROUP_HELPER, project / "tools" / CGROUP_HELPER.name)
@@ -276,12 +312,14 @@ def run_launcher(
     status_fail_at: int | None = None,
     trace_timeouts: bool = False,
     fast_docker_timeout: bool = False,
+    hide_docker: bool = False,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
-    docker = fake_bin / "docker"
-    docker.write_text(FAKE_DOCKER, encoding="utf-8")
-    docker.chmod(0o755)
+    if not hide_docker:
+        docker = fake_bin / "docker"
+        docker.write_text(FAKE_DOCKER, encoding="utf-8")
+        docker.chmod(0o755)
     if status_fail_at is not None:
         git = fake_bin / "git"
         git.write_text(FAKE_GIT, encoding="utf-8")
@@ -320,6 +358,14 @@ def run_launcher(
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
     if background is not None:
         env["CGROUP_PARENT_DEV_BACKGROUND"] = background
+    if hide_docker:
+        minimal_bin = tmp_path / "minimal-bin"
+        minimal_bin.mkdir(exist_ok=True)
+        for name in ("bash", "git", "findmnt", "realpath", "flock", "chmod", "rm"):
+            target = shutil.which(name)
+            assert target is not None
+            (minimal_bin / name).symlink_to(target)
+        env["PATH"] = str(minimal_bin)
     started = time.monotonic()
     proc = subprocess.run(
         ["bash", str(SCRIPT), str(worktree), lane],
@@ -393,6 +439,20 @@ def host_workspace_root(worktree: Path) -> str:
             "ASSAY_SELF_QUALIFICATION_VERIFIED=1",
             "dev-background.slice",
         ),
+        (
+            "b110-pilot",
+            "2h15m",
+            None,
+            "B110_PILOT_COMPLETED=1",
+            None,
+        ),
+        (
+            "b110-screen",
+            "7h15m",
+            None,
+            "B110_SCREEN_VERIFIED=1",
+            None,
+        ),
     ],
 )
 def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_status(
@@ -413,8 +473,12 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
 
     assert proc.returncode == 0, proc.stderr
     assert marker in proc.stdout
-    assert "ASSAY_B105_GATE_CONTAINER_EXIT=0" in proc.stdout
-    assert f"ASSAY_B105_GATE_COMPLETE={lane}" in proc.stdout
+    if lane.startswith("b110-"):
+        assert "ASSAY_B110_GATE_CONTAINER_EXIT=0" in proc.stdout
+        assert f"ASSAY_B110_GATE_COMPLETE={lane}" in proc.stdout
+    else:
+        assert "ASSAY_B105_GATE_CONTAINER_EXIT=0" in proc.stdout
+        assert f"ASSAY_B105_GATE_COMPLETE={lane}" in proc.stdout
     launch = launch_call(calls)
     assert "--init" in launch
     assert "--cgroupns=host" in launch
@@ -461,6 +525,59 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     assert f"ASSAY_B105_GATE_EXPECTED_TREE={source_tree}" in env
 
 
+@pytest.mark.parametrize(
+    ("lane", "mode", "expected_error"),
+    [
+        ("b110-pilot", "pilot-init-refused", "campaign initialization was refused"),
+        ("b110-pilot", "pilot-timeout", "campaign failsafe"),
+        ("b110-pilot", "pilot-incomplete", "complete exit status (6)"),
+        ("b110-screen", "screen-r0-fail", "verified complete verdict marker"),
+        ("b110-screen", "screen-timeout", "failsafe timeout"),
+        ("b110-screen", "screen-malformed-exit", "run exit status"),
+        ("b110-screen", "screen-wrong-marker", "pilot-mode marker"),
+        ("b110-pilot", "pilot-wrong-marker", "screen-mode marker"),
+    ],
+)
+def test_b110_child_evidence_is_required_before_outer_completion(
+    tmp_path: Path, committed_worktree: Path, lane: str, mode: str, expected_error: str
+):
+    proc, _calls, _elapsed = run_launcher(tmp_path, committed_worktree, lane=lane, mode=mode)
+
+    assert proc.returncode != 0
+    assert expected_error in proc.stderr
+    assert "ASSAY_B110_GATE_COMPLETE" not in proc.stdout
+
+
+@pytest.mark.parametrize(("lane", "wait_seconds"), [
+    ("b110-pilot", 2 * 60 * 60 + 15 * 60),
+    ("b110-screen", 7 * 60 * 60 + 15 * 60),
+])
+def test_b110_container_wait_and_log_follow_include_the_exact_bounds(
+    tmp_path: Path, committed_worktree: Path, lane: str, wait_seconds: int
+):
+    proc, _calls, _elapsed = run_launcher(
+        tmp_path, committed_worktree, lane=lane, trace_timeouts=True
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    timeouts = [
+        json.loads(line)
+        for line in (tmp_path / "timeout.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    wait = next(
+        args for args in timeouts
+        if "docker" in args and args[args.index("docker") + 1 : args.index("docker") + 3]
+        == ["wait", CONTAINER_ID]
+    )
+    follower = next(
+        args for args in timeouts
+        if "docker" in args and args[args.index("docker") + 1 : args.index("docker") + 4]
+        == ["logs", "--follow", CONTAINER_ID]
+    )
+    assert wait[wait.index("docker") - 1] == f"{wait_seconds}s"
+    assert follower[follower.index("docker") - 1] == f"{wait_seconds + 90}s"
+
+
 def test_runner_refuses_to_launch_beside_an_active_registered_gate(tmp_path: Path, committed_worktree: Path):
     proc, calls, _elapsed = run_launcher(
         tmp_path, committed_worktree, lane="self-qualification-preflight", mode="busy"
@@ -469,6 +586,166 @@ def test_runner_refuses_to_launch_beside_an_active_registered_gate(tmp_path: Pat
     assert proc.returncode == 3
     assert "host busy" in proc.stderr
     assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+
+
+def test_b110_screen_removes_stale_verdict_before_host_admission(
+    tmp_path: Path, committed_worktree: Path
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    stale_outputs = (
+        "verdict-b110-screen.json",
+        "b110-screen-plan.json",
+        "b110-screen-run.log",
+    )
+    for name in stale_outputs:
+        (state / name).write_text("stale attempt\n", encoding="utf-8")
+
+    proc, calls, _elapsed = run_launcher(
+        tmp_path, committed_worktree, lane="b110-screen", mode="busy"
+    )
+
+    assert proc.returncode == 3
+    assert "host busy" in proc.stderr
+    assert all(not (state / name).exists() for name in stale_outputs)
+    assert any(call[:2] == ["ps", "--no-trunc"] for call in calls)
+    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+
+
+def test_b110_screen_removes_stale_verdict_before_shared_host_refusal(
+    tmp_path: Path, committed_worktree: Path
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    stale_outputs = (
+        "verdict-b110-screen.json",
+        "b110-screen-plan.json",
+        "b110-screen-run.log",
+    )
+    for name in stale_outputs:
+        (state / name).write_text("stale attempt\n", encoding="utf-8")
+
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="b110-screen",
+        shared_host_value="1",
+    )
+
+    assert proc.returncode == 3
+    assert "ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported" in proc.stderr
+    assert all(not (state / name).exists() for name in stale_outputs)
+    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+
+
+def test_b110_screen_clears_stale_outputs_before_host_bind_refusal(
+    tmp_path: Path, committed_worktree: Path
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    stale_outputs = (
+        "verdict-b110-screen.json",
+        "b110-screen-plan.json",
+        "b110-screen-run.log",
+    )
+    for name in stale_outputs:
+        (state / name).write_text("stale attempt\n", encoding="utf-8")
+
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="b110-screen",
+        host_workspace_root="/other/vbpub",
+    )
+
+    assert proc.returncode != 0
+    assert "differs from the findmnt workspace bind source" in proc.stderr
+    assert all(not (state / name).exists() for name in stale_outputs)
+    assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+
+
+def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
+    tmp_path: Path, committed_worktree: Path
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    stale_outputs = (
+        "b110-pilot-plan.json",
+        "b110-pilot-candidates.txt",
+        "b110-pilot-selection.json",
+        "b110-pilot-summary.json",
+        "b110-pilot-run.log",
+    )
+    for name in stale_outputs:
+        (state / name).write_text("stale attempt\n", encoding="utf-8")
+    progress = state / "progress-b110-pilot.jsonl"
+    progress.write_text('{"event":"resume evidence"}\n', encoding="utf-8")
+    deadline = state / "campaign-deadline-b110-pilot-test.json"
+    deadline.write_text('{"expires_at_utc":"2030-01-01T00:00:00Z"}\n', encoding="utf-8")
+    mutation_state = state / "b110-pilot-state" / "PILOT-STATE"
+    mutation_state.parent.mkdir()
+    mutation_state.write_text("state identity\n", encoding="utf-8")
+
+    proc, _calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="b110-pilot",
+        mode="busy",
+    )
+
+    assert proc.returncode == 3
+    assert "host busy" in proc.stderr
+    assert all(not (state / name).exists() for name in stale_outputs)
+    assert progress.read_text(encoding="utf-8") == '{"event":"resume evidence"}\n'
+    assert deadline.exists()
+    assert mutation_state.read_text(encoding="utf-8") == "state identity\n"
+
+
+@pytest.mark.parametrize(
+    ("lane", "artifact_names"),
+    [
+        (
+            "b110-pilot",
+            (
+                "b110-pilot-plan.json",
+                "b110-pilot-candidates.txt",
+                "b110-pilot-selection.json",
+                "b110-pilot-summary.json",
+                "b110-pilot-run.log",
+            ),
+        ),
+        (
+            "b110-screen",
+            (
+                "verdict-b110-screen.json",
+                "b110-screen-plan.json",
+                "b110-screen-run.log",
+            ),
+        ),
+    ],
+)
+def test_b110_attempt_clears_old_artifacts_before_missing_docker_refusal(
+    tmp_path: Path,
+    committed_worktree: Path,
+    lane: str,
+    artifact_names: tuple[str, ...],
+):
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    for name in artifact_names:
+        (state / name).write_text("previous attempt\n", encoding="utf-8")
+
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane=lane,
+        hide_docker=True,
+    )
+
+    assert proc.returncode == 1
+    assert "Docker is required" in proc.stderr
+    assert all(not (state / name).exists() for name in artifact_names)
+    assert calls == []
 
 
 def test_b105_refuses_the_shared_host_opt_in(tmp_path: Path, committed_worktree: Path):
@@ -506,6 +783,41 @@ def test_b105_lock_serializes_callers_across_tmp_namespaces(
     assert proc.returncode == 3
     assert "another B105 host check holds the shared Git-directory lock" in proc.stderr
     assert not any(call and call[0] == "run" and "-d" in call for call in calls)
+
+
+def test_b110_screen_lock_refusal_preserves_the_existing_verdict(
+    tmp_path: Path, committed_worktree: Path
+):
+    common_dir = subprocess.run(
+        ["git", "-C", str(committed_worktree), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    lock_path = Path(common_dir) / "assay-b105-self-qualification.lock"
+    lock_path.touch(mode=0o600)
+    state = committed_worktree / "assay" / ".assay"
+    state.mkdir(parents=True)
+    active_outputs = (
+        "verdict-b110-screen.json",
+        "b110-screen-plan.json",
+        "b110-screen-run.log",
+    )
+    for name in active_outputs:
+        (state / name).write_text("active attempt\n", encoding="utf-8")
+
+    with lock_path.open("r+") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        proc, calls, _elapsed = run_launcher(
+            tmp_path,
+            committed_worktree,
+            lane="b110-screen",
+        )
+
+    assert proc.returncode == 3
+    assert "another B105 host check holds the shared Git-directory lock" in proc.stderr
+    assert all((state / name).read_text(encoding="utf-8") == "active attempt\n" for name in active_outputs)
+    assert not any(call and call[0] in {"ps", "run"} for call in calls)
 
 
 def test_runner_fails_on_nonzero_container_exit_and_removes_its_verified_container(

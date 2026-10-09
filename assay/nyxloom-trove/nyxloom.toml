@@ -159,8 +159,9 @@ series       = "nyxloom-trove/handoffs/README.md"
 # tree. A host with another `run-gate-*` container running makes the gate exit 3
 # (`ASSAY_GATE_INCONCLUSIVE=host busy`); run-gate records that as an
 # infrastructure ERROR, which always means "rerun". The registered
-# `tester-unified`, `self-qualification`, and standalone preflight lanes share
-# one run-gate lock, so those Assay lanes cannot race each other's host check.
+# `tester-unified`, self-qualification, preflight, pilot, and screen lanes share
+# one run-gate lock, so those Assay campaigns cannot race each other's host
+# check or consume the same host capacity concurrently.
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_GATES and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
@@ -211,6 +212,27 @@ phase = "implementation"
 asserts = ["tests-pass"]
 # 75m run-gate budget plus 15m for admission/startup and evidence collection.
 timeout_seconds = 5400
+environment = "tester-unified"
+
+[gates.b110-pilot]
+# P7's two-hour campaign-bound pilot is a measurement, never a qualification
+# pass. run-gate's 2h20m bound includes a planned <=10m build/venv allowance,
+# which the registered gate report must measure and confirm, plus campaign and
+# cleanup time. This controller leaves 10m for admission and startup.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} b110-pilot"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 9000
+environment = "tester-unified"
+
+[gates.b110-screen]
+# Non-qualifying full-plan survivor screen. The 7h30m command timeout and 8h
+# run-gate budget include container cleanup; the verifier and report checker
+# accept complete survivors but refuse partial or timed-out measurements.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} b110-screen"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 28800
 environment = "tester-unified"
 
 [mutexes.merge-lane]
