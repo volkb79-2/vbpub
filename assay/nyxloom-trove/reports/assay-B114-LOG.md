@@ -607,3 +607,70 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   `git diff --check`. No registered gate or mutation campaign has run yet.
 - Next: commit and provisionally merge this package; run the registered B114
   acceptance gates on the merged commit.
+
+## 2026-10-09 — tester-unified integration follow-up
+
+- The first registered `./run-gate.py tester-unified` run on merged Assay
+  commit `7ea7b5817d19e484335a87dfc5ba96c24858e467` exited 1 after 9m19s:
+  **8,260 passed, 85 failed, 11 skipped**. The run log is
+  `/tmp/run-gate/lanes/tester-unified/edda88996c5086fc74b80b21737517e3.log`.
+- Diagnosed integration failures: B114 added tracked source
+  `src/assay/_mutation_inventory.py` without adding it to both B105 target
+  inventories; the B105 exclusion map retained pre-edit line numbers for
+  `mutation.py`; and pyflakes found an unused caught exception name plus two
+  local guard definitions that reused their initialized variable names.
+- The repair adds the helper to both B105 target lists, updates the reviewed
+  exclusion lines, removes the unused exception binding, and gives the nested
+  progress guard functions distinct names before assigning them to the optional
+  callbacks. Added R0/R1 tests covering every success and refusal path of the
+  complete-inventory helper.
+- Focused verification on this branch: **73 passed** across the B105 exclusion
+  control, mutation-inventory tests, self-lane tests, and shipped-tree pyflakes
+  check. A dedicated branch-coverage run for the helper reported **100%** (41
+  statements, 30 branches); `git diff --check` passed.
+- The failed gate container is gone, `./run-gate.py status --json` reports no
+  inflight work, and the CIU-managed worktree remains attached to its recorded
+  branch. Next: exact-tip independent Sol xhigh review, serial merge, and a new
+  registered `tester-unified` run on the repaired merged tree.
+
+## 2026-10-09 — Sol xhigh integration review round 7
+
+- The read-only GPT-6-Sol xhigh review from the preferred `.codex` route
+  returned **REVISE** with one P3: tests did not prove that each of the six
+  terminal outcome buckets is required and counted. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round7.md`; before/after HEAD and status
+  snapshots matched at `30fd138b95c3fbc50e9361eea4869dad5b8ebcb9` with a clean
+  worktree. The review ran no tests or gates.
+- Expanded the success fixture to put one planned candidate in each bucket
+  and added a refusal case for each missing bucket. Focused verification then
+  passed **78 tests**; helper statement and branch coverage remained **100%**
+  (41 statements, 30 branches), and `git diff --check` passed.
+- Next: exact-tip Sol xhigh review of the strengthened test, then proceed to
+  the serial merge if accepted.
+
+## 2026-10-09 — Sol xhigh integration review round 8
+
+- The read-only GPT-6-Sol xhigh review from `.codex` returned **REVISE** with
+  one P3: tests needed to distinguish a missing bucket from a present
+  non-array bucket value. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round8.md`; before/after HEAD and status
+  snapshots matched at `046f4831cde74fe587f29a14443320809734cdd9` with a clean
+  worktree. The reviewer ran no tests or gates.
+- Added a tuple-valued outcome case for each of the six buckets. Focused
+  verification passed **84 tests**, and the helper remained at **100%** branch
+  coverage (41 statements, 30 branches). `git diff --check` passed.
+- Next: exact-tip Sol xhigh review of the new non-array refusal cases.
+
+## 2026-10-09 — Sol xhigh integration review round 9
+
+- The read-only GPT-6-Sol xhigh review from `.codex` returned **ACCEPT**, with
+  no actionable P0–P3 findings. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round9.md`; before/after HEAD and status
+  snapshots matched at `6133f78d66cd9f2499f52df5c6fed7855f39a01c` with a clean
+  worktree. The reviewer ran no tests or gates.
+- The reviewer confirmed the six-bucket success case, missing-key and
+  non-array refusal cases for all buckets, exact source inventories, current
+  exclusion lines, and behavior-preserving source edits. The controller's
+  focused suite passed **84 tests** with **100%** helper branch coverage.
+- Next: merge serially and rerun registered `tester-unified` on the repaired
+  main tip.
