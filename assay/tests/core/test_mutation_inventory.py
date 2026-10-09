@@ -9,6 +9,10 @@ from assay._mutation_inventory import verify_complete_mutation_inventory
 _BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung")
 _ID_A = "a" * 64
 _ID_B = "b" * 64
+_ID_C = "c" * 64
+_ID_D = "d" * 64
+_ID_E = "e" * 64
+_ID_F = "f" * 64
 
 
 def _payload(planned_ids: tuple[str, ...]) -> dict[str, object]:
@@ -21,12 +25,13 @@ def _payload(planned_ids: tuple[str, ...]) -> dict[str, object]:
 
 
 def test_accepts_a_complete_ordered_partition_of_the_plan():
-    mutation = _payload((_ID_A, _ID_B))
-    mutation["killed"] = [{"candidate_id": _ID_A}]
-    mutation["survived"] = [{"candidate_id": _ID_B}]
+    planned_ids = (_ID_A, _ID_B, _ID_C, _ID_D, _ID_E, _ID_F)
+    mutation = _payload(planned_ids)
+    for bucket, identity in zip(_BUCKETS, planned_ids):
+        mutation[bucket] = [{"candidate_id": identity}]
 
     verify_complete_mutation_inventory(
-        mutation, (_ID_A, _ID_B), context="analysis R2"
+        mutation, planned_ids, context="analysis R2"
     )
 
 
@@ -75,11 +80,6 @@ def test_accepts_a_complete_ordered_partition_of_the_plan():
             "candidate_ids differ from the ordered full plan",
         ),
         (
-            {key: value for key, value in _payload((_ID_A,)).items() if key != "killed"},
-            (_ID_A,),
-            "mutation.killed is missing or not an array",
-        ),
-        (
             {**_payload((_ID_A,)), "killed": [None]},
             (_ID_A,),
             r"mutation\.killed\[0\] is not an object",
@@ -116,4 +116,18 @@ def test_rejects_incomplete_or_malformed_campaign_inventories(
     with pytest.raises(ValueError, match=message):
         verify_complete_mutation_inventory(
             mutation, planned_ids, context="analysis R2"
+        )
+
+
+@pytest.mark.parametrize("missing_bucket", _BUCKETS)
+def test_requires_each_terminal_bucket(missing_bucket):
+    mutation = _payload((_ID_A,))
+    del mutation[missing_bucket]
+
+    with pytest.raises(
+        ValueError,
+        match=rf"mutation\.{missing_bucket} is missing or not an array",
+    ):
+        verify_complete_mutation_inventory(
+            mutation, (_ID_A,), context="analysis R2"
         )

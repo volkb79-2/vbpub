@@ -632,3 +632,18 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   inflight work, and the CIU-managed worktree remains attached to its recorded
   branch. Next: exact-tip independent Sol xhigh review, serial merge, and a new
   registered `tester-unified` run on the repaired merged tree.
+
+## 2026-10-09 — Sol xhigh integration review round 7
+
+- The read-only GPT-6-Sol xhigh review from the preferred `.codex` route
+  returned **REVISE** with one P3: tests did not prove that each of the six
+  terminal outcome buckets is required and counted. The report is retained at
+  `reports/assay-B114-REVIEW-2026-10-09-round7.md`; before/after HEAD and status
+  snapshots matched at `30fd138b95c3fbc50e9361eea4869dad5b8ebcb9` with a clean
+  worktree. The review ran no tests or gates.
+- Expanded the success fixture to put one planned candidate in each bucket
+  and added a refusal case for each missing bucket. Focused verification then
+  passed **78 tests**; helper statement and branch coverage remained **100%**
+  (41 statements, 30 branches), and `git diff --check` passed.
+- Next: exact-tip Sol xhigh review of the strengthened test, then proceed to
+  the serial merge if accepted.
