@@ -223,6 +223,7 @@ matches are listed first, and only identifiers and metadata are printed:
 nyxloom-harness search debian iso cloud qcow
 nyxloom-harness search debian iso cloud qcow --term-match prefix --word-match all
 nyxloom-harness search debian iso cloud qcow --client codex --source-root ~/.codex/sessions --term-match prefix
+nyxloom-harness search debian iso cloud qcow --fast --client codex --source-root ~/.codex/sessions
 ```
 
 See the [search design](DESIGN-GUIDE.md#local-session-search) for matching
@@ -231,6 +232,12 @@ for source selection and progress controls. Exact word matching and any query
 word are the defaults; `prefix` matches `qcow` in `qcow2`, and `all` requires
 every query word. Relevance scores reward up to 64 occurrences of each query
 word per session; more repeats no longer raise that word's score.
+For approximate raw matching, `--fast` requires ripgrep, ASCII query words, and
+explicit Codex and/or Claude selection. It scans serialized JSON tokens (so
+metadata can match), skips candidate-record parsing for matching and activity-
+tail reads, and sorts by filesystem mtime as a labeled proxy. See the
+[search design](DESIGN-GUIDE.md#local-session-search) and
+[consumer recipe](CONSUMERS.md#search-local-session-history) for its scope.
 
 | Command | Purpose |
 |---|---|

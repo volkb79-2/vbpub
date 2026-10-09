@@ -163,6 +163,23 @@ def _path_identity(path: Path) -> tuple[int, int] | None:
     return result.st_dev, result.st_ino
 
 
+def _path_modified_utc(path: Path) -> str:
+    """Return filesystem mtime for fast-mode date ranking, labeled as a proxy."""
+    try:
+        modified = path.stat().st_mtime
+    except OSError as exc:
+        raise SearchError(
+            f"session search is indeterminate; could not read file metadata for {path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(modified))
+    except (OverflowError, OSError, ValueError) as exc:
+        raise SearchError(
+            f"session search is indeterminate; invalid file modification time for {path}: {exc}"
+        ) from exc
+
+
 def _dedupe_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
     seen: set[tuple[int, int]] = set()
     lexical: set[Path] = set()
@@ -822,6 +839,17 @@ def _ripgrep_pattern(terms: tuple[str, ...], term_match: str) -> str | None:
     return "(?:" + "|".join(candidates) + ")"
 
 
+def _ripgrep_raw_token_pattern(terms: tuple[str, ...]) -> str | None:
+    """Match complete serialized-text tokens containing an ASCII query word."""
+    if not all(term.isascii() for term in terms):
+        return None
+    token_char = r"[\p{L}\p{N}]"
+    alternatives = "|".join(
+        re.escape(term) for term in sorted(terms, key=len, reverse=True)
+    )
+    return rf"(?i:{token_char}*(?:{alternatives}){token_char}*)"
+
+
 @lru_cache(maxsize=64)
 def _query_casefold_bytes_pattern(terms: tuple[str, ...]) -> re.Pattern[bytes] | None:
     chars = _ripgrep_casefold_chars(terms)
@@ -866,7 +894,7 @@ def _ripgrep_stdout_ready(stream, timeout: float) -> bool:
 
 
 def _ripgrep_records(stream, *, progress: Progress | None, client: str):
-    """Yield (path, JSONL record) frames without confusing newlines in paths."""
+    """Yield (path, output line) frames without confusing newlines in paths."""
     buffer = bytearray()
     path_bytes: bytes | None = None
     started = time.monotonic()
@@ -906,6 +934,97 @@ def _ripgrep_records(stream, *, progress: Progress | None, client: str):
             path_bytes = None
         if cursor:
             del buffer[:cursor]
+
+
+def _ripgrep_raw_counts(
+    paths: Sequence[Path],
+    terms: tuple[str, ...],
+    term_match: str,
+    *,
+    client: str,
+    progress: Progress | None = None,
+) -> dict[str, Counter[str]]:
+    """Count rg-emitted serialized-text tokens without parsing transcript JSON."""
+    binary = shutil.which("rg")
+    if binary is None:
+        raise SearchError("--fast requires ripgrep (rg), but it is not installed")
+    pattern = _ripgrep_raw_token_pattern(terms)
+    if pattern is None:
+        raise SearchError("--fast currently supports ASCII query words only")
+
+    counts: dict[str, Counter[str]] = {}
+    frequency_cap = _TERM_FREQUENCY_CAP
+    matches_seen = 0
+    for batch in _ripgrep_path_batches(paths):
+        _report(
+            progress,
+            f"Searching {client} transcripts with ripgrep fast mode ({len(batch):,} files)",
+        )
+        with tempfile.TemporaryFile() as stderr_file:
+            try:
+                process = subprocess.Popen(
+                    [
+                        binary,
+                        "--no-config",
+                        "--no-ignore",
+                        "--hidden",
+                        "--text",
+                        "--null",
+                        "--with-filename",
+                        "--no-heading",
+                        "--no-line-number",
+                        "--only-matching",
+                        "--regexp",
+                        pattern,
+                        "--",
+                        *(str(path) for path in batch),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_file,
+                )
+            except OSError as exc:
+                raise SearchError(
+                    f"could not start ripgrep for {client} fast search: {exc}"
+                ) from exc
+            assert process.stdout is not None
+            process_completed = False
+            try:
+                for raw_path, raw_token in _ripgrep_records(
+                    process.stdout, progress=progress, client=client,
+                ):
+                    path_text = os.fsdecode(raw_path)
+                    matches_seen += 1
+                    if progress is not None and matches_seen % 4096 == 0:
+                        _report(
+                            progress,
+                            f"Counting {client} fast matches: {matches_seen:,} tokens",
+                            matches_seen,
+                            None,
+                        )
+                    token = raw_token.decode("utf-8", errors="replace").casefold()
+                    session_counts = counts.setdefault(path_text, Counter())
+                    for term in terms:
+                        if session_counts[term] >= frequency_cap:
+                            continue
+                        if token == term or (
+                            term_match == "prefix" and token.startswith(term)
+                        ):
+                            session_counts[term] += 1
+                process_completed = True
+            finally:
+                process.stdout.close()
+                if not process_completed and process.poll() is None:
+                    process.terminate()
+                return_code = process.wait()
+            if return_code not in (0, 1):
+                stderr_file.seek(0)
+                details = stderr_file.read().decode("utf-8", errors="replace").strip()
+                detail_text = f": {details}" if details else ""
+                raise SearchError(
+                    f"ripgrep could not search {client} fast transcripts "
+                    f"(exit {return_code}){detail_text}"
+                )
+    return counts
 
 
 def _active_query_terms(
@@ -1591,7 +1710,13 @@ def _documents(
     source_roots: tuple[Path, ...] | None = None,
     progress: Progress | None = None,
     require_compatible_roots: bool = False,
+    fast: bool = False,
 ) -> list[_Document]:
+    if fast and client == "opencode":
+        raise SearchError(
+            "--fast supports Codex and Claude JSONL stores only; select them with "
+            "--client codex and/or --client claude"
+        )
     found = _store_sessions(
         client,
         source_roots=source_roots,
@@ -1627,12 +1752,12 @@ def _documents(
     rg_counts: dict[str, Counter[str]] | None = None
     counts_by_identity: dict[tuple[int, int] | str, Counter[str]] = {}
     if client != "opencode" and terms is not None:
-        rg_counts = _ripgrep_jsonl_counts(
-            tuple(files_by_identity.values()),
-            terms,
-            term_match,
-            client=client,
-            progress=progress,
+        count_candidates = (
+            _ripgrep_raw_counts if fast else _ripgrep_jsonl_counts
+        )
+        rg_counts = count_candidates(
+            tuple(files_by_identity.values()), terms, term_match,
+            client=client, progress=progress,
         )
         if rg_counts is not None:
             for path_text, counts in rg_counts.items():
@@ -1656,7 +1781,11 @@ def _documents(
         if progress is not None and (index == 1 or index % 25 == 0):
             _report(
                 progress,
-                f"Reading {client} transcript {index:,}/{len(unique_sessions):,}: {source.name}",
+                (
+                    f"Ranking {client} fast results {index:,}/{len(unique_sessions):,}: {source.name}"
+                    if fast
+                    else f"Reading {client} transcript {index:,}/{len(unique_sessions):,}: {source.name}"
+                ),
                 index,
                 len(unique_sessions),
             )
@@ -1666,17 +1795,18 @@ def _documents(
         elif rg_counts is not None:
             counts = counts_by_identity.get(file_identity, Counter())
             if file_identity not in activity_by_identity:
-                activity_by_identity[file_identity] = (
-                    _jsonl_last_activity(
+                if not counts:
+                    activity_by_identity[file_identity] = None
+                elif fast:
+                    activity_by_identity[file_identity] = _path_modified_utc(source)
+                else:
+                    activity_by_identity[file_identity] = _jsonl_last_activity(
                         source,
                         progress=progress,
                         client=client,
                         index=index,
                         total=len(unique_sessions),
                     )
-                    if counts
-                    else None
-                )
             last_activity = activity_by_identity[file_identity]
         else:
             counts, last_activity = _jsonl_content(
@@ -1706,6 +1836,7 @@ def search_sessions(
     source_roots: Sequence[str | Path] | None = None,
     word_match: str = "any",
     term_match: str = "exact",
+    fast: bool = False,
     progress: Progress | None = None,
 ) -> list[SearchResult]:
     """Find sessions containing the requested query words and rank matches.
@@ -1716,8 +1847,12 @@ def search_sessions(
     Date order sorts by recorded last activity, newest first, with relevance
     and stable identifiers breaking ties. ``word_match`` selects any/all query
     words, and ``term_match`` selects exact word matches or token prefixes.
+    ``fast`` opts into raw ripgrep token matching for ASCII Codex/Claude queries;
+    it skips transcript JSON parsing and uses file mtime as an activity proxy.
     """
     terms = _terms(query)
+    if fast and not all(token.isascii() for token in _WORD.findall(query)):
+        raise SearchError("--fast currently supports ASCII query words only")
     if client is None:
         selected = CLIENTS
     elif isinstance(client, str):
@@ -1728,6 +1863,13 @@ def search_sessions(
     if unknown_clients:
         raise SearchError(
             f"unknown client {unknown_clients[0]!r}; expected one of: {', '.join(CLIENTS)}"
+        )
+    if fast and (
+        not selected or any(name == "opencode" for name in selected)
+    ):
+        raise SearchError(
+            "--fast supports Codex and Claude JSONL stores only; select them with "
+            "--client codex and/or --client claude"
         )
     if sort_by not in SORT_ORDERS:
         raise SearchError(f"unknown sort order {sort_by!r}; expected one of: {', '.join(SORT_ORDERS)}")
@@ -1751,6 +1893,7 @@ def search_sessions(
             source_roots=roots,
             progress=progress,
             require_compatible_roots=client is not None,
+            fast=fast,
         )
     ]
     document_frequency = Counter(

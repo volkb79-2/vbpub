@@ -1485,6 +1485,7 @@ def cmd_search(args) -> int:
 
     query = " ".join(args.words)
     runtime = getattr(args, "runtime", None)
+    fast = getattr(args, "fast", False)
     progress = runtime.progress() if runtime is not None else None
     if progress is None:
         results = search_sessions(
@@ -1494,6 +1495,7 @@ def cmd_search(args) -> int:
             source_roots=args.source_root,
             word_match=args.word_match,
             term_match=args.term_match,
+            fast=fast,
         )
     else:
         with progress:
@@ -1505,6 +1507,7 @@ def cmd_search(args) -> int:
                 source_roots=args.source_root,
                 word_match=args.word_match,
                 term_match=args.term_match,
+                fast=fast,
                 progress=lambda message, current, total: progress.update(
                     message, current=current, total=total,
                 ),
@@ -1519,7 +1522,7 @@ def cmd_search(args) -> int:
             "CLIENT": result.client,
             "SESSION ID": result.session_id,
             "SCORE": f"{result.score:.3f}",
-            "LAST ACTIVITY": result.last_activity or "—",
+            ("FILE MTIME (UTC)" if fast else "LAST ACTIVITY"): result.last_activity or "—",
             "MATCHED WORDS": ", ".join(result.matched_terms),
             "SOURCE": result.source,
         }
@@ -1527,7 +1530,11 @@ def cmd_search(args) -> int:
     ]
     print(_format_table(
         rows,
-        ["CLIENT", "SESSION ID", "SCORE", "LAST ACTIVITY", "MATCHED WORDS", "SOURCE"],
+        [
+            "CLIENT", "SESSION ID", "SCORE",
+            "FILE MTIME (UTC)" if fast else "LAST ACTIVITY",
+            "MATCHED WORDS", "SOURCE",
+        ],
     ))
     return 0
 
