@@ -8506,6 +8506,47 @@ in 131.39 seconds but exited 2 because the whole-project branch threshold was
 99%: the only partial branch was `lib/serve.py:2936->2909`. That is the
 oversized-request check after a read with no newline; existing tests covered a
 complete oversized line, which returns through the earlier newline branch.
-A 4097-byte unterminated request now pins the distinct response and no-dispatch
-behavior. Re-run `r0-r1` on the next quiet commit and require 100% total line
-and branch coverage before proceeding.
+A 4097-byte unterminated request pins the distinct response and no-dispatch
+behavior. That covered the over-limit branch but not its false edge (a
+non-empty, under-limit partial request followed by EOF); RW-532 records the
+remaining coverage gap and its focused regression test.
+
+### RW-531 — 2026-10-09 03:59:41 UTC — prove DAMON_STAT is the host conflict
+
+The operator approved one temporary host-global toggle, one short live
+acceptance session, restoration, and verification. The exact probe container
+`rg55-damon-stat-probe-20261009-0358` (ID
+`0a2b0f99db9adbb574010c08cea35fed3ecd923f4f99d2e7c1ba27ac28d9789c`) ran under
+the loaded `dev-gates.slice` with `--network none`, three CPUs, and a 256-MiB
+memory ceiling. With `/sys/module/damon_stat/parameters/enabled=N`, the
+existing `cgprofile-host-daemon` started session
+`s-20261009T035732Z-20f9` with `damon: "on"`; it recorded 36 ordinary samples
+and 36 DAMON samples for one target, including nonzero hot/warm classifications
+(peak hot bytes 68,788,224). Stop completed normally. The exact probe container
+was removed. `DAMON_STAT` was restored and read back as `Y`,
+`nr_kdamonds=0`, the daemon remained running with zero sessions, and the socket
+remained responsive. This confirms the earlier `EBUSY` is due to the active
+special-purpose `DAMON_STAT` consumer, not daemon/socket failure.
+
+The host kernel is `7.1.13+deb13-amd64`; its `/boot/config` sets
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`. This is the running kernel build's
+default, not a universal Debian guarantee. `DAMON_STAT` exposes global
+whole-physical-memory idle percentiles and estimated bandwidth; cgprofile uses
+the generic sysfs interface for per-process virtual-address targets and
+statistics-only samples. The modes are mutually exclusive. cgprofile must not
+change this host-wide policy on its own. `host-escape` also ran its documented
+`mdt doctor` post-check, which restored missing cgroup2 mount options
+`nsdelegate,memory_recursiveprot,memory_hugetlb_accounting`; the resulting
+host mount reports all three present.
+
+### RW-532 — 2026-10-09 03:59:41 UTC — cover the observer request-size false edge
+
+The registered `r0-r1` lane on exact tree
+`cedfc4598d05270c535d28165e68246eac838d43` finished at 03:55:20Z with all
+2,477 tests passing, but exited 2 because total branch coverage was 99%; the
+only partial edge remained `lib/serve.py:2936->2909`. RW-530's 4097-byte
+unterminated request exercised the true (oversized) edge only. Add a request
+of exactly 4096 bytes without a newline followed by EOF: the handler should
+ignore the incomplete request, send no response, and close the peer. Re-run
+the registered lane on a committed quiet tree and require 100% line and branch
+coverage before R3 or R2.

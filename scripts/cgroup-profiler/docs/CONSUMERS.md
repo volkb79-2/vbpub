@@ -290,6 +290,23 @@ alone.
 
 ### Host DAMON_STAT exclusivity
 
+`DAMON_STAT` and the generic DAMON sysfs interface serve different consumers.
+`DAMON_STAT` is a special-purpose kernel module that monitors the whole
+physical-memory space and exposes simplified system-wide idle-time percentiles
+and estimated memory bandwidth, with auto-tuned monitoring intervals. It does
+not select the PIDs belonging to a particular lane. The sysfs interface is a
+privileged, programmable control ABI: user space configures kdamonds,
+contexts, operations, and targets. cgprofile uses it for per-session virtual
+address (`vaddr`) targets bound to the profiled process PIDs, with a
+statistics-only scheme, so its output can be attributed to a lane. These are
+not two ways to read the same result; Linux makes DAMON special-purpose
+consumers exclusive, and starting the sysfs monitor while `DAMON_STAT` is
+active can return `EBUSY`. See the kernel's [DAMON sysfs usage
+guide](https://docs.kernel.org/7.1/admin-guide/mm/damon/usage.html) for the
+programmable interface and its [DAMON_STAT
+guide](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html) for the
+global summary interface.
+
 The DAMON sysfs registry is not a complete inventory of kernel DAMON users.
 In particular, Linux's special-purpose `DAMON_STAT` module can be enabled
 while `nr_kdamonds` is `0`; the kernel documents special-purpose DAMON
@@ -326,6 +343,22 @@ is consistent with DAMON_STAT exclusivity, not a failed daemon launch. Do not
 disable a host-wide monitor as an automatic diagnostic or from cgprofile;
 coordinate any temporary change with the host operator, then verify an actual
 session start and persisted `damon.jsonl` series before claiming DAMON data.
+
+The running RG-55 host uses Debian 13's `7.1.13+deb13-amd64` kernel. Its
+`/boot/config-7.1.13+deb13-amd64` reports
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`, and the live module parameter was `Y`.
+This describes that installed kernel build, not a universal Debian default;
+the parameter's build-time default is controlled by
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT`. In an operator-approved 2026-10-09
+acceptance probe, `DAMON_STAT` was temporarily set to `N`: a real session
+started with `damon: "on"`, collected 36 DAMON records for one synthetic
+64-MiB process, and stopped cleanly. The host setting was restored to `Y`,
+`nr_kdamonds` was `0`, and the daemon remained up with no sessions. This
+confirms the exclusivity diagnosis; it does not authorize cgprofile or an
+automated gate to change the host-wide setting. To make DAMON available
+persistently, the host operator must choose a kernel policy that does not run
+`DAMON_STAT` concurrently, then verify the session's status and persisted
+series. Ordinary resource profiling remains usable either way under R-36h.
 
 ## Attach a run-gate lane
 

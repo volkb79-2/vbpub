@@ -605,6 +605,18 @@ def test_observer_request_line_accepts_limit_and_refuses_one_byte_over(
     assert dispatched == [exact_payload[:-1]]
 
 
+def test_observer_incomplete_under_limit_request_is_ignored_on_eof(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    conn = _FakeConnection([b"x" * 4096, b""])
+
+    _handle_fake(server, conn, monkeypatch)
+
+    assert conn.sent == []
+    assert conn.closed
+
+
 def test_observer_request_received_exactly_at_deadline_is_not_dispatched(
     tmp_path, monkeypatch
 ):

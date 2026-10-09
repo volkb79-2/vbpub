@@ -336,6 +336,26 @@ continues ordinary profiling under R-36h. See
 [`CONSUMERS.md`'s host troubleshooting note](CONSUMERS.md#host-damon_stat-exclusivity)
 for read-only checks and the operator procedure.
 
+This is a deliberate choice of interface, not a preference for sysfs as a
+generic convenience. `DAMON_STAT` is designed to expose compact global
+statistics: whole-physical-memory idle-time percentiles and estimated
+bandwidth, with automatically tuned intervals. It does not give cgprofile a
+per-lane target boundary. DAMON sysfs is the generic privileged programming
+ABI: it lets cgprofile configure virtual-address contexts and PID targets for
+the specific process tree it has resolved, and request statistics without an
+action that changes workload memory. That targeting and result shape are what
+RG-55 needs. The cost is exclusive ownership of DAMON while the sysfs monitor
+runs; when another special-purpose module such as `DAMON_STAT` is active,
+cgprofile must preserve it and report DAMON unavailable rather than silently
+reconfigure host policy ([DAMON sysfs usage](https://docs.kernel.org/7.1/admin-guide/mm/damon/usage.html),
+[DAMON_STAT](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html)). The
+operator-approved 2026-10-09 live probe confirmed
+that relationship: with the host's `DAMON_STAT` setting temporarily `N`, the
+real daemon collected 36 per-session DAMON records; after stopping the session,
+`DAMON_STAT` was restored to `Y`. The kernel build on this Debian 13 host sets
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`; other Debian kernels may carry different
+configs.
+
 Each newly reserved `state` node is held open as an identity pin. The kernel's
 kernfs identity lets cgprofile detect a later same-count rewrite that leaves
 the numeric count and replacement `state=off` unchanged. Before reuse, stop,

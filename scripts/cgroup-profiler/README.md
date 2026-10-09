@@ -225,6 +225,14 @@ mean the kernel accepted a configured monitoring context. Check each session's
 One possible host-level refusal is an active, mutually exclusive kernel DAMON
 consumer such as `DAMON_STAT`; see the
 [consumer troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
+`DAMON_STAT` is a simplified, system-wide physical-memory statistics module;
+cgprofile instead uses the generic DAMON sysfs interface to target the
+profiled process(es) and collect per-session access regions. Linux makes
+these DAMON consumers exclusive, so an enabled `DAMON_STAT` can leave ordinary
+cgprofile sampling healthy while its DAMON series is unavailable. Debian does
+not define one invariant runtime default: the installed kernel build controls
+it. The RG-55 host's kernel config sets `CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`;
+see the consumer note for the live probe and safe host procedure.
 
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
