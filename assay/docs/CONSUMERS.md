@@ -1015,6 +1015,98 @@ so an R2-only lane would relax its own target gate with nothing in the verdict
 admitting it, which is the auditability the flag exists to provide. Declare
 `rigor = ["R0", "R1", "R2"]` and both tiers honor the one declaration.
 
+## Run a non-qualifying native-R2 pilot (B118)
+
+Use a pilot to measure a deterministic subset of a native R2 plan before
+committing to a full campaign. The selector requires the JSON from `assay plan`
+for the current Git HEAD and tree, and refuses a dirty checkout. It reads the
+source files named by that plan, checks every row's `source_sha256`, and records
+the plan commit, tree, raw plan digest, and selected IDs in its report. A plan
+from an older commit is refused even when its planned source files are
+unchanged:
+
+```sh
+mkdir -p .assay
+campaign="b110-pilot-local"
+deadline=".assay/campaign-deadline-${campaign}.json"
+assay campaign init --file assay.toml --campaign "$campaign" \
+  --lane self-qualification --hours 2 --state-dir .assay/b110-pilot-state
+assay plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
+if ! python tools/b110_pilot_select.py \
+    --plan .assay/b110-pilot-plan.json \
+    --repo-root "$(git rev-parse --show-toplevel)" \
+    --out .assay/b110-pilot-candidates.txt \
+    --report .assay/b110-pilot-selection.json; then
+  printf 'pilot selection failed; do not use its outputs\n' >&2
+  exit 2
+fi
+if assay run self-qualification --file assay.toml \
+    --candidates-file .assay/b110-pilot-candidates.txt \
+    --pilot-jobs 3 \
+    --state-dir .assay/b110-pilot-state \
+    --progress .assay/progress-b110-pilot.jsonl \
+    --cold-witness --resume --campaign-deadline "$deadline" \
+    > .assay/b110-pilot-summary.json; then
+  pilot_status=0
+else
+  pilot_status=$?
+fi
+printf 'pilot exit: %s\n' "$pilot_status"
+cat .assay/b110-pilot-summary.json
+```
+
+This is the campaign-bound B110 pilot shape: the deadline is initialized over
+the full `self-qualification` plan before selection, and the run uses cold
+witnesses. P7b will add a registered `b110-pilot` run-gate lane that uses the
+B105 bare-host launcher to create the controlled tester-unified child. Until
+P7b ships, this local command is measurement only and does not provide
+registered gate evidence.
+
+Exit **6** means R2 produced a mutation payload, did not end with
+`LANE_TIMEOUT`, and every selected candidate has a disposition. It does not
+mean R2 passed: a complete sample can include survivors, crashes, equivalents,
+hangs, or per-candidate budget outcomes. A recorded per-candidate budget
+outcome is a disposition and is not unresolved, even if the overall lane ends
+with `LANE_TIMEOUT`; that overall timeout still makes `completed` false and
+returns exit **4**. Read `buckets`, `r2`, and `unresolved` in the summary.
+Other incomplete runs return the ordinary refusal or failure code and report
+unresolved candidates when a summary can be produced.
+
+The selector accepts a printable ASCII `--seed` of at most 128 characters.
+It refuses a selected-ID file larger than Assay's 1 MiB input limit before
+writing either output, so its candidate file can be passed directly to
+`assay run`.
+The selector takes nonblocking locks on the candidate and report parent
+directories while it publishes the pair. If another selector is writing in
+either directory, this invocation refuses; retry it after the other selector
+finishes. The selector pins both directories and checks that the requested
+paths still name them before and after publication. Directory locks also
+coordinate symlink aliases and ignore different `TMPDIR` settings.
+Use the candidate file only if the selector exits 0. A refusal or cleanup and
+identity error can return 2 after leaving temporary files or a complete pair
+in the pinned directories.
+
+A pilot never writes a verdict and never runs R3. Do not use its summary as
+qualification evidence. Give each selection its own `--state-dir`; the
+`PILOT-STATE` sentinel binds the directory to that lane and selection. To
+resume an interrupted pilot, repeat the same lane, candidate file, and state
+directory with `--resume`. A different selection or a directory containing
+ordinary mutation records is refused. Keep the entire pilot state directory
+separate from qualifying campaign state. Assay takes a nonblocking exclusive
+lock before preflight and holds it through the run. For state under the
+checkout or external, it also takes a path lock under a private directory in
+the system `/tmp`, independent of `TMPDIR`; that lock survives replacement of
+the store's parent. A nonblocking `flock` on the admitted directory descriptor
+coordinates path aliases that name the same store inode. A concurrent run
+refuses promptly with a retry-after-completion message; it does not wait
+outside the lane budget. Renaming a store keeps its original inode locked, and
+the run refuses certification if the requested path no longer names that inode.
+Candidate records are both read and written through the admitted descriptor.
+Progress output cannot overwrite the sentinel or a mutation record. Every
+resumed candidate record must include terminal command evidence that agrees
+with its bucket; missing or contradictory legacy records are re-executed. See the
+[design rationale](DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118).
+
 ## Resume and shard a long mutation lane
 
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 from concurrent.futures import Future as ConcurrentFuture
 from datetime import datetime, timezone
@@ -53,6 +54,11 @@ def _record(job=None):
         "operator": job.site.operator,
         "source_sha256": hashlib.sha256(source).hexdigest(),
         "outcome_bucket": "killed",
+        "terminal_result": {
+            "outcome": "FAIL",
+            "reason_code": "COMMAND_FAILED",
+            "returncode": 1,
+        },
         "judge_sha256": "j" * 64,
         "execution": {"mode": "full"},
         "lineno": job.site.lineno,
@@ -142,7 +148,12 @@ def test_progress_writer_types_write_and_close_failures(
 ):
     destination = tmp_path / "progress.jsonl"
     stream = _FailingProgressStream(**stream_options)
-    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: stream)
+
+    def fdopen(descriptor, *_args, **_kwargs):
+        os.close(descriptor)
+        return stream
+
+    monkeypatch.setattr(mutation.os, "fdopen", fdopen)
 
     with pytest.raises(AssayError, match=message):
         with mutation.progress_writer(destination) as write:

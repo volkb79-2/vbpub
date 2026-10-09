@@ -11,6 +11,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   repin Assay before relying on v15 verdict fields.
 
 ### Added
+- Add non-qualifying native-R2 pilot selection with `--candidates-file` and
+  `--pilot-jobs`, per-candidate resumable state, a selection-bound sentinel,
+  and a deterministic stratified candidate selector with bounded, loader-safe
+  output. Completed pilot runs print a separate summary and exit 6; they never
+  write a verdict or run R3.
+- Serialize pilot and qualifying resume runs by requested state path and
+  admitted store inode; locks are nonblocking, independent of `TMPDIR`, and
+  keep parent replacement from splitting exclusivity. Require terminal command
+  evidence before trusting a per-candidate budget record as a completed
+  disposition.
 - Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
   command, ordered collection and hook facts; a `witness-cold` kill records its
   failed test call and labels later tests unrun. Hook trust is pinned to
@@ -43,6 +53,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Close caller-owned receipt descriptors and return `ERROR/EXEC_FAILED` when
   receipt-pipe or reader initialization fails; the candidate stays unclassified
   and cannot escape accounting as an unhandled exception (B114).
+- Bind B110 pilot selections to a clean checkout's exact plan commit/tree and
+  each planned source file's SHA-256; report the plan digest and selected IDs,
+  and require scanner hard-site spans to point to the exact token on the declared line.
 - Pin pytest built-in hook callable identities before candidate conftests load;
   a same-module/path substitution can no longer certify a cold kill or survivor
   with an unchanged hook fingerprint. Pin Assay's generated receipt hooks and
