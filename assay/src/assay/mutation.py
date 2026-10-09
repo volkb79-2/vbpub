@@ -1586,7 +1586,7 @@ def _write_mutation_state_record(
             unlink_state_name(backup_name)
             backup_name = None
             sync_state_directory()
-    except BaseException as write_error:
+    except BaseException:
         if not commit_accepted:
             try:
                 if published:

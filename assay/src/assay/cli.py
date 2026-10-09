@@ -2215,7 +2215,7 @@ def _cmd_run(
             progress_parent_guard = None
             progress_open_guard = None
             if state_store_path is not None and state_lock_root_fd is not None:
-                def progress_parent_guard(parent_fd: int) -> None:
+                def check_progress_parent(parent_fd: int) -> None:
                     _refuse_progress_parent_in_state(
                         progress_arg,
                         state_store_path,
@@ -2223,7 +2223,7 @@ def _cmd_run(
                         state_lock_root_fd,
                     )
 
-                def progress_open_guard(parent_fd: int, progress_fd: int) -> None:
+                def check_progress_open(parent_fd: int, progress_fd: int) -> None:
                     _refuse_progress_state_fd_collision(
                         progress_arg,
                         state_store_path,
@@ -2231,6 +2231,9 @@ def _cmd_run(
                         progress_fd,
                         state_lock_root_fd,
                     )
+
+                progress_parent_guard = check_progress_parent
+                progress_open_guard = check_progress_open
 
             if pilot_judge_sha256 is not None:
                 with ExitStack() as stack:
