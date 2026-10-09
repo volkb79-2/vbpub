@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import os
@@ -11,10 +12,13 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
+import sysconfig
 import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from contextlib import closing
 from dataclasses import dataclass
 from functools import lru_cache
@@ -42,6 +46,12 @@ _ACTIVITY_CHUNK_SIZE = 1024 * 1024
 _PROGRESS_FILE_THRESHOLD = 64 * 1024 * 1024
 _PROGRESS_BYTE_STEP = 16 * 1024 * 1024
 _RG_ARGV_PATH_BUDGET = 128 * 1024
+_TERM_FREQUENCY_CAP = 64
+_RIPGREP_PARALLEL_AFTER_CANDIDATES = 512
+_RIPGREP_MAX_WORKERS = 4
+_RIPGREP_MAX_PENDING_PER_WORKER = 2
+_RIPGREP_BATCH_RECORD_LIMIT = 128
+_RIPGREP_BATCH_BYTE_LIMIT = 1024 * 1024
 _METADATA_KEYS = {
     "agent",
     "cli_version",
@@ -674,19 +684,7 @@ def _filtered_jsonl_counts(
         return None
     counts: Counter[str] = Counter()
 
-    def count_record(
-        buffer: bytes | bytearray, start: int, end: int,
-    ) -> None:
-        nonlocal matched_lines
-        if pattern.search(buffer, start, end) is None:
-            return
-        raw_line = bytes(buffer[start:end])
-        try:
-            record = json.loads(raw_line.decode("utf-8", errors="replace"))
-        except json.JSONDecodeError:
-            return
-        _add_text(counts, record, terms, term_match)
-        matched_lines += 1
+    def report_candidate_progress() -> None:
         if progress is not None and matched_lines % 4096 == 0:
             _report(
                 progress,
@@ -695,6 +693,33 @@ def _filtered_jsonl_counts(
                 matched_lines,
                 None,
             )
+
+    def count_record(
+        buffer: bytes | bytearray, start: int, end: int,
+    ) -> None:
+        nonlocal matched_lines
+        if pattern.search(buffer, start, end) is None:
+            return
+        matched_lines += 1
+        active_terms = _active_query_terms(
+            counts, terms, _TERM_FREQUENCY_CAP,
+        )
+        if not active_terms:
+            report_candidate_progress()
+            return
+        if len(active_terms) != len(terms):
+            active_pattern = _candidate_bytes_pattern(active_terms, term_match)
+            if active_pattern is None or active_pattern.search(buffer, start, end) is None:
+                report_candidate_progress()
+                return
+        raw_line = bytes(buffer[start:end])
+        try:
+            record = json.loads(raw_line.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            report_candidate_progress()
+            return
+        _add_text(counts, record, terms, term_match)
+        report_candidate_progress()
 
     try:
         with path.open("rb") as source:
@@ -883,6 +908,196 @@ def _ripgrep_records(stream, *, progress: Progress | None, client: str):
             del buffer[:cursor]
 
 
+def _active_query_terms(
+    counts: Counter[str], terms: tuple[str, ...], cap: int,
+) -> tuple[str, ...]:
+    return tuple(term for term in terms if counts.get(term, 0) < cap)
+
+
+def _is_guarded_harness_console_entrypoint(path: Path) -> bool:
+    """Recognize the installed wrapper's safe, guarded top-level shape."""
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError):
+        return False
+    has_sys_import = False
+    has_harness_main_import = False
+    has_guarded_main_call = False
+    for statement in module.body:
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            continue
+        if isinstance(statement, ast.Import):
+            if len(statement.names) != 1 or not (
+                statement.names[0].name == "sys"
+                and statement.names[0].asname is None
+            ):
+                return False
+            has_sys_import = True
+            continue
+        if isinstance(statement, ast.ImportFrom):
+            if not (
+                statement.level == 0
+                and statement.module == "nyxloom.cli_harness"
+                and len(statement.names) == 1
+                and statement.names[0].name == "main"
+                and statement.names[0].asname is None
+            ):
+                return False
+            has_harness_main_import = True
+            continue
+        if not isinstance(statement, ast.If):
+            return False
+        condition = statement.test
+        if not (
+            isinstance(condition, ast.Compare)
+            and isinstance(condition.left, ast.Name)
+            and condition.left.id == "__name__"
+            and len(condition.ops) == 1
+            and isinstance(condition.ops[0], ast.Eq)
+            and len(condition.comparators) == 1
+            and isinstance(condition.comparators[0], ast.Constant)
+            and condition.comparators[0].value == "__main__"
+            and not statement.orelse
+        ):
+            return False
+        has_guarded_main_call |= any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "main"
+            for node in ast.walk(statement)
+        )
+    return has_sys_import and has_harness_main_import and has_guarded_main_call
+
+
+def _search_process_worker_count() -> int:
+    main_module = sys.modules.get("__main__")
+    main_file = getattr(main_module, "__file__", None)
+    if not main_file or not Path(main_file).is_file():
+        return 1
+    main_path = Path(main_file).resolve()
+    module_entrypoint = Path(__file__).with_name("cli_harness.py").resolve()
+    scripts_directory = sysconfig.get_path("scripts")
+    console_entrypoints = (
+        {
+            (Path(scripts_directory) / "nyxloom-harness").resolve(),
+            (Path(scripts_directory) / "nyxloom-harness-script.py").resolve(),
+        }
+        if scripts_directory
+        else set()
+    )
+    is_console_entrypoint = (
+        main_path in console_entrypoints
+        and _is_guarded_harness_console_entrypoint(main_path)
+    )
+    if main_path != module_entrypoint and not is_console_entrypoint:
+        return 1
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    available = process_cpu_count() if callable(process_cpu_count) else os.cpu_count()
+    return min(_RIPGREP_MAX_WORKERS, max(1, available or 1))
+
+
+def _count_ripgrep_batch(
+    records: Sequence[tuple[str, bytes]],
+    initial_counts: dict[str, Counter[str]],
+    terms: tuple[str, ...],
+    term_match: str,
+    cap: int,
+) -> dict[str, Counter[str]]:
+    """Count a bounded batch, returning capped increments by source file."""
+    counts = {
+        path: Counter(initial_counts.get(path, Counter()))
+        for path, _raw_record in records
+    }
+    for path, raw_record in records:
+        path_counts = counts[path]
+        active_terms = _active_query_terms(path_counts, terms, cap)
+        if not active_terms:
+            continue
+        if (
+            len(active_terms) != len(terms)
+            and not _raw_bytes_may_match(raw_record, active_terms, term_match)
+        ):
+            continue
+        try:
+            record = json.loads(raw_record.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        _add_text(
+            path_counts,
+            record,
+            active_terms,
+            term_match,
+            term_frequency_cap=cap,
+        )
+
+    increments: dict[str, Counter[str]] = {}
+    for path, final_counts in counts.items():
+        baseline = initial_counts.get(path, Counter())
+        delta = Counter({
+            term: final_counts.get(term, 0) - baseline.get(term, 0)
+            for term in terms
+            if final_counts.get(term, 0) > baseline.get(term, 0)
+        })
+        if delta:
+            increments[path] = delta
+    return increments
+
+
+def _merge_capped_count_increments(
+    counts: dict[str, Counter[str]],
+    increments: dict[str, Counter[str]],
+    cap: int,
+) -> None:
+    for source, delta in increments.items():
+        target = counts.setdefault(source, Counter())
+        for term, amount in delta.items():
+            target[term] = min(cap, target.get(term, 0) + amount)
+
+
+def _collect_ripgrep_batch(
+    pending: set[Future],
+    counts: dict[str, Counter[str]],
+    cap: int,
+) -> None:
+    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+    for future in done:
+        pending.remove(future)
+        _merge_capped_count_increments(counts, future.result(), cap)
+
+
+def _submit_ripgrep_batch(
+    executor: ProcessPoolExecutor,
+    pending: set[Future],
+    records: list[tuple[str, bytes]],
+    counts: dict[str, Counter[str]],
+    terms: tuple[str, ...],
+    term_match: str,
+    cap: int,
+    worker_count: int,
+) -> None:
+    if not records:
+        return
+    initial = {
+        source: Counter(counts.get(source, Counter()))
+        for source, _raw_record in records
+    }
+    pending.add(executor.submit(
+        _count_ripgrep_batch,
+        tuple(records),
+        initial,
+        terms,
+        term_match,
+        cap,
+    ))
+    records.clear()
+    while len(pending) >= worker_count * _RIPGREP_MAX_PENDING_PER_WORKER:
+        _collect_ripgrep_batch(pending, counts, cap)
+
+
 def _ripgrep_jsonl_counts(
     paths: Sequence[Path],
     terms: tuple[str, ...],
@@ -904,73 +1119,187 @@ def _ripgrep_jsonl_counts(
         return None
     counts: dict[str, Counter[str]] = {}
     candidates_seen = 0
-    for batch in _ripgrep_path_batches(paths):
-        _report(
-            progress,
-            f"Searching {client} transcripts with ripgrep ({len(batch):,} files)",
-        )
-        with tempfile.TemporaryFile() as stderr_file:
-            try:
-                process = subprocess.Popen(
-                    [
-                        binary,
-                        "--no-config",
-                        "--no-ignore",
-                        "--hidden",
-                        "--text",
-                        "--null",
-                        "--with-filename",
-                        "--no-heading",
-                        "--no-line-number",
-                        "--regexp",
-                        pattern,
-                        "--",
-                        *(str(path) for path in batch),
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=stderr_file,
-                )
-            except OSError as exc:
-                raise SearchError(
-                    f"could not start ripgrep for {client} session search: {exc}"
-                ) from exc
-            assert process.stdout is not None
-            completed = False
-            return_code = None
-            try:
-                for raw_path, raw_record in _ripgrep_records(
-                    process.stdout, progress=progress, client=client,
-                ):
-                    path_text = os.fsdecode(raw_path)
-                    if not _raw_bytes_may_match(raw_record, terms, term_match):
-                        continue
-                    try:
-                        record = json.loads(raw_record.decode("utf-8", errors="replace"))
-                    except json.JSONDecodeError:
-                        continue
-                    _add_text(counts.setdefault(path_text, Counter()), record, terms, term_match)
-                    candidates_seen += 1
-                    if progress is not None and candidates_seen % 4096 == 0:
-                        _report(
-                            progress,
-                            f"Checking {client} transcripts: {candidates_seen:,} candidate records",
-                            candidates_seen,
-                            None,
+    frequency_cap = _TERM_FREQUENCY_CAP
+    parallel_workers = _search_process_worker_count()
+    executor: ProcessPoolExecutor | None = None
+    pending: set[Future] = set()
+    queued_records: list[tuple[str, bytes]] = []
+    queued_bytes = 0
+    completed = False
+    try:
+        for batch in _ripgrep_path_batches(paths):
+            _report(
+                progress,
+                f"Searching {client} transcripts with ripgrep ({len(batch):,} files)",
+            )
+            with tempfile.TemporaryFile() as stderr_file:
+                try:
+                    process = subprocess.Popen(
+                        [
+                            binary,
+                            "--no-config",
+                            "--no-ignore",
+                            "--hidden",
+                            "--text",
+                            "--null",
+                            "--with-filename",
+                            "--no-heading",
+                            "--no-line-number",
+                            "--regexp",
+                            pattern,
+                            "--",
+                            *(str(path) for path in batch),
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=stderr_file,
+                    )
+                except OSError as exc:
+                    raise SearchError(
+                        f"could not start ripgrep for {client} session search: {exc}"
+                    ) from exc
+                assert process.stdout is not None
+                process_completed = False
+                try:
+                    for raw_path, raw_record in _ripgrep_records(
+                        process.stdout, progress=progress, client=client,
+                    ):
+                        path_text = os.fsdecode(raw_path)
+                        candidates_seen += 1
+                        if progress is not None and candidates_seen % 4096 == 0:
+                            _report(
+                                progress,
+                                f"Checking {client} transcripts: {candidates_seen:,} candidate records",
+                                candidates_seen,
+                                None,
+                            )
+                        session_counts = counts.get(path_text, Counter())
+                        active_terms = _active_query_terms(
+                            session_counts, terms, frequency_cap,
                         )
-                completed = True
-            finally:
-                process.stdout.close()
-                if not completed and process.poll() is None:
-                    process.terminate()
-                return_code = process.wait()
-            if return_code not in (0, 1):
-                stderr_file.seek(0)
-                details = stderr_file.read().decode("utf-8", errors="replace").strip()
-                detail_text = f": {details}" if details else ""
-                raise SearchError(
-                    f"ripgrep could not search {client} session transcripts "
-                    f"(exit {return_code}){detail_text}"
+                        if not active_terms:
+                            continue
+                        if (
+                            len(active_terms) != len(terms)
+                            and not _raw_bytes_may_match(
+                                raw_record, active_terms, term_match,
+                            )
+                        ):
+                            continue
+                        if (
+                            executor is None
+                            and (
+                                parallel_workers <= 1
+                                or candidates_seen < _RIPGREP_PARALLEL_AFTER_CANDIDATES
+                            )
+                        ):
+                            _merge_capped_count_increments(
+                                counts,
+                                _count_ripgrep_batch(
+                                    ((path_text, raw_record),),
+                                    {path_text: Counter(counts.get(path_text, Counter()))},
+                                    terms,
+                                    term_match,
+                                    frequency_cap,
+                                ),
+                                frequency_cap,
+                            )
+                            continue
+                        if executor is None:
+                            executor = ProcessPoolExecutor(max_workers=parallel_workers)
+                            _report(
+                                progress,
+                                f"Counting {client} candidates with {parallel_workers} workers",
+                            )
+                        record_size = len(raw_path) + len(raw_record)
+                        if record_size > _RIPGREP_BATCH_BYTE_LIMIT:
+                            if queued_records:
+                                _submit_ripgrep_batch(
+                                    executor,
+                                    pending,
+                                    queued_records,
+                                    counts,
+                                    terms,
+                                    term_match,
+                                    frequency_cap,
+                                    parallel_workers,
+                                )
+                                queued_bytes = 0
+                            _merge_capped_count_increments(
+                                counts,
+                                _count_ripgrep_batch(
+                                    ((path_text, raw_record),),
+                                    {path_text: Counter(counts.get(path_text, Counter()))},
+                                    terms,
+                                    term_match,
+                                    frequency_cap,
+                                ),
+                                frequency_cap,
+                            )
+                            continue
+                        if queued_records and (
+                            len(queued_records) >= _RIPGREP_BATCH_RECORD_LIMIT
+                            or queued_bytes + record_size > _RIPGREP_BATCH_BYTE_LIMIT
+                        ):
+                            _submit_ripgrep_batch(
+                                executor,
+                                pending,
+                                queued_records,
+                                counts,
+                                terms,
+                                term_match,
+                                frequency_cap,
+                                parallel_workers,
+                            )
+                            queued_bytes = 0
+                        queued_records.append((path_text, raw_record))
+                        queued_bytes += record_size
+                        if (
+                            len(queued_records) >= _RIPGREP_BATCH_RECORD_LIMIT
+                            or queued_bytes >= _RIPGREP_BATCH_BYTE_LIMIT
+                        ):
+                            _submit_ripgrep_batch(
+                                executor,
+                                pending,
+                                queued_records,
+                                counts,
+                                terms,
+                                term_match,
+                                frequency_cap,
+                                parallel_workers,
+                            )
+                            queued_bytes = 0
+                    process_completed = True
+                finally:
+                    process.stdout.close()
+                    if not process_completed and process.poll() is None:
+                        process.terminate()
+                    return_code = process.wait()
+                if return_code not in (0, 1):
+                    stderr_file.seek(0)
+                    details = stderr_file.read().decode("utf-8", errors="replace").strip()
+                    detail_text = f": {details}" if details else ""
+                    raise SearchError(
+                        f"ripgrep could not search {client} session transcripts "
+                        f"(exit {return_code}){detail_text}"
+                    )
+        if executor is not None:
+            if queued_records:
+                _submit_ripgrep_batch(
+                    executor,
+                    pending,
+                    queued_records,
+                    counts,
+                    terms,
+                    term_match,
+                    frequency_cap,
+                    parallel_workers,
                 )
+            while pending:
+                _collect_ripgrep_batch(pending, counts, frequency_cap)
+        completed = True
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=not completed)
     return counts
 
 
@@ -979,7 +1308,11 @@ def _add_text(
     value: Any,
     terms: tuple[str, ...] | None = None,
     term_match: str = "exact",
+    *,
+    term_frequency_cap: int | None = None,
 ) -> None:
+    if terms is not None and term_frequency_cap is None:
+        term_frequency_cap = _TERM_FREQUENCY_CAP
     query_pattern = (
         _query_text_pattern(terms, term_match)
         if terms is not None
@@ -990,20 +1323,51 @@ def _add_text(
             counts.update(token.casefold() for token in _WORD.findall(text))
             continue
         if query_pattern is not None and text.isascii():
-            for match in query_pattern.finditer(text):
-                token = match.group().casefold()
-                if term_match == "prefix":
-                    for term in terms:
-                        if token.startswith(term):
-                            counts[term] += 1
-                else:
-                    counts[token] += 1
+            assert term_frequency_cap is not None
+            active_terms = _active_query_terms(
+                counts, terms, term_frequency_cap,
+            )
+            cursor = 0
+            while active_terms:
+                active_pattern = _query_text_pattern(active_terms, term_match)
+                if active_pattern is None:
+                    break
+                restart = False
+                for match in active_pattern.finditer(text, cursor):
+                    token = match.group().casefold()
+                    if term_match == "prefix":
+                        for term in active_terms:
+                            if token.startswith(term):
+                                counts[term] += 1
+                    else:
+                        counts[token] += 1
+                    remaining_terms = _active_query_terms(
+                        counts, active_terms, term_frequency_cap,
+                    )
+                    if remaining_terms != active_terms:
+                        active_terms = remaining_terms
+                        cursor = match.end()
+                        restart = True
+                        break
+                if not restart:
+                    break
+            continue
+        assert term_frequency_cap is not None
+        active_terms = _active_query_terms(
+            counts, terms, term_frequency_cap,
+        )
+        if not active_terms:
             continue
         for match in _WORD.finditer(text):
             token = match.group().casefold()
-            for term in terms:
+            for term in active_terms:
                 if token == term or (term_match == "prefix" and token.startswith(term)):
                     counts[term] += 1
+            active_terms = _active_query_terms(
+                counts, active_terms, term_frequency_cap,
+            )
+            if not active_terms:
+                break
 
 
 def _jsonl_content(
@@ -1044,7 +1408,15 @@ def _jsonl_content(
     try:
         with path.open("rb") as source:
             for line_number, raw_line in enumerate(source, 1):
-                if terms is None or _raw_bytes_may_match(raw_line, terms, term_match):
+                if (
+                    terms is None
+                    or (
+                        (active_terms := _active_query_terms(
+                            counts, terms, _TERM_FREQUENCY_CAP,
+                        ))
+                        and _raw_bytes_may_match(raw_line, active_terms, term_match)
+                    )
+                ):
                     line = raw_line.decode("utf-8", errors="replace")
                     try:
                         record = json.loads(line)
@@ -1177,10 +1549,21 @@ def _opencode_term_counts(
                 if progress is not None and row_index % 5000 == 0:
                     _report(progress, f"Searching OpenCode messages and parts: {row_index:,} records")
                 raw_text = raw_data if isinstance(raw_data, str) else ""
+                session_counts = counts_by_session.get(session_id, Counter())
+                active_terms = (
+                    _active_query_terms(
+                        session_counts, terms, _TERM_FREQUENCY_CAP,
+                    )
+                    if terms is not None
+                    else None
+                )
+                if terms is not None and not active_terms:
+                    continue
                 if (
                     terms is not None
+                    and active_terms is not None
                     and raw_text
-                    and not _raw_may_match(raw_text, terms, term_match)
+                    and not _raw_may_match(raw_text, active_terms, term_match)
                 ):
                     continue
                 try:
@@ -1188,11 +1571,13 @@ def _opencode_term_counts(
                 except (TypeError, json.JSONDecodeError):
                     continue
                 _add_text(
-                    counts_by_session.setdefault(session_id, Counter()),
+                    session_counts,
                     record,
-                    terms,
+                    active_terms,
                     term_match,
                 )
+                if session_counts:
+                    counts_by_session[session_id] = session_counts
     except sqlite3.Error as exc:
         raise SearchError(f"could not search OpenCode store {store}: {exc}") from exc
     return counts_by_session
