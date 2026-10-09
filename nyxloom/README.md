@@ -150,6 +150,13 @@ never transcript text. It uses ripgrep when available and keeps no index.
 Clients and source roots can be limited; any/all query words and exact/prefix
 matching are selectable. Per-word frequency contributes to ranking up to 64
 occurrences per session, so repeated text cannot dominate the relevance score.
+For a quicker approximate search of Codex or Claude JSONL stores, `--fast`
+counts raw tokens emitted by ripgrep without parsing candidate records for
+matching or reading activity tails. It requires ASCII query words and an
+explicit `--client` selection that excludes OpenCode; its date column is
+filesystem modification time, and serialized metadata or escaped text can
+affect matches. Example:
+`nyxloom-harness search debian iso cloud qcow --fast --client codex`.
 See the
 [search design](docs/DESIGN-GUIDE.md#local-session-search) and
 [worked examples](docs/CONSUMERS.md#search-local-session-history).

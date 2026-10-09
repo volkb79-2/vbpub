@@ -97,6 +97,32 @@ def test_root_stat_error_refuses_to_claim_an_empty_store(tmp_path, monkeypatch):
         search._root_is_available(root)
 
 
+def test_fast_file_mtime_refuses_metadata_and_timestamp_conversion_errors(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "session.jsonl"
+    path.touch()
+    original_stat = Path.stat
+
+    def fail_stat(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("forced mtime failure")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(search.SearchError, match="file metadata.*PermissionError"):
+        search._path_modified_utc(path)
+
+    monkeypatch.setattr(Path, "stat", original_stat)
+
+    def fail_gmtime(_timestamp):
+        raise OverflowError("outside platform timestamp range")
+
+    monkeypatch.setattr(search.time, "gmtime", fail_gmtime)
+    with pytest.raises(search.SearchError, match="invalid file modification time"):
+        search._path_modified_utc(path)
+
+
 def test_walk_files_includes_regular_files_and_file_symlinks_only(tmp_path):
     root = tmp_path / "tree"
     nested = root / "nested"
@@ -955,6 +981,167 @@ def test_ripgrep_candidate_stream_parses_records_and_preserves_exact_path(
     assert calls[0][0][-1] == str(path)
 
 
+def test_fast_ripgrep_counts_only_returned_tokens_and_caps_each_term(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "rollout-fast.jsonl"
+    output = b"".join(
+        os.fsencode(path) + b"\0" + token + b"\n"
+        for token in (b"QCOW", b"qcow2", b"cloud", b"qcow")
+    )
+    calls = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = io.BytesIO(output)
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pytest.fail("a completed ripgrep process should not be terminated")
+
+    def fake_popen(args, **_kwargs):
+        calls.append(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(search, "_TERM_FREQUENCY_CAP", 2)
+    monkeypatch.setattr(
+        search.json, "loads", lambda *_args, **_kwargs: pytest.fail("fast mode parsed source JSON"),
+    )
+
+    prefix = search._ripgrep_raw_counts(
+        (path,), ("qcow", "qc", "cloud"), "prefix", client="codex",
+    )
+    assert prefix == {str(path): Counter(qcow=2, qc=2, cloud=1)}
+    assert "--only-matching" in calls[0]
+    assert "--json" not in calls[0]
+    assert calls[0][-1] == str(path)
+
+
+def test_fast_ripgrep_requires_binary(tmp_path, monkeypatch):
+    path = tmp_path / "rollout.jsonl"
+    monkeypatch.setattr(search.shutil, "which", lambda _name: None)
+    with pytest.raises(search.SearchError, match="requires ripgrep"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+
+
+def test_fast_ripgrep_rejects_non_ascii_words_and_startup_failures(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "rollout.jsonl"
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    assert search._ripgrep_raw_token_pattern(("café",)) is None
+    with pytest.raises(search.SearchError, match="ASCII query words"):
+        search._ripgrep_raw_counts((path,), ("café",), "exact", client="codex")
+
+    def fail_start(*_args, **_kwargs):
+        raise OSError("forced fast ripgrep startup error")
+
+    monkeypatch.setattr(search.subprocess, "Popen", fail_start)
+    with pytest.raises(search.SearchError, match="could not start ripgrep.*forced"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+
+
+def test_fast_ripgrep_reports_many_matches_and_refuses_bad_exit_status(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "rollout.jsonl"
+    output = (os.fsencode(path) + b"\0qcow\n") * 4096
+    progress = []
+
+    class Process:
+        def __init__(self, raw_output, return_code=0):
+            self.stdout = io.BytesIO(raw_output)
+            self.return_code = return_code
+
+        def poll(self):
+            return self.return_code
+
+        def wait(self):
+            return self.return_code
+
+        def terminate(self):
+            pytest.fail("a completed process should not be terminated")
+
+    def run_many(args, **_kwargs):
+        return Process(output)
+
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", run_many)
+    result = search._ripgrep_raw_counts(
+        (path,), ("qcow",), "exact", client="codex",
+        progress=lambda message, current, total: progress.append((message, current, total)),
+    )
+    assert result == {str(path): Counter(qcow=64)}
+    assert any("4,096 tokens" in message for message, _, _ in progress)
+
+    def fail_exit(_args, **kwargs):
+        kwargs["stderr"].write(b"forced rg failure")
+        return Process(b"", 2)
+
+    monkeypatch.setattr(search.subprocess, "Popen", fail_exit)
+    with pytest.raises(search.SearchError, match="exit 2.*forced rg failure"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+
+
+def test_fast_ripgrep_terminates_a_process_after_malformed_output(tmp_path, monkeypatch):
+    path = tmp_path / "rollout.jsonl"
+
+    class Process:
+        def __init__(self):
+            self.stdout = io.BytesIO(os.fsencode(path) + b"\0")
+            self.terminated = False
+
+        def poll(self):
+            return None if not self.terminated else -15
+
+        def wait(self):
+            return -15
+
+        def terminate(self):
+            self.terminated = True
+
+    process = Process()
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(search.SearchError, match="malformed candidate record"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+    assert process.terminated
+
+
+def test_documents_fast_mode_uses_rg_counts_and_file_mtime_without_tail_reads(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "rollout-fast.jsonl"
+    path.write_text('{"type":"session_meta"}\n', encoding="utf-8")
+    session = search._DiscoveredSession("codex", "fast-id", str(path))
+    monkeypatch.setattr(search, "_store_sessions", lambda *_args, **_kwargs: [session])
+    monkeypatch.setattr(
+        search,
+        "_ripgrep_raw_counts",
+        lambda paths, *_args, **_kwargs: {str(paths[0]): Counter(qcow=2)},
+    )
+    monkeypatch.setattr(
+        search, "_jsonl_last_activity",
+        lambda *_args, **_kwargs: pytest.fail("fast mode read transcript tails"),
+    )
+
+    [doc] = search._documents("codex", ("qcow",), fast=True)
+    assert doc.term_counts == Counter(qcow=2)
+    assert doc.last_activity is not None and doc.last_activity.endswith("Z")
+
+    monkeypatch.setattr(search, "_ripgrep_raw_counts", lambda *_args, **_kwargs: {})
+    [unmatched] = search._documents("codex", ("qcow",), fast=True)
+    assert unmatched.term_counts == Counter()
+    assert unmatched.last_activity is None
+
+
 def test_ripgrep_candidate_stream_uses_bounded_process_workers(
     tmp_path, monkeypatch,
 ):
@@ -1357,6 +1544,7 @@ def test_search_best_and_date_orders_use_match_count_relevance_and_activity(monk
 
 
 def test_search_validates_client_sort_order_and_empty_query_before_discovery(monkeypatch):
+    documents = search._documents
     monkeypatch.setattr(
         search, "_documents", lambda _client, *_args, **_kwargs: pytest.fail("invalid input must not scan stores"),
     )
@@ -1370,6 +1558,14 @@ def test_search_validates_client_sort_order_and_empty_query_before_discovery(mon
         search.search_sessions("word", word_match="xor")
     with pytest.raises(search.SearchError, match="unknown term match mode"):
         search.search_sessions("word", term_match="fuzzy")
+    with pytest.raises(search.SearchError, match="Codex and Claude JSONL"):
+        search.search_sessions("word", fast=True)
+    with pytest.raises(search.SearchError, match="Codex and Claude JSONL"):
+        search.search_sessions("word", client="opencode", fast=True)
+    with pytest.raises(search.SearchError, match="Codex and Claude JSONL"):
+        documents("opencode", fast=True)
+    with pytest.raises(search.SearchError, match="ASCII query words"):
+        search.search_sessions("café", client="codex", fast=True)
 
 
 def test_search_client_filter_and_no_matches(monkeypatch):
@@ -1494,6 +1690,7 @@ def test_search_cli_routes_query_options_and_prints_only_result_metadata(
             "search", "cli-extended", "gate", "backlog",
             "--sort-by", "date", "--client", "codex", "--client", "claude",
             "--word-match", "all", "--term-match", "prefix",
+            "--fast",
             "--source-root", str(tmp_path),
         ],
         interactive_extra="nyxloom[interactive]",
@@ -1506,10 +1703,13 @@ def test_search_cli_routes_query_options_and_prints_only_result_metadata(
     assert calls[0][1]["sort_by"] == "date"
     assert calls[0][1]["word_match"] == "all"
     assert calls[0][1]["term_match"] == "prefix"
+    assert calls[0][1]["fast"] is True
     assert calls[0][1]["source_roots"] == [str(tmp_path)]
     assert callable(calls[0][1]["progress"])
     assert "Fixture progress (1/1)" in captured.err
     assert expected_text in output
+    if results:
+        assert "FILE MTIME (UTC)" in output
     assert "confidential transcript body" not in output
 
 
@@ -1536,7 +1736,7 @@ def test_cmd_search_without_a_progress_renderer_keeps_search_options(
         "debian qcow",
         {
             "client": ["codex"], "sort_by": "best", "source_roots": [str(tmp_path)],
-            "word_match": "all", "term_match": "prefix",
+            "word_match": "all", "term_match": "prefix", "fast": False,
         },
     )]
     assert "id" in capsys.readouterr().out
