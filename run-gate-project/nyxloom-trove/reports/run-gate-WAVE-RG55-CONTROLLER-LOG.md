@@ -8497,3 +8497,15 @@ mutant that value would pass the check and be returned as a native ID, so the
 mutant must be killed by an assertion rather than waved away as equivalent.
 Verify this in the next selective R2 run. The failed gate log is preserved;
 no gate remains active.
+
+### RW-530 — 2026-10-09 03:52:49 UTC — add coverage for unterminated observer overflow
+
+The registered `r0-r1` lane on exact tree
+`aa5edcde6c5e5c812541cb06a9f78d5dd47e1495` ran all 2,477 tests successfully
+in 131.39 seconds but exited 2 because the whole-project branch threshold was
+99%: the only partial branch was `lib/serve.py:2936->2909`. That is the
+oversized-request check after a read with no newline; existing tests covered a
+complete oversized line, which returns through the earlier newline branch.
+A 4097-byte unterminated request now pins the distinct response and no-dispatch
+behavior. Re-run `r0-r1` on the next quiet commit and require 100% total line
+and branch coverage before proceeding.

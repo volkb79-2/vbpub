@@ -597,6 +597,13 @@ def test_observer_request_line_accepts_limit_and_refuses_one_byte_over(
     assert "exceeds 4096 bytes" in response["error"]["message"]
     assert dispatched == [exact_payload[:-1]]
 
+    unterminated = _FakeConnection([b"x" * 4097])
+    _handle_fake(server, unterminated, monkeypatch)
+    response = json.loads(unterminated.sent[0])
+    assert response["error"]["code"] == "bad-argument"
+    assert "exceeds 4096 bytes" in response["error"]["message"]
+    assert dispatched == [exact_payload[:-1]]
+
 
 def test_observer_request_received_exactly_at_deadline_is_not_dispatched(
     tmp_path, monkeypatch
