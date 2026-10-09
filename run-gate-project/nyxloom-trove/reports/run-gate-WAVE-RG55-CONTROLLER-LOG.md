@@ -8289,3 +8289,17 @@ The updated focused observer plus socket-endpoint suite passes 92 tests with
 126 branches); Ruff, compilation, and whitespace checks pass. These tests and
 the new oracles are not yet registered-gate or mutation evidence. Rerun both
 short lanes on the committed report-bearing tree before starting fresh R2.
+
+### RW-520 — 2026-10-09 01:11:57 UTC — current-tree R0–R1 passes after survivor-oracle additions
+
+The registered `r0-r1` lane passed on exact tree
+`42a76af89de5b599d757e2debe13f401c15c133d`: 2,473 tests, 100% line and
+branch coverage across all package modules, exit 0 in 126.58 seconds. Run-Gate
+recorded footprint peak 5,095 MiB, p90 4,860 MiB, 0.33 average cores, and
+0.1 seconds full memory stall; the container was
+`cgprofile-gate-2083683-1791508166` under `dev-gates.slice` with a 3-CPU cap.
+The profile has no DAMON samples (`no pids to monitor yet`), so this is not
+overhead evidence. Because this controller-log commit changes HEAD and Assay
+resumes by tree identity, rerun the short lanes on the final report-bearing
+tree before invoking R2; this result remains a precise prior-tree PASS, not
+that final receipt.
