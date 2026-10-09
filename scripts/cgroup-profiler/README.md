@@ -160,6 +160,8 @@ remain private. The daemon exposes its existing control protocol on
 lanes. That second listener accepts only a peer-bound resource-counter query;
 it is not a broker and provides no control or placement operation. Run-Gate
 mounts only that socket into the selected tester container, never `ctl.sock`.
+It accepts one newline-terminated JSON request of at most 4096 bytes including
+the newline, with a five-second absolute deadline.
 See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)
 and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
 It also receives a read-only host `/proc` bind and an

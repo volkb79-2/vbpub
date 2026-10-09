@@ -263,6 +263,14 @@ operation. Run-Gate validates the fixed socket and mounts only that node
 read-only, forwarding its observed group ID. It does not add a Docker socket,
 host PID namespace, host cgroup namespace, or a second daemon.
 
+The observer request is one newline-terminated JSON line, at most 4096 bytes
+including the newline, with a five-second absolute deadline. The bound
+includes the delimiter so an oversized complete line cannot be dispatched
+just because a single socket read returns it all at once. A malformed line,
+oversize request, or expired deadline does not reach the observer; the exact
+wire refusal behavior is pinned in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89)
+and contract §9.
+
 This gives the gate only the missing read path and keeps its namespace private;
 it also avoids another privileged service and duplicated authorization
 surface. It does **not** contain arbitrary code execution in cgprofile: the

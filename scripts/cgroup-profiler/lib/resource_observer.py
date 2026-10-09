@@ -267,7 +267,7 @@ def _cgroup_mount(cgroup_root: Path, mountinfo_path: Path) -> tuple[int, int]:
             raise ResourceObserverError("daemon mountinfo contains a malformed record")
         fields = left.split()
         filesystem = right.split()
-        if len(fields) < 5 or not filesystem:
+        if len(fields) < 6 or not filesystem:
             raise ResourceObserverError("daemon mountinfo contains a truncated record")
         mountpoint = _unescape_mountinfo(fields[4])
         normalized_mountpoint = os.path.normpath(mountpoint)

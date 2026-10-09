@@ -338,6 +338,20 @@ def test_close_socket_survives_observer_path_unlink_failure(tmp_path, monkeypatc
     path.unlink()
 
 
+def test_close_socket_preserves_an_unowned_observer_path(tmp_path):
+    path = tmp_path / "resource-observer.sock"
+    path.write_text("belongs to another listener", encoding="ascii")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(path),
+    )
+
+    server._close_socket()
+
+    assert path.read_text(encoding="ascii") == "belongs to another listener"
+
+
 def test_observer_socket_permission_failures_are_logged_and_fail_closed(tmp_path, monkeypatch):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     messages = []
@@ -414,6 +428,7 @@ def test_observer_accept_loop_handles_absent_socket_timeout_and_close(tmp_path):
 def test_accept_loop_logs_if_observer_thread_does_not_stop(tmp_path, monkeypatch):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     messages = []
+    thread_args = {}
     monkeypatch.setattr(server, "_log", messages.append)
 
     class MainSocket:
@@ -425,8 +440,8 @@ def test_accept_loop_logs_if_observer_thread_does_not_stop(tmp_path, monkeypatch
         pass
 
     class StuckThread:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            thread_args.update(kwargs)
 
         def start(self):
             pass
@@ -451,6 +466,8 @@ def test_accept_loop_logs_if_observer_thread_does_not_stop(tmp_path, monkeypatch
     server._accept_loop()
 
     assert server._observer_thread is None
+    assert thread_args["daemon"] is True
+    assert thread_args["name"] == "cgprofile-resource-observer"
     assert any("accept thread did not stop" in message for message in messages)
 
 
@@ -516,6 +533,12 @@ def test_observer_connection_refuses_peer_and_handles_eof_and_timeout(tmp_path, 
     assert json.loads(refused.sent[0]) ["error"]["code"] == "peer-refused"
     assert refused.closed
 
+    no_credentials = _FakeConnection([_request(thread_id=42)])
+    _handle_fake(server, no_credentials, monkeypatch, peer=None)
+    response = json.loads(no_credentials.sent[0])
+    assert response["error"]["code"] == "peer-refused"
+    assert "SO_PEERCRED is required" in response["error"]["message"]
+
     eof = _FakeConnection()
     _handle_fake(server, eof, monkeypatch)
     assert eof.sent == [] and eof.closed
@@ -542,6 +565,66 @@ def test_observer_connection_rejects_extra_lines_and_oversize_payloads(
     _handle_fake(server, conn, monkeypatch)
     assert expected in json.loads(conn.sent[0])["error"]["message"]
     assert conn.closed
+
+
+def test_observer_request_line_accepts_limit_and_refuses_one_byte_over(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    dispatched = []
+    monkeypatch.setattr(
+        server, "_observer_dispatch",
+        lambda payload, _peer: (dispatched.append(payload) or {"ok": True, "contract": 1}),
+    )
+    prefix = b'{"verb":"resource-limits","args":{"thread_id":1,"padding":"'
+    suffix = b'"},"contract":1}\n'
+
+    def payload_of_size(size):
+        padding = size - len(prefix) - len(suffix)
+        assert padding >= 0
+        return prefix + b"x" * padding + suffix
+
+    exact_payload = payload_of_size(4096)
+    exact = _FakeConnection([exact_payload])
+    _handle_fake(server, exact, monkeypatch)
+    assert json.loads(exact.sent[0])["ok"] is True
+    assert dispatched == [exact_payload]
+
+    oversized = _FakeConnection([payload_of_size(4097)])
+    _handle_fake(server, oversized, monkeypatch)
+    response = json.loads(oversized.sent[0])
+    assert response["error"]["code"] == "bad-argument"
+    assert "exceeds 4096 bytes" in response["error"]["message"]
+    assert dispatched == [exact_payload]
+
+
+def test_observer_request_received_exactly_at_deadline_is_not_dispatched(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        server, "_observer_dispatch",
+        lambda *_args: {"ok": True, "contract": 1},
+    )
+    ticks = iter((10.0, 15.0))
+    monkeypatch.setattr(serve.time, "monotonic", lambda: next(ticks))
+    conn = _FakeConnection([_request(thread_id=42)])
+
+    _handle_fake(server, conn, monkeypatch)
+
+    assert conn.sent == []
+    assert conn.closed
+
+
+def test_observer_connection_handles_newline_at_offset_zero(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    conn = _FakeConnection([b"\nextra"])
+
+    _handle_fake(server, conn, monkeypatch)
+
+    response = json.loads(conn.sent[0])
+    assert response["error"]["code"] == "bad-argument"
+    assert "exactly one request line" in response["error"]["message"]
 
 
 def test_observer_connection_keeps_accept_loop_alive_on_errors(tmp_path, monkeypatch):

@@ -211,6 +211,10 @@ read-only into `tester-unified`, adds its observed GID, and sets
 or unsafe ownership/mode is an infrastructure refusal, never a silent
 fallback. The selected container retains private PID, cgroup, and network
 namespaces; do not mount `ctl.sock` or the Docker socket for this feature.
+The observer accepts one newline-terminated JSON request of at most 4096 bytes
+including the newline and applies a five-second absolute deadline. Consumers
+must send one complete line; oversized or incomplete requests are not
+dispatched.
 
 Assay uses its local B145 reader first and contacts the observer only when the
 local view specifically proves that ancestors are hidden. The daemon derives

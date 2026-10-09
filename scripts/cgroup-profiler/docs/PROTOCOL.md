@@ -214,8 +214,11 @@ The request is exactly:
 {"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
 ```
 
-There is one positive native TID, one line, one connection, at most 4096
-bytes, and an absolute five-second server deadline. `SO_PEERCRED` is required.
+There is one positive native TID, one line, and one connection. The complete
+line, including its terminating newline, is at most 4096 bytes; a larger
+complete line or an unterminated request that grows beyond that limit gets a
+`bad-argument` response and is never dispatched. The server enforces one
+absolute five-second deadline. `SO_PEERCRED` is required.
 The daemon uses that PID/UID plus the requested TID to prove the caller's
 thread identity, shared thread cgroup/credentials, and gates-slice membership;
 the request cannot choose a PID, cgroup path, or slice. A successful response

@@ -84,6 +84,7 @@ DEFAULT_INTERVAL = 1.0
 DISCOVERY_INTERVAL_SECONDS = 2.0
 REQUEST_LINE_TIMEOUT_SECONDS = 25.0
 MAX_REQUEST_LINE_BYTES = 1024 * 1024
+MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES = 4096
 
 # RW-14 (C5): `ctl report` renders the REAL interactive HTML — `analyze.build`
 # + `report_html.render`, which need pandas/plotly. This module stays
@@ -983,7 +984,6 @@ class SessionServer:
         ):
             raise OSError(f"session id collision: {session_id}")
         started_at = self._iso(self.clock())
-        abs_target = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
         # The token resolver below will resolve direct target-cgroup PIDs;
         # avoid doing the broader proc-to-cgroup map a second time here.
         pids_now = (
@@ -2906,18 +2906,26 @@ class SessionServer:
                 return
             deadline = time.monotonic() + 5.0
             data = bytearray()
-            while len(data) <= 4096:
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return
                 conn.settimeout(remaining)
-                chunk = conn.recv(4097 - len(data))
+                chunk = conn.recv(
+                    MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES + 1 - len(data)
+                )
                 if not chunk:
                     return
                 data.extend(chunk)
                 newline = data.find(b"\n")
                 if newline >= 0:
-                    if newline + 1 != len(data):
+                    if newline + 1 > MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES:
+                        response = self._error_response(
+                            "bad-argument",
+                            f"observer request exceeds "
+                            f"{MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES} bytes",
+                        )
+                    elif newline + 1 != len(data):
                         response = self._error_response(
                             "bad-argument", "observer accepts exactly one request line"
                         )
@@ -2925,10 +2933,14 @@ class SessionServer:
                         response = self._observer_dispatch(bytes(data[:newline]), peer)
                     conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                     return
-            response = self._error_response(
-                "bad-argument", "observer request exceeds 4096 bytes"
-            )
-            conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+                if len(data) > MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES:
+                    response = self._error_response(
+                        "bad-argument",
+                        f"observer request exceeds "
+                        f"{MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES} bytes",
+                    )
+                    conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+                    return
         except (OSError, UnicodeError, json.JSONDecodeError):
             return
         except Exception as exc:  # noqa: BLE001 - keep the daemon accept loop alive

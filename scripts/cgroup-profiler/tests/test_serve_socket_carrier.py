@@ -1173,6 +1173,7 @@ class TestSocketPermissions:
         try:
             err = capsys.readouterr().err
             assert "socket carrier root-only until host-setup is installed" in err
+            assert err.count("socket carrier root-only until host-setup is installed") == 1
             assert "mdt-cgprofile.conf" in err
             # …and the daemon is nevertheless listening: the exec carrier is
             # unaffected, so a missing host-setup is never fatal.

@@ -8385,3 +8385,65 @@ oracle or document an evidence-backed equivalence proof, then re-run short
 gates and selectively reuse only the prior R2 kill witnesses on a quiet new
 tree. This R2 is a substantive failure and does not authorize merge or
 release.
+
+### RW-525 — 2026-10-09 03:34:50 UTC — disposition R2 survivors and repair observer boundaries
+
+Triaged all 11 survivors from RW-524. `_read_status` constructs `NSpid` as a
+tuple and rejects an empty tuple before returning; `_task_facts` receives it
+only through that helper. The line-177 `Or->And` survivor is therefore
+equivalent on the production call path; a parser test now pins the tuple
+invariant and the existing empty-NSpid refusal. The line-250 `Or->And` survivor
+exposed a missing independent negative-`CapEff` oracle, now added. The
+line-270 `Lt->LtE` mutation accepted a mountinfo record with five left-side
+fields, although Linux's format requires the sixth mount-options field; the
+parser now requires six, with a five-field refusal case.
+
+For `lib/serve.py`, the two socket-permission survivors could produce duplicate
+or false root-only diagnostics; the root-owned-directory oracle now requires
+exactly one warning. The observer cleanup survivor could unlink a path without
+owning its socket; a regression case proves it preserves that path. The
+observer accept thread's daemon/name properties are now asserted. A missing
+`SO_PEERCRED` record must reach the structured `peer-refused` response, not a
+generic handler error. The observer parser previously dispatched a complete
+4097-byte line when one `recv` returned the whole payload; it now checks the
+newline-inclusive 4096-byte maximum explicitly. Added exact-limit/one-byte-over,
+deadline-equality, and newline-at-offset-zero cases. Also removed one
+pre-existing unused local found by Ruff.
+
+README, DESIGN-GUIDE, CONSUMERS, PROTOCOL, and both byte-identical RG55
+contract mirrors now state that the maximum includes the newline and that an
+oversized line is never dispatched. DAMON_STAT host troubleshooting remains
+recorded by RW-523. `git diff --check`, contract-mirror comparison, and focused
+Ruff passed; no test lane or mutation was run on this new diff yet. Next run
+the registered `r0-r1` and `r3` lanes on the committed tree, then R2 with
+`--reuse-from .assay/verdict-r2-e04a5883.json` after
+verifying the exact selective request plan. Keep the prior failed verdict
+immutable; the new tree needs its own terminal evidence.
+
+### RW-526 — 2026-10-09 03:37:45 UTC — repeat daemon acceptance probe with DAMON on/off
+
+Repeated the live session check against the running `cgprofile-host-daemon`
+using only the exact disposable container
+`rg55-damon-on-probe-20261009-0340` (ID
+`046188c8152397ca784f83d030314004097a94d8699f7b0c549cb2a787f9921b`),
+under `dev-gates.slice`, network disabled, CPU capped at three, with host
+memory PSI `full avg10=0.00`. The DAMON-on start at 03:36:56Z returned
+`ok:true` and a live session, but `damon` was
+`unavailable:OSError: [Errno 16] Device or resource busy`; stop at 03:37:00Z
+was clean and recorded four ordinary samples, zero DAMON samples, and the same
+reason. A second session with `--damon off` started and stopped cleanly with
+four ordinary samples. The exact probe container was stopped and removed;
+no other container or host DAMON setting was changed.
+
+This confirms the daemon socket/session/control path and ordinary resource
+sampling work; the failing capability is specifically DAMON acquisition, not
+daemon reachability or cgroup targeting. At the time of the probe,
+`/sys/module/damon_stat/parameters/enabled` remained `Y` and
+`nr_kdamonds` remained `0`. Linux's DAMON documentation says active
+special-purpose modules are mutually exclusive and competing starts can
+return `-EBUSY` ([design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html),
+[DAMON_STAT](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html)).
+That makes DAMON_STAT the strongest supported explanation, though not a
+toggle-and-retest proof. Do not disable or reconfigure host-wide DAMON_STAT
+without an explicit operator decision; it is not required for the daemon's
+ordinary sampling path.

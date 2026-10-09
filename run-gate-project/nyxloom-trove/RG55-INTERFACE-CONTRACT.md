@@ -699,9 +699,12 @@ One newline-delimited JSON request per connection:
 The request has exactly the three wire keys shown, exactly one argument
 (`thread_id`), and a positive integer native TID. The listener accepts only
 `resource-limits`; it refuses `start`, `stop`, `place`, and every other verb.
-The request line is bounded to 4096 bytes and a five-second absolute deadline.
-The daemon requires `SO_PEERCRED`; the existing daemon UID allowlist, when
-configured, also applies to this listener.
+The complete request line, including its terminating newline, is bounded to
+4096 bytes. A larger complete line or an unterminated request that grows past
+that limit receives `bad-argument` and is never dispatched. The server
+enforces one absolute five-second deadline; a request arriving at the deadline
+is not dispatched. The daemon requires `SO_PEERCRED`; the existing daemon UID
+allowlist, when configured, also applies to this listener.
 
 Success has this shape (values abbreviated):
 

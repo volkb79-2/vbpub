@@ -475,6 +475,11 @@ def test_peer_threads_must_share_uid_filesystem_credentials_and_tid_mapping(tmp_
 def test_status_reader_rejects_duplicate_malformed_and_out_of_range_facts(tmp_path):
     path = tmp_path / "status"
     valid = _status(50, host_tid=4250)
+    path.write_text(valid, encoding="ascii")
+    parsed = resource_observer._read_status(path)
+    assert isinstance(parsed["NSpid"], tuple)
+    assert parsed["NSpid"] == (4250, 50)
+
     path.write_text(valid + "Uid:\t4242 4242 4242 4242\n", encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="repeats Uid"):
         resource_observer._read_status(path)
@@ -492,6 +497,10 @@ def test_status_reader_rejects_duplicate_malformed_and_out_of_range_facts(tmp_pa
         resource_observer._read_status(path)
 
     path.write_text(valid.replace("NSpid:\t4250 50", "NSpid:\t0 50"), encoding="ascii")
+    with pytest.raises(resource_observer.ResourceObserverError, match="out-of-range"):
+        resource_observer._read_status(path)
+
+    path.write_text(valid.replace("CapEff:\t0000000000000000", "CapEff:\t-1"), encoding="ascii")
     with pytest.raises(resource_observer.ResourceObserverError, match="out-of-range"):
         resource_observer._read_status(path)
 
@@ -642,6 +651,7 @@ def test_mount_reader_refuses_unreadable_truncated_invalid_and_ambiguous_mounts(
     for contents, message in (
         ("1 2 0:1 /", "malformed record"),
         ("1 2 0:1 / x rw - \n", "truncated record"),
+        (f"1 2 0:1 / {root} - cgroup2 cgroup rw\n", "truncated record"),
         (f"0 2 0:1 / {root} rw - cgroup2 cgroup rw\n", "mount ID is invalid"),
         (f"1 2 0:1 / {root} rw - ext4 /dev/x rw\n", "no unique full-root"),
         (f"1 2 0:1 / {root} rw - cgroup2 cgroup rw\n"
