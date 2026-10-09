@@ -1,0 +1,3 @@
+CWD=/workspaces/dstdns/.worktrees/assay-b087-js-r3-qual-20261008
+COMMAND=python3 tools/assay/assay-8.0.1.dev126+gad17ab38a.pyz verify .assay/verdict-b087_import_break.json
+VERIFY_EXIT=0

@@ -12,10 +12,10 @@ linking against assay itself.
 - **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
   supported at **R2 only** (no SQL R1, no SQL R3 — see
   [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
-  JavaScript/TypeScript is supported at **R1 and R2 by ingestion** — changed-
-  line coverage plus mutation testing over externally-generated evidence (no
-  native JS mutant generator yet), see
-  [JavaScript/TypeScript coverage and mutation ingestion](#javascripttypescript-coverage-and-mutation-ingestion)
+  JavaScript/TypeScript is supported at **R1, R2 by ingestion, and R3** —
+  changed-line coverage, externally-generated mutation evidence (no native
+  JS mutant generator yet), and cause-sensitive canaries, see
+  [JavaScript/TypeScript coverage, mutation ingestion and canaries](#javascripttypescript-coverage-mutation-ingestion-and-canaries)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
   see the Go section below. **Full matrix, and what R0–R3 each actually mean:
@@ -356,7 +356,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ⚠️ **implemented, not registered** — the canary injection methods are real code, not stubs, but no producer path is wired into the CLI's closed registry yet |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); current dstdns qualification is pending |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
 
@@ -372,9 +372,11 @@ Three genuinely different states, worth keeping distinct:
   this.
 - **Not implemented** — nothing prevents it; nobody has built it yet (Go
   mutation testing, SQL line coverage, Go/SQL canary).
-- **Implemented but unregistered** — the code exists and presumably works,
-  but is not wired as a callable capability through the CLI's own closed
-  declaration (JS canary).
+  - **Implemented but unregistered** — code may exist without being
+  callable through the CLI until it is wired and proven. JavaScript R3
+  used to be this state; B087 registers it and adds local real-Vitest
+  oracles. Requalification of the current transform against dstdns remains
+  open ([report](nyxloom-trove/reports/B087-js-r3-qualification.md)).
 
 Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
 (the single authority for what's registered — its own docstring notes this
@@ -598,12 +600,13 @@ Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**
 
-### JavaScript/TypeScript coverage and mutation ingestion
+### JavaScript/TypeScript coverage, mutation ingestion and canaries
 
-`judge.language = "javascript"` resolves at **R1 and R2 by ingestion**.
+`judge.language = "javascript"` resolves at **R1, R2 by ingestion, and R3**.
 R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
-judges a Stryker report produced by the lane's own command (B046). Assay does
-not generate native JavaScript mutants. One language name covers all four:
+judges a Stryker report produced by the lane's own command (B046); R3
+checks cause-sensitive import-break and uncovered-line canaries (B087). Assay
+does not generate native JavaScript mutants. One language name covers all four:
 TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
 two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
@@ -624,7 +627,7 @@ statement-less node line is classified from its function's call count, and
 its default branch is counted even when the default was never used. If all
 arms start on other lines, the node line stays unclassified. See the
 [classification rationale](docs/DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456)
-and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
+and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
 
 The `coverage-final.json` document is emitted natively by nyc/istanbul and by
 Jest (`--coverageReporters=json`), and by Vitest through either coverage
@@ -711,9 +714,11 @@ must run its external mutation producer and write the declared report inside
 the Assay snapshot; Assay then verifies and judges that report. Assay does not
 generate JavaScript mutants itself. The supported report path and its exact
 producer contract are in the
-[JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
-R3 (the cause-sensitive canary) remains unregistered because its producer path
-is not wired into the CLI.
+[JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
+R3 (the cause-sensitive canary) is registered for JavaScript through B087.
+The two adapter transforms are judged by the existing isolated canary runner;
+local real-Vitest tests exercise the current code, while dstdns qualification
+of the current transform is pending. The verdict schema is unchanged.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the

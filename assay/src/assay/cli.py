@@ -14,28 +14,20 @@ CLI entry points:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0, R1, R2 and R3 for Python, R2 for SQL, and R1
-  for JavaScript/TypeScript and Go** (P19 closes sol finding 1 in full for
-  Python; P34/W6 adds SQL at R2 only; B036 adds JavaScript at R1 only; the
-  P27 re-carve adds Go at R1 only, A-394):
+  This build evaluates **R0, R1, R2 and R3 for Python, R2 for SQL, R1, R2
+  and R3 for JavaScript/TypeScript, and R1 for Go** (P19 closes sol finding
+  1 in full for Python; P34/W6 adds SQL at R2 only; B036/B046/B087 wire
+  JavaScript at R1/R2/R3; the P27 re-carve adds Go at R1 only, A-394):
   ``_built_in_registry`` is the CLI's own closed capability declaration
   (work item 2, widened by every rigor-wiring package since) — Python is
   registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 and R2
-  (B046, the INGESTED path only), Go at R1 only (A-394, the P27 re-carve),
-  and nothing else, so a lane declaring
-  ``judge.language`` as anything but
-  ``"python"``/``"sql"``/``"javascript"``/``"go"``, a SQL lane declaring R1
-  or R3, a JavaScript lane declaring R3, a Go lane declaring R2 or R3, or a
-  rigor level for a
-  language this registry does not know at all, is refused
-  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs.
-  (This sentence said "JavaScript at R1 only" and "a JavaScript or Go lane
-  declaring R2 or R3" until the round-1 fix round; B046 had admitted
-  ``javascript`` at R2 and this copy was not updated. Corrected here for the
-  same reason ``registry.py``'s two paragraphs were: the fact is
-  :func:`_built_in_registry`'s, and every restatement of it has now gone
-  stale at least once.) A
-  declared R3 lane's own canary run happens in
+  (B046, the ingested path only) and R3 (B087, the qualified canary path),
+  Go at R1 only (A-394, the P27 re-carve), and nothing else. An unknown
+  language, SQL at R1/R3, Go at R2/R3, or a rigor this build does not reach
+  is refused with ``ERROR``/``BAD_LANE_CONFIG`` before the lane's command
+  runs. This summary follows the registry directly; it previously went
+  stale after B046's R2 registration and B087's R3 registration.
+  A declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
   :func:`assay.runner.run_lane`) — the consumer's real worktree is never
@@ -275,11 +267,14 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         help="execute a declared lane's argv and emit its verdict",
         description=(
-            "Execute the named lane's declared argv and emit a verdict. "
-            "Ordinary runs do not discover, select, order or retry anything; "
-            "the explicit non-qualifying --candidates-file pilot mode selects "
-            "a bounded native R2 subset and emits no verdict. This build evaluates R0, Python R1, "
-            "Python R2, Python R3, JavaScript R1, Go R1, and SQL R2."
+            "Execute the named lane's declared argv (plus anything appended "
+            "after a literal `--`, if the lane permits it) and emit a verdict. "
+            "Ordinary runs execute the command once and do not discover, "
+            "select, order or retry anything; the explicit non-qualifying "
+            "--candidates-file pilot mode selects a bounded native R2 subset "
+            "and emits no verdict. This build evaluates R0, Python R1, "
+            "Python R2, Python R3, JavaScript R1, JavaScript R2 by evidence "
+            "ingestion, JavaScript R3, Go R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -1535,10 +1530,12 @@ def _built_in_registry() -> registry.Registry:
        ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` -- a stated absence of
        capability, never a PASS.
 
-    R3 is still NOT registered for ``javascript``: the two canary injection
-    methods are real implementations, but a producer path is a separate claim
-    from a method existing (DESIGN-GUIDE §7), and B041(c)'s qualification
-    harness has proven R1 only -- a real canary PAIR has never run.
+    **B087 registers JavaScript at R3 through the existing producer path.**
+    Real-Vitest fixture oracles exercise both canary mechanisms. The current
+    uncovered-line transform's dstdns qualification is pending; the report in
+    ``nyxloom-trove/reports/B087-js-r3-qualification.md`` archives an earlier
+    attempt that used a different transform and did not retain its verdicts.
+    No verdict or schema change was needed for the registration.
     """
     return registry.new_registry(
         registry.RegistryEntry(
@@ -1549,7 +1546,7 @@ def _built_in_registry() -> registry.Registry:
         # function's docstring for why that is a property of the lane's own
         # `judge.mutation.format` declaration rather than of this frozenset.
         registry.RegistryEntry(
-            adapter=JavaScriptAdapter(), rigor=frozenset({"R1", "R2"})
+            adapter=JavaScriptAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
         # (A-394, Wave C) R1 ONLY, and deliberately the LAST thing this wave
         # landed -- see this function's docstring for why the ordering is
@@ -1570,7 +1567,7 @@ _ADAPTER_BEARING_LEVELS: tuple[str, ...] = ("R1", "R2", "R3")
 def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
     """Check EVERY declared rigor level above R0 against this build's own
     registry, and return the adapter :func:`assay.runner.run_lane` needs
-    for whichever of R1/R2 the lane declares (``None`` when neither is
+    for whichever of R1/R2/R3 the lane declares (``None`` when none is
     declared).
 
     Work item 2's "reject declared rigor above that entry's capability"

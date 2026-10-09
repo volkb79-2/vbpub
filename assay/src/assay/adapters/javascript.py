@@ -136,18 +136,21 @@ JS/TS has an executable module top level like Python, so
 prologue shape — but an ES module's ``import`` declarations are HOISTED and
 its imported modules evaluated before any of its own body runs, so a
 ``throw`` appended at the end of the file still fires during module
-evaluation, before any test can touch a single export. Appending is therefore
-exactly as faithful to the contract ("reliably tripped by merely
+evaluation, before any test can touch a single export. CommonJS also evaluates
+the appended top-level ``throw`` when ``require`` loads the file. Appending is
+therefore exactly as faithful to the contract ("reliably tripped by merely
 importing/loading the module") while needing none of Python's
 docstring/``__future__`` insertion-point logic — the same reason
 ``adapters/go.py`` appends both of its own. Both snippets are written in the
-subset that is valid in ``.js``, ``.jsx``, ``.ts`` and ``.tsx`` alike, because
-these methods receive only *text* and never a path: no type annotations (a
-``.js`` file would be a syntax error), and the canary function's parameter
-carries a DEFAULT rather than a type, so TypeScript infers ``number`` and
-``noImplicitAny`` has nothing to complain about. The function is ``export``ed
-for the same reason: an unexported, never-referenced declaration is what
-``noUnusedLocals`` flags, and the protocol asks for a lint-clean addition.
+subset valid in ``.js``, ``.jsx``, ``.ts`` and ``.tsx`` alike, because these
+methods receive only *text* and never a path: no type annotations (a ``.js``
+file would be a syntax error), and the canary function's parameter carries a
+DEFAULT rather than a type, so TypeScript infers ``number`` and
+``noImplicitAny`` has nothing to complain about. The uncovered-line canary
+uses a leading-semicolon wrapper call that returns an anonymous function. The
+wrapper runs at module load, but the returned function is never called; the
+expression declares no module binding, reads no target-visible global, and
+does not use the ``void`` operator or a discarded bare expression.
 
 **``generate_mutation_sites`` is unconditionally ``"UNSUPPORTED"`` (A-183's
 own marker, Go's precedent).** Whether JS/TS mutation should be native or
@@ -205,12 +208,11 @@ _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 _IMPORT_BREAK_SNIPPET = (
     '\n\nthrow new Error("assay-canary-import-break")\n'
 )
-_UNCOVERED_CANARY_FUNC = "_assayCanaryUnreached"
 _UNCOVERED_CANARY_SNIPPET = (
-    f"\n\nexport function {_UNCOVERED_CANARY_FUNC}(value = 0) {{\n"
+    "\n\n;(() => function (value = 0) {\n"
     "  const doubled = value * 2 // assay-canary: executed by no test\n"
     "  return doubled\n"
-    "}\n"
+    "})()\n"
 )
 
 
@@ -461,12 +463,14 @@ def _inject_import_break(text: str) -> tuple[str, str]:
 
 
 def _inject_uncovered_line(text: str) -> tuple[str, str]:
-    """Append :data:`_UNCOVERED_CANARY_SNIPPET` -- a never-called, exported,
-    side-effect-free top-level function -- to *text*. Pure, same contract as
-    :func:`_inject_import_break`."""
+    """Append :data:`_UNCOVERED_CANARY_SNIPPET` -- a wrapper call that returns
+    an anonymous function which is never called -- to *text*. The wrapper
+    expression reads no target bindings and has no global side effect. Pure,
+    same contract as :func:`_inject_import_break`."""
     return _append_snippet(text, _UNCOVERED_CANARY_SNIPPET), (
-        f"appended never-called `export function {_UNCOVERED_CANARY_FUNC}` "
-        "(2 uncovered lines) at end of file"
+        "appended an uncalled anonymous function returned by a side-effect-free "
+        "wrapper call "
+        "(2 uncovered body lines) at end of file"
     )
 
 

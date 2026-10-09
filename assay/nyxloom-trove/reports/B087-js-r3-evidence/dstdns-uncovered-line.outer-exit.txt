@@ -1,0 +1,2 @@
+COMMAND=/workspaces/dstdns/scripts/gate-slot.sh run-gate b087-uncovered-line --worktree /workspaces/dstdns/.worktrees/assay-b087-js-r3-qual-20261008 --base fc75306035e8ffe6493417839649f09fec174991
+GATE_SLOT_EXIT=0
