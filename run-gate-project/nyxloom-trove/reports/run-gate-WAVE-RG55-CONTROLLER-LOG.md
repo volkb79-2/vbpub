@@ -8303,3 +8303,16 @@ overhead evidence. Because this controller-log commit changes HEAD and Assay
 resumes by tree identity, rerun the short lanes on the final report-bearing
 tree before invoking R2; this result remains a precise prior-tree PASS, not
 that final receipt.
+
+### RW-521 — 2026-10-09 01:16:30 UTC — R0–R1 and R3 pass on the integrated fix
+
+On report tree `76b200dfd10e8aeba81e40f1ff5b148db89ea648`, the registered
+`r0-r1` lane passed: 2,473 tests, 100% line and branch coverage across all
+modules, exit 0 in 124.16 seconds (log
+`/tmp/run-gate/lanes/r0-r1/2d15804c50d4f5b6d043719df35babef.log`). The
+registered `r3` lane also passed on that same tree: all seven canaries were
+rejected, zero survived, exit 0 (log
+`/tmp/run-gate/lanes/r3/6001b010c73517f15c27edc3c8c0c573.log`). Its profile
+reported DAMON unavailable because the host interface returned `EBUSY`; no
+overhead evidence is claimed. Both results precede this log-only commit, so
+rerun the short lanes on the new report-bearing HEAD before fresh R2.
