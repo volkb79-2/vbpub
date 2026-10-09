@@ -8329,3 +8329,59 @@ there were no pids to monitor; R3 reports DAMON unavailable (`EBUSY`). Neither
 run supplies DAMON-overhead evidence. This ruling is a log-only commit. Start a
 fresh R2 against its resulting exact tree and keep that tree quiet until the
 campaign has a terminal verdict.
+
+### RW-523 — 2026-10-09 03:26:38 UTC — distinguish daemon reachability from DAMON availability
+
+No run-gate or assay process was active at the check. Container
+`cgprofile-host-daemon` (`69b646913546`, restart count 0, started
+2026-10-08 02:16:57 UTC) is healthy at the control-plane level: its `version`,
+`status`, and `host` verbs returned valid contract-1 JSON both via `docker exec`
+and the cockpit's direct Unix-socket client. The cockpit user is UID 1003 in
+GID 994 (`docker`), which matches `/run/cgprofile`'s `root:994` group access;
+the socket mount and permissions work. The source-tree `cgprofile.py ctl`
+client also works. The bare `cgprofile` command is not installed in this
+cockpit's PATH, a separate convenience/install issue.
+
+DAMON itself is unavailable on this host. The completed exact-tree R2 and a
+short live probe both recorded `OSError: [Errno 16] Device or resource busy`
+when starting DAMON; the live session still collected ordinary samples and
+stopped cleanly. Read-only inspection inside the daemon showed kernel
+`7.1.13+deb13-amd64`, `/sys/module/damon_stat/parameters/enabled=Y`, and
+`nr_kdamonds=0`. Linux documents special-purpose DAMON consumers as mutually
+exclusive, with competing starts returning `-EBUSY`; this host state and the
+reproduction make active `DAMON_STAT` the best-supported cause. It is not
+proved by toggling the host module, and no toggle was made because that would
+pause host-wide monitoring. `ctl version` reports `damon: available` as a
+capability/interface fact, not successful session readiness; check each
+session's start status and persisted DAMON series.
+
+The running local image is labeled revision `09084078f124bf97efcfa3da4f74afb4499778ff`.
+The current candidate `e04a58837717eb9568962012ac4ac392b71d0f64` adds
+`fa5e348a8` and `75d9c4f0e`, both changing the resource-observer endpoint.
+Thus the control daemon is reachable but that endpoint is not yet running the
+latest candidate implementation; refresh it only through the normal reviewed
+integration/deployment path. The three operator-facing docs now record the
+DAMON_STAT limitation and the read-only diagnosis. No kernel state, host
+monitor, unrelated container, or `/workspaces/dstdns` path was changed.
+
+### RW-524 — 2026-10-09 03:27:34 UTC — record terminal R2 survivors without treating them as equivalent
+
+The registered R2 on exact tree
+`e04a58837717eb9568962012ac4ac392b71d0f64` ended at 02:44:11 UTC with exit
+1, `FAIL/MUTANTS_SURVIVED`: all 120 candidates accounted, 109 killed, 11
+survived, and zero equivalent, budget-exceeded, crashed, or hung. The verdict
+is preserved byte-for-byte at
+`scripts/cgroup-profiler/.assay/verdict-r2-e04a5883.json` (SHA-256
+`4c6fbc08b616fa180378efd577dcba3f078f6da93126803ab157f76b979bd8e2`). The
+campaign container `run-gate-vbpub-r2-2095052-1791509195` is gone; no run-gate
+or assay job is active now.
+
+The 11 survivors remain unresolved findings, not accepted equivalents: three
+are in `lib/resource_observer.py` (lines 177, 250, 270) and eight are in
+`lib/serve.py` (lines 2440, 2466, 2591, 2841, 2901, 2909, 2911, 2919). Their
+candidate IDs and operators are in the preserved verdict/progress stream.
+Next: map each survivor to a distinct contract behavior, add a discriminating
+oracle or document an evidence-backed equivalence proof, then re-run short
+gates and selectively reuse only the prior R2 kill witnesses on a quiet new
+tree. This R2 is a substantive failure and does not authorize merge or
+release.

@@ -313,6 +313,21 @@ resize while any kdamond is running, including a monitor owned by another
 program; see upstream v7.1 [`nr_kdamonds_store()` and directory growth
 path](https://github.com/torvalds/linux/blob/v7.1/mm/damon/sysfs.c#L1923-L1944).
 
+The sysfs registry is not a complete inventory of every kernel DAMON user.
+For example, the kernel's special-purpose `DAMON_STAT` module can run through
+the DAMON API outside the sysfs `nr_kdamonds` table. Linux documents these
+special-purpose modules as mutually exclusive: while one is active, another
+DAMON start can return `-EBUSY` ([design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html),
+[DAMON_STAT](https://docs.kernel.org/admin-guide/mm/damon/stat.html)). On the
+RG-55 host, `damon_stat/enabled` read `Y` while `nr_kdamonds` read `0`, and a
+real cgprofile start returned `EBUSY`. The zero registry count therefore did
+not establish that the host DAMON facility was free. cgprofile does not
+disable or reconfigure `DAMON_STAT`: that would silently change host-wide
+monitoring outside the lane's authority. It marks DAMON unavailable and
+continues ordinary profiling under R-36h. See
+[`CONSUMERS.md`'s host troubleshooting note](CONSUMERS.md#host-damonstat-exclusivity)
+for read-only checks and the operator procedure.
+
 Each newly reserved `state` node is held open as an identity pin. The kernel's
 kernfs identity lets cgprofile detect a later same-count rewrite that leaves
 the numeric count and replacement `state=off` unchanged. Before reuse, stop,

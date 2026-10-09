@@ -284,6 +284,34 @@ DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a
 `damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
 alone.
 
+### Host DAMON_STAT exclusivity
+
+The DAMON sysfs registry is not a complete inventory of kernel DAMON users.
+In particular, Linux's special-purpose `DAMON_STAT` module can be enabled
+while `nr_kdamonds` is `0`; the kernel documents special-purpose DAMON
+modules as exclusive, so another start request can fail with `EBUSY`. This
+does not make the cgprofile daemon's control socket or ordinary resource
+sampling unusable. The start response should record DAMON as
+`unavailable:OSError: [Errno 16] ...`, and the session should continue without
+DAMON under R-36h. See the [kernel DAMON design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html)
+and [DAMON_STAT documentation](https://docs.kernel.org/admin-guide/mm/damon/stat.html).
+
+Check the host-visible state through the daemon's existing read-only sysfs
+bind, without changing it:
+
+```bash
+docker exec cgprofile-host-daemon sh -c \
+  'cat /sys/module/damon_stat/parameters/enabled; cat /sys/kernel/mm/damon/admin/kdamonds/nr_kdamonds'
+```
+
+On the RG-55 host the observed values were `Y` and `0`, respectively, while
+the control socket answered `version`, `status`, and `host`, and a live
+session's ordinary samples were collected. The `Y` plus a reproduced `EBUSY`
+is consistent with DAMON_STAT exclusivity, not a failed daemon launch. Do not
+disable a host-wide monitor as an automatic diagnostic or from cgprofile;
+coordinate any temporary change with the host operator, then verify an actual
+session start and persisted `damon.jsonl` series before claiming DAMON data.
+
 ## Attach a run-gate lane
 
 Run-gate must start the lane first, inspect its immutable 64-hex container ID,

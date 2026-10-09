@@ -220,6 +220,9 @@ analysis library loaded and its admin sysfs interface is visible. It does not
 mean the kernel accepted a configured monitoring context. Check each session's
 `start` result and persisted series; details are in the
 [design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
+One possible host-level refusal is an active, mutually exclusive kernel DAMON
+consumer such as `DAMON_STAT`; see the
+[consumer troubleshooting note](docs/CONSUMERS.md#host-damonstat-exclusivity).
 
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
