@@ -97,6 +97,32 @@ def test_root_stat_error_refuses_to_claim_an_empty_store(tmp_path, monkeypatch):
         search._root_is_available(root)
 
 
+def test_fast_file_mtime_refuses_metadata_and_timestamp_conversion_errors(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "session.jsonl"
+    path.touch()
+    original_stat = Path.stat
+
+    def fail_stat(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("forced mtime failure")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(search.SearchError, match="file metadata.*PermissionError"):
+        search._path_modified_utc(path)
+
+    monkeypatch.setattr(Path, "stat", original_stat)
+
+    def fail_gmtime(_timestamp):
+        raise OverflowError("outside platform timestamp range")
+
+    monkeypatch.setattr(search.time, "gmtime", fail_gmtime)
+    with pytest.raises(search.SearchError, match="invalid file modification time"):
+        search._path_modified_utc(path)
+
+
 def test_walk_files_includes_regular_files_and_file_symlinks_only(tmp_path):
     root = tmp_path / "tree"
     nested = root / "nested"
@@ -1005,6 +1031,90 @@ def test_fast_ripgrep_requires_binary(tmp_path, monkeypatch):
         search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
 
 
+def test_fast_ripgrep_rejects_non_ascii_words_and_startup_failures(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "rollout.jsonl"
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    assert search._ripgrep_raw_token_pattern(("café",)) is None
+    with pytest.raises(search.SearchError, match="ASCII query words"):
+        search._ripgrep_raw_counts((path,), ("café",), "exact", client="codex")
+
+    def fail_start(*_args, **_kwargs):
+        raise OSError("forced fast ripgrep startup error")
+
+    monkeypatch.setattr(search.subprocess, "Popen", fail_start)
+    with pytest.raises(search.SearchError, match="could not start ripgrep.*forced"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+
+
+def test_fast_ripgrep_reports_many_matches_and_refuses_bad_exit_status(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "rollout.jsonl"
+    output = (os.fsencode(path) + b"\0qcow\n") * 4096
+    progress = []
+
+    class Process:
+        def __init__(self, raw_output, return_code=0):
+            self.stdout = io.BytesIO(raw_output)
+            self.return_code = return_code
+
+        def poll(self):
+            return self.return_code
+
+        def wait(self):
+            return self.return_code
+
+        def terminate(self):
+            pytest.fail("a completed process should not be terminated")
+
+    def run_many(args, **_kwargs):
+        return Process(output)
+
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", run_many)
+    result = search._ripgrep_raw_counts(
+        (path,), ("qcow",), "exact", client="codex",
+        progress=lambda message, current, total: progress.append((message, current, total)),
+    )
+    assert result == {str(path): Counter(qcow=64)}
+    assert any("4,096 tokens" in message for message, _, _ in progress)
+
+    def fail_exit(_args, **kwargs):
+        kwargs["stderr"].write(b"forced rg failure")
+        return Process(b"", 2)
+
+    monkeypatch.setattr(search.subprocess, "Popen", fail_exit)
+    with pytest.raises(search.SearchError, match="exit 2.*forced rg failure"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+
+
+def test_fast_ripgrep_terminates_a_process_after_malformed_output(tmp_path, monkeypatch):
+    path = tmp_path / "rollout.jsonl"
+
+    class Process:
+        def __init__(self):
+            self.stdout = io.BytesIO(os.fsencode(path) + b"\0")
+            self.terminated = False
+
+        def poll(self):
+            return None if not self.terminated else -15
+
+        def wait(self):
+            return -15
+
+        def terminate(self):
+            self.terminated = True
+
+    process = Process()
+    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(search.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(search.SearchError, match="malformed candidate record"):
+        search._ripgrep_raw_counts((path,), ("qcow",), "exact", client="codex")
+    assert process.terminated
+
+
 def test_documents_fast_mode_uses_rg_counts_and_file_mtime_without_tail_reads(
     tmp_path, monkeypatch,
 ):
@@ -1025,6 +1135,11 @@ def test_documents_fast_mode_uses_rg_counts_and_file_mtime_without_tail_reads(
     [doc] = search._documents("codex", ("qcow",), fast=True)
     assert doc.term_counts == Counter(qcow=2)
     assert doc.last_activity is not None and doc.last_activity.endswith("Z")
+
+    monkeypatch.setattr(search, "_ripgrep_raw_counts", lambda *_args, **_kwargs: {})
+    [unmatched] = search._documents("codex", ("qcow",), fast=True)
+    assert unmatched.term_counts == Counter()
+    assert unmatched.last_activity is None
 
 
 def test_ripgrep_candidate_stream_uses_bounded_process_workers(
@@ -1429,6 +1544,7 @@ def test_search_best_and_date_orders_use_match_count_relevance_and_activity(monk
 
 
 def test_search_validates_client_sort_order_and_empty_query_before_discovery(monkeypatch):
+    documents = search._documents
     monkeypatch.setattr(
         search, "_documents", lambda _client, *_args, **_kwargs: pytest.fail("invalid input must not scan stores"),
     )
@@ -1446,6 +1562,8 @@ def test_search_validates_client_sort_order_and_empty_query_before_discovery(mon
         search.search_sessions("word", fast=True)
     with pytest.raises(search.SearchError, match="Codex and Claude JSONL"):
         search.search_sessions("word", client="opencode", fast=True)
+    with pytest.raises(search.SearchError, match="Codex and Claude JSONL"):
+        documents("opencode", fast=True)
     with pytest.raises(search.SearchError, match="ASCII query words"):
         search.search_sessions("café", client="codex", fast=True)
 
