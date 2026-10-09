@@ -607,3 +607,28 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   `git diff --check`. No registered gate or mutation campaign has run yet.
 - Next: commit and provisionally merge this package; run the registered B114
   acceptance gates on the merged commit.
+
+## 2026-10-09 — tester-unified integration follow-up
+
+- The first registered `./run-gate.py tester-unified` run on merged Assay
+  commit `7ea7b5817d19e484335a87dfc5ba96c24858e467` exited 1 after 9m19s:
+  **8,260 passed, 85 failed, 11 skipped**. The run log is
+  `/tmp/run-gate/lanes/tester-unified/edda88996c5086fc74b80b21737517e3.log`.
+- Diagnosed integration failures: B114 added tracked source
+  `src/assay/_mutation_inventory.py` without adding it to both B105 target
+  inventories; the B105 exclusion map retained pre-edit line numbers for
+  `mutation.py`; and pyflakes found an unused caught exception name plus two
+  local guard definitions that reused their initialized variable names.
+- The repair adds the helper to both B105 target lists, updates the reviewed
+  exclusion lines, removes the unused exception binding, and gives the nested
+  progress guard functions distinct names before assigning them to the optional
+  callbacks. Added R0/R1 tests covering every success and refusal path of the
+  complete-inventory helper.
+- Focused verification on this branch: **73 passed** across the B105 exclusion
+  control, mutation-inventory tests, self-lane tests, and shipped-tree pyflakes
+  check. A dedicated branch-coverage run for the helper reported **100%** (41
+  statements, 30 branches); `git diff --check` passed.
+- The failed gate container is gone, `./run-gate.py status --json` reports no
+  inflight work, and the CIU-managed worktree remains attached to its recorded
+  branch. Next: exact-tip independent Sol xhigh review, serial merge, and a new
+  registered `tester-unified` run on the repaired merged tree.
