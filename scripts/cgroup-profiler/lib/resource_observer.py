@@ -215,7 +215,7 @@ def _task_facts(task_dir: Path) -> dict[str, Any]:
 def _read_status(path: Path) -> dict[str, Any]:
     try:
         lines = path.read_text(encoding="ascii").splitlines()
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ProcessLookupError) as exc:
         raise _PeerSnapshotChanged("peer thread status file disappeared") from exc
     except (OSError, UnicodeError) as exc:
         detail = f"{type(exc).__name__}, errno={getattr(exc, 'errno', None)}"

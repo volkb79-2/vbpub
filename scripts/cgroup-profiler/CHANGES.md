@@ -18,6 +18,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
+- fix(cgprofile): treat `ProcessLookupError` while reading a peer task's
+  procfs status as a transient snapshot race; retry the bounded identity scan
+  and still refuse when the peer cannot be proven (RG-89)
 - fix(cgprofile): refuse a missing host socket-directory bind source instead
   of letting Compose create an empty directory that hides the host-setup
   prerequisite

@@ -8568,3 +8568,28 @@ operator-approved isolated live probe in RW-531 independently demonstrated
 successful DAMON collection when that conflict was temporarily removed.
 `docker ps` showed no remaining `cgprofile-gate-*` containers. These receipts
 are for `b5804ee6`; any later commit requires fresh exact-tree gates.
+
+### RW-534 — 2026-10-09 23:04:52 UTC — bound peer-task ESRCH retries and preserve incomplete R2
+
+The exact RG-89/P1 R2 tree `8e09b6369d744374ebaa1104b2b513417e5d615e` did
+not finish. Its progress stream accounts for candidate 579 of 1,059; Assay
+wrote `ERROR/EXEC_FAILED` because the required cgprofile observer could not
+read a peer task's `/proc/.../status` after a `ProcessLookupError` (errno 3).
+This is executor/infrastructure failure, not a mutation outcome. The earlier
+`FileNotFoundError` retry does not catch `ESRCH`; change the status reader to
+retry `ProcessLookupError` within the existing bounded peer-snapshot loop, and
+keep the final refusal fail-closed. Add one-shot-success and persistent-race
+regressions.
+
+A subsequent R2 attempt on the same tree stopped at R0 with
+`COMMAND_FAILED`: `test_each_watch_line_shape_is_frozen_on_its_own` indexed a
+fourth stream line that was absent. The registered `r0-r1` coverage gate then
+passed on that pre-reconcile tree: 2,478 tests, 8,326/8,326 statements and
+3,074/3,074 branches, duration 146.129 seconds. This is a non-reproduction,
+not proof the watch-stream symptom is fixed; keep its synchronization/EOF edge
+under review.
+
+Current main `5bf6db82b` (Assay B118/B110/B114 integration) was reconciled into
+the isolated RG-89 tree as merge commit `a4d68181b`; the old R2 attempt remains
+incomplete and is not evidence for this new tree. The peer-task retry repair
+and tests are now in progress on that branch. No R2 campaign is running.

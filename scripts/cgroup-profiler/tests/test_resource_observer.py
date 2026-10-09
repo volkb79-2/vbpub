@@ -609,6 +609,27 @@ def test_observation_retries_a_peer_procfs_entry_that_disappears_once(
     assert vanished
 
 
+def test_observation_retries_peer_status_process_lookup_race_once(tmp_path, monkeypatch):
+    kwargs = _fixture(tmp_path)
+    vanished_path = Path(kwargs["proc_root"]) / "4242/task/4242/status"
+    original = Path.read_text
+    reads = 0
+
+    def lookup_race(path, *args, **call_kwargs):
+        nonlocal reads
+        if path == vanished_path and reads == 0:
+            reads += 1
+            raise ProcessLookupError(errno.ESRCH, "peer task exited", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, "read_text", lookup_race)
+
+    result = _observe(kwargs)
+
+    assert result["thread_id"] == kwargs["thread_id"]
+    assert reads == 1
+
+
 def test_observation_fails_closed_after_repeated_peer_procfs_disappearance(
     tmp_path, monkeypatch
 ):
@@ -625,6 +646,32 @@ def test_observation_fails_closed_after_repeated_peer_procfs_disappearance(
         return original(path, *args, **call_kwargs)
 
     monkeypatch.setattr(Path, "read_text", always_missing)
+
+    with pytest.raises(
+        resource_observer.ResourceObserverError,
+        match="peer process or thread disappeared during identity verification",
+    ):
+        _observe(kwargs)
+
+    assert 1 < reads <= resource_observer._PEER_SNAPSHOT_ATTEMPTS
+
+
+def test_observation_fails_closed_after_repeated_peer_status_lookup_race(
+    tmp_path, monkeypatch
+):
+    kwargs = _fixture(tmp_path)
+    vanished_path = Path(kwargs["proc_root"]) / "4242/task/4242/status"
+    original = Path.read_text
+    reads = 0
+
+    def always_vanished(path, *args, **call_kwargs):
+        nonlocal reads
+        if path == vanished_path:
+            reads += 1
+            raise ProcessLookupError(errno.ESRCH, "persistent peer task exit", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, "read_text", always_vanished)
 
     with pytest.raises(
         resource_observer.ResourceObserverError,
