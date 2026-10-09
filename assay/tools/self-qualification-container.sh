@@ -15,24 +15,15 @@ assay_git() {
 }
 
 usage() {
-  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight'
+  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen'
 }
 
 [[ $# -eq 2 ]] || usage
 worktree="$1"
 lane="$2"
 case "$lane" in
-  self-qualification|self-qualification-preflight) ;;
+  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
   *) usage ;;
-esac
-
-case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
-  '') ;;
-  1)
-    printf 'ASSAY_GATE_INCONCLUSIVE=B105 requires an exclusive gates host; ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported\n' >&2
-    exit 3
-    ;;
-  *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset or empty for B105 qualification' ;;
 esac
 
 case "$worktree" in
@@ -47,47 +38,10 @@ project="$worktree/assay"
 [[ "$(assay_git -C "$worktree" rev-parse --show-toplevel)" == "$worktree" ]] \
   || die "selected worktree path does not resolve to its own repository root"
 
-source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
-  || die "cannot resolve selected worktree HEAD"
-source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
-  || die "cannot resolve selected worktree tree"
-source_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
-  || die 'cannot read selected worktree status before B105 qualification'
-[[ -z "$source_status" ]] \
-  || die "selected worktree is not clean before B105 qualification"
-
-if ! command -v docker >/dev/null 2>&1; then
-  die 'Docker is required to launch the cgroup-visible tester-unified runner'
-fi
-for required_command in timeout setsid od tr paste rg grep sort sed findmnt realpath flock; do
+for required_command in realpath flock chmod rm; do
   command -v "$required_command" >/dev/null 2>&1 \
     || die "required host command is unavailable: $required_command"
 done
-
-# Bound every Docker client call, not only the long-running container wait.
-# An unhealthy daemon must not pin the wrapper past its admission budget.
-docker_bounded() {
-  timeout --signal=TERM --kill-after=5s 30s docker "$@"
-}
-
-workspace_target="$(findmnt --target "$worktree" --noheadings --output TARGET)" \
-  || die 'could not derive the selected worktree mount target'
-workspace_fsroot="$(findmnt --target "$worktree" --noheadings --output FSROOT)" \
-  || die 'could not derive the selected worktree host FSROOT'
-[[ "$workspace_target" == /workspaces/vbpub && "$workspace_fsroot" == /* \
-  && "$workspace_fsroot" != / ]] \
-  || die 'the selected worktree is not inside the declared /workspaces/vbpub bind'
-case "$worktree/" in
-  "$workspace_target"/*) ;;
-  *) die 'the selected worktree is outside the derived workspace mount target' ;;
-esac
-worktree_suffix="${worktree#"$workspace_target"}"
-host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
-[[ "$host_workspace_root" == "$workspace_fsroot" ]] \
-  || die 'ASSAY_GATE_HOST_WORKSPACE_ROOT differs from the findmnt workspace bind source'
-[[ "$host_workspace_root" == /* && "$host_workspace_root" != "/" \
-  && "$host_workspace_root" != *$'\n'* && "$host_workspace_root" != *,* ]] \
-  || die 'the host workspace bind source is not a usable Docker mount source'
 
 # The run-gate `resources.shared` flock is scoped to its caller's /tmp. B105
 # callers in separate container namespaces can therefore race on one Docker
@@ -98,8 +52,8 @@ git_common_dir="$(assay_git -C "$worktree" rev-parse --path-format=absolute --gi
 git_common_dir="$(realpath -e -- "$git_common_dir")" \
   || die 'cannot resolve the selected worktree Git common directory path'
 case "$git_common_dir/" in
-  "$workspace_target"/*) ;;
-  *) die 'the selected worktree Git common directory is outside the workspace bind' ;;
+  /workspaces/vbpub/*) ;;
+  *) die 'the selected worktree Git common directory is outside /workspaces/vbpub' ;;
 esac
 host_lock_path="$git_common_dir/assay-b105-self-qualification.lock"
 [[ ! -L "$host_lock_path" ]] \
@@ -115,6 +69,88 @@ if ! flock -n "$host_lock_fd"; then
   printf 'ASSAY_GATE_INCONCLUSIVE=another B105 host check holds the shared Git-directory lock\n' >&2
   exit 3
 fi
+
+# Acquire the shared lock before checks that can refuse ordinary admission. It
+# protects a live screen from verdict cleanup and prevents pilot output cleanup
+# from racing another caller. The run-gate artifact paths must not expose a
+# previous result as this attempt's when host or Docker admission refuses.
+if [[ "$lane" == b110-screen || "$lane" == b110-pilot ]]; then
+  assay_state_dir="$project/.assay"
+  [[ ! -L "$assay_state_dir" ]] \
+    || die 'B110 state directory is a symlink; refusing stale-artifact cleanup'
+  if [[ -e "$assay_state_dir" && ! -d "$assay_state_dir" ]]; then
+    die 'B110 state path exists but is not a directory'
+  fi
+  if [[ -d "$assay_state_dir" ]]; then
+    if [[ "$lane" == b110-screen ]]; then
+      rm -f -- \
+        "$assay_state_dir/verdict-b110-screen.json" \
+        "$assay_state_dir/b110-screen-plan.json" \
+        "$assay_state_dir/b110-screen-run.log" \
+        || die 'cannot clear prior B110 screen outputs before launcher admission'
+    else
+      rm -f -- \
+        "$assay_state_dir/b110-pilot-plan.json" \
+        "$assay_state_dir/b110-pilot-candidates.txt" \
+        "$assay_state_dir/b110-pilot-selection.json" \
+        "$assay_state_dir/b110-pilot-summary.json" \
+        "$assay_state_dir/b110-pilot-run.log" \
+        || die 'cannot remove prior B110 pilot outputs before launcher admission'
+    fi
+  fi
+fi
+
+command -v findmnt >/dev/null 2>&1 \
+  || die 'required host command is unavailable: findmnt'
+workspace_target="$(findmnt --target "$worktree" --noheadings --output TARGET)" \
+  || die 'could not derive the selected worktree mount target'
+workspace_fsroot="$(findmnt --target "$worktree" --noheadings --output FSROOT)" \
+  || die 'could not derive the selected worktree host FSROOT'
+[[ "$workspace_target" == /workspaces/vbpub && "$workspace_fsroot" == /* \
+  && "$workspace_fsroot" != / ]] \
+  || die 'the selected worktree is not inside the declared /workspaces/vbpub bind'
+case "$worktree/" in
+  "$workspace_target"/*) ;;
+  *) die 'the selected worktree is outside the derived workspace mount target' ;;
+esac
+host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
+[[ "$host_workspace_root" == "$workspace_fsroot" ]] \
+  || die 'ASSAY_GATE_HOST_WORKSPACE_ROOT differs from the findmnt workspace bind source'
+[[ "$host_workspace_root" == /* && "$host_workspace_root" != "/" \
+  && "$host_workspace_root" != *$'\n'* && "$host_workspace_root" != *,* ]] \
+  || die 'the host workspace bind source is not a usable Docker mount source'
+
+source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
+  || die "cannot resolve selected worktree HEAD"
+source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
+  || die "cannot resolve selected worktree tree"
+source_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
+  || die 'cannot read selected worktree status before B105 qualification'
+[[ -z "$source_status" ]] \
+  || die "selected worktree is not clean before B105 qualification"
+
+if ! command -v docker >/dev/null 2>&1; then
+  die 'Docker is required to launch the cgroup-visible tester-unified runner'
+fi
+for required_command in timeout setsid od tr paste rg grep sort sed; do
+  command -v "$required_command" >/dev/null 2>&1 \
+    || die "required host command is unavailable: $required_command"
+done
+
+# Bound every Docker client call, not only the long-running container wait.
+# An unhealthy daemon must not pin the wrapper past its admission budget.
+docker_bounded() {
+  timeout --signal=TERM --kill-after=5s 30s docker "$@"
+}
+
+case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
+  '') ;;
+  1)
+    printf 'ASSAY_GATE_INCONCLUSIVE=Assay qualification requires an exclusive gates host; ASSAY_GATE_ALLOW_SHARED_HOST=1 is unsupported\n' >&2
+    exit 3
+    ;;
+  *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset or empty for B105 qualification' ;;
+esac
 
 docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
   || die 'tester-unified:local is unavailable; build the declared tester image first'
@@ -257,17 +293,36 @@ if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   mount_args+=(--mount "type=bind,src=$host_workspace_root,dst=/workspaces/vbpub")
 fi
 
-wait_timeout_label=65m
-wait_timeout_seconds=3900
-inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
-if [[ "$lane" == self-qualification ]]; then
-  wait_timeout_label=7h40m
-  wait_timeout_seconds=27600
-  inner_argv=(
-    timeout --verbose --signal=TERM --kill-after=30s 27000s
-    bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane"
-  )
-fi
+case "$lane" in
+  self-qualification)
+    wait_timeout_label=7h40m
+    wait_timeout_seconds=27600
+    inner_argv=(
+      timeout --verbose --signal=TERM --kill-after=30s 27000s
+      bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane"
+    )
+    ;;
+  self-qualification-preflight)
+    wait_timeout_label=65m
+    wait_timeout_seconds=3900
+    inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
+  b110-pilot)
+    # The build and venv setup happen before the two-hour campaign starts.
+    # Preserve the planned ten-minute setup allowance, two-hour campaign
+    # deadline, and five-minute log/cleanup margin inside docker wait. The
+    # 90-minute campaign invocation cap is hard; TERM is followed by 30s
+    # kill-after, with no extra execution grace.
+    wait_timeout_label=2h15m
+    wait_timeout_seconds=8100
+    inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
+  b110-screen)
+    wait_timeout_label=7h15m
+    wait_timeout_seconds=26100
+    inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
+esac
 
 printf 'ASSAY_B105_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
 printf 'ASSAY_B105_GATE_CONTAINER=%s\n' "$container_name"
@@ -407,7 +462,7 @@ fi
 
 docker_bounded logs "$container_id" >"$scratch/container.log" 2>&1 \
   || die 'could not collect the completed B105 container log'
-[[ "$wait_status" == 0 ]] || die "B105 container exited with status $wait_status"
+[[ "$wait_status" == 0 ]] || die "Assay qualification container exited with status $wait_status"
 case "$lane" in
   self-qualification)
     marker=ASSAY_SELF_QUALIFICATION_VERIFIED=1
@@ -415,9 +470,44 @@ case "$lane" in
   self-qualification-preflight)
     marker=ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1
     ;;
+  b110-pilot)
+    if grep -Eq '^B110_SCREEN_(EXIT|VERIFIED|TIMEOUT_FAILSAFE|VERDICT)=' "$scratch/container.log"; then
+      die 'B110 pilot log contains a screen-mode marker'
+    fi
+    if grep -Fxq 'B110_PILOT_INIT_REFUSED=1' "$scratch/container.log"; then
+      die 'B110 pilot campaign initialization was refused'
+    fi
+    if grep -Fxq 'B110_PILOT_TIMEOUT_FAILSAFE=1' "$scratch/container.log"; then
+      die 'B110 pilot exceeded its campaign failsafe'
+    fi
+    mapfile -t pilot_exit_markers < <(grep -E '^B110_PILOT_EXIT=(0|[1-9][0-9]{0,2})$' "$scratch/container.log" || true)
+    [[ ${#pilot_exit_markers[@]} -eq 1 && "${pilot_exit_markers[0]}" == 'B110_PILOT_EXIT=6' ]] \
+      || die 'B110 pilot did not report exactly one complete exit status (6)'
+    mapfile -t pilot_completion_markers < <(grep -Fx 'B110_PILOT_COMPLETED=1' "$scratch/container.log" || true)
+    [[ ${#pilot_completion_markers[@]} -eq 1 ]] \
+      || die 'B110 pilot exited 6 without its completion marker'
+    marker=B110_PILOT_COMPLETED=1
+    ;;
+  b110-screen)
+    if grep -Eq '^B110_PILOT_(EXIT|COMPLETED|TIMEOUT_FAILSAFE|INIT_REFUSED|SUMMARY)=' "$scratch/container.log"; then
+      die 'B110 screen log contains a pilot-mode marker'
+    fi
+    if grep -Fxq 'B110_SCREEN_TIMEOUT_FAILSAFE=1' "$scratch/container.log"; then
+      die 'B110 screen exceeded its failsafe timeout'
+    fi
+    mapfile -t screen_exit_markers < <(grep -E '^B110_SCREEN_EXIT=(0|[1-9][0-9]{0,2})$' "$scratch/container.log" || true)
+    [[ ${#screen_exit_markers[@]} -eq 1 ]] \
+      || die 'B110 screen did not report exactly one run exit status'
+    screen_status="${screen_exit_markers[0]#B110_SCREEN_EXIT=}"
+    ((10#$screen_status < 124)) || die 'B110 screen run status is a timeout failsafe'
+    mapfile -t screen_completion_markers < <(grep -Fx 'B110_SCREEN_VERIFIED=1' "$scratch/container.log" || true)
+    [[ ${#screen_completion_markers[@]} -eq 1 ]] \
+      || die 'B110 screen has no verified complete verdict marker'
+    marker=B110_SCREEN_VERIFIED=1
+    ;;
 esac
 grep -Fxq "$marker" "$scratch/container.log" \
-  || die "B105 container exited zero without $marker"
+  || die "Assay qualification container exited zero without $marker"
 
 [[ "$(assay_git -C "$worktree" rev-parse HEAD)" == "$source_commit" ]] \
   || die 'selected worktree HEAD changed during B105 qualification'
@@ -429,5 +519,13 @@ final_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=al
   || die 'selected worktree became dirty during B105 qualification'
 
 printf '%s\n' "$marker"
-printf 'ASSAY_B105_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
-printf 'ASSAY_B105_GATE_COMPLETE=%s\n' "$lane"
+case "$lane" in
+  b110-pilot|b110-screen)
+    printf 'ASSAY_B110_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+    printf 'ASSAY_B110_GATE_COMPLETE=%s\n' "$lane"
+    ;;
+  *)
+    printf 'ASSAY_B105_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+    printf 'ASSAY_B105_GATE_COMPLETE=%s\n' "$lane"
+    ;;
+esac

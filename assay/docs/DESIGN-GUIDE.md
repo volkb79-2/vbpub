@@ -2545,6 +2545,48 @@ shows how to preserve the log and inspect the report. Decision A-462 records
 why this separate lane supersedes A-133's former permanent R0-only limit while
 leaving the ordinary release lane unchanged.
 
+### Registered B110 pilot and survivor-screen lanes (B118 P7b)
+
+The separately registered `b110-pilot` and `b110-screen` lanes measure native
+R2 work without claiming qualification. Both use the B105 bare-host launcher
+and its verified, detached `tester-unified` child so they retain the host
+cgroup visibility required by selected native candidates.
+
+The pilot initializes its two-hour campaign after exact-source wheel setup and
+before planning or selection. Campaign initialization, planning, selection and
+Assay execution share a hard 90-minute per-invocation cap; planning and
+selection are also bounded by the remaining campaign deadline. Assay execution
+uses only the remaining cap, followed by at most 30 seconds for termination.
+The persisted two-hour campaign remains the absolute bound across retries. The
+selector binds the chosen subset to the current plan, commit, tree and source
+bytes. The run uses three pilot jobs, cold witnesses, resume and the
+pilot-specific state directory; exit 6 plus the completion marker means every
+selected candidate has a disposition. Survivors and other non-passing outcomes
+remain measurement results. A campaign refusal, timeout failsafe or incomplete
+exit cannot be certified by the wrapper. The run-gate 2h20m outer bound
+includes a planned build/venv allowance of at most 10 minutes, pending
+measurement by the registered gate, plus the campaign and timeout cleanup
+margins.
+
+The survivor screen plans the full current inventory, removes any prior
+verdict before planning, then runs with cold witnesses and resume state. The
+Assay lane's 5h budget is its effective work limit; its 7h10m timeout is a
+failure-only failsafe, followed by a 7h15m container wait and 7h30m run-gate
+command timeout under the 8h run-gate budget. It has no campaign deadline: a
+retry resumes its same-tree state, while a new commit has a distinct state
+identity. Run stdout and stderr are retained in
+`.assay/b110-screen-run.log`; the driver calls `assay verify` and the
+independent `b110_screen_report_check.py`, which also requires the verdict's
+exit code to match the actual `assay run` status. The checker requires R0 and
+R1 PASS, a native R2 payload with candidate IDs matching the full ordered plan,
+no R2 `LANE_TIMEOUT`, and an R2 status of `PASS` or `FAIL`. An R2 `ERROR`,
+`BUDGET_EXCEEDED` or `INCONCLUSIVE` status cannot complete the screen. A
+complete screen may contain survivors and may therefore retain a nonzero Assay
+run exit; the outer gate records completion of the measurement, not an R2 pass.
+The screen is not B105 evidence except through B119's import path, whose use
+for pre-deadline records awaits the operator's D7 decision. See the [registered consumer commands and
+artifacts](CONSUMERS.md#registered-pilot-and-survivor-screen-gates).
+
 Loop guards (B113, A-466). Time never classifies a candidate (A-464), so a
 mutant that spins must fail by itself: a CPU-spinning candidate keeps the
 liveness monitor's `cpu_growing` true and would otherwise burn its whole

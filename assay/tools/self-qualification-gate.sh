@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# B105's separately invoked full-source R0-R3 qualification gate.
+# B105 and B110's separately invoked full-source R0-R3 gate modes.
 # run-gate owns admission and artifacts; self-qualification-container.sh owns
 # the bounded, cgroup-visible tester-unified container and exact worktree
 # mounts. This inner driver builds that selected committed source as a wheel,
@@ -25,9 +25,168 @@ requested_lane="${2:-self-qualification}"
 project="$worktree/assay"
 tester_python=/opt/tester-venv/bin/python
 
+pilot_invocation_remaining_s() {
+  local started_s="$1" cap_s="$2" now_s="${3:-$SECONDS}"
+  local elapsed_s=$((now_s - started_s))
+  PILOT_INVOCATION_REMAINING_S=$((elapsed_s >= cap_s ? 0 : cap_s - elapsed_s))
+}
+
+pilot_campaign_remaining_s() {
+  "$1" -c 'import json,sys,math,datetime as d; e=d.datetime.strptime(json.load(open(sys.argv[1]))["expires_at_utc"],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc); print(max(0, math.floor((e-d.datetime.now(d.timezone.utc)).total_seconds())))' "$2"
+}
+
+run_b110_pilot() {
+  pilot_campaign="$campaign"
+  pilot_deadline="$deadline"
+  pilot_cap_s=$((90 * 60))
+  pilot_started_s=$SECONDS
+  # These outputs describe this attempt. Preserve only the campaign deadline,
+  # mutation state and append-only progress stream needed for a safe resume.
+  rm -f -- \
+    .assay/b110-pilot-plan.json \
+    .assay/b110-pilot-candidates.txt \
+    .assay/b110-pilot-selection.json \
+    .assay/b110-pilot-summary.json \
+    .assay/b110-pilot-run.log
+  # P7R2-4: init FIRST, so `assay plan` and the selector run inside the 2 h campaign
+  # and the outer failsafe only has to cover the build plus the campaign.
+  if [[ ! -f "$pilot_deadline" ]]; then
+    pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+    pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+    if (( pilot_step_budget_s <= 0 )); then
+      echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+      return 124
+    fi
+    set +e
+    timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+      "$assay_bin" campaign init --file assay.toml \
+        --campaign "$pilot_campaign" --lane self-qualification --hours 2 \
+        --state-dir .assay/b110-pilot-state --wheel-sha256 "$wheel_digest"
+    pilot_init_status=$?
+    set -e
+    if (( pilot_init_status != 0 )); then
+      (( pilot_init_status < 124 )) || echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+      echo "B110_PILOT_INIT_REFUSED=1"
+      return 0
+    fi
+  fi
+  # The 90-minute per-invocation cap covers campaign init, planning, selection
+  # and assay run.
+  # The campaign deadline is an independent absolute bound across retries.
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_step_budget_s=$((pilot_step_budget_s < campaign_budget_s ? pilot_step_budget_s : campaign_budget_s))
+  if (( pilot_step_budget_s <= 0 )); then
+    echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+    "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-pilot-plan.json
+  pilot_plan_status=$?
+  set -e
+  if (( pilot_plan_status != 0 )); then
+    (( pilot_plan_status < 124 )) || echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return "$pilot_plan_status"
+  fi
+
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_step_budget_s=$((pilot_step_budget_s < campaign_budget_s ? pilot_step_budget_s : campaign_budget_s))
+  if (( pilot_step_budget_s <= 0 )); then
+    echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+    "$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_pilot_select.py" \
+    --plan .assay/b110-pilot-plan.json --repo-root "$worktree" \
+    --out .assay/b110-pilot-candidates.txt --report .assay/b110-pilot-selection.json
+  pilot_selection_status=$?
+  set -e
+  if (( pilot_selection_status != 0 )); then
+    (( pilot_selection_status < 124 )) || echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return "$pilot_selection_status"
+  fi
+  # Exactly P6's rule: max(0, floor(expires_at_utc - now_utc)); never "floored at 1".
+  remaining_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  pilot_step_budget_s="$PILOT_INVOCATION_REMAINING_S"
+  pilot_run_timeout_s=$((remaining_s < pilot_step_budget_s ? remaining_s : pilot_step_budget_s))
+  if (( pilot_run_timeout_s <= 0 )); then
+    echo "B110_PILOT_TIMEOUT_FAILSAFE=1" >&2
+    return 124
+  fi
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
+    "$assay_bin" run self-qualification --file assay.toml \
+    --candidates-file .assay/b110-pilot-candidates.txt --pilot-jobs 3 --cold-witness --resume \
+    --state-dir .assay/b110-pilot-state --progress .assay/progress-b110-pilot.jsonl \
+    --campaign-deadline "$pilot_deadline" \
+    > .assay/b110-pilot-summary.json 2> .assay/b110-pilot-run.log
+  pilot_status=$?
+  set -e
+  campaign_remaining_after_run_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
+  pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"
+  if (( PILOT_INVOCATION_REMAINING_S <= 0 || campaign_remaining_after_run_s <= 0 )); then
+    pilot_status=124
+  fi
+  echo "B110_PILOT_EXIT=$pilot_status"
+  echo "B110_PILOT_SUMMARY=.assay/b110-pilot-summary.json"
+  # Any status >= 124 (124, 125-127, 137 after --kill-after) is the failsafe.
+  [[ $pilot_status -ge 124 ]] && echo "B110_PILOT_TIMEOUT_FAILSAFE=1"
+  [[ $pilot_status -eq 6 ]] && echo "B110_PILOT_COMPLETED=1"
+  return 0
+}
+
+run_b110_screen() {
+  reuse_args=()
+  # A prior commit's screen verdict is passed explicitly for witness replay.
+  [[ -f .assay/verdict-b110-screen-prev.json ]] \
+    && reuse_args=(--reuse-from .assay/verdict-b110-screen-prev.json)
+  rm -f -- .assay/verdict-b110-screen.json \
+    || { echo "B110_SCREEN_VERDICT_CLEANUP_FAILED=1" >&2; return 1; }
+  "$assay_bin" plan self-qualification --file assay.toml > .assay/b110-screen-plan.json \
+    || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
+  set +e
+  timeout --verbose --signal=TERM --kill-after=30s 7h10m \
+    "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
+    "${reuse_args[@]}" \
+    --state-dir .assay/b110-screen-state --progress .assay/progress-b110-screen.jsonl \
+    --verdict-json .assay/verdict-b110-screen.json \
+    > .assay/b110-screen-run.log 2>&1
+  screen_status=$?
+  set -e
+  echo "B110_SCREEN_EXIT=$screen_status" || return 1
+  echo "B110_SCREEN_VERDICT=.assay/verdict-b110-screen.json" || return 1
+  if [[ $screen_status -ge 124 ]]; then
+    echo "B110_SCREEN_TIMEOUT_FAILSAFE=1" || return 1
+  fi
+  if [[ $screen_status -ge 124 ]]; then
+    return 0
+  fi
+  "$assay_bin" verify .assay/verdict-b110-screen.json \
+    || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }
+  screen_checker_output="$("$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_screen_report_check.py" \
+    --plan .assay/b110-screen-plan.json \
+    --verdict .assay/verdict-b110-screen.json \
+    --expected-commit "$source_commit" --expected-tree "$source_tree" \
+    --expected-exit-code "$screen_status")" \
+    || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }
+  [[ "$screen_checker_output" == "B110_SCREEN_VERIFIED=1" ]] \
+    || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }
+  echo "$screen_checker_output" || return 1
+  if [[ ${#reuse_args[@]} -gt 0 ]]; then
+    echo "B110_SCREEN_REUSE_FROM=.assay/verdict-b110-screen-prev.json" || return 1
+  fi
+  return 0
+}
+
 case "$requested_lane" in
-  self-qualification|self-qualification-preflight) ;;
-  *) die "unsupported B105 lane: $requested_lane" ;;
+  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
+  *) die "unsupported self-qualification lane: $requested_lane" ;;
 esac
 
 [[ -x "$tester_python" ]] || die "B105 requires tester-unified's $tester_python"
@@ -161,12 +320,18 @@ PYEOF
 )"
 
 wheel_digest="$(sha256sum "$wheel" | cut -d' ' -f1)"
+campaign=""
+deadline=""
 if [[ "$requested_lane" == "self-qualification" ]]; then
   campaign="b105-${source_commit:0:12}"
-else
+  deadline=".assay/campaign-deadline-$campaign.json"
+elif [[ "$requested_lane" == "self-qualification-preflight" ]]; then
   campaign="b105-pre-${source_commit:0:12}"
+  deadline=".assay/campaign-deadline-$campaign.json"
+elif [[ "$requested_lane" == "b110-pilot" ]]; then
+  campaign="b110-pilot-${source_commit:0:12}"
+  deadline=".assay/campaign-deadline-$campaign.json"
 fi
-deadline=".assay/campaign-deadline-$campaign.json"
 
 check_campaign_wheel_digest() {
   "$tester_python" "$scratch/source/assay/tools/b105_report_check.py" \
@@ -178,9 +343,11 @@ check_campaign_wheel_digest() {
 # Bind the wheel before installing the run closure or invoking plan/preflight/
 # R2. A same-OID retry must not spend hours on an artifact that the persisted
 # campaign deadline cannot accept.
-if [[ -e "$deadline" || -L "$deadline" ]]; then
-  check_campaign_wheel_digest \
-    || die "existing campaign deadline does not bind this deterministic source wheel"
+if [[ -n "$deadline" ]]; then
+  if [[ -e "$deadline" || -L "$deadline" ]]; then
+    check_campaign_wheel_digest \
+      || die "existing campaign deadline does not bind this deterministic source wheel"
+  fi
 fi
 
 echo "B105_PHASE=install-wheel-and-tester-test-closure"
@@ -211,6 +378,11 @@ PYEOF
 
 export PATH="$scratch/run-venv/bin:$PATH"
 assay_bin="$scratch/run-venv/bin/assay"
+
+case "$requested_lane" in
+  b110-pilot) run_b110_pilot; exit 0 ;;
+  b110-screen) run_b110_screen || exit $?; exit 0 ;;
+esac
 
 if [[ "$requested_lane" == "self-qualification" ]]; then
   if [[ ! -e "$deadline" ]]; then

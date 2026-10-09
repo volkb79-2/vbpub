@@ -1145,7 +1145,7 @@ you're changing assay itself:
   workspace root at both its physical host path and `/workspaces/vbpub` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
-  `docker wait` status. The three registered
+  `docker wait` status. The five registered
   Assay lanes share a run-gate lock; a Git-common-directory lock also
   serializes B105 callers across container `/tmp` namespaces. The wrapper
   refuses to launch beside an already-running registered gate, but that scan
@@ -1189,6 +1189,21 @@ you're changing assay itself:
   B114's cold-witness and campaign-deadline support is now available, but the
   B118 bounded pilot and go/no-go decision must happen before another full
   qualification attempt.
+
+  Two registered B110 lanes support non-qualifying R2 measurement:
+  `./run-gate.py b110-pilot` selects a bounded campaign sample, while
+  `./run-gate.py b110-screen` checks a complete full-plan result and can accept
+  survivors as a completed measurement. Pilot invocations cap R2 work at 90
+  minutes for campaign initialization, planning, selection and execution
+  within a persisted two-hour campaign. Assay execution uses the remaining
+  90-minute cap, followed by at most 30 seconds for termination. The screen
+  uses the declared 5-hour Assay lane budget; longer
+  wrapper timeouts are failure-only cleanup bounds. Neither lane qualifies
+  B105; the screen requires R0/R1 PASS, a complete current-plan R2 inventory,
+  and an R2 `PASS` or `FAIL` outcome. R2 errors, budget exhaustion and
+  inconclusive results cannot complete the screen. See the
+  [B110 design](docs/DESIGN-GUIDE.md#registered-b110-pilot-and-survivor-screen-lanes-b118-p7b)
+  and [registered commands](docs/CONSUMERS.md#registered-pilot-and-survivor-screen-gates).
 
   B114 ships the opt-in `--cold-witness` policy for the supported native Python
   pytest shape. Check a lane with `assay plan LANE --cold-witness`, then run it
