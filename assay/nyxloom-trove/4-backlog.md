@@ -215,7 +215,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B115 — P4 work-queue executor — OPEN
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
 - B117 — P6 persisted campaign deadline + process-group termination — OPEN
-- B118 — P7 non-qualifying pilot selection — OPEN
+- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a merged; P7b code and focused tests are in `assay-b110-p7b-gate-modes`; waiting on fresh independent review and registered gate acceptance. The bounded pilot and P8 analysis remain before B131.)
 - B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
 - B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
 - B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
@@ -11459,7 +11459,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 ## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
-**Status: OPEN (filed 2026-09-28; resumed 2026-10-07; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-cold-witness`; v15 replaces the already shipped v14 target).**
+**Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-evidence-deadline-20261009`; v15 replaces the already shipped v14 target).**
 
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
@@ -11469,7 +11469,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 - per-candidate `evidence`;
 - `witness-cold` and `ledger` execution modes;
 - `judgment.r2.{cold_witness_kills, r2_command, liveness.cpu_window_s/idle_floor_s, equivalence_ledger}`;
-- judge identity `/8` (current `/7` after B145; mutation-state schema remains 1);
+- judge identity `/9` (including the B145 and B114 evidence changes; mutation-state schema remains 1);
 - lane keys `liveness_cpu_window`/`liveness_idle_floor` (A-469);
 - B105 gate flag and source-bound report binding;
 - B117/P6 persisted deadline and process-group termination as a direct prerequisite;
@@ -11514,6 +11514,11 @@ inputs. The 3,760-candidate positive fixture must pass `assay verify` with its
 inventory equal to the complete outcome buckets, then pass the checker with a
 matching plan and deadline.
 
+The B105 and B110 report checkers also run `assay verify` against the same
+bounded parsed snapshot they accept, and require all six outcome buckets to
+cover the full ordered plan exactly once; duplicate, missing, and partial
+inventories refuse.
+
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
@@ -11529,9 +11534,16 @@ matching plan and deadline.
   and trailing bytes refuse proof. The parent receipt reader cannot block on a
   FIFO, and the ordered manifest is read as a bounded no-follow regular file.
   A post-session hook cannot rewrite a completed receipt into a call failure.
-- [ ] Recheck the lane deadline immediately after a successful snapshot
-  integrity return; expiry at that boundary leaves the candidate unclassified
-  and absent from resume state and candidate progress.
+- [ ] Recheck the lane deadline after snapshot cleanup, before and after
+      main-thread candidate classification, at the atomic state commit
+      boundary, after resume aggregation, around final progress/bucketing, and
+      before return. Expiry or termination during snapshot integrity, cleanup,
+      state serialization or commit leaves that candidate unclassified and
+      absent from resume state and candidate progress. Campaign incompleteness
+      comes from the executor's unscheduled-candidate fact, not from the
+      `budget_exceeded` bucket, which also contains terminal per-candidate
+      timeouts. A campaign that does not finish before its deadline cannot
+      return a completed mutation result.
 - [ ] Assay `tester-unified` and `self-qualification-preflight`, plus MDT `smoke`, PASS on the final reviewed merge commit; MDT smoke covers the host initializer regression and the Assay gates cover the verdict/cold-witness implementation.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
@@ -11583,19 +11595,24 @@ matching plan and deadline.
 
 ## B118 — B110 P7: non-qualifying pilot candidate selection
 
-**Status: OPEN (filed 2026-09-28; A-474; brief `reports/b110/P7-pilot-tooling.md`).**
+**Status: IN PROGRESS (filed 2026-09-28; A-474; P7a merged, P7b implementation on `assay-b110-p7b-gate-modes`; focused checks green and independent Sol xhigh review accepted 2026-10-09; registered gate acceptance remains pending; brief `reports/b110/P7-pilot-tooling.md`).**
 
 **Scope:**
 - `assay run --candidates-file` (no verdict, exit 6, R3 not run) and `--pilot-jobs`;
 - `selection_sha256` in progress;
 - the deterministic `tools/b110_pilot_select.py`;
 - the pilot runbook and report template;
-- P7b: the gate-script modes `b110-pilot` and `b110-screen` (non-qualifying survivor screen) and their run-gate lanes, after P6 and v14 merge;
+- P7b: the gate-script modes `b110-pilot` and `b110-screen` (non-qualifying survivor screen) and their run-gate lanes, after P6 and B114's v15 work;
 - a selection enables the state root and writes one record per executed candidate (C5);
 - a `PILOT-STATE` sentinel file.
 
 **Acceptance:**
-- [ ] The brief's oracles pass.
+- [x] P7b focused oracles: 93 passed; docs contract: 55 passed; shell/Python syntax and gate listing pass (2026-10-09; report records log paths).
+- [x] Follow-up review fixes: hard 90m per-invocation cap, cross-caller lock before B110 artifact cleanup, explicit planning failure propagation, stale pilot output cleanup before host admission, and planned-versus-measured timeout docs.
+- [x] Final focused P7b oracles: 201 passed; docs contract: 55 passed; shell syntax, Python compilation, diff check and gate listing pass (2026-10-09; see `reports/assay-B118-REPORT.md`).
+- [x] Final regression after review fixes: 151 focused tests passed in 54.17s; manual-path and archived-progress oracles, shell syntax and `git diff --check` pass.
+- [x] Follow-up review corrections: clear attempt artifacts under the shared lock before source/Docker admission checks; fail the screen if any completion-marker write fails; enforce the cap after execution in the manual example; add a late-exit behavior oracle.
+- [x] Fresh independent Sol xhigh review accepts the updated P7b diff (2026-10-09; read-only snapshot and findings recorded in `reports/assay-B118-REPORT.md`).
 - [ ] tester-unified PASS.
 
 ## B119 — B110 P9: distributed/async mutation evidence

@@ -803,6 +803,35 @@ a gitignored path), since a progress file inside the work tree makes the next
 run of the same lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. The verdict does not
 record the destination, exactly as it does not record `--verdict-json`'s.
 
+**Non-qualifying pilot runs** can use `assay run LANE --candidates-file PATH`
+to execute a bounded selection from a native R2 plan; `--pilot-jobs` can set
+1–8 workers for that run. A pilot skips R3, writes no verdict, and returns exit
+code 6 only when every selected candidate has a completed disposition. Exit 6
+means “pilot measurement completed,” never “the lane passed”; use the JSON
+summary and its mutation buckets to read the result. Pilot state is tied to one
+selection and lane and must stay separate from qualifying campaign state. See
+[why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
+and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+An invocation takes a path lock under a private directory in the system
+`/tmp` (independent of `TMPDIR`) and locks the admitted state-directory inode
+through the run. The path lock survives replacement of the store's parent;
+the inode lock makes independent path aliases of the same store coordinate.
+A second run refuses promptly and can be retried after the first finishes.
+The selector requires a clean Git checkout whose HEAD commit and
+tree match the plan, reads source bytes from that immutable tree, and checks
+each known-hard byte span on its declared line. It pins output directories,
+rechecks repository identity before publishing, and writes the digest-bound
+selection report last, so path redirection or a stale checkout cannot produce
+a report that describes different candidate bytes. It rechecks the requested
+output parents before and after publication. It locks both pinned output
+directories through publication; a concurrent selector writing in either
+directory refuses promptly, so the two-file result cannot be interleaved. The
+locks use the directory descriptors themselves, so symlink aliases and
+different `TMPDIR` settings still coordinate on the same directory.
+Only exit 0 certifies the pair for use. Exit 2 can leave temporary files or a
+complete pair in the pinned directories after an identity or cleanup error;
+do not continue with the candidate file after a nonzero selector exit.
+
 Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
 `derived:` sources. Assay resolves them in the invoking context before any
 snapshot work and injects the values into the isolated command.
@@ -1129,7 +1158,7 @@ you're changing assay itself:
   workspace root at both its physical host path and `/workspaces/vbpub` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
-  `docker wait` status. The three registered
+  `docker wait` status. The five registered
   Assay lanes share a run-gate lock; a Git-common-directory lock also
   serializes B105 callers across container `/tmp` namespaces. The wrapper
   refuses to launch beside an already-running registered gate, but that scan
@@ -1157,7 +1186,13 @@ you're changing assay itself:
   and manifest as bounded no-follow regular files. The limits for report,
   plan and receipt are 64 MiB, 16 MiB and 4 KiB. It checks plan-independent
   campaign deadlines before parsing an R2 plan, then binds the selected
-  ordered-plan digest. The full lane judges
+  ordered-plan digest. B105 and B110 report checkers run the shipped
+  `assay verify` document validation on the same bounded JSON object they
+  inspect for source and candidate provenance; a separate `assay verify`
+  invocation cannot certify a later independent read. They also require all
+  six terminal outcome buckets to contain every planned candidate exactly
+  once, so matching counts cannot hide a missing, duplicate or foreign result.
+  The full lane judges
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
@@ -1173,6 +1208,21 @@ you're changing assay itself:
   B114's cold-witness and campaign-deadline support is now available, but the
   B118 bounded pilot and go/no-go decision must happen before another full
   qualification attempt.
+
+  Two registered B110 lanes support non-qualifying R2 measurement:
+  `./run-gate.py b110-pilot` selects a bounded campaign sample, while
+  `./run-gate.py b110-screen` checks a complete full-plan result and can accept
+  survivors as a completed measurement. Pilot invocations cap R2 work at 90
+  minutes for campaign initialization, planning, selection and execution
+  within a persisted two-hour campaign. Assay execution uses the remaining
+  90-minute cap, followed by at most 30 seconds for termination. The screen
+  uses the declared 5-hour Assay lane budget; longer
+  wrapper timeouts are failure-only cleanup bounds. Neither lane qualifies
+  B105; the screen requires R0/R1 PASS, a complete current-plan R2 inventory,
+  and an R2 `PASS` or `FAIL` outcome. R2 errors, budget exhaustion and
+  inconclusive results cannot complete the screen. See the
+  [B110 design](docs/DESIGN-GUIDE.md#registered-b110-pilot-and-survivor-screen-lanes-b118-p7b)
+  and [registered commands](docs/CONSUMERS.md#registered-pilot-and-survivor-screen-gates).
 
   B114 ships the opt-in `--cold-witness` policy for the supported native Python
   pytest shape. Check a lane with `assay plan LANE --cold-witness`, then run it

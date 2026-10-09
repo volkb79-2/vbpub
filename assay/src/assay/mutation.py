@@ -106,6 +106,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import threading
 import time
@@ -201,6 +202,7 @@ __all__ = [
     "MutantJob",
     "MutationDiscoveryError",
     "InvalidRejudgeIdError",
+    "InvalidCandidateSelectionError",
     "CampaignPlanMismatchError",
     "MutationSite",
     "MutationTarget",
@@ -330,8 +332,23 @@ class MutationStateError(AssayError):
         )
 
 
+class MutationTerminalEvidenceError(MutationStateError):
+    """A present terminal record is malformed rather than an old cache miss."""
+
+
 class InvalidRejudgeIdError(AssayError):
     """A requested candidate id is absent from the current candidate set."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
+class InvalidCandidateSelectionError(AssayError):
+    """A requested pilot ID is absent from the current mutation plan."""
 
     def __init__(self, message: str) -> None:
         super().__init__(
@@ -881,7 +898,12 @@ class _CandidateEventBuffer:
 
 
 @contextmanager
-def progress_writer(path: Path) -> Iterator[ProgressWriter]:
+def progress_writer(
+    path: Path,
+    *,
+    parent_guard: Callable[[int], None] | None = None,
+    open_guard: Callable[[int, int], None] | None = None,
+) -> Iterator[ProgressWriter]:
     """Append one compact JSON object per line and flush every record.
 
     Round-2 review (blocker 2): a bad destination -- an existing directory,
@@ -899,24 +921,58 @@ def progress_writer(path: Path) -> Iterator[ProgressWriter]:
     identical mistake and ``--progress`` did not. Both now raise the same
     typed :class:`AssayError`, naming the path.
     """
+    expanded = Path(
+        os.path.normpath(os.path.abspath(os.path.expanduser(os.fspath(path))))
+    )
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        expanded.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise AssayError(
             f"cannot create the parent directory of the progress "
-            f"destination {str(path)!r}: {exc}",
+            f"destination {str(expanded)!r}: {exc}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
         ) from exc
+    parent_fd: int | None = None
+    descriptor: int | None = None
     try:
-        stream = path.open("a", encoding="utf-8")
+        parent_fd = os.open(
+            expanded.parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        )
+        if parent_guard is not None:
+            parent_guard(parent_fd)
+        descriptor = os.open(
+            expanded.name,
+            os.O_WRONLY
+            | os.O_APPEND
+            | os.O_CREAT
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW,
+            0o666,
+            dir_fd=parent_fd,
+        )
+        if open_guard is not None:
+            open_guard(parent_fd, descriptor)
+        stream = os.fdopen(descriptor, "a", encoding="utf-8")
+        descriptor = None
     except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_fd is not None:
+            os.close(parent_fd)
         raise AssayError(
             f"cannot open the progress destination {str(path)!r} for "
             f"appending: {exc}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
         ) from exc
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        if parent_fd is not None:
+            os.close(parent_fd)
+        raise
     try:
         with stream:
 
@@ -943,6 +999,9 @@ def progress_writer(path: Path) -> Iterator[ProgressWriter]:
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
         ) from exc
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
 
 
 #: (B064) The CLOSED progress vocabulary. Every record the stream carries
@@ -1411,7 +1470,13 @@ def _crash_diagnostic_tails(
     return tails
 
 
-def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -> None:
+def _write_mutation_state_record(
+    state_root: Path,
+    payload: Mapping[str, Any],
+    *,
+    state_root_fd: int | None = None,
+    commit_guard: Callable[[], None] | None = None,
+) -> None:
     """(B066) Write one record into *state_root*, whatever root that is.
 
     The parameter used to be the project root and the ``.assay/
@@ -1423,18 +1488,140 @@ def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -
     identity, so a shared store stays safe by construction.
     """
     parent = Path(state_root)
-    destination = parent / mutation_state_record_name(payload["candidate_id"])
-    parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".state-", dir=parent)
+    destination_name = mutation_state_record_name(payload["candidate_id"])
+    if state_root_fd is None:
+        parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".state-", dir=parent)
+    else:
+        # The CLI passes the directory descriptor admitted by its state-store
+        # lock. A path may be moved and replaced after the final identity
+        # check; descriptor-relative creation and replace keep this write in
+        # the directory that was locked instead of following that new path.
+        temporary_name = f".state-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=state_root_fd,
+        )
+    backup_name: str | None = None
+    published = False
+    commit_accepted = False
+
+    def sync_state_directory() -> None:
+        if state_root_fd is not None:
+            os.fsync(state_root_fd)
+            return
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def link_previous_record(name: str) -> None:
+        if state_root_fd is None:
+            os.link(
+                parent / destination_name,
+                parent / name,
+                follow_symlinks=False,
+            )
+        else:
+            os.link(
+                destination_name,
+                name,
+                src_dir_fd=state_root_fd,
+                dst_dir_fd=state_root_fd,
+                follow_symlinks=False,
+            )
+
+    def replace_state_name(source: str, destination: str) -> None:
+        if state_root_fd is None:
+            os.replace(parent / source, parent / destination)
+        else:
+            os.replace(
+                source,
+                destination,
+                src_dir_fd=state_root_fd,
+                dst_dir_fd=state_root_fd,
+            )
+
+    def unlink_state_name(name: str) -> None:
+        if state_root_fd is None:
+            os.unlink(parent / name)
+        else:
+            os.unlink(name, dir_fd=state_root_fd)
+
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(dict(payload), stream, sort_keys=True, separators=(",", ":"))
             stream.write("\n")
             stream.flush()
-        os.replace(temporary_name, destination)
-    except BaseException:
+            os.fsync(stream.fileno())
+        # The record becomes reusable at the atomic replacement below. Check
+        # after serialization and fsync so a deadline or termination during
+        # the write cannot commit a candidate outcome.
+        if commit_guard is not None:
+            commit_guard()
+        backup_candidate = f".state-backup-{os.getpid()}-{os.urandom(8).hex()}.tmp"
         try:
-            os.unlink(temporary_name)
+            link_previous_record(backup_candidate)
+        except FileNotFoundError:
+            pass
+        else:
+            backup_name = backup_candidate
+        # Preserve the previous state until the replacement is durable even
+        # when no deadline guard was requested. Backup creation can itself
+        # take time, so guarded commits recheck immediately before replace.
+        if commit_guard is not None:
+            commit_guard()
+
+        replace_state_name(temporary_name, destination_name)
+        published = True
+        sync_state_directory()
+        if commit_guard is not None:
+            commit_guard()
+        commit_accepted = True
+
+        if backup_name is not None:
+            unlink_state_name(backup_name)
+            backup_name = None
+            sync_state_directory()
+    except BaseException:
+        if not commit_accepted:
+            try:
+                if published:
+                    if backup_name is None:
+                        try:
+                            unlink_state_name(destination_name)
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        replace_state_name(backup_name, destination_name)
+                        backup_name = None
+                    sync_state_directory()
+                elif backup_name is not None:
+                    unlink_state_name(backup_name)
+                    backup_name = None
+                    sync_state_directory()
+            except OSError as rollback_error:
+                raise MutationStateError(
+                    "Assay could not roll back a candidate state record after "
+                    "its commit failed"
+                ) from rollback_error
+        elif backup_name is not None:
+            # The new record passed its deadline guard and is durable. A
+            # leftover hidden hard link is not a resumable record; try to
+            # remove it without undoing the accepted record.
+            try:
+                unlink_state_name(backup_name)
+                sync_state_directory()
+            except OSError:
+                pass
+        try:
+            if state_root_fd is None:
+                os.unlink(temporary_name)
+            else:
+                os.unlink(temporary_name, dir_fd=state_root_fd)
         except FileNotFoundError:
             pass
         raise
@@ -1686,6 +1873,239 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
 valid_hung_resource_evidence = _valid_hung_resource_evidence
 
 
+def _read_state_record_bytes(
+    state_root: Path,
+    identity: str,
+    *,
+    state_root_fd: int | None,
+) -> bytes | None:
+    """Read one bounded record from the admitted state directory when given."""
+    name = mutation_state_record_name(identity)
+    if state_root_fd is None:
+        return safeio.read_bounded_input(
+            Path(state_root), name, limit=MUTATION_STATE_RECORD_LIMIT
+        )
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=state_root_fd,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise MutationStateError(
+            f"mutation-state record {identity} could not be opened safely: {exc}"
+        ) from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise MutationStateError(
+                f"mutation-state record {identity} is not a regular file"
+            )
+        if info.st_size > MUTATION_STATE_RECORD_LIMIT:
+            raise MutationStateError(
+                f"mutation-state record {identity} exceeds the "
+                f"{MUTATION_STATE_RECORD_LIMIT}-byte limit"
+            )
+        chunks = bytearray()
+        while len(chunks) <= MUTATION_STATE_RECORD_LIMIT:
+            piece = os.read(
+                descriptor,
+                min(64 * 1024, MUTATION_STATE_RECORD_LIMIT + 1 - len(chunks)),
+            )
+            if not piece:
+                break
+            chunks.extend(piece)
+        if len(chunks) > MUTATION_STATE_RECORD_LIMIT:
+            raise MutationStateError(
+                f"mutation-state record {identity} exceeds the "
+                f"{MUTATION_STATE_RECORD_LIMIT}-byte limit"
+            )
+        return bytes(chunks)
+    except MutationStateError:
+        raise
+    except OSError as exc:
+        raise MutationStateError(
+            f"mutation-state record {identity} could not be read safely: {exc}"
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def _terminal_result_matches_bucket(
+    payload: Mapping[str, Any],
+    *,
+    equivalence_artifact: str | None = None,
+    baseline_equivalence_sha256: str | None = None,
+    kill_signal_artifact: str | None = None,
+    cold_witness: bool = False,
+    resource_limit_hit: bool = False,
+) -> bool:
+    """Validate persisted terminal facts and their classified bucket.
+
+    Missing terminal data is a legacy cache miss. Present malformed data is
+    corruption and raises ``ValueError`` for the state-record boundary to
+    report distinctly.
+    """
+    if "terminal_result" not in payload:
+        return False
+    terminal = payload["terminal_result"]
+    if not isinstance(terminal, Mapping) or set(terminal) != {
+        "outcome",
+        "reason_code",
+        "returncode",
+    }:
+        raise ValueError(
+            "terminal_result must contain exactly outcome, reason_code and returncode"
+        )
+    if not isinstance(terminal["outcome"], str):
+        raise ValueError("terminal_result.outcome must be a string")
+    if terminal["reason_code"] is not None and not isinstance(
+        terminal["reason_code"], str
+    ):
+        raise ValueError("terminal_result.reason_code must be a string or null")
+    if terminal["returncode"] is not None and type(terminal["returncode"]) is not int:
+        raise ValueError("terminal_result.returncode must be an integer or null")
+    try:
+        outcome = Outcome(terminal["outcome"])
+        reason = (
+            None
+            if terminal["reason_code"] is None
+            else ReasonCode(terminal["reason_code"])
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"terminal_result contains an unknown outcome or reason: {exc}") from exc
+    returncode = terminal["returncode"]
+    if outcome is Outcome.PASS and (
+        reason is not None or type(returncode) is not int
+    ):
+        raise ValueError("PASS terminal_result requires a null reason and integer returncode")
+    if outcome is Outcome.FAIL and (
+        reason is not ReasonCode.COMMAND_FAILED or type(returncode) is not int
+    ):
+        raise ValueError("FAIL terminal_result requires COMMAND_FAILED and integer returncode")
+    if outcome is Outcome.ERROR and returncode is not None:
+        raise ValueError("ERROR terminal_result requires a null returncode")
+    if outcome is Outcome.BUDGET_EXCEEDED and (
+        reason not in {ReasonCode.LANE_TIMEOUT, ReasonCode.CANDIDATE_HUNG}
+        or returncode is not None
+    ):
+        raise ValueError(
+            "BUDGET_EXCEEDED terminal_result requires a timeout reason and null returncode"
+        )
+
+    forced_bucket = payload.get("forced_bucket")
+    if "forced_bucket" in payload and forced_bucket != "crashed":
+        raise ValueError("forced_bucket must be 'crashed' when present")
+
+    equivalence_evidence = payload.get("equivalence_evidence")
+    if "equivalence_evidence" in payload:
+        if not isinstance(equivalence_evidence, Mapping) or set(equivalence_evidence) != {
+            "artifact",
+            "baseline_sha256",
+            "observed_sha256",
+        }:
+            raise ValueError("equivalence_evidence has missing or unknown fields")
+        artifact = equivalence_evidence["artifact"]
+        baseline_digest = equivalence_evidence["baseline_sha256"]
+        observed_digest = equivalence_evidence["observed_sha256"]
+        if not isinstance(artifact, str):
+            raise ValueError("equivalence_evidence.artifact must be a string")
+        if (
+            not isinstance(baseline_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", baseline_digest) is None
+        ):
+            raise ValueError("equivalence_evidence baseline digest must be SHA-256")
+        if observed_digest is not None and (
+            not isinstance(observed_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", observed_digest) is None
+        ):
+            raise ValueError(
+                "equivalence_evidence observed digest must be SHA-256 or null"
+            )
+    else:
+        artifact = baseline_digest = observed_digest = None
+
+    kill_signal_evidence = payload.get("kill_signal_evidence")
+    if "kill_signal_evidence" in payload:
+        if not isinstance(kill_signal_evidence, Mapping) or set(kill_signal_evidence) != {
+            "artifact",
+            "present",
+        }:
+            raise ValueError("kill_signal_evidence has missing or unknown fields")
+        if (
+            not isinstance(kill_signal_evidence["artifact"], str)
+            or type(kill_signal_evidence["present"]) is not bool
+        ):
+            raise ValueError("kill_signal_evidence has invalid field types")
+
+    bucket = payload.get("outcome_bucket")
+    if forced_bucket == "crashed" or resource_limit_hit:
+        expected_bucket = "crashed"
+    elif outcome is Outcome.ERROR:
+        expected_bucket = "crashed"
+    elif outcome is Outcome.BUDGET_EXCEEDED:
+        expected_bucket = (
+            "hung" if reason is ReasonCode.CANDIDATE_HUNG else "budget_exceeded"
+        )
+    elif outcome in {Outcome.PASS, Outcome.FAIL}:
+        if equivalence_artifact is not None:
+            if (
+                equivalence_evidence is None
+                or baseline_equivalence_sha256 is None
+                or artifact != equivalence_artifact
+                or baseline_digest != baseline_equivalence_sha256
+            ):
+                return False
+            if observed_digest is None:
+                expected_bucket = "crashed"
+            elif observed_digest == baseline_equivalence_sha256:
+                expected_bucket = "equivalent"
+            else:
+                expected_bucket = (
+                    "survived" if outcome is Outcome.PASS else "killed"
+                )
+        else:
+            if equivalence_evidence is not None:
+                return False
+            expected_bucket = "survived" if outcome is Outcome.PASS else "killed"
+
+        if kill_signal_artifact is not None:
+            if (
+                not isinstance(kill_signal_evidence, Mapping)
+                or kill_signal_evidence.get("artifact") != kill_signal_artifact
+            ):
+                return False
+            if expected_bucket == "killed" and not kill_signal_evidence["present"]:
+                expected_bucket = "crashed"
+        elif kill_signal_evidence is not None:
+            return False
+
+        if cold_witness and expected_bucket == "killed":
+            execution = payload.get("execution")
+            witness = execution.get("witness") if isinstance(execution, Mapping) else None
+            if not isinstance(witness, Mapping) or set(witness) != {
+                "node_id",
+                "when",
+                "outcome",
+                "session_exit_status",
+                "process_exit_status",
+            } or (
+                not isinstance(witness.get("node_id"), str)
+                or witness.get("when") != "call"
+                or witness.get("outcome") != "failed"
+                or type(witness.get("session_exit_status")) is not int
+                or witness["session_exit_status"] != 1
+                or type(witness.get("process_exit_status")) is not int
+                or witness["process_exit_status"] != 1
+            ):
+                return False
+    else:
+        return False
+    return bucket == expected_bucket
+
+
 def _load_validated_state_record(
     state_root: Path,
     job: MutantJob,
@@ -1693,6 +2113,10 @@ def _load_validated_state_record(
     judge: str,
     campaign_deadline_sha256: str | None = None,
     cold_witness: bool = False,
+    state_root_fd: int | None = None,
+    equivalence_artifact: str | None = None,
+    baseline_equivalence_sha256: str | None = None,
+    kill_signal_artifact: str | None = None,
 ) -> Mapping[str, Any] | str | None:
     """Return the persisted verdict for *job*, or why it cannot be used.
 
@@ -1718,10 +2142,10 @@ def _load_validated_state_record(
     # -- it is a descriptor walk, not a repository query -- so relocating
     # the store is a change of root plus a one-component relative name, with
     # the O_NOFOLLOW/bounded-read discipline entirely unchanged.
-    raw = safeio.read_bounded_input(
+    raw = _read_state_record_bytes(
         Path(state_root),
-        mutation_state_record_name(identity),
-        limit=MUTATION_STATE_RECORD_LIMIT,
+        identity,
+        state_root_fd=state_root_fd,
     )
     if raw is None:
         return None
@@ -1793,6 +2217,49 @@ def _load_validated_state_record(
             f"{payload['outcome_bucket']!r}"
         )
     try:
+        terminal_matches_bucket = _terminal_result_matches_bucket(
+            payload,
+            equivalence_artifact=equivalence_artifact,
+            baseline_equivalence_sha256=baseline_equivalence_sha256,
+            kill_signal_artifact=kill_signal_artifact,
+            cold_witness=cold_witness,
+            resource_limit_hit=(
+                resource_limit_evidence is not None
+                and resource_limit_evidence.limit_hit
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise MutationTerminalEvidenceError(
+            f"mutation-state record {identity} has invalid terminal evidence: {exc}"
+        ) from exc
+    if payload["outcome_bucket"] == "budget_exceeded":
+        # A timeout is reusable only when the complete candidate record was
+        # committed. Older full-run records may omit `execution`, and
+        # evidence may be absent on non-timeout legacy outcomes; neither
+        # compatibility shape proves a current per-candidate timeout. Treat
+        # these missing fields as a cache miss so resume schedules the site
+        # again instead of retaining an unresolved budget bucket forever.
+        if any(
+            key not in payload
+            for key in ("execution", "evidence", "mutated_file_sha256")
+        ):
+            return _RECORD_REJECTED
+        mutated_file_sha256 = payload["mutated_file_sha256"]
+        if (
+            not isinstance(mutated_file_sha256, str)
+            or _CANDIDATE_ID_RE.fullmatch(mutated_file_sha256) is None
+        ):
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid mutated_file_sha256"
+            )
+        expected_mutated_file_sha256 = candidate_identity_fields(job)[
+            "mutated_file_sha256"
+        ]
+        if mutated_file_sha256 != expected_mutated_file_sha256:
+            raise MutationStateError(
+                f"mutation-state record {identity} has stale mutated_file_sha256"
+            )
+    try:
         _execution_from_state_record(payload)
     except (TypeError, ValueError) as exc:
         raise MutationStateError(
@@ -1815,6 +2282,12 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} has invalid mutant evidence: {exc}"
             ) from exc
+    if not terminal_matches_bucket:
+        # Terminal evidence is required for every current record. A missing
+        # field is a legacy cache miss; contradictory evidence is never
+        # merged into this run's outcome. Run structural validation first so
+        # malformed records remain corruption errors, not cache misses.
+        return _RECORD_REJECTED
     # (B088) LAST, and deliberately so. Everything above asks "is this record
     # internally consistent with the identity it is filed under" -- a
     # tampered or corrupted record must still be surfaced as corruption
@@ -2629,6 +3102,8 @@ def run_mutation(
     #: Mode-B instances): the store went away with the worktree. It is a
     #: root, not a project root, and it is named for what it is.
     state_root: Path | str | None = None,
+    state_root_fd: int | None = None,
+    state_root_guard: Callable[[], None] | None = None,
     #: (B092) The native-R2 lane's explicitly resolved identity filter. `None`
     #: preserves the legacy B088 whole-tree digest; an empty tuple is an
     #: explicit filtered identity domain and must remain distinct from it.
@@ -2636,6 +3111,8 @@ def run_mutation(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    candidate_selection: frozenset[str] | None = None,
+    expected_selection_sha256: str | None = None,
     #: (B091/D-23, P7 A5) ``--rejudge <id>[,...]``: candidate ids to drop
     #: from the resume store BEFORE it is consulted, so each re-executes
     #: instead of replaying a possibly-stale verdict, exactly like a
@@ -2803,6 +3280,34 @@ def run_mutation(
     if not isinstance(resume, bool):
         raise ValueError(f"run_mutation resume must be a boolean, got {resume!r}")
     shard_specified = shard_index is not None or shard_count is not None
+    selection_specified = candidate_selection is not None
+    if selection_specified:
+        if not isinstance(candidate_selection, frozenset) or not candidate_selection:
+            raise ValueError("run_mutation candidate_selection must be a non-empty frozenset")
+        if any(
+            not isinstance(candidate, str)
+            or re.fullmatch(r"[0-9a-f]{64}", candidate) is None
+            for candidate in candidate_selection
+        ):
+            raise ValueError("run_mutation candidate_selection must contain SHA-256 candidate IDs")
+        if shard_specified:
+            raise ValueError("run_mutation candidate_selection cannot be combined with sharding")
+        if len(candidate_selection) > max_mutants:
+            raise ValueError(
+                "run_mutation candidate_selection exceeds max_mutants"
+            )
+        if expected_selection_sha256 is not None and re.fullmatch(
+            r"[0-9a-f]{64}", expected_selection_sha256
+        ) is None:
+            raise ValueError("run_mutation expected_selection_sha256 must be a SHA-256 digest")
+        if state_root is None:
+            raise ValueError(
+                "run_mutation candidate_selection requires the caller's authoritative state_root"
+            )
+    elif expected_selection_sha256 is not None:
+        raise ValueError(
+            "run_mutation expected_selection_sha256 requires candidate_selection"
+        )
     if state_root is None and (resume or shard_specified):
         raise ValueError(
             "run_mutation resume requires the caller's authoritative "
@@ -2831,7 +3336,10 @@ def run_mutation(
             f"{sorted(MUTATION_BUCKETS)}"
         )
     if state_root is not None:
-        Path(state_root).mkdir(parents=True, exist_ok=True)
+        if state_root_guard is not None:
+            state_root_guard()
+        if state_root_fd is None:
+            Path(state_root).mkdir(parents=True, exist_ok=True)
 
     if baseline.outcome is not Outcome.PASS:
         return None
@@ -3015,16 +3523,48 @@ def run_mutation(
         if total == 0:
             # A source edit can remove the last mutation site. Its former id
             # is still invalid input; do not turn the request into NO_MUTANTS.
+            if selection_specified:
+                raise InvalidCandidateSelectionError(
+                    "candidate selection contains IDs absent from the current mutation plan: "
+                    + ", ".join(sorted(candidate_selection or ()))
+                )
             if rejudge_ids:
                 _reject_unknown_rejudge_ids(rejudge_ids, set())
             _end(_no_buckets, reason="no_candidates", total=0)
             return Mutation(candidate_count=0, total=0, candidate_ids=())
 
-        selected_indices = list(range(total))
+        # C23: discovery → campaign digest (full list) → ledger placement → selection/shard → resume.
+        current_ids = [candidate_id(job) for job in job_list]
+        if selection_specified:
+            assert candidate_selection is not None
+            unknown = candidate_selection - set(current_ids)
+            if unknown:
+                raise InvalidCandidateSelectionError(
+                    "candidate selection contains IDs absent from the current mutation plan: "
+                    + ", ".join(sorted(unknown))
+                )
+            selected_indices = [
+                index for index, identity in enumerate(current_ids)
+                if identity in candidate_selection
+            ]
+            selection_digest = plan_sha256(
+                [current_ids[index] for index in selected_indices]
+            )
+            if (
+                expected_selection_sha256 is not None
+                and selection_digest != expected_selection_sha256
+            ):
+                raise InvalidCandidateSelectionError(
+                    "candidate selection digest differs from the planned selection: "
+                    f"expected {expected_selection_sha256}, observed {selection_digest}"
+                )
+            total = len(selected_indices)
+        else:
+            selected_indices = list(range(total))
         if shard_specified:
             assert shard_index is not None and shard_count is not None
             selected_indices = select_mutation_shard(
-                [candidate_id(job) for job in job_list],
+                current_ids,
                 index=shard_index,
                 count=shard_count,
             )
@@ -3092,6 +3632,8 @@ def run_mutation(
         if resume:
             assert isinstance(state_root, Path)
             assert judge is not None
+            if state_root_guard is not None:
+                state_root_guard()
             # (B091/D-23, P7 A5) `--rejudge <id>[,...]` refuses BEFORE any
             # record is even loaded, the moment a named id does not match
             # ANY of this run's own current candidate identities. Candidate
@@ -3109,12 +3651,22 @@ def run_mutation(
                     rejudge_ids, {candidate_id(job) for job in selected_jobs}
                 )
             for job in selected_jobs:
+                if state_root_guard is not None:
+                    state_root_guard()
                 record = _load_validated_state_record(
                     state_root,
                     job,
                     judge=judge,
                     campaign_deadline_sha256=campaign_deadline_sha256,
                     cold_witness=cold_witness,
+                    state_root_fd=state_root_fd,
+                    equivalence_artifact=equivalence_artifact,
+                    baseline_equivalence_sha256=(
+                        hashlib.sha256(baseline_equivalence).hexdigest()
+                        if baseline_equivalence is not None
+                        else None
+                    ),
+                    kill_signal_artifact=kill_signal_artifact,
                 )
                 if record is _RECORD_REJECTED:
                     rejected_total += 1
@@ -3177,6 +3729,11 @@ def run_mutation(
                     "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
                     **({"judge_sha256": judge} if judge is not None else {}),
+                    **(
+                        {"selection_sha256": selection_digest}
+                        if selection_specified
+                        else {}
+                    ),
                 }
             )
             write_progress(
@@ -3192,7 +3749,10 @@ def run_mutation(
                 }
             )
 
-        result_payload = _execute_mutation_jobs(
+        # Keep the executor's partial-campaign fact separate from its outcome
+        # buckets: a terminal per-candidate timeout belongs in
+        # `budget_exceeded` without making the campaign incomplete.
+        result_payload, complete_campaign = _execute_mutation_jobs(
             job_list=pending_jobs,
             deadline=deadline,
             jobs=jobs,
@@ -3211,6 +3771,8 @@ def run_mutation(
             total=len(pending_jobs),
             candidate_count=len(pending_jobs),
             state_root=state_root,
+            state_root_fd=state_root_fd,
+            state_root_guard=state_root_guard,
             judge=judge,
             liveness_events_dir=liveness_events_dir,
             liveness_plugin_path=(
@@ -3234,8 +3796,14 @@ def run_mutation(
 
         if resumed_records:
             result_payload = merge_mutations(result_payload, resumed_records)
+        if complete_campaign:
+            # `_execute_mutation_jobs` has returned by now; resume merging can
+            # still take time and must remain inside the persisted deadline.
+            deadline.remaining()
         if write_progress is not None and resumed_records:
             write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
+            if complete_campaign:
+                deadline.remaining()
         if selected_jobs or not shard_specified:
             #
             # B031/A-320: `mutation.candidate_ids` has existed in the
@@ -3269,6 +3837,8 @@ def run_mutation(
                 result_payload,
                 budget_per_candidate_derived_s=budget_per_candidate_seconds,
             )
+        if complete_campaign:
+            deadline.remaining()
         if write_progress is not None:
             # (B065) The sweep's own terminal. Without it a reader cannot
             # tell a finished sweep from one whose process died between two
@@ -3289,6 +3859,8 @@ def run_mutation(
                 reason=None,
                 total=total,
             )
+            if complete_campaign:
+                deadline.remaining()
         return result_payload
 
 
@@ -3323,6 +3895,8 @@ def _execute_mutation_jobs(
     total: int,
     candidate_count: int,
     state_root: Path | str | None = None,
+    state_root_fd: int | None = None,
+    state_root_guard: Callable[[], None] | None = None,
     #: (B088) This sweep's judge identity, resolved ONCE by the caller and
     #: written onto every record. Required whenever *state_root* is set --
     #: a record written without one would be indistinguishable from a
@@ -3344,7 +3918,7 @@ def _execute_mutation_jobs(
     r2_facts: ReceiptFacts | None = None,
     coverage_facts: ReceiptFacts | None = None,
     manifest_node_ids: Sequence[str] = (),
-) -> Mutation:
+) -> tuple[Mutation, bool]:
 
     if job_list:
         _read_candidate_resource_counters()
@@ -3657,6 +4231,10 @@ def _execute_mutation_jobs(
                 raise dirt
             if decode_error is not None:
                 raise decode_error
+        # Snapshot teardown owns filesystem cleanup and may outlive the last
+        # in-snapshot deadline check. A result is not eligible for a terminal
+        # bucket until cleanup has completed within the lane budget.
+        deadline.remaining()
         teardown_finished_monotonic = time.monotonic()
         run = _MutantRun(
             result=result,
@@ -3935,9 +4513,16 @@ def _execute_mutation_jobs(
         )
 
     def _record_candidate(position: int, run: _MutantRun) -> Mapping[str, Any]:
+        # Futures can finish before the deadline and sit ready while the
+        # main thread is busy draining earlier results. Check at the actual
+        # classification boundary, not only in the worker.
+        deadline.remaining()
         # The same classifier decides whether a witness is reusable and which
         # terminal bucket this complete campaign records.
         outcome_bucket = _classified_bucket(run)
+        # Classification itself is main-thread work and can cross the lane
+        # boundary. Refuse before staging a candidate progress event or state.
+        deadline.remaining()
         # B111: diagnostic evidence only (never a classification input), built
         # once so progress and state carry the identical resources object.
         resources = {
@@ -3964,39 +4549,107 @@ def _execute_mutation_jobs(
                 "a mutation state record cannot be written without "
                 "the sweep's judge identity"
             )
+            if state_root_guard is not None:
+                state_root_guard()
+            equivalence_record_evidence = None
+            if equivalence_artifact is not None:
+                if baseline_equivalence is None:
+                    raise MutationStateError(
+                        "equivalence artifact lacks its baseline bytes"
+                    )
+                baseline_digest = hashlib.sha256(baseline_equivalence).hexdigest()
+                equivalence_record_evidence = {
+                    "artifact": equivalence_artifact,
+                    "baseline_sha256": baseline_digest,
+                    "observed_sha256": (
+                        None
+                        if run.equivalence_bytes is None
+                        else hashlib.sha256(run.equivalence_bytes).hexdigest()
+                    ),
+                }
+                if outcome_bucket == "equivalent" and (
+                    run.equivalence_bytes is None
+                    or run.equivalence_bytes != baseline_equivalence
+                ):
+                    raise MutationStateError(
+                        "equivalent candidate lacks matching declared artifact evidence"
+                    )
+            elif outcome_bucket == "equivalent":
+                raise MutationStateError(
+                    "equivalent candidate lacks a declared equivalence artifact"
+                )
+            kill_signal_record_evidence = (
+                {
+                    "artifact": kill_signal_artifact,
+                    "present": run.kill_signal is not None,
+                }
+                if kill_signal_artifact is not None
+                else None
+            )
+            record = {
+                **_progress_event(
+                    candidate_index=position,
+                    candidate_total=total,
+                    job=job_list[position],
+                ),
+                "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+                "judge_sha256": judge,
+                "source_sha256": hashlib.sha256(
+                    job_list[position].original_text.encode("utf-8")
+                ).hexdigest(),
+                "replacement_sha256": job_list[position].site.replacement_sha256,
+                "lineno": job_list[position].site.lineno,
+                "description": job_list[position].site.description,
+                "outcome_bucket": outcome_bucket,
+                **(
+                    {"forced_bucket": run.forced_bucket}
+                    if run.forced_bucket is not None
+                    else {}
+                ),
+                "terminal_result": {
+                    "outcome": run.result.outcome.value,
+                    "reason_code": (
+                        run.result.reason_code.value
+                        if run.result.reason_code is not None
+                        else None
+                    ),
+                    "returncode": run.result.returncode,
+                },
+                "execution": run.execution.to_dict(),
+                "evidence": run.evidence.to_dict() if run.evidence is not None else None,
+                "resources": resources,
+                "resource_limit_evidence": resource_limit_evidence.to_dict(),
+                **(
+                    {"liveness_resource_evidence": run.liveness_resource_evidence}
+                    if run.liveness_resource_evidence is not None
+                    else {}
+                ),
+                **(
+                    {"campaign_deadline_sha256": campaign_deadline_sha256}
+                    if campaign_deadline_sha256 is not None
+                    else {}
+                ),
+                **(
+                    {"equivalence_evidence": equivalence_record_evidence}
+                    if equivalence_record_evidence is not None
+                    else {}
+                ),
+                **(
+                    {"kill_signal_evidence": kill_signal_record_evidence}
+                    if kill_signal_record_evidence is not None
+                    else {}
+                ),
+                **_crash_diagnostic_tails(outcome_bucket, run.result),
+            }
+            # Keep the last check directly at the persistence boundary. If
+            # deadline expiry or termination arrived while the record was
+            # assembled, leave this candidate unclassified for resume.
+            deadline.remaining()
             _write_mutation_state_record(
                 Path(state_root),
-                {
-                    **_progress_event(
-                        candidate_index=position,
-                        candidate_total=total,
-                        job=job_list[position],
-                    ),
-                    "schema_version": MUTATION_STATE_SCHEMA_VERSION,
-                    "judge_sha256": judge,
-                    "source_sha256": hashlib.sha256(
-                        job_list[position].original_text.encode("utf-8")
-                    ).hexdigest(),
-                    "replacement_sha256": job_list[position].site.replacement_sha256,
-                    "lineno": job_list[position].site.lineno,
-                    "description": job_list[position].site.description,
-                    "outcome_bucket": outcome_bucket,
-                    "execution": run.execution.to_dict(),
-                    "evidence": run.evidence.to_dict() if run.evidence is not None else None,
-                    "resources": resources,
-                    "resource_limit_evidence": resource_limit_evidence.to_dict(),
-                    **(
-                        {"liveness_resource_evidence": run.liveness_resource_evidence}
-                        if run.liveness_resource_evidence is not None
-                        else {}
-                    ),
-                    **(
-                        {"campaign_deadline_sha256": campaign_deadline_sha256}
-                        if campaign_deadline_sha256 is not None
-                        else {}
-                    ),
-                    **_crash_diagnostic_tails(outcome_bucket, run.result),
-                },
+                record,
+                state_root_fd=state_root_fd,
+                commit_guard=deadline.remaining,
             )
         # State is committed as soon as the future completes. Candidate
         # progress is staged and emitted in order by the caller below.
@@ -4112,6 +4765,7 @@ def _execute_mutation_jobs(
         if any(budget_exceeded_mask)
         else None
     )
+    complete_campaign = not any(budget_exceeded_mask)
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
         # and `collect_mutation_sites` guarantees that list is
@@ -4128,12 +4782,16 @@ def _execute_mutation_jobs(
                 )
             )
             continue
+        if complete_campaign:
+            deadline.remaining()
         run = results[position]
         assert run is not None
         # `_classified_bucket` preserves O8's exact legacy classifier when
         # no equivalence artifact is declared, and applies the declared
         # artifact/signal rules on the extended path.
         bucket = _classified_bucket(run)
+        if complete_campaign:
+            deadline.remaining()
         assert run.resource_limit_evidence is not None
         kill_signal = run.kill_signal if bucket == "killed" else None
         buckets[bucket].append(
@@ -4146,11 +4804,14 @@ def _execute_mutation_jobs(
             )
         )
 
-    return Mutation(
+    mutation = Mutation(
         candidate_count=candidate_count,
         total=total,
         **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
     )
+    if complete_campaign:
+        deadline.remaining()
+    return mutation, complete_campaign
 
 
 #: (B046) The upstream `MutantStatus` -> assay-bucket map, each direction

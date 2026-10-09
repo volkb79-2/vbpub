@@ -1385,6 +1385,69 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Non-qualifying candidate pilots (B118)
+
+`assay run --candidates-file` measures a selected subset of a native R2 plan.
+That subset cannot support the lane's normal qualification claim, so pilot mode
+prints a separate JSON summary and never writes a verdict artifact. A standard
+verdict is the input to verification and downstream release decisions; omitting
+it prevents a partial candidate inventory from being mistaken for a complete
+PASS. The summary says `qualifying: false` and reports each bucket, selected
+candidate, and any unresolved ID.
+
+Exit code **6** is intentionally outside the ordinary `EXIT_CODES` map. It
+means the selected pilot inventory completed, regardless of whether R2 passed
+or found survivors. It does not change the lane's verdict vocabulary or turn a
+survivor into a pass. Incomplete pilots return the underlying refusal or
+failure code, and a non-completed PASS is converted to ERROR.
+
+Pilot runs omit R3 because the selected R2 sample is exploratory; it cannot
+establish the lane-wide canary claim. They do persist one ordinary mutation
+state record per completed candidate, so an interrupted sample can resume.
+The `PILOT-STATE` sentinel binds that store to the plan-ordered selection and
+lane. A different selection, lane, or pre-existing non-pilot store refuses.
+Keep pilot state separate from qualifying campaign state; the later state
+import workflow refuses this sentinel. The standalone selector bounds seeds
+to 128 printable ASCII characters and checks that its output fits the same
+1 MiB limit the run command accepts. Assay takes a nonblocking exclusive
+`flock` on the admitted state-directory descriptor from preflight through the
+run. It also takes a path lock under a private directory in the system `/tmp`,
+independent of `TMPDIR`, so processes using different temporary-directory
+settings still lock the same requested state path. This lock survives
+replacement of the store's parent. The descriptor `flock` coordinates callers
+that reach the same directory inode through independent clones or path aliases.
+If the store or its parent is renamed, the open descriptor keeps the old store
+locked; the path identity check refuses certification if the requested path
+now names a different directory. All state-record reads and writes use that
+admitted descriptor. After building a pilot summary, Assay re-reads and
+validates `PILOT-STATE`, then checks the path identity immediately before
+printing the result. Progress output cannot name the sentinel, a mutation
+record, or another link to a state file.
+
+The standalone selector runs Git with a closed configuration environment and
+checks that Git reports the supplied repository root. It requires a clean
+checkout, verifies the plan's commit and tree, reads candidate source bytes
+from those immutable Git objects, and checks the source hashes before
+selection. It pins both output parent directories before collision checks;
+atomic writes stay relative to those descriptors even if a parent symlink is
+later redirected. The selector stages both outputs, rechecks commit, tree and
+status immediately before publishing, replaces the candidates file first,
+then publishes the digest-bound report as the commit marker. Each row's
+`source_sha256` and each known-hard scanner span are checked against the exact
+committed bytes and declared function/operator. A candidate with any bucket
+can be resumed only when its terminal command facts agree with that bucket;
+legacy or contradictory records are re-executed. The selector takes
+nonblocking `flock` locks on both pinned output-parent directory descriptors,
+ordered by device and inode. A selector writing in either directory refuses
+until the current publication finishes. Directory-inode locks coordinate
+symlink aliases and do not depend on `TMPDIR`. It checks the requested parent
+identity before and after publishing. A parent retarget that is still present
+at either check returns an error; a transient retarget restored before the
+post-check can complete with the pair written through the pinned descriptors.
+Exit 2 can occur after a complete pair was written, so consumers use the pair
+only after exit 0. See the [pilot command and
+summary example](CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+
 ### Selective reuse replays a current failure witness (B106)
 
 `--resume` and `--reuse-from` answer different questions. Resume may reuse a
@@ -2421,6 +2484,15 @@ snapshot cannot resolve `HEAD~1` (an R2 mutant or R3 canary child's `HEAD~1`
 is the judged commit itself). Snapshot refs and tags are intentionally not
 copied.
 
+The checker parses its bounded report once, checks B105's source bindings, and
+then applies the shipped `verify_document` validation to that same object
+before acceptance. This avoids treating an earlier `assay verify` read as
+evidence for different bytes read later by the checker. A complete R2 result
+also requires the six terminal outcome buckets to contain every candidate in
+the ordered plan exactly once. Candidate counts alone cannot distinguish
+complete classification from a missing result paired with a duplicate or
+foreign one.
+
 **S1: the same-commit `tester-unified` receipt.** The full lane refuses to
 start unless the registered `tester-unified` gate passed at the very commit and
 tree it is about to judge. After a green container, and only if HEAD and its
@@ -2510,6 +2582,53 @@ The [consumer guide](CONSUMERS.md#assays-own-full-source-self-qualification-b105
 shows how to preserve the log and inspect the report. Decision A-462 records
 why this separate lane supersedes A-133's former permanent R0-only limit while
 leaving the ordinary release lane unchanged.
+
+### Registered B110 pilot and survivor-screen lanes (B118 P7b)
+
+The separately registered `b110-pilot` and `b110-screen` lanes measure native
+R2 work without claiming qualification. Both use the B105 bare-host launcher
+and its verified, detached `tester-unified` child so they retain the host
+cgroup visibility required by selected native candidates.
+
+The pilot initializes its two-hour campaign after exact-source wheel setup and
+before planning or selection. Campaign initialization, planning, selection and
+Assay execution share a hard 90-minute per-invocation cap; planning and
+selection are also bounded by the remaining campaign deadline. Assay execution
+uses only the remaining cap, followed by at most 30 seconds for termination.
+The persisted two-hour campaign remains the absolute bound across retries. The
+selector binds the chosen subset to the current plan, commit, tree and source
+bytes. The run uses three pilot jobs, cold witnesses, resume and the
+pilot-specific state directory; exit 6 plus the completion marker means every
+selected candidate has a disposition. Survivors and other non-passing outcomes
+remain measurement results. A campaign refusal, timeout failsafe or incomplete
+exit cannot be certified by the wrapper. The run-gate 2h20m outer bound
+includes a planned build/venv allowance of at most 10 minutes, pending
+measurement by the registered gate, plus the campaign and timeout cleanup
+margins.
+
+The survivor screen plans the full current inventory, removes any prior
+verdict before planning, then runs with cold witnesses and resume state. The
+Assay lane's 5h budget is its effective work limit; its 7h10m timeout is a
+failure-only failsafe, followed by a 7h15m container wait and 7h30m run-gate
+command timeout under the 8h run-gate budget. It has no campaign deadline: a
+retry resumes its same-tree state, while a new commit has a distinct state
+identity. Run stdout and stderr are retained in
+`.assay/b110-screen-run.log`; the driver calls `assay verify` and the
+independent `b110_screen_report_check.py`, which also requires the verdict's
+exit code to match the actual `assay run` status. The checker requires R0 and
+R1 PASS, a native R2 payload with candidate IDs matching the full ordered plan,
+no R2 `LANE_TIMEOUT`, and an R2 status of `PASS` or `FAIL`. An R2 `ERROR`,
+`BUDGET_EXCEEDED` or `INCONCLUSIVE` status cannot complete the screen. A
+complete screen may contain survivors and may therefore retain a nonzero Assay
+run exit; the outer gate records completion of the measurement, not an R2 pass.
+The screen checker applies `verify_document` to the same bounded report object
+it uses for the lane, exit-status and plan checks, and requires all six
+terminal outcome buckets to cover the current plan exactly once. This binds
+the report's structural validity and its full candidate accounting to one
+snapshot of the file.
+The screen is not B105 evidence except through B119's import path, whose use
+for pre-deadline records awaits the operator's D7 decision. See the [registered consumer commands and
+artifacts](CONSUMERS.md#registered-pilot-and-survivor-screen-gates).
 
 Loop guards (B113, A-466). Time never classifies a candidate (A-464), so a
 mutant that spins must fail by itself: a CPU-spinning candidate keeps the

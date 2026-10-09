@@ -105,8 +105,9 @@ later commit, a docs-only or merge commit included, needs a fresh `tester-unifie
 run. `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=host busy — rerun: <names>`
 when another `run-gate-*` container is running. Run-gate maps this infrastructure
 status to `ERROR`, not to an Assay test failure; retry after the host is clear.
-The three registered Assay lanes share one run-gate lock, and a separate lock
-in the Git common directory serializes B105 callers across container `/tmp`
+The five registered Assay lanes share one run-gate lock, and a separate lock
+in the Git common directory serializes full-source qualification, pilot and
+screen callers across container `/tmp`
 namespaces. The wrapper's one-time scan is not an atomic lease against another
 project starting a gate afterward. The coordinator must keep all other
 registered gates serial until B105 finishes; a concurrent cross-project gate
@@ -269,6 +270,11 @@ tester-unified receipt, deadline and manifest through bounded no-follow
 regular-file descriptors. Report, plan and receipt limits are 64 MiB, 16 MiB
 and 4 KiB; final-component symlinks and special files are refused. It validates
 D1-D4 before parsing the R2 plan, then checks the selected ordered-plan digest.
+The checker validates the shipped report schema on the same parsed JSON object
+it uses for source and plan checks; a separate `assay verify` run cannot certify
+a later read of the report. For a complete R2 result, all six terminal outcome
+buckets must contain every candidate in the ordered plan exactly once. Missing,
+duplicate or foreign outcomes are refused even when their aggregate counts match.
 
 Before starting R2, the full gate runs the registered R0/R1 coverage
 preflight against the same commit. To run that check by itself while preparing
@@ -1040,6 +1046,213 @@ interest is R2: R1 is the tier that writes `judgment.r1.allow_test_path_targets`
 so an R2-only lane would relax its own target gate with nothing in the verdict
 admitting it, which is the auditability the flag exists to provide. Declare
 `rigor = ["R0", "R1", "R2"]` and both tiers honor the one declaration.
+
+## Run a non-qualifying native-R2 pilot (B118)
+
+Use a pilot to measure a deterministic subset of a native R2 plan before
+committing to a full campaign. This is measurement only; it does not qualify
+B105. The selector requires the JSON from `assay plan`
+for the current Git HEAD and tree, and refuses a dirty checkout. It reads the
+source files named by that plan, checks every row's `source_sha256`, and records
+the plan commit, tree, raw plan digest, and selected IDs in its report. A plan
+from an older commit is refused even when its planned source files are
+unchanged:
+
+### Registered pilot and survivor-screen gates
+
+Use the registered lanes for reviewable gate evidence:
+
+```sh
+./run-gate.py b110-pilot
+./run-gate.py b110-screen
+```
+
+`b110-pilot` initializes a two-hour campaign after building the exact commit,
+then plans and selects candidates inside that campaign. It runs the selected
+subset with three pilot jobs, cold witnesses, resume state and a progress
+stream. Campaign initialization, planning, selection and Assay execution share
+a hard 90-minute per-invocation cap, and planning and selection are bounded by
+the remaining campaign deadline. Assay execution uses only the remaining cap,
+followed by at most 30 seconds for termination. The persisted campaign deadline
+is the absolute two-hour bound across retries. Exit 6 is a
+complete pilot measurement, including when
+candidates survive; it is not an R2 pass or B105 qualification. The gate
+refuses campaign initialization refusal, timeout, a missing completion marker
+or any exit other than 6. It retains the run summary and stderr at
+`.assay/b110-pilot-summary.json` and `.assay/b110-pilot-run.log`.
+
+Retries for the same commit reuse the persisted campaign deadline and mutation
+state; the progress stream appends resumable work. When piloting a new commit,
+preserve the old `.assay/b110-pilot-state` and
+`.assay/progress-b110-pilot.jsonl` with that commit's report (for example, move
+them to names suffixed with the old commit ID) before starting. The registered
+gate derives its campaign name from the source commit, but the state and
+progress paths are stable and cannot be reused across commits. Keep the old
+files; do not edit or delete their contents.
+
+`b110-screen` removes any prior verdict before planning the full current
+candidate inventory, then resumes a non-qualifying full-plan screen with cold
+witnesses. Assay's declared lane budget caps work at 5h; the 7h10m inner
+timeout, 7h15m container wait and 7h30m run-gate command timeout are
+failure-only cleanup bounds within the 8h run-gate budget. Each retry keeps
+the same `.assay/b110-screen-state`. Run stdout and stderr are retained in
+`.assay/b110-screen-run.log`. A complete survivor result is accepted as a
+measurement even when `assay run` exits 1, but only after `assay verify` and
+the screen report checker confirm the verdict exit status matches the actual
+run status, R0/R1 PASS, the exact ordered R2 candidate inventory for the
+current commit/tree, no R2 `LANE_TIMEOUT`, and a completed R2 `PASS` or `FAIL`
+outcome. R2 `ERROR`, `BUDGET_EXCEEDED` and `INCONCLUSIVE` outcomes are not a
+completed screen. An R0 or R1 failure, partial inventory, timeout or stale
+verdict cannot emit the screen completion marker.
+The screen checker validates the report schema and its lane, exit status and
+plan against that same parsed snapshot. Its six terminal outcome buckets must
+account for every planned candidate exactly once; counts alone do not establish
+complete classification.
+The lane's report is never B105 evidence except through the B119 import path;
+using it for pre-deadline records awaits the D7 decision.
+
+The local command sequence below shows the same timing bounds for a manual
+investigation. It uses a separate `manual-b110-pilot-<commit12>` campaign and
+commit-specific state, progress, and output files under
+`.assay/manual-b110-pilot-<commit12>/`. Assay stores that campaign's deadline
+at `.assay/campaign-deadline-manual-b110-pilot-<commit12>.json`; these paths
+cannot create or reuse the registered gate's campaign deadline, state,
+progress, or artifacts. Its output is not registered gate evidence.
+
+```sh
+mkdir -p .assay
+commit12="$(git rev-parse --short=12 HEAD)"
+manual_dir=".assay/manual-b110-pilot-${commit12}"
+mkdir -p "$manual_dir"
+campaign="manual-b110-pilot-${commit12}"
+deadline=".assay/campaign-deadline-${campaign}.json"
+pilot_state="$manual_dir/state"
+pilot_progress="$manual_dir/progress.jsonl"
+pilot_plan="$manual_dir/plan.json"
+pilot_candidates="$manual_dir/candidates.txt"
+pilot_selection="$manual_dir/selection.json"
+pilot_summary="$manual_dir/summary.json"
+pilot_log="$manual_dir/run.log"
+pilot_started_s=$SECONDS
+if timeout --verbose --signal=TERM --kill-after=30s 5400s \
+    assay campaign init --file assay.toml --campaign "$campaign" \
+    --lane self-qualification --hours 2 --state-dir "$pilot_state"; then
+  :
+else
+  pilot_status=$?
+  printf 'campaign initialization failed: %s\n' "$pilot_status" >&2
+  exit "$pilot_status"
+fi
+pilot_remaining_s() {
+  local now_s="$1"
+  local work_remaining_s=$((90 * 60 - (now_s - pilot_started_s)))
+  local campaign_remaining_s
+  campaign_remaining_s="$(python -c 'import json,sys,math,datetime as d; e=d.datetime.strptime(json.load(open(sys.argv[1]))["expires_at_utc"],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc); print(max(0, math.floor((e-d.datetime.now(d.timezone.utc)).total_seconds())))' "$deadline")"
+  if (( work_remaining_s < campaign_remaining_s )); then
+    printf '%s\n' "$work_remaining_s"
+  else
+    printf '%s\n' "$campaign_remaining_s"
+  fi
+}
+run_pilot_phase() {
+  local budget_s
+  budget_s="$(pilot_remaining_s "$SECONDS")"
+  (( budget_s > 0 )) || return 124
+  timeout --verbose --signal=TERM --kill-after=30s "${budget_s}s" "$@"
+}
+set +e
+run_pilot_phase assay plan self-qualification --file assay.toml \
+  > "$pilot_plan"
+phase_status=$?
+set -e
+(( phase_status == 0 )) || exit "$phase_status"
+set +e
+run_pilot_phase python tools/b110_pilot_select.py \
+    --plan "$pilot_plan" \
+    --repo-root "$(git rev-parse --show-toplevel)" \
+    --out "$pilot_candidates" \
+    --report "$pilot_selection"
+phase_status=$?
+set -e
+(( phase_status == 0 )) || exit "$phase_status"
+pilot_run_s="$(pilot_remaining_s "$SECONDS")"
+(( pilot_run_s > 0 )) || exit 124
+if timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_s}s" \
+    assay run self-qualification --file assay.toml \
+    --candidates-file "$pilot_candidates" \
+    --pilot-jobs 3 \
+    --state-dir "$pilot_state" \
+    --progress "$pilot_progress" \
+    --cold-witness --resume --campaign-deadline "$deadline" \
+    > "$pilot_summary" 2> "$pilot_log"; then
+  pilot_status=0
+else
+  pilot_status=$?
+fi
+pilot_after_run_s="$(pilot_remaining_s "$SECONDS")"
+if (( pilot_after_run_s <= 0 )); then
+  pilot_status=124
+fi
+printf 'pilot exit: %s\n' "$pilot_status"
+if (( pilot_status >= 124 )); then
+  printf 'pilot timeout is a failsafe; do not interpret the summary\n' >&2
+  exit "$pilot_status"
+fi
+cat "$pilot_summary"
+```
+
+This is the campaign-bound B110 pilot shape: the deadline is initialized over
+the full `self-qualification` plan before selection, and campaign initialization,
+planning, selection and execution share the 90-minute per-invocation work cap.
+The run uses cold
+witnesses. The registered `b110-pilot` lane uses the B105 bare-host launcher
+to create the controlled tester-unified child; use it when the result needs
+registered evidence.
+
+Exit **6** means R2 produced a mutation payload, did not end with
+`LANE_TIMEOUT`, and every selected candidate has a disposition. It does not
+mean R2 passed: a complete sample can include survivors, crashes, equivalents,
+hangs, or per-candidate budget outcomes. A recorded per-candidate budget
+outcome is a disposition and is not unresolved, even if the overall lane ends
+with `LANE_TIMEOUT`; that overall timeout still makes `completed` false and
+returns exit **4**. Read `buckets`, `r2`, and `unresolved` in the summary.
+Other incomplete runs return the ordinary refusal or failure code and report
+unresolved candidates when a summary can be produced.
+
+The selector accepts a printable ASCII `--seed` of at most 128 characters.
+It refuses a selected-ID file larger than Assay's 1 MiB input limit before
+writing either output, so its candidate file can be passed directly to
+`assay run`.
+The selector takes nonblocking locks on the candidate and report parent
+directories while it publishes the pair. If another selector is writing in
+either directory, this invocation refuses; retry it after the other selector
+finishes. The selector pins both directories and checks that the requested
+paths still name them before and after publication. Directory locks also
+coordinate symlink aliases and ignore different `TMPDIR` settings.
+Use the candidate file only if the selector exits 0. A refusal or cleanup and
+identity error can return 2 after leaving temporary files or a complete pair
+in the pinned directories.
+
+A pilot never writes a verdict and never runs R3. Do not use its summary as
+qualification evidence. Give each selection its own `--state-dir`; the
+`PILOT-STATE` sentinel binds the directory to that lane and selection. To
+resume an interrupted pilot, repeat the same lane, candidate file, and state
+directory with `--resume`. A different selection or a directory containing
+ordinary mutation records is refused. Keep the entire pilot state directory
+separate from qualifying campaign state. Assay takes a nonblocking exclusive
+lock before preflight and holds it through the run. For state under the
+checkout or external, it also takes a path lock under a private directory in
+the system `/tmp`, independent of `TMPDIR`; that lock survives replacement of
+the store's parent. A nonblocking `flock` on the admitted directory descriptor
+coordinates path aliases that name the same store inode. A concurrent run
+refuses promptly with a retry-after-completion message; it does not wait
+outside the lane budget. Renaming a store keeps its original inode locked, and
+the run refuses certification if the requested path no longer names that inode.
+Candidate records are both read and written through the admitted descriptor.
+Progress output cannot overwrite the sentinel or a mutation record. Every
+resumed candidate record must include terminal command evidence that agrees
+with its bucket; missing or contradictory legacy records are re-executed. See the
+[design rationale](DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118).
 
 ## Resume and shard a long mutation lane
 

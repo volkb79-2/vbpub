@@ -3811,6 +3811,8 @@ def _run_prepared_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    candidate_selection: frozenset[str] | None = None,
+    expected_selection_sha256: str | None = None,
     #: (B091/D-23, P7 A5) Straight through to `mutation.run_mutation` --
     #: see its own docstring. Empty for every call site that never asked.
     rejudge_ids: frozenset[str] = frozenset(),
@@ -3819,6 +3821,8 @@ def _run_prepared_lane(
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
+    state_root_fd: int | None = None,
+    state_root_guard: Callable[[], None] | None = None,
     liveness_dir: Path | None = None,
     expected_plan_sha256: str | None = None,
     campaign_deadline_sha256: str | None = None,
@@ -5044,10 +5048,18 @@ def _run_prepared_lane(
                             if state_dir is not None
                             else mutation.default_state_root(project_root)
                         )
-                        if (resume or shard_index is not None)
+                        if (
+                            resume
+                            or shard_index is not None
+                            or candidate_selection is not None
+                        )
                         else None
                     ),
+                    state_root_fd=state_root_fd,
+                    state_root_guard=state_root_guard,
                     expected_plan_sha256=expected_plan_sha256,
+                    candidate_selection=candidate_selection,
+                    expected_selection_sha256=expected_selection_sha256,
                     campaign_deadline_sha256=campaign_deadline_sha256,
                     resume=resume,
                     shard_index=shard_index,
@@ -5068,6 +5080,7 @@ def _run_prepared_lane(
                 )
             except (
                 mutation.InvalidRejudgeIdError,
+                mutation.InvalidCandidateSelectionError,
                 mutation.CampaignPlanMismatchError,
                 mutation.R2CommandProofError,
                 mutation.R2ManifestWriteError,
@@ -5725,6 +5738,8 @@ def _run_higher_rigor_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    candidate_selection: frozenset[str] | None = None,
+    expected_selection_sha256: str | None = None,
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
     reuse_source: Any = None,
@@ -5735,6 +5750,8 @@ def _run_higher_rigor_lane(
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
+    state_root_fd: int | None = None,
+    state_root_guard: Callable[[], None] | None = None,
     allow_dirty: bool = False,
     dirty_ignore: tuple[str, ...] = (),
     expected_plan_sha256: str | None = None,
@@ -5965,12 +5982,16 @@ def _run_higher_rigor_lane(
                         resume=resume,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        candidate_selection=candidate_selection,
+                        expected_selection_sha256=expected_selection_sha256,
                         rejudge_ids=rejudge_ids,
                         rejudge_outcomes=rejudge_outcomes,
                         reuse_source=reuse_source,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
+                        state_root_fd=state_root_fd,
+                        state_root_guard=state_root_guard,
                         liveness_dir=Path(raw_liveness_dir),
                         expected_plan_sha256=expected_plan_sha256,
                         campaign_deadline_sha256=campaign_deadline_sha256,
@@ -6142,6 +6163,8 @@ def run_lane(
     deadline: LaneDeadline | None = None,
     resume: bool = False,
     shard: str | None = None,
+    candidate_selection: frozenset[str] | None = None,
+    expected_selection_sha256: str | None = None,
     #: (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, unparsed --
     #: comma-separated, exactly like *shard*'s own `"INDEX/COUNT"` string.
     #: Parsed and refused (clean `BAD_LANE_CONFIG`, never an uncaught
@@ -6170,6 +6193,8 @@ def run_lane(
     #: instance -- points this at a durable directory so `--resume` stops
     #: being inert exactly where budget-capped retries happen most.
     state_dir: Path | None = None,
+    state_root_fd: int | None = None,
+    state_root_guard: Callable[[], None] | None = None,
     reuse_from: str | Path | None = None,
     #: (B019/A-328) the comparison ref the invoking GATE REQUEST supplies,
     #: for a lane that declared `judge.base_source = "request"`. It is a ref
@@ -6280,6 +6305,8 @@ def run_lane(
                 deadline=deadline,
                 resume=resume,
                 shard=shard,
+                candidate_selection=candidate_selection,
+                expected_selection_sha256=expected_selection_sha256,
                 rejudge=rejudge,
                 rejudge_outcome=rejudge_outcome,
                 infrastructure_source=infrastructure_source,
@@ -6288,6 +6315,8 @@ def run_lane(
                 progress_stream=stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
                 state_dir=state_dir,
+                state_root_fd=state_root_fd,
+                state_root_guard=state_root_guard,
                 reuse_from=reuse_from,
                 request_base=request_base,
                 expected_plan_sha256=expected_plan_sha256,
@@ -6853,6 +6882,8 @@ def run_lane(
             resume=resume,
             shard_index=shard_index,
             shard_count=shard_count,
+            candidate_selection=candidate_selection,
+            expected_selection_sha256=expected_selection_sha256,
             rejudge_ids=rejudge_ids,
             rejudge_outcomes=rejudge_outcomes,
             reuse_source=reuse_source,
@@ -6861,6 +6892,8 @@ def run_lane(
             progress_stream=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
             state_dir=state_dir,
+            state_root_fd=state_root_fd,
+            state_root_guard=state_root_guard,
             allow_dirty=allow_dirty,
             dirty_ignore=dirty_ignore,
             base_declaration=base_declaration,

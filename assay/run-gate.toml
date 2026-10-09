@@ -8,7 +8,8 @@
 # ephemeral container would be wrong (it launches its own). Host lane.
 # Judgment policy stays in assay.toml. `tester-unified` remains the ordinary
 # R0 release lane; the B105 lanes are separately invoked full-source R0-R3
-# qualification. Their bare-host Assay wrapper launches a bounded,
+# qualification, while B110's registered modes measure a bounded pilot or
+# complete survivor screen. The bare-host Assay wrapper launches a bounded,
 # cgroup-visible tester-unified container because the generic run-gate
 # container has a private cgroup namespace.
 # Bare-host command lanes do not receive run-gate's container RAM admission or
@@ -80,4 +81,53 @@ artifacts = [
   ".assay/verdict-self-qualification-preflight.json",
   ".assay/progress-self-qualification-preflight.jsonl",
   ".assay/coverage-self-qualification-preflight-snapshots",
+]
+
+# A-474 / B110 P7: the bounded pilot is a non-qualifying measurement. Campaign
+# init happens after clone/build/venv setup and before plan/selection. Campaign
+# init, planning, selection and Assay execution share one hard 90m
+# per-invocation cap; planning and selection are also bounded at each stage by
+# the remaining 2h campaign deadline. Assay execution uses only the remaining
+# cap, followed by at most 30s for termination. The persisted campaign deadline
+# remains the absolute retry bound. The 2h15m docker wait includes a planned
+# <=10m setup allowance, the 2h campaign and 5m for log/cleanup; the 2h20m
+# command timeout adds outer run-gate margin. The gate report must measure and
+# confirm setup time. The
+# launcher owns the cgroup-visible child.
+[lanes.b110-pilot]
+kind = "command"
+environment = "bare-host"
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-pilot"]
+exit_map = { "3" = "ERROR" }
+resources = { shared = ["assay-self-qualification"] }
+clean_tree = true
+budget = "140m"
+artifacts = [
+  ".assay/b110-pilot-plan.json",
+  ".assay/b110-pilot-candidates.txt",
+  ".assay/b110-pilot-selection.json",
+  ".assay/b110-pilot-summary.json",
+  ".assay/b110-pilot-run.log",
+  ".assay/progress-b110-pilot.jsonl",
+]
+
+# Non-qualifying survivor screen (B110 plan §9.1). It is never B105 evidence
+# except through the B119 import path; use for pre-deadline records awaits the
+# operator's D7 answer (C8). The Assay lane itself has a 5h budget; the 7h10m
+# inner timeout, 7h15m container wait and 7h30m command timeout are failure
+# failsafes and leave cleanup time under the 8h run-gate budget. The launcher
+# owns the cgroup-visible child.
+[lanes.b110-screen]
+kind = "command"
+environment = "bare-host"
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-screen"]
+exit_map = { "3" = "ERROR" }
+resources = { shared = ["assay-self-qualification"] }
+clean_tree = true
+budget = "8h"
+artifacts = [
+  ".assay/b110-screen-plan.json",
+  ".assay/verdict-b110-screen.json",
+  ".assay/b110-screen-run.log",
+  ".assay/progress-b110-screen.jsonl",
 ]

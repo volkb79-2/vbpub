@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 from concurrent.futures import Future as ConcurrentFuture
 from datetime import datetime, timezone
@@ -53,6 +54,11 @@ def _record(job=None):
         "operator": job.site.operator,
         "source_sha256": hashlib.sha256(source).hexdigest(),
         "outcome_bucket": "killed",
+        "terminal_result": {
+            "outcome": "FAIL",
+            "reason_code": "COMMAND_FAILED",
+            "returncode": 1,
+        },
         "judge_sha256": "j" * 64,
         "execution": {"mode": "full"},
         "lineno": job.site.lineno,
@@ -142,7 +148,12 @@ def test_progress_writer_types_write_and_close_failures(
 ):
     destination = tmp_path / "progress.jsonl"
     stream = _FailingProgressStream(**stream_options)
-    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: stream)
+
+    def fdopen(descriptor, *_args, **_kwargs):
+        os.close(descriptor)
+        return stream
+
+    monkeypatch.setattr(mutation.os, "fdopen", fdopen)
 
     with pytest.raises(AssayError, match=message):
         with mutation.progress_writer(destination) as write:
@@ -497,7 +508,7 @@ def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrup
     plan = make_plan(make_lane(argv=("check",)))
 
     with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
-        result = mutation._execute_mutation_jobs(
+        result, campaign_complete = mutation._execute_mutation_jobs(
             job_list=(job,),
             deadline=make_deadline(),
             jobs=1,
@@ -515,6 +526,7 @@ def test_mutation_worker_leaves_candidate_unclassified_when_termination_interrup
         )
 
     assert isinstance(result, Mutation)
+    assert campaign_complete is False
     assert len(result.budget_exceeded) == 1
     assert not result.killed and not result.survived and not result.crashed
     assert integrity_checks == [True]
@@ -560,7 +572,7 @@ def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
     plan = make_plan(make_lane(argv=("check",)))
 
     with prepared_snapshot(git_repo, scratch_root=scratch) as prepared:
-        result = mutation._execute_mutation_jobs(
+        result, campaign_complete = mutation._execute_mutation_jobs(
             job_list=(job,),
             deadline=deadline,
             jobs=1,
@@ -580,6 +592,7 @@ def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
         )
 
     assert isinstance(result, Mutation)
+    assert campaign_complete is False
     assert len(result.budget_exceeded) == 1
     assert not result.killed and not result.survived and not result.crashed
     assert not list(state_root.glob("*.json"))
