@@ -974,7 +974,9 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
 ):
     checker_dir = tmp_path / "checker"
     checker_dir.mkdir()
-    checker_status, checker_output = _run_checker_cli_with_valid_evidence(checker_dir)
+    checker_status, checker_output, _paths = (
+        _run_checker_cli_with_valid_evidence(checker_dir)
+    )
     assert checker_status == 0
     attestation_sha256 = checker_output.strip().split("=", 1)[1]
     assert checker_output == f"ANALYSIS_R2_PILOT_VERIFIED={attestation_sha256}\n"
