@@ -213,6 +213,9 @@ resumable safety window; rerun the exact `r2` command in
 [Run the P1 review gates](#run-the-p1-review-gates) from the same committed
 tree after an incomplete window. See the
 [resource-observation rationale](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
+If the observer refuses because the peer threads have different capability
+states, resolve that peer configuration; the counter query will not guess
+which thread state applies.
 
 The existing host `/run/cgprofile` directory bind is sufficient for the
 devcontainer to see the daemon-created socket; no second host mount or new

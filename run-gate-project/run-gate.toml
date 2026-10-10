@@ -89,7 +89,8 @@ budget = "30m"
 # the observer-only cgprofile socket supplies the hidden host ancestry needed
 # by Assay B145 without exposing the daemon control socket or using
 # --cgroupns=host. Assay runs two isolated mutant workers and Docker caps this
-# container at 3 CPUs, below dev-gates.slice's 5-CPU ceiling.
+# container at 3 CPUs, below dev-gates.slice's 5-CPU ceiling. The shared
+# tester cgroup makes Assay's resource-event windows serial (jobs = 1).
 #
 # RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
 # (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of

@@ -231,6 +231,24 @@ def test_observation_rejects_bypass_capability_in_either_mask(tmp_path, field, c
         _observe(kwargs)
 
 
+def test_observation_requires_matching_safe_capabilities_across_peer_threads(tmp_path):
+    kwargs = _fixture(tmp_path)
+    selected = Path(kwargs["proc_root"]) / "4242/task/4250/status"
+    other = Path(kwargs["proc_root"]) / "4242/task/4242/status"
+    safe_capability = 1 << 10  # CAP_NET_BIND_SERVICE cannot bypass cgroup.procs DAC.
+
+    selected.write_text(
+        _status(50, host_tid=4250, caps=safe_capability), encoding="ascii"
+    )
+    with pytest.raises(resource_observer.ResourceObserverError, match="different capability states"):
+        _observe(kwargs)
+
+    other.write_text(
+        _status(42, host_tid=4242, caps=safe_capability), encoding="ascii"
+    )
+    assert _observe(kwargs)["thread_id"] == 50
+
+
 def test_observation_rejects_writable_cgroup_procs(tmp_path):
     kwargs = _fixture(tmp_path)
     monkeypatch = pytest.MonkeyPatch()

@@ -144,6 +144,13 @@ ambiguous shared-limit activity makes the lane ERROR and requires a clean
 retry; it is not guessed away or assigned to whichever candidate happened to
 run.
 
+Two mutant workers inside one tester container still share its *leaf* event
+counters, despite separate scratch trees. An event from worker B can fall
+inside worker A's before/after window and look like A's own limit hit.
+The shipped R2 declaration therefore uses `jobs = 1`; `--resume` continues a
+budget-limited campaign on the same tree. Parallel workers require separate
+cgroups and counter bindings before they can be classified independently.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral

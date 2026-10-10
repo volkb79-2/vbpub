@@ -148,6 +148,9 @@ def _resolve_peer_snapshot(
     for facts in task_facts:
         if facts["cap_eff"] & _CAPS_THAT_CAN_BYPASS_CGROUP_DAC or facts["cap_prm"] & _CAPS_THAT_CAN_BYPASS_CGROUP_DAC:
             raise ResourceObserverError("peer thread capabilities can bypass cgroup control permissions")
+    capability_sets = {(facts["cap_eff"], facts["cap_prm"]) for facts in task_facts}
+    if len(capability_sets) != 1:
+        raise ResourceObserverError("peer threads have different capability states")
     return {
         "cgroup": selected[0]["cgroup"],
         "start_ticks": start_ticks,

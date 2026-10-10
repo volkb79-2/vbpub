@@ -241,8 +241,9 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    delegated to the invoking gate request (`judge.base_source =
    "request"`), never hardcoded.
 3. **`assay-r2`** — mutation testing (R2) over the same scope in a private
-   `tester-unified` container, capped at 3 CPUs with two isolated mutant
-   workers. Its `resource_observer = "cgprofile"` opt-in mounts only the
+   `tester-unified` container, capped at 3 CPUs with one mutant worker.
+   The worker count is one because concurrent candidates would share the
+   tester cgroup's resource-event counters. Its `resource_observer = "cgprofile"` opt-in mounts only the
    daemon's read-only resource-observer socket; the control socket is not
    exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
    the complete host cgroup ancestry required by B145 while keeping the

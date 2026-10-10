@@ -259,6 +259,11 @@ candidate bucket. Do not mount the control socket as a fallback: a read-only
 bind does not restrict the verbs accepted by its protocol. See the
 [design rationale](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer).
 
+For this project's native R2 lane, keep `[lanes.r2.judge.mutation] jobs = 1`
+in `assay.toml`: workers in the same tester container share cgroup event
+counters even with separate scratch trees. After a budget stop, rerun the
+registered lane on the same exact tree so Assay resumes its saved campaign.
+
 ## Closed results and runner mode migration
 
 Every invocation returns one of five statuses: **PASS 0**, **FAIL 1**,

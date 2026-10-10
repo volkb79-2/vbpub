@@ -7798,6 +7798,10 @@ class TestShippedGateFullDeclaration:
         assert lanes["assay-r2"]["environment"] == "tester-unified"
         assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
         assert lanes["assay-r2"]["resources"] == {"cpus": "3"}
+        # Two scratch worktrees still share one tester-cgroup event counter.
+        # Concurrent candidate windows cannot safely attribute a limit hit.
+        assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
+        assert assay_cfg["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
         assert "assay-r2" not in gate_full["argv"][2]
 
 

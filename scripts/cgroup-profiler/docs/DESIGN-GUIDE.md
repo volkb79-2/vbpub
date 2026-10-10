@@ -243,7 +243,7 @@ Assay worker <-- own gates-slice ancestry and counters
 
 The request supplies only a native TID. The daemon binds it to the connecting
 PID/UID, proves the TID belongs to that peer and that its live threads share
-one cgroup/credential set, derives the path itself, and returns only that
+one cgroup/credential/capability state, derives the path itself, and returns only that
 peer cgroup's complete ancestry beneath `dev-gates.slice`. It does not return
 PIDs or sibling data. The daemon's own cgroup namespace is private too, so it
 maps outside-peer paths only when the leading `..` count exactly matches the

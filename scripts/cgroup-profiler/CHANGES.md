@@ -21,6 +21,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
+- fix(cgprofile): refuse a resource-observer query when authenticated peer threads disagree on capability state
 - fix(cgprofile): treat `ProcessLookupError` while reading a peer task's
   procfs identity as a transient snapshot race at status, stat, task
   enumeration, and cgroup reads; retry the bounded identity scan
