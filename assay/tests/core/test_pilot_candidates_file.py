@@ -100,6 +100,31 @@ def _candidate_file(path: Path, candidate_ids: list[str]) -> Path:
     return path
 
 
+def test_pilot_inputs_and_progress_work_beneath_a_pinned_proc_fd_root(
+    tmp_path: Path,
+):
+    candidate_id = "a" * 64
+    candidate_path = tmp_path / "candidates.txt"
+    _candidate_file(candidate_path, [candidate_id])
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        pinned = Path(f"/proc/self/fd/{descriptor}")
+        selected, digest = cli._parse_candidates_file(
+            pinned / candidate_path.name, max_mutants=1
+        )
+        assert selected == {candidate_id}
+        assert digest == hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+
+        progress_path = pinned / "progress.jsonl"
+        with mutation.progress_writer(progress_path) as emit:
+            emit({"event": "run"})
+        assert (tmp_path / "progress.jsonl").read_text(encoding="utf-8") == (
+            '{"event":"run"}\n'
+        )
+    finally:
+        os.close(descriptor)
+
+
 def _assert_state_lock_refuses_promptly(state_dir: Path) -> LaneConfigError:
     completed = threading.Event()
     result: list[BaseException | None] = []
@@ -439,6 +464,12 @@ def test_T3_T5_single_killed_candidate_is_completed_and_persisted(git_repo: GitR
     assert code == 6, stderr
     summary = json.loads(stdout)
     assert summary["qualifying"] is False and summary["completed"] is True
+    current_judge = next(
+        event["judge_sha256"]
+        for event in _events(progress)
+        if event["event"] == "candidates"
+    )
+    assert summary["judge_sha256"] == current_judge
     assert summary["requested"] == 1
     assert [row["id"] for row in summary["candidates"]] == [selected]
     assert summary["buckets"]["killed"] == 1
@@ -1013,6 +1044,40 @@ def test_state_store_lock_is_nonblocking_and_survives_directory_replacement(
         cli._verify_state_directory_identity(replacement_root, replacement_root_fd)
     finally:
         cli._release_state_directory_lock(replacement_root_fd, replacement_lock_fds)
+
+
+def test_proc_fd_state_store_stays_bound_to_the_admitted_directory(
+    tmp_path: Path,
+):
+    visible_assay = tmp_path / ".assay"
+    visible_assay.mkdir()
+    assay_fd = os.open(
+        visible_assay, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    state_dir = Path(f"/proc/self/fd/{assay_fd}/b110-pilot-state")
+    root_fd, lock_fds, admitted_root = cli._acquire_state_directory_lock(state_dir)
+    moved_assay = tmp_path / ".assay-moved"
+    try:
+        assert admitted_root == state_dir
+        visible_assay.rename(moved_assay)
+        visible_assay.mkdir()
+        (visible_assay / state_dir.name).mkdir()
+
+        cli._verify_state_directory_identity(
+            admitted_root, root_fd, requested_path=state_dir
+        )
+        mutation._write_mutation_state_record(
+            state_dir,
+            {"candidate_id": "a" * 64},
+            state_root_fd=root_fd,
+        )
+
+        record_name = mutation.mutation_state_record_name("a" * 64)
+        assert (moved_assay / state_dir.name / record_name).is_file()
+        assert not (visible_assay / state_dir.name / record_name).exists()
+    finally:
+        cli._release_state_directory_lock(root_fd, lock_fds)
+        os.close(assay_fd)
 
 
 def test_state_path_lock_survives_parent_replacement_at_same_spelling(

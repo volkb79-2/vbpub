@@ -12,6 +12,45 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.10.1] - 2026-10-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=5bf6db82bdd61a5b9a46b6035ee4c76de944e87d -->
+
+### Fixed
+- fix(mm-move): cmru dependency declaration, --root-folder docs, path guard test, NL-39 (e4b2aee46)
+
+### Changed
+- Cover fast harness search branches (ccd28b49f)
+- Add approximate fast harness search mode (034df83f2)
+- Assert worker batch byte bounds (4bf58026c)
+- Keep worker batches within byte limit (6c6cc2f23)
+- Cover remaining harness search branches (e401c317e)
+- Cover bounded harness search edge cases (f96cfa465)
+- Record guarded entrypoint worker policy (899a171aa)
+- Verify guarded harness wrapper before spawning (459b7e9cb)
+- Identify safe harness worker entrypoints (285478670)
+- Harden bounded search workers (82db773dd)
+- Speed up harness session searches (ebb40c676)
+- Close harness search coverage paths (f3e7e84c5)
+- Merge Claude aliases across selected roots (571dd43cf)
+- Use source IDs for hard-linked Claude sessions (0b63fa406)
+- Fix harness search alias and scan edge cases (9a2526a31)
+- Fix reviewed harness search edge cases (f893ba3b1)
+- Cover harness search cleanup and edge paths (fa26f72bf)
+- Optimize local harness session search (601fc686e)
+- refactor(mattermost): rename project folder mattermost/ to mattermost-server/ and update references (3ef40d9ff)
+- build(nyxloom): depend on the cli-extended wheel instead of vendoring it (NYX-CLIX, CX-D1) (c6557bb79)
+- refactor(mattermost): update references after the move; mattermost becomes its own ciu root (95f97f4b6)
+- refactor(mattermost): move nyxloom/mattermost to mattermost/ at the vbpub root (4fa965773)
+
+### Documentation
+- docs(nyxloom): MM-MOVE + NYX-CLIX report (3d25cfee2)
+- docs(cli-extended,nyxloom): record nyxloom's vendoring removal (NL-30 packaging items, program row 3); NL-38 note on the stack move (a6500c523)
+- docs(nyxloom): cite the CIU-132 backlog record by heading, not a drifting line range (9a68b54ee)
+- docs(nyxloom,ciu): NL-38/CIU-118 review fixes (hard/warn split, oracles match design, port source, sibling prod names) (a7720a53e)
+- docs(nyxloom,ciu): NL-38 design ruling (runtime discovery of mattermost target) and CIU-118 service-discovery follow-up (fd2063c6d)
+- docs(nyxloom): curate the released 0.10.0 changelog (highlights), demote the stale 0.6 draft heading, drop the moved draft (1264d9401)
+
 ## [0.10.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=9444bd1d87f08ce0e51c71bb8cc69c4b90b2504a -->

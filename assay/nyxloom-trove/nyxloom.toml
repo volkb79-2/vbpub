@@ -225,6 +225,18 @@ asserts = ["tests-pass"]
 timeout_seconds = 9000
 environment = "tester-unified"
 
+[gates.analysis-r2-pilot]
+# B131's bounded analysis-package R2 measurement is independent from B105's
+# source-root qualification. The gate binds selected candidates, state,
+# progress, wheel and deadline to one exact analysis plan and reports a pilot,
+# never a qualifying verdict.
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} analysis-r2-pilot"]
+phase = "implementation"
+asserts = ["tests-pass"]
+# 140m run-gate budget plus 10m for admission/startup and evidence collection.
+timeout_seconds = 9000
+environment = "tester-unified"
+
 [gates.b110-screen]
 # Non-qualifying full-plan survivor screen. The 7h30m command timeout and 8h
 # run-gate budget include container cleanup; the verifier and report checker

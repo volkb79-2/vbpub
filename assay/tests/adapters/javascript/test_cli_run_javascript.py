@@ -208,9 +208,9 @@ def test_a_javascript_r1_lane_fails_and_names_the_uncovered_lines(git_repo: GitR
 def test_a_javascript_lane_declaring_r2_is_refused_before_anything_runs(
     git_repo: GitRepo, tmp_path: Path
 ):
-    """B037's boundary, enforced: this build wires ``javascript`` at R1 only,
-    so R2 is ``ERROR``/``BAD_LANE_CONFIG`` at ``get_adapter``'s choke point.
-    The marker file proves the lane's command never executed."""
+    """B046 admits JavaScript R2 only through ingested reports. This native
+    R2 declaration uses a foreign Python operator and must be refused during
+    config loading before the command can execute. The marker proves it."""
     base_rev = seed_repo(git_repo)
     marker = tmp_path / "the-command-ran"
     lane = f"""\

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 import stat as stat_module
 from pathlib import Path, PurePosixPath
 from types import TracebackType
@@ -38,10 +39,18 @@ __all__ = [
 
 _OPEN_DIR_FLAGS = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _OPEN_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+_PROC_FD_ROOT_RE = re.compile(
+    r"/proc/(self|[1-9][0-9]*)/fd/(0|[1-9][0-9]*)(?:/(.*))?\Z"
+)
 
 
 def _refuse(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.UNREADABLE_ARTIFACT)
+
+
+def _is_proc_fd_root(path: Path | str) -> bool:
+    """Whether *path* names an exact proc-fd root or a no-follow child of it."""
+    return _PROC_FD_ROOT_RE.fullmatch(os.fspath(path)) is not None
 
 
 def _lexical_components(artifact: str) -> tuple[str, ...]:
@@ -74,8 +83,54 @@ def _lexical_components(artifact: str) -> tuple[str, ...]:
 
 
 def _open_root(project_root: Path) -> int:
+    """Open a trusted root, with one explicit Linux descriptor-path form.
+
+    Ordinary roots keep the existing final-component ``O_NOFOLLOW`` check.
+    A caller may also name an already-open directory as
+    ``/proc/{self|PID}/fd/FD[/child/... ]``.  In that spelling only the
+    kernel-owned ``fd/FD`` link is followed; every suffix component is then
+    opened relative to the pinned descriptor with ``O_NOFOLLOW``.  This lets
+    gate launchers pass an admitted directory descriptor across a subprocess
+    boundary without converting it back to a raceable pathname.
+    """
+    spelling = os.fspath(project_root)
+    match = _PROC_FD_ROOT_RE.fullmatch(spelling)
+    if match is not None:
+        process, descriptor, suffix = match.groups()
+        descriptor_path = f"/proc/{process}/fd/{descriptor}"
+        try:
+            current = os.open(
+                descriptor_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+            )
+        except OSError as exc:
+            raise _refuse(
+                f"pinned directory root {descriptor_path} is not an openable directory: {exc}"
+            ) from exc
+        try:
+            if not stat_module.S_ISDIR(os.fstat(current).st_mode):
+                raise _refuse(f"pinned directory root {descriptor_path} is not a directory")
+            if suffix is not None:
+                parts = suffix.split("/")
+                if any(part in {"", ".", ".."} for part in parts):
+                    raise _refuse(
+                        f"pinned directory root {spelling!r} has an unsafe suffix"
+                    )
+                for part in parts:
+                    try:
+                        next_fd = os.open(part, _OPEN_DIR_FLAGS, dir_fd=current)
+                    except OSError as exc:
+                        raise _refuse(
+                            f"pinned directory root {spelling!r} has a missing, "
+                            f"symlinked, or non-directory suffix component {part!r}: {exc}"
+                        ) from exc
+                    os.close(current)
+                    current = next_fd
+            return current
+        except BaseException:
+            os.close(current)
+            raise
     try:
-        return os.open(os.fspath(project_root), _OPEN_DIR_FLAGS)
+        return os.open(spelling, _OPEN_DIR_FLAGS)
     except OSError as exc:
         raise _refuse(f"project root {project_root} is not an openable, non-symlink directory: {exc}") from exc
 

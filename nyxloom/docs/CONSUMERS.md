@@ -9,6 +9,26 @@ command, positional, option, default, side effect, and migration from the old
 single-command surface. Nyxloom ships `nyxloom`, `nyxloom-harness`,
 `nyxloomctl`, and the service-only `nyxloomd` from one wheel.
 
+## Upgrade from Nyxloom 0.10.0
+
+Nyxloom 0.10.0 and the separately installed `cli-extended` wheel both wrote
+files under `cli_extended/`. During an upgrade, pip removes the old Nyxloom
+files but may keep `cli-extended` marked as satisfied. Complete this one-time
+repair from the vbpub checkout root, using the trusted 0.10.1 Nyxloom wheel
+and official 0.4.0 `cli-extended` wheel produced by the release workflow:
+
+```bash
+python -m pip install ./nyxloom/artifacts/nyxloom-v0.10.1/dist/nyxloom-0.10.1-py3-none-any.whl
+python -m pip install --force-reinstall ./libraries/cli-extended/artifacts/cli-extended-v0.4.0/dist/cli_extended-0.4.0-py3-none-any.whl
+```
+
+The second command must follow the Nyxloom install so it restores files that
+the old Nyxloom wheel may have removed. For later releases, install Nyxloom's
+wheel and the matching official `cli-extended` wheel from the vbpub GitHub
+Release assets. Do not resolve the bare `cli-extended` project name from
+PyPI. The ownership decision is explained in the
+[design guide](DESIGN-GUIDE.md#the-cli-extended-wheel-ownership-boundary).
+
 ## Operator CLI quick path
 
 Register and inspect a project, lint a handoff, and review a state-repair

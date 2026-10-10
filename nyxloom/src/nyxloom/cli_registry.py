@@ -11,16 +11,26 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from cli_extended import (
-    ArgumentSpec,
-    CliFailure,
-    CliIdentity,
-    CliRegistry,
-    OptionSpec,
-    PromptCancelled,
-    VerbGroup,
-    VerbSpec,
-)
+try:
+    from cli_extended import (
+        ArgumentSpec,
+        CliFailure,
+        CliIdentity,
+        CliRegistry,
+        OptionSpec,
+        PromptCancelled,
+        VerbGroup,
+        VerbSpec,
+    )
+except ImportError as exc:
+    raise ImportError(
+        "nyxloom could not load the cli-extended runtime package. Its installed "
+        "metadata may be present while its package files are missing or incomplete. "
+        "Install the official cli-extended wheel after upgrading Nyxloom, using "
+        "`python -m pip install --force-reinstall <path-to-trusted-cli_extended-wheel>`. "
+        "For the Nyxloom 0.10.0 to 0.10.1 upgrade, see the dependency repair steps "
+        "in nyxloom/docs/CONSUMERS.md."
+    ) from exc
 
 from . import __version__, backlog_entries, cli, findings
 from .session_extract import presets as presets_mod

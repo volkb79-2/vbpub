@@ -190,7 +190,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
-- B087 — JavaScript/TypeScript canary (R3) has no CLI producer path — OPEN (JS/R3 wave)
+- B087 — JavaScript/TypeScript canary (R3) — provisionally merged into `assay-b131-r2` at `1b5f61a9`; both dstdns R3 canaries PASS with retained schema-v15 verdicts and verifier transcripts; integrated `tester-unified` gate and exact-tip review pending; unreleased
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
@@ -215,7 +215,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B115 — P4 work-queue executor — OPEN
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
 - B117 — P6 persisted campaign deadline + process-group termination — OPEN
-- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a merged; P7b code and focused tests are in `assay-b110-p7b-gate-modes`; waiting on fresh independent review and registered gate acceptance. The bounded pilot and P8 analysis remain before B131.)
+- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a/P7b merged; P7c artifact-attestation, archive publication, round-24 judge/quarantine fixes, and round-28/29 descriptor/path/permission repairs are implemented on `assay-b118-p7c-artifact-attestation-20261009`. The B110 container tests pass 100; candidate-file tests pass 44; post-helper shell/report-check tests pass 9. Fresh exact-diff review and same-tip registered gates remain. B131 will run its own measured sample after integration.)
 - B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
 - B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
 - B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
@@ -9493,7 +9493,7 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
-**Status: OPEN (filed 2026-09-09) — `_built_in_registry()`'s own docstring on main states "R3 is still NOT registered for `javascript`".**
+**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07), rebased onto main `6086d4c9` (2026-10-08). Local real-Vitest oracles and both current dstdns R3 canaries pass; the registered Assay gate remains pending controller release. The branch is not merged or released.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
@@ -9532,20 +9532,29 @@ a product capability until a supported producer path reaches it" framing).
 
 ### Acceptance (for whoever picks this up)
 
-- [ ] the existing canary injection methods are exercised end-to-end against
+- [x] the existing canary injection methods are exercised end-to-end against
       a real JS/TS project's real source (not a fixture), confirming they
-      produce a genuine control/transform pair the R3 machinery can judge;
-- [ ] `_built_in_registry()` registers `"javascript"` at R3;
-- [ ] a real qualification run, the same shape as the Go R1 qualification
+      produce a genuine control/transform pair the R3 machinery can judge
+      using the current uncovered-line transform;
+- [x] `_built_in_registry()` registers `"javascript"` at R3;
+- [x] a real qualification run, the same shape as the Go R1 qualification
       (`README.md`'s "Qualified on a real project" paragraph) — a real
       commit range, through the shipped zipapp, compared against a hand-
       verified expectation, with any defect found treated as what a
       qualification is for (the same framing B061 used);
-- [ ] `README.md`'s Status line and the new rigor matrix are updated to
+- [x] `README.md`'s Status line and the new rigor matrix are updated to
       reflect `{"R1","R2","R3"}` once this lands — this entry's own filing
       is what corrected the matrix to `{"R1","R2"}` (R3 unregistered) in the
       first place, so the matrix is the freshness check for whoever closes
       this.
+
+### Qualification evidence
+
+The original dstdns attempt remains archival only. The current dstdns
+qualification passed both canaries with the B087 zipapp pinned by run-gate;
+full schema-v15 verdicts and separate verifier transcripts are retained in
+`reports/B087-js-r3-evidence/`. The registered Assay gate remains pending;
+see the [qualification report](reports/B087-js-r3-qualification.md).
 
 ## B088 — `--resume`'s candidate identity folds in the mutant's source bytes but not the judging test suite's, so a test-only fix silently replays a stale verdict instead of re-executing
 
@@ -11595,7 +11604,7 @@ inventories refuse.
 
 ## B118 — B110 P7: non-qualifying pilot candidate selection
 
-**Status: IN PROGRESS (filed 2026-09-28; A-474; P7a merged, P7b implementation on `assay-b110-p7b-gate-modes`; focused checks green and independent Sol xhigh review accepted 2026-10-09; registered gate acceptance remains pending; brief `reports/b110/P7-pilot-tooling.md`).**
+**Status: IN PROGRESS (filed 2026-09-28; A-474; P7a and P7b are merged, P7b as `cbd605445`; P7c artifact-attestation and review rounds 24–33 are on `assay-b118-p7c-artifact-attestation-20261009`. The latest fixes pin the checker, deadline, output files, and attempt-log read to the admitted `.assay` descriptor, then repeat full content/source/deadline and snapshot/archive checks at completion. The round-32 focused suite passes 268 tests; round-33 Sol xhigh accepts the exact diff. Registered `tester-unified` passed on commit `68f8a477`; five B131 integration reviews found twelve concrete progress/inventory checker gaps, now fixed on `assay-b131-r2`; final exact-tree review and same-tip gates remain pending. The fixed B105 pilot run is a separate B110 acceptance item; B131 will run its own measured sample after integration; brief `reports/b110/P7-pilot-tooling.md`).**
 
 **Scope:**
 - `assay run --candidates-file` (no verdict, exit 6, R3 not run) and `--pilot-jobs`;
@@ -11613,7 +11622,23 @@ inventories refuse.
 - [x] Final regression after review fixes: 151 focused tests passed in 54.17s; manual-path and archived-progress oracles, shell syntax and `git diff --check` pass.
 - [x] Follow-up review corrections: clear attempt artifacts under the shared lock before source/Docker admission checks; fail the screen if any completion-marker write fails; enforce the cap after execution in the manual example; add a late-exit behavior oracle.
 - [x] Fresh independent Sol xhigh review accepts the updated P7b diff (2026-10-09; read-only snapshot and findings recorded in `reports/assay-B118-REPORT.md`).
-- [ ] tester-unified PASS.
+- [x] P7c repair adds source-bound plan/selection/summary/state/progress/deadline/resource validation, an attestation manifest, and a host-published evidence snapshot with post-marker content and deadline rechecks; README, DESIGN-GUIDE, CONSUMERS, CHANGES and P7 brief are synced.
+- [x] P7c focused regression: 129 passed in 60.29s, including direct verifier path-swap, late-state, snapshot-integrity and post-marker refusal oracles; shell syntax, Python compilation, `git diff --check` and gate listing pass (2026-10-09; `/tmp/assay-b118-p7c-focused-final-2026-10-09.log`, `P7C_TEST_EXIT=0`).
+- [x] Round-19 review findings: rehash open transcript descriptors after marker validation; retain and verify a read-only transcript copy bound by version-2 archive attestation; decide no-success history before requiring its transcript root. Eight race/retry tests and the full focused suite (234 passed in 165.66s), compilation, shell syntax, diff check and gate listing pass (2026-10-09; report round 19).
+- [x] Round-20 review finding: withdraw any archive entry whose post-rename identity checks fail. Staging-directory and staged-transcript replacement tests prove the visible archive stays empty; the full focused suite passes 236 tests in 165.03s, with compilation, shell syntax, diff check and gate listing green (2026-10-09; report round 20).
+- [x] Round-21 review findings: use a collision-resistant withdrawal path and rehash/revalidate the snapshot, receipt, attestation and transcript after archive publication. Tests occupy the predictable destination and inject same-inode writes at the rename boundary; the full focused suite passes 240 tests in 174.51s, with compilation, shell syntax, diff check and gate listing green (2026-10-09; report round 21).
+- [x] Round-22 review findings: use atomic no-replace renames for archive publication and withdrawal; distinguish a missing source from a missing quarantine destination, recreate and verify the private destination when needed, and update the P7 brief to describe the pilot's inner-worker/wrapper boundary. The race oracle collides with the generated quarantine name; 9 targeted archive tests and the full focused suite pass (242 tests in 171.44s), with compilation, shell syntax, diff check and gate listing green (2026-10-09; report round 22).
+- [x] P7c review round-23 findings: recheck the published snapshot at the archive return boundary; use a private fallback when the incomplete destination becomes unsafe; use no-replace moves for quarantine; exercise an empty-directory collision; correct the P7 wrapper/inner-worker brief. The combined focused suite passes 245 tests in 184.42s; Python compilation, shell syntax, diff check and gate listing pass (2026-10-09; report round 23).
+- [x] Round-24 Sol xhigh P2 findings: bind progress and every state record to the current sweep's in-memory judge digest in the summary; let quarantine use a verified private fallback when the incomplete path is unsafe, recording the chosen destination. Round-25 first run had 288 passed/4 failed; the four test causes were fixed, five targeted regressions passed, and the full focused suite passed 292 tests in 198.53s (`/tmp/assay-b118-round25-focused-rerun.log`, `TEST_EXIT=0`). Python compilation, shell syntax, diff check and gate listing pass.
+- [x] Round-27 Sol xhigh findings: use descriptor-relative host cleanup anchored to the captured `.assay` identity; recheck the archive entry after final bundle verification; and revalidate evidence read-only/private directory modes at return. Regression code and static checks passed; later round-28 review found additional inner-worker boundaries (report rounds 27–28).
+- [x] Round-28 Sol xhigh findings: pin the admitted `.assay` device/inode through the inner B110 worker, use descriptor-rooted attempt/output paths, and repeat child-mode verification at the completion boundary. The full B110 container-test module passed 100 tests after the archive completion-boundary correction.
+- [x] Round-29 Sol xhigh findings: make the report checker consume the inherited `.assay` descriptor and emit logical manifest paths; pass the pinned deadline to campaign init; use no-follow output creation and attempt-log reads; recheck `.assay`, archive-root and child permissions at completion. The candidate-file suite passed 44 tests and the post-helper shell/report-check selection passed 9.
+- [x] Round-30 Sol xhigh findings: compare the summary with Assay's canonical state path; recheck the published snapshot name after the final child pass; and recheck archive root, entry, and snapshot names after the final permission sweep. Four focused race/path regressions pass in 6.00s.
+- [x] Round-31 Sol xhigh findings: repeat full snapshot digest and identity verification after archive publication checks; verify source commit/tree/cleanliness and both deadlines after final snapshot and path checks; emit the host-verified marker only from that final verifier. The full focused suite passes 263 tests in 206.46s, with shell/Python syntax, diff check, and gate listing green.
+- [x] Round-32 Sol xhigh findings: after final Git checks, repeat snapshot digest/deadline validation and receipt/path checks; after the archive snapshot sweep, rehash and revalidate the receipt, attestation, and archived transcript. Six targeted race tests pass; the full focused suite passes 268 tests in 213.92s.
+- [x] Fresh independent Sol xhigh review accepts the complete exact diff, including untracked files (round 33; `/tmp/assay-b118-round33-review.md`; HEAD and status unchanged).
+- [x] Registered `tester-unified` at the committed P7c tip `68f8a477b761fe650fdae6268cbe77e46ae148a0` passed (`GATE_EXIT=0`); receipt tree `14d9211c804c5e84d4414fbecd49b019f05b407e`; run log `/tmp/run-gate/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`. The B131 integration gate still needs to cover the round-34/38 checker repairs.
+- [ ] Registered B105 preflight is still refused before launch when dev-gates RAM headroom is 1.321 GiB, below its 2 GiB admission requirement; retry after capacity returns. No B110 pilot has run.
 
 ## B119 — B110 P9: distributed/async mutation evidence
 
@@ -11798,7 +11823,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: OPEN, after B114 v15 and the B118 bounded pilot (Wave A CD17).** The analysis package (A-478) has an R0+R1 whole-target lane. Add a mutation lane over its own suite after cold-witness support and bounded pilot tooling are available. Recount candidates from the actual plan; the historical ≈317 estimate is not a current measurement.
+**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and now has a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 

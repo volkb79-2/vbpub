@@ -1,0 +1,6 @@
+{"budget_per_candidate_s":null,"budget_s":1200.0,"candidate_total":null,"commit":"00b6f56d1dfa9f942c1ae261ef1b6306448a7cfe","elapsed_s":0.009,"emitted_at":"2026-10-08T10:06:47.008180+00:00","event":"run","lane":"b087_import_break","rigor":["R0","R1","R3"],"started":"2026-10-08T10:06:47.008150+00:00"}
+{"commit":"00b6f56d1dfa9f942c1ae261ef1b6306448a7cfe","elapsed_s":2.529,"emitted_at":"2026-10-08T10:06:49.528181+00:00","event":"snapshot_materialized","phase":"baseline"}
+{"argv":["npx","--no-install","vitest","run","--coverage","--reporter=json","--outputFile=.assay/vitest-report.json"],"elapsed_s":2.534,"emitted_at":"2026-10-08T10:06:49.533961+00:00","event":"command_started","phase":"baseline"}
+{"elapsed_s":22.25,"emitted_at":"2026-10-08T10:07:09.249139+00:00","ended":"2026-10-08T10:07:09.208702+00:00","event":"command_finished","outcome":"PASS","phase":"baseline","reason_code":null,"returncode":0,"started":"2026-10-08T10:06:49.534431+00:00"}
+{"elapsed_s":22.971,"emitted_at":"2026-10-08T10:07:09.970937+00:00","event":"coverage_parsed","parsed":true,"phase":"baseline","reason_code":null}
+{"destination":".assay/verdict-b087_import_break.json","elapsed_s":57.067,"emitted_at":"2026-10-08T10:07:44.066569+00:00","event":"verdict_written","exit_code":0,"outcome":"PASS","reason_code":null}

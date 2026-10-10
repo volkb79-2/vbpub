@@ -1,0 +1,143 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "npx",
+    "--no-install",
+    "vitest",
+    "run",
+    "--coverage",
+    "--reporter=json",
+    "--outputFile=.assay/vitest-report.json"
+  ],
+  "argv_effective": [
+    "npx",
+    "--no-install",
+    "vitest",
+    "run",
+    "--coverage",
+    "--reporter=json",
+    "--outputFile=.assay/vitest-report.json"
+  ],
+  "argv_modified": false,
+  "assay_version": "8.0.1.dev126+gad17ab38a",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "coverage": {
+        "branch_capability": "reported",
+        "branches_covered": 16,
+        "branches_total": 16,
+        "considered": 3,
+        "covered": 29,
+        "excluded_lines": {},
+        "exclusion_capability": "unavailable",
+        "executable": 29,
+        "files_missing_coverage": [],
+        "files_with_excluded_lines": [],
+        "files_with_missing_branch_lines": [],
+        "files_with_unclassified_lines": [],
+        "missing_branch_lines": {},
+        "missing_lines": {},
+        "pct": 100.0,
+        "unclassified_lines": {}
+      },
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "canary": {
+        "attempts": [
+          {
+            "control_outcome": "PASS",
+            "description": "appended a module-top-level `throw new Error(...)`; an ES module's imports are hoisted, so this fires during module evaluation for any test that imports the file (A-345)",
+            "disposition": "attempted",
+            "expected_reason_code": "COMMAND_FAILED",
+            "observed_reason_code": "COMMAND_FAILED",
+            "target": "applications/webapp-ui-react/src/api/queries/domains.ts",
+            "transformed_outcome": "FAIL"
+          }
+        ],
+        "mechanism": "import-break"
+      },
+      "rigor": "R3",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "00b6f56d1dfa9f942c1ae261ef1b6306448a7cfe",
+  "cwd_declared": "applications/webapp-ui-react",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1",
+    "R3"
+  ],
+  "ended": "2026-10-08T10:07:44.034767+00:00",
+  "enforcement": "gate",
+  "env_declared": {},
+  "env_effective": {
+    "HOME": "<passthrough>",
+    "PATH": "<passthrough>"
+  },
+  "env_effective_passthrough_sha256": {
+    "HOME": "8a5edab282632443219e051e4ade2d1d5bbc671c781051bf1437897cbdfea0f1",
+    "PATH": "b42ba247f33243f0292de639675d33c4646ba9c4621f6fb02db3cf6600d4e05d"
+  },
+  "env_passthrough": [
+    "PATH",
+    "HOME"
+  ],
+  "evidence": [],
+  "exit_code": 0,
+  "judge_provenance": {
+    "artifact": "zipapp",
+    "digest": "cbef763b036f3fcf3c91e46028ac482621372d154306c8790bdad16c69b86d18",
+    "digest_algorithm": "sha256",
+    "name": "assay",
+    "version": "8.0.1.dev126+gad17ab38a"
+  },
+  "judgment": {
+    "r1": {
+      "allow_excluded": false,
+      "coverage_artifact": "applications/webapp-ui-react/.assay/coverage-final.json",
+      "coverage_format": "coverage-istanbul-json",
+      "coverage_producer": "istanbul",
+      "fail_under": 100.0,
+      "mode": "changed_lines",
+      "require_branch": true
+    },
+    "r3": {
+      "mechanism": "import-break",
+      "targets": [
+        "applications/webapp-ui-react/src/api/queries/domains.ts"
+      ]
+    },
+    "resolved": {
+      "base": "fc75306035e8ffe6493417839649f09fec174991",
+      "base_resolution": "merge-base",
+      "language": "javascript",
+      "source_roots": [
+        "applications/webapp-ui-react/src"
+      ]
+    }
+  },
+  "lane": "b087_import_break",
+  "outcome": "PASS",
+  "schema_version": 15,
+  "scope": "S1",
+  "snapshot_policy": {
+    "link_paths": [
+      "applications/webapp-ui-react/node_modules"
+    ],
+    "selection": "repository"
+  },
+  "started": "2026-10-08T10:06:49.534431+00:00"
+}

@@ -97,8 +97,13 @@ actually re-running the lane when correctness itself is in question.
 ## What this build evaluates
 
 R0, Python R1, Python R2, Python R3, JavaScript R1, JavaScript R2 (ingested
-Stryker report; B046), Go R1, SQL R2. See the JavaScript/TypeScript section in
-CONSUMERS for the ingested R2 workflow. If a lane's declared rigor tier isn't
-in this list for its language, that's a real capability gap to check `assay
-lanes --json` for (the "which rigor levels THIS build reaches" field), not
-something to route around silently.
+Stryker report; B046), JavaScript R3, Go R1, SQL R2. See the
+JavaScript/TypeScript section in CONSUMERS for the ingested R2 and canary R3
+workflows. If a lane's declared rigor tier isn't in this list for its
+language, that's a real capability gap to check `assay lanes --json` for (the
+"which rigor levels THIS build reaches" field), not something to route around
+silently.
+
+JavaScript R3 is registered and locally exercised. B087's current uncovered-
+line transform still needs retained dstdns qualification; the archived first
+attempt used an earlier transform and is not current qualification evidence.

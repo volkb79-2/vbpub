@@ -13,7 +13,7 @@ import re
 import stat
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -301,9 +301,33 @@ def _read_sources_from_tree(
     rows: list[dict[str, Any]], repo_root: Path, *, commit: str
 ) -> dict[str, bytes]:
     """Read planned source bytes from the immutable committed tree."""
+    sources = _read_tree_files(
+        (row["path"] for row in rows), repo_root, commit=commit
+    )
+    for row in rows:
+        actual = hashlib.sha256(sources[row["path"]]).hexdigest()
+        if row["source_sha256"] != actual:
+            raise SelectionError(
+                f"source sha256 does not match plan for {row['path']!r}"
+            )
+    return sources
+
+
+def _read_tree_files(
+    relative_paths: Iterable[str], repo_root: Path, *, commit: str
+) -> dict[str, bytes]:
+    """Read a set of exact regular-file blobs from one committed tree."""
     root = repo_root.resolve(strict=True)
     sources: dict[str, bytes] = {}
-    for relative in sorted({row["path"] for row in rows}):
+    for relative in sorted(set(relative_paths)):
+        path = PurePosixPath(relative)
+        if (
+            not relative
+            or path.is_absolute()
+            or path.as_posix() != relative
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise SelectionError(f"committed source path {relative!r} is not canonical")
         try:
             listing = _git(
                 root,
@@ -344,12 +368,6 @@ def _read_sources_from_tree(
                 f"cannot read committed source {relative!r} at {commit}: {exc}"
             ) from exc
         sources[relative] = raw
-    for row in rows:
-        actual = hashlib.sha256(sources[row["path"]]).hexdigest()
-        if row["source_sha256"] != actual:
-            raise SelectionError(
-                f"source sha256 does not match plan for {row['path']!r}"
-            )
     return sources
 
 

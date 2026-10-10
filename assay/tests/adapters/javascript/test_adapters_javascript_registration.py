@@ -1,16 +1,13 @@
-"""B036 — the JavaScript/TypeScript adapter registers cleanly through P05's
+"""B036/B087 — the JavaScript/TypeScript adapter registers cleanly through P05's
 own, UNMODIFIED ``registry.py`` (this package touches no line of it, mirroring
 ``test_adapters_go_registration.py``'s and ``test_adapters_sql_registration.py``'s
 own O3 proofs one language over), declares the protocol surface this package
-chose transparently, and reaches **R1 only**.
+chose transparently, and reaches **R1, R2 by ingestion, and R3 by canary**.
 
-The R1-only entry is the whole reason ``judge.language = "javascript"`` at R2
-is refused: :meth:`~assay.adapters.javascript.JavaScriptAdapter.
-generate_mutation_sites` is unconditionally ``"UNSUPPORTED"`` because whether
-JS/TS mutation should be native or should ingest an external producer's
-evidence is the ruling **B037** exists to force, and a registry entry naming a
-level this build cannot reach is exactly the declared-capability lie this
-project exists to remove (DESIGN-GUIDE §7).
+R2 remains limited to an ingested external report: the adapter's native
+``generate_mutation_sites`` is still unconditionally ``"UNSUPPORTED"``. R3
+is registered only after B087's real producer qualification; the shared
+isolated canary runner judges the adapter's two existing injection methods.
 """
 
 from __future__ import annotations
@@ -182,14 +179,13 @@ def test_all_four_adapters_coexist_in_one_registry_each_independently_addressabl
     assert len(registry.entries) == 4
 
 
-# --- R1-only: at R2/R3 this build's own registry refuses --------------------
+# --- Built-in registry capabilities ----------------------------------------
 
 
-def test_the_built_in_registry_refuses_javascript_at_r3(rigor: str = "R3"):
+def test_the_built_in_registry_resolves_javascript_at_r3():
     """Driven through ``cli._built_in_registry()`` itself, not a hand-built
-    one: this is THIS BUILD's capability declaration, and the refusal is the
-    same ``ERROR``/``BAD_LANE_CONFIG`` an entirely unregistered language gets
-    (A-139).
+    one: this is THIS BUILD's capability declaration, and R3 reaches the
+    same adapter methods the real Vitest qualification exercised.
 
     **B046 removed R2 from this refusal, deliberately.** R2 is now registered
     -- through the INGESTED path only: the lane's own argv runs StrykerJS in
@@ -200,21 +196,19 @@ def test_the_built_in_registry_refuses_javascript_at_r3(rigor: str = "R3"):
     exists). See ``test_the_registry_does_not_open_the_NATIVE_r2_path`` below,
     which is what keeps that guarantee tested rather than assumed.
 
-    R3 stays refused: the two canary injection methods are real
-    implementations, but a producer path is a separate claim from a method
-    existing (DESIGN-GUIDE §7), and no real canary PAIR has ever run.
+    B087 resolves R3 only after a real control/transform pair and the shipped
+    zipapp's dstdns qualification were both judged cause-sensitively.
     """
-    with pytest.raises(AssayError) as excinfo:
-        get_adapter(_built_in_registry(), "javascript", rigor)
+    adapter = get_adapter(_built_in_registry(), "javascript", "R3")
 
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
-    assert "javascript" in str(excinfo.value)
-    assert "['R1', 'R2']" in str(excinfo.value)
+    assert isinstance(adapter, JavaScriptAdapter)
+    assert adapter.name == "javascript"
 
 
-@pytest.mark.parametrize("rigor", ["R1", "R2"])
-def test_the_built_in_registry_resolves_javascript_at_r1_and_r2(rigor: str):
+@pytest.mark.parametrize("rigor", ["R1", "R2", "R3"])
+def test_the_built_in_registry_resolves_javascript_at_each_registered_rigor(
+    rigor: str,
+):
     """The paired must-succeed control: the identical registry, at the levels
     it declares, resolves cleanly rather than refusing everything."""
     adapter = get_adapter(_built_in_registry(), "javascript", rigor)
@@ -299,8 +293,8 @@ def test_the_built_in_registry_names_exactly_the_languages_this_build_reaches():
     assert {name: sorted(entry.rigor) for name, entry in entries.items()} == {
         "python": ["R1", "R2", "R3"],
         "sql": ["R2"],
-        # B046: javascript gained R2, through the INGESTED path only.
-        "javascript": ["R1", "R2"],
+        # B046 adds ingested R2; B087 adds the real-qualified R3 canary path.
+        "javascript": ["R1", "R2", "R3"],
         # A-394 (Wave C): go, at R1 ONLY. R2 would advertise a mutation
         # producer that does not exist -- `generate_mutation_sites` is
         # unconditionally `UNSUPPORTED` -- and R1 was itself sequenced

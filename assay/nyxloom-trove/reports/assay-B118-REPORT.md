@@ -1,4 +1,4 @@
-# B118 implementation report — in progress
+# B118 implementation report — P7c follow-up in progress
 
 **Base:** `3589a57f1cf462f82aab0683a05dc0bda6be2c3c`  
 **P7a branch:** `assay-b118-p7-pilot`  
@@ -8,9 +8,42 @@
 
 **P7b base:** `d3821b5fab3163abfea15e8b54be9245fc6d3e5a`
 
-**P7b commit:** pending; implementation and follow-up review are in progress
+**P7b commit:** `f0814096c`
+**P7b merge to main:** `cbd605445`
+
+**P7c base:** `5bf6db82bdd61a5b9a46b6035ee4c76de944e87d`
+**P7c worktree:** `assay-b118-p7c-artifact-attestation-20261009`
 
 ## Status
+
+**Current integration summary (2026-10-09 21:41 UTC):** P7a and P7b are
+merged. Their prior registered `tester-unified` gate passed at `5bf6db82`
+(`/tmp/run-gate/lanes/tester-unified/16a4517e7b7f0817e13e48b4e9959690.log`,
+`ASSAY_GATE_CONTAINER_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`), before P7c.
+The P7c diff now includes the round-29 repairs: the report checker consumes the
+inherited `.assay` directory descriptor and writes logical `.assay/...`
+manifest names; campaign initialization receives the pinned deadline path;
+gate logs use no-follow descriptor-relative creation and reading; and final
+snapshot/archive checks revalidate path identity and child permissions.
+
+Validation after these fixes: the B110 container-test module passed **100
+tests in 154.61 seconds**; `tests/core/test_pilot_candidates_file.py` passed 44;
+the post-helper B110 shell/report-check selection passed 9. The earlier
+combined self-lane/report-check run passed 111 before the safe log-reader
+regression was added. Shell syntax, Python compilation, and `git diff --check`
+pass. A fresh exact-diff review and same-tip registered gates remain pending.
+
+The resumed RG-89 campaign ended with an R0 failure in
+`tests/test_serve_socket_carrier.py::test_each_watch_line_shape_is_frozen_on_its_own`
+before any mutation candidate ran; it is not B118 evidence. No registered gate
+is currently active. The last B105 preflight attempt refused before container launch at
+1,321,574,400 bytes of free dev-gates RAM against its 2 GiB admission
+requirement (`/tmp/run-gate/lanes/self-qualification-preflight/7e06a9ce7e8604ff6200d95867176ffd.log`;
+no preflight success marker). No B110 pilot or new B105 R2 run is claimed.
+
+The review history and implementation notes below preserve earlier decisions;
+their pending statements are superseded by this summary and the latest P7c
+controller follow-up below.
 
 P7a is implemented on its isolated worktree. Round 6 rejected an incomplete
 budget-cache record and source/scanner binding gaps; those code findings and
@@ -384,3 +417,709 @@ both B110 shell drivers, and `git diff --check` passed. No registered gate,
 B105 R2 campaign, or B110 pilot has started from this worktree. P7b is ready
 for merge; same-tip `tester-unified` and registered-gate acceptance remain
 pending.
+
+## Controller follow-up — 2026-10-09 (P7c artifact attestation)
+
+P7b is now merged to main as `cbd605445`, and its code is included in the
+registered `tester-unified` PASS at `5bf6db82`. That gate does not include this
+P7c repair. A fresh read-only Sol xhigh review of the P7b integration found
+that exit 6 and a completion marker could certify a malformed or incomplete
+pilot summary, selection, state or deadline, and that the 90-minute cap ended
+before report checking and final marker writes.
+
+The P7c diff adds `tools/b110_pilot_report_check.py`. It parses bounded
+no-follow files, recomputes the deterministic selection against the exact
+clean commit/tree and source bytes, checks the complete R0/R1/R2 summary,
+candidate dispositions, terminal state and no-hit resource evidence, current
+two-hour campaign deadline, wheel digest, progress tail and full-plan identity.
+It re-reads each validated file before creating a SHA-256 manifest. The host
+launcher requires the exact expected artifact paths, verifies the manifest
+digest marker, and checks every retained file against it. Pilot report
+checking, final source identity and campaign/cap checks run inside the
+90-minute subprocess timeout. The post-marker host check described below
+controls the outer gate result; marker text alone cannot turn a failed check
+into success.
+
+An earlier focused suite passed 137 tests in 60.23 seconds, with
+`P7C_TEST_EXIT=0` in `/tmp/assay-b118-p7c-focused-resume-2026-10-09.log`. It covers
+`test_b110_pilot_checker_attests_a_complete_source_bound_run`, the
+`test_b110_pilot_checker_rejects_exit_six_without_complete_evidence` damage
+cases, the pilot shell ordering/expiry oracles, outer host-manifest omission
+and tampering, and the three-document examples/vocabulary/anchor contract.
+After the final timing-oracle update, `bash -n` passed for both gate drivers,
+Python compilation passed, `git diff --check` passed, and `./run-gate.py --list`
+listed the expected registered lanes.
+
+The final read-only P7c review and same-tip registered `tester-unified` gate are
+pending. The last B105 preflight refused before launching a container because
+the dev-gates cgroup had 1.321 GiB free against a 2 GiB admission reserve. No
+B110 pilot or full B105 R2 campaign ran in this follow-up.
+
+## Controller follow-up — 2026-10-09 (P7c host snapshot and final check)
+
+The host now copies the verified manifest-listed artifacts by content into
+`.assay/b110-pilot-evidence/`, verifies the copied inventory and digests, and
+atomically publishes the directory with files and directories made read-only.
+The host emits the snapshot-index digest with the pilot markers, then reopens
+the published snapshot and rechecks its contents, path identities and both
+deadlines. All completion marker text is provisional: a refusal after marker
+output leaves the registered command failed. A retry archives a prior
+published snapshot with its original index receipt before starting a new
+attempt. The original resumable files remain unchanged and are not the
+authoritative retained evidence after snapshot publication. The
+`b110-pilot-evidence` and `.assay/b110-pilot-evidence-archive` paths are
+registered run-gate artifacts.
+
+## Controller follow-up — 2026-10-09 (review round 6)
+
+The read-only Sol xhigh review found that the host checker required the
+run-gate evidence root and `lanes/` parent to be private, although run-gate
+creates those as owner-controlled mode `0755` directories. The checker now
+accepts those standard non-group/world-writable parents and continues to
+require the lane directory and transcript to be private. A second finding was
+that unavailable history returned ordinary exit 1, which made run-gate replace
+the previous successful history record. Such retries now return exit 3, mapped
+to infrastructure `ERROR`; the prior success remains eligible and the live
+snapshot/receipt stay untouched. Tests construct the normal `0755/0755/0700`
+directory layout and assert exit 3 for missing or corrupt retry evidence.
+
+The focused final regression passed 129 tests in 60.29 seconds, recorded in
+`/tmp/assay-b118-p7c-focused-final-2026-10-09.log` with
+`P7C_TEST_EXIT=0`. Direct verifier tests prove that replacing the canonical
+project path or adding a late state record is refused, that a changed published
+snapshot fails re-verification, that a same-UID write racing between host hash
+passes is detected, and that changing live resumable files after publication
+does not alter the snapshot evidence. Shell tests inject final host-check
+failure after marker output and retry that failed completion, verifying the
+prior receipt is archived before the new snapshot is published. Fresh Sol
+xhigh review and same-tip `tester-unified` remain pending; no registered gate
+is running.
+
+## Controller follow-up — 2026-10-09 (review round 10)
+
+The fresh read-only Sol xhigh review found two issues. First, the newly added
+selected-size progress test referenced `result` and `fixture` from another
+test; those assertions now live with the complete-run fixture that creates
+them. Second, the state-record validator used Assay's general legacy decoder,
+which supplies `full` when `execution` is absent. Pilot state now requires an
+explicit execution object, with a refusal oracle for a missing field.
+
+The review snapshots stayed at `5bf6db82` with identical worktree status. The
+same-tip focused suite and `tester-unified` acceptance remain pending; the
+controller is waiting for the shared Assay gate slot to become available.
+
+## Controller follow-up — 2026-10-09 (review round 11)
+
+The read-only Sol xhigh review found two issues. First, a readable run-gate
+history with no successful transcript was treated as unavailable evidence. That
+could strand a snapshot left by a failed first publication, because every retry
+preserved it and stopped before launching. The host checker now distinguishes
+that state from unreadable or malformed history and quarantines the unattested
+publication, preserving it under the incomplete-evidence directory so a retry
+can proceed. A launcher oracle starts with a failed final host check,
+records a valid failed lane history, and confirms the next attempt quarantines
+and replaces the incomplete snapshot. Corrupt history and missing transcript
+cases still preserve their existing evidence.
+
+Second, the attempt deadline check ran before three final Git checks. Those
+checks now run before final host verification, so the last deadline read follows
+them. A delayed final status oracle crosses the attempt expiry before the last
+host check and confirms the gate does not emit its host-verified marker.
+
+The full `test_self_qualification_container.py` module passed 58 tests in
+91.57 seconds. `bash -n`, Python compilation, and `git diff --check` passed.
+A fresh read-only Sol xhigh review and the same-tip registered gate remain
+pending; the registered gate is waiting for the active shared R2 campaign.
+
+## Controller follow-up — 2026-10-09 (review round 12)
+
+The read-only Sol xhigh review found that the history-store preflight checked
+the top-level schema but not the nested `b110-pilot.history` entries. The
+run-gate history query filters non-dictionary entries, so a malformed prior
+entry could disappear and make the host classify the remaining failed record
+as proof that no successful attestation existed. The preflight now validates
+the pilot lane object and every stored history entry before querying; malformed
+nested history returns infrastructure-inconclusive exit 3 and preserves the
+live snapshot and receipt. A new launcher oracle covers a prior publication
+with a valid latest failure and `history: [null]`, asserting no child run,
+quarantine, archive, or snapshot replacement occurs.
+
+The review's timing-comment observation was checked against the P7c contract:
+the lane comment correctly distinguishes the 90-minute per-attempt cap from
+the persisted two-hour campaign deadline and 2h20m outer timeout. The
+round-12 review snapshots matched at `5bf6db82` with identical worktree
+status. The regression test and focused same-tip gate remain pending.
+
+## Controller follow-up — 2026-10-09 (review round 13)
+
+The read-only Sol xhigh review found two history-attestation defects. A stored
+`pass` with a non-integer or nonzero exit code could pass preflight and then be
+silently skipped by the history query, making an older success disappear. The
+host now validates every pilot history record's outcome, exact integer exit
+code, eligibility, commit/worktree binding and successful transcript binding;
+malformed latest records also refuse as unavailable. A second read of
+`history.json` through `run-gate history` could observe bytes replaced after
+preflight, and run-gate would report corrupt telemetry as an empty store. The
+host now consumes the validated in-memory snapshot directly, so the records
+used for attestation are the exact bytes that passed preflight. Controller
+inspection also caught an explicit null `b110-pilot` lane being mistaken for
+an absent lane; it now fails as malformed. Non-string outcomes fail closed
+without leaking a `TypeError`.
+
+The full focused suite passed 216 tests in 121.72 seconds. After the final
+additional malformed-outcome case, the four malformed-history variants and
+history-replacement regression passed 5 tests in 11.13 seconds. Compilation,
+shell syntax, `./run-gate.py --list`, and `git diff --check` passed. The
+round-13 snapshots were unchanged at `5bf6db82`; the independent review's two
+findings and the controller's null-slot finding are covered by these new
+oracles. A fresh read-only Sol xhigh review and same-tip registered gate are
+still pending.
+
+## Controller follow-up — 2026-10-09 (round 12 test closeout)
+
+The full `test_self_qualification_container.py` module passed 59 tests in
+95.22 seconds, including the malformed nested-history retry oracle. The first
+`test_b110_pilot_report_check.py` run found an existing test helper returning
+three values while one test treated it as a dictionary. The helper annotation
+now states its tuple contract and that test reads the validated record map
+from the third value. The complete report-checker module then passed 42 tests
+in 12.58 seconds. `py_compile`, `bash -n`, and `git diff --check` passed.
+The fresh read-only review and registered same-tip gate remain outstanding.
+
+## Controller follow-up — 2026-10-09 (review round 14)
+
+The read-only Sol xhigh review found that non-pass latest records did not
+validate `exit_code`. A latest `error` with `exit_code: "3"` could therefore
+look like a readable store with no successful attestation and quarantine the
+live snapshot. Non-pass records now allow only an integer or absent exit code.
+The retry oracle covers the malformed latest record and asserts exit 3 with
+the snapshot and receipt preserved. A paired legitimate-state oracle covers
+`error` with no exit code and no earlier success; that case still quarantines
+the unattested snapshot and starts a new attempt. The review also found that
+the DESIGN-GUIDE still described the removed `run-gate history` subprocess. It
+now describes the single validated `history.json` snapshot and why the host
+does not reopen the mutable store.
+
+The review snapshots matched at `5bf6db82`, with identical worktree status.
+The malformed-history, valid-error retry, and history replacement regressions
+passed 9 tests in 24.37 seconds. Python compilation and `git diff --check`
+passed. The full focused suite after round-14 fixes and a fresh read-only
+review are pending; no registered gate has run on P7c.
+
+## Controller follow-up — 2026-10-09 (round 14 test closeout)
+
+After the round-14 fixes, the complete focused suite passed 220 tests in
+185.09 seconds across `test_self_qualification_container.py`,
+`test_b110_pilot_report_check.py`, `test_self_lane.py`, and
+`test_docs_examples_and_vocabulary.py`. `git diff --check`, Python compilation,
+shell syntax checks, and `./run-gate.py --list` also passed. The final fresh
+read-only review and registered same-tip gate remain pending.
+
+## Controller follow-up — 2026-10-09 (review round 16)
+
+The independent read-only Sol xhigh review found three remaining cases. A
+completed same-commit retry could fail the host source-status check before
+archiving the preceding pass; the launcher now archives prior evidence before
+source cleanliness and later host admission, and a regression proves that an
+early status failure cannot erase that snapshot when run-gate records the
+failure. A documented ineligible `not_run` latest record with `commit: null`
+could reject an earlier eligible pass; the history validator now accepts that
+producer shape while still requiring every eligible record to bind a valid
+commit. Finally, quarantine now checks the moved device and inode for files and
+symlinks as well as directories. A replacement-race regression fails closed.
+
+The complete focused suite passed 228 tests in 147.92 seconds. The targeted
+round-16 history and quarantine regressions passed, as did `git diff --check`,
+Python compilation, shell syntax checks and `./run-gate.py --list`. The fresh
+read-only review and same-tip `tester-unified` gate remain pending; no B110
+pilot ran from P7c.
+
+## Controller follow-up — 2026-10-09 (review round 17)
+
+The Sol xhigh review used `.codex2` after the preferred `.codex` route hit its
+usage limit. Before/after HEAD and status snapshots matched. It found that
+missing `stat`/`realpath`, lock failures, or early project refusals could
+still return an eligible failure before prior evidence was archived. The
+pilot launcher now returns exit 3 for every refusal until prior pilot evidence
+is archived or quarantined; `run-gate.toml` maps 3 to `ERROR`, so that latest
+record cannot displace an earlier eligible pass. A regression injects a lock
+mode prerequisite failure, records the resulting ineligible latest `ERROR`,
+then proves the next retry can archive the earlier pass and launch.
+
+The review also caught an inaccurate changelog statement. The live snapshot
+uses a pending receipt while the snapshot and final receipt are published in
+separate steps; only the verified archive bundle is published with one
+directory rename. The changelog now distinguishes those two boundaries.
+
+The five round-17 focused cases passed, followed by the complete focused suite:
+229 passed in 154.25 seconds. `git diff --check`, Python compilation, shell
+syntax checks and `./run-gate.py --list` pass. A fresh review and the same-tip
+registered `tester-unified` gate remain pending; no B110 pilot ran from P7c.
+
+## Controller follow-up — review round 22 (2026-10-09)
+
+The exact-diff Sol xhigh review used `.codex2`; its before/after HEAD and
+worktree-status snapshots matched. It found two remaining withdrawal races and
+one stale P7 brief oracle. A `FileNotFoundError` from rename could name the
+quarantine destination, yet the handler treated it as proof that the archive
+source had disappeared. Also, `os.rename` could replace an empty directory
+created at the generated quarantine destination between the existence check
+and move. The P7 brief still assigned planning and campaign checks to
+`run_b110_pilot`, while the implementation owns them in
+`run_b110_pilot_inner`.
+
+Archive publication and withdrawal now use Linux `renameat2` with
+`RENAME_NOREPLACE`. A withdrawal collision retries with a fresh random name.
+On `ENOENT`, the host checks whether the visible source is gone; if it remains,
+the host reopens or recreates the private incomplete directory and retries the
+move. A focused test removes that directory while its descriptor remains open,
+then proves the unverified entry is moved into a newly verified directory. A
+parameterized source-absent/source-present oracle checks both `ENOENT` cases.
+The archive-boundary race test now creates an empty directory at the actual
+generated quarantine name immediately before the move and verifies the
+existing directory and sentinel survive while withdrawal retries successfully.
+The P7 brief and its static test oracle now distinguish the outer worker
+wrapper from the inner pilot implementation.
+
+The targeted archive race set passed **9 tests in 13.92 seconds**. The full
+focused suite passed **242 tests in 171.44 seconds**; Python compilation,
+`bash -n` for both B110 scripts, `git diff --check`, and `./run-gate.py --list`
+also pass. A fresh exact-diff review and the registered same-tip gates remain
+pending; no B110 pilot has run from this worktree.
+
+## Controller follow-up — review round 19 (2026-10-09)
+
+The read-only Sol xhigh review used `.codex2` after the preferred `.codex`
+route hit its usage limit. HEAD and status snapshots matched. It found three
+remaining transcript cases: a same-user path replacement after the final
+live-log check but before archive rename; an in-place write to the opened log
+after its bytes were cached; and a failed first publication that could remain
+stuck when valid history had no successful candidate and the transcript root
+was absent.
+
+The host now rehashes the opened transcript descriptor after marker validation
+both when accepting history and when checking a persisted attestation. The
+version-2 attestation names a read-only transcript copy inside the staged
+archive and binds its digest. The host verifies that copy's digest and source,
+tree, snapshot and final host markers immediately before the one-rename
+publication point; the archive no longer depends on the mutable source path.
+History is filtered for an eligible successful candidate before the host
+requires that transcript root, so readable failed-only history can quarantine
+an unattested first publication and proceed. README, DESIGN-GUIDE, CONSUMERS,
+CHANGES and the P7 brief describe the retained transcript copy.
+
+Eight focused race and retry cases passed. The full focused suite passed
+**234 tests in 165.66 seconds** (`/tmp/assay-b118-round20-focused.log`,
+`TEST_EXIT=0`). `git diff --check`, Python compilation, shell syntax, and
+`./run-gate.py --list` pass. The next exact-diff read-only review and registered
+same-tip gates remain pending; no B110 pilot ran from P7c.
+
+## Controller follow-up — review round 20 (2026-10-09)
+
+The exact-diff read-only Sol xhigh review used `.codex2`; before and after
+HEAD/status snapshots matched. It found that a same-user replacement of the
+staging directory at the archive rename boundary could be moved to the visible
+archive name and only rejected by the subsequent inode check, leaving the
+unverified entry published. The host now withdraws an archive entry into the
+incomplete area when any post-rename identity check fails, including checks of
+the archived transcript, archive directory and project path. It performs the
+archive-entry inode check last. New boundary tests replace both the staging
+directory and the staged transcript; each must fail with the visible archive
+empty and untrusted content under the incomplete path.
+
+The four archive publication/race cases passed. The full focused suite passed
+**236 tests in 165.03 seconds** (`/tmp/assay-b118-round24-focused.log`,
+`TEST_EXIT=0`). `git diff --check`, Python compilation, shell syntax, and
+`./run-gate.py --list` pass. A fresh exact-diff review and the same-tip
+registered gates remain pending; no B110 pilot ran from P7c.
+
+## Controller follow-up — review round 21 (2026-10-09)
+
+The next exact-diff Sol xhigh review used `.codex2` and recorded matching
+before/after HEAD and status snapshots. It confirmed the directory/transcript
+replacement fix, then found two adjacent publication races: the predictable
+withdrawal path could already exist, and same-inode writes to the transcript
+or another bundle file after its last pre-rename check could evade path-only
+post-rename checks.
+
+Withdrawal now selects a high-entropy destination, checks for collisions and
+retries on collision. After the archive rename, the host rechecks the snapshot
+inventory and digest, receipt, attestation and transcript content and paths,
+archive parent and project path before returning success. Any failed check
+withdraws the entry to the incomplete area. The staging replacement oracle
+also occupies the former predictable destination; parameterized boundary tests
+mutate the transcript, receipt, attestation or snapshot file in place and
+prove the visible archive remains empty.
+
+Eight focused publication-race cases passed. The full focused suite passed
+**240 tests in 174.51 seconds** (`/tmp/assay-b118-round26-focused.log`,
+`TEST_EXIT=0`). `git diff --check`, Python compilation, shell syntax, and
+`./run-gate.py --list` pass. A fresh exact-diff review and same-tip registered
+gates remain pending; no B110 pilot ran from P7c.
+
+## Controller follow-up — 2026-10-09 (review round 18)
+
+The read-only Sol xhigh review used `.codex2` after the preferred `.codex`
+route hit its usage limit. HEAD and worktree status snapshots matched. It found
+that persisted-attestation verification checked the transcript pathname before
+reading but did not recheck it after digest and marker validation. The host now
+keeps the run-gate root, `lanes`, and `b110-pilot` descriptors open through
+validation and confirms that the absolute root, both parent entries, and log
+entry still name the opened inodes. Archival repeats that validation after the
+archive bundle is staged and immediately before its atomic publish rename. Two
+race oracles replace the transcript path during marker validation and confirm
+that direct verification refuses and a staged bundle remains incomplete rather
+than being published.
+
+The review also found that a directory replaced between `stat` and `open`
+could receive the old directory's mode in the cleanup path. Quarantine now
+restores mode only after this invocation successfully changed the verified
+opened inode, using that inode's captured mode. A replacement race proves the
+replacement keeps its own permissions; existing move and identity-check failure
+tests still prove mode restoration for the original inode.
+
+The five transcript/quarantine regressions passed. The full focused suite then
+passed **232 tests in 153.01 seconds** (`/tmp/assay-b118-round19-final-focused.log`,
+`TEST_EXIT=0`). `git diff --check`, Python compilation, shell syntax, and
+`./run-gate.py --list` pass. A fresh read-only review and the same-tip
+registered `tester-unified` gate remain pending; no B110 pilot ran from P7c.
+
+## Controller follow-up — P7c review round 23 (2026-10-09)
+
+The exact-diff Sol xhigh review report is `/tmp/assay-b118-round23-review.md`.
+It found that the final archive return path did not recheck the published
+snapshot name, withdrawal could leave an unverified archive entry visible if
+the incomplete directory was replaced unsafely, quarantine used an
+overwrite-capable rename, the collision oracle used a nonempty directory, and
+the P7 brief assigned wrapper work to the inner worker.
+
+Archive verification now repeats both snapshot content verification and
+snapshot-path identity checking at the return boundary. Withdrawal falls back
+to a private, descriptor-verified `.assay/b110-pilot-evidence-unverified`
+directory (or a private random sibling) if the incomplete destination cannot
+be reopened safely. Quarantine and archive movement use atomic no-replace
+renames. The collision oracle now places an empty directory at the generated
+destination and verifies that it survives; the P7 brief and static oracle
+separate launcher, outer-wrapper, and inner-worker responsibilities.
+
+The first combined focused rerun found two test failures: the exact registered
+artifact list omitted the new fallback path, and one fake-Docker cgroup probe
+identity case did not reproduce when isolated. The artifact oracle now names
+the fallback, and that Docker case passed both in isolation and in the clean
+full rerun. The final combined focused suite passed **245 tests in 184.42
+seconds** (`/tmp/assay-b118-round24-focused-rerun.log`, `TEST_EXIT=0`). Python
+compilation, `bash -n` for both B110 shell drivers, `git diff --check`, and
+`./run-gate.py --list` pass. A fresh exact-diff review and same-tip registered
+gates remain pending; the separate RG-89 campaign is still active, so no
+registered gate or B110 pilot was started from this worktree.
+
+
+## Controller follow-up — P7c round-24 review fixes and round-25 regression
+
+The read-only Sol xhigh review report is `/tmp/assay-b118-round24-review-codex2.md`;
+HEAD and status remained unchanged during review. It found two P2 issues. First,
+the checker previously trusted agreement between progress and candidate state
+without independently binding both to the current sweep's judge identity.
+`src/assay/cli.py` now captures that digest from the in-memory `candidates`
+event and includes it in the pilot summary. The checker requires the progress
+event and every state record to match the summary value. The coherent-tampering
+oracle rewrites progress and all state records to the same wrong digest.
+
+Second, prior-evidence quarantine previously stopped if the incomplete path was
+unsafe. It now uses the same verified private unverified-evidence fallback as
+archive withdrawal, selecting a random private sibling if the fixed fallback is
+unsafe or occupied. The quarantine marker records its destination, and the
+container marker parser accepts both destination roots. Symlink and public-
+directory regressions prove the retry can proceed without changing the unsafe
+path or its external target.
+
+The first round-25 full run logged **288 passed, 4 failed** in
+`/tmp/assay-b118-round25-focused.log`. The failures were the direct progress
+helper missing its new expected-judge argument, a stale expected refusal string,
+a stale fallback constant in the withdrawal test, and an identity-check test
+injecting failure during fallback-root setup rather than at the moved snapshot.
+After those corrections, the four failures plus the paired rename-stage case
+passed in `/tmp/assay-b118-round25-failures-rerun.log` (**5 passed**,
+`TEST_EXIT=0`). The coherent-wrong-judge regression also passed in the full
+focused suite, which passed **292 tests in 198.53 seconds** at
+`/tmp/assay-b118-round25-focused-rerun.log` (`TEST_EXIT=0`). Static checks also
+passed. Exact test names are in the round-25 traceability row below.
+
+Files changed for these round-24/25 repairs: `src/assay/cli.py`,
+`tools/b110_pilot_report_check.py`, `tools/b110_pilot_host_check.py`,
+`tools/self-qualification-container.sh`, `gate/tests/test_b110_pilot_report_check.py`,
+`gate/tests/test_self_qualification_container.py`,
+`tests/core/test_pilot_candidates_file.py`, README, DESIGN-GUIDE, CONSUMERS,
+CHANGES, the P7 brief, this report and the B118 backlog entry.
+The final P7c Sol xhigh exact-diff review, `tester-unified`, and
+`self-qualification-preflight` on the integrated tip remain pending. The
+pre-P7c gate markers and preflight refusal are recorded in the current summary;
+no B110 pilot was run.
+
+### Round-25 test traceability
+
+| Scope and actual tests | First round-25 result | Final result |
+|---|---:|---:|
+| `test_progress_candidate_total_is_the_selected_pilot_size_not_full_plan`; `test_b110_pilot_checker_rejects_exit_six_without_complete_evidence` (`progress-wrong-judge`, `coherent-wrong-judge` cases); `test_archive_withdraw_falls_back_when_incomplete_directory_is_replaced_unsafe`; `test_quarantine_restores_snapshot_mode_when_move_or_identity_check_fails` (`rename`, `identity-check` cases) | 4 failed among 292 total; see `/tmp/assay-b118-round25-focused.log` | Four failing cases plus the paired rename-stage case: 5 passed in `/tmp/assay-b118-round25-failures-rerun.log`; coherent-wrong-judge and the full suite: 292 passed in 198.53s, `TEST_EXIT=0` |
+
+## Controller follow-up — review round 27 (2026-10-09)
+
+A fresh read-only GPT-6-Sol xhigh review used the preferred `.codex` route on
+HEAD `5bf6db82`; before/after HEAD and status snapshots matched. It found
+three remaining races: prior-attempt cleanup used path-based `rm` after the
+`.assay` symlink check; the archive entry name was not rechecked after the
+final snapshot verification; and later identity checks did not revalidate
+read-only evidence or private archive/quarantine directory modes.
+
+Cleanup now captures the expected `.assay` identity and asks the source-bound
+host checker to open it without following links and unlink only the declared
+prior-attempt names relative to that descriptor. Archive publication checks
+the receipt, attestation, transcript and snapshot again before the final
+archive-entry identity check. Snapshot paths require owner-only read-only modes
+at their last checks; archive, incomplete and quarantine directories require
+their captured private writable modes again before reporting a path. New
+regressions cover a replaced `.assay` symlink, archive-name substitution after
+final verification, and mode changes to snapshot files plus archive/quarantine
+roots.
+
+Static checks pass (`git diff --check`, Python AST parsing, and `bash -n` for
+both B110 shell drivers). The new race regressions have not yet run; the
+registered gate slot is occupied by the separate resumed RG89 R2 campaign.
+This round's fixes need a fresh exact-diff review and same-tip integrated gate
+before B118 can close. No B110 pilot ran from this worktree.
+
+## Controller follow-up — review round 28 fixes (2026-10-09)
+
+The fresh Sol xhigh review report is `/tmp/assay-b118-round28-review-codex.md`.
+HEAD and working-tree snapshots matched. It found two remaining races: the
+inner B110 shell still removed attempt outputs through `.assay` by name after
+host admission, and snapshot child modes could change after the content pass
+but before final verification returned.
+
+The host launcher now creates a missing `.assay` directory with a private
+temporary directory and atomic no-replace rename, returns its device/inode,
+and passes that identity into the tester container. The inner B110 script opens
+and verifies that exact directory, then routes cleanup, output, state, and
+deadline paths through the pinned descriptor. Attempt-window creation uses the
+inherited descriptor with `dir_fd`; host archival, publication, and final
+verification also require the admitted `.assay` identity. New regressions
+cover first-run state creation, a competing `.assay` appearance during atomic
+installation, and replacement by a symlink between attempt-window admission
+and file creation.
+
+Snapshot verification now repeats the full child-file verification at the
+completion boundary, after other receipt, transcript, and root checks. The
+archive path keeps its final visible-entry identity check last. New tests inject
+a child-mode change after the earlier verification pass in both published
+snapshot verification and archive publication.
+
+`bash -n` for both B110 shell drivers, Python compilation, and `git diff
+--check` pass. The new regressions have not run yet. Round 28 is not acceptable
+until its fixes receive a fresh exact-diff review and the registered
+`tester-unified` gate. No B110 pilot ran from this worktree.
+
+## Controller follow-up — review round 29 fixes (2026-10-09)
+
+The read-only Sol xhigh review report is `/tmp/assay-b118-round29-review-codex.md`.
+It rejected the diff for four findings: the report checker rejected the
+worker's proc-fd paths and generated invalid manifest names; `assay campaign
+init` still used its default deadline destination; shell redirections could
+follow same-user leaf symlinks; and the final child/path checks could certify a
+detached or writable snapshot/archive.
+
+The checker now accepts the inherited `.assay` descriptor plus its admitted
+device/inode, pins `b110-pilot-state` separately, compares the summary with the
+worker's original state-dir spelling, and emits manifest paths under `.assay/`
+while reading through pinned descriptors. Campaign init passes `--out` with
+the pinned deadline path. `b110_pilot_safe_output.py` creates outputs using
+`O_EXCL|O_NOFOLLOW` relative to the admitted directory and safely reads the
+attempt log without following a replaced leaf. Snapshot verification checks
+the visible `.assay` identity after its final child pass; archive publication
+rechecks the archive root and complete child permissions after boundary
+checks. The archive failure message now describes failed final verification
+rather than claiming every refusal proves an identity change.
+
+The checker, safe-output, B110 worker and host-boundary regressions pass. The
+full B110 container-test module passed 100 tests; the candidate-file suite
+passed 44; and the post-helper targeted shell/report-check selection passed 9.
+An initial full container-module run exposed one stale assertion after the
+archive check was moved; the corrected boundary tests now pass. Fresh Sol
+xhigh review and registered `tester-unified`/preflight evidence are still
+pending. No B110 pilot ran.
+
+## Controller follow-up — review round 30 fixes (2026-10-09)
+
+The round-30 Sol xhigh review report is `/tmp/assay-b118-round30-review.md`.
+It found three completion-boundary gaps: snapshot-name replacement during the
+last child verification, a mismatch between the proc-fd state path and the
+canonical path Assay writes into its summary, and archive root/entry/snapshot
+replacement during the final permission sweep.
+
+The checker now resolves the pinned state descriptor to the canonical path
+Assay records. Published-snapshot verification rechecks the visible snapshot
+name after its final child pass. Archive completion rechecks the visible
+archive root, archive entry, snapshot path, `.assay`, and project path after
+the final permission sweep. The pinned-fd test now uses the actual canonical
+summary path without rewriting its fixture. Four focused race/path tests pass
+in 6.00 seconds (`python -m pytest -q ...`, exit 0), and `git diff --check`
+passes. A fresh exact-diff Sol xhigh review and registered gate evidence are
+still pending; no B110 pilot ran.
+
+## Controller follow-up — review round 31 fixes (2026-10-09)
+
+The exact-diff Sol xhigh review report is `/tmp/assay-b118-round31-review.md`;
+the invocation used `.codex`, GPT-6-Sol xhigh, and unchanged before/after HEAD
+and status. It found three completion gaps: archive permission verification
+did not repeat artifact digests, the final host check did not recheck Git
+source identity, and the deadlines were not checked after the final path
+checks.
+
+Archive completion now repeats the full snapshot content, identity, and mode
+verification. The final published-snapshot verifier rechecks commit, tree, and
+cleanliness after its child/path checks, rechecks the admitted directory path,
+then checks both deadlines immediately before returning. The verifier itself
+emits `B110_PILOT_HOST_VERIFIED_SHA256` only after those checks; the shell no
+longer writes an independent marker. New regressions cover a changed archived
+child, source mutation during final verification, and expiry after the final
+child pass. The first full focused run had 262 passes and one stale expected
+message; after correcting that assertion, the suite passed **263 tests in
+206.46 seconds** (`/tmp/assay-b118-round33-focused.log`, `TEST_EXIT=0`). Shell
+syntax, Python compilation, `git diff --check`, and `./run-gate.py --list`
+pass. Fresh exact-diff review and registered gate evidence remain pending; no
+B110 pilot ran.
+
+## Controller follow-up — review round 32 fixes (2026-10-09)
+
+The exact-diff Sol xhigh review report is `/tmp/assay-b118-round32-review.md`;
+the `.codex` invocation's before/after HEAD and worktree status matched. It
+found two remaining races: the published snapshot or receipt could be replaced
+during final Git identity checks, and the archive receipt, attestation, or
+transcript could change during the snapshot sweep.
+
+Final host verification now repeats the complete snapshot digest/deadline pass
+after Git identity/cleanliness checks, then rehashes the receipt and rechecks
+the visible snapshot, receipt, pending-receipt, `.assay`, and project paths
+before its last deadline check. Archive completion rehashes and revalidates
+the receipt, attestation, and archived run-gate transcript after the final
+snapshot pass, then checks the public archive names. Six targeted path/content
+race cases pass. The full focused suite passes **268 tests in 213.92 seconds**
+(`/tmp/assay-b118-round35-focused.log`, `TEST_EXIT=0`); `git diff --check`
+passes. A fresh exact-diff review and registered gate evidence remain pending;
+no B110 pilot ran.
+
+## Controller follow-up — review round 33 acceptance (2026-10-09)
+
+The independent exact-diff Sol xhigh review report is
+`/tmp/assay-b118-round33-review.md`. It reviewed the complete uncommitted
+change set, including untracked files, and returned **accept with no
+actionable findings**. The `.codex` GPT-6-Sol xhigh invocation recorded the
+same HEAD (`5bf6db82`) and worktree status before and after. The focused suite
+and static checks are green; registered `tester-unified` at the committed
+P7c tip remains pending. No B110 pilot ran.
+
+## Controller follow-up — P7c gate and round-34/38 integration reviews (2026-10-09)
+
+Registered `./run-gate.py tester-unified` passed at committed P7c repair
+`68f8a477b761fe650fdae6268cbe77e46ae148a0` (`GATE_EXIT=0`, tree
+`14d9211c804c5e84d4414fbecd49b019f05b407e`). The run log is
+`/tmp/run-gate/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`;
+the B145 probes, wheel build/install, self-hosted suite, analysis lane,
+independent self-hosting, pyflakes and SQL qualification passed. Peak observed
+footprint was 5,094 MiB, 600 MiB over the 4,494 MiB baseline. The self-hosted
+container exited 0; the SQL containers were removed after their qualified run.
+The CIU-managed checkout remains ready, attached to its recorded branch, and
+clean. No B105 pilot ran.
+
+The three exact staged B118-to-B131 Sol xhigh reviews found seven concrete follow-ups:
+the B110 checker omitted `ProgressStream` timing fields from its expected
+baseline event; B110 state records did not compare mutation site spans and
+descriptions against the plan; B131 accepted a self-consistent but incomplete
+supplied plan without rederiving the full analysis inventory; duplicate
+terminal verdict events were not refused; and `emitted_at` was not parsed as
+an aware timestamp. The B110 checker also did not validate `end` timing, and
+B131 accepted malformed timestamps on its `end` and terminal events. The
+integration now accepts and validates the producer's timestamped baseline and
+end shapes, parses asserted timestamps as aware instants, requires one
+terminal verdict, compares all state site metadata, and rebuilds the
+complete committed analysis-lane candidate inventory before selection or
+verification. The two affected suites pass **104 tests in 29.84 seconds**; the shipped-source
+pyflakes oracle, Python compilation, and diff checks pass. A final exact-tree
+review and integrated registered gate remain pending, so the 68f8a477 gate
+does not cover these later integration-only corrections.
+
+The fourth exact-tree B118-to-B131 Sol xhigh review was run with `.codex2` on
+HEAD `d4d2cb285b60dff9d32db9a09bc73fed9ab113fb` and staged diff SHA256
+`46ea971aa9175121846a997f656779959ec25047b472eb5bb21aa23503fa9ce5`;
+the review record is `/tmp/assay-b131-b118-final-review3-codex2.md`. It found
+two more gaps: B131 accepted state without the resume-required
+`replacement_sha256`, and the B131 candidate plus B110 candidate/resume
+progress paths accepted missing producer timing. The selectors now derive
+replacement-byte hashes from committed mutation sites and bind them into
+selection and state checks. The checkers require valid producer timing on the
+progress records they use. New refusal cases and producer-shaped fixtures
+bring the focused B131/B110 suites to **111 passed in 35.40 seconds**. Python
+compilation, pyflakes, and diff checks remain to rerun, followed by another
+exact-tree Sol xhigh review and same-tip gates.
+
+The fifth exact-tree B118-to-B131 Sol xhigh review used `.codex2` on HEAD
+`d4d2cb285b60dff9d32db9a09bc73fed9ab113fb`, staged diff SHA256
+`9328a27edb0e6d32c4ed31600672a90cf6520662cfd43fc29eca8ce81cb998fc`;
+its record is `/tmp/assay-b131-b118-final-review4-codex2.md`. It found three
+further gaps: B110 did not require collection evidence for full kills; B131
+did not reconstruct the typed execution receipt or explicitly enforce its
+kill-specific witness rules; and B131 could certify a completed summary that
+also carried a refusal. B110 now requires collection evidence for every kill.
+B131 validates the mutation execution model, requires a witness for full
+kills, refuses kill-only receipts on non-kills, and closes the completed
+summary shape. The existing terminal matcher already rejected a completely
+missing kill witness; the typed check also enforces the receipt's non-empty,
+bounded node identity and closed field shape. New refusal cases bring the
+focused B131/B110 suites to **116 passed in 31.58 seconds**. Compilation,
+pyflakes, and diff checks remain to rerun, followed by exact-tree re-review and
+same-tip gates.
+
+## Controller follow-up — exact-tree review round 39 (2026-10-10)
+
+The sixth exact-tree B118-to-B131 Sol xhigh review used `.codex2` and is
+recorded in `/tmp/assay-b131-b118-final-review5-codex2.md`. It found two more
+gaps. B110's campaign, candidate, deadline, state and progress paths use the
+launcher-pinned `.assay` descriptor, but Assay's no-follow input loader
+rejected the proc-fd spelling before planning. The safe reader now follows
+only the exact kernel-owned descriptor link, then walks suffix components
+with `O_NOFOLLOW`; pilot state locking preserves that descriptor root rather
+than resolving it to a replaceable pathname. The review also found that a
+full kill could carry `command="r2"`; B110 now requires declared-command
+collection evidence for a full kill and R2 evidence for witness executions.
+Behavioral oracles cover campaign creation/deadline reading, candidate and
+progress I/O, symlink refusal below the descriptor, state writes after visible
+`.assay` replacement, and evidence-command mismatch. The focused B131/B110
+checker suites pass **117 tests in 43.65 seconds**; the safe-I/O, campaign and
+pilot-path core suites pass **124 tests in 20.96 seconds**; docs and pyflakes
+pass **57 tests in 10.57 seconds**. The seventh exact-tree review and same-tip
+registered gates remain pending; no B110 pilot has run.
+
+## Controller follow-up — exact-tree reviews rounds 40–42 (2026-10-10)
+
+Round 40 found three integration gaps: the B110 checker compared the pilot
+summary's state path to a resolved filesystem path instead of the launcher
+proc-fd spelling; non-kill state could carry a witness-cold execution and a
+witness-cold kill did not require an R2 failed-call prefix; and B131 allowed
+`witness-prefix` despite the selected-candidate pilot forbidding reuse. The
+checker now verifies that the supplied spelling names the state directory
+opened under the admitted `.assay` descriptor before comparing the summary,
+binds state mode to outcome and collection evidence, and permits only `full`
+or `witness-cold` kills in the analysis pilot.
+
+Round 41 requested stronger oracles for a state-directory replacement after
+descriptor open and for a full-mode survivor carrying a valid failure witness.
+The tests now perform that path swap and assert refusal before manifest
+publication, and cover both non-kill witness contradictions. The final
+round-42 Sol xhigh review accepted the remediation delta with no findings. Its
+record is `/tmp/assay-b131-b118-review9-codex.md`; HEAD, status, staged diff
+SHA256 `41d8c8810f22ebf4761343eb0359d8a7466da39edfe1e054b3f3a5366c12c7c0`,
+and repair-delta SHA256
+`631507361fe0eec4378411514f20c1792c8dbc0b8c597193a0d51bbd7a2971d8` were
+unchanged by review. The focused B131/B110 checker suites pass **123 tests**;
+Python compilation and `git diff --check` pass. Same-tip registered gates and
+both bounded pilot measurements remain pending; a separate RG89 `r1` gate was
+active at this checkpoint, so no B131 gate was launched concurrently.
