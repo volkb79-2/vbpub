@@ -11375,7 +11375,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         argv += ["--cpus", cpus]
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
-          f"slice {gate_slice} ({gate_slice_src})", flush=True)
+          f"slice {slice_name} ({slice_src})", flush=True)
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "
