@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -49,6 +50,7 @@ QUALIFICATION_ID = "self-qualification"
 PREFLIGHT_ID = "self-qualification-preflight"
 B110_PILOT_ID = "b110-pilot"
 B110_SCREEN_ID = "b110-screen"
+B131_PILOT_ID = "analysis-r2-pilot"
 RUN_GATE_TOML = PROJECT_ROOT / "run-gate.toml"
 
 #: (B123) The exact argv of the wheel lane: both test trees, the tooling
@@ -77,7 +79,13 @@ def test_assays_own_lane_file_loads():
 
     assert lane_file.schema_version == 2
     assert lane_file.project_root == PROJECT_ROOT
-    assert list(lane_file.lanes) == [GATE_ID, QUALIFICATION_ID, PREFLIGHT_ID, "analysis"]
+    assert list(lane_file.lanes) == [
+        GATE_ID,
+        QUALIFICATION_ID,
+        PREFLIGHT_ID,
+        "analysis",
+        "analysis-r2",
+    ]
 
 
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
@@ -120,6 +128,44 @@ def test_inner_tester_budget_leaves_time_for_the_outer_sql_witness():
     assert run_gate["resources"] == {"shared": ["assay-self-qualification"]}
     assert run_gate["exit_map"] == {"3": "ERROR"}
     assert gate["timeout_seconds"] == 6 * 60 * 60
+
+
+def test_analysis_r2_is_a_bounded_separate_whole_target_lane():
+    lane_file = load_lane_file(SELF_LANE_FILE)
+    lane = lane_file.lane("analysis-r2")
+    baseline = lane_file.lane("analysis")
+    judge = lane.judge
+
+    assert lane.scope == "S1"
+    assert lane.rigor == ("R0", "R1", "R2")
+    assert lane.enforcement == "gate"
+    assert lane.budget_seconds == 60 * 60
+    assert lane.argv == baseline.argv[:-1] + (
+        "--cov-report=json:.assay/coverage-analysis-r2.json",
+    )
+    assert judge is not None
+    assert judge.mode == "whole_target"
+    assert judge.source_roots == ("analysis/src/assay_analysis",)
+    assert judge.targets == (
+        "analysis/src/assay_analysis/__init__.py",
+        "analysis/src/assay_analysis/campaign.py",
+        "analysis/src/assay_analysis/cli.py",
+        "analysis/src/assay_analysis/evidence.py",
+        "analysis/src/assay_analysis/plan_estimate.py",
+    )
+    assert not set(judge.targets) & {target for target in lane_file.lane(QUALIFICATION_ID).judge.targets}
+    assert judge.mutation is not None
+    assert judge.mutation.jobs == 1
+    assert judge.mutation.max_mutants == 10000
+    assert judge.mutation.operators == (
+        "python:compare-swap",
+        "python:boolop-swap",
+        "python:bool-const-flip",
+        "python:falsy-swap",
+    )
+    assert judge.mutation.budget_per_candidate == "auto"
+    assert judge.coverage is not None
+    assert judge.coverage.artifact == ".assay/coverage-analysis-r2.json"
 
 
 def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
@@ -789,11 +835,23 @@ def test_b110_pilot_and_screen_are_registered_bare_host_lanes_with_exact_bounds(
             ],
             "budget": "140m",
             "artifacts": [
+                ".assay",
                 ".assay/b110-pilot-plan.json",
                 ".assay/b110-pilot-candidates.txt",
                 ".assay/b110-pilot-selection.json",
                 ".assay/b110-pilot-summary.json",
                 ".assay/b110-pilot-run.log",
+                ".assay/b110-pilot-attempt-window.json",
+                ".assay/b110-pilot-attempt.log",
+                ".assay/b110-pilot-artifacts.sha256",
+                ".assay/b110-pilot-evidence",
+                ".assay/b110-pilot-evidence.receipt.json",
+                ".assay/b110-pilot-evidence.attestation.json",
+                ".assay/b110-pilot-evidence.pending.json",
+                ".assay/b110-pilot-evidence-archive",
+                ".assay/b110-pilot-evidence-incomplete",
+                ".assay/b110-pilot-evidence-unverified",
+                ".assay/b110-pilot-state",
                 ".assay/progress-b110-pilot.jsonl",
             ],
         },
@@ -824,10 +882,57 @@ def test_b110_pilot_and_screen_are_registered_bare_host_lanes_with_exact_bounds(
         assert lane["artifacts"] == declaration["artifacts"]
 
     nyxloom = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"]
-    for lane_id, timeout_seconds in ((B110_PILOT_ID, 9000), (B110_SCREEN_ID, 28800)):
+    for lane_id, timeout_seconds in (
+        (B110_PILOT_ID, 9000),
+        (B131_PILOT_ID, 9000),
+        (B110_SCREEN_ID, 28800),
+    ):
         assert nyxloom[lane_id]["timeout_seconds"] == timeout_seconds
         assert nyxloom[lane_id]["asserts"] == ["tests-pass"]
         assert lane_id in nyxloom[lane_id]["argv"][-1]
+
+
+def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
+    run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"]
+    lane = run_gate[B131_PILOT_ID]
+
+    assert lane["kind"] == "command"
+    assert lane["environment"] == "bare-host"
+    assert lane["clean_tree"] is True
+    assert lane["argv"] == [
+        "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m",
+        "bash", "{worktree}/assay/tools/self-qualification-container.sh",
+        "{worktree}", B131_PILOT_ID,
+    ]
+    assert lane["budget"] == "140m"
+    assert lane["resources"] == {"shared": ["assay-self-qualification"]}
+    assert lane["exit_map"] == {"3": "ERROR"}
+    assert lane["artifacts"] == [
+        ".assay/analysis-r2-pilot-plan.json",
+        ".assay/analysis-r2-pilot-candidates.txt",
+        ".assay/analysis-r2-pilot-selection.json",
+        ".assay/analysis-r2-pilot-summary.json",
+        ".assay/analysis-r2-pilot-run.log",
+        ".assay/progress-analysis-r2-pilot.jsonl",
+        ".assay/analysis-r2-pilot-state",
+    ]
+    nyxloom = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"]
+    assert nyxloom[B131_PILOT_ID]["timeout_seconds"] == 9000
+    assert nyxloom[B131_PILOT_ID]["asserts"] == ["tests-pass"]
+    assert "./run-gate.py --worktree {worktree} analysis-r2-pilot" in nyxloom[B131_PILOT_ID]["argv"][-1]
+
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    pilot = _shell_function_body(script, "run_analysis_r2_pilot")
+    assert '--campaign "$campaign" --lane analysis-r2 --hours 2' in pilot
+    assert '"$assay_bin" plan analysis-r2 --file assay.toml --cold-witness' in pilot
+    assert '"$assay_bin" run analysis-r2 --file assay.toml' in pilot
+    for marker in (
+        "--candidates-file", "--cold-witness", "--resume", "--state-dir",
+        "--progress", "--campaign-deadline", "analysis_r2_pilot_select.py",
+        "analysis_r2_pilot_check.py", "ANALYSIS_R2_PILOT_VERIFIED=1",
+    ):
+        assert marker in pilot
+    assert 'analysis-r2-pilot) run_analysis_r2_pilot; exit 0 ;;' in script
 
 
 def _shell_function_body(script: str, name: str) -> str:
@@ -837,9 +942,96 @@ def _shell_function_body(script: str, name: str) -> str:
     return "\n".join(lines[start : end + 1]) + "\n"
 
 
+@pytest.mark.parametrize("expired_bound", ["invocation", "campaign"])
+def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
+    tmp_path: Path, expired_bound: str
+):
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    pilot = _shell_function_body(script, "run_analysis_r2_pilot")
+    function_path = tmp_path / "analysis-pilot-function.sh"
+    function_path.write_text(pilot, encoding="utf-8")
+
+    project = tmp_path / "project"
+    state = project / ".assay"
+    state.mkdir(parents=True)
+    deadline = state / "campaign-deadline-analysis-r2-pilot-test.json"
+    deadline.write_text("{}\n", encoding="utf-8")
+    scratch = tmp_path / "scratch"
+    python = scratch / "run-venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_timeout = bin_dir / "timeout"
+    fake_timeout.write_text(
+        "#!/usr/bin/env bash\nshift 4\nexec \"$@\"\n", encoding="utf-8"
+    )
+    fake_timeout.chmod(0o755)
+    fake_assay = bin_dir / "assay"
+    fake_assay.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        "  plan) printf '{}\\n'; exit 0 ;;\n"
+        "  run) printf '{\\\"completed\\\":true}\\n'; exit 6 ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_assay.chmod(0o755)
+
+    expiry_flag = tmp_path / "deadline-expired"
+    harness = tmp_path / "run-analysis-pilot.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        f"source {function_path}\n"
+        f"cd {project}\n"
+        f"assay_bin={fake_assay}\n"
+        f"scratch={scratch}\n"
+        "campaign=analysis-r2-pilot-test\n"
+        f"deadline={deadline}\n"
+        "wheel_digest=$(printf 'c%.0s' {1..64})\n"
+        f"worktree={tmp_path}\n"
+        "source_commit=$(printf 'a%.0s' {1..40})\n"
+        "source_tree=$(printf 'b%.0s' {1..40})\n"
+        "gate_started_s=$SECONDS\n"
+        "pilot_invocation_remaining_s() {\n"
+        f"  if [[ -f {expiry_flag} && {expired_bound!r} == invocation ]]; then\n"
+        "    PILOT_INVOCATION_REMAINING_S=0\n"
+        "  else\n"
+        "    PILOT_INVOCATION_REMAINING_S=5400\n"
+        "  fi\n"
+        "}\n"
+        "pilot_campaign_remaining_s() {\n"
+        f"  if [[ -f {expiry_flag} && {expired_bound!r} == campaign ]]; then\n"
+        "    printf '0\\n'\n"
+        "  else\n"
+        "    printf '3600\\n'\n"
+        "  fi\n"
+        "}\n"
+        f"ensure_source_unchanged() {{ touch {expiry_flag}; }}\n"
+        "if run_analysis_r2_pilot; then status=0; else status=$?; fi\n"
+        "printf 'STATUS=%s\\n' \"$status\"\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+    proc = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, env=env, timeout=30
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "STATUS=124" in proc.stdout
+    assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+
+
 def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
-    pilot = _shell_function_body(script, "run_b110_pilot")
+    pilot = _shell_function_body(script, "run_b110_pilot_inner")
+    pilot_wrapper = _shell_function_body(script, "run_b110_pilot")
     pilot_budget = _shell_function_body(script, "pilot_invocation_remaining_s")
     pilot_campaign_budget = _shell_function_body(script, "pilot_campaign_remaining_s")
     screen = _shell_function_body(script, "run_b110_screen")
@@ -848,20 +1040,23 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     assert pilot.index("pilot_started_s=$SECONDS") < pilot.index('"$assay_bin" campaign init')
     assert pilot.index("rm -f --") < pilot.index('"$assay_bin" campaign init')
     assert pilot.index('"$assay_bin" campaign init') < pilot.index('"$assay_bin" plan self-qualification')
+    assert '--out "$pilot_deadline"' in pilot
     assert "--candidates-file" in pilot and "--campaign-deadline" in pilot
     assert "pilot_cap_s=$((90 * 60))" in pilot
     assert "pilot_started_s=$SECONDS" in pilot
-    assert pilot.count('pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"') == 5
+    assert pilot.count('pilot_invocation_remaining_s "$pilot_started_s" "$pilot_cap_s"') == 6
     assert "pilot_step_budget_s=$((pilot_step_budget_s < campaign_budget_s ? pilot_step_budget_s : campaign_budget_s))" in pilot
     assert "pilot_run_timeout_s=$((remaining_s < pilot_step_budget_s ? remaining_s : pilot_step_budget_s))" in pilot
     assert '"${pilot_run_timeout_s}s"' in pilot
     assert "PILOT_INVOCATION_REMAINING_S <= 0" in pilot
     assert '"${pilot_step_budget_s}s"' in pilot
-    assert "> .assay/b110-pilot-summary.json 2> .assay/b110-pilot-run.log" in pilot
+    assert "--output b110-pilot-summary.json --stderr b110-pilot-run.log" in pilot
     assert 'campaign_remaining_after_run_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"' in pilot
     assert "campaign_remaining_after_run_s <= 0" in pilot
     assert pilot.index("pilot_status=$?") < pilot.index("campaign_remaining_after_run_s=")
-    assert pilot.index("campaign_remaining_after_run_s=") < pilot.index('echo "B110_PILOT_EXIT=$pilot_status"')
+    assert pilot.index("campaign_remaining_after_run_s=") < pilot.index('if (( pilot_status != 6 ))')
+    assert pilot.index("b110_pilot_report_check.py") < pilot.index('echo "B110_PILOT_COMPLETED=1"')
+    assert pilot.index("ensure_source_unchanged") < pilot.index("campaign_remaining_after_check_s=")
     assert "--pilot-jobs 3" in pilot
     for marker in (
         "B110_PILOT_EXIT=", "B110_PILOT_TIMEOUT_FAILSAFE=1",
@@ -869,15 +1064,18 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     ):
         assert marker in pilot
     assert "run_b110_pilot" in dispatch and "run_b110_screen" in dispatch
+    assert "timeout --verbose --signal=TERM --kill-after=30s 5400s" in pilot_wrapper
+    assert "--internal-b110-pilot" in pilot_wrapper
+    assert "--output b110-pilot-attempt.log --stderr-to-stdout" in pilot_wrapper
     assert "--cold-witness" in screen and "--resume" in screen
-    assert '"$assay_bin" verify .assay/verdict-b110-screen.json' in screen
+    assert '"$assay_bin" verify "$assay_state_root/verdict-b110-screen.json"' in screen
     assert "b110_screen_report_check.py" in screen
     assert "B110_SCREEN_VERIFIED=1" in screen
     assert "--expected-exit-code \"$screen_status\"" in screen
-    assert "> .assay/b110-screen-run.log 2>&1" in screen
+    assert "--output b110-screen-run.log --stderr-to-stdout" in screen
     assert "--campaign-deadline" not in screen
     assert "--candidates-file" not in screen
-    assert screen.index("rm -f -- .assay/verdict-b110-screen.json") < screen.index('"$assay_bin" plan self-qualification')
+    assert screen.index('rm -f -- "$assay_state_root/verdict-b110-screen.json"') < screen.index('"$assay_bin" plan self-qualification')
     assert 'echo "B110_SCREEN_VERDICT_CLEANUP_FAILED=1" >&2; return 1' in screen
     assert 'plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"' in screen
     assert 'echo "B110_SCREEN_EXIT=$screen_status" || return 1' in screen
@@ -892,7 +1090,9 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     assert script.index('campaign="b110-pilot-${source_commit:0:12}"') < script.index("# Bind the wheel before installing")
     assert 'check_campaign_wheel_digest \\' in script
     assert 'if [[ -n "$deadline" ]]; then' in script
-    assert 'deadline=".assay/campaign-deadline-$campaign.json"' in script
+    assert 'deadline="$assay_state_root/campaign-deadline-$campaign.json"' in script
+    assert "pin_b110_assay_state" in script
+    assert "--expected-assay-device" in pilot_wrapper
     assert 'now_s="${3:-$SECONDS}"' in pilot_budget
     assert "local elapsed_s=$((now_s - started_s))" in pilot_budget
     assert 'PILOT_INVOCATION_REMAINING_S=$((elapsed_s >= cap_s ? 0 : cap_s - elapsed_s))' in pilot_budget
@@ -901,12 +1101,18 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
 
 def test_b110_pilot_early_refusal_clears_attempt_outputs_but_keeps_resume_progress(tmp_path: Path):
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
-    pilot = _shell_function_body(script, "run_b110_pilot")
+    pilot = _shell_function_body(script, "run_b110_pilot_inner")
     helper = _shell_function_body(script, "pilot_invocation_remaining_s")
     function_path = tmp_path / "pilot-functions.sh"
     function_path.write_text(helper + "\n" + pilot, encoding="utf-8")
     cwd = tmp_path / "project"
     (cwd / ".assay").mkdir(parents=True)
+    tools_dir = cwd / "tools"
+    tools_dir.mkdir()
+    shutil.copy2(
+        PROJECT_ROOT / "tools" / "b110_pilot_attempt_window.py",
+        tools_dir / "b110_pilot_attempt_window.py",
+    )
     stale_outputs = (
         "b110-pilot-plan.json",
         "b110-pilot-candidates.txt",
@@ -935,13 +1141,15 @@ def test_b110_pilot_early_refusal_clears_attempt_outputs_but_keeps_resume_progre
     harness.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
         f"source {function_path}\ncd {cwd}\n"
+        "exec {assay_state_fd}< .assay\n"
+        "assay_state_root=\"/proc/$BASHPID/fd/$assay_state_fd\"\n"
         f"assay_bin={fake_assay}\n"
         f"scratch={tmp_path / 'scratch'}\n"
         "campaign=b110-pilot-test\n"
-        f"deadline={cwd / '.assay/campaign-deadline-b110-pilot-test.json'}\n"
+        "deadline=\"$assay_state_root/campaign-deadline-b110-pilot-test.json\"\n"
         "wheel_digest=\"$(printf 'a%.0s' {1..64})\"\n"
         f"worktree={tmp_path}\n"
-        "run_b110_pilot\n",
+        "run_b110_pilot_inner\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -955,6 +1163,65 @@ def test_b110_pilot_early_refusal_clears_attempt_outputs_but_keeps_resume_progre
     assert (tmp_path / "trace").read_text(encoding="utf-8").strip().startswith("campaign init")
     assert all(not (cwd / ".assay" / name).exists() for name in stale_outputs)
     assert progress.read_text(encoding="utf-8") == '{"event":"candidate"}\n'
+
+
+def test_b110_attempt_window_creation_uses_the_pinned_assay_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = tmp_path / "project"
+    state = project / ".assay"
+    outside = tmp_path / "outside"
+    state.mkdir(parents=True)
+    outside.mkdir()
+    (outside / "unrelated.txt").write_text("preserve\n", encoding="utf-8")
+    state_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+    state_info = os.fstat(state_fd)
+    spec = importlib.util.spec_from_file_location(
+        "b110_pilot_attempt_window_pinned_dir_test",
+        PROJECT_ROOT / "tools" / "b110_pilot_attempt_window.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    original_time_ns = module.time.time_ns
+    replaced = False
+
+    def replace_visible_state_before_create():
+        nonlocal replaced
+        if not replaced:
+            state.rename(project / ".assay-held")
+            os.symlink(outside, state)
+            replaced = True
+        return original_time_ns()
+
+    monkeypatch.setattr(module.time, "time_ns", replace_visible_state_before_create)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(PROJECT_ROOT / "tools" / "b110_pilot_attempt_window.py"),
+            "b110-pilot-aaaaaaaaaaaa",
+            "a" * 40,
+            "--assay-fd",
+            str(state_fd),
+            "--expected-assay-device",
+            str(state_info.st_dev),
+            "--expected-assay-inode",
+            str(state_info.st_ino),
+        ],
+    )
+    try:
+        with pytest.raises(SystemExit) as refused:
+            module.main()
+        assert refused.value.code == 2
+    finally:
+        os.close(state_fd)
+
+    assert replaced
+    assert (project / ".assay-held" / "b110-pilot-attempt-window.json").is_file()
+    assert not (outside / "b110-pilot-attempt-window.json").exists()
+    assert (outside / "unrelated.txt").read_text(encoding="utf-8") == "preserve\n"
 
 
 def test_b110_pilot_invocation_budget_counts_elapsed_work_and_floors_at_zero():
@@ -972,19 +1239,94 @@ def test_b110_pilot_invocation_budget_counts_elapsed_work_and_floors_at_zero():
     assert exhausted == 0
 
 
-@pytest.mark.parametrize("expired_bound", ["invocation", "campaign", "timeout"])
+def test_b110_pilot_outer_cap_rejects_completion_markers_from_a_timed_out_worker(
+    tmp_path: Path,
+):
+    script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    wrapper = _shell_function_body(script, "run_b110_pilot")
+    function_path = tmp_path / "pilot-wrapper.sh"
+    function_path.write_text(wrapper, encoding="utf-8")
+    cwd = tmp_path / "project"
+    (cwd / ".assay").mkdir(parents=True)
+    (cwd / "tools").mkdir()
+    shutil.copy2(
+        PROJECT_ROOT / "tools" / "b110_pilot_attempt_window.py",
+        cwd / "tools" / "b110_pilot_attempt_window.py",
+    )
+    shutil.copy2(
+        PROJECT_ROOT / "tools" / "b110_pilot_safe_output.py",
+        cwd / "tools" / "b110_pilot_safe_output.py",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_timeout = bin_dir / "timeout"
+    fake_timeout.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >\"$B110_TIMEOUT_TRACE\"\n"
+        "printf '%s\\n' 'B110_PILOT_EXIT=6' 'B110_PILOT_VERIFIED=1' \\\n"
+        "  'B110_PILOT_COMPLETED=1'\n"
+        "exit 124\n",
+        encoding="utf-8",
+    )
+    fake_timeout.chmod(0o755)
+    harness = tmp_path / "run-wrapper.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        f"source {function_path}\ncd {cwd}\n"
+        "exec {assay_state_fd}< .assay\n"
+        "assay_state_root=\"/proc/$BASHPID/fd/$assay_state_fd\"\n"
+        "ASSAY_B110_ASSAY_STATE_DEVICE=\"$(stat -Lc '%d' -- \"$assay_state_root\")\"\n"
+        "ASSAY_B110_ASSAY_STATE_INODE=\"$(stat -Lc '%i' -- \"$assay_state_root\")\"\n"
+        f"project={cwd}\nworktree={tmp_path}\n"
+        f"scratch={tmp_path / 'scratch'}\n"
+        "campaign=b110-pilot-bbbbbbbbbbbb\ndeadline=.assay/deadline.json\n"
+        "wheel_digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "source_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "source_tree=cccccccccccccccccccccccccccccccccccccccc\n"
+        "assay_bin=/fake/assay\n"
+        "run_b110_pilot\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+            "B110_TIMEOUT_TRACE": str(tmp_path / "timeout-trace"),
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, env=env, timeout=10
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "5400s bash" in (tmp_path / "timeout-trace").read_text(encoding="utf-8")
+    assert "B110_PILOT_COMPLETED=1" in proc.stdout
+    assert "B110_PILOT_EXIT=124" in proc.stdout
+    assert "B110_PILOT_TIMEOUT_FAILSAFE=1" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "expired_bound",
+    ["invocation", "campaign", "invocation-after-check", "campaign-after-check", "timeout"],
+)
 def test_b110_pilot_expiry_or_timeout_is_not_reported_as_complete(
     tmp_path: Path, expired_bound: str
 ):
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     helper = _shell_function_body(script, "pilot_invocation_remaining_s")
-    pilot = _shell_function_body(script, "run_b110_pilot")
+    pilot = _shell_function_body(script, "run_b110_pilot_inner")
     function_path = tmp_path / "pilot-functions.sh"
     function_path.write_text(helper + "\n" + pilot, encoding="utf-8")
     cwd = tmp_path / "project"
     (cwd / ".assay").mkdir(parents=True)
     deadline = cwd / ".assay" / "campaign-deadline-b110-pilot-test.json"
     deadline.write_text('{"expires_at_utc":"2030-01-01T00:00:00Z"}\n', encoding="utf-8")
+    (cwd / "tools").mkdir()
+    shutil.copy2(
+        PROJECT_ROOT / "tools" / "b110_pilot_safe_output.py",
+        cwd / "tools" / "b110_pilot_safe_output.py",
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_timeout = bin_dir / "timeout"
@@ -1018,17 +1360,30 @@ def test_b110_pilot_expiry_or_timeout_is_not_reported_as_complete(
     fake_assay.chmod(0o755)
     fake_python = tmp_path / "scratch" / "run-venv" / "bin" / "python"
     fake_python.parent.mkdir(parents=True)
-    fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *b110_pilot_report_check.py* ]]; then\n'
+        "  printf '%s\\n' 'B110_PILOT_VERIFIED=1' "
+        "'B110_PILOT_ATTESTATION_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n"
+        "fi\nexit 0\n",
+        encoding="utf-8",
+    )
     fake_python.chmod(0o755)
     harness = tmp_path / "run-pilot.sh"
     harness.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
         f"source {function_path}\ncd {cwd}\n"
+        "exec {assay_state_fd}< .assay\n"
+        "assay_state_root=\"/proc/$BASHPID/fd/$assay_state_fd\"\n"
+        "ASSAY_B110_ASSAY_STATE_DEVICE=\"$(stat -Lc '%d' -- \"$assay_state_root\")\"\n"
+        "ASSAY_B110_ASSAY_STATE_INODE=\"$(stat -Lc '%i' -- \"$assay_state_root\")\"\n"
+        f"project={cwd}\n"
         "pilot_invocation_checks=0\n"
         "pilot_campaign_checks=0\n"
         "pilot_invocation_remaining_s() {\n"
         "  pilot_invocation_checks=$((pilot_invocation_checks + 1))\n"
-        f"  if [[ {expired_bound!r} == invocation ]] && (( pilot_invocation_checks == 4 )); "
+        f"  if [[ ({expired_bound!r} == invocation && pilot_invocation_checks -eq 4) "
+        f"|| ({expired_bound!r} == invocation-after-check && pilot_invocation_checks -eq 5) ]]; "
         "then PILOT_INVOCATION_REMAINING_S=0; "
         "else PILOT_INVOCATION_REMAINING_S=5400; fi\n"
         "}\n"
@@ -1037,16 +1392,20 @@ def test_b110_pilot_expiry_or_timeout_is_not_reported_as_complete(
         '  [[ ! -f "$B110_CAMPAIGN_CHECKS" ]] || campaign_checks="$(<"$B110_CAMPAIGN_CHECKS")"\n'
         "  campaign_checks=$((campaign_checks + 1))\n"
         '  printf \'%s\\n\' "$campaign_checks" >"$B110_CAMPAIGN_CHECKS"\n'
-        f"  if [[ {expired_bound!r} == campaign ]] && (( campaign_checks == 4 )); "
+        f"  if [[ ({expired_bound!r} == campaign && campaign_checks -eq 4) "
+        f"|| ({expired_bound!r} == campaign-after-check && campaign_checks -eq 5) ]]; "
         "then printf '0\\n'; else printf '3600\\n'; fi\n"
         "}\n"
+        "ensure_source_unchanged() { return 0; }\n"
         f"assay_bin={fake_assay}\n"
         f"scratch={tmp_path / 'scratch'}\n"
         "campaign=b110-pilot-test\n"
-        f"deadline={deadline}\n"
+        "deadline=\"$assay_state_root/campaign-deadline-b110-pilot-test.json\"\n"
+        "source_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "source_tree=cccccccccccccccccccccccccccccccccccccccc\n"
         'wheel_digest="$(printf \'a%.0s\' {1..64})"\n'
         f"worktree={tmp_path}\n"
-        "run_b110_pilot\n",
+        "run_b110_pilot_inner\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -1119,6 +1478,11 @@ def _run_extracted_screen_function(tmp_path: Path, *, run_status: int, write_ver
     function_path.write_text(_shell_function_body(script, "run_b110_screen"), encoding="utf-8")
     cwd = tmp_path / "project"
     (cwd / ".assay").mkdir(parents=True)
+    (cwd / "tools").mkdir()
+    shutil.copy2(
+        PROJECT_ROOT / "tools" / "b110_pilot_safe_output.py",
+        cwd / "tools" / "b110_pilot_safe_output.py",
+    )
     verdict_path = cwd / ".assay" / "verdict-b110-screen.json"
     if stale:
         verdict_path.write_text("stale", encoding="utf-8")
@@ -1171,6 +1535,10 @@ def _run_extracted_screen_function(tmp_path: Path, *, run_status: int, write_ver
         "set -euo pipefail\n",
         f"source {function_path}\n",
         f"cd {cwd}\n",
+        "exec {assay_state_fd}< .assay\n",
+        "assay_state_root=\"/proc/$BASHPID/fd/$assay_state_fd\"\n",
+        "ASSAY_B110_ASSAY_STATE_DEVICE=\"$(stat -Lc '%d' -- \"$assay_state_root\")\"\n",
+        "ASSAY_B110_ASSAY_STATE_INODE=\"$(stat -Lc '%i' -- \"$assay_state_root\")\"\n",
     ]
     if fail_reuse_output:
         harness_lines.append(
@@ -1184,6 +1552,7 @@ def _run_extracted_screen_function(tmp_path: Path, *, run_status: int, write_ver
             f"source_commit={'a' * 40}\n",
             f"source_tree={'b' * 40}\n",
             f"worktree={tmp_path}\n",
+            f"project={cwd}\n",
             # Match production dispatch: this `||` list disables errexit inside
             # the function, so every contract-critical command needs an explicit guard.
             "run_b110_screen || exit $?\n",

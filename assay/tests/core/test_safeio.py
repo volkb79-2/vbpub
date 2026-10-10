@@ -142,6 +142,33 @@ def test_a_project_root_that_is_not_an_openable_directory_is_refused(tmp_path: P
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
+def test_a_pinned_proc_fd_root_is_followed_once_then_walked_without_symlinks(
+    tmp_path: Path,
+):
+    admitted = tmp_path / "admitted"
+    admitted.mkdir()
+    state = admitted / "state"
+    state.mkdir()
+    (state / "input.json").write_bytes(b"pinned input")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "input.json").write_bytes(b"outside input")
+    (admitted / "escape").symlink_to(outside, target_is_directory=True)
+
+    descriptor = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        pinned = Path(f"/proc/self/fd/{descriptor}")
+        assert safeio.read_bounded_file(
+            pinned / "state", "input.json", limit=LIMIT
+        ) == b"pinned input"
+        with pytest.raises(AssayError, match="symlinked, or non-directory suffix component"):
+            safeio.read_bounded_file(
+                pinned / "escape", "input.json", limit=LIMIT
+            )
+    finally:
+        os.close(descriptor)
+
+
 # --- create_missing_parents: B006(b) -------------------------------------------
 #
 # `reserve_output`'s new capability, off by default -- the whole contract, not

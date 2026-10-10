@@ -2562,17 +2562,97 @@ and its verified, detached `tester-unified` child so they retain the host
 cgroup visibility required by selected native candidates.
 
 The pilot initializes its two-hour campaign after exact-source wheel setup and
-before planning or selection. Campaign initialization, planning, selection and
-Assay execution share a hard 90-minute per-invocation cap; planning and
-selection are also bounded by the remaining campaign deadline. Assay execution
-uses only the remaining cap, followed by at most 30 seconds for termination.
+before planning or selection. Campaign initialization, planning, selection,
+Assay execution, report checking, final source/deadline checks and completion
+markers share a hard 90-minute per-invocation cap. Planning and selection are
+also bounded by the remaining campaign deadline. Assay execution and evidence
+checks use only the time left after setup and selection; a timeout allows at
+most 30 seconds for process termination.
 The persisted two-hour campaign remains the absolute bound across retries. The
 selector binds the chosen subset to the current plan, commit, tree and source
 bytes. The run uses three pilot jobs, cold witnesses, resume and the
-pilot-specific state directory; exit 6 plus the completion marker means every
-selected candidate has a disposition. Survivors and other non-passing outcomes
-remain measurement results. A campaign refusal, timeout failsafe or incomplete
-exit cannot be certified by the wrapper. The run-gate 2h20m outer bound
+pilot-specific state directory. The launcher keeps the admitted `.assay`
+directory open and gives Assay proc-fd paths rooted at that descriptor. Assay
+follows only the kernel-owned descriptor link, then opens each child without
+following symlinks; this preserves the admitted directory identity across
+campaign setup and R2 execution. Exit 6 alone is not completion evidence: an
+independent checker recomputes the selection and validates the source-bound
+summary, per-candidate state, progress stream, resumed dispositions, two-hour
+campaign deadline, 90-minute attempt window, wheel identity and resource-limit
+evidence. The summary records the current sweep's `judge_sha256` captured in
+memory; the checker requires the candidates progress event and every state
+record to match it. It writes a SHA-256 manifest over the validated files. The
+host copies those bytes into
+`.assay/b110-pilot-evidence/`, checks the exact inventory and content digests,
+and atomically publishes that directory as the retained evidence snapshot.
+Files and directories in the snapshot are made read-only. A separate
+`.assay/b110-pilot-evidence.receipt.json` binds the source, manifest and
+snapshot-index digests. After validating a successful run-gate transcript, the
+host writes `.assay/b110-pilot-evidence.attestation.json`, binding the snapshot
+digest to the transcript run ID and content digest. This durable success
+binding remains usable after run-gate replaces a same-commit pass history entry
+with a later completed failure. A pending receipt is written before the
+snapshot is published and removed only after the snapshot and final receipt
+verify. If the process stops in between, the next attempt moves the pending
+marker, snapshot, receipt, attestation and any staging directory under
+`.assay/b110-pilot-evidence-incomplete/`; none of that material enters the
+validated archive. After writing all completion markers, the host reopens the
+published snapshot, rechecks its contents and identities, and checks both
+deadlines again. Marker text, including the gate-completion line, is
+provisional; a post-marker expiry or changed snapshot returns a failed gate,
+and the registered command's exit status remains the pass signal. The original
+files remain resume state and are not authoritative evidence after
+publication. On retry, a persisted success attestation is checked against the
+owner-only run-gate transcript outside the judged worktree. This lets the host
+recover the successful transcript even after a later same-commit failure
+replaces run-gate's latest-history entry. A retry checks and archives prior
+evidence before source-cleanliness and later host-admission checks, so those
+refusals cannot replace the pass before the host secures its transcript
+binding. Any earlier host refusal exits 3, which the lane maps to
+`ERROR`/history-ineligible; an eligible pass therefore remains available for
+retry. Once prior evidence is archived or quarantined, later refusals can be
+recorded without losing that evidence. Before that sidecar exists, the host opens and validates one bounded
+snapshot of `.run-gate/history.json`, then searches its `b110-pilot` records
+for an eligible successful lane record for the same commit and worktree. A
+well-formed ineligible latest record with `commit: null` is ignored as a
+candidate while earlier eligible history remains usable. It does not reopen
+the mutable store through the
+`run-gate history` verb: the transcript lookup uses exactly the bytes that
+passed preflight. The host compares the receipt's snapshot digest with the
+owner-only transcript. The transcript must contain both the provisional
+snapshot digest and a host-generated digest marker emitted only after the
+final snapshot check. After this check, the host saves the durable attestation
+before attempting to archive the snapshot. It stages the snapshot, receipt,
+attestation and a read-only copy of the exact verified transcript together
+under `.assay/b110-pilot-evidence-incomplete/`. The version-2 attestation names
+that copy as `b110-pilot-run-gate.log` and binds its content digest. The host
+checks the staged copy immediately before publishing the set into
+`.assay/b110-pilot-evidence-archive/<entry>/` with one atomic no-replace
+directory rename. If a failed post-publication check cannot use the incomplete
+area, the unverified bundle moves under the private
+`.assay/b110-pilot-evidence-unverified/` fallback or a private
+collision-resistant sibling. This
+makes the archive independent of later changes to the external log path while
+keeping the transcript and attestation visible together. If the history store
+or transcript cannot be read or validated before the attestation exists, the
+host leaves the live evidence untouched and returns exit 3. An explicit
+absence of a successful transcript,
+a valid successful transcript that proves a different digest, an invalid
+receipt, or an interrupted publication is preserved in the incomplete
+directory before a fresh attempt. If that path is unavailable or unsafe, prior
+evidence quarantine and archive withdrawal use the private unverified-evidence
+fallback or a private collision-resistant sibling; the quarantine marker names
+the selected destination. The host bounds history output, transcript reads,
+snapshot hashing and copying. The transcript protects this comparison from the nested
+tester container, which cannot rewrite the host's external evidence directory;
+it is not a cryptographic signature against a host user with access to that
+directory. Quarantine checks the moved device and inode for files and
+symlinks as well as directories; a replacement race fails closed. The outer
+attempt log is retained as diagnostics and is not in the evidence manifest.
+Survivors and
+other non-passing outcomes remain measurement results. A campaign refusal,
+timeout failsafe, resource-limit event or incomplete exit cannot be certified
+by the wrapper. The run-gate 2h20m outer bound
 includes a planned build/venv allowance of at most 10 minutes, pending
 measurement by the registered gate, plus the campaign and timeout cleanup
 margins.
@@ -2760,8 +2840,22 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1, R2 by ingestion only (B046) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. R3 is not registered |
+| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; qualification of the current transform against dstdns is pending |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
+
+**B087 registers both adapter transforms through the shared isolated canary
+runner.** `import-break` appends a top-level throw, which module evaluation
+reaches when tests import the target. `uncovered-line` appends a leading-
+semicolon wrapper call that returns an anonymous function without calling
+it; the wrapper has no target-global reads or generated module binding, and
+the function body's lines remain uncovered. The runner accepts only the
+matching `COMMAND_FAILED` or `UNCOVERED_LINES` result after a passing control,
+respectively. The live R3 oracles cover ESM and CommonJS; a separate Vitest
+fixture replay confirms the body lines remain missing under both Istanbul
+and V8 artifacts. The original dstdns attempt used a different uncovered-line
+transform; current real-consumer qualification remains open. The report at
+`nyxloom-trove/reports/B087-js-r3-qualification.md` records that evidence gap.
+No verdict or schema rule changed.
 
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own
@@ -4237,10 +4331,12 @@ protecting any verdict.
   R3 targets lie outside `src/assay/`, or that names an analysis target; an
   accepted report says
   `scope=src/assay out_of_scope=analysis/src/assay_analysis:A-478`.
-- **Own lane, no R2.** Analysis has an R0+R1 whole-target lane
-  (`analysis`, tests in `analysis/tests/`, 100% line and branch). R2 for
-  analysis is deliberately not claimed in this change; it is a follow-up
-  (B131).
+- **Own lane, staged R2 claim.** Analysis keeps its R0+R1 whole-target lane
+  (`analysis`, tests in `analysis/tests/`, 100% line and branch) and adds a
+  separate `analysis-r2` whole-target lane. B131's registered gate runs only a
+  bounded non-qualifying pilot; a full analysis R2 qualification remains a
+  later stage decided from measured pilot data. See
+  [the B131 pilot design](#analysis-package-r2-pilot-b131).
 - **Schemas** stay in `src/assay/schemas/`; documented paths do not move.
 - The undocumented `import assay.analysis` is removed. A source checkout
   needs both `src` and `analysis/src` on `PYTHONPATH`.
@@ -4302,3 +4398,30 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   summary whose `projection (diagnostic)` line appears only with `--project`.
   Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
   `--limit`) and always carry `matching_total` and `next_offset`.
+
+### Analysis-package R2 pilot (B131)
+
+The analysis package has a separate `analysis-r2` lane because B105 judges
+`src/assay`, not `analysis/src/assay_analysis`. Keep the existing `analysis`
+R0/R1 lane and B105's target scope unchanged. B131 first adds a bounded,
+non-qualifying pilot; it does not make full analysis R2 a release requirement.
+
+The pilot derives its inventory from the exact unsharded `assay plan
+analysis-r2` result. Its deterministic selector chooses one candidate from
+every candidate-bearing file/operator stratum, includes the full census of the
+rare `python:falsy-swap` operator, then fills to a default sample of up to 40 from
+the ranked remainder in plan order. If the selected size cannot cover the
+required strata and rare-operator census, the selector refuses instead of
+silently reducing coverage. It never reuses B105's candidate count or GO
+thresholds.
+
+The registered `analysis-r2-pilot` gate runs the selected sample with cold
+witnesses, resumable state, a progress stream and one persisted campaign
+deadline. The host binds the selection and completed exit-6 summary to the
+clean source commit/tree, plan bytes, wheel identity, candidate file, state,
+progress and B145 resource evidence. No verdict is written: a completed sample
+is a measurement, while timeout, partial state, host refusal or resource limit
+is incomplete. Only measurements from this pilot may set an analysis-specific
+worker envelope, full-run budget and GO policy; a separate stage must add and
+qualify a full-plan gate if the pilot justifies one. The pasteable in-repo
+invocation is in [CONSUMERS.md](CONSUMERS.md#run-the-analysis-package-r2-pilot-b131).

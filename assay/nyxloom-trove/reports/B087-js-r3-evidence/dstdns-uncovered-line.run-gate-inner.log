@@ -1,0 +1,12 @@
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+assay-8.0.1.dev126+gad17ab38a.pyz: OK
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)
+b087_uncovered_line: PASS (exit 0)
+  commit: 00b6f56d1dfa9f942c1ae261ef1b6306448a7cfe
+  argv: npx --no-install vitest run --coverage --reporter=json --outputFile=.assay/vitest-report.json

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,32 @@ def test_campaign_init_persists_exact_identity_and_accepts_same_identity(
     code, _, err = _invoke(args)
     assert code == Outcome.PASS.exit_code, err
     assert target.read_bytes() == original
+
+
+def test_campaign_init_and_deadline_read_accept_a_pinned_proc_fd_root(
+    git_repo: GitRepo, tmp_path: Path
+):
+    config = _lane_config(git_repo)
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        root = Path(f"/proc/self/fd/{descriptor}")
+        target = root / "deadline.json"
+        state_dir = root / "state"
+        args = _init_args(config, target)
+        args.extend(("--state-dir", str(state_dir)))
+
+        code, out, err = _invoke(args)
+
+        assert code == Outcome.PASS.exit_code, err
+        assert out.strip() == str(target)
+        assert (tmp_path / "deadline.json").is_file()
+        document, _raw, _expires = cli._parse_campaign_deadline(
+            target, lane="package"
+        )
+        assert document["schema"] == "assay-campaign-deadline/1"
+        assert document["lanes"] == ["package"]
+    finally:
+        os.close(descriptor)
 
 
 @pytest.mark.parametrize(

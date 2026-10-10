@@ -1044,16 +1044,92 @@ Use the registered lanes for reviewable gate evidence:
 `b110-pilot` initializes a two-hour campaign after building the exact commit,
 then plans and selects candidates inside that campaign. It runs the selected
 subset with three pilot jobs, cold witnesses, resume state and a progress
-stream. Campaign initialization, planning, selection and Assay execution share
-a hard 90-minute per-invocation cap, and planning and selection are bounded by
-the remaining campaign deadline. Assay execution uses only the remaining cap,
-followed by at most 30 seconds for termination. The persisted campaign deadline
+stream. Campaign initialization, planning, selection, Assay execution, report
+checking, final source/deadline checks and completion markers share a hard
+90-minute per-invocation cap. Planning and selection are bounded by the
+remaining campaign deadline. Assay execution and evidence checks use the time
+left after setup and selection; a timeout allows at most 30 seconds for process
+termination. The persisted campaign deadline
 is the absolute two-hour bound across retries. Exit 6 is a
 complete pilot measurement, including when
-candidates survive; it is not an R2 pass or B105 qualification. The gate
-refuses campaign initialization refusal, timeout, a missing completion marker
-or any exit other than 6. It retains the run summary and stderr at
-`.assay/b110-pilot-summary.json` and `.assay/b110-pilot-run.log`.
+candidates survive; it is not an R2 pass or B105 qualification. Before the
+launcher starts Assay, it pins the admitted `.assay` directory so campaign,
+candidate, state, deadline and progress paths stay bound to it through the
+run. The gate then reports completion only after an independent checker
+recomputes the selected IDs
+from the exact source plan and validates the summary's in-memory current-sweep
+`judge_sha256`; the candidates progress event and every candidate state record
+must match that value. It also validates resource evidence, pending and resumed
+progress, campaign deadline, the 90-minute attempt window and wheel digest. The 90-minute cap
+includes report checking, final source/deadline checks and completion markers.
+The checker writes
+`.assay/b110-pilot-artifacts.sha256`; the host pins that manifest and its listed
+files, copies their verified bytes into `.assay/b110-pilot-evidence/`, and
+checks the snapshot index and exact file inventory. Snapshot files and
+directories are read-only. A separate
+`.assay/b110-pilot-evidence.receipt.json` binds the source, manifest and
+snapshot-index digests; the index digest is reported as
+`B110_PILOT_SNAPSHOT_SHA256`. After validating a successful run-gate
+transcript, the host also writes
+`.assay/b110-pilot-evidence.attestation.json`, binding that snapshot to the
+transcript run ID and content digest. This durable binding remains available if
+a later same-commit failed retry replaces run-gate's latest-history entry. A
+retry checks and archives prior evidence before source-cleanliness and later
+host-admission checks, while the successful run-gate record is still
+available. Earlier host refusals exit 3, mapped to run-gate `ERROR`, so the
+pass remains eligible for retry. An ineligible latest record with an unresolved HEAD does not hide
+an earlier eligible pass. A
+pending receipt is written before the snapshot
+is published and removed only after the final receipt, snapshot and deadlines
+verify. If the process stops before that cleanup, the next attempt preserves
+the pending marker, snapshot and any staging directory under
+`.assay/b110-pilot-evidence-incomplete/`; it does not treat those files as
+completed evidence. After writing provisional completion markers, the host
+reopens and rechecks the published snapshot and both deadlines. The gate exits
+with failure if that final check finds a changed snapshot or expired deadline,
+even if marker text was already written; command exit status determines
+success. Before a retry archives a completed snapshot, the host checks its
+digest against an eligible successful `b110-pilot` record and the owner-only
+run-gate transcript outside the judged worktree. The transcript must contain
+both the provisional snapshot digest and the host-generated digest marker
+emitted after the final snapshot check. The host stages a verified snapshot,
+receipt, durable version-2 attestation and a read-only copy of the verified
+transcript under `.assay/b110-pilot-evidence-incomplete/`. The attestation
+points to `b110-pilot-run-gate.log` and binds its content digest. The host
+publishes the complete set as `.assay/b110-pilot-evidence-archive/<entry>/`
+with one atomic no-replace directory rename, so the archive remains checkable
+after the external run-gate log path changes. If a failed post-publication
+check cannot use the incomplete area, the unverified bundle moves under the
+private `.assay/b110-pilot-evidence-unverified/` fallback or a private
+collision-resistant sibling. Prior-evidence quarantine uses the same fallback
+when the incomplete path is unavailable or unsafe, and its quarantine marker
+records the selected destination. Before the durable attestation exists,
+unavailable or malformed history or transcript evidence leaves the live files
+in place and returns exit 3. A later run-gate failure may replace the latest-
+history entry; the persisted attestation still binds the successful transcript
+to its snapshot. A valid transcript proving a different digest, an invalid
+receipt or an interrupted publication is preserved before a fresh attempt;
+when the incomplete path is unavailable or unsafe, the host uses the fallback
+above. The snapshot
+directory is the authoritative retained evidence; original attempt files stay
+available for resume until a retry replaces them. Run-gate's `artifacts` list
+discloses paths for inspection, but it does not guarantee that live files will
+survive a retry. Retain the snapshot and its archive when you need the evidence
+after another attempt.
+The registered lane also discloses `.assay` so the active commit-derived
+deadline (`campaign-deadline-b110-pilot-<commit12>.json`) is discoverable by
+its exact name. A retry archives only a prior snapshot whose full digest
+matches the successful run-gate transcript. If a publication was interrupted,
+the host preserves it under `.assay/b110-pilot-evidence-incomplete/` and
+proceeds with a fresh attempt. If run-gate history or its transcript is
+unavailable, it leaves the live snapshot and receipt in place and returns exit
+3, so the failure is recorded as infrastructure error and can be retried after
+the evidence is available. A timeout,
+resource-limit event, incomplete report, stale or missing artifact, or
+unverified exit cannot complete the gate. The summary and Assay stderr remain
+at `.assay/b110-pilot-summary.json` and `.assay/b110-pilot-run.log`; the
+outer attempt log is retained at `.assay/b110-pilot-attempt.log` as wrapper
+diagnostics and is not part of the pilot evidence manifest.
 
 Retries for the same commit reuse the persisted campaign deadline and mutation
 state; the progress stream appends resumable work. When piloting a new commit,
@@ -1803,16 +1879,20 @@ in `nyxloom-trove/4-backlog.md`:
   *narrows* the check, and `sql:drop-check` also rewrites `CREATE POLICY ...
   WITH CHECK`; the operator names describe the common case only.
 
-## JavaScript/TypeScript lanes (R1, and R2 by ingestion)
+## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 
 `judge.language = "javascript"` is a changed-line lane over
 `.js`/`.jsx`/`.ts`/`.tsx` — one language name for all four. It resolves at
-**R1** (coverage) and, since schema v9, at **R2 by evidence ingestion** — your
-own argv runs StrykerJS inside the snapshot and assay judges the report
-([below](#r2-for-javascript-by-ingesting-strykers-report-b046)). Assay still
-ships no JS/TS mutation engine, so a *native* R2 lane is still refused. **R3
-is unwired**, and a lane declaring it is refused `ERROR`/`BAD_LANE_CONFIG`
-before anything runs.
+**R1** (coverage), **R2 by evidence ingestion** — your own argv runs StrykerJS
+inside the snapshot and assay judges the report
+([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
+by the existing cause-sensitive canary runner. Assay still ships no JS/TS
+mutation engine, so a *native* R2 lane is still refused. B087 registers R3
+and local real-Vitest tests exercise both mechanisms. Requalification of the
+current uncovered-line transform against dstdns is pending; the earlier
+operator-reported dstdns attempt used different code and did not retain its
+verdicts or verifier transcripts. See the
+[qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
 
@@ -1851,6 +1931,69 @@ export default defineConfig({
 `json-summary` (totals only, no per-file detail) or `lcov` (a different
 registry format — if you prefer it, declare `format = "lcov"` instead and
 point at `lcov.info`).
+
+### Add an R3 canary to a JavaScript lane
+
+R3 checks that the lane's command catches a deliberately injected cause. Use
+`import-break` when the test suite imports the target file; it must make the
+command fail with `COMMAND_FAILED`. Use `uncovered-line` when the lane also
+declares R1 coverage; the appended function body must make R1 fail with
+`UNCOVERED_LINES`. Choose a tracked source file that the lane's tests import;
+do not point the canary at a test file.
+
+This complete schema-v2 lane uses the existing Vitest installation in the
+clean invoking checkout through `link_paths`. Keep `coverage.clean = false`
+in `vitest.config.ts` as shown above. Replace the target with a real
+test-imported file and measure the command duration before setting the
+budgets:
+
+```toml
+schema_version = 2
+
+[lanes.ui]
+scope = "S1"
+rigor = ["R0", "R1", "R3"]
+enforcement = "gate"
+argv = ["npx", "--no-install", "vitest", "run", "--coverage"]
+env = {}
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui.isolation]
+snapshot_selection = "repository"
+link_paths = ["node_modules"]
+
+[lanes.ui.judge]
+language = "javascript"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+base_source = "request"
+
+[lanes.ui.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = ".assay/coverage-final.json"
+producer = "istanbul"
+
+[lanes.ui.judge.canary]
+mechanism = "uncovered-line"
+target = "src/app.ts"
+budget_per_attempt = "15m"
+```
+
+`budget_per_attempt` bounds one target's control and transformed runs;
+the lane `budget` also includes the ordinary baseline run. For one target,
+expect one baseline run plus two isolated command runs. Each additional
+target adds two more full command runs. `import-break` and `uncovered-line`
+are separate lane declarations because a lane names one mechanism.
+
+Run a request-based lane with the gate's selected base and retain progress:
+
+```bash
+mkdir -p .assay
+assay run ui --request-base "$BASE" --resume --progress .assay/progress-ui.jsonl --verdict-json .assay/verdict-ui.json
+```
 
 **`clean: false` is RECOMMENDED for any lane assay judges — and if you
 forget it, assay now names the cause instead of reporting no coverage
@@ -1992,13 +2135,15 @@ snippet earlier in this section).
 the offline install plus the real run once, in the actual gate environment,
 and set the budget from that.
 
-**R3 triples this cost, not doubles it.** A canary run is baseline PLUS two
-further runs (import-break, uncovered-line), each against its OWN fresh
-snapshot — so each one repeats the offline install from a cold `node_modules`
-inside that snapshot. Budget a `javascript` R3 lane accordingly once it is
-wired — not yet: R3 is registered only after a real-Vitest canary pair has
-run (`gate/tests/qualification/test_javascript_real_vitest.py` proves R1 today;
-canary coverage is a later step).
+**One R3 lane selects one canary mechanism and runs three commands:** its
+baseline, the canary control, and the transformed target. The two canary
+commands use their own fresh snapshots, so each repeats the offline install
+from a cold `node_modules`. This triples the cost of that lane. The lane's
+`mechanism` is exactly one of `import-break` or `uncovered-line`; declare
+separate lanes if you want to exercise both, and budget each lane for its own
+baseline and two canary commands. R3 is registered and has local real-Vitest
+oracles. Qualification of the current transform against dstdns remains open;
+see the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 Gitignore what the run writes — the coverage directory, and anything your
 runner drops beside it — in the same change that adds the lane:
@@ -4964,3 +5109,34 @@ request needs `--request-base`.
   reported as `artifact_status: missing`; a missing parent directory is an
   evidence error (create it); a supplied `--coverage` path that is not the
   declared one is an evidence error.
+
+### Run the analysis-package R2 pilot (B131)
+
+The bounded pilot measures the separate `analysis-r2` lane before anyone
+chooses a full-run budget or qualification policy. It must run from a clean,
+committed worktree with B131's lane and selector in that commit. For an in-repo
+checkout, run the registered gate from the Assay project directory:
+
+```bash
+WORKTREE=/workspaces/vbpub/.worktrees/assay-analysis-r2
+cd "$WORKTREE/assay"
+./run-gate.py --worktree "$WORKTREE" analysis-r2-pilot
+```
+
+The gate builds Assay from that exact worktree commit, then uses the detached,
+cgroup-visible `tester-unified` child. It plans the whole `analysis-r2` lane,
+then selects a deterministic bounded sample: one candidate for every
+candidate-bearing source-file/operator pair, all `python:falsy-swap`
+candidates, and ranked fill to up to 40 candidates by default. The gate verifies the
+source, plan, selected ids, pilot state/progress, cold-witness evidence,
+resource counters and actual exit before returning success.
+
+Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
+operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`
+for the completed sample; and `.assay/progress-analysis-r2-pilot.jsonl` plus
+`.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
+gate means only that the sample completed and its evidence verified. It does
+not create a verdict or qualify the full plan. A timeout, partial sample,
+host-busy refusal or cgroup resource event is not a successful measurement.
+Use the [B131 design and decision boundary](DESIGN-GUIDE.md#analysis-package-r2-pilot-b131)
+before proposing a full analysis R2 run.

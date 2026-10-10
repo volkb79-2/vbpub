@@ -4,7 +4,17 @@
 # qualification in the cgroup-visible tester-unified namespace B145 requires.
 set -euo pipefail
 
-die() { printf 'self-qualification-container: %s\n' "$*" >&2; exit 1; }
+die() {
+  local exit_status=1
+  if [[ "${lane:-}" == b110-pilot && "${prior_pilot_evidence_secured:-false}" != true ]]; then
+    # The lane maps exit 3 to run-gate ERROR, which is excluded from the
+    # per-commit success history. Do not let a host refusal before prior
+    # evidence is secured replace the pass needed to archive that evidence.
+    exit_status=3
+  fi
+  printf 'self-qualification-container: %s\n' "$*" >&2
+  exit "$exit_status"
+}
 
 assay_git() {
   command git \
@@ -14,15 +24,50 @@ assay_git() {
     "$@"
 }
 
+run_source_host_checker() {
+  assay_git -C "$worktree" show "$source_commit:assay/tools/b110_pilot_host_check.py" \
+    | python3 - "$@"
+}
+
+clear_prior_outputs() {
+  local output_lane="$1" marker
+  local expected_assay_args=()
+  if [[ "$assay_state_present" == true ]]; then
+    expected_assay_args=(
+      --expected-assay-device "$assay_state_device"
+      --expected-assay-inode "$assay_state_inode"
+    )
+  else
+    expected_assay_args=(--expected-assay-absent)
+  fi
+  if ! marker="$(run_source_host_checker \
+    --project-root "$project" \
+    --expected-project-device "$project_device" \
+    --expected-project-inode "$project_inode" \
+    "${expected_assay_args[@]}" \
+    --clear-prior-outputs "$output_lane")"; then
+    die "cannot safely clear prior $output_lane outputs before launcher admission"
+  fi
+  local marker_lines=()
+  mapfile -t marker_lines <<<"$marker"
+  [[ ${#marker_lines[@]} -eq 2 && "${marker_lines[0]}" =~ ^B110_PRIOR_OUTPUTS_CLEARED=[0-9]+$ ]] \
+    || die 'host returned malformed stale-output cleanup markers'
+  [[ "${marker_lines[1]}" =~ ^B110_ASSAY_STATE_IDENTITY=([0-9]+):([0-9]+)$ ]] \
+    || die 'host returned a malformed prepared .assay identity'
+  assay_state_device="${BASH_REMATCH[1]}"
+  assay_state_inode="${BASH_REMATCH[2]}"
+  assay_state_present=true
+}
+
 usage() {
-  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen'
+  die 'usage: self-qualification-container.sh WORKTREE self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot'
 }
 
 [[ $# -eq 2 ]] || usage
 worktree="$1"
 lane="$2"
 case "$lane" in
-  self-qualification|self-qualification-preflight|b110-pilot|b110-screen) ;;
+  self-qualification|self-qualification-preflight|b110-pilot|b110-screen|analysis-r2-pilot) ;;
   *) usage ;;
 esac
 
@@ -34,14 +79,31 @@ worktree="$(cd -- "$worktree" && pwd -P)" \
   || die 'cannot resolve the selected worktree path'
 
 project="$worktree/assay"
-[[ -f "$project/pyproject.toml" ]] || die "selected worktree has no assay project: $project"
+[[ -d "$project" && ! -L "$project" && -f "$project/pyproject.toml" ]] \
+  || die "selected worktree has no real assay project directory: $project"
+project_identity="$(stat -c '%d:%i' -- "$project")" \
+  || die 'cannot capture the Assay project directory identity before container startup'
+[[ "$project_identity" =~ ^([0-9]+):([0-9]+)$ ]] \
+  || die 'stat returned a malformed Assay project directory identity'
+project_device="${BASH_REMATCH[1]}"
+project_inode="${BASH_REMATCH[2]}"
 [[ "$(assay_git -C "$worktree" rev-parse --show-toplevel)" == "$worktree" ]] \
   || die "selected worktree path does not resolve to its own repository root"
+source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
+  || die "cannot resolve selected worktree HEAD"
+source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
+  || die "cannot resolve selected worktree tree"
 
-for required_command in realpath flock chmod rm; do
+for required_command in realpath flock chmod python3 stat; do
   command -v "$required_command" >/dev/null 2>&1 \
     || die "required host command is unavailable: $required_command"
 done
+if [[ "$lane" != b110-pilot ]]; then
+  for required_command in rm mkdir mv; do
+    command -v "$required_command" >/dev/null 2>&1 \
+      || die "required host command is unavailable: $required_command"
+  done
+fi
 
 # The run-gate `resources.shared` flock is scoped to its caller's /tmp. B105
 # callers in separate container namespaces can therefore race on one Docker
@@ -74,30 +136,102 @@ fi
 # protects a live screen from verdict cleanup and prevents pilot output cleanup
 # from racing another caller. The run-gate artifact paths must not expose a
 # previous result as this attempt's when host or Docker admission refuses.
-if [[ "$lane" == b110-screen || "$lane" == b110-pilot ]]; then
+if [[ "$lane" == b110-screen || "$lane" == b110-pilot || "$lane" == analysis-r2-pilot ]]; then
   assay_state_dir="$project/.assay"
   [[ ! -L "$assay_state_dir" ]] \
     || die 'B110 state directory is a symlink; refusing stale-artifact cleanup'
   if [[ -e "$assay_state_dir" && ! -d "$assay_state_dir" ]]; then
     die 'B110 state path exists but is not a directory'
   fi
+  assay_state_present=false
+  assay_state_device=""
+  assay_state_inode=""
   if [[ -d "$assay_state_dir" ]]; then
-    if [[ "$lane" == b110-screen ]]; then
-      rm -f -- \
-        "$assay_state_dir/verdict-b110-screen.json" \
-        "$assay_state_dir/b110-screen-plan.json" \
-        "$assay_state_dir/b110-screen-run.log" \
-        || die 'cannot clear prior B110 screen outputs before launcher admission'
-    else
-      rm -f -- \
-        "$assay_state_dir/b110-pilot-plan.json" \
-        "$assay_state_dir/b110-pilot-candidates.txt" \
-        "$assay_state_dir/b110-pilot-selection.json" \
-        "$assay_state_dir/b110-pilot-summary.json" \
-        "$assay_state_dir/b110-pilot-run.log" \
-        || die 'cannot remove prior B110 pilot outputs before launcher admission'
-    fi
+    assay_state_identity="$(stat -c '%d:%i' -- "$assay_state_dir")" \
+      || die 'cannot capture the B110 state directory identity before cleanup'
+    [[ "$assay_state_identity" =~ ^([0-9]+):([0-9]+)$ ]] \
+      || die 'stat returned a malformed B110 state directory identity'
+    assay_state_device="${BASH_REMATCH[1]}"
+    assay_state_inode="${BASH_REMATCH[2]}"
+    assay_state_present=true
   fi
+  if [[ "$lane" == b110-pilot && "$assay_state_present" == true ]]; then
+      prior_snapshot="$assay_state_dir/b110-pilot-evidence"
+      prior_receipt="$assay_state_dir/b110-pilot-evidence.receipt.json"
+      prior_attestation="$assay_state_dir/b110-pilot-evidence.attestation.json"
+      prior_pending="$assay_state_dir/b110-pilot-evidence.pending.json"
+      prior_stage_found=false
+      for prior_stage in "$assay_state_dir"/.b110-pilot-evidence.stage.*; do
+        if [[ -e "$prior_stage" || -L "$prior_stage" ]]; then
+          prior_stage_found=true
+          break
+        fi
+      done
+      if [[ -e "$prior_snapshot" || -L "$prior_snapshot" \
+        || -e "$prior_receipt" || -L "$prior_receipt" \
+        || -e "$prior_attestation" || -L "$prior_attestation" \
+        || -e "$prior_pending" || -L "$prior_pending" \
+        || "$prior_stage_found" == true ]]; then
+        if prior_archive_marker="$(run_source_host_checker \
+          --project-root "$project" \
+          --expected-project-device "$project_device" \
+          --expected-project-inode "$project_inode" \
+          --expected-assay-device "$assay_state_device" \
+          --expected-assay-inode "$assay_state_inode" \
+          --expected-commit "$source_commit" \
+          --expected-tree "$source_tree" \
+          --archive-prior-snapshot)"; then
+          prior_archive_status=0
+        else
+          prior_archive_status=$?
+        fi
+        if [[ "$prior_archive_status" == 3 ]]; then
+          printf '%s\n' 'ASSAY_GATE_INCONCLUSIVE=prior B110 pilot evidence is unavailable; preserving it for retry'
+          exit 3
+        elif [[ "$prior_archive_status" != 0 ]]; then
+          die 'host could not archive or quarantine the prior B110 pilot publication'
+        fi
+        [[ "$prior_archive_marker" =~ ^B110_PILOT_PRIOR_(ARCHIVED=[0-9]+-[0-9a-f]{16}-[0-9a-f]{64}|QUARANTINED=(b110-pilot-evidence-incomplete|b110-pilot-evidence-unverified(-[0-9a-f]{32})?)/[0-9]+-[0-9a-f]{12})$ ]] \
+          || die 'host returned a malformed prior B110 pilot disposition marker'
+      fi
+  fi
+  if [[ "$lane" == b110-pilot ]]; then
+    prior_pilot_evidence_secured=true
+    # Preserve any prior successful snapshot before a source-cleanliness or
+    # later host prerequisite refusal can replace its same-commit run-gate
+    # history entry. Earlier launcher refusals use exit 3, mapped to ERROR.
+    source_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
+      || die 'cannot read selected worktree status before B105 qualification'
+    [[ -z "$source_status" ]] \
+      || die "selected worktree is not clean before B105 qualification"
+    for required_command in rm mkdir mv; do
+      command -v "$required_command" >/dev/null 2>&1 \
+        || die "required host command is unavailable: $required_command"
+    done
+    clear_prior_outputs b110-pilot
+  elif [[ "$lane" == b110-screen ]]; then
+    clear_prior_outputs b110-screen
+  else
+    if [[ -e "$assay_state_dir/verdict-analysis-r2.json" \
+      || -L "$assay_state_dir/verdict-analysis-r2.json" ]]; then
+      printf '%s\n' 'B131 refuses to overwrite a pre-existing analysis-r2 verdict; preserve or archive it first' >&2
+      exit 2
+    fi
+    rm -f -- \
+      "$assay_state_dir/analysis-r2-pilot-plan.json" \
+      "$assay_state_dir/analysis-r2-pilot-candidates.txt" \
+      "$assay_state_dir/analysis-r2-pilot-selection.json" \
+      "$assay_state_dir/analysis-r2-pilot-summary.json" \
+      "$assay_state_dir/analysis-r2-pilot-run.log" \
+      || die 'cannot remove prior B131 pilot outputs before launcher admission'
+  fi
+fi
+
+if [[ "$lane" != b110-pilot ]]; then
+  source_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
+    || die 'cannot read selected worktree status before B105 qualification'
+  [[ -z "$source_status" ]] \
+    || die "selected worktree is not clean before B105 qualification"
 fi
 
 command -v findmnt >/dev/null 2>&1 \
@@ -119,15 +253,6 @@ host_workspace_root="${ASSAY_GATE_HOST_WORKSPACE_ROOT:-$workspace_fsroot}"
 [[ "$host_workspace_root" == /* && "$host_workspace_root" != "/" \
   && "$host_workspace_root" != *$'\n'* && "$host_workspace_root" != *,* ]] \
   || die 'the host workspace bind source is not a usable Docker mount source'
-
-source_commit="$(assay_git -C "$worktree" rev-parse HEAD)" \
-  || die "cannot resolve selected worktree HEAD"
-source_tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" \
-  || die "cannot resolve selected worktree tree"
-source_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
-  || die 'cannot read selected worktree status before B105 qualification'
-[[ -z "$source_status" ]] \
-  || die "selected worktree is not clean before B105 qualification"
 
 if ! command -v docker >/dev/null 2>&1; then
   die 'Docker is required to launch the cgroup-visible tester-unified runner'
@@ -287,6 +412,14 @@ forwarded_env=()
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]]; then
   forwarded_env+=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
 fi
+b110_state_env=()
+if [[ "$lane" == b110-pilot || "$lane" == b110-screen ]]; then
+  [[ "$assay_state_present" == true ]] || die 'B110 did not prepare its .assay state directory'
+  b110_state_env+=(
+    -e "ASSAY_B110_ASSAY_STATE_DEVICE=$assay_state_device"
+    -e "ASSAY_B110_ASSAY_STATE_INODE=$assay_state_inode"
+  )
+fi
 
 mount_args=(--mount "type=bind,src=$host_workspace_root,dst=$host_workspace_root")
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
@@ -308,11 +441,9 @@ case "$lane" in
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
     ;;
   b110-pilot)
-    # The build and venv setup happen before the two-hour campaign starts.
-    # Preserve the planned ten-minute setup allowance, two-hour campaign
-    # deadline, and five-minute log/cleanup margin inside docker wait. The
-    # 90-minute campaign invocation cap is hard; TERM is followed by 30s
-    # kill-after, with no extra execution grace.
+    # The build and venv setup happen before the 90-minute campaign-attempt
+    # cap. The inner cap covers campaign init, plan, selection, Assay, report
+    # checking and final markers; docker wait is the larger cleanup failsafe.
     wait_timeout_label=2h15m
     wait_timeout_seconds=8100
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
@@ -322,10 +453,20 @@ case "$lane" in
     wait_timeout_seconds=26100
     inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
     ;;
+  analysis-r2-pilot)
+    wait_timeout_label=2h15m
+    wait_timeout_seconds=8100
+    inner_argv=(bash "$project/tools/self-qualification-gate.sh" "$worktree" "$lane")
+    ;;
 esac
 
-printf 'ASSAY_B105_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
-printf 'ASSAY_B105_GATE_CONTAINER=%s\n' "$container_name"
+if [[ "$lane" == analysis-r2-pilot ]]; then
+  printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
+  printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER=%s\n' "$container_name"
+else
+  printf 'ASSAY_B105_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
+  printf 'ASSAY_B105_GATE_CONTAINER=%s\n' "$container_name"
+fi
 launch_attempted=1
 launch_output="$scratch/docker.run.stdout"
 launch_error="$scratch/docker.run.stderr"
@@ -343,6 +484,7 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
   -e "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
   -e "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree" \
+  "${b110_state_env[@]}" \
   "${forwarded_env[@]}" \
   "${mount_args[@]}" \
   -w "$worktree" \
@@ -415,6 +557,15 @@ for expected in \
     die "B105 container is missing required environment fact: ${expected%%=*}"
   fi
 done
+if [[ "$lane" == b110-pilot || "$lane" == b110-screen ]]; then
+  for expected in \
+    "ASSAY_B110_ASSAY_STATE_DEVICE=$assay_state_device" \
+    "ASSAY_B110_ASSAY_STATE_INODE=$assay_state_inode"; do
+    if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
+      die "B110 container is missing its admitted .assay identity: ${expected%%=*}"
+    fi
+  done
+fi
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]] \
   && ! printf '%s\n' "$container_env" | grep -Fqx \
     "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND"; then
@@ -486,10 +637,17 @@ case "$lane" in
     mapfile -t pilot_completion_markers < <(grep -Fx 'B110_PILOT_COMPLETED=1' "$scratch/container.log" || true)
     [[ ${#pilot_completion_markers[@]} -eq 1 ]] \
       || die 'B110 pilot exited 6 without its completion marker'
+    mapfile -t pilot_verified_markers < <(grep -Fx 'B110_PILOT_VERIFIED=1' "$scratch/container.log" || true)
+    [[ ${#pilot_verified_markers[@]} -eq 1 ]] \
+      || die 'B110 pilot has no independently verified artifact marker'
+    mapfile -t pilot_attestation_markers < <(grep -E '^B110_PILOT_ATTESTATION_SHA256=[0-9a-f]{64}$' "$scratch/container.log" || true)
+    [[ ${#pilot_attestation_markers[@]} -eq 1 ]] \
+      || die 'B110 pilot did not report exactly one attestation digest'
+    pilot_attestation_sha256="${pilot_attestation_markers[0]#B110_PILOT_ATTESTATION_SHA256=}"
     marker=B110_PILOT_COMPLETED=1
     ;;
   b110-screen)
-    if grep -Eq '^B110_PILOT_(EXIT|COMPLETED|TIMEOUT_FAILSAFE|INIT_REFUSED|SUMMARY)=' "$scratch/container.log"; then
+    if grep -Eq '^B110_PILOT_(EXIT|COMPLETED|VERIFIED|ATTESTATION_SHA256|TIMEOUT_FAILSAFE|INIT_REFUSED|SUMMARY)=' "$scratch/container.log"; then
       die 'B110 screen log contains a pilot-mode marker'
     fi
     if grep -Fxq 'B110_SCREEN_TIMEOUT_FAILSAFE=1' "$scratch/container.log"; then
@@ -505,6 +663,24 @@ case "$lane" in
       || die 'B110 screen has no verified complete verdict marker'
     marker=B110_SCREEN_VERIFIED=1
     ;;
+  analysis-r2-pilot)
+    if grep -Eq '^B110_(SCREEN|PILOT)_' "$scratch/container.log"; then
+      die 'B131 pilot log contains a B110-mode marker'
+    fi
+    if grep -Fxq 'ANALYSIS_R2_PILOT_INIT_REFUSED=1' "$scratch/container.log"; then
+      die 'B131 pilot campaign initialization was refused'
+    fi
+    if grep -Fxq 'ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1' "$scratch/container.log"; then
+      die 'B131 pilot exceeded its campaign failsafe'
+    fi
+    mapfile -t analysis_pilot_exit_markers < <(grep -E '^ANALYSIS_R2_PILOT_EXIT=(0|[1-9][0-9]{0,2})$' "$scratch/container.log" || true)
+    [[ ${#analysis_pilot_exit_markers[@]} -eq 1 && "${analysis_pilot_exit_markers[0]}" == 'ANALYSIS_R2_PILOT_EXIT=6' ]] \
+      || die 'B131 pilot did not report exactly one complete exit status (6)'
+    mapfile -t analysis_pilot_completion_markers < <(grep -Fx 'ANALYSIS_R2_PILOT_VERIFIED=1' "$scratch/container.log" || true)
+    [[ ${#analysis_pilot_completion_markers[@]} -eq 1 ]] \
+      || die 'B131 pilot exit 6 lacks its source-bound evidence verification marker'
+    marker=ANALYSIS_R2_PILOT_VERIFIED=1
+    ;;
 esac
 grep -Fxq "$marker" "$scratch/container.log" \
   || die "Assay qualification container exited zero without $marker"
@@ -518,11 +694,68 @@ final_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=al
 [[ -z "$final_status" ]] \
   || die 'selected worktree became dirty during B105 qualification'
 
+if [[ "$lane" == b110-pilot ]]; then
+  if ! pilot_snapshot_receipt="$(run_source_host_checker \
+    --project-root "$project" \
+    --expected-project-device "$project_device" \
+    --expected-project-inode "$project_inode" \
+    --expected-assay-device "$assay_state_device" \
+    --expected-assay-inode "$assay_state_inode" \
+    --campaign "b110-pilot-${source_commit:0:12}" \
+    --commit "$source_commit" \
+    --tree "$source_tree" \
+    --manifest-sha256 "$pilot_attestation_sha256" \
+    --container-exit "$wait_status")"; then
+    die 'host rejected or could not publish the B110 pilot evidence snapshot'
+  fi
+  [[ "$pilot_snapshot_receipt" =~ ^B110_PILOT_SNAPSHOT_SHA256=([0-9a-f]{64})$ ]] \
+    || die 'host returned a malformed B110 pilot evidence snapshot receipt'
+  pilot_snapshot_sha256="${BASH_REMATCH[1]}"
+
+  # All marker lines are provisional until the command exits zero. The final
+  # source-bound host check runs after these writes so an expiry or snapshot
+  # change during marker output turns the registered lane into failure.
+  printf 'B110_PILOT_EXIT=6\n'
+  printf 'B110_PILOT_VERIFIED=1\n'
+  printf 'B110_PILOT_ATTESTATION_SHA256=%s\n' "$pilot_attestation_sha256"
+  printf 'B110_PILOT_SNAPSHOT_SHA256=%s\n' "$pilot_snapshot_sha256"
+  printf 'B110_PILOT_COMPLETED=1\n'
+  printf 'ASSAY_B110_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+  printf 'ASSAY_B110_GATE_COMPLETE=%s\n' "$lane"
+
+  [[ "$(assay_git -C "$worktree" rev-parse HEAD)" == "$source_commit" ]] \
+    || die 'selected worktree HEAD changed during B110 snapshot publication'
+  [[ "$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
+    || die 'selected worktree tree changed during B110 snapshot publication'
+  final_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
+    || die 'cannot read selected worktree status after B110 snapshot publication'
+  [[ -z "$final_status" ]] \
+    || die 'selected worktree became dirty during B110 snapshot publication'
+  run_source_host_checker \
+    --project-root "$project" \
+    --expected-project-device "$project_device" \
+    --expected-project-inode "$project_inode" \
+    --expected-assay-device "$assay_state_device" \
+    --expected-assay-inode "$assay_state_inode" \
+    --campaign "b110-pilot-${source_commit:0:12}" \
+    --commit "$source_commit" \
+    --tree "$source_tree" \
+    --manifest-sha256 "$pilot_attestation_sha256" \
+    --verify-published-snapshot \
+    --snapshot-sha256 "$pilot_snapshot_sha256" \
+    || die 'final host verification rejected the B110 pilot snapshot or an expired deadline'
+  exit 0
+fi
+
 printf '%s\n' "$marker"
 case "$lane" in
   b110-pilot|b110-screen)
     printf 'ASSAY_B110_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
     printf 'ASSAY_B110_GATE_COMPLETE=%s\n' "$lane"
+    ;;
+  analysis-r2-pilot)
+    printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+    printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=%s\n' "$lane"
     ;;
   *)
     printf 'ASSAY_B105_GATE_CONTAINER_EXIT=%s\n' "$wait_status"

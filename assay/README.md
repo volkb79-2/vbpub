@@ -12,10 +12,10 @@ linking against assay itself.
 - **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
   supported at **R2 only** (no SQL R1, no SQL R3 — see
   [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
-  JavaScript/TypeScript is supported at **R1 and R2 by ingestion** — changed-
-  line coverage plus mutation testing over externally-generated evidence (no
-  native JS mutant generator yet), see
-  [JavaScript/TypeScript coverage and mutation ingestion](#javascripttypescript-coverage-and-mutation-ingestion)
+  JavaScript/TypeScript is supported at **R1, R2 by ingestion, and R3** —
+  changed-line coverage, externally-generated mutation evidence (no native
+  JS mutant generator yet), and cause-sensitive canaries, see
+  [JavaScript/TypeScript coverage, mutation ingestion and canaries](#javascripttypescript-coverage-mutation-ingestion-and-canaries)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
   see the Go section below. **Full matrix, and what R0–R3 each actually mean:
@@ -31,9 +31,16 @@ and `assay verify`, and adds no runtime dependencies. The code lives in its own
 top-level package, `assay_analysis` (`analysis/src/assay_analysis/`), which the
 CLI loads only when you run `assay analyze`; the judge (`src/assay`) never
 imports it, and B105 scores only `src/assay`. The analysis package has its own
-R0+R1 lane and tests (`analysis/tests/`). A source checkout needs both `src`
-and `analysis/src` on the path for `analyze`; an installed wheel or zipapp
-needs nothing extra:
+R0+R1 lane and tests (`analysis/tests/`), plus a separate native `analysis-r2`
+lane and a registered `analysis-r2-pilot` gate. The pilot targets a sample of up to 40
+mutants across candidate-bearing file/operator strata and includes every
+`python:falsy-swap` candidate. Its success means that the bounded measurement
+completed; it is not a full R2 qualification or a release gate. A full analysis
+R2 claim awaits a separate decision based on measured pilot results. See the
+[B131 design](docs/DESIGN-GUIDE.md#analysis-package-r2-pilot-b131) and
+[pilot procedure](docs/CONSUMERS.md#run-the-analysis-package-r2-pilot-b131).
+A source checkout needs both `src` and `analysis/src` on the path for `analyze`;
+an installed wheel or zipapp needs nothing extra:
 
 - `record` captures an explicit command, before/after Git identities and
   cleanliness, merged job output, and the actual job exit.
@@ -349,9 +356,14 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ⚠️ **implemented, not registered** — the canary injection methods are real code, not stubs, but no producer path is wired into the CLI's closed registry yet |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); current dstdns qualification is pending |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
+
+The matrix describes language capability, not a qualification claim for every
+package. B131 declares a separate whole-target `analysis-r2` lane, but its
+registered gate currently runs only the bounded non-qualifying pilot. The
+analysis package is not yet qualified over its full R2 plan.
 
 Three genuinely different states, worth keeping distinct:
 
@@ -360,9 +372,11 @@ Three genuinely different states, worth keeping distinct:
   this.
 - **Not implemented** — nothing prevents it; nobody has built it yet (Go
   mutation testing, SQL line coverage, Go/SQL canary).
-- **Implemented but unregistered** — the code exists and presumably works,
-  but is not wired as a callable capability through the CLI's own closed
-  declaration (JS canary).
+  - **Implemented but unregistered** — code may exist without being
+  callable through the CLI until it is wired and proven. JavaScript R3
+  used to be this state; B087 registers it and adds local real-Vitest
+  oracles. Requalification of the current transform against dstdns remains
+  open ([report](nyxloom-trove/reports/B087-js-r3-qualification.md)).
 
 Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
 (the single authority for what's registered — its own docstring notes this
@@ -586,12 +600,13 @@ Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**
 
-### JavaScript/TypeScript coverage and mutation ingestion
+### JavaScript/TypeScript coverage, mutation ingestion and canaries
 
-`judge.language = "javascript"` resolves at **R1 and R2 by ingestion**.
+`judge.language = "javascript"` resolves at **R1, R2 by ingestion, and R3**.
 R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
-judges a Stryker report produced by the lane's own command (B046). Assay does
-not generate native JavaScript mutants. One language name covers all four:
+judges a Stryker report produced by the lane's own command (B046); R3
+checks cause-sensitive import-break and uncovered-line canaries (B087). Assay
+does not generate native JavaScript mutants. One language name covers all four:
 TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
 two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
@@ -612,7 +627,7 @@ statement-less node line is classified from its function's call count, and
 its default branch is counted even when the default was never used. If all
 arms start on other lines, the node line stays unclassified. See the
 [classification rationale](docs/DESIGN-GUIDE.md#default-argument-signature-lines-b080-a-456)
-and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
+and the [JavaScript consumer examples](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
 
 The `coverage-final.json` document is emitted natively by nyc/istanbul and by
 Jest (`--coverageReporters=json`), and by Vitest through either coverage
@@ -699,9 +714,11 @@ must run its external mutation producer and write the declared report inside
 the Assay snapshot; Assay then verifies and judges that report. Assay does not
 generate JavaScript mutants itself. The supported report path and its exact
 producer contract are in the
-[JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-and-r2-by-ingestion).
-R3 (the cause-sensitive canary) remains unregistered because its producer path
-is not wired into the CLI.
+[JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
+R3 (the cause-sensitive canary) is registered for JavaScript through B087.
+The two adapter transforms are judged by the existing isolated canary runner;
+local real-Vitest tests exercise the current code, while dstdns qualification
+of the current transform is pending. The verdict schema is unchanged.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the
@@ -803,6 +820,42 @@ summary and its mutation buckets to read the result. Pilot state is tied to one
 selection and lane and must stay separate from qualifying campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+
+The registered B110 pilot retains a host-verified evidence snapshot at
+`.assay/b110-pilot-evidence/`, with a separate receipt at
+`.assay/b110-pilot-evidence.receipt.json`. After validating a successful
+run-gate transcript, the host also retains
+`.assay/b110-pilot-evidence.attestation.json`, binding the snapshot digest to
+that transcript. The launcher pins the admitted `.assay` directory through an
+open directory descriptor while Assay creates campaign, candidate, mutation
+state, deadline and progress files beneath it. The next attempt checks and
+archives this snapshot before source-cleanliness and later host-admission
+checks, while the successful
+run-gate record is still available. Earlier host refusals exit 3, which the
+registered lane maps to `ERROR` so the pass remains eligible for retry. The
+snapshot index digest is
+reported with the completion markers, and the host rechecks the snapshot and
+both deadlines after writing those provisional markers; a failed final check
+makes the gate fail even if completion marker text is present. Before a retry,
+the host validates the snapshot, receipt, durable attestation and retained
+transcript. An ineligible latest record with an unresolved HEAD does not hide
+an earlier eligible pass. The transcript must include the host's digest marker
+after the final snapshot check. The verified snapshot, receipt and version-2
+attestation are staged with a read-only copy of the verified transcript at
+`b110-pilot-run-gate.log` under `.assay/b110-pilot-evidence-incomplete/`. The
+attestation names that copy and binds its digest. The complete bundle becomes
+visible under `.assay/b110-pilot-evidence-archive/<entry>/` with one atomic
+no-replace directory rename, so a later change to the external log path cannot
+change the archived transcript. If a failed post-publication check cannot use
+the incomplete area, the unverified bundle moves to the private
+`.assay/b110-pilot-evidence-unverified/` fallback or a private collision-resistant
+sibling. If the history store or transcript is unavailable before a durable attestation is
+written, the host leaves the live evidence in place and returns
+infrastructure-inconclusive exit 3. A proven digest mismatch or interrupted
+publication is preserved under the incomplete path
+before a fresh attempt. See the
+[registered pilot design](docs/DESIGN-GUIDE.md#registered-b110-pilot-and-survivor-screen-lanes-b118-p7b)
+and [retained pilot evidence](docs/CONSUMERS.md#registered-pilot-and-survivor-screen-gates).
 An invocation takes a path lock under a private directory in the system
 `/tmp` (independent of `TMPDIR`) and locks the admitted state-directory inode
 through the run. The path lock survives replacement of the store's parent;
@@ -1199,13 +1252,34 @@ you're changing assay itself:
   Two registered B110 lanes support non-qualifying R2 measurement:
   `./run-gate.py b110-pilot` selects a bounded campaign sample, while
   `./run-gate.py b110-screen` checks a complete full-plan result and can accept
-  survivors as a completed measurement. Pilot invocations cap R2 work at 90
-  minutes for campaign initialization, planning, selection and execution
-  within a persisted two-hour campaign. Assay execution uses the remaining
-  90-minute cap, followed by at most 30 seconds for termination. The screen
+  survivors as a completed measurement. Pilot invocations cap campaign
+  initialization, planning, selection, Assay execution, report checking, final
+  source/deadline checks and completion markers at 90 minutes within a persisted
+  two-hour campaign. Assay execution and evidence checks use the time remaining
+  after setup and selection; a timeout allows at most 30 seconds for process
+  termination. The screen
   uses the declared 5-hour Assay lane budget; longer
   wrapper timeouts are failure-only cleanup bounds. Neither lane qualifies
-  B105; the screen requires R0/R1 PASS, a complete current-plan R2 inventory,
+  B105. Pilot exit 6 is accepted only after an independent checker recomputes
+  the plan selection and validates the summary, candidate state, progress,
+  resumed dispositions, campaign deadline, the 90-minute attempt window,
+  wheel identity and resource evidence. Assay captures the current
+  `judge_sha256` in memory when the mutation sweep starts and includes it in
+  the JSON summary; the checker requires the progress event and each state
+  record to match that captured value. The host
+  pins and rechecks the digest manifest, publishes a read-only evidence
+  snapshot, then rechecks its bytes and both deadlines after writing completion
+  markers. Marker text is provisional; the registered command's exit status
+  determines success. A retry archives a prior snapshot only when its digest
+  matches the successful run-gate transcript. Interrupted or unverified
+  publications are preserved under
+  `.assay/b110-pilot-evidence-incomplete/` before a fresh attempt. If that path
+  is unavailable or unsafe during quarantine or archive withdrawal, the host
+  uses the private `.assay/b110-pilot-evidence-unverified/` fallback or a
+  private collision-resistant sibling; the quarantine disposition records the
+  selected destination.
+  Survivors and other pilot outcomes remain measurement results. The screen
+  requires R0/R1 PASS, a complete current-plan R2 inventory,
   and an R2 `PASS` or `FAIL` outcome. R2 errors, budget exhaustion and
   inconclusive results cannot complete the screen. See the
   [B110 design](docs/DESIGN-GUIDE.md#registered-b110-pilot-and-survivor-screen-lanes-b118-p7b)
