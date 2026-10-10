@@ -135,11 +135,10 @@ def _assert_recent_verdict_migrations_are_documented(
 
 def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-    # The topmost section is `[Unreleased]` between releases and the folded
-    # release section (e.g. `[8.0.0]`) in a release candidate, where no
-    # `[Unreleased]` heading exists any more.
-    newest = changes.split("\n## [", 1)[1].split("\n## [", 1)[0]
-    assert f"verdict schema v{VERDICT_SCHEMA_VERSION}" in newest
+    # During development the current cut is under `[Unreleased]`. Release
+    # preparation folds that text into the versioned section and empties the
+    # placeholder, so the current schema fact may be in either section.
+    assert f"verdict schema v{VERDICT_SCHEMA_VERSION}" in changes
     consumer_text = CONSUMERS.read_text(encoding="utf-8")
     _assert_recent_verdict_migrations_are_documented(
         consumer_text, VERDICT_SCHEMA_VERSION
