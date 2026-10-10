@@ -714,6 +714,23 @@ def test_rule3_unknown_cross_file_column_type_still_refuses_widening():
     assert sites == ()
 
 
+def test_rule3_schema_qualified_enum_from_another_file_refuses_alter_check_widening():
+    enum_source = "CREATE TYPE public.task_state AS ENUM ('open', 'closed');\n"
+    table_source = "CREATE TABLE task (state public.task_state);\n"
+    check_source = "ALTER TABLE task ADD CHECK (state IN ('open', 'closed'));\n"
+    context = ADAPTER.prepare_mutation_context((enum_source, table_source))
+
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
 def test_sql_context_indexing_keeps_large_target_discovery_bounded():
     from assay.mutation import MutationTarget, collect_mutation_sites
 
@@ -795,6 +812,14 @@ def test_widen_check_in_reduces_a_not_in_exclusion_list():
 @pytest.mark.parametrize("column_type", ["TEXT", "CHAR(2)", "VARCHAR(2)"])
 def test_widen_check_in_refuses_string_not_in_without_comparison_semantics(column_type):
     source = f"CREATE TABLE t (k {column_type} CHECK (k NOT IN ('a', 'b')));\n"
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_widen_check_in_refuses_char_values_equal_after_trailing_space_padding():
+    source = "CREATE TABLE t (k CHAR(2) CHECK (k NOT IN ('a', 'a ')));\n"
     sites = ADAPTER.generate_mutation_sites(
         source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
     )

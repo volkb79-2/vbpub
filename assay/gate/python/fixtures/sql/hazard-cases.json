@@ -54,7 +54,7 @@
         "before": "UNIQUE",
         "after": "CHECK (true)"
       },
-      "assertion": null,
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_using_index (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
       "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\n-- ASSAY-FOCUS: unique-using-index-constraint\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
     },
     {
@@ -68,7 +68,7 @@
         "before": "CREATE UNIQUE INDEX",
         "after": "CREATE INDEX"
       },
-      "assertion": null,
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_using_index (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
       "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\n-- ASSAY-FOCUS: unique-using-index-index\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
     },
     {
@@ -79,7 +79,7 @@
       "expected_probe_bucket": "no-site",
       "expected_probe_sqlstate": null,
       "probe": null,
-      "assertion": null,
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_primary_key_using_index (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
       "source": "CREATE TABLE assay_b132_primary_key_using_index (value integer);\n-- ASSAY-FOCUS: primary-key-using-index-index\nCREATE UNIQUE INDEX assay_b132_primary_key_using_index_idx ON assay_b132_primary_key_using_index (value);\nALTER TABLE assay_b132_primary_key_using_index ADD CONSTRAINT assay_b132_primary_key_using_index_pk PRIMARY KEY USING INDEX assay_b132_primary_key_using_index_idx;\n"
     },
     {
@@ -178,7 +178,7 @@
       },
       "source": "CREATE TYPE assay_b132_status AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_enum_check (status assay_b132_status,\n-- ASSAY-FOCUS: enum-check-string-widen\n  CHECK (status IN ('open', 'closed'))\n);\n",
       "expected_probe_sqlstate": null,
-      "assertion": null
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_enum_check (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN invalid_text_representation OR check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n"
     },
     {
       "id": "generated-expression",

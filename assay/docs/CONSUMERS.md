@@ -1877,7 +1877,8 @@ in `nyxloom-trove/4-backlog.md`:
 
 - **SQL edge constructs (B132).** The registered SQL qualification includes
   a PostgreSQL hazard set separate from the representative 24-row matrix.
-  Each case has a construct-specific behavior probe and records whether
+  Each case has a construct-specific SQL assertion that runs against its
+  baseline and any historical comparison rewrite, and records whether
   PostgreSQL failed during apply, dump, or test. The case definitions alone
   are not qualification evidence; use the passing registered gate receipt for
   the exact package commit. If a current generated site fails before its probe

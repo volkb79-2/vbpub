@@ -98,7 +98,7 @@ def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
     assert q.PROBES_SHA256.startswith("36249c03") and q.PROBES_SHA256.endswith("488c")
-    assert q.HAZARD_CASES_SHA256 == "d9f320744c39679332e4651ba0fe00bdcaa61383ec66f2f4c9f7a850ab9fd7cb"
+    assert q.HAZARD_CASES_SHA256 == "c5e36d410b423804fe9d95ab5ca612ba3dcb342a4f97a008349abf647cf08600"
 
 
 def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
@@ -124,6 +124,7 @@ def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
         "do-block-trigger",
     }
     assert all(case["assertion"] for case in cases if case["expected_site_count"] == 1)
+    assert all(case["assertion"] for case in cases if case["probe"] is not None)
     assert all(case["expected_bucket"] == "no-site" for case in cases if case["expected_site_count"] == 0)
 
 
@@ -148,6 +149,36 @@ def test_hazard_case_loader_refuses_duplicate_ids_and_unpinned_no_site(tmp_path:
     case["expected_bucket"] = None
     path.write_text(json.dumps({"schema_version": 1, "cases": [case]}), encoding="utf-8")
     with pytest.raises(q.QualificationError, match="must expect no-site"):
+        q.load_hazard_cases(root)
+
+
+def test_hazard_case_loader_requires_construct_probe_and_rejects_current_crash_pin(
+    tmp_path: Path,
+):
+    case = {
+        "id": "example",
+        "operator": "sql:drop-check",
+        "expected_site_count": 0,
+        "expected_bucket": "no-site",
+        "expected_probe_bucket": None,
+        "expected_probe_sqlstate": None,
+        "probe": {"before": "CHECK (value > 0)", "after": "CHECK (true)"},
+        "assertion": None,
+        "source": "-- ASSAY-FOCUS: example\nSELECT 1;\n",
+    }
+    root = tmp_path / "sql"
+    root.mkdir()
+    path = root / "hazard-cases.json"
+    path.write_text(json.dumps({"schema_version": 1, "cases": [case]}), encoding="utf-8")
+    with pytest.raises(q.QualificationError, match="construct-specific assertion"):
+        q.load_hazard_cases(root)
+
+    case["expected_site_count"] = 1
+    case["expected_bucket"] = "crashed"
+    case["expected_probe_bucket"] = "survived"
+    case["assertion"] = "SELECT 1;\n"
+    path.write_text(json.dumps({"schema_version": 1, "cases": [case]}), encoding="utf-8")
+    with pytest.raises(q.QualificationError, match="current site may not be pinned"):
         q.load_hazard_cases(root)
 
 

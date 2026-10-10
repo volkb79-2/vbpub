@@ -99,7 +99,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "sql"
 #: sha256 pins of the two fixture texts the matrix is written against (T0).
 SCHEMA_SHA256 = "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1"
 PROBES_SHA256 = "36249c03a558784ea0d1a5e1f45c83ede6f189827f239721a488739a6e1a488c"
-HAZARD_CASES_SHA256 = "d9f320744c39679332e4651ba0fe00bdcaa61383ec66f2f4c9f7a850ab9fd7cb"
+HAZARD_CASES_SHA256 = "c5e36d410b423804fe9d95ab5ca612ba3dcb342a4f97a008349abf647cf08600"
 
 ALL_OPERATORS: tuple[str, ...] = (
     "sql:drop-check",
@@ -313,9 +313,15 @@ def load_hazard_cases(fixture_root: Path) -> list[dict[str, Any]]:
                 f"{case_id}: expected_bucket is not a mutation bucket or null"
             )
         if case["expected_site_count"] == 1 and expected in {"crashed", "hung", "budget_exceeded"}:
-            raise QualificationError(f"{case_id}: a generated site may not be pinned as infrastructure failure")
+            raise QualificationError(
+                f"{case_id}: a current site may not be pinned as a pre-test or timeout failure"
+            )
         if assertion is not None and (not isinstance(assertion, str) or not assertion.endswith("\n")):
             raise QualificationError(f"{case_id}: assertion must be newline-terminated SQL or null")
+        if probe is not None and assertion is None:
+            raise QualificationError(
+                f"{case_id}: a historical probe requires a construct-specific assertion"
+            )
         if case["expected_site_count"] == 1 and assertion is None:
             raise QualificationError(f"{case_id}: a generated site requires a construct-specific assertion")
         if probe is None:
