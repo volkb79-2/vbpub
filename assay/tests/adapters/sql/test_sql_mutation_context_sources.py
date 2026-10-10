@@ -110,6 +110,284 @@ def test_sql_context_invalidates_type_after_cross_file_column_drop_and_readd():
     assert sites == ()
 
 
+def test_sql_context_invalidates_column_types_after_cross_file_table_drop():
+    enum_source = "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+    original_table = "CREATE TABLE public.task (status text);\n"
+    drop_table = "DROP TABLE IF EXISTS public.task CASCADE;\n"
+    recreate_without_declared_columns = (
+        "CREATE TABLE public.task AS "
+        "SELECT 'open'::public.task_status AS status;\n"
+    )
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (enum_source, original_table, drop_table, recreate_without_declared_columns)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
+def test_sql_context_does_not_invalidate_a_qualified_other_schema_table():
+    table_source = "CREATE TABLE public.task (status text);\n"
+    unrelated_drop = "DROP TABLE archive.task;\n"
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    context = SqlAdapter().prepare_mutation_context((table_source, unrelated_drop))
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert len(sites) == 1
+
+
+def test_sql_context_preserves_bounded_varchar_typmod_across_files():
+    table_source = "CREATE TABLE public.task (status varchar(5));\n"
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'close'));\n"
+    )
+    context = SqlAdapter().prepare_mutation_context((table_source,))
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
+def test_sql_context_refuses_unqualified_type_when_a_temp_table_can_shadow_it():
+    permanent_table = "CREATE TABLE public.task (status text);\n"
+    temporary_table = 'CREATE TEMP TABLE "task" (status varchar(5));\n'
+    check_source = (
+        'ALTER TABLE "task" ADD CHECK (status IN (\'open\', \'closed\'));\n'
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (permanent_table, temporary_table)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
+def test_sql_context_refuses_type_facts_shadowed_by_select_into_temp():
+    permanent_table = "CREATE TABLE public.task (status text);\n"
+    temporary_table = (
+        "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+        "SELECT 'open'::public.task_status AS status INTO TEMP TABLE task;\n"
+    )
+    check_source = (
+        "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    baseline = SqlAdapter().prepare_mutation_context((permanent_table,))
+    baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (permanent_table, temporary_table)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert len(baseline_sites) == 1
+    assert sites == ()
+
+
+def test_sql_context_refuses_type_facts_shadowed_by_select_into_pg_temp():
+    permanent_table = "CREATE TABLE public.task (status text);\n"
+    temporary_table = (
+        "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+        "SELECT 'open'::public.task_status AS status INTO pg_temp.task;\n"
+    )
+    check_source = "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    baseline = SqlAdapter().prepare_mutation_context((permanent_table,))
+    baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (permanent_table, temporary_table)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert len(baseline_sites) == 1
+    assert sites == ()
+
+
+def test_sql_context_refuses_permanent_type_for_pg_temp_qualified_reference():
+    permanent_table = "CREATE TABLE task (status text);\n"
+    unqualified_check = (
+        "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    explicit_temp_check = (
+        "ALTER TABLE pg_temp.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    baseline = SqlAdapter().prepare_mutation_context((permanent_table,))
+    baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+        unqualified_check,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+    temp_schema_sites = SqlAdapter().generate_mutation_sites_with_context(
+        explicit_temp_check,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+
+    assert len(baseline_sites) == 1
+    assert temp_schema_sites == ()
+
+
+def test_sql_context_recognizes_tables_created_in_pg_temp_schema():
+    permanent_table = "CREATE TABLE task (status text);\n"
+    temporary_table = (
+        "CREATE TYPE task_status AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE pg_temp.task AS SELECT 'open'::task_status AS status;\n"
+    )
+    check_source = "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    baseline = SqlAdapter().prepare_mutation_context((permanent_table,))
+    baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (permanent_table, temporary_table)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert len(baseline_sites) == 1
+    assert sites == ()
+
+
+def test_sql_context_invalidates_type_facts_for_both_sides_of_table_rename():
+    enum_source = "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+    original_table = "CREATE TABLE public.task (status text);\n"
+    rename_and_recreate = (
+        "ALTER TABLE public.task RENAME TO old_task;\n"
+        "CREATE TABLE public.task AS "
+        "SELECT 'open'::public.task_status AS status;\n"
+    )
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    baseline = SqlAdapter().prepare_mutation_context((enum_source, original_table))
+    baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (enum_source, original_table, rename_and_recreate)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert len(baseline_sites) == 1
+    assert sites == ()
+
+
+def test_sql_context_invalidates_type_facts_after_table_schema_move():
+    enum_source = "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+    original_table = "CREATE TABLE public.task (status text);\n"
+    move_and_recreate = (
+        "CREATE SCHEMA archive;\n"
+        "ALTER TABLE public.task SET SCHEMA archive;\n"
+        "CREATE TABLE public.task AS "
+        "SELECT 'open'::public.task_status AS status;\n"
+    )
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    baseline = SqlAdapter().prepare_mutation_context((enum_source, original_table))
+    baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=baseline,
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (enum_source, original_table, move_and_recreate)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert len(baseline_sites) == 1
+    assert sites == ()
+
+
 def test_sql_context_invalidates_type_after_quoted_cross_file_alter_identifiers():
     enum_source = "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
     cases = (

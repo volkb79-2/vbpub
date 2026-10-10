@@ -3554,7 +3554,7 @@ buy nothing further, because none of the seven operators needs to know what
 
 **Operator names describe the effect on the predicate.**
 `sql:widen-check-in` appends a member to `IN (...)` only for homogeneous
-string literals on declared `text`, `varchar`, or `name` columns without an
+string literals on declared `text`, unbounded `varchar`, or `name` columns without an
 explicit `COLLATE`, or unsigned integer literals on a declared bounded integer
 column. Fixed-length `CHAR` types are excluded because PostgreSQL ignores
 trailing-space differences in their comparisons. The integer is chosen inside
@@ -3787,10 +3787,20 @@ must declare roots covering its complete applied DDL corpus. The context links
 both `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` references across files,
 collects column declarations and types across files, marks columns with any
 `ALTER COLUMN ... TYPE` change unknown for literal widening, and tracks
-explicit column collations. Unknown or conflicting types do not establish a
-safe widening. String `IN` widening refuses explicitly collated columns
-because the adapter cannot prove a generated literal is distinct under an
-arbitrary collation. The qualification appends one focused SQL construct
+explicit column collations. It retains type modifiers, so bounded `varchar(n)`
+is not mistaken for unbounded `varchar`; the fixed widening sentinel may not
+fit the former. Because the scan does not resolve ordered DDL, finding a
+`DROP TABLE` invalidates that table's type facts, including facts from a later
+recreate. A table rename or schema move invalidates facts for both names.
+Unknown or
+conflicting types do not establish a safe widening. Array suffixes stay in
+the resolved type, so arrays are not treated as scalar text or integer
+columns. An unqualified table name that could resolve to a temporary relation
+or an explicit `pg_temp` name has no widening site because the scanner does
+not model session or search-path state. String `IN` widening
+refuses explicitly collated columns because the adapter cannot prove a
+generated literal is distinct under an arbitrary collation. The qualification
+appends one focused SQL construct
 at a time. Cases with a generated site or a historical comparison rewrite
 run a construct-specific assertion through the same apply/dump/test script;
 a no-site case without a comparison rewrite asserts the focused site count.
@@ -3808,7 +3818,11 @@ changing the constraint alone leaves the index enforcing uniqueness, while
 changing the index alone makes the attachment invalid, so neither half is a
 one-site mutation. Enum string
 checks and ambiguous equality cases are refused when the scanner cannot prove
-the relevant type.
+the relevant type. For `sql:drop-not-null`, an explicit `NOT NULL` on identity,
+serial, or inline primary-key columns is removed as an equivalent mutation
+when the constraint is unnamed and has no `NO INHERIT` modifier. Named and
+table-level `NOT NULL` constraints and `NO INHERIT` forms produce no site
+because a partial replacement would leave invalid SQL.
 
 **The residue premise, now a loud failure.** The old premise was that a mutant
 re-applied onto a database that already carries the schema silently does

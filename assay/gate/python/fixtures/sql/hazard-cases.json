@@ -5,51 +5,51 @@
       "id": "unique-deferrable",
       "operator": "sql:drop-unique",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "UNIQUE (value)",
         "after": "CHECK (true)"
       },
-      "source": "CREATE TABLE assay_b132_unique_deferrable (value integer,\n-- ASSAY-FOCUS: unique-deferrable\n  CONSTRAINT assay_b132_unique_deferrable UNIQUE (value) DEFERRABLE INITIALLY DEFERRED\n);\n",
+      "source": "CREATE TABLE assay_b132_unique_deferrable (value integer,\n-- ASSAY-FOCUS: unique-deferrable\n  CONSTRAINT assay_b132_unique_deferrable_uq UNIQUE (value) DEFERRABLE INITIALLY DEFERRED\n);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  SET CONSTRAINTS ALL IMMEDIATE;\n  BEGIN\n    INSERT INTO assay_b132_unique_deferrable (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "0A000"
     },
     {
       "id": "unique-nulls-not-distinct",
       "operator": "sql:drop-unique",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "UNIQUE",
         "after": "CHECK (true)"
       },
-      "source": "CREATE TABLE assay_b132_unique_nulls_not_distinct (value integer,\n-- ASSAY-FOCUS: unique-nulls-not-distinct\n  CONSTRAINT assay_b132_unique_nulls_not_distinct UNIQUE NULLS NOT DISTINCT (value)\n);\n",
+      "source": "CREATE TABLE assay_b132_unique_nulls_not_distinct (value integer,\n-- ASSAY-FOCUS: unique-nulls-not-distinct\n  CONSTRAINT assay_b132_unique_nulls_not_distinct_uq UNIQUE NULLS NOT DISTINCT (value)\n);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_nulls_not_distinct (value) VALUES (NULL), (NULL);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "unique-include",
       "operator": "sql:drop-unique",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "UNIQUE (value)",
         "after": "CHECK (true)"
       },
-      "source": "CREATE TABLE assay_b132_unique_include (value integer, payload text,\n-- ASSAY-FOCUS: unique-include\n  CONSTRAINT assay_b132_unique_include UNIQUE (value) INCLUDE (payload)\n);\n",
+      "source": "CREATE TABLE assay_b132_unique_include (value integer, payload text,\n-- ASSAY-FOCUS: unique-include\n  CONSTRAINT assay_b132_unique_include_uq UNIQUE (value) INCLUDE (payload)\n);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_include (value, payload) VALUES (1, 'a'), (1, 'b');\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "unique-using-index-constraint",
       "operator": "sql:drop-unique",
       "expected_site_count": 0,
       "expected_bucket": "no-site",
-      "expected_probe_bucket": null,
-      "expected_probe_sqlstate": null,
+      "expected_probe_bucket": "crashed",
+      "expected_probe_sqlstate": "42601",
       "probe": {
         "before": "UNIQUE",
         "after": "CHECK (true)"
@@ -62,8 +62,8 @@
       "operator": "sql:drop-unique",
       "expected_site_count": 0,
       "expected_bucket": "no-site",
-      "expected_probe_bucket": null,
-      "expected_probe_sqlstate": null,
+      "expected_probe_bucket": "crashed",
+      "expected_probe_sqlstate": "42809",
       "probe": {
         "before": "CREATE UNIQUE INDEX",
         "after": "CREATE INDEX"
@@ -86,106 +86,106 @@
       "id": "fk-match-full",
       "operator": "sql:drop-foreign-key",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "FOREIGN KEY (a, b) REFERENCES assay_b132_fk_match_full_parent (a, b)",
         "after": "CHECK (true)"
       },
       "source": "CREATE TABLE assay_b132_fk_match_full_parent (a integer, b integer, PRIMARY KEY (a, b));\n-- ASSAY-FOCUS: fk-match-full\nCREATE TABLE assay_b132_fk_match_full_child (a integer, b integer, CONSTRAINT assay_b132_fk_match_full FOREIGN KEY (a, b) REFERENCES assay_b132_fk_match_full_parent (a, b) MATCH FULL);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_match_full_parent (a, b) VALUES (1, 1);\n  BEGIN\n    INSERT INTO assay_b132_fk_match_full_child (a, b) VALUES (1, NULL);\n  EXCEPTION WHEN foreign_key_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "fk-deferrable",
       "operator": "sql:drop-foreign-key",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "FOREIGN KEY (parent_id) REFERENCES assay_b132_fk_deferrable_parent (id)",
         "after": "CHECK (true)"
       },
       "source": "CREATE TABLE assay_b132_fk_deferrable_parent (id integer PRIMARY KEY);\n-- ASSAY-FOCUS: fk-deferrable\nCREATE TABLE assay_b132_fk_deferrable_child (parent_id integer, CONSTRAINT assay_b132_fk_deferrable FOREIGN KEY (parent_id) REFERENCES assay_b132_fk_deferrable_parent (id) DEFERRABLE INITIALLY DEFERRED);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_deferrable_child (parent_id) VALUES (999);\n  BEGIN\n    SET CONSTRAINTS ALL IMMEDIATE;\n  EXCEPTION WHEN foreign_key_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "0A000"
     },
     {
       "id": "fk-set-null-columns",
       "operator": "sql:drop-foreign-key",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "FOREIGN KEY (a, b) REFERENCES assay_b132_fk_set_null_parent (a, b) ON DELETE SET NULL",
         "after": "CHECK (true)"
       },
       "source": "CREATE TABLE assay_b132_fk_set_null_parent (a integer, b integer, PRIMARY KEY (a, b));\n-- ASSAY-FOCUS: fk-set-null-columns\nCREATE TABLE assay_b132_fk_set_null_child (a integer, b integer, CONSTRAINT assay_b132_fk_set_null FOREIGN KEY (a, b) REFERENCES assay_b132_fk_set_null_parent (a, b) ON DELETE SET NULL (b));\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_set_null_parent (a, b) VALUES (1, 2);\n  INSERT INTO assay_b132_fk_set_null_child (a, b) VALUES (1, 2);\n  DELETE FROM assay_b132_fk_set_null_parent WHERE a = 1 AND b = 2;\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_fk_set_null_child WHERE a = 1 AND b IS NULL\n  ) THEN\n    RAISE EXCEPTION 'K01';\n  END IF;\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "not-null-identity",
       "operator": "sql:drop-not-null",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "NOT NULL",
         "after": "NULL"
       },
-      "source": "CREATE TABLE assay_b132_not_null_identity (\n-- ASSAY-FOCUS: not-null-identity\n  id bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL, payload integer\n);\n",
+      "source": "CREATE TABLE assay_b132_not_null_identity (\n-- ASSAY-FOCUS: not-null-identity\n  id bigint GENERATED BY DEFAULT AS IDENTITY (START WITH 10) NOT NULL, payload integer\n);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_identity (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "not-null-serial",
       "operator": "sql:drop-not-null",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "NOT NULL",
         "after": "NULL"
       },
       "source": "CREATE TABLE assay_b132_not_null_serial (\n-- ASSAY-FOCUS: not-null-serial\n  id serial NOT NULL, payload integer\n);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_serial (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "not-null-primary-key",
       "operator": "sql:drop-not-null",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "NOT NULL",
         "after": "NULL"
       },
       "source": "CREATE TABLE assay_b132_not_null_pk (\n-- ASSAY-FOCUS: not-null-primary-key\n  id integer NOT NULL PRIMARY KEY, payload integer\n);\n",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_pk (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
-      "expected_probe_sqlstate": null
+      "expected_probe_sqlstate": "42601"
     },
     {
       "id": "enum-check-string-widen",
       "operator": "sql:widen-check-in",
       "expected_site_count": 0,
       "expected_bucket": "no-site",
-      "expected_probe_bucket": null,
+      "expected_probe_bucket": "crashed",
       "probe": {
         "before": "IN ('open', 'closed')",
         "after": "IN ('open', 'closed', '__assay_widened__')"
       },
       "source": "CREATE TYPE assay_b132_status AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_enum_check (status assay_b132_status,\n-- ASSAY-FOCUS: enum-check-string-widen\n  CHECK (status IN ('open', 'closed'))\n);\n",
-      "expected_probe_sqlstate": null,
+      "expected_probe_sqlstate": "22P02",
       "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_enum_check (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN invalid_text_representation OR check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n"
     },
     {
       "id": "generated-expression",
       "operator": "sql:drop-not-null",
       "expected_site_count": 1,
-      "expected_bucket": null,
-      "expected_probe_bucket": null,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
       "probe": {
         "before": "NOT NULL",
         "after": "NULL"
@@ -224,6 +224,108 @@
       "expected_probe_bucket": "no-site",
       "probe": null,
       "source": "CREATE TABLE assay_b132_do_trigger (value integer);\nCREATE FUNCTION assay_b132_do_trigger_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;\n-- ASSAY-FOCUS: do-block-trigger\nDO $$ BEGIN EXECUTE 'CREATE TRIGGER assay_b132_do_trigger BEFORE INSERT ON assay_b132_do_trigger FOR EACH ROW EXECUTE FUNCTION assay_b132_do_trigger_fn()'; END $$;\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "not-null-add-if-not-exists-serial",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_add_serial (payload integer);\n-- ASSAY-FOCUS: not-null-add-if-not-exists-serial\nALTER TABLE assay_b132_add_serial ADD COLUMN IF NOT EXISTS id serial NOT NULL;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_add_serial (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "array-check-string-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_array_check (k text ARRAY,\n-- ASSAY-FOCUS: array-check-string-widen\n  CHECK (k IN ('{a}', '{b}'))\n);\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "array-bracket-check-string-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_array_bracket_check (k text[],\n-- ASSAY-FOCUS: array-bracket-check-string-widen\n  CHECK (k IN ('{a}', '{b}'))\n);\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "temp-table-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE public.assay_b132_temp_shadow (k text);\nCREATE TABLE pg_temp.assay_b132_temp_shadow AS SELECT 'a'::varchar(5) AS k;\n-- ASSAY-FOCUS: temp-table-shadow-widen\nALTER TABLE assay_b132_temp_shadow ADD CHECK (k IN ('a', 'b'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "create-temp-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE public.assay_b132_create_temp_shadow (k text);\nCREATE TEMP TABLE assay_b132_create_temp_shadow (k varchar(5));\n-- ASSAY-FOCUS: create-temp-shadow-widen\nALTER TABLE assay_b132_create_temp_shadow ADD CHECK (k IN ('a', 'b'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "select-into-temp-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_temp_state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_select_into_temp (status text);\nSELECT 'open'::assay_b132_temp_state AS status INTO TEMP TABLE assay_b132_select_into_temp;\n-- ASSAY-FOCUS: select-into-temp-shadow-widen\nALTER TABLE assay_b132_select_into_temp ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "select-into-pg-temp-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_select_into_pg_temp_state AS ENUM ('open', 'closed');\nCREATE TABLE public.assay_b132_select_into_pg_temp (status text);\nSELECT 'open'::assay_b132_select_into_pg_temp_state AS status INTO pg_temp.assay_b132_select_into_pg_temp;\n-- ASSAY-FOCUS: select-into-pg-temp-shadow-widen\nALTER TABLE assay_b132_select_into_pg_temp ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "table-rename-stale-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_rename_state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_rename_task (status text);\nALTER TABLE assay_b132_rename_task RENAME TO assay_b132_rename_old;\nCREATE TABLE assay_b132_rename_task AS SELECT 'open'::assay_b132_rename_state AS status;\n-- ASSAY-FOCUS: table-rename-stale-type\nALTER TABLE assay_b132_rename_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "table-schema-move-stale-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_move_state AS ENUM ('open', 'closed');\nCREATE SCHEMA assay_b132_archive;\nCREATE TABLE public.assay_b132_move_task (status text);\nALTER TABLE public.assay_b132_move_task SET SCHEMA assay_b132_archive;\nCREATE TABLE public.assay_b132_move_task AS SELECT 'open'::assay_b132_move_state AS status;\n-- ASSAY-FOCUS: table-schema-move-stale-type\nALTER TABLE public.assay_b132_move_task ADD CHECK (status IN ('open', 'closed'));\n",
       "assertion": null,
       "expected_probe_sqlstate": null
     }

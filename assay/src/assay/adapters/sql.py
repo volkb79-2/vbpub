@@ -45,7 +45,7 @@ feeds every candidate from every scanner into ONE heap bounded at *limit* and
 keyed by identity, mirroring :func:`assay.adapters.python._generate_python_sites`
 (``python.py:742-763``) exactly, and sorts by identity once at return.
 
-**The five lexical context rules (three from the carve's own §3.2, two more
+**The six lexical context rules (three from the carve's own §3.2, three more
 from A-283), each with its own scanner-level exclusion:**
 
 1. No ``sql:drop-not-null`` site where ``NOT NULL`` is immediately preceded
@@ -66,6 +66,11 @@ from A-283), each with its own scanner-level exclusion:**
    ``BEGIN``) -- a plpgsql declaration's ``NOT NULL`` is not a column
    constraint, and phase 2's own recursion is what brings that grammar into
    scope at all.
+6. When the parsed column type is a ``serial`` pseudo-type, the column has an
+   identity clause, or its inline constraint is ``PRIMARY KEY``, remove the
+   explicit ``NOT NULL`` instead of replacing it with ``NULL``. These columns
+   are inherently non-null. Named ``NOT NULL`` constraints and ``NO INHERIT``
+   forms are refused because removing only part would leave invalid SQL.
 
 Plus (A-283) ``sql:drop-foreign-key``'s bare column-level ``REFERENCES``
 recogniser excludes any statement beginning ``GRANT``/``REVOKE`` --
@@ -281,7 +286,7 @@ class _Site(NamedTuple):
 
 
 class _SqlMutationContext(NamedTuple):
-    """Cross-file facts needed to avoid splitting linked SQL constructs."""
+    """Cross-file facts needed to avoid unsafe or stale SQL mutations."""
 
     attached_indexes: frozenset[tuple[bytes | None, bytes]]
     unresolved_index_attachment: bool
@@ -290,6 +295,9 @@ class _SqlMutationContext(NamedTuple):
         tuple[tuple[bytes | None, bytes], bytes, bytes]
     ]
     collated_columns: frozenset[tuple[tuple[bytes | None, bytes], bytes]]
+    dropped_tables: frozenset[tuple[bytes | None, bytes]]
+    temporary_table_names: frozenset[bytes]
+    relocated_tables: frozenset[tuple[bytes | None, bytes]]
 
 
 # --- shared regex fragments ---------------------------------------------------
@@ -342,7 +350,20 @@ _CREATE_TRIGGER_RE = re.compile(
     rb"\bCREATE\b(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\b", re.IGNORECASE
 )
 _CREATE_TABLE_RE = re.compile(rb"\bCREATE\s+TABLE\b", re.IGNORECASE)
+_CREATE_TABLE_DEFINITION_RE = re.compile(
+    rb"\bCREATE\s+(?:(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+|UNLOGGED\s+)?TABLE\b",
+    re.IGNORECASE,
+)
+_CREATE_TEMP_TABLE_RE = re.compile(
+    rb"\bCREATE\s+(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+TABLE\b",
+    re.IGNORECASE,
+)
+_SELECT_INTO_TEMP_RE = re.compile(
+    rb"\bINTO\s+(?:TEMP|TEMPORARY)\s+(?:TABLE\s+)?", re.IGNORECASE
+)
+_INTO_RE = re.compile(rb"\bINTO\b", re.IGNORECASE)
 _ALTER_TABLE_RE = re.compile(rb"\bALTER\s+TABLE\b", re.IGNORECASE)
+_DROP_TABLE_RE = re.compile(rb"\bDROP\s+TABLE\b", re.IGNORECASE)
 _TABLE_NAME_AFTER_CREATE_RE = re.compile(
     rb"\s*(?:IF\s+NOT\s+EXISTS\s+)?"
     rb"(?:(?P<schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
@@ -357,7 +378,11 @@ _ENUM_TYPE_RE = re.compile(
 _ENUM_COLUMN_DECL_RE = re.compile(
     rb"\s*(?P<column>" + _SQL_IDENTIFIER + rb")\s+"
     rb"(?:(?P<type_schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
-    rb"(?P<type>" + _SQL_IDENTIFIER + rb")(?![A-Za-z0-9_$])",
+    rb"(?P<type>" + _SQL_IDENTIFIER + rb")"
+    rb"(?P<type_modifier>\s*\([^()]*\))?"
+    rb"(?P<array_suffix>(?:(?:\s*ARRAY\b(?:\s*\[\s*[0-9]*\s*\])?)|"
+    rb"(?:\s*\[\s*[0-9]*\s*\]))*)"
+    rb"(?![A-Za-z0-9_$])",
     re.IGNORECASE,
 )
 _SIMPLE_IDENT_RE = re.compile(rb"\s*(" + _SQL_IDENTIFIER + rb")\s*")
@@ -656,7 +681,18 @@ def _type_name_from_match(match: re.Match[bytes]) -> bytes:
     name = _normalize_sql_identifier(match.group("type"))
     schema = match.group("type_schema")
     if schema is not None and _normalize_sql_identifier(schema) != b"pg_catalog":
-        return _normalize_sql_identifier(schema) + b"." + name
+        name = _normalize_sql_identifier(schema) + b"." + name
+    modifier = match.group("type_modifier")
+    if modifier is not None:
+        # Preserve typmods in the context identity. A bounded varchar cannot
+        # safely accept the qualification sentinel when its length is shorter
+        # than that sentinel; treating varchar(5) as bare varchar invents a
+        # widening mutation that changes no accepted value.
+        name += re.sub(rb"\s+", b"", modifier)
+    if match.group("array_suffix"):
+        # Array types have distinct literal parsing and equality rules. Keep
+        # the suffix so they cannot inherit scalar string/integer widening.
+        name += b"[]"
     return name
 
 
@@ -704,6 +740,25 @@ def _read_alter_table_identity(
     return (schema, table), end
 
 
+def _read_create_table_identity(
+    source: bytes, masked: bytes, pos: int
+) -> tuple[bytes | None, bytes, int] | None:
+    """Read CREATE TABLE's optional IF NOT EXISTS and possibly quoted name."""
+    cursor = pos
+    keyword = _next_sql_keyword(source, masked, cursor)
+    if keyword is not None and keyword[0] == b"IF":
+        not_keyword = _next_sql_keyword(source, masked, keyword[1])
+        exists_keyword = (
+            None
+            if not_keyword is None or not_keyword[0] != b"NOT"
+            else _next_sql_keyword(source, masked, not_keyword[1])
+        )
+        if exists_keyword is None or exists_keyword[0] != b"EXISTS":
+            return None
+        cursor = exists_keyword[1]
+    return _read_qualified_sql_identifier_details(source, cursor)
+
+
 def _read_action_identifier(
     source: bytes, masked: bytes, pos: int
 ) -> tuple[bytes, int] | None:
@@ -720,6 +775,116 @@ def _read_action_identifier(
     if not token.startswith(b'"') and masked[cursor:end] != token:
         return None
     return _normalize_sql_identifier(token), end
+
+
+def _collect_dropped_tables(
+    source: bytes, masked: bytes
+) -> frozenset[tuple[bytes | None, bytes]]:
+    """Return table identities removed by DROP TABLE statements.
+
+    The SQL context scan does not resolve ordered DDL. Any drop therefore
+    invalidates all CREATE TABLE type facts for that table, including facts
+    from later statements and other source files.
+    """
+    dropped: set[tuple[bytes | None, bytes]] = set()
+    for statement in _DROP_TABLE_RE.finditer(masked):
+        cursor = statement.end()
+        while True:
+            table = _read_alter_table_identity(source, masked, cursor)
+            if table is None:
+                break
+            table_key, table_end = table
+            dropped.add(table_key)
+            after_table = _skip_sql_trivia(source, table_end)
+            if (
+                after_table is None
+                or after_table >= len(masked)
+                or masked[after_table] != ord(",")
+            ):
+                break
+            cursor = after_table + 1
+    return frozenset(dropped)
+
+
+def _collect_temporary_table_names(
+    source: bytes, masked: bytes
+) -> frozenset[bytes]:
+    """Names that may shadow permanent relations in unqualified DDL.
+
+    The connection and search-path context are not part of SQL mutation
+    discovery. Any temporary relation name therefore makes an unqualified
+    type lookup ambiguous, even if its declaration is in another source.
+    """
+    names: set[bytes] = set()
+    for statement in _CREATE_TEMP_TABLE_RE.finditer(masked):
+        table = _read_create_table_identity(source, masked, statement.end())
+        if table is not None:
+            names.add(table[1])
+    for statement in _SELECT_INTO_TEMP_RE.finditer(masked):
+        table = _read_qualified_sql_identifier_details(source, statement.end())
+        if table is not None:
+            names.add(table[1])
+    for statement in _INTO_RE.finditer(masked):
+        table = _read_qualified_sql_identifier_details(source, statement.end())
+        if table is not None and _is_temporary_schema(table[0]):
+            names.add(table[1])
+    for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
+        table = _read_create_table_identity(source, masked, statement.end())
+        if table is not None and _is_temporary_schema(table[0]):
+            names.add(table[1])
+    return frozenset(names)
+
+
+def _is_temporary_schema(schema: bytes | None) -> bool:
+    return schema == b"pg_temp" or (
+        schema is not None
+        and re.fullmatch(rb"pg_temp_[0-9]+", schema) is not None
+    )
+
+
+def _collect_relocated_tables(
+    source: bytes, masked: bytes
+) -> frozenset[tuple[bytes | None, bytes]]:
+    """Return table identities changed by rename or schema-move DDL."""
+    relocated: set[tuple[bytes | None, bytes]] = set()
+    for alter in _ALTER_TABLE_RE.finditer(masked):
+        table = _read_alter_table_identity(source, masked, alter.end())
+        if table is None:
+            continue
+        old_key, table_end = table
+        statement_end = masked.find(b";", table_end)
+        if statement_end < 0:
+            statement_end = len(masked)
+        actions = masked[table_end:statement_end]
+        for start, end in _split_top_level(actions):
+            action_start = table_end + start
+            action_end = table_end + end
+            change = re.match(
+                rb"\s*(RENAME|SET)\b", masked[action_start:action_end], re.I
+            )
+            if change is None:
+                continue
+            verb = change.group(1).upper()
+            next_keyword = _next_sql_keyword(
+                source, masked, action_start + change.end()
+            )
+            if verb == b"RENAME":
+                if next_keyword is None or next_keyword[0] != b"TO":
+                    continue
+                new_name = _read_sql_identifier(source, next_keyword[1])
+                if new_name is None:
+                    continue
+                relocated.add(old_key)
+                relocated.add((old_key[0], _normalize_sql_identifier(new_name[0])))
+            elif next_keyword is not None and next_keyword[0] == b"SCHEMA":
+                new_schema = _read_sql_identifier(source, next_keyword[1])
+                if new_schema is None:
+                    continue
+                relocated.add(old_key)
+                relocated.add(
+                    (_normalize_sql_identifier(new_schema[0]), old_key[1])
+                )
+    return frozenset(relocated)
 
 
 def _collect_altered_columns(
@@ -895,6 +1060,9 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
     altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     declared_column_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
     collated_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
+    dropped_tables: set[tuple[bytes | None, bytes]] = set()
+    temporary_table_names: set[bytes] = set()
+    relocated_tables: set[tuple[bytes | None, bytes]] = set()
     for text in sources:
         source = text.encode("utf-8")
         masked = lex_sql(source).mask
@@ -905,6 +1073,9 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
             else:
                 attached_indexes.add(reference)
         altered_columns.update(_collect_altered_columns(source, masked))
+        dropped_tables.update(_collect_dropped_tables(source, masked))
+        temporary_table_names.update(_collect_temporary_table_names(source, masked))
+        relocated_tables.update(_collect_relocated_tables(source, masked))
         declared, collated = _collect_table_column_metadata(masked)
         declared_column_types.update(declared)
         collated_columns.update(collated)
@@ -914,6 +1085,9 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
         frozenset(altered_columns),
         frozenset(declared_column_types),
         frozenset(collated_columns),
+        frozenset(dropped_tables),
+        frozenset(temporary_table_names),
+        frozenset(relocated_tables),
     )
 
 
@@ -1003,6 +1177,24 @@ def _scan_drop_unique(
 # --- sql:drop-not-null -----------------------------------------------------
 
 
+_INLINE_PRIMARY_KEY_RE = re.compile(rb"\bPRIMARY\s+KEY\b", re.IGNORECASE)
+_IDENTITY_CLAUSE_RE = re.compile(
+    rb"\bGENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY"
+    rb"(?:\s*\([^()]*\))?",
+    re.IGNORECASE,
+)
+_NO_INHERIT_AFTER_NOT_NULL_RE = re.compile(rb"\s*NO\s+INHERIT\b", re.IGNORECASE)
+_TABLE_LEVEL_NOT_NULL_PREFIX_RE = re.compile(
+    rb"^\s*(?:ADD\s+)?"
+    rb"(?:CONSTRAINT(?:\s+" + _SQL_IDENTIFIER + rb")?\s+)?"
+    rb"NOT\s+NULL\b",
+    re.IGNORECASE,
+)
+_NAMED_NOT_NULL_CONSTRAINT_PREFIX_RE = re.compile(
+    rb"\bCONSTRAINT(?:\s+" + _SQL_IDENTIFIER + rb")?\s*$", re.IGNORECASE
+)
+
+
 def _declare_section_spans(
     masked: bytes, dollar_bodies: tuple[tuple[int, int], ...]
 ) -> list[tuple[int, int]]:
@@ -1024,10 +1216,153 @@ def _declare_section_spans(
     return spans
 
 
+def _column_definition_clauses(
+    source: bytes, masked: bytes
+) -> list[tuple[int, int, bytes]]:
+    """Return CREATE TABLE items and ALTER TABLE ADD actions.
+
+    These bounded clauses let the NOT NULL scanner inspect sibling options
+    without letting an identity declaration in a previous column affect this
+    one. Table-level constraints are included so they can be refused rather
+    than mistaken for column-level NOT NULL clauses.
+    """
+    clauses: list[tuple[int, int, bytes]] = []
+    for table_match in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
+        table_open = _read_create_table_columns_open(
+            source, masked, table_match.end()
+        )
+        if table_open is None:
+            continue
+        table_close = _find_matching_close_paren(masked, table_open)
+        if table_close is None:
+            continue
+        body_start = table_open + 1
+        body = masked[body_start:table_close]
+        for start, end in _split_top_level(body):
+            absolute_start = body_start + start
+            absolute_end = body_start + end
+            clauses.append(
+                (absolute_start, absolute_end, masked[absolute_start:absolute_end])
+            )
+
+    for alter in _ALTER_TABLE_RE.finditer(masked):
+        table = _read_alter_table_identity(source, masked, alter.end())
+        if table is None:
+            continue
+        _, table_end = table
+        statement_end = masked.find(b";", table_end)
+        if statement_end < 0:
+            statement_end = len(masked)
+        actions = masked[table_end:statement_end]
+        for start, end in _split_top_level(actions):
+            absolute_start = table_end + start
+            absolute_end = table_end + end
+            action = masked[absolute_start:absolute_end]
+            add = re.match(rb"\s*ADD\s+(?:COLUMN\s+)?", action, re.IGNORECASE)
+            if add is None:
+                continue
+            clauses.append((absolute_start, absolute_end, action))
+
+    clauses.sort(key=lambda clause: clause[0])
+    return clauses
+
+
+def _read_create_table_columns_open(
+    source: bytes, masked: bytes, pos: int
+) -> int | None:
+    """Read a CREATE TABLE header and return its column/constraint list.
+
+    The lexer blanks quoted identifiers, so the table name must be consumed
+    from the source with the source-aware identifier reader. Accept the
+    documented IF NOT EXISTS, OF, PARTITION OF, and USING header forms, then
+    require the opening parenthesis at the syntactic position instead of
+    searching ahead into a later clause.
+    """
+    table = _read_create_table_identity(source, masked, pos)
+    if table is None:
+        return None
+    cursor = table[2]
+
+    modifier = _next_sql_keyword(source, masked, cursor)
+    if modifier is not None and modifier[0] == b"PARTITION":
+        of_keyword = _next_sql_keyword(source, masked, modifier[1])
+        if of_keyword is None or of_keyword[0] != b"OF":
+            return None
+        parent = _read_qualified_sql_identifier_details(source, of_keyword[1])
+        if parent is None:
+            return None
+        cursor = parent[2]
+    elif modifier is not None and modifier[0] == b"OF":
+        parent_type = _read_qualified_sql_identifier_details(source, modifier[1])
+        if parent_type is None:
+            return None
+        cursor = parent_type[2]
+    elif modifier is not None and modifier[0] == b"USING":
+        method = _read_qualified_sql_identifier_details(source, modifier[1])
+        if method is None:
+            return None
+        cursor = method[2]
+
+    table_open = _skip_sql_trivia(source, cursor)
+    if table_open is None or table_open >= len(masked):
+        return None
+    if masked[table_open] != _OPEN_PAREN:
+        return None
+    return table_open
+
+
+def _implicit_not_null_reason(
+    source: bytes,
+    masked: bytes,
+    clause_start: int,
+    clause: bytes | None,
+) -> str | None:
+    """Why omitting an explicit NOT NULL remains non-null and valid SQL."""
+    if clause is None:
+        return None
+    column_start = clause_start
+    first_keyword = _next_sql_keyword(source, masked, column_start)
+    if first_keyword is not None and first_keyword[0] == b"ADD":
+        column_start = first_keyword[1]
+        next_keyword = _next_sql_keyword(source, masked, column_start)
+        if next_keyword is not None and next_keyword[0] == b"COLUMN":
+            column_start = next_keyword[1]
+            next_keyword = _next_sql_keyword(source, masked, column_start)
+        if next_keyword is not None and next_keyword[0] == b"IF":
+            not_keyword = _next_sql_keyword(source, masked, next_keyword[1])
+            exists_keyword = (
+                None
+                if not_keyword is None or not_keyword[0] != b"NOT"
+                else _next_sql_keyword(source, masked, not_keyword[1])
+            )
+            if exists_keyword is not None and exists_keyword[0] == b"EXISTS":
+                column_start = exists_keyword[1]
+    column = _read_action_identifier(source, masked, column_start)
+    if column is not None:
+        declared_type = _next_sql_keyword(source, masked, column[1])
+        serial_types = {
+            b"smallserial",
+            b"serial",
+            b"bigserial",
+            b"serial2",
+            b"serial4",
+            b"serial8",
+        }
+        if declared_type is not None and declared_type[0].lower() in serial_types:
+            return f"{declared_type[0].decode('ascii').upper()} implies NOT NULL"
+    if _IDENTITY_CLAUSE_RE.search(clause) is not None:
+        return "IDENTITY implies NOT NULL"
+    if _INLINE_PRIMARY_KEY_RE.search(clause) is not None:
+        return "PRIMARY KEY implies NOT NULL"
+    return None
+
+
 def _scan_drop_not_null(
     source: bytes, masked: bytes, declare_spans: list[tuple[int, int]]
 ) -> "list[_Site]":
     sites = []
+    column_clauses = _column_definition_clauses(source, masked)
+    column_clause_starts = [start for start, _, _ in column_clauses]
     for m in _NOT_NULL_RE.finditer(masked):
         preceding = _preceding_word(masked, m.start())
         word = None if preceding is None else preceding[0]
@@ -1040,9 +1375,46 @@ def _scan_drop_not_null(
             replacement = b"DROP NOT NULL"
             description = "SET NOT NULL -> DROP NOT NULL"
         else:
+            clause = None
+            clause_start = None
+            local_start = local_end = 0
+            clause_index = bisect_right(column_clause_starts, m.start()) - 1
+            if clause_index >= 0:
+                clause_start, clause_end, candidate_clause = column_clauses[clause_index]
+                if clause_start <= m.start() < clause_end:
+                    clause = candidate_clause
+                    local_start = m.start() - clause_start
+                    local_end = m.end() - clause_start
+            if clause is not None:
+                table_not_null = _TABLE_LEVEL_NOT_NULL_PREFIX_RE.match(clause)
+                if table_not_null is not None and clause_start is not None:
+                    table_column_start = _skip_sql_trivia(
+                        source, clause_start + table_not_null.end()
+                    )
+                    if (
+                        table_column_start is not None
+                        and _read_sql_identifier(source, table_column_start)
+                        is not None
+                    ):
+                        continue
+                if _NO_INHERIT_AFTER_NOT_NULL_RE.match(
+                    clause[local_end:]
+                ) is not None:
+                    continue
+                if _NAMED_NOT_NULL_CONSTRAINT_PREFIX_RE.search(
+                    clause[:local_start]
+                ) is not None:
+                    continue
+            reason = _implicit_not_null_reason(
+                source, masked, clause_start or 0, clause
+            )
             span_start = m.start()
-            replacement = b"NULL"
-            description = "NOT NULL -> NULL"
+            if reason is not None:
+                replacement = b" "
+                description = f"NOT NULL -> omitted ({reason})"
+            else:
+                replacement = b"NULL"
+                description = "NOT NULL -> NULL"
         if _inside_any(declare_spans, span_start):  # rule 5 (A-283)
             continue
         sites.append(
@@ -1188,10 +1560,16 @@ def _scan_widen_check_in(
     all_declared_column_types = set(declared_column_types)
     collated_columns = set(local_collated_columns)
     altered_columns = set(_collect_altered_columns(source, masked))
+    dropped_tables = set(_collect_dropped_tables(source, masked))
+    temporary_table_names = set(_collect_temporary_table_names(source, masked))
+    relocated_tables = set(_collect_relocated_tables(source, masked))
     if context is not None:
         all_declared_column_types.update(context.declared_column_types)
         altered_columns.update(context.altered_columns)
         collated_columns.update(context.collated_columns)
+        dropped_tables.update(context.dropped_tables)
+        temporary_table_names.update(context.temporary_table_names)
+        relocated_tables.update(context.relocated_tables)
     for table_match in _CREATE_TABLE_RE.finditer(masked):
         table_name = _TABLE_NAME_AFTER_CREATE_RE.match(masked, table_match.end())
         table_open = masked.find(b"(", table_match.end())
@@ -1263,6 +1641,36 @@ def _scan_widen_check_in(
     ) -> tuple[dict[bytes, bytes], frozenset[bytes]]:
         table_key = table_for_check(check_start)
         if table_key is None:
+            return {}, frozenset()
+        if _is_temporary_schema(table_key[0]):
+            # Explicit pg_temp references never denote an ordinary table in
+            # the scanned source roots, even if no temp declaration was found.
+            return {}, frozenset()
+        if table_key[0] is None and table_key[1] in temporary_table_names:
+            # A temp relation with this name can win unqualified resolution,
+            # while the permanent relation's type is the one in source context.
+            return {}, frozenset()
+        # An unqualified table reference has an unknown search_path, so any
+        # dropped table with that name invalidates its type facts. A qualified
+        # reference is invalidated only by the exact drop or an unqualified
+        # drop that could resolve to it.
+        table_was_dropped = (
+            table_key in dropped_tables
+            or (None, table_key[1]) in dropped_tables
+            or (
+                table_key[0] is None
+                and any(name == table_key[1] for _, name in dropped_tables)
+            )
+        )
+        table_was_relocated = (
+            table_key in relocated_tables
+            or (None, table_key[1]) in relocated_tables
+            or (
+                table_key[0] is None
+                and any(name == table_key[1] for _, name in relocated_tables)
+            )
+        )
+        if table_was_dropped or table_was_relocated:
             return {}, frozenset()
         if table_key[0] is None:
             raw_types = types_by_name.get(table_key[1], {})

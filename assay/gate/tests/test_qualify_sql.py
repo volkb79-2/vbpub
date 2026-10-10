@@ -98,7 +98,7 @@ def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
     assert q.PROBES_SHA256.startswith("36249c03") and q.PROBES_SHA256.endswith("488c")
-    assert q.HAZARD_CASES_SHA256 == "c5e36d410b423804fe9d95ab5ca612ba3dcb342a4f97a008349abf647cf08600"
+    assert q.HAZARD_CASES_SHA256 == "bb229be45b60b7444c6c141ab03ee2897405d731b31e0dc8026a04da550da27b"
 
 
 def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
@@ -122,6 +122,15 @@ def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
         "event-trigger",
         "quoted-fk-target",
         "do-block-trigger",
+        "not-null-add-if-not-exists-serial",
+        "array-check-string-widen",
+        "array-bracket-check-string-widen",
+        "temp-table-shadow-widen",
+        "create-temp-shadow-widen",
+        "select-into-temp-shadow-widen",
+        "select-into-pg-temp-shadow-widen",
+        "table-rename-stale-type",
+        "table-schema-move-stale-type",
     }
     assert all(case["assertion"] for case in cases if case["expected_site_count"] == 1)
     assert all(case["assertion"] for case in cases if case["probe"] is not None)
@@ -973,6 +982,41 @@ def test_run_assertions_names_every_failing_probe_in_id_order(tmp_path: Path) ->
 def test_run_assertions_is_silent_and_green_when_every_probe_passes(tmp_path: Path) -> None:
     proc = _run_assertions(tmp_path, {})
     assert (proc.returncode, proc.stdout) == (0, "")
+
+
+def test_run_assertions_preserves_sqlstate_notice_markers(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "K18.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    stub_dir = tmp_path / "fake-bin"
+    stub_dir.mkdir()
+    (stub_dir / "psql").write_text(
+        "#!/bin/sh\n"
+        "for arg; do\n"
+        "  [ \"$arg\" != -q ] || exit 0\n"
+        "  [ \"$arg\" != VERBOSITY=sqlstate ] || exit 0\n"
+        "done\n"
+        "printf '%s\\n' 'NOTICE: ASSAY_SQLSTATE=23001'\n",
+        encoding="utf-8",
+    )
+    (stub_dir / "psql").chmod(0o755)
+    env = {
+        **_host_environ(),
+        "PATH": f"{stub_dir}:{os.environ['PATH']}",
+        "SCHEMA_GATE_DBNAME": "qual",
+        "SCHEMA_GATE_ASSERT_DIR": str(tests),
+    }
+
+    proc = subprocess.run(
+        ["sh", str(_FIXTURE_ROOT / "run-assertions.sh")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.splitlines() == ["NOTICE: ASSAY_SQLSTATE=23001"]
 
 
 def test_run_assertions_treats_any_other_psql_exit_as_infrastructure(tmp_path: Path) -> None:

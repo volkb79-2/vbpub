@@ -790,8 +790,19 @@ column declarations, `ALTER COLUMN ... TYPE` changes, and explicit column
 collations. A SQL lane's roots must cover the complete DDL corpus its command
 applies; candidate scope decides which files can produce mutants, while the
 full root set supplies safety context. A declaration in another included SQL
-file can establish a column's type; unknown or conflicting types remain
-ineligible for literal widening. The harness records
+file can establish a column's type; type modifiers are retained, so bounded
+`varchar(n)` is not mistaken for unbounded `varchar` when deciding whether the
+fixed widening sentinel fits. If the scan finds a `DROP TABLE` for a table, it
+treats all type facts for that table as unsafe because it does not resolve DDL
+order. Unknown or conflicting types remain ineligible for literal widening.
+Array columns are not treated as scalar text or integer columns. An unqualified
+reference that may resolve to a temporary table, or an explicit `pg_temp`
+reference, gets no widening site. A table drop, rename, or schema move
+invalidates its type facts because the scan does not resolve DDL order.
+Explicit `NOT NULL` on identity, serial, and inline primary-key columns is
+removed as an equivalent mutation when the clause can be removed safely.
+Named and table-level `NOT NULL` constraints and `NOT NULL NO INHERIT` forms
+have no site; a partial replacement would leave invalid SQL. The harness records
 whether apply, dump, or test failed; a current generated site that fails before
 tests is a qualification error, never a `crashed` mutation result. Historical
 comparison probes may be recorded as crashes only when their apply-stage
@@ -826,8 +837,9 @@ sql:widen-check-in
 ```
 
 `sql:widen-check-in` adds a member to `IN` only for homogeneous string
-literals on declared `text`, `varchar`, or `name` columns without an explicit
-`COLLATE`, or unsigned integer literals on declared bounded integer columns.
+literals on declared `text`, unbounded `varchar`, or `name` columns without an
+explicit `COLLATE`, or unsigned integer literals on declared bounded integer
+columns.
 Fixed-length `CHAR` types have no string widening site because PostgreSQL
 ignores trailing-space differences for their comparisons. For an integer `NOT IN` list on a
 declared bounded integer column, it removes one uniquely listed excluded

@@ -1868,33 +1868,50 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
-### What assay's own SQL qualification does not cover
+### What assay's own SQL qualification covers
 
-assay qualifies this adapter against a real PostgreSQL 18.6 with its own schema
-(24 representative sites; see [§11 of the design guide](DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126)),
-not against your schema. Two families are outside that evidence and are tracked
-in `nyxloom-trove/4-backlog.md`:
+Assay qualifies its SQL adapter against real PostgreSQL 18.6 using its own
+schema, not your schema. The registered qualification combines a 24-row matrix
+with the separate B132 hazard cases; see [§11 of the design
+guide](DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
+The case file pins expected current and comparison-probe outcomes; the
+registered gate measures them and its passing receipt is the evidence for the
+exact package commit.
+The gate records whether PostgreSQL failed during apply, dump, or test. If a
+current generated site fails before its probe runs, qualification fails; that
+is not a kill.
 
-- **SQL edge constructs (B132).** The registered SQL qualification includes
-  a PostgreSQL hazard set separate from the representative 24-row matrix.
-  Cases with a generated site or a historical comparison rewrite have a
-  construct-specific SQL assertion that runs against the baseline and rewrite.
-  A no-site case without a comparison rewrite asserts zero focused sites.
-  Qualification records whether PostgreSQL failed during apply, dump, or test.
-  The case definitions alone are not qualification evidence; use the passing
-  registered gate receipt for the exact package commit. If a current generated
-  site fails before its probe runs, qualification fails; that is not a kill.
-  The adapter offers no site for either half of a linked `UNIQUE USING INDEX`
-  or `PRIMARY KEY USING INDEX` pair, or for an enum string check whose resolved
-  type cannot be established.
-  String `NOT IN` rewrites are refused because PostgreSQL type and collation
-  rules can make distinct source strings compare equal; for example,
-  `CHAR(n)` ignores trailing spaces. Historical comparison probes that fail at
-  apply are useful only with an exact SQLSTATE pin.
-- **Operator behavior (B133).** `sql:widen-check-in` appends a member to
-  `IN ('open', 'pending')` only for homogeneous string literals on declared
-  `text`, `varchar`, or `name` columns without an explicit `COLLATE` clause,
-  or unsigned integers on declared bounded integer columns. Fixed-length
+The adapter offers no site for either half of a linked `UNIQUE USING INDEX` or
+`PRIMARY KEY USING INDEX` pair, or for an enum string check whose resolved type
+cannot be established. It preserves `varchar(n)` modifiers and does not offer
+the fixed-sentinel widening site for bounded columns. A `DROP TABLE`, table
+rename, or schema move anywhere in the scanned corpus invalidates type facts
+for the old and new names because the scanner does not resolve DDL order. For
+array types it does not assume scalar literal or equality rules. An unqualified name that may
+resolve to a temporary table, or an explicit `pg_temp` name, has no widening
+site because its type cannot be established from the source corpus alone. For
+`sql:drop-not-null`, identity, serial, and inline primary-key columns use an
+equivalent removal of an unnamed explicit clause. Named and table-level
+`NOT NULL` constraints and `NOT NULL NO INHERIT` forms produce no site because
+a partial replacement would leave invalid SQL. String `NOT IN` rewrites are refused
+because PostgreSQL type and collation rules can make distinct source strings
+compare equal; for example, `CHAR(n)` ignores trailing spaces. Historical
+comparison probes that fail at apply are useful only with an exact SQLSTATE
+pin.
+
+### What the SQL qualification does not cover
+
+The built-in schema and hazard cases do not certify behavior on your own DDL,
+extensions, PostgreSQL versions, or consumer test probes. Run your declared SQL
+lane against the complete DDL corpus your command applies and review its own
+registered gate evidence.
+
+### SQL operator behavior (B133)
+
+`sql:widen-check-in` appends a member to `IN ('open', 'pending')` only for
+homogeneous string literals on declared `text`, unbounded `varchar`, or `name`
+columns without an explicit `COLLATE` clause, or unsigned integers on declared
+bounded integer columns. Fixed-length
   `CHAR` types have no string widening site because PostgreSQL ignores
   trailing-space differences in their comparisons. An integer `NOT IN` list
   on a declared bounded integer column can remove one uniquely listed excluded
