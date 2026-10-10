@@ -109,6 +109,7 @@ artifacts = [
   ".assay/b110-pilot-selection.json",
   ".assay/b110-pilot-summary.json",
   ".assay/b110-pilot-run.log",
+  ".assay/r2-manifest-b110-pilot.txt",
   ".assay/b110-pilot-attempt-window.json",
   ".assay/b110-pilot-attempt.log",
   ".assay/b110-pilot-artifacts.sha256",
@@ -125,7 +126,8 @@ artifacts = [
 
 # B131 measures analysis-package R2 independently from B105. The selector,
 # state store and report checker bind the bounded sample to the exact plan,
-# commit, tree, wheel, campaign deadline and cold-witness/resource evidence.
+# commit, tree, wheel, campaign deadline, collected test manifest,
+# cold-witness/resource evidence and per-candidate measurements.
 [lanes.analysis-r2-pilot]
 kind = "command"
 environment = "bare-host"
@@ -140,6 +142,7 @@ artifacts = [
   ".assay/analysis-r2-pilot-selection.json",
   ".assay/analysis-r2-pilot-summary.json",
   ".assay/analysis-r2-pilot-run.log",
+  ".assay/r2-manifest-analysis-r2-pilot.txt",
   ".assay/progress-analysis-r2-pilot.jsonl",
   ".assay/analysis-r2-pilot-state",
 ]

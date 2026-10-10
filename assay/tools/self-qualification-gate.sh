@@ -78,6 +78,7 @@ run_b110_pilot_inner() {
     "$assay_state_root/b110-pilot-selection.json" \
     "$assay_state_root/b110-pilot-summary.json" \
     "$assay_state_root/b110-pilot-run.log" \
+    "$assay_state_root/r2-manifest-b110-pilot.txt" \
     "$assay_state_root/b110-pilot-artifacts.sha256"
   # P7R2-4: init FIRST, so `assay plan` and the selector run inside the 2 h campaign
   # and the outer failsafe only has to cover the build plus the campaign.
@@ -167,6 +168,7 @@ run_b110_pilot_inner() {
       "$assay_bin" run self-qualification --file assay.toml \
       --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 3 --cold-witness --resume \
       --state-dir "$assay_state_root/b110-pilot-state" --progress "$assay_state_root/progress-b110-pilot.jsonl" \
+      --r2-manifest "$assay_state_root/r2-manifest-b110-pilot.txt" \
       --campaign-deadline "$pilot_deadline"
   pilot_status=$?
   set -e
@@ -272,10 +274,11 @@ run_analysis_r2_pilot() {
   local summary_path=.assay/analysis-r2-pilot-summary.json
   local run_log_path=.assay/analysis-r2-pilot-run.log
   local progress_path=.assay/progress-analysis-r2-pilot.jsonl
+  local r2_manifest_path=.assay/r2-manifest-analysis-r2-pilot.txt
   local verdict_path=.assay/verdict-analysis-r2.json
 
   rm -f -- "$plan_path" "$candidates_path" "$selection_path" \
-    "$summary_path" "$run_log_path" \
+    "$summary_path" "$run_log_path" "$r2_manifest_path" \
     || { echo "ANALYSIS_R2_PILOT_OUTPUT_CLEANUP_FAILED=1" >&2; return 1; }
   if [[ -e "$verdict_path" || -L "$verdict_path" ]]; then
     echo "ANALYSIS_R2_PILOT_PREEXISTING_VERDICT=1" >&2
@@ -358,6 +361,7 @@ run_analysis_r2_pilot() {
     "$assay_bin" run analysis-r2 --file assay.toml \
       --candidates-file "$candidates_path" --cold-witness --resume \
       --state-dir "$state_dir" --progress "$progress_path" \
+      --r2-manifest "$r2_manifest_path" \
       --campaign-deadline "$pilot_deadline" \
       > "$summary_path" 2> "$run_log_path"
   pilot_status=$?
@@ -394,6 +398,7 @@ run_analysis_r2_pilot() {
       --plan "$plan_path" --selection "$selection_path" \
       --candidates "$candidates_path" --summary "$summary_path" \
       --progress "$progress_path" --deadline "$pilot_deadline" \
+      --r2-manifest "$r2_manifest_path" \
       --state-dir "$state_dir" --verdict "$verdict_path" \
       --repo-root "$worktree" --expected-commit "$source_commit" \
       --expected-tree "$source_tree" --expected-wheel-sha256 "$wheel_digest" \

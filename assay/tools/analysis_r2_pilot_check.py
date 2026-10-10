@@ -18,6 +18,7 @@ from typing import Any
 
 import b110_pilot_select as common
 import analysis_r2_pilot_select as selector
+import pilot_r2_evidence
 from assay.candidate_identity import candidate_id_from_fields
 from assay import __version__ as ASSAY_VERSION
 from assay.mutation import (
@@ -343,6 +344,7 @@ def _check_pilot_state(
     plan_by_id: dict[str, dict[str, Any]],
     outcome_by_id: dict[str, dict[str, Any]],
     deadline_sha256: str,
+    r2_baselines: dict[str, Any],
 ) -> tuple[str, dict[str, dict[str, Any]]]:
     if state_dir.is_symlink() or not state_dir.is_dir():
         raise ValueError("pilot state directory is missing or is a symlink")
@@ -451,16 +453,32 @@ def _check_pilot_state(
             if outcome["bucket"] == "survived":
                 if checked_evidence.started_count is not None:
                     raise ValueError(f"pilot survivor {identity} carries failed-prefix evidence")
-            else:
-                mode = outcome["execution_mode"]
-                if mode == "full":
-                    if checked_evidence.command != "declared" or checked_evidence.started_count is not None:
-                        raise ValueError(f"cold full kill {identity} lacks declared-command evidence")
-                elif mode == "witness-cold":
-                    if checked_evidence.command != "r2" or checked_evidence.started_count is None:
-                        raise ValueError(f"cold witness kill {identity} lacks R2 failed-prefix evidence")
-                else:
-                    raise ValueError(f"cold kill {identity} has unsupported execution mode {mode!r}")
+            pilot_r2_evidence.validate_candidate_evidence(
+                evidence,
+                baselines=r2_baselines,
+                candidate_id=identity,
+            )
+        elif record.get("evidence") is not None:
+            pilot_r2_evidence.validate_candidate_evidence(
+                record["evidence"],
+                baselines=r2_baselines,
+                candidate_id=identity,
+            )
+        if outcome["bucket"] == "killed":
+            pilot_r2_evidence.validate_kill_witness(
+                record.get("execution"),
+                record["evidence"],
+                nodes=r2_baselines["nodes"],
+                candidate_id=identity,
+            )
+        elif execution.mode != "full" or execution.witness is not None:
+            raise ValueError(
+                f"pilot non-kill {identity} must use full execution without a witness"
+            )
+        cost_resources = pilot_r2_evidence.validate_state_measurements(
+            record,
+            candidate_id=identity,
+        )
         raw_resources = record.get("resource_limit_evidence")
         if not isinstance(raw_resources, dict):
             raise ValueError(f"pilot state record {identity} has no B145 resource evidence")
@@ -473,6 +491,7 @@ def _check_pilot_state(
         resources_by_id[identity] = {
             "resource_limit_evidence": resources.to_dict(),
             "liveness_resource_evidence": record.get("liveness_resource_evidence"),
+            "cost_resources": cost_resources,
         }
         if not _terminal_result_matches_bucket(
             record, cold_witness=True, resource_limit_hit=False
@@ -516,10 +535,47 @@ def _check_progress(
     state_resources_by_id: dict[str, dict[str, Any]],
     summary_r2: dict[str, Any],
 ) -> None:
+    boundaries = [index for index, event in enumerate(events) if event.get("event") == "run"]
+    if not boundaries or boundaries[0] != 0:
+        raise ValueError("progress does not begin with a run header")
+    segments = [
+        events[start : boundaries[index + 1] if index + 1 < len(boundaries) else len(events)]
+        for index, start in enumerate(boundaries)
+    ]
+    final_segment = segments[-1]
+    final_header = final_segment[0]
+    final_metadata = [event for event in final_segment if event.get("event") == "candidates"]
+    if (
+        final_header.get("lane") != LANE
+        or final_header.get("commit") != expected_commit
+        or len(final_metadata) != 1
+        or final_metadata[0].get("selection_sha256") != common._plan_sha256(selected_ids)
+        or final_metadata[0].get("judge_sha256") != expected_judge_sha256
+    ):
+        raise ValueError("final progress run does not bind this lane, source, selection and judge")
+
+    # A lane can append to an existing progress file. Only segments whose
+    # source, selection and judge all match may supply resume dispositions;
+    # stale commits and unrelated selections carry no candidate authority.
+    bound_events: list[dict[str, Any]] = []
+    for segment in segments:
+        header = segment[0]
+        if header.get("lane") != LANE or header.get("commit") != expected_commit:
+            continue
+        metadata = [event for event in segment if event.get("event") == "candidates"]
+        if (
+            len(metadata) == 1
+            and metadata[0].get("selection_sha256") == common._plan_sha256(selected_ids)
+            and metadata[0].get("judge_sha256") == expected_judge_sha256
+        ):
+            bound_events.extend(segment)
+    events = bound_events
+
     selected = set(selected_ids)
     observed: dict[str, list[tuple[str, str]]] = defaultdict(list)
     latest_resources: dict[str, dict[str, Any]] = {}
     latest_liveness: dict[str, Any] = {}
+    latest_cost_resources: dict[str, dict[str, Any]] = {}
     runs: list[dict[str, Any]] = []
     current_run: dict[str, Any] | None = None
     for index, event in enumerate(events, 1):
@@ -656,11 +712,21 @@ def _check_progress(
             execution_mode = event.get("execution_mode")
             if not isinstance(execution_mode, str) or not execution_mode:
                 raise ValueError(f"progress candidate {identity} has no execution mode")
+            cost_measurements = pilot_r2_evidence.validate_progress_measurements(
+                event,
+                candidate_id=identity,
+            )
             current_run["candidate_ids"].append(identity)
             current_run["candidate_events"][identity] = event
             observed[identity].append((bucket, execution_mode))
             latest_resources[identity] = resource_evidence.to_dict()
             latest_liveness[identity] = event.get("liveness_resource_evidence")
+            latest_cost_resources[identity] = {
+                field: cost_measurements[field]
+                for field in (
+                    "cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds"
+                )
+            }
         elif kind == "end":
             if (
                 current_run is None
@@ -776,6 +842,8 @@ def _check_progress(
         state_liveness = state_evidence["liveness_resource_evidence"]
         if latest_liveness.get(identity) != state_liveness:
             raise ValueError(f"latest progress liveness evidence differs from state for candidate {identity}")
+        if latest_cost_resources.get(identity) != state_evidence["cost_resources"]:
+            raise ValueError(f"latest progress cost measurements differ from state for candidate {identity}")
         if outcome["bucket"] == "hung" and (
             not _valid_hung_resource_evidence(latest_liveness.get(identity))
             or latest_liveness[identity] != state_liveness
@@ -797,6 +865,7 @@ def verify_pilot(
     expected_wheel_sha256: str,
     expected_exit_code: int,
     repo_root: Path,
+    r2_manifest_path: Path,
 ) -> None:
     if _HEX40.fullmatch(expected_commit) is None or _HEX40.fullmatch(expected_tree) is None:
         raise ValueError("expected commit and tree must be full lowercase Git ids")
@@ -826,7 +895,7 @@ def verify_pilot(
     summary = _json(summary_raw, label="pilot summary")
     if not isinstance(summary, dict):
         raise ValueError("pilot summary is not an object")
-    if summary.get("schema") != "assay-pilot-summary/1":
+    if summary.get("schema") != "assay-pilot-summary/2":
         raise ValueError("pilot summary has an unknown schema")
     if summary.get("qualifying") is not False or summary.get("completed") is not True:
         raise ValueError("pilot summary is not a complete non-qualifying measurement")
@@ -836,7 +905,7 @@ def verify_pilot(
         "schema", "qualifying", "completed", "lane", "commit", "jobs",
         "requested", "selection_sha256", "judge_sha256",
         "candidates_file_sha256", "state_dir", "r0", "r1", "r2", "r3",
-        "buckets", "candidates", "unresolved",
+        "r2_command", "buckets", "candidates", "unresolved",
     }:
         raise ValueError("pilot summary has missing or unknown fields")
     if summary.get("lane") != LANE or summary.get("commit") != commit:
@@ -860,6 +929,13 @@ def verify_pilot(
         raise ValueError("pilot summary has no completed R2 outcome")
     if r2.get("reason_code") is not None and not isinstance(r2.get("reason_code"), str):
         raise ValueError("pilot summary R2 reason_code is malformed")
+    r2_baselines = pilot_r2_evidence.validate_r2_command(
+        summary.get("r2_command"),
+        repo_root=repo_root,
+        expected_commit=commit,
+        expected_lane=LANE,
+        manifest_path=r2_manifest_path,
+    )
     if summary.get("unresolved") != []:
         raise ValueError("pilot summary has unresolved selected candidates")
     raw_buckets = summary.get("buckets")
@@ -908,6 +984,7 @@ def verify_pilot(
         plan_by_id=plan_by_id,
         outcome_by_id=outcome_by_id,
         deadline_sha256=deadline_sha256,
+        r2_baselines=r2_baselines,
     )
     if summary.get("judge_sha256") != expected_judge_sha256:
         raise ValueError("pilot summary judge_sha256 differs from state and progress")
@@ -931,6 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--progress", type=Path, required=True)
+    parser.add_argument("--r2-manifest", type=Path, required=True)
     parser.add_argument("--deadline", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--verdict", type=Path, required=True)
@@ -956,6 +1034,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_wheel_sha256=args.expected_wheel_sha256,
             expected_exit_code=args.expected_exit_code,
             repo_root=args.repo_root,
+            r2_manifest_path=args.r2_manifest,
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"analysis_r2_pilot_check: {exc}", file=sys.stderr)

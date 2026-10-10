@@ -1381,7 +1381,12 @@ prints a separate JSON summary and never writes a verdict artifact. A standard
 verdict is the input to verification and downstream release decisions; omitting
 it prevents a partial candidate inventory from being mistaken for a complete
 PASS. The summary says `qualifying: false` and reports each bucket, selected
-candidate, and any unresolved ID.
+candidate, and any unresolved ID. Schema `/2` also retains the cold-witness R2
+command and its coverage/R2 baselines when present. A registered gate retains
+the ordered R2 collection manifest separately: the report checker compares its
+count and digest with the baseline, then binds each candidate's collection
+facts and failed-call witness to that collection. This prevents a fabricated
+node ID or unrelated collection digest from turning a pilot result green.
 
 Exit code **6** is intentionally outside the ordinary `EXIT_CODES` map. It
 means the selected pilot inventory completed, regardless of whether R2 passed
@@ -2581,7 +2586,13 @@ summary, per-candidate state, progress stream, resumed dispositions, two-hour
 campaign deadline, 90-minute attempt window, wheel identity and resource-limit
 evidence. The summary records the current sweep's `judge_sha256` captured in
 memory; the checker requires the candidates progress event and every state
-record to match it. It writes a SHA-256 manifest over the validated files. The
+record to match it. The `/2` summary also carries the effective declared and
+transformed R2 command, configuration digest, and coverage/R2 baselines. The
+retained `.assay/r2-manifest-b110-pilot.txt` is part of the checked artifact
+set; candidate collection facts and kill witnesses must match those baselines
+and collected test nodes. The checker requires elapsed and phase measurements
+in progress and compares CPU/RSS/phase/startup values with resumable state. It
+writes a SHA-256 manifest over the validated files. The
 host copies those bytes into
 `.assay/b110-pilot-evidence/`, checks the exact inventory and content digests,
 and atomically publishes that directory as the retained evidence snapshot.
@@ -4418,9 +4429,15 @@ thresholds.
 
 The registered `analysis-r2-pilot` gate runs the selected sample with cold
 witnesses, resumable state, a progress stream and one persisted campaign
-deadline. The host binds the selection and completed exit-6 summary to the
-clean source commit/tree, plan bytes, wheel identity, candidate file, state,
-progress and B145 resource evidence. No verdict is written: a completed sample
+deadline. The `/2` summary records the effective R2 command and its collection
+baselines. `.assay/r2-manifest-analysis-r2-pilot.txt` is retained and checked
+against the R2 baseline; candidate collection evidence and failed-call
+witnesses must resolve to those baseline facts and manifest nodes. The checker
+also requires candidate elapsed and phase evidence and binds CPU/RSS/phase/
+startup measurements between progress and resumable state. The host binds the
+selection and completed exit-6 summary to the clean source commit/tree, plan
+bytes, wheel identity, candidate file, state, progress and B145 resource
+evidence. No verdict is written: a completed sample
 is a measurement, while timeout, partial state, host refusal or resource limit
 is incomplete. Only measurements from this pilot may set an analysis-specific
 worker envelope, full-run budget and GO policy; a separate stage must add and

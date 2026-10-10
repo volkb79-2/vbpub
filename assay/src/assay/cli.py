@@ -1323,6 +1323,12 @@ def _build_pilot_summary(
     claims = {claim.rigor: claim for claim in verdict.claims}
     r2_claim = claims.get("R2")
     r2_mutation = None if r2_claim is None else r2_claim.mutation
+    r2_policy = None if verdict.judgment is None else verdict.judgment.r2
+    r2_command = (
+        None
+        if r2_policy is None or r2_policy.r2_command is None
+        else r2_policy.r2_command.to_dict()
+    )
     bucket_counts = (
         None
         if r2_mutation is None
@@ -1374,7 +1380,7 @@ def _build_pilot_summary(
         }
     )
     summary: dict[str, Any] = {
-        "schema": "assay-pilot-summary/1",
+        "schema": "assay-pilot-summary/2",
         "qualifying": False,
         "completed": completed,
         "lane": lane.name,
@@ -1391,6 +1397,7 @@ def _build_pilot_summary(
         "r0": None if "R0" not in claims else claims["R0"].status.value,
         "r1": None if "R1" not in claims else claims["R1"].status.value,
         "r2": r2_summary,
+        "r2_command": r2_command,
         "r3": "not-run: pilot",
         "buckets": bucket_counts,
         "candidates": candidates,

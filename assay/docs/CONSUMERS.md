@@ -1059,8 +1059,15 @@ run. The gate then reports completion only after an independent checker
 recomputes the selected IDs
 from the exact source plan and validates the summary's in-memory current-sweep
 `judge_sha256`; the candidates progress event and every candidate state record
-must match that value. It also validates resource evidence, pending and resumed
-progress, campaign deadline, the 90-minute attempt window and wheel digest. The 90-minute cap
+must match that value. Its `/2` summary records the effective declared and
+transformed R2 command, configuration digest, and coverage/R2 baselines. The
+gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
+recomputes its ordered collection digest, requires candidate collection facts
+to match the appropriate baseline, and requires every kill witness to name a
+collected test. It validates candidate elapsed and phase evidence and binds
+CPU/RSS/phase/startup measurements between progress and state. It also
+validates resource evidence, pending and resumed progress, campaign deadline,
+the 90-minute attempt window and wheel digest. The 90-minute cap
 includes report checking, final source/deadline checks and completion markers.
 The checker writes
 `.assay/b110-pilot-artifacts.sha256`; the host pins that manifest and its listed
@@ -5130,11 +5137,20 @@ then selects a deterministic bounded sample: one candidate for every
 candidate-bearing source-file/operator pair, all `python:falsy-swap`
 candidates, and ranked fill to up to 40 candidates by default. The gate verifies the
 source, plan, selected ids, pilot state/progress, cold-witness evidence,
-resource counters and actual exit before returning success.
+resource counters and actual exit before returning success. It writes
+`.assay/r2-manifest-analysis-r2-pilot.txt`; the `/2` summary records the
+effective R2 command, configuration digest and coverage/R2 baselines. The
+checker compares the manifest with the R2 baseline, binds candidate collection
+evidence and kill-witness nodes to that manifest, and compares progress resource
+measurements with state.
 
 Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
 operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`
-for the completed sample; and `.assay/progress-analysis-r2-pilot.jsonl` plus
+for the completed sample and source-bound `r2_command`; and
+`.assay/r2-manifest-analysis-r2-pilot.txt` for the ordered baseline collection.
+The checker verifies that each candidate's collection evidence matches its
+baseline and each kill witness names a collected test. Read
+`.assay/progress-analysis-r2-pilot.jsonl` plus
 `.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
 gate means only that the sample completed and its evidence verified. It does
 not create a verdict or qualify the full plan. A timeout, partial sample,

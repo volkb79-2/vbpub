@@ -320,6 +320,7 @@ if args and args[0] == "logs":
                 ".assay/b110-pilot-selection.json": b"selection\n",
                 ".assay/b110-pilot-summary.json": b"summary\n",
                 ".assay/b110-pilot-run.log": b"run log\n",
+                ".assay/r2-manifest-b110-pilot.txt": b"test_contract::test_example\n",
                 ".assay/b110-pilot-attempt-window.json": attempt_raw,
                 ".assay/progress-b110-pilot.jsonl": b"progress\n",
                 f".assay/{deadline_name}": deadline_raw,
@@ -3678,6 +3679,7 @@ def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
         "b110-pilot-run.log",
         "b110-pilot-attempt.log",
         "b110-pilot-attempt-window.json",
+        "r2-manifest-b110-pilot.txt",
         "b110-pilot-artifacts.sha256",
     )
     for name in stale_outputs:
@@ -3716,6 +3718,7 @@ def test_b110_pilot_clears_stale_attempt_outputs_before_host_admission(
                 "b110-pilot-selection.json",
                 "b110-pilot-summary.json",
                 "b110-pilot-run.log",
+                "r2-manifest-b110-pilot.txt",
             ),
         ),
         (

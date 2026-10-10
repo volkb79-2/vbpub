@@ -5,11 +5,13 @@ import importlib.util
 import json
 import os
 import argparse
+import shutil
 import stat
 import subprocess
 import sys
 import threading
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -27,6 +29,7 @@ from assay.mutation import (
     plan_sha256,
     valid_hung_resource_evidence,
 )
+from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT
 
 
@@ -228,6 +231,12 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
 """,
         encoding="utf-8",
     )
+    project_assay = repo / "assay"
+    shutil.copyfile(PROJECT_ROOT / "pyproject.toml", project_assay / "pyproject.toml")
+    (project_assay / "tests").mkdir()
+    (project_assay / "tests" / "test_sample.py").write_text(
+        "def test_sample():\n    assert True\n", encoding="utf-8"
+    )
     targets = []
     for path, raw_source in ((GO_PATH, go_source), (BOOL_PATH, bool_source)):
         text = raw_source.decode("utf-8")
@@ -273,7 +282,51 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
     commit = _git(repo, "rev-parse", "HEAD")
     tree = _git(repo, "rev-parse", "HEAD^{tree}")
 
-    project_assay = repo / "assay"
+    manifest_nodes = ["tests/test_sample.py::test_sample"]
+    r2_manifest_path = project_assay / ".assay" / "r2-manifest-b110-pilot.txt"
+    r2_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    r2_manifest_path.write_bytes(("\n".join(manifest_nodes) + "\n").encode())
+    lane_config = tomllib.loads((project_assay / "assay.toml").read_text(encoding="utf-8"))
+    declared_argv = lane_config["lanes"]["self-qualification"]["argv"]
+    baseline = {
+        "collection_count": len(manifest_nodes),
+        "collection_sha256": collection_digest(manifest_nodes),
+        "duplicates": 0,
+        "hook_fingerprint_sha256": "e" * 64,
+        "hook_count": 1,
+        "runtime_fingerprint_sha256": "f" * 64,
+    }
+    r2_command = {
+        "transform": R2_TRANSFORM_ID,
+        "argv_declared": declared_argv,
+        "argv_transformed": list(transform_argv(declared_argv)),
+        "appended": list(R2_APPENDED),
+        "cwd": "assay",
+        "config_sha256": hashlib.sha256(
+            (project_assay / "pyproject.toml").read_bytes()
+        ).hexdigest(),
+        "coverage_baseline": baseline,
+        "r2_baseline": {**baseline, "wall_s": 1.25},
+    }
+    report_checker = _load_module("b110_pilot_report_check_fixture", CHECKER_PATH)
+    r2_baselines = report_checker.pilot_r2_evidence.validate_r2_command(
+        r2_command,
+        repo_root=repo,
+        expected_commit=commit,
+        expected_lane="self-qualification",
+        manifest_path=r2_manifest_path,
+    )
+    cost_resources = {
+        "cpu_seconds": None,
+        "peak_rss_bytes": None,
+        "phase_seconds": {
+            "materialize": 0.1,
+            "command": 0.2,
+            "integrity": 0.1,
+            "teardown": 0.1,
+        },
+        "startup_seconds": None,
+    }
     artifact_dir = project_assay / ".assay"
     state_dir = artifact_dir / "b110-pilot-state"
     state_dir.mkdir(parents=True)
@@ -371,12 +424,13 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
             "execution": {"mode": "full"},
             "evidence": {
                 "command": "r2",
-                "collection_count": 1,
-                "collection_sha256": "d" * 64,
-                "hook_fingerprint_sha256": "e" * 64,
+                "collection_count": r2_command["r2_baseline"]["collection_count"],
+                "collection_sha256": r2_command["r2_baseline"]["collection_sha256"],
+                "hook_fingerprint_sha256": r2_command["r2_baseline"]["hook_fingerprint_sha256"],
                 "started_count": None,
                 "failed_call_index": None,
             },
+            "resources": cost_resources,
             "campaign_deadline_sha256": deadline_sha256,
             "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
         }
@@ -390,7 +444,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
     }
     (state_dir / "PILOT-STATE").write_text(json.dumps(sentinel) + "\n", encoding="utf-8")
     summary = {
-        "schema": "assay-pilot-summary/1",
+        "schema": "assay-pilot-summary/2",
         "qualifying": False,
         "completed": True,
         "lane": "self-qualification",
@@ -404,6 +458,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         "r0": "PASS",
         "r1": "PASS",
         "r2": {"status": "FAIL", "reason_code": "MUTANTS_SURVIVED"},
+        "r2_command": r2_command,
         "r3": "not-run: pilot",
         "buckets": buckets,
         "candidates": candidate_rows,
@@ -457,6 +512,9 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
                 "execution_mode": row["execution_mode"],
                 "mutated_file_sha256": plan_by_id[row["id"]]["mutated_file_sha256"],
                 "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
+                "elapsed_seconds": 2.5,
+                "tests_completed": None,
+                **cost_resources,
             }
             for index, row in enumerate(candidate_rows)
         ],
@@ -488,11 +546,15 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         "selected_ids": selected_ids,
         "plan_rows": rows,
         "replacement_sha256_by_id": replacement_sha256_by_id,
+        "r2_baselines": r2_baselines,
         "selection_sha256": selection_sha256,
         "deadline_sha256": deadline_sha256,
         "summary": summary,
         "deadline": deadline_path.relative_to(project_assay),
         "attempt_window": artifact_dir / "b110-pilot-attempt-window.json",
+        "r2_manifest_path": r2_manifest_path,
+        "r2_command": r2_command,
+        "cost_resources": cost_resources,
     }
 
 
@@ -527,6 +589,7 @@ def _verify_fixture_with_first_hung(
         deadline_sha256=fixture["deadline_sha256"],
         expected_judge_sha256="b" * 64,
         replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+        r2_baselines=fixture["r2_baselines"],
     )
 
 
@@ -579,6 +642,7 @@ def test_pilot_state_requires_collection_evidence_for_a_full_kill(tmp_path: Path
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -609,7 +673,7 @@ def test_pilot_state_rejects_r2_collection_evidence_for_a_full_kill(tmp_path: Pa
     assert record["evidence"]["command"] == "r2"
     state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="collection evidence command does not match execution mode"):
+    with pytest.raises(ValueError, match="full kill .* requires declared-command evidence"):
         checker._verify_state(
             fixture["state_dir"],
             selected_ids=fixture["selected_ids"],
@@ -619,6 +683,59 @@ def test_pilot_state_rejects_r2_collection_evidence_for_a_full_kill(tmp_path: Pa
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
+        )
+
+
+def test_pilot_state_rejects_a_full_kill_witness_absent_from_the_r2_manifest(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    checker = _load_module("b110_pilot_report_check_uncollected_witness_test", CHECKER_PATH)
+    identity = fixture["selected_ids"][0]
+    dispositions = {
+        row["id"]: dict(row) for row in fixture["summary"]["candidates"]
+    }
+    dispositions[identity].update({"bucket": "killed", "execution_mode": "full"})
+    state_path = fixture["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["outcome_bucket"] = "killed"
+    record["terminal_result"] = {
+        "outcome": "FAIL",
+        "reason_code": "COMMAND_FAILED",
+        "returncode": 1,
+    }
+    record["execution"] = {
+        "mode": "full",
+        "witness": {
+            "node_id": "invented::test_not_collected",
+            "when": "call",
+            "outcome": "failed",
+            "session_exit_status": 1,
+            "process_exit_status": 1,
+        },
+    }
+    record["evidence"].update({
+        "command": "declared",
+        "collection_count": fixture["r2_baselines"]["coverage_baseline"]["collection_count"],
+        "collection_sha256": fixture["r2_baselines"]["coverage_baseline"]["collection_sha256"],
+        "hook_fingerprint_sha256": fixture["r2_baselines"]["coverage_baseline"]["hook_fingerprint_sha256"],
+        "started_count": None,
+        "failed_call_index": None,
+    })
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="witness node is not in the R2 manifest"):
+        checker._verify_state(
+            fixture["state_dir"],
+            selected_ids=fixture["selected_ids"],
+            rows=fixture["plan_rows"],
+            dispositions=dispositions,
+            selection_sha256=fixture["selection_sha256"],
+            deadline_sha256=fixture["deadline_sha256"],
+            expected_judge_sha256="b" * 64,
+            replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -672,6 +789,7 @@ def test_pilot_state_rejects_non_kill_execution_witness(
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -713,7 +831,7 @@ def test_pilot_state_rejects_witness_cold_kill_without_failed_prefix(
     })
     state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="cold-witness kill lacks R2 failed-prefix evidence"):
+    with pytest.raises(ValueError, match="cold-witness kill .* not the manifest node"):
         checker._verify_state(
             fixture["state_dir"],
             selected_ids=fixture["selected_ids"],
@@ -723,6 +841,7 @@ def test_pilot_state_rejects_witness_cold_kill_without_failed_prefix(
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -750,7 +869,7 @@ def test_pilot_state_accepts_witness_cold_kill_with_failed_prefix(
     record["execution"] = {
         "mode": "witness-cold",
         "witness": {
-            "node_id": "test_contract",
+            "node_id": fixture["r2_baselines"]["nodes"][0],
             "when": "call",
             "outcome": "failed",
             "session_exit_status": 1,
@@ -773,6 +892,7 @@ def test_pilot_state_accepts_witness_cold_kill_with_failed_prefix(
         deadline_sha256=fixture["deadline_sha256"],
         expected_judge_sha256="b" * 64,
         replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+        r2_baselines=fixture["r2_baselines"],
     )
     assert records[identity]["execution"]["mode"] == "witness-cold"
 
@@ -790,6 +910,9 @@ def test_hung_progress_must_carry_the_validated_liveness_trace(tmp_path: Path):
         "execution_mode": record["execution"]["mode"],
         "mutated_file_sha256": record["mutated_file_sha256"],
         "resource_limit_evidence": record["resource_limit_evidence"],
+        "elapsed_seconds": 2.5,
+        "tests_completed": None,
+        **record["resources"],
     }
     progress_facts = {
         "resumed_ids": set(),
@@ -1056,6 +1179,31 @@ def _load_host_checker():
     return _load_module("b110_pilot_host_check_tests", HOST_CHECK_PATH)
 
 
+def test_b110_snapshot_inventory_v2_adds_the_r2_manifest_and_keeps_v1_readable():
+    host = _load_host_checker()
+    candidate_ids = {"c" * 64}
+    commit = "a" * 40
+    assert ".assay/r2-manifest-b110-pilot.txt" in host._expected_artifacts(
+        candidate_ids, commit
+    )
+    assert ".assay/r2-manifest-b110-pilot.txt" not in host._expected_artifacts(
+        candidate_ids, commit, inventory_version=1
+    )
+    for version in (1, 2):
+        receipt = {
+            "schema": f"assay-b110-pilot-evidence-receipt/{version}",
+            "campaign": f"b110-pilot-{commit[:12]}",
+            "commit": commit,
+            "tree": "b" * 40,
+            "manifest_sha256": "d" * 64,
+            "snapshot_sha256": "e" * 64,
+        }
+        parsed = host._parse_snapshot_receipt(
+            (json.dumps(receipt, sort_keys=True) + "\n").encode()
+        )
+        assert host._receipt_inventory_version(parsed) == version
+
+
 def _write_resumed_progress(
     fixture: dict[str, object], *, corrupt_end_buckets: bool = False, omit_prior_candidate: bool = False
 ) -> None:
@@ -1105,6 +1253,9 @@ def _write_resumed_progress(
                 "execution_mode": record["execution"]["mode"],
                 "mutated_file_sha256": record["mutated_file_sha256"],
                 "resource_limit_evidence": record["resource_limit_evidence"],
+                "elapsed_seconds": 2.5,
+                "tests_completed": None,
+                **record["resources"],
             }
         )
     events.extend(
@@ -1144,6 +1295,9 @@ def _write_resumed_progress(
             "execution_mode": dispositions[identity]["execution_mode"],
             "mutated_file_sha256": rows_by_id[identity]["mutated_file_sha256"],
             "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
+            "elapsed_seconds": 2.5,
+            "tests_completed": None,
+            **fixture["cost_resources"],
         }
         for index, identity in enumerate(pending_ids)
     )

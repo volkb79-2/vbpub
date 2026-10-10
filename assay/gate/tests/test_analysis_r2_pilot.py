@@ -17,6 +17,7 @@ import pytest
 
 from assay.candidate_identity import candidate_id_from_fields
 from assay.mutation import MUTATION_BUCKETS, MUTATION_STATE_SCHEMA_VERSION
+from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT
 
 
@@ -53,8 +54,12 @@ def _repository(tmp_path: Path) -> tuple[Path, str, str]:
     assay_dir = root / "assay"
     assay_dir.mkdir()
     shutil.copyfile(PROJECT_ROOT / "assay.toml", assay_dir / "assay.toml")
+    shutil.copyfile(PROJECT_ROOT / "pyproject.toml", assay_dir / "pyproject.toml")
     shutil.copytree(PROJECT_ROOT / "src" / "assay", assay_dir / "src" / "assay")
     (assay_dir / "analysis" / "tests").mkdir(parents=True)
+    (assay_dir / "analysis" / "tests" / "test_contract.py").write_text(
+        "def test_contract():\n    assert True\n", encoding="utf-8"
+    )
     for relative in selector.TARGETS:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +169,34 @@ def _producer_progress_bytes(events: list[dict]) -> bytes:
     ).encode()
 
 
+def _r2_command(root: Path, commit: str, *, lane_name: str, nodes: list[str]) -> dict:
+    import tomllib
+
+    assay_dir = root / "assay"
+    config = tomllib.loads((assay_dir / "assay.toml").read_text(encoding="utf-8"))
+    declared = config["lanes"][lane_name]["argv"]
+    baseline = {
+        "collection_count": len(nodes),
+        "collection_sha256": collection_digest(nodes),
+        "duplicates": 0,
+        "hook_fingerprint_sha256": "c" * 64,
+        "hook_count": 1,
+        "runtime_fingerprint_sha256": "d" * 64,
+    }
+    return {
+        "transform": R2_TRANSFORM_ID,
+        "argv_declared": declared,
+        "argv_transformed": list(transform_argv(declared)),
+        "appended": list(R2_APPENDED),
+        "cwd": "assay",
+        "config_sha256": hashlib.sha256(
+            (assay_dir / "pyproject.toml").read_bytes()
+        ).hexdigest(),
+        "coverage_baseline": baseline,
+        "r2_baseline": {**baseline, "wall_s": 1.25},
+    }
+
+
 def _valid_pilot(tmp_path: Path) -> dict:
     root, commit, tree = _repository(tmp_path)
     rows = _planned_rows(root, commit)
@@ -174,6 +207,12 @@ def _valid_pilot(tmp_path: Path) -> dict:
     assert len(selection["selected_ids"]) == 1
     identity = selection["selected_ids"][0]
     row = next(row for row in rows if row["id"] == identity)
+    manifest_nodes = ["analysis/tests/test_contract.py::test_contract"]
+    r2_manifest_path = tmp_path / "r2-manifest-analysis-r2-pilot.txt"
+    r2_manifest_path.write_bytes(("\n".join(manifest_nodes) + "\n").encode())
+    r2_command = _r2_command(
+        root, commit, lane_name=selector.LANE, nodes=manifest_nodes
+    )
     wheel_sha256 = "a" * 64
     created = datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -202,6 +241,17 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "lane": selector.LANE,
     }), encoding="utf-8")
     resources = _zero_resources()
+    cost_resources = {
+        "cpu_seconds": None,
+        "peak_rss_bytes": None,
+        "phase_seconds": {
+            "materialize": 0.1,
+            "command": 0.2,
+            "integrity": 0.1,
+            "teardown": 0.1,
+        },
+        "startup_seconds": None,
+    }
     record = {
         "candidate_id": identity,
         "path": row["path"],
@@ -220,7 +270,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "execution": {
             "mode": "full",
             "witness": {
-                "node_id": "test_contract",
+                "node_id": manifest_nodes[0],
                 "when": "call",
                 "outcome": "failed",
                 "session_exit_status": 1,
@@ -229,12 +279,13 @@ def _valid_pilot(tmp_path: Path) -> dict:
         },
         "evidence": {
             "command": "declared",
-            "collection_count": 1,
-            "collection_sha256": "c" * 64,
-            "hook_fingerprint_sha256": "d" * 64,
+            "collection_count": r2_command["coverage_baseline"]["collection_count"],
+            "collection_sha256": r2_command["coverage_baseline"]["collection_sha256"],
+            "hook_fingerprint_sha256": r2_command["coverage_baseline"]["hook_fingerprint_sha256"],
             "started_count": None,
             "failed_call_index": None,
         },
+        "resources": cost_resources,
         "terminal_result": {
             "outcome": "FAIL",
             "reason_code": "COMMAND_FAILED",
@@ -247,7 +298,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
     buckets = {name: 0 for name in MUTATION_BUCKETS}
     buckets["killed"] = 1
     summary = {
-        "schema": "assay-pilot-summary/1",
+        "schema": "assay-pilot-summary/2",
         "qualifying": False,
         "completed": True,
         "lane": selector.LANE,
@@ -261,6 +312,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "r0": "PASS",
         "r1": "PASS",
         "r2": {"status": "PASS", "reason_code": None},
+        "r2_command": r2_command,
         "r3": "not-run: pilot",
         "unresolved": [],
         "buckets": buckets,
@@ -310,6 +362,9 @@ def _valid_pilot(tmp_path: Path) -> dict:
             "mutated_file_sha256": row["mutated_file_sha256"],
             "outcome_bucket": "killed",
             "execution_mode": "full",
+            "elapsed_seconds": 2.5,
+            "tests_completed": None,
+            **cost_resources,
             "resource_limit_evidence": resources,
         },
         {
@@ -344,6 +399,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "expected_wheel_sha256": wheel_sha256,
         "expected_exit_code": 6,
         "repo_root": root,
+        "r2_manifest_path": r2_manifest_path,
     }
 
 
@@ -580,6 +636,79 @@ def test_analysis_pilot_accepts_consistent_complete_evidence(tmp_path: Path):
     checker.verify_pilot(**_valid_pilot(tmp_path))
 
 
+def test_analysis_pilot_ignores_unrelated_prior_progress_segments(tmp_path: Path):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    stale_segment = [
+        {
+            "event": "run",
+            "lane": "self-qualification",
+            "commit": "0" * 40,
+            "rigor": ["R0", "R1", "R2"],
+        },
+        {"event": "legacy-progress-marker"},
+    ]
+    evidence["progress_raw"] = _producer_progress_bytes(stale_segment + events)
+
+    checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_a_kill_witness_absent_from_the_r2_manifest(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    summary = json.loads(evidence["summary_raw"])
+    identity = summary["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["execution"]["witness"]["node_id"] = "invented::test_not_collected"
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="witness node is not in the R2 manifest"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_candidate_evidence_from_another_collection(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    summary = json.loads(evidence["summary_raw"])
+    identity = summary["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["evidence"]["collection_sha256"] = "e" * 64
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="collection_sha256 differs from coverage_baseline"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_requires_cost_measurements_and_binds_them_to_state(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    candidate = next(event for event in events if event["event"] == "candidate")
+    del candidate["elapsed_seconds"]
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match="elapsed_seconds is invalid"):
+        checker.verify_pilot(**evidence)
+
+    second_tmp = tmp_path / "second"
+    second_tmp.mkdir()
+    evidence = _valid_pilot(second_tmp)
+    summary = json.loads(evidence["summary_raw"])
+    identity = summary["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["resources"]["phase_seconds"]["command"] += 0.5
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cost measurements differ from state"):
+        checker.verify_pilot(**evidence)
+
+
 def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
     evidence = _valid_pilot(tmp_path)
     inputs = {
@@ -588,6 +717,7 @@ def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
         "--candidates": ("candidates.txt", evidence["candidates_raw"]),
         "--summary": ("summary.json", evidence["summary_raw"]),
         "--progress": ("progress.jsonl", evidence["progress_raw"]),
+        "--r2-manifest": ("r2-manifest.txt", evidence["r2_manifest_path"].read_bytes()),
         "--deadline": ("deadline.json", evidence["deadline_raw"]),
     }
     argv: list[str] = []
@@ -815,8 +945,8 @@ def test_analysis_pilot_rejects_witness_prefix_reuse_for_selected_candidates(
     state_record["execution"].update({
         "mode": "witness-prefix",
         "prior_verdict_sha256": "f" * 64,
-        "prior_node_id": "test_contract",
-        "current_node_id": "test_contract",
+        "prior_node_id": "analysis/tests/test_contract.py::test_contract",
+        "current_node_id": "analysis/tests/test_contract.py::test_contract",
     })
     state_record["evidence"].update({
         "command": "r2",
@@ -870,7 +1000,7 @@ def test_analysis_pilot_killed_full_candidate_requires_declared_command_evidence
     state_record["evidence"]["command"] = "r2"
     state_path.write_text(json.dumps(state_record), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="lacks declared-command evidence"):
+    with pytest.raises(ValueError, match="requires declared-command evidence"):
         checker.verify_pilot(**evidence)
 
 

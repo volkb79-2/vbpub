@@ -39,6 +39,11 @@ completed; it is not a full R2 qualification or a release gate. A full analysis
 R2 claim awaits a separate decision based on measured pilot results. See the
 [B131 design](docs/DESIGN-GUIDE.md#analysis-package-r2-pilot-b131) and
 [pilot procedure](docs/CONSUMERS.md#run-the-analysis-package-r2-pilot-b131).
+The gate verifies pilot-summary schema `/2`, binds its recorded R2 command and
+both collection baselines to the judged source, and retains the ordered R2
+test manifest. Candidate collection evidence and each kill witness must match
+that manifest; the checker also binds per-candidate resource measurements in
+progress to the resumable state record.
 A source checkout needs both `src` and `analysis/src` on the path for `analyze`;
 an installed wheel or zipapp needs nothing extra:
 
@@ -819,8 +824,10 @@ to execute a bounded selection from a native R2 plan; `--pilot-jobs` can set
 1–8 workers for that run. A pilot skips R3, writes no verdict, and returns exit
 code 6 only when every selected candidate has a completed disposition. Exit 6
 means “pilot measurement completed,” never “the lane passed”; use the JSON
-summary and its mutation buckets to read the result. Pilot state is tied to one
-selection and lane and must stay separate from qualifying campaign state. See
+summary and its mutation buckets to read the result. Pilot summaries use schema
+`assay-pilot-summary/2` and include the recorded R2 command when a cold-witness
+baseline ran. Pilot state is tied to one selection and lane and must stay
+separate from qualifying campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
 
@@ -829,7 +836,12 @@ The registered B110 pilot retains a host-verified evidence snapshot at
 `.assay/b110-pilot-evidence.receipt.json`. After validating a successful
 run-gate transcript, the host also retains
 `.assay/b110-pilot-evidence.attestation.json`, binding the snapshot digest to
-that transcript. The launcher pins the admitted `.assay` directory through an
+that transcript. Its snapshot includes
+`.assay/r2-manifest-b110-pilot.txt`; the `/2` summary records the declared and
+transformed R2 command and its coverage/R2 baselines. The independent report
+checker requires each candidate's collection evidence and kill witness to
+agree with those facts and checks resource measurements against progress.
+The launcher pins the admitted `.assay` directory through an
 open directory descriptor while Assay creates campaign, candidate, mutation
 state, deadline and progress files beneath it. The next attempt checks and
 archives this snapshot before source-cleanliness and later host-admission

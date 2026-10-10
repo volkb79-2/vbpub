@@ -841,6 +841,7 @@ def test_b110_pilot_and_screen_are_registered_bare_host_lanes_with_exact_bounds(
                 ".assay/b110-pilot-selection.json",
                 ".assay/b110-pilot-summary.json",
                 ".assay/b110-pilot-run.log",
+                ".assay/r2-manifest-b110-pilot.txt",
                 ".assay/b110-pilot-attempt-window.json",
                 ".assay/b110-pilot-attempt.log",
                 ".assay/b110-pilot-artifacts.sha256",
@@ -913,6 +914,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
         ".assay/analysis-r2-pilot-selection.json",
         ".assay/analysis-r2-pilot-summary.json",
         ".assay/analysis-r2-pilot-run.log",
+        ".assay/r2-manifest-analysis-r2-pilot.txt",
         ".assay/progress-analysis-r2-pilot.jsonl",
         ".assay/analysis-r2-pilot-state",
     ]
@@ -1164,6 +1166,7 @@ def test_b110_pilot_early_refusal_clears_attempt_outputs_but_keeps_resume_progre
         "b110-pilot-selection.json",
         "b110-pilot-summary.json",
         "b110-pilot-run.log",
+        "r2-manifest-b110-pilot.txt",
     )
     for name in stale_outputs:
         (cwd / ".assay" / name).write_text("stale", encoding="utf-8")

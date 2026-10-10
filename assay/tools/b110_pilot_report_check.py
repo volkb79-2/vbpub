@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import b110_pilot_select as selector
+import pilot_r2_evidence
 from assay.cli import _plan_rows_from_jobs, _resolve_declared_adapters
 from assay.config import load_lane_file
 from assay.mutation import (
@@ -421,18 +422,20 @@ def _verify_summary(
     candidates_sha256: str,
     selection_sha256: str,
     expected_state_dir: Path,
-) -> tuple[dict[str, dict[str, Any]], str]:
+    repo_root: Path,
+    r2_manifest_path: Path,
+) -> tuple[dict[str, dict[str, Any]], str, dict[str, Any]]:
     if not isinstance(summary, dict):
         raise ValueError("pilot summary is not an object")
     expected_fields = {
         "schema", "qualifying", "completed", "lane", "commit", "jobs",
         "requested", "selection_sha256", "judge_sha256", "candidates_file_sha256", "state_dir",
-        "r0", "r1", "r2", "r3", "buckets", "candidates", "unresolved",
+        "r0", "r1", "r2", "r2_command", "r3", "buckets", "candidates", "unresolved",
     }
     if set(summary) != expected_fields:
         raise ValueError("complete pilot summary has missing or unknown fields")
     if (
-        summary.get("schema") != "assay-pilot-summary/1"
+        summary.get("schema") != "assay-pilot-summary/2"
         or summary.get("qualifying") is not False
         or summary.get("completed") is not True
         or summary.get("lane") != "self-qualification"
@@ -457,6 +460,13 @@ def _verify_summary(
         or r2.get("reason_code") == "LANE_TIMEOUT"
     ):
         raise ValueError("pilot summary does not contain a completed R2 result")
+    r2_baselines = pilot_r2_evidence.validate_r2_command(
+        summary.get("r2_command"),
+        repo_root=repo_root,
+        expected_commit=expected_commit,
+        expected_lane="self-qualification",
+        manifest_path=r2_manifest_path,
+    )
     if type(summary.get("jobs")) is not int or summary["jobs"] != 3:
         raise ValueError("pilot summary job count does not match the registered three-job pilot")
     summary_judge_sha256 = _require_sha(
@@ -510,7 +520,7 @@ def _verify_summary(
         expected_r2 = {"status": "PASS", "reason_code": None}
     if r2 != expected_r2:
         raise ValueError("pilot R2 result differs from the validated candidate outcomes")
-    return by_id, summary_judge_sha256
+    return by_id, summary_judge_sha256, r2_baselines
 
 
 def _verify_state(
@@ -523,6 +533,7 @@ def _verify_state(
     deadline_sha256: str,
     expected_judge_sha256: str,
     replacement_sha256_by_id: dict[str, str],
+    r2_baselines: dict[str, Any],
 ) -> tuple[list[str], dict[str, str], dict[str, dict[str, Any]]]:
     _require_directory(state_dir)
     expected_names = {"PILOT-STATE", *(f"{identity}.json" for identity in selected_ids)}
@@ -636,35 +647,34 @@ def _verify_state(
                 MutantEvidence(**raw_evidence)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"mutation state record {identity} has invalid execution evidence: {exc}") from exc
+            pilot_r2_evidence.validate_candidate_evidence(
+                raw_evidence,
+                baselines=r2_baselines,
+                candidate_id=identity,
+            )
         if (
             outcome["bucket"] in {"killed", "survived"}
             or execution.mode == "witness-cold"
         ) and raw_evidence is None:
             raise ValueError(f"mutation state record {identity} is missing required collection evidence")
-        if outcome["bucket"] == "killed" and raw_evidence is not None:
-            if execution.mode == "full" and raw_evidence["command"] != "declared":
-                raise ValueError(
-                    f"mutation state record {identity} collection evidence command "
-                    "does not match execution mode 'full'"
-                )
-            if execution.mode == "witness-cold" and (
-                raw_evidence["command"] != "r2"
-                or raw_evidence["started_count"] is None
-            ):
-                raise ValueError(
-                    f"mutation state record {identity} cold-witness kill lacks "
-                    "R2 failed-prefix evidence"
-                )
-            if execution.mode not in {"full", "witness-cold"}:
-                raise ValueError(
-                    f"mutation state record {identity} pilot kill has unsupported "
-                    f"execution mode {execution.mode!r}"
-                )
-        elif execution.mode != "full" or execution.witness is not None:
+        if outcome["bucket"] != "killed" and (
+            execution.mode != "full" or execution.witness is not None
+        ):
             raise ValueError(
                 f"mutation state record {identity} non-kill must use full execution "
                 "without a witness"
             )
+        if outcome["bucket"] == "killed":
+            pilot_r2_evidence.validate_kill_witness(
+                record.get("execution"),
+                raw_evidence,
+                nodes=r2_baselines["nodes"],
+                candidate_id=identity,
+            )
+        pilot_r2_evidence.validate_state_measurements(
+            record,
+            candidate_id=identity,
+        )
         records[identity] = record
     if len(judge_digests) != 1:
         raise ValueError("selected mutation state records do not share one judge identity")
@@ -1014,6 +1024,21 @@ def _verify_resumed_progress(
             raise ValueError(f"candidate {identity} has invalid resource evidence: {exc}") from exc
         if progress_resources.to_dict() != state_resources.to_dict():
             raise ValueError(f"candidate {identity} resource evidence differs from its state record")
+        progress_measurements = pilot_r2_evidence.validate_progress_measurements(
+            event,
+            candidate_id=identity,
+        )
+        state_measurements = pilot_r2_evidence.validate_state_measurements(
+            record,
+            candidate_id=identity,
+        )
+        if any(
+            progress_measurements[field] != state_measurements[field]
+            for field in (
+                "cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds"
+            )
+        ):
+            raise ValueError(f"candidate {identity} cost measurements differ from its state record")
         if record.get("outcome_bucket") == "hung":
             progress_trace = event.get("liveness_resource_evidence")
             if (
@@ -1147,6 +1172,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
                 return path.relative_to(project_root).as_posix()
 
         attempt_window_path = artifact_dir / "b110-pilot-attempt-window.json"
+        r2_manifest_path = artifact_dir / "r2-manifest-b110-pilot.txt"
         plan_path = artifact_dir / "b110-pilot-plan.json"
         candidates_path = artifact_dir / "b110-pilot-candidates.txt"
         selection_path = artifact_dir / "b110-pilot-selection.json"
@@ -1171,7 +1197,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
         selection_sha256 = selector._plan_sha256(selected_ids)
 
         summary_doc, summary_raw = _read_json(summary_path, limit=_LIMITS["summary"])
-        dispositions, expected_judge_sha256 = _verify_summary(
+        dispositions, expected_judge_sha256, r2_baselines = _verify_summary(
             summary_doc,
             expected_commit=args.expected_commit,
             selected_ids=selected_ids,
@@ -1179,6 +1205,8 @@ def verify_pilot(args: argparse.Namespace) -> str:
             candidates_sha256=candidates_sha256,
             selection_sha256=selection_sha256,
             expected_state_dir=expected_state_dir,
+            repo_root=repo_root,
+            r2_manifest_path=r2_manifest_path,
         )
 
         deadline_doc, deadline_raw = _read_json(deadline_path, limit=_LIMITS["deadline"])
@@ -1221,6 +1249,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
             deadline_sha256=deadline_sha256,
             expected_judge_sha256=expected_judge_sha256,
             replacement_sha256_by_id=replacement_sha256_by_id,
+            r2_baselines=r2_baselines,
         )
         _verify_resumed_progress(
             progress_facts,
@@ -1235,6 +1264,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
             "summary": logical_path(summary_path),
             "run_log": logical_path(run_log_path),
             "attempt_window": logical_path(attempt_window_path),
+            "r2_manifest": logical_path(r2_manifest_path),
             "progress": logical_path(progress_path),
             "deadline": logical_path(deadline_path),
         }
@@ -1245,6 +1275,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
             logical["summary"]: summary_path,
             logical["run_log"]: run_log_path,
             logical["attempt_window"]: attempt_window_path,
+            logical["r2_manifest"]: r2_manifest_path,
             logical["progress"]: progress_path,
             logical["deadline"]: deadline_path,
             **{
@@ -1262,6 +1293,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
             logical["summary"]: hashlib.sha256(summary_raw).hexdigest(),
             logical["run_log"]: hashlib.sha256(run_log_raw).hexdigest(),
             logical["attempt_window"]: hashlib.sha256(attempt_window_raw).hexdigest(),
+            logical["r2_manifest"]: r2_baselines["manifest_sha256"],
             logical["progress"]: progress_facts["sha256"],
             logical["deadline"]: deadline_sha256,
             **{

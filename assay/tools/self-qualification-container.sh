@@ -223,6 +223,7 @@ if [[ "$lane" == b110-screen || "$lane" == b110-pilot || "$lane" == analysis-r2-
       "$assay_state_dir/analysis-r2-pilot-selection.json" \
       "$assay_state_dir/analysis-r2-pilot-summary.json" \
       "$assay_state_dir/analysis-r2-pilot-run.log" \
+      "$assay_state_dir/r2-manifest-analysis-r2-pilot.txt" \
       || die 'cannot remove prior B131 pilot outputs before launcher admission'
   fi
 fi

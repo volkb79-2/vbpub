@@ -81,6 +81,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   exclusive registered-gate window.
 
 ### Fixed
+- Bind B110 and B131 pilot collection evidence to the committed R2 command,
+  coverage/R2 baselines and retained ordered test manifest. A killed candidate
+  must name a collected failed-call node; elapsed and phase measurements are
+  required in progress, and resource measurements must agree with resumable
+  state. Pilot summaries now use schema `/2` to carry the source-checkable
+  command facts.
 - Leave a candidate unclassified and out of resume state when lane or campaign
   termination interrupts its post-command snapshot integrity check (B117).
 - Require the B105 and B110 report checkers to validate one bounded parsed
