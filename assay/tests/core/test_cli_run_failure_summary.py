@@ -96,6 +96,7 @@ def test_lanes_warns_on_pytest_fail_fast_with_coverage_without_polluting_json(
 
 def test_a_failing_suite_that_dirties_the_tree_still_reports_r0_fail(
     git_repo: GitRepo,
+    tmp_path,
 ):
     path = _lane(
         git_repo,
@@ -103,11 +104,22 @@ def test_a_failing_suite_that_dirties_the_tree_still_reports_r0_fail(
         "echo dirt > made.txt; exit 1",
     )
 
-    code, out, _ = _run(["run", "package", "--file", str(path)])
+    verdict_path = tmp_path / "verdict.json"
+    code, out, _ = _run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(verdict_path)]
+    )
 
     assert code == 3
     assert "package: NO_MEASUREMENT/DIRTY_TREE (exit 3)" in out
     assert f"  R0: FAIL (first failing test: {FIRST})" in out
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r0 = next(claim for claim in document["claims"] if claim["rigor"] == "R0")
+    assert r0["status"] == "NO_MEASUREMENT"
+    assert r0["detail"].startswith(
+        f"R0 command failed; first failing test: {FIRST}; run refusal:"
+    )
+    assert "made.txt" in r0["detail"]
+    assert verify_document(document) == []
 
 
 def test_a_no_measurement_without_a_failing_test_is_not_recast(git_repo: GitRepo):

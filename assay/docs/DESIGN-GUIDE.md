@@ -955,13 +955,15 @@ one would re-open the vocabulary A-138/A-170 shut.
 **A-489 (B146) extends the existing unstructured `claim.detail` field.** When
 the R0 command fails and the retained output tail names a recognized test,
 Assay stores `R0 command failed; first failing test: NAME` on the R0 claim.
-The concise CLI summary reports the same first failure. The headline and
-closed `(status, reason_code)` pair remain unchanged: for example, a dirty
-tree can still make the verdict `NO_MEASUREMENT/DIRTY_TREE` while the R0
-diagnostic records that its command failed. No reason code, field or schema
-shape is added. `detail` remains declared-not-verified; consumers must not
-parse it or use it as policy, and `assay verify` checks only its existing
-non-PASS and byte-bound rules.
+The concise CLI summary reports the same first failure. If a post-run
+refusal replaces that claim (for example, the failing command also dirties
+the tree), `detail` retains both the failure diagnostic and refusal text in
+one bounded string; the stderr refusal line is unchanged. The headline and
+closed `(status, reason_code)` pair remain unchanged, so the verdict can still
+be `NO_MEASUREMENT/DIRTY_TREE`. No reason code, field or schema shape is
+added. `detail` remains declared-not-verified; consumers must not parse it or
+use it as policy, and `assay verify` checks only its existing non-PASS and
+byte-bound rules.
 
 Lane validation also warns on stderr when a declared coverage lane invokes
 pytest directly or through `python -m pytest` with `--maxfail`, `--exitfirst`,
@@ -3552,8 +3554,10 @@ buy nothing further, because none of the seven operators needs to know what
 
 **Operator names describe the effect on the predicate.**
 `sql:widen-check-in` appends a member to `IN (...)` only for homogeneous
-string literals on a declared built-in character column or unsigned integer
-literals on a declared bounded integer column. The integer is chosen inside
+string literals on declared `text`, `varchar`, or `name` columns without an
+explicit `COLLATE`, or unsigned integer literals on a declared bounded integer
+column. Fixed-length `CHAR` types are excluded because PostgreSQL ignores
+trailing-space differences in their comparisons. The integer is chosen inside
 the column's range and outside the current list. For integer-literal
 `NOT IN (...)` on a declared bounded integer column, the adapter removes one
 uniquely listed excluded member, which widens the accepted set. String

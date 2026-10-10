@@ -1604,7 +1604,7 @@ def build_r0_claim(result: CommandResult) -> Claim:
         else None
     )
     detail = (
-        f"R0 command failed; first failing test: {failing_test}"
+        refusal_detail(f"R0 command failed; first failing test: {failing_test}")
         if failing_test is not None
         else None
     )
@@ -1614,8 +1614,8 @@ def build_r0_claim(result: CommandResult) -> Claim:
         status=result.outcome,
         verified_by_assay=True,
         reason_code=result.reason_code,
-        detail=detail,
-        detail_dropped_bytes=0 if detail is not None else None,
+        detail=detail.text if detail is not None else None,
+        detail_dropped_bytes=detail.dropped_bytes if detail is not None else None,
     )
 
 
@@ -7306,6 +7306,15 @@ def _finish_direct_r0_lane(
             ),
             diagnostics=diagnostics,
         )
+        # Keep the measured R0 failure in its claim even though this later
+        # post-run guard replaces the claim status with NO_MEASUREMENT. In
+        # this one case both diagnostics share the existing unstructured
+        # bounded detail field; the stderr refusal line remains unchanged.
+        if r0_claim.detail is not None:
+            combined = r0_claim.detail
+            if direct_post_detail is not None:
+                combined = f"{combined}; run refusal: {direct_post_detail.text}"
+            direct_post_detail = refusal_detail(combined)
         return assemble_verdict(
             lane=lane,
             commit=commit,

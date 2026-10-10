@@ -363,6 +363,30 @@ _ALTER_COLUMN_TYPE_RE = re.compile(
     rb"(?P<type>" + _SQL_IDENTIFIER + rb")(?![A-Za-z0-9_$])",
     re.IGNORECASE,
 )
+_ALTER_COLUMN_DROP_RE = re.compile(
+    rb"\bDROP\s+(?:(?:COLUMN\s+)(?:IF\s+EXISTS\s+)?|"
+    rb"(?:IF\s+EXISTS\s+)?(?!CONSTRAINT\b))(?P<column>"
+    + _SQL_IDENTIFIER
+    + rb")(?=\s|,|;|$)",
+    re.IGNORECASE,
+)
+_ALTER_COLUMN_ADD_RE = re.compile(
+    rb"\bADD\s+(?:(?:COLUMN\s+)(?:IF\s+NOT\s+EXISTS\s+)?|"
+    rb"(?:IF\s+NOT\s+EXISTS\s+)?"
+    rb"(?!(?:CONSTRAINT|CHECK|FOREIGN|PRIMARY|UNIQUE|EXCLUDE)\b))"
+    rb"(?P<column>"
+    + _SQL_IDENTIFIER
+    + rb")(?=\s)",
+    re.IGNORECASE,
+)
+_ALTER_COLUMN_RENAME_RE = re.compile(
+    rb"\bRENAME\s+(?:COLUMN\s+)?(?P<old>"
+    + _SQL_IDENTIFIER
+    + rb")\s+\bTO\b\s+(?P<new>"
+    + _SQL_IDENTIFIER
+    + rb")(?=\s|,|;|$)",
+    re.IGNORECASE,
+)
 _ENUM_TYPE_RE = re.compile(
     rb"\bCREATE\s+TYPE\s+(?:(?P<schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
     rb"(?P<type>" + _SQL_IDENTIFIER + rb")\s+AS\s+ENUM\b",
@@ -390,7 +414,7 @@ _INTEGER_TYPE_BOUNDS = {
     b"bigserial": (-(2**63), 2**63 - 1),
 }
 _SAFE_STRING_COLUMN_TYPES = frozenset(
-    {b"text", b"varchar", b"character", b"char", b"bpchar", b"name"}
+    {b"text", b"varchar", b"name"}
 )
 _CREATE_UNIQUE_INDEX_RE = re.compile(rb"\bCREATE\s+UNIQUE\s+INDEX\b", re.IGNORECASE)
 _UNIQUE_RE = re.compile(rb"\bUNIQUE\b", re.IGNORECASE)
@@ -675,6 +699,12 @@ def _type_name_from_match(match: re.Match[bytes]) -> bytes:
 
 
 def _collect_altered_columns(masked: bytes) -> frozenset[tuple[tuple[bytes | None, bytes], bytes]]:
+    """Return columns whose final type cannot be inferred from CREATE TABLE.
+
+    This scanner does not resolve ordered DDL. Type changes, column removal,
+    addition, and rename therefore invalidate the affected names, including
+    when the statement is in another source file.
+    """
     altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for alter in _ALTER_TABLE_RE.finditer(masked):
         table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
@@ -687,6 +717,27 @@ def _collect_altered_columns(masked: bytes) -> frozenset[tuple[tuple[bytes | Non
         for changed in _ALTER_COLUMN_TYPE_RE.finditer(masked, table_name.end(), statement_end):
             altered_columns.add(
                 (table_key, _normalize_sql_identifier(changed.group("column")))
+            )
+        for changed in _ALTER_COLUMN_DROP_RE.finditer(
+            masked, table_name.end(), statement_end
+        ):
+            altered_columns.add(
+                (table_key, _normalize_sql_identifier(changed.group("column")))
+            )
+        for changed in _ALTER_COLUMN_ADD_RE.finditer(
+            masked, table_name.end(), statement_end
+        ):
+            altered_columns.add(
+                (table_key, _normalize_sql_identifier(changed.group("column")))
+            )
+        for renamed in _ALTER_COLUMN_RENAME_RE.finditer(
+            masked, table_name.end(), statement_end
+        ):
+            altered_columns.add(
+                (table_key, _normalize_sql_identifier(renamed.group("old")))
+            )
+            altered_columns.add(
+                (table_key, _normalize_sql_identifier(renamed.group("new")))
             )
     return frozenset(altered_columns)
 
@@ -1192,7 +1243,10 @@ def _scan_widen_check_in(
                     # well-formed new literal (notably enum labels), while
                     # an explicit collation may equate a new spelling with
                     # an existing member. Keep the supported branch on
-                    # known built-in character types with default collation.
+                    # supported variable-length built-in character types with
+                    # default collation. Fixed-length CHAR pads trailing
+                    # spaces during equality, so a source-distinct literal
+                    # may be equivalent to an existing member.
                     continue
             if is_not_in:
                 # String equality depends on PostgreSQL's resolved column type

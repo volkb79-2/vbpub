@@ -1892,9 +1892,12 @@ in `nyxloom-trove/4-backlog.md`:
   `CHAR(n)` ignores trailing spaces. Historical comparison probes that fail at
   apply are useful only with an exact SQLSTATE pin.
 - **Operator behavior (B133).** `sql:widen-check-in` appends a member to
-  `IN ('open', 'pending')` only for homogeneous literals on declared built-in
-  character columns without an explicit `COLLATE` clause, or bounded integer
-  columns. An integer `NOT IN` list on a declared bounded integer column can remove one uniquely listed excluded
+  `IN ('open', 'pending')` only for homogeneous string literals on declared
+  `text`, `varchar`, or `name` columns without an explicit `COLLATE` clause,
+  or unsigned integers on declared bounded integer columns. Fixed-length
+  `CHAR` types have no string widening site because PostgreSQL ignores
+  trailing-space differences in their comparisons. An integer `NOT IN` list
+  on a declared bounded integer column can remove one uniquely listed excluded
   member, which widens the accepted set. It emits no site for string `NOT IN`
   lists, unknown or approximate column types, out-of-range integer members, a
   singleton, empty, duplicate-only, non-literal, or mixed lists. The
@@ -4103,8 +4106,9 @@ v10 without your product changing:**
 
 ### If you read refusals: `claim.detail` is now on the wire
 
-A non-PASS claim may carry `detail` (a refusal sentence or, for a recognized
-R0 test failure, its failure diagnostic) and
+A non-PASS claim may carry `detail` (a refusal sentence, a recognized R0 test
+failure diagnostic, or both when a post-run refusal replaces a failing R0
+claim) and
 `detail_dropped_bytes` beside it. The pair is all-or-nothing, a PASS claim
 carries neither, and the text is bounded at 2048 UTF-8 bytes with the head
 kept. **Nothing is required of you** — the field is optional and additive.
@@ -4263,7 +4267,9 @@ Where it goes:
   diagnostic; its closed outcome/reason pair and schema remain unchanged. A
   coverage lane with direct pytest invocation and `--maxfail`, `--exitfirst`,
   or `-x` also emits an advisory to stderr because fail-fast can leave the
-  artifact incomplete. The warning does not alter lane validity or JSON stdout.
+  artifact incomplete. If a post-run refusal replaces the R0 claim, `detail`
+  keeps both the failure and refusal text. The warning does not alter lane
+  validity or JSON stdout.
 - **From a library caller**, to whatever stream you pass as `diagnostics=` to
   `assay.runner.run_lane`. Nothing is written to the process's stderr behind
   your back; omit the argument and assay stays silent, exactly as before.

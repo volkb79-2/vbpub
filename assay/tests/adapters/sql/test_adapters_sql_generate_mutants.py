@@ -578,6 +578,18 @@ def test_rule3_widen_check_in_all_string_members_widen_with_an_unused_string():
     assert site.replacement == b", '__assay_widened__')"
 
 
+@pytest.mark.parametrize("column_type", ["CHAR(32)", "CHARACTER(32)", "BPCHAR"])
+def test_widen_check_in_refuses_fixed_char_comparison_collisions(column_type):
+    source = (
+        f"CREATE TABLE t (k {column_type} "
+        "CHECK (k IN ('__assay_widened__ ', 'b')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
 def test_rule3_enum_check_with_string_members_has_no_widening_site():
     source = (
         "CREATE TYPE task_state AS ENUM ('open', 'closed');\n"

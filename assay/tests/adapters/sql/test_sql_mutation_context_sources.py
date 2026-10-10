@@ -83,3 +83,28 @@ def test_sql_context_ignores_malformed_test_sources_but_keeps_ddl_candidates(
 
     assert len(jobs) == 1
     assert jobs[0].site.lineno == 1
+
+
+def test_sql_context_invalidates_type_after_cross_file_column_drop_and_readd():
+    enum_source = "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+    table_source = "CREATE TABLE public.task (status text);\n"
+    replacement_source = (
+        "ALTER TABLE public.task DROP COLUMN status;\n"
+        "ALTER TABLE public.task ADD COLUMN status public.task_status;\n"
+    )
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        (enum_source, table_source, replacement_source)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()

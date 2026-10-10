@@ -800,10 +800,11 @@ SQLSTATE is pinned exactly. A
 unique index are one semantic unit, so neither half is offered as a one-site
 mutation. String `NOT IN`
 rewrites are refused because PostgreSQL equality can collapse distinct source
-strings, such as values compared as `CHAR(n)`. String `IN` widening is also
-refused for columns with an explicit `COLLATE` clause; the adapter cannot
-prove that its generated spelling compares distinct from every existing
-member under an arbitrary explicit collation.
+strings, such as values compared as `CHAR(n)`. String `IN` widening also
+skips fixed-length `CHAR` columns because trailing-space padding can make its
+generated member equivalent to an existing value. It refuses explicit
+`COLLATE` clauses because the adapter cannot prove that its spelling compares
+distinct from every existing member under an arbitrary explicit collation.
 
 The two B015 semantic families, `python:uuid-equality-swap` and
 `python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
@@ -825,8 +826,10 @@ sql:widen-check-in
 ```
 
 `sql:widen-check-in` adds a member to `IN` only for homogeneous string
-literals on declared built-in character columns or unsigned integer literals
-on declared bounded integer columns. For an integer `NOT IN` list on a
+literals on declared `text`, `varchar`, or `name` columns without an explicit
+`COLLATE`, or unsigned integer literals on declared bounded integer columns.
+Fixed-length `CHAR` types have no string widening site because PostgreSQL
+ignores trailing-space differences for their comparisons. For an integer `NOT IN` list on a
 declared bounded integer column, it removes one uniquely listed excluded
 value so the predicate accepts a wider set. It emits no site for string
 `NOT IN` lists, unknown or approximate column types, out-of-range integer

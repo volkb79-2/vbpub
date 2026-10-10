@@ -3904,7 +3904,8 @@ class Claim:
     #: (B053/DA-D2(c), A-428, schema v10; A-489) an unstructured diagnostic:
     #: normally the refusing sentence byte-copied from the diagnostics stream,
     #: or an R0 failure summary when the command output names its first failing
-    #: test. The latter is derived from the bounded output tail.
+    #: test. If a post-run refusal replaces that R0 claim, the field combines
+    #: both diagnostics. Failure summaries come from the bounded output tail.
     #:
     #: **Per CLAIM, not per verdict**: one lane can refuse at two tiers for
     #: two different reasons, and a single verdict-level string would have to
@@ -3912,7 +3913,7 @@ class Claim:
     #: when no refusal text or recognized R0 failure diagnostic was produced.
     #:
     #: **Declared, not verified** (A-230a, ``producer_tool``'s own words):
-    #: assay copies this text and never parses it; this layer and
+    #: assay copies or combines this text and never parses it; this layer and
     #: ``assay verify`` check the PRESENCE rule and the BYTE bound and never
     #: the content. The closed ``(status, reason_code)`` pair remains the
     #: only machine-readable statement in the document (A-138/A-170), and a
@@ -4062,8 +4063,8 @@ class Claim:
         if not isinstance(self.detail, str) or not self.detail:
             raise ValueError(
                 f"claim[{self.rigor}]: detail must be a non-empty string when "
-                f"present, got {self.detail!r} -- absent says 'no refusal "
-                f"produced text', which an empty string cannot say"
+                f"present, got {self.detail!r} -- absent says 'no diagnostic "
+                f"text was produced', which an empty string cannot say"
             )
         if len(self.detail.encode("utf-8")) > CLAIM_DETAIL_BYTES:
             raise ValueError(
