@@ -278,7 +278,9 @@ with sqlfluff in a command lane if the project wants it.
   `auto` uses the socket only after a successful version probe and otherwise
   uses Docker exec. The daemon watch is one reader per session; if it is
   unavailable, the in-process assay watch uses the producer's calibrated
-  cadence and pauses its idle clock during high host memory PSI.
+  cadence and pauses its idle clock during high host memory PSI. For an
+  exec or bare-host lane without a placement request, daemon stall policy
+  is `report`; a shared container is never a kill target.
 - Declare `resources.cpus` (RG-48) on any container lane whose argv spawns
   workers by NAME (`-n auto`, `--workers auto`) — otherwise the worker
   count is decided by the CONTAINER's visible CPU count (which nothing
@@ -382,7 +384,7 @@ Filed items carry their id; unfiled ones say where they would go.
 
 | item | where | state |
 |---|---|---|
-| RG-72 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | P5 implementation and documentation in progress; close with the P5 R1/R2/R3 evidence and release |
+| RG-55/P5 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | P5 implementation and documentation in review; RG-56 atomic admission remains open |
 | `stall_timeout` for container COMMAND lanes, judged from log-stream silence | run-gate RG-40 | OPEN, E-3 candidate (23.5.0) |
 | `coverage_gate.py` line offsets under `--allow-dirty` | run-gate RG-39 | OPEN, first item of E-3 |
 | Re-attach / follow a running lane after the client dies | run-gate RG-35 → 23.4.0 | in review |

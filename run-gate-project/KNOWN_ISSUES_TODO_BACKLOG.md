@@ -5120,8 +5120,9 @@ bounded by `admission_wait`, while the gates slice lacks 10% headroom for the
 lane request; after the bound, proceed with one warning. Never turn host load,
 daemon reachability, transport failure, or profiling data into a lane verdict
 (R-36h); only the declared stall policy may take the existing stall exit path.
-Ephemeral containers use the configured `CGROUP_PARENT_DEV_GATES` parent when
-present and otherwise preserve today's behavior with an explicit disclosure.
+Ephemeral containers resolve their gates parent from the environment's
+`cgroup_slice`, then `cgroup_slice_env`, then the required
+`CGROUP_PARENT_DEV_GATES`; an absent selected source refuses before launch.
 History schema remains 2 and gains nullable `watch` and `placement` fields.
 
 The no-daemon fallback is cadence-aware: a `plan` event arms

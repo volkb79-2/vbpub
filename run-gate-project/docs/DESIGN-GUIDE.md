@@ -351,6 +351,16 @@ object whose ownership cannot be verified.
 
 ## Progress is scoped to the current Assay run
 
+The daemon's watch and Run-Gate's local silence timer cannot both be verdict
+authorities at once. The daemon can pause its liveness clock under measured
+pressure; a local timer running alongside it could call the same healthy lane
+stalled. Run-Gate uses the local timer only after the watch transport is
+unavailable, and reconciles a terminal daemon kill from the stopped session
+summary when the lane exits before its last stream event is read. A shared
+exec or bare-host cgroup without an explicit placement request cannot be a
+kill target, so its daemon policy reports and leaves the declared local
+watch in charge.
+
 Assay keeps progress in an append-only JSONL file so a later `--resume` run
 does not erase the earlier diagnostic history. Each invocation begins with a
 `run` event; that record is the attribution boundary for every later event in

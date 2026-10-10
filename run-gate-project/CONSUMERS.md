@@ -97,7 +97,11 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    The daemon watch is one stream per profiling session. Readings and the
    final verdict are recorded in the run's history/inflight record; a daemon
    `killed` verdict follows the declared stall path, while `reported` is one
-   warning and never a lane verdict. If the daemon or its watch transport is
+   warning and never a lane verdict. A terminal kill remains available from
+   the stopped session summary if its stream event arrives too late. An exec
+   or bare-host lane without a placement request asks the daemon to report
+   stalls and keeps its declared local watch as the verdict authority; it
+   cannot authorize a shared-cgroup kill. If the daemon or its watch transport is
    unavailable, run-gate uses its in-process assay progress watch. That
    fallback uses the assay plan's calibrated cadence (`max(300s, 3x the
    advertised next-event bound)`) and pauses its idle clock while host memory

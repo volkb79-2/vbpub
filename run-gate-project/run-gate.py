@@ -14,7 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 61  # rev 61: restore P5 v1.1 profiler transport and liveness
+__revision__ = 62  # rev 62: reconcile daemon watch authority and safe stall policy
+# Rev 62 keeps local silence from racing a healthy daemon watch, uses a
+# terminal kill in the stopped session summary, and refuses shared-scope
+# daemon kill policy without an explicit placement request.
 # Rev 61 restores the reviewed P5 v1.1 profiler transport/watch, placement,
 # gates-slice admission and calibrated fallback atop the current rev-60 tree.
 # rev 60: suppress ETA without current-run pending_total
@@ -3033,7 +3036,8 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
     return container_id, None
 
 
-def profile_start_policy(lane: dict, project_dir: Path) -> dict:
+def profile_start_policy(lane: dict, project_dir: Path, scope: str,
+                         placement_requested: bool) -> dict:
     """Build the v1.1 stall policy from the lane's authoritative facts.
 
     `stall_timeout` remains the lane's existing R-40 declaration; run-gate
@@ -3048,7 +3052,11 @@ def profile_start_policy(lane: dict, project_dir: Path) -> dict:
             lane["assay_lane"])) if lane["kind"] == "assay" else None),
         "idle_bound": budget_seconds(stall) if stall else "auto",
         "ceiling": "auto",
-        "on_stall": "kill" if stall else "report",
+        # A shared cgroup contains other work. Its daemon may kill only an
+        # explicitly requested, verified placement leaf; otherwise the
+        # already-declared local stall watch remains the verdict authority.
+        "on_stall": ("kill" if stall and (scope == "container" or
+                                    placement_requested) else "report"),
     }
 
 
@@ -3110,7 +3118,6 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                                     f"{cgprofile_ver}, damon {daemon_damon})")
         meta = profile_meta(lane, lane_name, project_dir, worktree)
         interval = float(budget_seconds(plan["interval"]))
-        policy = profile_start_policy(lane, project_dir)
         placement = {"place": False, "memory_high": None,
                      "memory_max": None, "cpu_weight": None}
         if scope == "container-shared":
@@ -3134,6 +3141,8 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                         host_doc)
             if host_doc is None:
                 state["warning"] = host_reason
+        policy = profile_start_policy(lane, project_dir, scope,
+                                      bool(placement["place"]))
         start_doc, start_reason = client.start(
             container_id, scope, token=plan.get("token"), damon=plan["damon"],
             interval=interval, meta=meta,
@@ -3281,7 +3290,6 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
                                 f"{cgprofile_ver}, damon {daemon_damon})")
     meta = profile_meta(lane, lane_name, project_dir, worktree)
     interval = float(budget_seconds(plan["interval"]))
-    policy = profile_start_policy(lane, project_dir)
     try:
         host_doc, host_reason = client.host()
     except Exception as exc:
@@ -3298,6 +3306,8 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
             client, lane_name, placement,
             plan.get("admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
             host_doc)
+    policy = profile_start_policy(lane, project_dir, "container-shared",
+                                  bool(placement["place"]))
     start_doc, start_reason = client.start(
         container_id, "container-shared", token=plan.get("token"),
         damon=plan["damon"], interval=interval, meta=meta,
@@ -10513,6 +10523,22 @@ def consume_profiler_watch(stream: ProfilerWatch, profiler: dict,
     return stalled
 
 
+def terminal_daemon_kill(resources: object) -> str | None:
+    """Reconcile a kill that ended the lane before the stream was drained.
+
+    The stopped session summary is the daemon's durable verdict record. A
+    profile that is absent, partial, or merely `reported` cannot change the
+    lane outcome.
+    """
+    if not isinstance(resources, dict) or resources.get("method") != "daemon":
+        return None
+    watch = resources.get("watch")
+    if not isinstance(watch, dict) or watch.get("verdict") != "killed":
+        return None
+    reason = watch.get("reason")
+    return reason if isinstance(reason, str) and reason else "daemon killed lane"
+
+
 def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     project_dir: Path, repo: Path, worktree: Path,
                     watch: "ProgressWatch | None" = None,
@@ -10711,9 +10737,14 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 # one level over — harmless here since it is never polled,
                 # but the two are not disjoint by construction, only by this
                 # priority).
-                stalled = (log_watch.poll() if log_watch is not None
-                          else fallback_watch.poll()
-                          if fallback_watch is not None else None)
+                # The daemon owns liveness while its stream is healthy. Its
+                # pressure-aware clock may be paused when a local silence
+                # timer is not; running both would turn host contention into
+                # a false lane verdict.
+                if daemon_watch is None:
+                    stalled = (log_watch.poll() if log_watch is not None
+                              else fallback_watch.poll()
+                              if fallback_watch is not None else None)
                 if stalled is not None:
                     break
         if daemon_watch is not None and stalled is None:
@@ -10777,6 +10808,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
         if profiler is not None:
             try:
                 profile_result = finish_lane_profiling(profiler)
+                if stalled is None:
+                    stalled = terminal_daemon_kill(profile_result["resources"])
                 print_profile_warning(profiler)
                 print_footprint_line(lane_name, project_dir,
                                      profile_result["resources"])
@@ -11968,6 +12001,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # lane, so this IS the equivalent "same finally" moment.
         try:
             profile_result = finish_lane_profiling(profiler_state)
+            if stalled is None:
+                stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
             print_footprint_line(lane_name, project_dir, profile_result["resources"])
             if run_record is not None:
@@ -12302,6 +12337,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             profile_result = finish_bare_host_profiling(
                 profiler_state, ru, started_at, ended_at,
                 measured_duration_seconds, floor_bytes)
+            if stalled is None:
+                stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
             print_footprint_line(lane_name, project_dir, profile_result["resources"])
             if run_record is not None:

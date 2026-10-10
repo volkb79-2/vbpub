@@ -543,7 +543,10 @@ the tool's reason to exist and MUST be implemented + tested:
 
   The v1.1 client opens one daemon watch per session. A daemon `killed`
   liveness verdict follows the existing stall exit path; `reported` is one
-  warning and never changes the test verdict. If the daemon or its watch is
+  warning and never changes the test verdict. The stopped session summary
+  preserves a verified kill if the lane exits before its stream event is
+  read. Shared-scope lanes without placement request reporting rather than
+  authorizing a shared-cgroup kill. If the daemon or its watch is
   unavailable, the in-process progress fallback uses the assay stream's
   calibrated cadence and pauses its idle clock while host memory PSI is above
   the threshold. Host contention is therefore disclosed scheduling state,

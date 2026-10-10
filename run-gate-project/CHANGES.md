@@ -10,13 +10,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Added
 - feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
-- feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence (RG-55/P5, rev 61)
+- feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence (RG-55/P5, rev 62)
 
 ### Changed
 - maintenance(run-gate): refresh the tracked lane-footprint manifest and consumer transcript from current daemon-backed histories; keep the short-lived assay-r3 memory peak unknown when profiling cannot attach
 - feat(run-gate): request/read back daemon placement for daemon-backed lanes and apply bounded gates-slice admission without turning load or profiler failures into lane verdicts (RG-55 P5)
 
 ### Fixed
+- fix(run-gate): let a healthy daemon watch alone decide liveness, reconcile a terminal verified kill from the stopped session summary, and use report policy for an unplaced shared-scope lane (P5 final review)
 - fix(run-gate): serialize the observer-backed native R2 lane so a shared tester-cgroup limit event cannot be assigned to the wrong mutant
 - fix(run-gate): scope Assay progress to the latest `run` record, calculate resumed rates from run-local events, and suppress ETAs without a trustworthy current-run `pending_total` (RG-90, rev 60)
 - fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)

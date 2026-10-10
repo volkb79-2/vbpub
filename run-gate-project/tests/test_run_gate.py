@@ -3463,7 +3463,7 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
     # The tagged release remains source rev 55. RG-90's telemetry change is
-    # historical at rev 60; the restored P5 transport is the current rev 61.
+    # historical at rev 60; the reviewed P5 transport is the current rev 62.
     # RG-89 stays at the revision that introduced its observer contract.
     assert "This section describes released source rev 55." in changes
     assert "RG-90, rev 60" in changes
@@ -18544,6 +18544,19 @@ class TestProfilerClient:
         assert plan["cpu_weight"] == 250
         assert plan["source"] == "declared"
 
+    def test_shared_scope_without_a_placement_request_cannot_author_daemon_kill(
+            self, tmp_path):
+        lane = {"kind": "command", "stall_timeout": "30s"}
+        shared = run_gate.profile_start_policy(
+            lane, tmp_path, "container-shared", False)
+        placed = run_gate.profile_start_policy(
+            lane, tmp_path, "container-shared", True)
+        container = run_gate.profile_start_policy(
+            lane, tmp_path, "container", False)
+        assert shared["on_stall"] == "report"
+        assert placed["on_stall"] == "kill"
+        assert container["on_stall"] == "kill"
+
     def test_placement_derives_one_and_a_half_times_manifest_median(
             self, monkeypatch):
         monkeypatch.setattr(
@@ -20564,6 +20577,10 @@ class TestAwaitContainerProfilingWiring:
                 pass
 
         client = _Client()
+        class _Fallback:
+            def poll(self):
+                raise AssertionError("local silence must not judge a live daemon watch")
+
         monkeypatch.setattr(run_gate.subprocess, "Popen",
                             lambda *args, **kwargs: _Process())
         monkeypatch.setattr(run_gate.subprocess, "run",
@@ -20580,8 +20597,64 @@ class TestAwaitContainerProfilingWiring:
         docker = shutil.which("docker")
         assert run_gate.await_container(
             docker, name, {"kind": "command"}, "suite", tmp_path,
-            tmp_path, tmp_path, profiler=profiler) == 0
+            tmp_path, tmp_path, profiler=profiler, watch=_Fallback()) == 0
         assert client.watch_calls == 1
+
+    @pytest.mark.parametrize("daemon_verdict, expect_stall", [
+        ("killed", True), ("reported", False),
+    ])
+    def test_terminal_daemon_summary_distinguishes_kill_from_reported(
+            self, tmp_path, monkeypatch, daemon_verdict, expect_stall):
+        class _Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class _Client:
+            def watch(self, _session):
+                return _Watch()
+
+        class _Process:
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: _Process())
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *args, **kwargs: subprocess.CompletedProcess(
+                                args[0], 0, stdout="137\n", stderr=""))
+        monkeypatch.setattr(run_gate, "save_container_logs", lambda *args: None)
+        monkeypatch.setattr(run_gate, "clear_inflight_record", lambda *args: None)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": {
+                                "method": "daemon", "watch": {
+                                    "verdict": daemon_verdict,
+                                    "reason": "verified idle kill"}},
+                                "profile_error": None, "profile_ref": None})
+        profiler = {"mode": "daemon", "client": _Client(), "daemon": "d",
+                    "session": "s-killed", "warning": None,
+                    "session_line": None, "sampler": None,
+                    "profiler_status": None}
+        def finish():
+            return run_gate.await_container(
+                "docker", "lane", {"kind": "command"}, "suite", tmp_path,
+                tmp_path, tmp_path, profiler=profiler)
+        if expect_stall:
+            with pytest.raises(run_gate.GateInfraError, match="verified idle kill"):
+                finish()
+        else:
+            assert finish() == 137
 
     def test_second_ended_daemon_watch_without_any_fallback_discloses_warning(
             self, tmp_path, monkeypatch, capsys):

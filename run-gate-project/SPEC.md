@@ -2236,8 +2236,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   and `verdict` events update the inflight/history watch field. A daemon
   `killed` verdict is the declared stall path; `reported` emits one warning
   and does not fail the lane. A closed or failed watch is disclosed and the
-  client reattaches once before using the in-process fallback. A watch that
-  ends without a verdict is not itself a verdict.
+  client reattaches once before using the in-process fallback. A healthy
+  daemon watch is the sole liveness verdict authority: local log/progress
+  silence cannot declare a stall until the daemon watch fails. If a daemon
+  kill ends the lane before the stream delivers its terminal event, the
+  stopped session summary supplies that verified `killed` verdict. A watch
+  that ends without a verdict is not itself a verdict. Shared-scope lanes
+  without an explicit placement request author `on-stall report`, never a
+  shared-cgroup kill; their existing local stall watch remains authoritative.
 - **`R-43l` Placement and parent (RG-55/P5 C3/C6).** A daemon-backed exec or
   bare-host lane with a declared `resources.memory`, or with a committed
   manifest median from which one can be derived, sends a placement request.
