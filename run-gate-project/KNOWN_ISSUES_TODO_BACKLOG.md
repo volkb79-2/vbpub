@@ -4450,16 +4450,15 @@ this entry originally left open:
   MiB / ≥ 70 MiB respectively) — full transcripts in
   `nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`.
 
-Admission control on top of this data (the PSI-gated "wait/refuse before
-starting lane N" mechanism this entry's own bullets sketched) is
-DELIBERATELY not part of this fix — filed forward as **RG-56**, the next
-wave, once real footprint data exists to set a threshold against instead
-of a guessed one (the same "measure first, decide later" posture RG-27
-itself was filed under). This entry's dstdns cross-reference
+Admission control on top of this data was deliberately deferred from the
+measurement-only P1/P2 implementation and filed forward as **RG-56**. P5 now
+applies the measured data through the delivered wait-then-proceed contract
+below; the historical acceptance evidence in this RG-55 row remains
+measurement-only. This entry's dstdns cross-reference
 (`docs/testing/RIGOR-COVERAGE-POLICY.md` "Resource-profiling and
-scheduling") is RG-56's to apply, not this package's.
+scheduling") is RG-56's to apply.
 
-## RG-56 — admission control on the profiler registry (next wave after RG-55)
+## RG-56 — admission control on the profiler registry (this package, P5)
 
 **Provenance:** RG-55 plan D-6 (`run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`),
 operator interview 2026-09-12 ("swap usage is never the gate; PSI is").
@@ -4470,47 +4469,43 @@ Inputs: the committed `run-gate.footprint.json` (expected footprint per
 lane, RG-55's own D-9), `cgprofile ctl status` (the live daemon's session
 registry — sessions across ALL projects/worktrees, the cross-project
 registry RG-45's direction 2 already asked for — plus host and per-slice
-PSI), and the lane's own `resources` declaration (RG-48). None of these
-exist as an admission SIGNAL today; RG-55 only measures and records them.
+PSI), and the lane's own `resources` declaration (RG-48). RG-55 measured
+and recorded these inputs; this package (P5) spends them on admission.
 
-### Proposed contract
+### Delivered contract (P5)
 
-Before starting a lane, run-gate WAITS (bounded, with a periodic notice)
-while host memory PSI `full avg10` is above a configured threshold, or
-while the sum of live sessions' expected peaks (from each session's stored
-`meta.expected`) plus this lane's own expected peak exceeds a declared
-headroom for the slice; on the bound expiring, REFUSES (exit 2) naming the
-readings that caused it (the PSI value, or the sessions and their expected
-peaks that summed over headroom). `--allow-pressure` bypasses the wait/
-refusal for one invocation (disclosed). `--dry-run` reports the admission
-decision it WOULD make without ever waiting.
-
-Explicitly NOT built as part of RG-55: run-gate decides no policy until
-real footprint data exists (the estate's R-36-style "measure first, decide
-later" posture) and any threshold set before real data is a guess dressed
-as a decision — the same trap RG-27's own filing named. RG-55 wires the
-registry and the footprint manifest; RG-56 is the wave that spends them on
-an actual go/wait/refuse decision.
+Before starting a daemon-backed lane, run-gate reads `cgprofile ctl host` and
+derives the lane request from declared `resources.memory` or the committed
+manifest median. When the verified gates slice's current memory plus that
+request exceeds 90% of the slice maximum, it waits in 30-second checks,
+prints a waiting notice at most once per minute, and honors
+`[profile].admission_wait` (10 minutes by default). It admits as soon as
+headroom appears; when the bound expires it proceeds with exactly one warning.
+There is no `--allow-pressure` bypass and no refusal based on host load:
+pressure, registry contention, transport failure, and the wait bound are
+scheduling facts, never a lane verdict. `--dry-run` reports `would-wait`
+without sleeping or starting a lane. The admission check is before an
+ephemeral Docker start.
 
 **Cross-reference:** SPEC-V8 S16.6 (ciu gate's admission ledger, keyed on
 the slice cgroup directory) should consume the SAME registry once it
 exists, rather than growing an independent one — see SPEC-V8.md Appendix
 D.6.
 
-### Oracles (sketch, not yet written — needs the real registry first)
+### Oracles
 
-- A fake daemon registry with two live sessions (each carrying a stored
-  `expected.memory_peak_median_bytes`) and a footprint manifest for the
-  candidate lane → assert the three outcomes (admitted immediately, waited
-  then admitted once a live session's PSI notice clears, refused after the
-  bound naming the specific readings).
-- The PSI-threshold path alone, against a fake `/proc/pressure/memory` that
-  starts above threshold and later drops.
-- `--dry-run` never blocks regardless of the fake registry's contents.
-- `--allow-pressure` bypasses a refusal that would otherwise fire, and the
-  bypass is disclosed in the lane's stdout.
+- `TestProfileAdmission` covers immediate admission, wait-then-admit after a
+  host reading clears, bounded proceed with one warning, and dry-run without
+  sleeping; it also proves missing capacity is disclosed as skipped.
+- Placement tests cover declared and manifest-derived requests, explicit and
+  gates-slice-derived ceilings, and no-request refusal to place.
+- Transport/watch tests cover byte-for-byte socket requests, auto version
+  probing, explicit carrier failures, one reader, event recording, ended-watch
+  reattach followed by in-process fallback, and the `killed`/`reported`
+  distinction.
 
-### Status — OPEN
+### Status — FIXED in P5 implementation; final status closes with the P5
+R1/R2/R3 evidence and release.
 
 ## RG-57 — bare-host lanes record no resource profile (RG-55 v1 gap)
 
@@ -4528,7 +4523,7 @@ pid for that child to hand the daemon, so `--target containerid:<lane
 pid>` has nothing correct to name; the daemon cannot be pointed at "this
 bare-host child" by pid the way it is pointed at a container by cgroup.
 
-### Proposed contract
+### Delivered contract
 
 The same env token run-gate already generates for exec/ephemeral lanes
 (`RUN_GATE_PROFILE_SESSION`, contract §4.1) is exported into the bare-host
@@ -5093,6 +5088,69 @@ Both are genuine, reproducible, PRE-EXISTING defects — neither is new,
 neither touches code this package's diff modified, and both were
 confirmed non-deterministic (pass on a retry) before being recorded here
 rather than "fixed" by silently retrying past them without a trace.
+
+## RG-55/P5 — run-gate v1.1 transport, watch, placement, and admission seams
+
+**Provenance:** RG-55 plan D-6 and D-17..D-30; controller rulings RW-29..
+RW-35; interface contract v1.1 §8. This row is the implementation record for
+the policy author, daemon-watch consumer, transport seam, placement requests,
+and RG-56 admission consumer delivered by P5.
+
+### Mechanism
+
+The run-gate client currently reaches the optional cgprofile daemon only by
+`docker exec`, samples progress in-process, leaves placement to the ambient
+Docker/systemd parent, and applies its older slice-memory check before a
+lane starts. Those separate paths cannot consume the v1.1 daemon's socket
+carrier, streaming watch, read-back placement, or cross-project registry
+admission contract. A second independent scheduler would also disagree with
+the daemon's live registry and host PSI readings.
+
+### Proposed contract
+
+Add one validated `[profile]` transport choice (`auto`, `exec`, or `socket`)
+and socket path, with `auto` selecting the socket only after a successful
+version probe and otherwise using the existing exec carrier. Build one
+contract request and parse one contract response behind both carriers.
+Author the daemon policy from the lane's progress stream and stall settings;
+consume one streaming `ctl watch` per session, falling back to the existing
+in-process watch without changing a verdict because profiling is unavailable.
+For exec and bare-host lanes, request a derived or declared memory placement,
+record the daemon's applied result, and warn-and-run unplaced if placement is
+refused. Before starting a daemon-backed lane, read `ctl host` and wait,
+bounded by `admission_wait`, while the gates slice lacks 10% headroom for the
+lane request; after the bound, proceed with one warning. Never turn host load,
+daemon reachability, transport failure, or profiling data into a lane verdict
+(R-36h); only the declared stall policy may take the existing stall exit path.
+Ephemeral containers use the configured `CGROUP_PARENT_DEV_GATES` parent when
+present and otherwise preserve today's behavior with an explicit disclosure.
+History schema remains 2 and gains nullable `watch` and `placement` fields.
+
+The no-daemon fallback is cadence-aware: a `plan` event arms
+`max(300s, 3 * expect_next_event_within_s)` even before the first candidate,
+and the automatic idle clock pauses while host memory PSI `full avg10` is
+above 5. An explicit `stall_timeout` retains its existing semantics. A watch
+reader that exits is retried once; a second failure falls back in-process, and
+an ended stream without a verdict is never itself a lane verdict.
+
+### Oracles (sketch)
+
+- Assert every socket request against the v1.1 request goldens byte-for-byte;
+  exercise auto fallback, explicit carrier failures, and doctor/dry-run
+  disclosures.
+- With a fake daemon stream, assert readings update the inflight record,
+  `killed` follows the existing stall exit path, `reported` warns once, and
+  an idle stream reattaches once before the in-process fallback.
+- Assert declared and manifest-derived placement requests, host-cap ceiling,
+  placement read-back, refusal warning, and throttling warning for exec and
+  bare-host lanes; ephemeral Docker argv uses the gates slice variable.
+- With a fake host registry/clock, assert immediate admission, wait-then-
+  proceed after pressure clears, bounded proceed with one warning, and that
+  dry-run never waits. Re-prove schema-2 history round-trips with both new
+  nullable fields and run the complete R1/R2/R3 gates before release.
+
+### Status — FIXED in P5 implementation; final status closes with the P5
+R1/R2/R3 evidence and release.
 
 ### Update 2026-09-18 (same wave, sixth package) — a fifth data point corroborating the ORIGINAL queue-wait-inside-the-budget-clock hypothesis, with a nuance: partial real progress before the aggregate clock still tripped
 

@@ -14,7 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 60  # rev 60: suppress ETA without current-run pending_total
+__revision__ = 61  # rev 61: restore P5 v1.1 profiler transport and liveness
+# Rev 61 restores the reviewed P5 v1.1 profiler transport/watch, placement,
+# gates-slice admission and calibrated fallback atop the current rev-60 tree.
+# rev 60: suppress ETA without current-run pending_total
 # R2 Assay lanes and explicit tester-unified command wrappers may opt into
 # the cgprofile observer-only socket; its mount, GID grant, and namespace
 # constraints are closed in the lane schema.
@@ -135,12 +138,14 @@ import io
 import json
 import math
 import os
+import queue
 import re
 import secrets
 import shlex
 import shutil
 import signal
 import stat
+import socket
 import subprocess
 import sys
 import tempfile
@@ -519,6 +524,11 @@ PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
 PROFILE_SAMPLE_SECONDS = 5
 PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
                         "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+PROFILE_TRANSPORT_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
+PROFILE_TRANSPORTS = ("auto", "exec", "socket")
+PROFILE_TRANSPORT_DEFAULT = "auto"
+PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/ctl.sock"
+PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
 # Self-target discovery is optional profiling preflight, so neither Docker
 # identity probe may hold a lane longer than the ctl status/version probes.
 PROFILE_IDENTITY_TIMEOUT_SECONDS = 5
@@ -1012,15 +1022,15 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         res = table["resources"]
         if not isinstance(res, dict):
             fail(f"{where} [lanes.{name}]: 'resources' must be a table")
-        _check_keys(res, {"memory", "memory_swap", "cpu_weight", "io_weight",
-                          "shared", "cpus"},
+        _check_keys(res, {"memory", "memory_max", "memory_swap", "cpu_weight",
+                          "io_weight", "shared", "cpus"},
                     f"{where} [lanes.{name}.resources]")
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
         if "memory" in res and table.get("memory"):
             fail(f"{where} [lanes.{name}]: declare RAM once — top-level 'memory' "
                  f"and 'resources.memory' are the same knob; use 'resources.memory'")
-        for key in ("memory", "memory_swap"):
+        for key in ("memory", "memory_max", "memory_swap"):
             if key in res and (not isinstance(res[key], str)
                                or not _SIZE_RE.fullmatch(res[key])):
                 fail(f"{where} [lanes.{name}.resources]: '{key}' must be a size "
@@ -1196,7 +1206,8 @@ def _validate_profile_policy(table: object, where: str) -> None:
     exact pattern `_validate_history_policy` already establishes."""
     if not isinstance(table, dict):
         fail(f"{where}: 'profile' must be a table")
-    _check_keys(table, {"enabled", "daemon", "interval", "damon"},
+    _check_keys(table, {"enabled", "daemon", "interval", "damon",
+                        "transport", "socket_path", "admission_wait"},
                 f"{where} [profile]")
     if "enabled" in table and not isinstance(table["enabled"], bool):
         fail(f"{where} [profile]: 'enabled' must be a boolean")
@@ -1207,6 +1218,16 @@ def _validate_profile_policy(table: object, where: str) -> None:
         _validate_budget(table["interval"], f"{where} [profile]", "interval")
     if "damon" in table and not isinstance(table["damon"], bool):
         fail(f"{where} [profile]: 'damon' must be a boolean")
+    if "transport" in table and table["transport"] not in PROFILE_TRANSPORTS:
+        fail(f"{where} [profile]: 'transport' must be one of "
+             f"{', '.join(PROFILE_TRANSPORTS)} (got {table['transport']!r})")
+    if "socket_path" in table and (not isinstance(table["socket_path"], str)
+                                    or not table["socket_path"].strip()
+                                    or not table["socket_path"].startswith("/")):
+        fail(f"{where} [profile]: 'socket_path' must be a non-empty absolute path")
+    if "admission_wait" in table:
+        _validate_budget(table["admission_wait"], f"{where} [profile]",
+                         "admission_wait")
 
 
 def _validate_footprint_policy(table: object, where: str) -> None:
@@ -1288,7 +1309,8 @@ def _validate_assay_policy(table: object, where: str) -> None:
 def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
                              central: dict, central_path: Path | None) -> dict:
     """Always-fully-populated `[profile]` settings for ONE lane:
-    `{'enabled', 'daemon', 'interval', 'damon', 'source'}`. Project
+    `{'enabled', 'daemon', 'interval', 'damon', 'transport', 'socket_path',
+    'admission_wait', 'source'}`. Project
     `[profile]` shadows the central one WHOLE-TABLE (R-09,
     `resolve_history_keep`'s pattern — never a per-key merge), then the
     documented defaults, then the lane's own `profile` key on top (a bool
@@ -1323,6 +1345,9 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         return {"enabled": False, "daemon": PROFILE_DAEMON_DEFAULT,
                "interval": PROFILE_INTERVAL_DEFAULT,
                "damon": PROFILE_DAMON_DEFAULT,
+               "transport": PROFILE_TRANSPORT_DEFAULT,
+               "socket_path": PROFILE_SOCKET_PATH_DEFAULT,
+               "admission_wait": PROFILE_ADMISSION_WAIT_DEFAULT,
                "source": f"${PROFILE_AMBIENT_ENV_VAR}=off",
                "disabled_reason": f"disabled ({PROFILE_AMBIENT_ENV_VAR}=off)"}
     if "profile" in cfg:
@@ -1336,6 +1361,10 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         "daemon": table.get("daemon", PROFILE_DAEMON_DEFAULT),
         "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
         "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
+        "transport": table.get("transport", PROFILE_TRANSPORT_DEFAULT),
+        "socket_path": table.get("socket_path", PROFILE_SOCKET_PATH_DEFAULT),
+        "admission_wait": table.get("admission_wait",
+                                      PROFILE_ADMISSION_WAIT_DEFAULT),
         "source": source,
         "disabled_reason": "disabled",
     }
@@ -1362,6 +1391,16 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     if ambient == "on":
         settings["enabled"] = True
         settings["source"] = f"${PROFILE_AMBIENT_ENV_VAR}=on (base: {settings['source']})"
+    transport = os.environ.get(PROFILE_TRANSPORT_ENV_VAR)
+    if transport == "":
+        transport = None
+    if transport is not None and transport not in PROFILE_TRANSPORTS:
+        fail(f"{PROFILE_TRANSPORT_ENV_VAR} must be one of "
+             f"{', '.join(PROFILE_TRANSPORTS)} (got {transport!r})")
+    if transport is not None:
+        settings["transport"] = transport
+        settings["source"] = (f"${PROFILE_TRANSPORT_ENV_VAR}={transport} "
+                               f"(base: {settings['source']})")
     return settings
 
 
@@ -2046,93 +2085,55 @@ def daemon_broken_reason(daemon_name: str) -> str:
 
 
 class ProfilerClient:
-    """RG55-INTERFACE-CONTRACT.md Sec 1-2. Every method returns
-    `(parsed_json | None, failure_reason | None)` — NEVER raises, NEVER
-    itself changes a lane's verdict (R-04/R-36h). The caller prints ONE
-    warning per lane invocation from the reason string; `resources: null` +
-    `profile_error: <reason>` is the record-level consequence, decided by
-    the CALLER, not this class.
+    """The v1.1 daemon client with one parser behind two carriers.
 
-    Contract rule 2 promises stdout is EXACTLY one JSON object REGARDLESS
-    of exit code — so JSON is parsed FIRST, exit code SECOND: a doc that
-    parses, carries the right `contract`, and says `"ok": true` is trusted
-    over a nonzero exit the daemon might raise for unrelated reasons (none
-    currently defined, but the contract does not forbid it); every failure
-    mode (non-zero exit with valid `error` JSON, timeout, garbage stdout,
-    non-object JSON, wrong contract, `"ok": false`) collapses to the same
-    `(None, reason)` shape through one code path rather than a per-exit-code
-    branch tree."""
+    The exec carrier remains the compatibility path.  The socket carrier is
+    deliberately stdlib-only: it sends the same request object the daemon's
+    in-image translator sends, then reads one response to EOF.  Transport
+    failures always return a profiling warning to the caller; they never
+    alter the lane verdict (R-36h).
+    """
 
-    def __init__(self, docker: str, daemon: str):
+    def __init__(self, docker: str, daemon: str,
+                 transport: str = PROFILE_TRANSPORT_DEFAULT,
+                 socket_path: str = PROFILE_SOCKET_PATH_DEFAULT):
         self.docker = docker
         self.daemon = daemon
+        self.transport = transport
+        self.socket_path = socket_path
+        self._carrier: str | None = None
+        self.transport_reason: str | None = None
 
-    # B1 (round-1 review): `--target`/`--meta` etc are ALL long options, so
-    # a verb never needs a positional required-key map beyond this one --
-    # the two verbs whose response the caller immediately subscripts.
     _REQUIRED_KEY = {"start": "session", "stop": "summary"}
 
-    def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
-        argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
-               *args, "--json"]
+    @property
+    def carrier(self) -> str:
+        """The selected carrier, or the configured carrier before a call."""
+        return self._carrier or self.transport
+
+    def _parse_response(self, verb: str, raw: str, returncode: int = 0,
+                        stderr: str = "") -> tuple[dict | None, str | None]:
+        stderr_tail = (stderr.strip().splitlines() or ["(no stderr)"])[-1]
         try:
-            # errors="replace" (B1a, round-1 review): text=True's STRICT
-            # decoding means a single non-UTF-8 byte anywhere in the
-            # daemon's stdout/stderr (contract Sec 1.2 promises stdout is
-            # JSON but stderr is explicitly "free text" -- no encoding
-            # guarantee) raises UnicodeDecodeError, a ValueError NOT caught
-            # by (TimeoutExpired, OSError) below -- exactly the same failure
-            # class `docker logs` already guards against elsewhere in this
-            # file (see the errors="replace" comment near `LogStreamWatch`).
-            proc = subprocess.run(argv, capture_output=True, text=True,
-                                  errors="replace",
-                                  timeout=PROFILE_CTL_TIMEOUTS[verb])
-        except subprocess.TimeoutExpired:
-            return None, (f"`cgprofile ctl {verb}` timed out after "
-                          f"{PROFILE_CTL_TIMEOUTS[verb]}s")
-        except OSError as exc:
-            return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
-        except Exception as exc:
-            # B1b (round-1 review): this class's own docstring promises
-            # NEVER raises -- broadened from (TimeoutExpired, OSError) so an
-            # unanticipated subprocess failure degrades to "profiling
-            # unavailable" (contract Sec 1.3) instead of escaping main().
-            return None, f"`cgprofile ctl {verb}` failed unexpectedly: {exc}"
-        stderr_tail = (proc.stderr.strip().splitlines() or ["(no stderr)"])[-1]
-        try:
-            doc = json.loads(proc.stdout)
+            doc = json.loads(raw)
         except json.JSONDecodeError:
-            # RG-59: this `docker exec` can fail BEFORE `cgprofile` ever
-            # runs (the daemon container itself is absent/stopped) -- stdout
-            # is then empty, so this SAME exception fires for a completely
-            # different, far more common cause than "a running daemon
-            # returned garbage". `stderr_tail` is docker's own wording, not
-            # cgprofile's, and is the only place the two are told apart:
-            # named explicitly here rather than folded into the generic
-            # "unparsable stdout" reason, which stays reserved for an
-            # ACTUALLY malformed response from a daemon that IS running.
-            if _stderr_names_daemon_not_running(stderr_tail, proc.returncode):
+            if returncode and _stderr_names_daemon_not_running(
+                    stderr_tail, returncode):
                 return None, daemon_not_running_reason(self.daemon)
-            # S11 (round-2 review, RW-51): 126/127 reach a LIVE container
-            # that could not start `cgprofile` -- a distinct condition
-            # from "not running", checked after the not-running/stderr-
-            # prefix test above so a real docker "not running" stderr
-            # wording still wins even on one of these exit codes.
-            if proc.returncode in _DAEMON_BROKEN_EXIT_CODES:
+            if returncode in _DAEMON_BROKEN_EXIT_CODES:
                 return None, daemon_broken_reason(self.daemon)
-            if proc.returncode != 0 and not proc.stdout.strip():
-                return None, (f"`docker exec` for `cgprofile ctl {verb}` "
-                              f"failed before a valid cgprofile response "
-                              f"(exit {proc.returncode}); stderr: "
-                              f"{stderr_tail}")
+            if returncode != 0 and not raw.strip():
+                return None, (f"`cgprofile ctl {verb}` failed before a valid "
+                              f"cgprofile response (exit {returncode}); "
+                              f"stderr: {stderr_tail}")
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
-                          f"(exit {proc.returncode}); stderr: {stderr_tail}")
+                          f"(exit {returncode}); stderr: {stderr_tail}")
         except Exception as exc:
             return None, (f"`cgprofile ctl {verb}` JSON parser failed "
                           f"unexpectedly: {exc}")
         if not isinstance(doc, dict):
             return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
-                          f"(exit {proc.returncode})")
+                          f"(exit {returncode})")
         if doc.get("contract") != PROFILE_CONTRACT:
             return None, (f"`cgprofile ctl {verb}` reports contract "
                           f"{doc.get('contract')!r}, this client accepts "
@@ -2146,25 +2147,143 @@ class ProfilerClient:
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
-        # B1c (round-1 review): a well-formed, "ok": true response that is
-        # missing the ONE key the caller immediately subscripts (a P1 bug,
-        # or minor-version skew INSIDE contract major 1, which Sec 1.4
-        # explicitly permits) must degrade here, not crash the caller with
-        # a bare KeyError.
         required = self._REQUIRED_KEY.get(verb)
         if required is not None and required not in doc:
             return None, (f"`cgprofile ctl {verb}` response is missing the "
                           f"required {required!r} key (contract Sec 1.4 "
                           f"minor-version skew?)")
         if verb == "start" and (
-                not isinstance(doc["session"], str)
+                not isinstance(doc.get("session"), str)
                 or not doc["session"].strip()):
             return None, ("`cgprofile ctl start` response has an unusable "
                           "'session' value (expected a non-empty string)")
-        if verb == "stop" and not isinstance(doc["summary"], dict):
+        if verb == "stop" and not isinstance(doc.get("summary"), dict):
             return None, ("`cgprofile ctl stop` response has an unusable "
                           "'summary' value (expected an object)")
         return doc, None
+
+    @staticmethod
+    def _wire_args(verb: str, args: tuple[str, ...]) -> dict:
+        if verb in ("version", "host", "gc"):
+            return {}
+        if verb in ("status", "stop", "report", "watch"):
+            result = {"session": args[0] if args else None}
+            if verb == "watch":
+                result["watch_interval"] = 30
+                for index, value in enumerate(args[1:]):
+                    if value == "--watch-interval" and index + 2 < len(args):
+                        result["watch_interval"] = float(args[index + 2])
+            return result
+        if verb != "start":
+            raise ValueError(f"unsupported cgprofile verb {verb!r}")
+        result = {"target": None, "scope": None, "token": None,
+                  "damon": None, "interval": None, "meta": {},
+                  "progress_stream": None, "idle_bound": None,
+                  "ceiling": None, "on_stall": None, "place": False,
+                  "memory_high": None, "memory_max": None,
+                  "cpu_weight": None}
+        index = 0
+        while index < len(args):
+            value = args[index]
+            if value == "--place":
+                result["place"] = True
+                index += 1
+                continue
+            if not value.startswith("--") or index + 1 >= len(args):
+                raise ValueError(f"invalid {verb} argument {value!r}")
+            key = value[2:].replace("-", "_")
+            raw = args[index + 1]
+            if key == "meta":
+                result[key] = json.loads(raw)
+            elif key in ("interval", "idle_bound", "ceiling"):
+                result[key] = (float(raw) if key == "interval"
+                               else (raw if raw == "auto" else float(raw)))
+            elif key in ("memory_high", "memory_max", "cpu_weight"):
+                result[key] = int(raw)
+            elif key in result:
+                result[key] = raw
+            else:
+                raise ValueError(f"unknown {verb} argument {value!r}")
+            index += 2
+        return result
+
+    def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
+        payload = {"verb": verb, "args": self._wire_args(verb, args),
+                   "contract": PROFILE_CONTRACT}
+        request = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        timeout = PROFILE_CTL_TIMEOUTS.get(verb, PROFILE_CTL_TIMEOUTS["status"])
+        chunks: list[bytes] = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as carrier:
+            carrier.settimeout(timeout)
+            carrier.connect(self.socket_path)
+            carrier.sendall(request.encode("utf-8"))
+            carrier.shutdown(socket.SHUT_WR)
+            while True:
+                chunk = carrier.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    def _socket_ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        try:
+            raw = self._socket_request(verb, args)
+        except FileNotFoundError:
+            return None, (f"cgprofile socket carrier path absent: "
+                          f"{self.socket_path}")
+        except PermissionError as exc:
+            return None, (f"cgprofile socket carrier permission denied at "
+                          f"{self.socket_path}: {exc}")
+        except socket.timeout:
+            return None, (f"cgprofile socket ctl {verb} timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS.get(verb, 5)}s")
+        except OSError as exc:
+            return None, (f"cgprofile socket carrier failed for ctl {verb}: "
+                          f"{exc}")
+        except Exception as exc:
+            return None, (f"cgprofile socket ctl {verb} failed unexpectedly: "
+                          f"{exc}")
+        return self._parse_response(verb, raw)
+
+    def _exec_ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
+                *args, "--json"]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  errors="replace",
+                                  timeout=PROFILE_CTL_TIMEOUTS[verb])
+        except subprocess.TimeoutExpired:
+            return None, (f"`cgprofile ctl {verb}` timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS[verb]}s")
+        except OSError as exc:
+            return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
+        except Exception as exc:
+            return None, f"`cgprofile ctl {verb}` failed unexpectedly: {exc}"
+        return self._parse_response(verb, proc.stdout, proc.returncode,
+                                    proc.stderr)
+
+    def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        if self.transport not in PROFILE_TRANSPORTS:
+            return None, (f"unknown profiler transport {self.transport!r}")
+        if self.transport == "auto" and self._carrier is None:
+            if os.path.exists(self.socket_path):
+                probe_doc, probe_reason = self._socket_ctl("version")
+                if probe_doc is not None:
+                    self._carrier = "socket"
+                    self.transport_reason = "socket version probe succeeded"
+                    if verb == "version":
+                        return probe_doc, None
+                else:
+                    self.transport_reason = (probe_reason or
+                                             "socket version probe failed")
+            else:
+                self.transport_reason = f"socket path absent: {self.socket_path}"
+            if self._carrier is None:
+                self._carrier = "exec"
+        carrier = self._carrier or self.transport
+        if carrier == "socket":
+            return self._socket_ctl(verb, *args)
+        return self._exec_ctl(verb, *args)
 
     def version(self) -> tuple[dict | None, str | None]:
         return self._ctl("version")
@@ -2177,7 +2296,12 @@ class ProfilerClient:
 
     def start(self, container_id: str, scope: str, *, token: str | None = None,
              damon: bool | None = None, interval: float | None = None,
-             meta: dict | None = None) -> tuple[dict | None, str | None]:
+             meta: dict | None = None, progress_stream: str | None = None,
+             idle_bound: str | float | None = None,
+             ceiling: str | float | None = None, on_stall: str | None = None,
+             place: bool = False, memory_high: int | None = None,
+             memory_max: int | None = None,
+             cpu_weight: int | None = None) -> tuple[dict | None, str | None]:
         args = ["--target", f"containerid:{container_id}", "--scope", scope]
         if token:
             args += ["--token", token]
@@ -2186,10 +2310,133 @@ class ProfilerClient:
         if interval is not None:
             args += ["--interval", str(interval)]
         args += ["--meta", json.dumps(meta or {})]
+        for key, value in (("progress-stream", progress_stream),
+                           ("idle-bound", idle_bound), ("ceiling", ceiling),
+                           ("on-stall", on_stall)):
+            if value is not None:
+                args += [f"--{key}", str(value)]
+        if place:
+            args += ["--place"]
+        for key, value in (("memory-high", memory_high),
+                           ("memory-max", memory_max),
+                           ("cpu-weight", cpu_weight)):
+            if value is not None:
+                args += [f"--{key}", str(value)]
         return self._ctl("start", *args)
 
     def stop(self, session: str) -> tuple[dict | None, str | None]:
         return self._ctl("stop", session)
+
+    def watch(self, session: str, watch_interval: int = 30) -> "ProfilerWatch":
+        return ProfilerWatch(self, session, watch_interval)
+
+
+class ProfilerWatch:
+    """One reader thread for the daemon's streaming `ctl watch` response."""
+
+    def __init__(self, client: ProfilerClient, session: str,
+                 watch_interval: int = 30, clock=time.monotonic):
+        self.client = client
+        self.session = session
+        self.watch_interval = watch_interval
+        self.clock = clock
+        self._events: queue.SimpleQueue[tuple[str, object]] = queue.SimpleQueue()
+        self._last_event_at = clock()
+        self._socket = None
+        self._process = None
+        self._closed = False
+        self._thread = threading.Thread(target=self._read, daemon=True,
+                                        name=f"cgprofile-watch-{session}")
+        self._thread.start()
+
+    def _read(self) -> None:
+        try:
+            if self.client.carrier == "socket":
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self._socket = sock
+                sock.connect(self.client.socket_path)
+                payload = {"verb": "watch", "args": {
+                    "session": self.session,
+                    "watch_interval": self.watch_interval},
+                    "contract": PROFILE_CONTRACT}
+                request = json.dumps(payload, indent=2,
+                                     ensure_ascii=False) + "\n"
+                sock.sendall(request.encode("utf-8"))
+                sock.shutdown(socket.SHUT_WR)
+                stream = sock.makefile("rb")
+                for raw in stream:
+                    self._accept(raw.decode("utf-8", errors="replace"))
+                stream.close()
+            else:
+                proc = subprocess.Popen(
+                    [self.client.docker, "exec", self.client.daemon,
+                     "cgprofile", "ctl", "watch", self.session,
+                     "--watch-interval", str(self.watch_interval), "--json"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, errors="replace", bufsize=1)
+                self._process = proc
+                for line in proc.stdout:
+                    self._accept(line)
+                returncode = proc.wait()
+                if returncode != 0 and not self._closed:
+                    self._events.put(("error", f"watch command exited {returncode}"))
+        except Exception as exc:
+            if not self._closed:
+                self._events.put(("error", str(exc)))
+        finally:
+            self._events.put(("end", None))
+
+    def _accept(self, raw: str) -> None:
+        try:
+            event = json.loads(raw)
+        except (ValueError, TypeError):
+            self._events.put(("error", "watch returned unparsable JSON"))
+            return
+        if not isinstance(event, dict):
+            self._events.put(("error", "watch returned non-object JSON"))
+            return
+        self._last_event_at = self.clock()
+        self._events.put(("event", event))
+
+    def drain(self) -> list[tuple[str, object]]:
+        events = []
+        while True:
+            try:
+                events.append(self._events.get_nowait())
+            except queue.Empty:
+                return events
+
+    def idle(self) -> bool:
+        return self._thread.is_alive() and \
+            self.clock() - self._last_event_at > 3 * self.watch_interval
+
+    def ended(self) -> bool:
+        """Whether the reader has closed without an active watch stream.
+
+        A clean thread exit is still a transport failure while the lane is
+        running: `ctl watch` is expected to remain open until the session is
+        stopped.  Keeping this separate from `idle()` matters because an
+        ended reader is no longer alive and therefore cannot satisfy
+        `idle()`'s liveness predicate.
+        """
+        return not self._thread.is_alive()
+
+    def close(self) -> None:
+        self._closed = True
+        if self._socket is not None:
+            try:
+                self._socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self._socket.close()
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
+        self._thread.join(timeout=1)
 
 
 class ResourceAccumulator:
@@ -2786,10 +3033,30 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
     return container_id, None
 
 
+def profile_start_policy(lane: dict, project_dir: Path) -> dict:
+    """Build the v1.1 stall policy from the lane's authoritative facts.
+
+    `stall_timeout` remains the lane's existing R-40 declaration; run-gate
+    does not invent a second timeout grammar or ask the daemon to infer it.
+    Assay progress is the only filesystem stream whose path is known to the
+    client.  Command lanes are watched from Docker's log stream by the
+    existing wait path, so they deliberately omit `progress_stream`.
+    """
+    stall = lane.get("stall_timeout")
+    return {
+        "progress_stream": (str(project_dir / assay_progress_rel(
+            lane["assay_lane"])) if lane["kind"] == "assay" else None),
+        "idle_bound": budget_seconds(stall) if stall else "auto",
+        "ceiling": "auto",
+        "on_stall": "kill" if stall else "report",
+    }
+
+
 def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                          worktree: Path, docker: str, plan: dict,
                          container_name: str, container_id: str,
-                         cgroup: str | None, scope: str) -> dict:
+                         cgroup: str | None, scope: str,
+                         preflight: dict | None = None) -> dict:
     """Contract Sec 4 obligations 1-3, called once per lane invocation AFTER
     the container/runner id is resolved (`docker inspect`) and BEFORE the
     caller's wait loop. Tries the daemon exactly once (`version` then
@@ -2813,12 +3080,29 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
     state = {"mode": "disabled", "client": None, "daemon": plan.get("daemon"),
              "session": None, "session_line": None, "warning": None,
              "sampler": None, "profiler_status": None,
+             "placement": None, "admission": None,
+             "profile_error": None,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
     if not plan["enabled"]:
         return state
-    client = ProfilerClient(docker, plan["daemon"])
+    client = (preflight["client"] if preflight is not None else
+              ProfilerClient(docker, plan["daemon"],
+                             transport=plan.get("transport",
+                                                PROFILE_TRANSPORT_DEFAULT),
+                             socket_path=plan.get("socket_path",
+                                                  PROFILE_SOCKET_PATH_DEFAULT)))
     state["client"] = client
-    version_doc, reason = client.version()
+    version_doc = (preflight.get("version") if preflight is not None
+                   else None)
+    reason = (preflight.get("reason") if preflight is not None else None)
+    if preflight is None:
+        try:
+            version_doc, reason = client.version()
+        except Exception as exc:
+            version_doc, reason = None, (
+                f"profiling version probe failed unexpectedly: {exc}")
+    elif preflight.get("fatal_reason"):
+        state["profile_error"] = preflight["fatal_reason"]
     if version_doc is not None:
         cgprofile_ver = version_doc.get("cgprofile", "?")
         daemon_damon = (version_doc.get("daemon") or {}).get("damon", "unavailable")
@@ -2826,9 +3110,39 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                                     f"{cgprofile_ver}, damon {daemon_damon})")
         meta = profile_meta(lane, lane_name, project_dir, worktree)
         interval = float(budget_seconds(plan["interval"]))
+        policy = profile_start_policy(lane, project_dir)
+        placement = {"place": False, "memory_high": None,
+                     "memory_max": None, "cpu_weight": None}
+        if scope == "container-shared":
+            if preflight is not None:
+                host_doc = preflight.get("host")
+                host_reason = preflight.get("reason")
+                placement = preflight.get("placement") or placement
+                state["admission"] = preflight.get("admission")
+            else:
+                try:
+                    host_doc, host_reason = client.host()
+                except Exception as exc:
+                    host_doc, host_reason = None, (
+                        f"profiling host probe failed unexpectedly: {exc}")
+                if host_doc is not None:
+                    placement = profile_placement_plan(
+                        lane, lane_name, project_dir, host_doc)
+                    state["admission"] = profile_admission(
+                        client, lane_name, placement, plan.get(
+                            "admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
+                        host_doc)
+            if host_doc is None:
+                state["warning"] = host_reason
         start_doc, start_reason = client.start(
             container_id, scope, token=plan.get("token"), damon=plan["damon"],
-            interval=interval, meta=meta)
+            interval=interval, meta=meta,
+            progress_stream=policy["progress_stream"],
+            idle_bound=policy["idle_bound"], ceiling=policy["ceiling"],
+            on_stall=policy["on_stall"], place=placement["place"],
+            memory_high=placement["memory_high"],
+            memory_max=placement["memory_max"],
+            cpu_weight=placement["cpu_weight"])
         if start_doc is not None:
             state["mode"] = "daemon"
             # B1c (round-1 review): `_ctl` already validates `session` is
@@ -2837,6 +3151,7 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
             # the prescription that every remaining daemon-data access
             # becomes `.get()`.
             state["session"] = start_doc.get("session")
+            state["placement"] = start_doc.get("placement")
             target = start_doc.get("target")
             baseline = (target.get("baseline_memory_bytes")
                         if isinstance(target, dict) else None)
@@ -2847,7 +3162,9 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
             state["session_line"] = (
                 f"run-gate: profile session {state['session']} "
                 f"(scope {scope}, baseline {baseline_mib} MiB, "
-                f"damon {damon_state})")
+                f"damon {damon_state}, via {client.carrier}, policy idle "
+                f"{policy['idle_bound']} ceiling {policy['ceiling']} "
+                f"on-stall {policy['on_stall']})")
             return state
         reason = start_reason
     state["warning"] = reason
@@ -2888,7 +3205,8 @@ def finish_lane_profiling(state: dict) -> dict:
                                 "session_dir": stop_doc.get("session_dir")}}
     if state["mode"] == "basic" and state["sampler"] is not None:
         state["sampler"].sample_final()   # contract Sec 4.2's final sample
-        return {"resources": state["sampler"].finish(), "profile_error": None,
+        return {"resources": state["sampler"].finish(),
+                "profile_error": state.get("profile_error"),
                 "profile_ref": None}
     if state["mode"] == "disabled":
         return {"resources": None,
@@ -2932,6 +3250,7 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     state = {"mode": "rusage", "client": None, "daemon": plan.get("daemon"),
              "session": None, "session_line": None, "warning": None,
              "sampler": None, "profiler_status": None,
+             "placement": None, "admission": None,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
     if not docker:
         state["warning"] = "docker not found on PATH"
@@ -2940,9 +3259,19 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     if container_id is None:
         state["warning"] = skip_reason
         return state
-    client = ProfilerClient(docker, plan["daemon"])
+    client = ProfilerClient(docker, plan["daemon"],
+                            transport=plan.get("transport",
+                                               PROFILE_TRANSPORT_DEFAULT),
+                            socket_path=plan.get("socket_path",
+                                                 PROFILE_SOCKET_PATH_DEFAULT))
     state["client"] = client
-    version_doc, reason = client.version()
+    try:
+        version_doc, reason = client.version()
+    except Exception as exc:
+        # R-36h: an unexpected optional probe failure degrades to the
+        # daemon-unavailable state; it must not escape into the lane.
+        state["warning"] = f"profiling version probe failed unexpectedly: {exc}"
+        return state
     if version_doc is None:
         state["warning"] = reason
         return state
@@ -2952,9 +3281,32 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
                                 f"{cgprofile_ver}, damon {daemon_damon})")
     meta = profile_meta(lane, lane_name, project_dir, worktree)
     interval = float(budget_seconds(plan["interval"]))
+    policy = profile_start_policy(lane, project_dir)
+    try:
+        host_doc, host_reason = client.host()
+    except Exception as exc:
+        host_doc, host_reason = None, (
+            f"profiling host probe failed unexpectedly: {exc}")
+    placement = profile_placement_plan(
+        lane, lane_name, project_dir, host_doc) if host_doc is not None \
+        else {"place": False, "memory_high": None,
+              "memory_max": None, "cpu_weight": None}
+    if host_doc is None:
+        state["warning"] = host_reason
+    else:
+        state["admission"] = profile_admission(
+            client, lane_name, placement,
+            plan.get("admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
+            host_doc)
     start_doc, start_reason = client.start(
         container_id, "container-shared", token=plan.get("token"),
-        damon=plan["damon"], interval=interval, meta=meta)
+        damon=plan["damon"], interval=interval, meta=meta,
+        progress_stream=policy["progress_stream"],
+        idle_bound=policy["idle_bound"], ceiling=policy["ceiling"],
+        on_stall=policy["on_stall"], place=placement["place"],
+        memory_high=placement["memory_high"],
+        memory_max=placement["memory_max"],
+        cpu_weight=placement["cpu_weight"])
     if start_doc is None:
         state["warning"] = start_reason
         return state
@@ -2962,6 +3314,7 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     # B1c (round-1 review precedent, same defense in depth as
     # `start_lane_profiling`): `.get()`, never a bare subscript.
     state["session"] = start_doc.get("session")
+    state["placement"] = start_doc.get("placement")
     target = start_doc.get("target")
     baseline = (target.get("baseline_memory_bytes")
                 if isinstance(target, dict) else None)
@@ -2972,7 +3325,9 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     state["session_line"] = (
         f"run-gate: profile session {state['session']} "
         f"(scope container-shared, baseline {baseline_mib} MiB, "
-        f"damon {damon_state})")
+        f"damon {damon_state}, via {client.carrier}, policy idle "
+        f"{policy['idle_bound']} ceiling {policy['ceiling']} "
+        f"on-stall {policy['on_stall']})")
     return state
 
 
@@ -3163,7 +3518,8 @@ def print_profile_session_line(state: dict) -> None:
         print(state["session_line"], flush=True)
 
 
-def print_profile_plan_dry_run(plan: dict, scope: str) -> None:
+def print_profile_plan_dry_run(plan: dict, scope: str,
+                               placement: dict | None = None) -> None:
     """`--dry-run` (contract Sec 4 obligation, handoff C3): the plan, never
     a real call. When disabled, names the SOURCE `resolve_profile_settings`
     resolved (RW-17: a `RUN_GATE_PROFILE=off` override discloses itself the
@@ -3175,7 +3531,21 @@ def print_profile_plan_dry_run(plan: dict, scope: str) -> None:
         return
     print(f"run-gate: DRY RUN — profile plan: daemon {plan['daemon']!r}, "
          f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
+         f"transport {plan.get('transport', PROFILE_TRANSPORT_DEFAULT)!r}, "
+         f"socket {plan.get('socket_path', PROFILE_SOCKET_PATH_DEFAULT)!r}, "
+         f"admission_wait {plan.get('admission_wait', PROFILE_ADMISSION_WAIT_DEFAULT)}, "
          f"token env {PROFILE_TOKEN_ENV}", flush=True)
+    if placement is not None and scope != "container":
+        if placement.get("place"):
+            print(f"run-gate: DRY RUN — placement plan: "
+                  f"request {placement['request']} bytes "
+                  f"({placement.get('source')}), memory.high "
+                  f"{placement['memory_high']}, memory.max "
+                  f"{placement['memory_max']} "
+                  f"({placement.get('ceiling_source')})", flush=True)
+        else:
+            print("run-gate: DRY RUN — placement plan: no request; "
+                  "lane runs unplaced", flush=True)
 
 
 def _fmt_stall_seconds(value: object) -> str:
@@ -3826,6 +4196,11 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
         "git_operation": git_operation_in_progress(worktree),
         "history_eligible": False,
         "excluded_reason": None,
+        # RG-55/C8: these are nullable telemetry facts, not verdict inputs.
+        # Keeping the keys on every invocation makes history JSON shape
+        # stable even when profiling is disabled or unavailable.
+        "watch": None,
+        "placement": None,
         "revision": __revision__,
         "_started_monotonic": time.monotonic(),
     }
@@ -4037,6 +4412,201 @@ def footprint_manifest_lane_expected(manifest: dict | None,
         "source": source,
         "duration_median_s": duration.get("median") if isinstance(duration, dict) else None,
     }
+
+
+def profile_placement_plan(lane: dict, lane_name: str, project_dir: Path,
+                           host_doc: dict | None) -> dict:
+    """Derive the v1.1 memory placement request from declared facts.
+
+    A declaration wins over measured history.  Otherwise the committed
+    footprint median is enlarged by 1.5 as the request; with neither source
+    available the daemon is not asked to place the session.  The host cap is
+    read only when the daemon supplied a valid gates-slice object, never
+    invented from the local/private cgroup namespace.
+    """
+    resources = lane.get("resources", {})
+    declared = resources.get("memory") or lane.get("memory")
+    source = "declared" if declared else None
+    request = parse_size_bytes(declared) if declared else None
+    if request is None:
+        expected = footprint_manifest_lane_expected(
+            load_footprint_manifest(project_dir), lane_name)
+        median = expected.get("memory_peak_median_bytes") if expected else None
+        if isinstance(median, (int, float)) and not isinstance(median, bool) \
+                and median > 0:
+            request = int(math.ceil(median * 1.5))
+            source = "derived"
+    if request is None:
+        return {"place": False, "reason": "no request", "request": None,
+                "memory_high": None, "memory_max": None,
+                "cpu_weight": None, "source": None}
+
+    gates = ((host_doc or {}).get("host") or {}).get("gates_slice") or {}
+    gates_max = gates.get("memory_max_bytes")
+    if not isinstance(gates_max, int) or isinstance(gates_max, bool) \
+            or gates_max <= 0:
+        gates_max = None
+    declared_max = resources.get("memory_max")
+    if declared_max:
+        ceiling = parse_size_bytes(declared_max)
+        ceiling_source = "declared"
+    else:
+        ceiling = request * 2
+        ceiling_source = "derived"
+        if gates_max is not None:
+            ceiling = min(ceiling, gates_max)
+            ceiling_source = "derived; gates slice cap"
+    return {"place": True, "reason": f"{source} request",
+            "request": request, "memory_high": request,
+            "memory_max": ceiling,
+            "cpu_weight": resources.get("cpu_weight"), "source": source,
+            "ceiling_source": ceiling_source, "gates_max": gates_max}
+
+
+def profile_admission(client: ProfilerClient, lane_name: str,
+                      placement: dict, wait_value: str,
+                      host_doc: dict | None, *, dry_run: bool = False,
+                      clock=time.monotonic, sleeper=time.sleep) -> dict:
+    """Wait for v1.1 gates-slice headroom, then proceed regardless.
+
+    This is intentionally a wait-then-proceed policy.  Host pressure and
+    registry contention are facts about scheduling, not a test verdict; a
+    busy or partially observable daemon therefore produces disclosure and
+    never a refusal.  The injected clock/sleeper make the bounded behavior
+    deterministic without shortening production's 30-second poll cadence.
+    """
+    result = {"state": "skipped", "waited_seconds": 0.0,
+              "warning": None}
+    request = placement.get("request") if placement else None
+    gates = ((host_doc or {}).get("host") or {}).get("gates_slice") or {}
+    if not gates.get("present"):
+        print("run-gate: admission: skipped — profiler has no gates slice",
+              flush=True)
+        return result
+    current = gates.get("memory_current_bytes")
+    maximum = gates.get("memory_max_bytes")
+    if (not isinstance(request, int) or isinstance(request, bool)
+            or not isinstance(current, int) or isinstance(current, bool)
+            or not isinstance(maximum, int) or isinstance(maximum, bool)
+            or maximum <= 0):
+        print("run-gate: admission: skipped — gates slice capacity is "
+              "not derivable", flush=True)
+        return result
+
+    def over_limit(doc: dict) -> bool | None:
+        fresh = ((doc.get("host") or {}).get("gates_slice") or {})
+        cur, cap = fresh.get("memory_current_bytes"), fresh.get(
+            "memory_max_bytes")
+        if (not isinstance(cur, int) or isinstance(cur, bool)
+                or not isinstance(cap, int) or isinstance(cap, bool)
+                or cap <= 0):
+            return None
+        return cur + request > cap * 0.9
+
+    if current + request <= maximum * 0.9:
+        result["state"] = "admitted"
+        print(f"run-gate: admission: gates slice {_fmt_mb(current)} of "
+              f"{_fmt_mb(maximum)} used; lane needs {_fmt_mb(request)} "
+              "— admitted", flush=True)
+        return result
+    if dry_run:
+        result["state"] = "would-wait"
+        print(f"run-gate: admission: would wait — gates slice "
+              f"{_fmt_mb(current)} of {_fmt_mb(maximum)} used; lane needs "
+              f"{_fmt_mb(request)}", flush=True)
+        return result
+
+    limit = max(0, budget_seconds(wait_value))
+    started = clock()
+    last_notice = -60.0
+    while clock() - started < limit:
+        elapsed = clock() - started
+        if elapsed - last_notice >= 60.0:
+            print(f"run-gate: admission: gates slice {_fmt_mb(current)} of "
+                  f"{_fmt_mb(maximum)} used, lane needs {_fmt_mb(request)} "
+                  f"— waiting ({int(elapsed)}s)", flush=True)
+            last_notice = elapsed
+        remaining = max(0.0, limit - elapsed)
+        sleeper(min(30.0, remaining))
+        try:
+            fresh, reason = client.host()
+        except Exception as exc:
+            fresh, reason = None, (
+                f"admission host probe failed unexpectedly: {exc}")
+        if fresh is None:
+            result["warning"] = result["warning"] or reason
+            continue
+        state = over_limit(fresh)
+        if state is False:
+            result["state"] = "admitted-after-wait"
+            result["waited_seconds"] = clock() - started
+            print(f"run-gate: admission: gates slice headroom is available "
+                  f"after {int(result['waited_seconds'])}s — admitted",
+                  flush=True)
+            return result
+        if state is True:
+            fresh_gates = ((fresh.get("host") or {}).get("gates_slice") or {})
+            current = fresh_gates.get("memory_current_bytes", current)
+            maximum = fresh_gates.get("memory_max_bytes", maximum)
+    result["state"] = "proceeded-after-bound"
+    result["waited_seconds"] = max(0.0, clock() - started)
+    result["warning"] = (result["warning"] or
+                          f"admission wait bound {wait_value} expired")
+    print(f"run-gate: WARNING: admission wait bound {wait_value} expired; "
+          "proceeding with the lane", file=sys.stderr, flush=True)
+    return result
+
+
+def prepare_profile_start(lane: dict, lane_name: str, project_dir: Path,
+                          worktree: Path, docker: str, plan: dict,
+                          scope: str) -> dict | None:
+    """Perform the pre-start daemon/host read needed by an ephemeral lane.
+
+    The returned client is reused by `start_lane_profiling`, so auto transport
+    selection and the host/admission read happen once per invocation.  A
+    failed optional probe returns a context with its reason; the caller still
+    starts the lane and the normal basic fallback remains authoritative.
+    """
+    if not plan.get("enabled"):
+        return None
+    client = ProfilerClient(
+        docker, plan["daemon"], transport=plan.get(
+            "transport", PROFILE_TRANSPORT_DEFAULT), socket_path=plan.get(
+                "socket_path", PROFILE_SOCKET_PATH_DEFAULT))
+    try:
+        version_doc, reason = client.version()
+    except Exception as exc:
+        # R-36h: the optional pre-start probe is not allowed to turn a
+        # profiling transport exception into a lane traceback.  Keep the
+        # failed context so the normal start path can disclose/fallback.
+        return {"client": client, "version": None, "host": None,
+                "placement": {"place": False, "memory_high": None,
+                               "memory_max": None, "cpu_weight": None},
+                "admission": None,
+                "fatal_reason": f"profiling crashed unexpectedly: {exc}",
+                "reason": f"profiling preflight failed unexpectedly: {exc}"}
+    context = {"client": client, "version": version_doc, "host": None,
+               "placement": {"place": False, "memory_high": None,
+                              "memory_max": None, "cpu_weight": None},
+               "admission": None, "reason": reason}
+    if version_doc is None:
+        return context
+    try:
+        host_doc, host_reason = client.host()
+    except Exception as exc:
+        host_doc, host_reason = None, (
+            f"profiling host probe failed unexpectedly: {exc}")
+    context["host"] = host_doc
+    context["reason"] = host_reason
+    if host_doc is not None:
+        admission_plan = profile_placement_plan(
+            lane, lane_name, project_dir, host_doc)
+        context["admission"] = profile_admission(
+            client, lane_name, admission_plan, plan.get(
+                "admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT), host_doc)
+        if scope == "container-shared":
+            context["placement"] = admission_plan
+    return context
 
 
 def _apply_record(store: dict, record: dict, keep: int) -> dict:
@@ -9340,15 +9910,24 @@ class ProgressWatch:
     """
 
     def __init__(self, path: Path, lane_name: str,
-                 stall_seconds: int | None, clock=time.monotonic):
+                 stall_seconds: int | None, clock=time.monotonic,
+                 *, auto_bound: bool = False,
+                 pressure_reader=None):
         self.path = path
         self.lane = lane_name
         self.stall_seconds = stall_seconds
         self.clock = clock
+        self.auto_bound = auto_bound
+        self.pressure_reader = pressure_reader or (lambda: False)
         self._announced_silent = False
         self._announced_vanished = False
         self._first: tuple[int, float, object] | None = None
         self._token: tuple | None = None
+        self._cadence_hint: float | None = None
+        self._plan_seen = False
+        self._last_signal_kind: str | None = None
+        self._paused_total = 0.0
+        self._pause_started: float | None = None
         # N4: the last (index, total) actually observed. It is what tells
         # "never saw an event" (not an R2 lane) apart from "had one, and the
         # file is unreadable now" (silence that must keep counting), and it
@@ -9385,6 +9964,7 @@ class ProgressWatch:
         completed = 0
         pending_total = None
         pending_total_seen = False
+        plan_seen = False
         for line_number, line in enumerate(text.splitlines()):
             try:
                 event = json.loads(line)
@@ -9399,6 +9979,8 @@ class ProgressWatch:
                 completed = 0
                 pending_total = None
                 pending_total_seen = False
+                plan_seen = False
+                self._cadence_hint = None
                 continue
             if isinstance(event, dict) and event.get("event") == "candidates":
                 pending_total_seen = "pending_total" in event
@@ -9413,8 +9995,51 @@ class ProgressWatch:
                 newest = event
                 if event["candidate_index"] >= 0:
                     completed += 1
+            if isinstance(event, dict) and event.get("event") == "plan":
+                plan_seen = True
+                hint = event.get("expect_next_event_within_s")
+                if isinstance(hint, (int, float)) \
+                        and not isinstance(hint, bool) \
+                        and math.isfinite(hint) and hint > 0:
+                    self._cadence_hint = float(hint)
+        self._plan_seen = plan_seen
         return (newest, mtime, run_boundary, completed, pending_total,
                 pending_total_seen)
+
+    def _idle_bound(self) -> float | None:
+        if self.stall_seconds is not None:
+            return float(self.stall_seconds)
+        if not self.auto_bound:
+            return None
+        # D-22: the producer's calibrated cadence is authoritative.  A
+        # missing/torn plan event is genuinely unknown, so the mechanical
+        # minimum is the only policy fact we can safely apply.
+        return max(300.0, 3.0 * (self._cadence_hint or 0.0))
+
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value > 5
+
+    def _active_age(self, now: float) -> float:
+        paused = self._paused_total
+        if self._pause_started is not None:
+            paused += max(0.0, now - self._pause_started)
+        return max(0.0, now - self._token_at - paused)
+
+    def _update_pressure_pause(self, now: float) -> None:
+        if not self.auto_bound:
+            return
+        if self._pressure_high():
+            if self._pause_started is None:
+                self._pause_started = now
+            return
+        if self._pause_started is not None:
+            self._paused_total += max(0.0, now - self._pause_started)
+            self._pause_started = None
 
     def _rate_per_min(self, completed: int, elapsed: object,
                       now: float) -> float | None:
@@ -9473,15 +10098,20 @@ class ProgressWatch:
               flush=True)
 
     def _last_event_phrase(self) -> str:
+        if self._last_signal_kind == "plan" and self._last_seen is None:
+            return "the plan event"
         index, total = self._last_seen        # only called after one was seen
         return (f"candidate {index}"
                 + (f"/{total}" if isinstance(total, int)
                    and not isinstance(total, bool) else ""))
 
     def _stall(self, age: float) -> str:
+        bound = self._idle_bound()
+        label = (f"stall_timeout {int(bound)}s" if self.stall_seconds is not None
+                 else f"idle_bound auto {int(bound)}s")
         return (f"the container is still RUNNING but "
                 f"{self.path.name} has not advanced for {int(age)}s "
-                f"(stall_timeout {self.stall_seconds}s); last event seen: "
+                f"({label}); last event seen: "
                 f"{self._last_event_phrase()}")
 
     def poll(self) -> str | None:
@@ -9506,7 +10136,23 @@ class ProgressWatch:
                 self._token_at = now
                 self._announced_silent = False
                 self._announced_vanished = False
+                self._paused_total = 0.0
+                self._pause_started = None
+        self._update_pressure_pause(now)
         if newest is None:
+            if self.auto_bound and self._plan_seen and mtime is not None:
+                token = (mtime, "plan", self._cadence_hint)
+                if token != self._token:
+                    first_observation = self._token is None
+                    self._token = token
+                    self._last_signal_kind = "plan"
+                    if first_observation:
+                        self._token_at = _seed_from_wall_clock(now, mtime)
+                    else:
+                        self._token_at = now
+                bound = self._idle_bound()
+                age = self._active_age(now)
+                return None if age < bound else self._stall(age)
             if self._last_seen is None:
                 # Never an event here: not an R2 lane, or the judge has not
                 # written one yet.
@@ -9534,10 +10180,11 @@ class ProgressWatch:
                       f"{self._last_event_phrase()}. A file that disappears "
                       f"mid-run is SILENCE, not 'no events': the stall clock "
                       f"keeps running from the last event seen", flush=True)
-            if self.stall_seconds is None:
+            bound = self._idle_bound()
+            if bound is None:
                 return None          # no stall_timeout: disclosure only
-            age = now - self._token_at
-            return None if age < self.stall_seconds else self._stall(age)
+            age = self._active_age(now)
+            return None if age < bound else self._stall(age)
         index = newest["candidate_index"]
         elapsed = newest.get("elapsed_s")
         token = (mtime, index, elapsed, completed, pending_total,
@@ -9546,6 +10193,7 @@ class ProgressWatch:
             first_observation = self._token is None
             self._token = token
             self._last_seen = (index, newest.get("candidate_total"))
+            self._last_signal_kind = "candidate"
             self._announced_vanished = False   # a file that came back
             if first_observation:
                 # RW-27 (review round 2, G1). Silence is measured from the
@@ -9573,10 +10221,11 @@ class ProgressWatch:
             self._report(index, newest.get("candidate_total"), elapsed, now,
                          completed, pending_total, pending_total_seen,
                          has_run_header=run_boundary is not None)
-        if self.stall_seconds is None:
+        bound = self._idle_bound()
+        if bound is None:
             return None              # no stall_timeout: disclosure only
-        age = now - self._token_at
-        if age < self.stall_seconds:
+        age = self._active_age(now)
+        if age < bound:
             return None
         return self._stall(age)
 
@@ -9779,7 +10428,8 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
 
 
 def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
-                        recorded: dict | None = None) -> "ProgressWatch | None":
+                        recorded: dict | None = None,
+                        *, auto_bound: bool = False) -> "ProgressWatch | None":
     """A watch for an assay lane (the only kind that writes the file R-38
     constructs), else None — a command lane has nothing to read.
 
@@ -9807,8 +10457,57 @@ def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
     if progress is None:
         return None
     stall = lane.get("stall_timeout")
+    pressure_reader = None
+    if auto_bound:
+        def pressure_reader():
+            snapshot = read_host_pressure_snapshot() or {}
+            return snapshot.get("full_avg10")
     return ProgressWatch(Path(progress), lane_name,
-                         budget_seconds(stall) if stall else None)
+                         budget_seconds(stall) if stall else None,
+                         auto_bound=auto_bound,
+                         pressure_reader=pressure_reader)
+
+
+def consume_profiler_watch(stream: ProfilerWatch, profiler: dict,
+                           lane_name: str, project_dir: Path,
+                           worktree: Path, run_record: dict | None
+                           ) -> str | None:
+    """Drain the daemon reader queue at the existing wait-loop tick."""
+    stalled = None
+    for kind, payload in stream.drain():
+        if kind == "error":
+            profiler["warning"] = profiler.get("warning") or \
+                f"daemon watch failed: {payload}"
+            continue
+        if kind != "event" or not isinstance(payload, dict):
+            continue
+        event = payload.get("event")
+        if event in ("reading", "verdict") and run_record is not None:
+            run_record["watch"] = payload
+            inflight = run_record.get("_inflight")
+            if isinstance(inflight, dict):
+                inflight["watch"] = payload
+                try:
+                    write_inflight_record(project_dir, worktree, lane_name,
+                                          inflight)
+                except Exception as exc:
+                    profiler["warning"] = profiler.get("warning") or \
+                        f"watch record update failed: {exc}"
+        if event != "verdict":
+            continue
+        decision = payload.get("watch")
+        if not isinstance(decision, dict):
+            continue
+        verdict = decision.get("verdict")
+        reason = decision.get("reason") or "daemon watch verdict"
+        if verdict == "killed":
+            stalled = reason
+        elif verdict == "reported" and not profiler.get("_watch_reported"):
+            profiler["_watch_reported"] = True
+            print(f"run-gate: WARNING profiling: daemon watch reported "
+                  f"lane {lane_name!r} stalled: {reason}",
+                  file=sys.stderr, flush=True)
+    return stalled
 
 
 def await_container(docker: str, name: str, lane: dict, lane_name: str,
@@ -9882,9 +10581,9 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     # tick shrinks to PROFILE_SAMPLE_SECONDS so a sample is taken on every
     # timeout (reaching the timeout branch structurally proves the container
     # is still running — RW-5's own precondition for a stall, one signal
-    # over); the daemon path does NO per-tick work in v1 (RW-12) and
-    # profiling-off is unaffected, so both keep the ORIGINAL
-    # PROGRESS_POLL_SECONDS tick. The stall/log-watch poll itself still runs
+    # over). The daemon path consumes its streaming watch at the ordinary
+    # progress-poll cadence; profiling-off keeps that cadence for any
+    # explicitly configured lane watch. The stall/log-watch poll itself runs
     # only once at least PROGRESS_POLL_SECONDS has REALLY elapsed (a
     # monotonic gate, not a second timer) — RG-36/RG-41 stall semantics are
     # therefore unchanged either way.
@@ -9903,6 +10602,30 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 0.0, time.time() - started_epoch)
             budget_deadline = clock() + max(0.0, remaining)
     budget_expired = False
+    daemon_watch: ProfilerWatch | None = None
+    fallback_watch = watch
+    fallback_announced = False
+    watch_restarts = 0
+    if profiler is not None and profiler.get("mode") == "daemon":
+        client = profiler.get("client")
+        session = profiler.get("session")
+        try:
+            if client is None or not session:
+                raise RuntimeError("profile session is unavailable")
+            daemon_watch = client.watch(session)
+        except Exception as exc:
+            profiler["warning"] = profiler.get("warning") or \
+                f"daemon watch could not start: {exc}"
+    if daemon_watch is None and profiler is not None \
+            and profiler.get("mode") != "disabled":
+        if fallback_watch is None:
+            fallback_watch = make_progress_watch(
+                lane, lane_name, project_dir, recorded=recorded,
+                auto_bound=True)
+        if fallback_watch is not None:
+            fallback_announced = True
+            print(f"run-gate: in-process watch — daemon unavailable for lane "
+                  f"{lane_name!r}", flush=True)
     try:
         while True:
             try:
@@ -9925,6 +10648,43 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     subprocess.run([docker, "kill", name],
                                    capture_output=True, text=True)
                     continue
+                if daemon_watch is not None:
+                    watch_stall = consume_profiler_watch(
+                        daemon_watch, profiler, lane_name, project_dir,
+                        worktree, run_record)
+                    if watch_stall is not None:
+                        stalled = watch_stall
+                        break
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
+                        daemon_watch.close()
+                        if watch_restarts == 0:
+                            watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} {state}; "
+                                  "reattaching once", file=sys.stderr,
+                                  flush=True)
+                            daemon_watch = profiler["client"].watch(
+                                profiler["session"])
+                        else:
+                            daemon_watch = None
+                            profiler["warning"] = profiler.get("warning") or \
+                                "daemon watch remained idle after one reattach"
+                            if fallback_watch is None:
+                                fallback_watch = make_progress_watch(
+                                    lane, lane_name, project_dir,
+                                    recorded=recorded, auto_bound=True)
+                            if fallback_watch is not None and not fallback_announced:
+                                fallback_announced = True
+                                print(f"run-gate: in-process watch — daemon "
+                                      f"unavailable for lane {lane_name!r}",
+                                      flush=True)
+                            else:
+                                print(f"run-gate: WARNING profiling: daemon watch "
+                                      f"for lane {lane_name!r} unavailable; "
+                                      "continuing without daemon liveness",
+                                      file=sys.stderr, flush=True)
                 if basic_active:
                     try:
                         tick_lane_profiling(profiler)
@@ -9949,9 +10709,14 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 # but the two are not disjoint by construction, only by this
                 # priority).
                 stalled = (log_watch.poll() if log_watch is not None
-                          else watch.poll() if watch is not None else None)
+                          else fallback_watch.poll()
+                          if fallback_watch is not None else None)
                 if stalled is not None:
                     break
+        if daemon_watch is not None and stalled is None:
+            stalled = consume_profiler_watch(
+                daemon_watch, profiler, lane_name, project_dir, worktree,
+                run_record)
         if stalled is not None:
             # NOT drained here (round-2 review, confirmed by direct
             # reproduction): a stalled container's pump thread is, BY
@@ -9996,6 +10761,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             if path is not None:
                 run_record["log_path"] = str(path)
     finally:
+        if daemon_watch is not None:
+            daemon_watch.close()
         # RG-55/contract Sec 4 obligation 2: `stop` (or the basic sampler's
         # final sample) runs BEFORE `docker rm -f`, on every exit of the try
         # above — stalled, failed or clean — because this `finally` is the
@@ -10460,11 +11227,19 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         session = pending.get("profile_session")
         daemon_name = pending.get("profile_daemon")
         if session and daemon_name:
+            transport = pending.get("profile_transport",
+                                    PROFILE_TRANSPORT_DEFAULT)
+            socket_path = pending.get("profile_socket_path",
+                                      PROFILE_SOCKET_PATH_DEFAULT)
             profiler_state = {"mode": "daemon",
-                              "client": ProfilerClient(docker, daemon_name),
+                              "client": ProfilerClient(
+                                  docker, daemon_name, transport=transport,
+                                  socket_path=socket_path),
                               "daemon": daemon_name, "session": session,
                               "session_line": None, "warning": None,
-                              "sampler": None, "profiler_status": None}
+                              "sampler": None, "profiler_status": None,
+                              "placement": pending.get("placement"),
+                              "admission": pending.get("admission")}
         elif pending.get("profile_token"):
             profiler_state = {"mode": None, "client": None, "daemon": None,
                               "session": None, "session_line": None,
@@ -10600,7 +11375,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         argv += ["--cpus", cpus]
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
-          f"slice {slice_name} ({slice_src})", flush=True)
+          f"slice {gate_slice} ({gate_slice_src})", flush=True)
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "
@@ -10620,6 +11395,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         print_profile_plan_dry_run(profile_plan, "container")
         print("run-gate: DRY RUN — no container was started", flush=True)
         return 0
+    # RG-56/C7: admission is a pre-start gate.  The daemon host read and any
+    # wait therefore happen before Docker creates the lane, never after a
+    # supposedly admitted lane is already consuming capacity.
+    profile_preflight = (prepare_profile_start(
+        lane, lane_name, project_dir, worktree, docker, profile_plan,
+        "container") if profiling else None)
     started = subprocess.run(argv, capture_output=True, text=True)
     if started.returncode != 0:
         # RG-12: a failed `docker run` may still have created the container
@@ -10689,7 +11470,15 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                       if run_record is not None else None),
         "admission_deadline": (run_record.get("admission_deadline")
                                 if run_record is not None else None),
+        "profile_transport": (profile_plan.get("transport")
+                               if profiling else None),
+        "profile_socket_path": (profile_plan.get("socket_path")
+                                if profiling else None),
+        "watch": None,
+        "placement": None,
     }
+    if run_record is not None:
+        run_record["_inflight"] = inflight_payload
     write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
     # RG-55/contract Sec 4 obligation 8: disabled means NO token (already
     # true above), NO daemon call and NO sampler — so the disabled state is
@@ -10724,7 +11513,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         try:
             profiler_state = start_lane_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
-                name, container_id, cgroup, "container")
+                name, container_id, cgroup, "container",
+                preflight=profile_preflight)
         except Exception as exc:
             # B1d (round-1 review): the whole point of `start_lane_profiling`
             # is to never raise -- this call-site wrap is defense in depth
@@ -10744,6 +11534,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             # adds the session id now that `start` succeeded (contract Sec
             # 4.1's "and, after start, profile_session").
             inflight_payload["profile_session"] = profiler_state["session"]
+            if profiler_state.get("placement") is not None:
+                inflight_payload["placement"] = profiler_state["placement"]
+                if run_record is not None:
+                    run_record["placement"] = profiler_state["placement"]
             write_inflight_record(project_dir, worktree, lane_name,
                                   inflight_payload)
     return await_container(docker, name, lane, lane_name, project_dir,
@@ -10909,7 +11703,10 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # `print_profile_plan_dry_run` already branches on `plan["enabled"]`
         # itself, so gating the CALL on `profiling` too made its
         # disabled-disclosure branch unreachable in production.
-        print_profile_plan_dry_run(profile_plan, "container-shared")
+        print_profile_plan_dry_run(
+            profile_plan, "container-shared",
+            profile_placement_plan(lane, lane_name, project_dir, None)
+            if profiling else None)
         print(f"run-gate: DRY RUN — the argv above is what a live run would "
               f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
@@ -10996,6 +11793,16 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
         "profile_daemon": profile_plan["daemon"] if profiling else None,
+        "profile_transport": (profiler_state["client"].carrier
+                               if profiler_state.get("mode") == "daemon"
+                               and profiler_state.get("client") is not None
+                               else None),
+        "profile_socket_path": (profiler_state["client"].socket_path
+                                if profiler_state.get("mode") == "daemon"
+                                and profiler_state.get("client") is not None
+                                else None),
+        "watch": None,
+        "placement": profiler_state.get("placement"),
         # RW-14/RG-35's own pattern, one field over (matches
         # run_container_lane): recorded directly here (a single write is
         # enough — unlike run_container_lane, this write happens AFTER
@@ -11003,27 +11810,48 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "profile_session": (profiler_state["session"]
                            if profiler_state["mode"] == "daemon" else None),
     }
+    if run_record is not None:
+        run_record["_inflight"] = inflight_payload
+        run_record["placement"] = profiler_state.get("placement")
     write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
-    # RG-55: rewritten from a blocking `subprocess.run` to `Popen` +
-    # `proc.wait(timeout=…)` so a BASIC-path sampler can tick mid-run
-    # (contract Sec 4, exec flow) — stdout/stderr stay inherited (Popen's
-    # default, identical to subprocess.run's) and the exit code is read the
-    # same way subprocess.run's own `.returncode` would report it. The
-    # daemon path does no per-tick work (RW-12) and profiling-off ticks
-    # never, so both simply block until the process exits, exactly as
-    # `subprocess.run(argv).returncode` did before this rewrite.
+    # RG-55: use Popen + OutputTee so basic sampling and daemon/in-process
+    # liveness can be serviced while the persistent-container exec runs,
+    # without changing the merged stdout/stderr presented to the operator.
+    # The wait cadence is the sampler interval for basic mode, the progress
+    # poll interval while a daemon/fallback watch is active, or blocking when
+    # neither is needed. The captured child status remains subprocess.run's
+    # ordinary return code.
     # RG-60: the cleanup boundary MUST include Popen itself. A synchronous
     # spawn failure is a lane-execution failure, but the record written above
     # still belongs to this invocation and must be cleared. If Popen succeeds
     # and this client is killed externally, Python never reaches this finally
     # and the record survives for reconciliation (the required client-death
     # behavior).
+    daemon_watch = None
+    fallback_watch = (make_progress_watch(
+        lane, lane_name, project_dir, auto_bound=True) if profiling else None)
+    fallback_announced = False
+    watch_restarts = 0
+    stalled = None
+    if profiler_state.get("mode") == "daemon":
+        try:
+            daemon_watch = profiler_state["client"].watch(
+                profiler_state["session"])
+        except Exception as exc:
+            profiler_state["warning"] = profiler_state.get("warning") or \
+                f"daemon watch could not start: {exc}"
+    if daemon_watch is None and fallback_watch is not None:
+        fallback_announced = True
+        print(f"run-gate: in-process watch — daemon unavailable for lane "
+              f"{lane_name!r}", flush=True)
     proc = None
     output_tee = None
     budget_expired = False
     try:
         basic_active = profiler_state["mode"] == "basic"
-        tick = PROFILE_SAMPLE_SECONDS if basic_active else None
+        tick = (PROFILE_SAMPLE_SECONDS if basic_active else
+                PROGRESS_POLL_SECONDS if daemon_watch is not None or
+                fallback_watch is not None else None)
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, bufsize=0)
         output_tee = OutputTee(
@@ -11055,6 +11883,55 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                             f"docker exec stayed attached after the in-runner "
                             f"timeout; confirm coreutils 'timeout' is installed")
                     break
+                if daemon_watch is not None:
+                    stalled = consume_profiler_watch(
+                        daemon_watch, profiler_state, lane_name, project_dir,
+                        worktree, run_record)
+                    if stalled is not None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
+                        daemon_watch.close()
+                        if watch_restarts == 0:
+                            watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} {state}; "
+                                  "reattaching once", file=sys.stderr,
+                                  flush=True)
+                            daemon_watch = profiler_state["client"].watch(
+                                profiler_state["session"])
+                        else:
+                            daemon_watch = None
+                            profiler_state["warning"] = \
+                                profiler_state.get("warning") or \
+                                "daemon watch remained idle after one reattach"
+                            if fallback_watch is not None and not fallback_announced:
+                                fallback_announced = True
+                                print(f"run-gate: in-process watch — daemon "
+                                      f"unavailable for lane {lane_name!r}",
+                                      flush=True)
+                            else:
+                                print(f"run-gate: WARNING profiling: daemon watch "
+                                      f"for lane {lane_name!r} unavailable; "
+                                      "continuing without daemon liveness",
+                                      file=sys.stderr, flush=True)
+                if daemon_watch is None and fallback_watch is not None:
+                    stalled = fallback_watch.poll()
+                    if stalled is not None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
                 try:
                     tick_lane_profiling(profiler_state)
                 except Exception as exc:
@@ -11064,6 +11941,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                         f"profiling tick failed unexpectedly: {exc}"
         output_tee.join()
     finally:
+        if daemon_watch is not None:
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
+            daemon_watch.close()
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
         # Contract Sec 4 obligation 2: finished BEFORE this function returns
         # — there is no container of run-gate's own to remove on an exec
         # lane, so this IS the equivalent "same finally" moment.
@@ -11075,6 +11958,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
                 run_record["profile_ref"] = profile_result["profile_ref"]
+                run_record["placement"] = profiler_state.get("placement")
         except Exception as exc:
             # B1d: profiling must NEVER pre-empt the lane's own exit code --
             # `code` was already captured above (or this exec's process is
@@ -11114,6 +11998,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             and time.monotonic() >= budget_deadline:
         raise GateBudgetExceeded(code,
                                  run_record.get("log_path") if run_record else None)
+    if stalled is not None:
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
     return code
 
 
@@ -11158,7 +12044,10 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # unconditional.
         if profile_plan and profile_plan["enabled"]:
             print_host_pressure_line()
-        print_profile_plan_dry_run(profile_plan, "container-shared")
+        print_profile_plan_dry_run(
+            profile_plan, "container-shared",
+            profile_placement_plan(lane, lane_name, project_dir, None)
+            if profile_plan and profile_plan["enabled"] else None)
         print(f"run-gate: DRY RUN — would run in {project_dir}: "
               f"{shlex.join(argv)}", flush=True)
         return 0
@@ -11211,6 +12100,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                   f"DEVCONTAINER-WIDE (RG-57 bare-host daemon path): cgroup "
                   f"numbers reflect the whole devcontainer, not lane "
                   f"{lane_name!r} exclusively", flush=True)
+    if run_record is not None:
+        run_record["placement"] = profiler_state.get("placement")
     # RG-57/contract Sec 4.1: the SAME per-invocation token the container/
     # exec paths inject via `-e RUN_GATE_PROFILE_SESSION=...` -- here it is
     # the bare-host CHILD's own environment, and ONLY on the daemon path:
@@ -11256,6 +12147,16 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     proc = None
     output_tee = None
     budget_expired = False
+    daemon_watch = None
+    watch_restarts = 0
+    stalled = None
+    if profiler_state.get("mode") == "daemon":
+        try:
+            daemon_watch = profiler_state["client"].watch(
+                profiler_state["session"])
+        except Exception as exc:
+            profiler_state["warning"] = profiler_state.get("warning") or \
+                f"daemon watch could not start: {exc}"
     try:
         proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
                                 stdout=subprocess.PIPE,
@@ -11301,6 +12202,50 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                             pass
                         kill_deadline = float("inf")
                 time.sleep(0.05)
+        elif daemon_watch is not None:
+            while True:
+                try:
+                    wait_for = PROGRESS_POLL_SECONDS
+                    if budget_deadline is not None:
+                        remaining = max(0.0, budget_deadline - time.monotonic())
+                        wait_for = min(wait_for, remaining)
+                    code = proc.wait(timeout=wait_for)
+                    break
+                except subprocess.TimeoutExpired:
+                    if budget_deadline is not None \
+                            and time.monotonic() >= budget_deadline:
+                        budget_expired = True
+                        code = terminate_process_group(proc)
+                        break
+                    if daemon_watch is None:
+                        continue
+                    stalled = consume_profiler_watch(
+                        daemon_watch, profiler_state, lane_name, project_dir,
+                        worktree, run_record)
+                    if stalled is not None:
+                        code = terminate_process_group(proc)
+                        break
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
+                        daemon_watch.close()
+                        if watch_restarts == 0:
+                            watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} {state}; "
+                                  "reattaching once", file=sys.stderr,
+                                  flush=True)
+                            daemon_watch = profiler_state["client"].watch(
+                                profiler_state["session"])
+                        else:
+                            daemon_watch = None
+                            profiler_state["warning"] = \
+                                profiler_state.get("warning") or \
+                                "daemon watch remained idle after one reattach"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} unavailable; "
+                                  "continuing without daemon liveness",
+                                  file=sys.stderr, flush=True)
         else:
             wait_for = (max(0.0, budget_deadline - time.monotonic())
                         if budget_deadline is not None else None)
@@ -11317,6 +12262,12 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             terminate_process_group(proc)
         if output_tee is not None:
             output_tee.join()
+        if daemon_watch is not None:
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
+            daemon_watch.close()
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
         measured_duration_seconds = time.monotonic() - started_monotonic
         ended_at = _iso_utc(time.time())
         try:
@@ -11345,6 +12296,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if budget_expired:
         raise GateBudgetExceeded(code,
                                  run_record.get("log_path") if run_record else None)
+    if stalled is not None:
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
     return code
 
 
@@ -11554,6 +12507,18 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  shape       mutation lane: a generous assay `budget` +",
         "              judge.mutation.budget_per_candidate + this key. R0/R1:",
         "              the command's own bound is all there is",
+        "",
+        "profiling (RG-55/P5) — optional resource telemetry, never judgment:",
+        "  [profile]   enabled, daemon, interval, damon, transport (auto|exec|socket),",
+        "              socket_path, and bounded admission_wait (default 10m);",
+        "              auto selects the socket only after a valid version probe",
+        "  watch       one daemon reader per session records readings/verdicts;",
+        "              killed follows the declared stall path, reported warns once;",
+        "              an ended/failed watch retries once, then falls back to the",
+        "              calibrated in-process assay watch with host-PSI idle pause",
+        "  placement   daemon-backed exec/bare-host lanes may use resources.memory",
+        "              or the committed footprint median plus resources.memory_max;",
+        "              ephemeral lanes use CGROUP_PARENT_DEV_GATES when configured",
         "",
         "lane history (RG-27) — measured and persisted, never acted on here:",
         f"  store       <project>/{HISTORY_DIR_NAME}/{HISTORY_FILE_NAME} in the JUDGED",

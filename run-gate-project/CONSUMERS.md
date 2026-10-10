@@ -94,6 +94,16 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    lane override, so it always wins). Any other value refuses at load, by
    name — a mistyped override is a refusal, never a silent no-op.
 
+   The daemon watch is one stream per profiling session. Readings and the
+   final verdict are recorded in the run's history/inflight record; a daemon
+   `killed` verdict follows the declared stall path, while `reported` is one
+   warning and never a lane verdict. If the daemon or its watch transport is
+   unavailable, run-gate uses its in-process assay progress watch. That
+   fallback uses the assay plan's calibrated cadence (`max(300s, 3x the
+   advertised next-event bound)`) and pauses its idle clock while host memory
+   PSI `full avg10` is above 5, so host contention cannot become a false
+   liveness verdict.
+
    <!-- run-gate-config -->
    ```toml
    schema_version = 1
@@ -112,6 +122,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
+   transport = "auto"             # auto | exec | socket
+   socket_path = "/run/cgprofile/ctl.sock"  # socket carrier path
+   admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
    # shadowing rule; consumed
@@ -166,7 +179,7 @@ schema_version = 1
 mode = "ephemeral"
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
-forward_env = ["SCHEMA_GATE_PW"]
+forward_env = ["SCHEMA_GATE_PW", "CGROUP_PARENT_DEV_BACKGROUND"]
 
 [lanes.suite]
 kind = "command"
@@ -208,11 +221,17 @@ resource_observer = "cgprofile"
 clean_tree = true
 ```
 
-For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
-`assay_lane = "<name declared in assay.toml>"`. Internal source mode omits
-`assay_command` and pins. External immutable mode supplies both, plus the
-`[lanes.<name>.pins.assay]` version and SHA-256 table; the target assay lane,
-not the pin table, owns its mutation budget.
+The `native-r2` lane demonstrates the opt-in observer-only socket integration:
+it exposes only the read-only resource-observer socket to the Assay process in
+the private tester namespace; it does not expose the daemon control socket.
+Internal Assay lanes omit `assay_command` and `pins`, so run-gate installs the
+selected worktree's `assay/` source. Explicit command plus immutable pin
+sidecars remain available for external consumers. Lane options belong on the
+lane itself, and the target `assay.toml` owns the mutation budget.
+
+For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
+optional placement ceiling, not a second Docker memory limit. Without it,
+run-gate derives the ceiling from the verified gates-slice cap and request.
 
 ### Native R2 resource observer
 
@@ -1564,10 +1583,18 @@ would silently drop every other lane's committed data).
   tail next to the run's own peak and the standing history median — three
   numbers, one line: what just happened, what has been typical, and what
   was budgeted.
-- **RG-56 (a later wave, not this one)** is where a footprint becomes an
-  ADMISSION signal — scheduling concurrent lanes against a slice's real
-  remaining budget instead of a guess. This package only measures and
-  commits the number; nothing here decides policy on it yet.
+- **RG-56 admission (P5).** Before a daemon-backed lane starts, run-gate reads
+  the gates slice through the profiler registry. When the lane's declared or
+  derived request would exceed the 90% headroom threshold, it waits in 30-second
+  checks, prints a notice at most once per minute, and then proceeds after the
+  bounded `admission_wait` (10 minutes by default) with one warning. It never
+  refuses a lane or changes its verdict because of host load; `--dry-run`
+  reports the decision without waiting. Ephemeral lanes are admitted before
+  Docker starts and use the parent resolved by their declared cgroup policy:
+  `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+  The selected source is required; absence fails closed instead of launching
+  under Docker's unconfined default. Long-running application stacks receive
+  `$CGROUP_PARENT_DEV_BACKGROUND` separately through declared `forward_env`.
 
 ### Failure evidence and selective footprint updates
 

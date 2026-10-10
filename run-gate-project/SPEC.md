@@ -54,7 +54,12 @@ amended (the "assay lanes ONLY"
 `stall_timeout` text was stale since RG-41 (rev 36) made it legal on
 `command` lanes too — a NEW `R-40f`, backfilled, gives RG-41's own
 log-stream liveness mechanism the rule id it shipped without).
-Rev 11: internal vbpub assay lanes may omit `assay_command` and `pins`; the
+Rev 11: RG-55 P5 (interface contract v1.1 transport and streaming watch,
+daemon policy authoring, verified gates-slice placement, and bounded
+wait-then-proceed admission) — `R-43j`..`R-43l` and `R-45`; the in-process
+progress fallback is calibrated from the producer's plan and pauses its idle
+clock during high host memory PSI (`R-40h`).
+Internal vbpub assay lanes may omit `assay_command` and `pins`; the
 launcher installs Assay from the selected worktree and records the runtime
 judge identity, while explicit command-plus-pin mode remains for external
 consumers. The tester-unified image supplies the declared build backend and a
@@ -1972,7 +1977,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     work count minus candidates completed in the active segment. A legacy
     stream with no `run` header retains whole-file behavior. Run-Gate does not
     truncate the stream, which Assay uses for resume history.
-
+  - **`R-40h` Calibrated no-daemon fallback (RG-55/P5).** When the daemon or
+    its watch transport is unavailable, an assay lane's in-process fallback
+    may apply an automatic idle bound only after it has read the judge's
+    `plan` event. The bound is `max(300s, 3 ×
+    expect_next_event_within_s)`; the plan arms it even before candidate 0, so
+    a wedged collection phase is bounded, while a file with no plan and no
+    candidate events remains the `R-40b` disclosure-only case. During this
+    automatic bound, host memory PSI `full avg10 > 5` pauses the idle clock;
+    the measured high-load interval is not converted into a false stall. An
+    explicit `stall_timeout` remains the author's policy and retains its
+    existing semantics. This fallback is advisory to profiling only: it never
+    changes a lane verdict except through the lane's already-declared stall
+    path.
 - `R-41` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
   no longer depends on every CALLER wrapping its own `flock` around the
   `docker exec` (dstdns `GUIDE.md` §1) to keep two lanes racing the SAME
@@ -2109,11 +2126,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
     `R-09`'s rule): `enabled` (bool, default true), `daemon` (container
     name, default `cgprofile-host-daemon`), `interval` (the `budget`
-    grammar, default `"1s"`), `damon` (bool, default true). Per lane:
-    `profile = false` (opt out entirely — `profile = true` is REFUSED by
-    name, a no-op typo for "delete this key") or a table
-    `[lanes.<n>.profile] { enabled, damon }` overriding those two only.
-    Unknown keys refuse at load like every other table.
+    grammar, default `"1s"`), `damon` (bool, default true), `transport`
+    (`"auto"`, `"exec"`, or `"socket"`, default `"auto"`),
+    `socket_path` (absolute Unix-socket path), and `admission_wait` (the
+    `budget` grammar, default `"10m"`). Per lane: `profile = false` (opt out
+    entirely — `profile = true` is REFUSED by name, a no-op typo for "delete
+    this key") or a table `[lanes.<n>.profile] { enabled, damon }` overriding
+    those two only. Unknown keys refuse at load like every other table.
   - **`R-43i` Bare-host lanes (RG-57/RW-27b).** A bare-host lane IS
     profiled once `[profile]` is enabled — it is NOT categorically
     unprofiled (superseded RG-55 v1 text). Daemon path: the target is
@@ -2178,7 +2197,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     "(peak <= floor)" next to such a lane's numbers, alongside the
     existing `[source: rusage-maxrss]` caveat; the footprint manifest's
     per-lane entry carries `"peak_at_floor"` from its most-recently-
-    profiled run (`R-44a`). A future RG-56 admission-control consumer
+    profiled run (`R-44a`). `R-45` is the admission-control consumer. It
     should treat a `peak_at_floor: true` lane as small (its true peak is
     bounded above by nothing this measurement can express, but bounded
     BELOW by nothing useful either — the honest reading is "small or
@@ -2202,6 +2221,47 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     out entirely (no token, no daemon call, no `wait4()` bracket);
     `--dry-run` rehearses the plan (`container-shared`) and attempts
     nothing for real.
+
+- **`R-43j` Transport and request parity (RG-55/P5 C2).** The project-level
+  `[profile]` table's `transport` is `"auto"`, `"exec"`, or `"socket"`.
+  `"socket"` uses `socket_path`; `"exec"` uses the daemon container's
+  `docker exec` carrier; `"auto"` probes the configured socket with
+  `ctl version` and selects it only on a valid v1.1 response, otherwise
+  retaining the exec carrier with a disclosure. Both carriers serialize the
+  same v1.1 request object and pass through the same response parser. A
+  carrier, daemon, or parser failure is profiling state unknown and follows
+  `R-36h`; it never changes the lane's verdict.
+- **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
+  `start`, run-gate creates one `ctl watch` reader for that session. `reading`
+  and `verdict` events update the inflight/history watch field. A daemon
+  `killed` verdict is the declared stall path; `reported` emits one warning
+  and does not fail the lane. A closed or failed watch is disclosed and the
+  client reattaches once before using the in-process fallback. A watch that
+  ends without a verdict is not itself a verdict.
+- **`R-43l` Placement and parent (RG-55/P5 C3/C6).** A daemon-backed exec or
+  bare-host lane with a declared `resources.memory`, or with a committed
+  manifest median from which one can be derived, sends a placement request.
+  The request uses the declaration when present, otherwise `ceil(median ×
+  1.5)`; `resources.memory_max` is the explicit ceiling, otherwise the client
+  derives a ceiling from the request and verified gates-slice cap. Applied
+  placement is recorded as nullable history/inflight data. Refusal or lack of
+  a placement fact warns and runs unplaced. Ephemeral lanes retain their
+  Docker memory/CPU controls and resolve their parent from the environment's
+  `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+  The selected source is required; absence is a hard configuration error,
+  never an unconfined Docker launch. The inherited tester environment binds
+  `cgroup_slice_env` to the host-provided gates value.
+- **`R-45` Bounded admission (RG-55/P5 C7).** Before a daemon-backed lane starts,
+  run-gate reads the profiler's host document. If the verified gates slice's
+  current memory plus the lane request exceeds 90% of its maximum, the client
+  checks again every 30 seconds, prints a waiting notice at most once per
+  minute, and honors `[profile] admission_wait` (default `"10m"`). It admits
+  immediately when headroom appears; at the bound it proceeds with exactly
+  one warning. Missing or indeterminate capacity is disclosed as skipped.
+  Neither host PSI, registry contention, a timeout of this wait, nor a
+  transport failure refuses a lane or changes its verdict. `--dry-run`
+  reports `would-wait` without sleeping or starting a lane. Admission is
+  performed before an ephemeral Docker start.
 
 - `R-44` **The footprint manifest (RG-55/C5), `run-gate.footprint.json`
   (schema 1, TRACKED — committed, unlike `.run-gate/`).** `footprint [LANE]

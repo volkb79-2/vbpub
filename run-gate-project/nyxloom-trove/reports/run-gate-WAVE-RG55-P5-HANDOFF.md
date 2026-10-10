@@ -1,12 +1,27 @@
-# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-63 transport/watch/placement, RG-56 admission)
+# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-72 transport/watch/placement, RG-56 admission)
 
-**Implementer:** FRESH Sonnet session, checkpoint clause on (HARD).
+**Historical implementer contract:** FRESH Sonnet session, checkpoint clause on (HARD).
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
 `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-{LOG,REPORT,BRIEF-n}.md`.
-Release after review: run-gate **23.9.0**, `__revision__ = 43` (the
-controller runs `cmru release` and installs the wheel).
 
-## Where you work
+## Controller continuation — 2026-10-01
+
+The P5 implementation is integrated with current main in
+`.worktrees/rg55-p5-assay63-reconcile`, branch
+`rg55-p5-assay63-reconcile`. The mainline integration commit is `bb7e21b7`;
+candidate source identity is `__revision__ = 47`, targeting run-gate 23.10.0
+(23.9.1 is already released). The controller supplies the exact final HEAD to
+the fresh Sol reviewer after the target documentation and gates are final.
+
+Mainline rev 44 supersedes the older optional gates-parent wording in C3
+below: gate/lane containers resolve their required parent through
+`cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+Absence of the selected source is a hard error. A lane that deliberately
+starts a long-running application stack receives
+`$CGROUP_PARENT_DEV_BACKGROUND` separately through declared `forward_env`.
+Do not restore the former silent/default-parent behavior.
+
+## Original implementation dispatch (historical; current checkout above)
 
 ```
 git -C /workspaces/vbpub worktree add .worktrees/rg55-client-v11 -b rg55-client-v11 <base>
@@ -39,11 +54,11 @@ brief (controller's).
    shapes per verb), `cgprofile-P6-FOLLOWUPS-REPORT.md` (probe evidence).
 5. `SPEC.md` R-04, R-09, R-29, R-30, R-36, R-39, R-40, R-41, R-43 a–i,
    R-44; `CONSUMERS.md` §6; `LANE-AUTHORING.md`; `CHANGES.md`;
-   backlog RG-56 (exists) — RG-63 you file (C1).
+   backlog RG-56 (exists) — RG-72 you file (C1).
 
 ## Deliverables (commit each separately, in this order)
 
-**C1 — backlog rows.** File **RG-63** (policy author / watch consumer /
+**C1 — backlog rows.** File **RG-72** (policy author / watch consumer /
 transport seam / placement requests — mechanism, proposed contract, oracle
 sketch per row convention, provenance RW-29..RW-35) and update RG-56's
 "next wave" wording to "this package (P5)". No code.
@@ -66,14 +81,15 @@ absent / permission denied / no answer / docker exec failed). `--dry-run`
 discloses the carrier. Goldens `fixtures/rg55/socket/*-request.json` are
 asserted byte-for-byte against what your builder emits for each verb.
 
-**C3 — gates slice default (D-19, D-24).** Ephemeral lane containers get
-`--cgroup-parent "$CGROUP_PARENT_DEV_GATES"` when that variable is set and
-non-empty (unset → today's behaviour, disclosed once by `doctor` as "gates
-slice: not configured — lanes run under the default parent"); a docker
-`run` failure whose stderr names the cgroup parent is reported with a
-WARNING naming mdt host-setup (`dev-gates.slice` not installed) and the
-lane FAILS as any other docker failure (never silently re-run elsewhere).
-SPEC R-30 amended; CONSUMERS names the variable; `doctor` shows it.
+**C3 — gates parent (D-19, D-24; updated for mainline rev 44).** Ephemeral
+lane containers use the parent resolved from the environment's declared
+`cgroup_slice`, then its `cgroup_slice_env`, then the required
+`$CGROUP_PARENT_DEV_GATES`. A missing selected source is a hard error, never
+an unconfined Docker launch. The same resolved parent is forwarded to the
+child as `CGROUP_PARENT_DEV_GATES`; `$CGROUP_PARENT_DEV_BACKGROUND` is a
+separate declared `forward_env` fact for a deliberately started long-running
+application stack. A Docker `run` failure naming the cgroup parent remains a
+failure; never retry silently under another parent.
 
 **C4 — policy author (D-27, §8.4).** At `ctl start` run-gate passes:
 `--progress-stream <path as the lane sees it>` for lanes that have one
@@ -153,7 +169,7 @@ two traps on the new keys); `history --json` prints them; `stats` and
 
 **C9 — close-out.** SPEC R-40a/b, R-43 j–l, R-45 (admission), Rev bump;
 README; CONSUMERS §6 (transport, gates slice, admission); LANE-AUTHORING;
-CHANGES `[Unreleased]` per RG id; RG-56 + RG-63 → FIXED with evidence;
+CHANGES `[Unreleased]` per RG id; RG-56 + RG-72 → FIXED with evidence;
 `__revision__ = 43`; `usage()`; the `doctor` output in the REPORT.
 
 ## Live probes (yours; daemon state is announced in the dispatch message)
@@ -174,11 +190,19 @@ every probe container in a `finally`.
 ## Gates (verdict in a SEPARATE step, never a pipe tail)
 
 Targeted files while iterating (`nice -n 19 ionice -c 3 python3 -m pytest
-tests/<file> -q`, SERIAL). Final tip, each once, in order: `./run-gate.py
-selftest` (RG-53: 100% line AND branch on every changed line vs `--base
-<base>`), `assay-r1`, `assay-r3`, LAST `assay-r2` (`budget_per_candidate =
-"900s"` is set; keep it), `gate-full` if present. Survivors: a killing test
-or a written equivalent-mutant justification (RW-20/RW-22). One resume.
+tests/<file> -q`, SERIAL). On the final pre-merge tip, run `./run-gate.py
+selftest` (RG-53: 100% line AND branch on every changed line),
+`./run-gate.py --base <base> assay-r1`, `./run-gate.py assay-r3`, and
+`./run-gate.py doctor`, plus the live probes above. This worktree has no
+upstream, and assay-r1/assay-r2 delegate their comparison base, so pass the
+exact base named in the dispatch (currently `main`) explicitly or run-gate
+refuses before starting the lane. After fresh Sol ACCEPT and provisional
+merge, the controller runs `./run-gate.py --base <base> assay-r2` and
+`./run-gate.py --base <base> gate-full` asynchronously in attached CIU
+worktrees; both remain release blockers. Keep the R2 tree quiet, resume only
+on the same judged tree, and retain `budget_per_candidate = "900s"`. Survivors
+must be killed by a behavioral oracle or justified as equivalent
+(RW-20/RW-22).
 
 ## Records
 
