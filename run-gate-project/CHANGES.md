@@ -8,7 +8,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
+
+### Changed
+- maintenance(run-gate): refresh the tracked lane-footprint manifest and consumer transcript from current daemon-backed histories; keep the short-lived assay-r3 memory peak unknown when profiling cannot attach
+
 ### Fixed
+- fix(run-gate): serialize the observer-backed native R2 lane so a shared tester-cgroup limit event cannot be assigned to the wrong mutant
+- fix(run-gate): scope Assay progress to the latest `run` record, calculate resumed rates from run-local events, and suppress ETAs without a trustworthy current-run `pending_total` (RG-90, rev 60)
 - fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)
 - fix(run-gate): run tester-unified selftest and canary lanes from the selected worktree's project directory, not the image's unset/default working directory
 - fix(run-gate): derive assay pytest temp and Git ceiling paths from the verified state mount, and create the default state root for fresh bare-host lanes (RG-85)

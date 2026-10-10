@@ -3421,11 +3421,13 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
 def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
-    # The tagged release remains source rev 55; RG-88 is the current
-    # unreleased revision. Historical release metadata must not drift when
-    # the launcher revision advances.
+    # The tagged release remains source rev 55; RG-90 is the current
+    # unreleased revision. RG-89 stays at the revision that introduced its
+    # observer contract. Historical release metadata must not drift when the
+    # launcher revision advances.
     assert "This section describes released source rev 55." in changes
-    assert f"RG-88, rev {run_gate.__revision__}" in changes
+    assert f"RG-90, rev {run_gate.__revision__}" in changes
+    assert "RG-89, rev 58" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes
@@ -7793,7 +7795,200 @@ class TestShippedGateFullDeclaration:
             "budget": "15m",
         }
         assert lanes["assay-r2"]["assay_lane"] == "r2"
+        assert lanes["assay-r2"]["environment"] == "tester-unified"
+        assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
+        assert lanes["assay-r2"]["resources"] == {"cpus": "3"}
+        # Two scratch worktrees still share one tester-cgroup event counter.
+        # Concurrent candidate windows cannot safely attribute a limit hit.
+        assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
+        assert assay_cfg["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
         assert "assay-r2" not in gate_full["argv"][2]
+
+
+class TestResourceObserverLane:
+    def _stat(self, mode, uid=0, gid=994):
+        return SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid)
+
+    def _patch_socket_metadata(self, monkeypatch, socket_path, *,
+                               parent_mode=None, parent_uid=0,
+                               parent_gid=994, socket_mode=None,
+                               socket_uid=0, socket_gid=994,
+                               missing=None):
+        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o770
+        socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
+
+        def fake_lstat(path):
+            path = Path(path)
+            if path == socket_path.parent:
+                return self._stat(parent_mode, parent_uid, parent_gid)
+            if path == socket_path:
+                if missing:
+                    raise OSError("socket path missing")
+                return self._stat(socket_mode, socket_uid, socket_gid)
+            raise AssertionError(f"unexpected lstat path: {path}")
+
+        real_os = run_gate.os
+
+        class OsProxy:
+            def __getattr__(self, name):
+                return fake_lstat if name == "lstat" else getattr(real_os, name)
+
+        monkeypatch.setattr(run_gate, "os", OsProxy())
+
+    def test_disabled_observer_adds_no_docker_flags(self):
+        assert run_gate.resource_observer_docker_flags(
+            {"kind": "assay", "environment": "tester-unified"}) == []
+
+    @pytest.mark.parametrize("lane, message", [
+        ({"kind": "assay", "environment": "tester-unified",
+         "resource_observer": "other"}, "must be 'cgprofile'"),
+        ({"kind": "command", "environment": "bare-host",
+         "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
+        ({"kind": "sequence", "environment": "tester-unified",
+          "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
+        ({"kind": "assay", "environment": "bare-host",
+          "resource_observer": "cgprofile"},
+         "requires an assay or command lane in tester-unified"),
+    ])
+    def test_invalid_observer_lane_refuses(self, lane, message):
+        with pytest.raises(run_gate.GateError, match=message):
+            run_gate.resource_observer_docker_flags(lane)
+
+    def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
+        run_gate._validate_lane(
+            "probe", {"kind": "command", "environment": "tester-unified",
+                      "argv": ["true"], "resource_observer": "cgprofile"},
+            "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="only for assay or command lanes"):
+            run_gate._validate_lane(
+                "probe", {"kind": "sequence", "lanes": ["inner"],
+                          "resource_observer": "cgprofile"}, "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="environment = \\\"tester-unified\\\""):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "environment": "bare-host",
+                       "assay_lane": "r2", "resource_observer": "cgprofile"},
+                "fixture")
+        with pytest.raises(run_gate.GateError, match="must be 'cgprofile'"):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "environment": "tester-unified",
+                       "assay_lane": "r2", "resource_observer": "anything"},
+                "fixture")
+
+    def test_missing_socket_is_infrastructure_error(self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
+        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"})
+
+    @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
+        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFDIR | 0o770, 1000, None, 0, 994, "root-owned directory"),
+        (None, 0, run_gate.stat.S_IFREG | 0o660, 0, 994, "not a Unix socket"),
+        (None, 0, None, 1000, 994, "ownership does not match"),
+        (None, 0, None, 0, 995, "ownership does not match"),
+        (None, 0, run_gate.stat.S_IFSOCK | 0o666, 0, 994, "not accessible to other"),
+        (None, 0, run_gate.stat.S_IFSOCK | 0o640, 0, 994, "group-connectable"),
+    ])
+    def test_unsafe_socket_metadata_refuses(
+            self, tmp_path, monkeypatch, parent_mode, parent_uid,
+            socket_mode, socket_uid, socket_gid, message):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_mode=parent_mode,
+            parent_uid=parent_uid, socket_mode=socket_mode,
+            socket_uid=socket_uid, socket_gid=socket_gid)
+        with pytest.raises(run_gate.GateInfraError, match=message):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"})
+
+    @pytest.mark.parametrize("kind", ["assay", "command"])
+    def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
+            self, tmp_path, monkeypatch, kind):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        assert run_gate.resource_observer_docker_flags({
+            "kind": kind, "environment": "tester-unified",
+            "resource_observer": "cgprofile"}) == [
+                "--mount",
+                f"type=bind,source={socket_path},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+                "--group-add", "1234",
+                "-e", "ASSAY_RESOURCE_OBSERVER_SOCKET="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+            ]
+        assert "ctl.sock" not in run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE
+
+    @pytest.mark.parametrize("kind", ["assay", "command"])
+    def test_container_argv_wires_the_opted_in_observer(
+            self, tmp_path, monkeypatch, kind):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lane = {
+            "kind": kind,
+            "environment": "tester-unified",
+            "resource_observer": "cgprofile",
+            "budget": "4h",
+            "resources": {"cpus": "3"},
+        }
+        if kind == "assay":
+            lane["assay_lane"] = "r2"
+        else:
+            lane["argv"] = ["bash", "-c", "true"]
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_kw: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_assay_inner", lambda *_a, **_kw: "true")
+        monkeypatch.setattr(run_gate, "assure_assay_state_root", lambda *_a, **_kw: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_kw: "true")
+        assembled = []
+        real_join = run_gate.shlex.join
+
+        def capture_argv(argv):
+            assembled.append(list(argv))
+            return real_join(argv)
+
+        monkeypatch.setattr(run_gate.shlex, "join", capture_argv)
+        assert run_gate.run_container_lane(
+            lane, "assay-r2", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester-unified:local"},
+            "fixture", "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test"},
+        ) == 0
+        argv, = assembled
+        assert "--cgroup-parent" in argv
+        assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "3"
+        assert ["--mount", f"type=bind,source={socket_path},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly"] == argv[
+                    argv.index("--mount"):argv.index("--mount") + 2]
+        assert ["--group-add", "1234"] == argv[
+            argv.index("--group-add"):argv.index("--group-add") + 2]
+        assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}" in argv
+        assert not any("ctl.sock" in item for item in argv)
 
 
 class TestComparisonBasePassthrough:
@@ -14737,11 +14932,18 @@ class FakeClock:
 
 def write_progress(path: Path, *events: dict, header: bool = True) -> None:
     """Write a progress file in assay's own shape: a `run` header line, then
-    one event per candidate."""
+    zero or more progress records."""
     lines = ['{"event": "run", "lane": "cw2b_schema"}'] if header else []
     lines += [json.dumps(e) for e in events]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
+
+
+def append_progress(path: Path, *events: dict) -> None:
+    """Append records as Assay does when a progress file is resumed."""
+    with path.open("a") as stream:
+        for event in events:
+            stream.write(json.dumps(event) + "\n")
 
 
 def candidate(i: int, total: int = 172, **over) -> dict:
@@ -14776,39 +14978,114 @@ class TestProgressWatch:
     def test_a_moving_file_yields_rate_and_eta_from_run_gates_own_clock(
             self, tmp_path, capsys):
         w = self._watch(tmp_path)
-        write_progress(w.path, candidate(10))
+        write_progress(w.path, candidate(10), header=False)
         assert w.watch.poll() is None
         # First observation is a BASELINE: one event and no clock in the file
         # is not a measurement, and inventing a rate would be the guess this
         # replaces.
         assert "progress sql-mutation: candidate 10/172\n" in capsys.readouterr().out
         w.clock.advance(600)                      # 10 minutes
-        write_progress(w.path, candidate(29))     # +19 candidates
+        append_progress(w.path, *(candidate(i) for i in range(11, 30)))
         assert w.watch.poll() is None
         out = capsys.readouterr().out
         # 19 candidates in 10 min = 1.9/min; 143 left => 75m.
         assert ("run-gate: progress sql-mutation: candidate 29/172, 1.9/min, "
                 "ETA 75m") in out
 
+    def test_legacy_rate_needs_positive_elapsed_time(self, tmp_path, capsys):
+        """A legacy stream without elapsed_s cannot produce a rate when two
+        candidate events are observed at the same clock instant."""
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(10))
+        assert w.watch.poll() is None
+        capsys.readouterr()
+        append_progress(w.path, candidate(11))
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "candidate 11/172" in out
+        assert "/min" not in out and "ETA" not in out
+
     def test_an_event_carrying_elapsed_s_is_preferred_over_our_clock(
             self, tmp_path, capsys):
-        """assay B065 adds per-event timing. The same code becomes exact the
-        day it lands — no rewrite, no second implementation."""
+        """Assay's run-relative elapsed time and candidate events give an
+        exact rate when the current run's event history is visible."""
         w = self._watch(tmp_path)
-        write_progress(w.path, candidate(60, elapsed_s=1200))   # 3.0/min
+        write_progress(
+            w.path,
+            {"event": "candidates", "candidate_total": 172,
+             "pending_total": 172},
+            *(candidate(i, elapsed_s=i * 20) for i in range(61)),
+        )   # 60 intervals / 20 minutes = 3.0/min
         assert w.watch.poll() is None
         assert ("run-gate: progress sql-mutation: candidate 60/172, 3.0/min, "
                 "ETA 37m") in capsys.readouterr().out
 
+    def test_resumed_eta_uses_current_run_events_not_campaign_index(
+            self, tmp_path, capsys):
+        """A resumed candidate keeps its campaign-wide index, while its
+        elapsed time restarts at the new run header. Rate and remaining work
+        must therefore use current-run event count and Assay's pending_total,
+        not `candidate_index / elapsed_s`."""
+        w = self._watch(tmp_path)
+        write_progress(
+            w.path,
+            {"event": "candidates", "candidate_total": 1059,
+             "pending_total": 480},
+            *(candidate(579 + i, total=1059, elapsed_s=i * 20)
+              for i in range(61)),
+        )
+        assert w.watch.poll() is None
+        assert ("run-gate: progress sql-mutation: candidate 639/1059, "
+                "3.0/min, ETA 140m") in capsys.readouterr().out
+
+    @pytest.mark.parametrize("pending_total", [None, True, -1, "2", 1, 2])
+    def test_invalid_or_exhausted_pending_total_suppresses_eta(
+            self, tmp_path, capsys, pending_total):
+        w = self._watch(tmp_path)
+        write_progress(
+            w.path,
+            {"event": "candidates", "pending_total": pending_total},
+            candidate(0, elapsed_s=10), candidate(1, elapsed_s=20),
+        )
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "candidate 1/172" in out
+        assert "ETA" not in out
+
+    def test_current_run_without_pending_total_suppresses_legacy_eta(
+            self, tmp_path, capsys):
+        """A run header opts into current-run declarations; absence is not
+        permission to guess remaining work from the campaign-wide index."""
+        w = self._watch(tmp_path)
+        write_progress(
+            w.path,
+            {"event": "candidates", "candidate_total": 172},
+            candidate(0, elapsed_s=10), candidate(1, elapsed_s=20),
+        )
+
+        assert w.watch.poll() is None
+
+        out = capsys.readouterr().out
+        assert "candidate 1/172" in out
+        assert "/min" not in out and "ETA" not in out
+
+    def test_elapsed_rate_uses_delta_from_first_observed_event(
+            self, tmp_path, capsys):
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(579, total=1059, elapsed_s=600),
+                       header=False)
+        assert w.watch.poll() is None
+        capsys.readouterr()
+        append_progress(w.path, candidate(580, total=1059, elapsed_s=660))
+        assert w.watch.poll() is None
+        assert ("candidate 580/1059, 1.0/min, ETA 479m"
+                in capsys.readouterr().out)
+
     def test_the_first_real_candidate_at_index_zero_yields_no_rate_not_a_crash(
             self, tmp_path, capsys):
-        """Regression (found running a real mutation lane, 2026-09-10): a
-        candidate's own `candidate_index` is 0-based, so the FIRST one to
-        complete carries `candidate_index: 0`. `0 / elapsed_s` is a literal
-        `0.0`, not "nothing to measure yet" -- treating it as a real rate
-        divided `(total - index) / rate` by zero and crashed the whole gate
-        run. index=0 must degrade to the bare-count line exactly like `rate
-        is None` already does."""
+        """Regression (found running a real mutation lane, 2026-09-10): the
+        first candidate has no interval yet, so even with elapsed time it
+        must not be treated as a zero rate or divide the ETA by zero."""
         w = self._watch(tmp_path)
         write_progress(w.path, candidate(0, elapsed_s=27.677, outcome_bucket="killed"))
         assert w.watch.poll() is None
@@ -14818,10 +15095,8 @@ class TestProgressWatch:
 
     def test_a_baseline_sentinel_at_index_negative_one_yields_no_rate(
             self, tmp_path, capsys):
-        """assay's own progress schema emits a `"baseline"` event ahead of
-        any real candidate, carrying `candidate_index: -1` as a sentinel --
-        the same B065 own-clock branch computed a nonsensical negative
-        rate/ETA from it (`-1 / elapsed_s`) before this guard."""
+        """Assay emits a `baseline` event with index -1 before candidate
+        events. It is a sentinel, not a completed candidate or rate sample."""
         w = self._watch(tmp_path)
         write_progress(w.path, {"event": "baseline", "candidate_index": -1,
                                  "candidate_total": 81, "elapsed_s": 15.9,
@@ -14874,6 +15149,61 @@ class TestProgressWatch:
         w.clock.advance(3600)
         assert w.watch.poll() is None
         assert "no candidate events" in capsys.readouterr().out
+
+    def test_a_new_run_header_hides_prior_candidates_from_a_fresh_watch(
+            self, tmp_path, capsys):
+        """Assay appends progress across --resume runs. The newest `run`
+        header, not the last candidate anywhere in the file, defines what
+        this invocation has done. A fresh watcher must not publish an old
+        candidate or arm a stall clock from it while the new baseline runs."""
+        w = self._watch(tmp_path, stall=60)
+        write_progress(w.path, candidate(579, total=1059))
+        append_progress(
+            w.path,
+            {"event": "run", "lane": "r2", "commit": "new-tree",
+             "started": "2026-10-10T00:00:00Z"},
+            {"event": "snapshot_materialized", "phase": "baseline"},
+        )
+        age_file(w.path, 3600)
+
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "no candidate events" in out
+        assert "candidate 579/1059" not in out
+        assert "ETA" not in out and "still RUNNING" not in out
+
+    def test_a_new_run_header_resets_an_existing_watch_baseline(
+            self, tmp_path, capsys):
+        """A new append boundary observed during re-attach resets the prior
+        candidate, ETA baseline, and stall clock; the current run then reports
+        only its own candidates."""
+        w = self._watch(tmp_path, stall=60)
+        write_progress(w.path, candidate(579, total=1059))
+        assert w.watch.poll() is None
+        assert "candidate 579/1059" in capsys.readouterr().out
+
+        w.clock.advance(3600)
+        append_progress(
+            w.path,
+            {"event": "run", "lane": "r2", "commit": "new-tree",
+             "started": "2026-10-10T00:00:00Z"},
+            {"event": "snapshot_materialized", "phase": "baseline"},
+        )
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "no candidate events" in out
+        assert "candidate 579/1059" not in out
+        assert "still RUNNING" not in out
+
+        append_progress(w.path, candidate(0, total=1059))
+        assert w.watch.poll() is None
+        assert "candidate 0/1059" in capsys.readouterr().out
+        w.clock.advance(60)
+        append_progress(w.path, candidate(1, total=1059))
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "candidate 1/1059" in out
+        assert "still RUNNING" not in out
 
     def test_a_torn_or_unparsable_line_is_skipped_not_fatal(self, tmp_path,
                                                             capsys):
@@ -23209,6 +23539,7 @@ class TestUserDocumentationOracles:
             "sequence stop_on": {"FAIL", "never"},
             "exit_map verdict": {"PASS", "FAIL", "ERROR"},
             "admission unreadable_policy": {"refuse", "unbudgeted"},
+            "resource observer": {"cgprofile"},
             "run-gate result": set(run_gate.VERDICT_EXIT_CODES),
             "NOT_RUN reason": set(run_gate.NOT_RUN_REASONS),
         }

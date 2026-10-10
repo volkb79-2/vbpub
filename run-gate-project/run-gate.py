@@ -14,7 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 56  # rev 56: RG-88 nullable DAMON footprint disclosure
+__revision__ = 60  # rev 60: suppress ETA without current-run pending_total
+# R2 Assay lanes and explicit tester-unified command wrappers may opt into
+# the cgprofile observer-only socket; its mount, GID grant, and namespace
+# constraints are closed in the lane schema.
 # selective assay and command requests; failed-assay evidence; completed-fail
 # and partial footprint manifests; native sequences with trunk bases; shared
 # assay inventory import; documented durable --state-dir; closed results,
@@ -352,6 +355,9 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 
 
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
+CGPROFILE_RESOURCE_OBSERVER_SOURCE = "/run/cgprofile/resource-observer.sock"
+CGPROFILE_RESOURCE_OBSERVER_TARGET = "/tmp/cgprofile-resource-observer.sock"
+ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
 # now routes through the same container machinery every named environment
@@ -848,7 +854,8 @@ def command_lane_is_composite(lane: dict) -> bool:
 LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
-             "profile", "exit_map", "accepts_args", "lanes", "stop_on"}
+             "profile", "exit_map", "accepts_args", "lanes", "stop_on",
+             "resource_observer"}
 PIN_KEYS = {"sha256", "version"}
 
 
@@ -914,6 +921,16 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
             not isinstance(table["environment"], str)
             or not table["environment"].strip()):
         fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
+    if "resource_observer" in table:
+        if table["resource_observer"] != "cgprofile":
+            fail(f"{where} [lanes.{name}]: 'resource_observer' must be "
+                 "'cgprofile'")
+        if kind not in ("assay", "command"):
+            fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
+                 "only for assay or command lanes")
+        if table.get("environment") != "tester-unified":
+            fail(f"{where} [lanes.{name}]: 'resource_observer' requires "
+                 "environment = \"tester-unified\"")
     if kind == "sequence":
         members = table.get("lanes")
         if not isinstance(members, list) or not members or not all(
@@ -5990,6 +6007,51 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
+def resource_observer_docker_flags(lane: dict) -> list[str]:
+    """Mount only cgprofile's read-only resource-observer socket.
+
+    The observer protocol is a separate daemon listener; never mount the
+    control socket here. Validate the host object instead of allowing Docker
+    to create a missing bind source as an empty directory or file.
+    """
+    if lane.get("resource_observer") is None:
+        return []
+    if lane.get("resource_observer") != "cgprofile":
+        fail("lane resource_observer must be 'cgprofile'")
+    if lane.get("kind") not in ("assay", "command") \
+            or lane.get("environment") != "tester-unified":
+        fail("resource_observer='cgprofile' requires an assay or command lane "
+             "in tester-unified")
+    socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    try:
+        parent = os.lstat(socket_path.parent)
+        observed = os.lstat(socket_path)
+    except OSError as exc:
+        fail_infra(f"cgprofile resource observer socket is unavailable at "
+                   f"{socket_path}: {exc}")
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 \
+            or parent.st_mode & 0o002:
+        fail_infra(f"cgprofile resource observer directory is not a safe "
+                   f"root-owned directory: {socket_path.parent}")
+    if not stat.S_ISSOCK(observed.st_mode):
+        fail_infra(f"cgprofile resource observer path is not a Unix socket: "
+                   f"{socket_path}")
+    if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
+        fail_infra("cgprofile resource observer socket ownership does not "
+                   "match its root-owned socket directory")
+    if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
+        fail_infra("cgprofile resource observer socket must be group-connectable "
+                   "and not accessible to other users")
+    return [
+        "--mount",
+        f"type=bind,source={socket_path},target="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+        "--group-add", str(observed.st_gid),
+        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+    ]
+
+
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
                          script: str,
@@ -9269,11 +9331,12 @@ class ProgressWatch:
     per candidate, so rate, ETA and — the load-bearing one — SILENCE can be
     read off the file instead.
 
-    Timing is COARSE on purpose today: assay's events carry no timestamp
-    (assay B065 adds `elapsed_s`), so the rate is measured against run-gate's
-    OWN clock from the first event it observed, and advancement is the file's
-    mtime. Where an event already carries `elapsed_s` it is preferred, so the
-    same code becomes exact when B065 lands, with no rewrite.
+    Assay's events carry `elapsed_s` (B065), so it is preferred for rate
+    estimates. The stream is append-only across Assay runs: rates count
+    candidate events after the latest `run` header, not the campaign-wide
+    candidate index, because resume preserves indexes while each invocation
+    restarts its elapsed clock. Older streams fall back to Run-Gate's clock;
+    the file's mtime remains the silence signal for either format.
     """
 
     def __init__(self, path: Path, lane_name: str,
@@ -9284,80 +9347,129 @@ class ProgressWatch:
         self.clock = clock
         self._announced_silent = False
         self._announced_vanished = False
-        self._first: tuple[int, float] | None = None
+        self._first: tuple[int, float, object] | None = None
         self._token: tuple | None = None
         # N4: the last (index, total) actually observed. It is what tells
         # "never saw an event" (not an R2 lane) apart from "had one, and the
         # file is unreadable now" (silence that must keep counting), and it
         # is what the stall message names once the file itself is gone.
         self._last_seen: tuple[int, object] | None = None
+        # Assay's progress stream is append-only across --resume invocations.
+        # A new `run` record fences off prior candidate events; remembering its
+        # line position also lets a reattached watcher reset its baseline if a
+        # later invocation begins while it is watching the same file.
+        self._run_boundary_seen = False
+        self._run_boundary: int | None = None
         # A placeholder only: the first observation re-seeds this from the
         # FILE's mtime (RW-27). Until then nothing can stall — `poll()`
         # returns None while no event has ever been read — so this value is
         # never the one a stall is measured against.
         self._token_at = clock()
 
-    def _newest(self) -> tuple[dict | None, float | None]:
-        """The newest event carrying a candidate index, plus the file's
-        mtime. A missing, unreadable or half-written file is not an event and
-        never a fault: the judge owns this file and may be mid-append."""
+    def _newest(self) -> tuple[
+            dict | None, float | None, int | None, int, int | None, bool]:
+        """The newest candidate event in the latest Assay run, its mtime,
+        that run header's line position, completed-candidate count,
+        pending-total declaration, and whether that declaration was present.
+        Older streams without a `run` header retain their historical
+        whole-file behavior. A missing, unreadable or half-written file is
+        not an event and never a fault: the judge owns this file and may be
+        mid-append."""
         try:
             mtime = self.path.stat().st_mtime
             text = self.path.read_text()
         except OSError:
-            return None, None
+            return None, None, None, 0, None, False
         newest = None
-        for line in text.splitlines():
+        run_boundary = None
+        completed = 0
+        pending_total = None
+        pending_total_seen = False
+        for line_number, line in enumerate(text.splitlines()):
             try:
                 event = json.loads(line)
             except ValueError:
-                continue  # the run header, a blank line, a torn last write
+                continue  # a blank line or a torn last write
+            if isinstance(event, dict) and event.get("event") == "run":
+                # Assay deliberately appends a run header before each new
+                # invocation. Do not attribute candidates from an earlier
+                # invocation to this one (especially on --resume).
+                run_boundary = line_number
+                newest = None
+                completed = 0
+                pending_total = None
+                pending_total_seen = False
+                continue
+            if isinstance(event, dict) and event.get("event") == "candidates":
+                pending_total_seen = "pending_total" in event
+                value = event.get("pending_total")
+                pending_total = None
+                if isinstance(value, int) and not isinstance(value, bool) \
+                        and value >= 0:
+                    pending_total = value
             if isinstance(event, dict) \
                     and isinstance(event.get("candidate_index"), int) \
                     and not isinstance(event.get("candidate_index"), bool):
                 newest = event
-        return newest, mtime
+                if event["candidate_index"] >= 0:
+                    completed += 1
+        return (newest, mtime, run_boundary, completed, pending_total,
+                pending_total_seen)
 
-    def _rate_per_min(self, index: int, elapsed: object,
+    def _rate_per_min(self, completed: int, elapsed: object,
                       now: float) -> float | None:
-        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) \
-                and elapsed > 0 and index > 0:
-            # index > 0: a real candidate's own 0-based position is 0 for
-            # the FIRST one (already completed by the time this event is
-            # seen) -- `0 / elapsed` is a literal 0.0, not "no measurement
-            # yet", and dividing the ETA line by it crashed with
-            # ZeroDivisionError (found running a real mutation lane,
-            # 2026-09-10). A judge's own "baseline" sentinel event also
-            # carries index=-1, which produced a nonsensical negative
-            # rate/ETA before this guard. Both fall through to the
-            # wall-clock branch below, which already refuses index <=
-            # base_index the same way.
-            return index / elapsed * 60.0   # B065: the judge's own clock
         if self._first is None:
-            return None                     # nothing to measure against yet
-        base_index, base_time = self._first
-        span = now - base_time
-        if span <= 0 or index <= base_index:
+            # On re-attach, all current-run events are already in the file.
+            # The first event is a baseline, so N events span N-1 intervals.
+            if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) \
+                    and elapsed > 0 and completed > 1:
+                return (completed - 1) / elapsed * 60.0
             return None
-        return (index - base_index) / span * 60.0
+        base_completed, base_time, base_elapsed = self._first
+        if completed <= base_completed:
+            return None
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) \
+                and isinstance(base_elapsed, (int, float)) \
+                and not isinstance(base_elapsed, bool) \
+                and elapsed > base_elapsed:
+            return ((completed - base_completed)
+                    / (elapsed - base_elapsed) * 60.0)
+        # Legacy streams have no run-relative clock. Count newly observed
+        # candidate events rather than subtracting campaign-wide indexes,
+        # which may jump over records already resumed from state.
+        span = now - base_time
+        if span > 0:
+            return (completed - base_completed) / span * 60.0
+        return None
 
     def _report(self, index: int, total: object, elapsed: object,
-                now: float) -> None:
-        rate = self._rate_per_min(index, elapsed, now)
-        if self._first is None:
-            self._first = (index, now)
-        countable = isinstance(total, int) and not isinstance(total, bool) \
-            and total > index
+                now: float, completed: int,
+                pending_total: int | None,
+                pending_total_seen: bool,
+                has_run_header: bool) -> None:
+        rate = self._rate_per_min(completed, elapsed, now)
+        if self._first is None and completed > 0:
+            self._first = (completed, now, elapsed)
+        remaining = None
+        if pending_total_seen:
+            if pending_total is not None and pending_total >= completed:
+                remaining = pending_total - completed
+        elif not has_run_header \
+                and isinstance(total, int) and not isinstance(total, bool) \
+                and total > index:
+            # Only pre-header legacy streams may use campaign indexes as a
+            # remaining-work proxy. A current run with a missing or invalid
+            # pending_total has no trustworthy ETA declaration.
+            remaining = total - index
         head = f"run-gate: progress {self.lane}: candidate {index}"
         if isinstance(total, int) and not isinstance(total, bool):
             head += f"/{total}"
-        if rate is None or not countable:
-            # The first observation is a BASELINE, not a measurement: with
-            # one event and no clock in the file there is no rate to print,
-            # and inventing one would be the guess this replaces.
+        if rate is None or remaining is None or remaining <= 0:
+            # Without both a usable rate and trustworthy remaining-work
+            # count, disclose the candidate but do not invent an ETA.
             print(head, flush=True)
             return
-        print(f"{head}, {rate:.1f}/min, ETA {(total - index) / rate:.0f}m",
+        print(f"{head}, {rate:.1f}/min, ETA {remaining / rate:.0f}m",
               flush=True)
 
     def _last_event_phrase(self) -> str:
@@ -9375,8 +9487,25 @@ class ProgressWatch:
     def poll(self) -> str | None:
         """One look at the file. Prints at most one line, and only when
         something changed. Returns a STALL description, or None."""
-        newest, mtime = self._newest()
+        (newest, mtime, run_boundary, completed, pending_total,
+         pending_total_seen) = self._newest()
         now = self.clock()
+        if mtime is not None:
+            if not self._run_boundary_seen:
+                self._run_boundary_seen = True
+                self._run_boundary = run_boundary
+            elif run_boundary is not None \
+                    and run_boundary != self._run_boundary:
+                # A newer run header starts a new progress/liveness window.
+                # Old candidates must neither be printed nor keep the new
+                # invocation's stall clock alive while its baseline starts.
+                self._run_boundary = run_boundary
+                self._first = None
+                self._token = None
+                self._last_seen = None
+                self._token_at = now
+                self._announced_silent = False
+                self._announced_vanished = False
         if newest is None:
             if self._last_seen is None:
                 # Never an event here: not an R2 lane, or the judge has not
@@ -9411,7 +9540,8 @@ class ProgressWatch:
             return None if age < self.stall_seconds else self._stall(age)
         index = newest["candidate_index"]
         elapsed = newest.get("elapsed_s")
-        token = (mtime, index, elapsed)
+        token = (mtime, index, elapsed, completed, pending_total,
+                 pending_total_seen)
         if token != self._token:
             first_observation = self._token is None
             self._token = token
@@ -9440,7 +9570,9 @@ class ProgressWatch:
             else:
                 # Real MOVEMENT restarts the silence clock.
                 self._token_at = now
-            self._report(index, newest.get("candidate_total"), elapsed, now)
+            self._report(index, newest.get("candidate_total"), elapsed, now,
+                         completed, pending_total, pending_total_seen,
+                         has_run_header=run_boundary is not None)
         if self.stall_seconds is None:
             return None              # no stall_timeout: disclosure only
         age = now - self._token_at
@@ -10413,7 +10545,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         repo, worktree, env, with_state=lane["kind"] == "assay",
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
-        *extra_mount_flags()]
+        *extra_mount_flags(),
+        *resource_observer_docker_flags(lane)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,

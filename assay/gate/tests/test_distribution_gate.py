@@ -94,7 +94,13 @@ def run_bash(
     env: dict[str, str] | None = None,
     timeout: int = 60,
 ) -> subprocess.CompletedProcess[str]:
-    script = f"set -euo pipefail\nsource '{gate_functions}'\n{snippet}\n"
+    # Shell unit tests inject a synthetic socket GID; live socket validation
+    # and Docker acceptance belong to the registered tester-unified gate.
+    script = (
+        f"set -euo pipefail\nsource '{gate_functions}'\n"
+        "resource_observer_gid() { printf '994\\n'; }\n"
+        f"{snippet}\n"
+    )
     return subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
@@ -202,6 +208,8 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         "    print(cid)\n"
         "    if os.environ.get('DOCKER_RUN_STATUS'):\n"
         "        raise SystemExit(int(os.environ['DOCKER_RUN_STATUS']))\n"
+        "elif args[:2] == ['update', '--cpus=3']:\n"
+        "    raise SystemExit(0)\n"
         "elif args[:1] == ['ps']:\n"
         "    cid = next(value[3:] for value in args if value.startswith('id='))\n"
         "    removed = pathlib.Path(os.environ['DOCKER_REMOVED_FILE'])\n"
@@ -234,7 +242,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
 
     proc = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -252,16 +260,23 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     name = run[7]
     assert name in proc.stdout
     assert "--init" in run
-    assert "--cgroupns=host" in run
+    assert "--cgroupns=host" not in run
     assert "--cgroup-parent=dev-gates.slice" in run
+    assert "--cpus=3" in run
+    assert "--group-add" in run and "994" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in run
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
+    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
     assert not any("docker.sock" in value for value in run)
     assert run.index("tester-unified:local") < run.index("bash")
     container_id = "a" * 64
+    update = ["update", "--cpus=3", name]
+    assert update in calls
+    assert calls.index(run) < calls.index(update) < calls.index(["logs", "--follow", container_id])
     assert ["logs", "--follow", container_id] in calls
     assert ["wait", container_id] in calls
     assert calls[-2] == ["ps", "--all", "--no-trunc", "--filter", f"id={container_id}", "--format", '{{.ID}}|{{.Names}}|{{.Label "assay.gate.owner"}}']
@@ -271,7 +286,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_RUN_STATUS"] = "18"
     failed_launch = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -283,7 +298,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_CID_ON_FAILED_LAUNCH"] = "1"
     accepted_but_transport_failed = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -295,7 +310,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     env["DOCKER_INSPECT_OWNER_OVERRIDE"] = "f" * 64
     foreign_cidfile = run_bash(
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -334,6 +349,9 @@ def test_registered_tester_log_follower_has_a_bound(
         "        name = pathlib.Path(os.environ['DOCKER_NAME_FILE']).read_text(encoding='ascii')\n"
         "        owner = pathlib.Path(os.environ['DOCKER_OWNER_FILE']).read_text(encoding='ascii')\n"
         "        print(cid + '|' + name + '|' + owner)\n"
+        "elif args[:2] == ['update', '--cpus=3']:\n"
+        "    expected = pathlib.Path(os.environ['DOCKER_NAME_FILE']).read_text(encoding='ascii')\n"
+        "    if len(args) != 3 or args[2] != expected: raise SystemExit(92)\n"
         "elif args[:2] == ['logs', '--follow']:\n"
         "    time.sleep(60)\n"
         "elif args[:1] == ['wait']:\n"
@@ -375,7 +393,7 @@ def test_registered_tester_log_follower_has_a_bound(
     proc = run_bash(
         'wait() { if command kill -0 "$1" 2>/dev/null; then printf "live\\n" > "$WAIT_MARKER"; else printf "exited\\n" > "$WAIT_MARKER"; fi; return 0; }\n'
         'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=short_functions,
         env=env,
         timeout=15,
@@ -431,6 +449,8 @@ def _b145_docker(fake_bin: Path) -> None:
         "    cid = os.environ.get('FAKE_B145_ID', 'd' * 64)\n"
         "    cidfile.write_text(cid + '\\n', encoding='ascii')\n"
         "    print(cid)\n"
+        "elif args[:2] == ['update', '--cpus=3']:\n"
+        "    raise SystemExit(0)\n"
         "elif args[:1] == ['ps']:\n"
         "    cid = next(value[3:] for value in args if value.startswith('id='))\n"
         "    if cid == os.environ.get('FAKE_B145_ID', 'd' * 64) and not pathlib.Path(os.environ['FAKE_B145_REMOVED_FILE']).exists():\n"
@@ -482,7 +502,7 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -491,20 +511,23 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert "B145 bounded probe log" in proc.stdout
     assert "ASSAY_GATE_PHASE=b145-low-pids-accepted" in proc.stdout
     calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 6
+    assert len(calls) == 7
     run = calls[0]
     assert run[:2] == ["run", "-d"]
     assert run[run.index("--name") + 1].startswith("run-gate-assay-b145-pids-")
     assert run[run.index("--cidfile") + 1].endswith("/container.cid")
     assert run[run.index("--label") + 1].startswith("assay.b145-probe.owner=")
     assert "--init" in run
-    assert "--cgroupns=host" in run
+    assert "--cgroupns=host" not in run
+    assert "--cpus=3" in run
     assert "--pids-limit=32" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in run
     assert "ASSAY_B145_LOW_PIDS_PROBE=1" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
+    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
     assert "tester-unified:local" in run
     probe_command = run[run.index("bash") + 2]
     assert probe_command.startswith(
@@ -513,11 +536,12 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     )
     assert "test_low_pids_limit_event_cannot_become_a_kill" in probe_command
     container_name = run[run.index("--name") + 1]
-    assert calls[1][:2] == ["ps", "--all"]
-    assert calls[2] == ["wait", _FAKE_B145_ID]
-    assert calls[3] == ["logs", _FAKE_B145_ID]
-    assert calls[4][:2] == ["ps", "--all"]
-    assert calls[5] == ["rm", "-f", _FAKE_B145_ID]
+    assert calls[1] == ["update", "--cpus=3", container_name]
+    assert calls[2][:2] == ["ps", "--all"]
+    assert calls[3] == ["wait", _FAKE_B145_ID]
+    assert calls[4] == ["logs", _FAKE_B145_ID]
+    assert calls[5][:2] == ["ps", "--all"]
+    assert calls[6] == ["rm", "-f", _FAKE_B145_ID]
     assert container_name in run
 
 
@@ -553,26 +577,30 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "ASSAY_GATE_PHASE=b145-bounded-wait-accepted" in proc.stdout
     docker_calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
-    assert len(docker_calls) == 4
+    assert len(docker_calls) == 5
     run = docker_calls[0]
     assert run[:2] == ["run", "-d"]
     assert run[run.index("--name") + 1].startswith("run-gate-assay-b145-wait-")
     assert run[run.index("--cidfile") + 1].endswith("/container.cid")
     assert run[run.index("--label") + 1].startswith("assay.b145-probe.owner=")
     assert "--init" in run
-    assert "--cgroupns=host" in run
+    assert "--cgroupns=host" not in run
+    assert "--cpus=3" in run
     assert "--pids-limit=16" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
     assert "tester-unified:local" in run
+    assert not any("resource-observer.sock" in value for value in run)
+    assert not any("ASSAY_RESOURCE_OBSERVER_SOCKET=" in value for value in run)
     probe_command = run[run.index("bash") + 2]
     assert "sleep 60" in probe_command
     probe_id = _FAKE_B145_ID
-    assert docker_calls[1][:2] == ["ps", "--all"]
+    assert docker_calls[1] == ["update", "--cpus=3", run[run.index("--name") + 1]]
     assert docker_calls[2][:2] == ["ps", "--all"]
-    assert docker_calls[3] == ["rm", "-f", probe_id]
+    assert docker_calls[3][:2] == ["ps", "--all"]
+    assert docker_calls[4] == ["rm", "-f", probe_id]
     timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
     assert any(f"1s docker wait {probe_id}" in call for call in timeout_calls)
     assert any(f"20s docker rm -f {probe_id}" in call for call in timeout_calls)
@@ -603,7 +631,7 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
 
     proc = run_bash(
         'run_b145_low_pids_probe "/workspaces/vbpub/.worktrees/assay-b145" '
-        '"/host/vbpub" "dev-gates.slice"',
+        '"/host/vbpub" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -613,10 +641,12 @@ def test_b145_low_pids_wait_timeout_logs_and_force_removes(
     assert "B145 bounded probe log" in proc.stdout
     docker_calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
     assert docker_calls[0][:2] == ["run", "-d"]
-    assert docker_calls[1][:2] == ["ps", "--all"]
-    assert docker_calls[2] == ["logs", _FAKE_B145_ID]
-    assert docker_calls[3][:2] == ["ps", "--all"]
-    assert docker_calls[4] == ["rm", "-f", _FAKE_B145_ID]
+    name = docker_calls[0][docker_calls[0].index("--name") + 1]
+    assert docker_calls[1] == ["update", "--cpus=3", name]
+    assert docker_calls[2][:2] == ["ps", "--all"]
+    assert docker_calls[3] == ["logs", _FAKE_B145_ID]
+    assert docker_calls[4][:2] == ["ps", "--all"]
+    assert docker_calls[5] == ["rm", "-f", _FAKE_B145_ID]
     timeout_calls = timeouts_path.read_text(encoding="utf-8").splitlines()
     assert any(f"150s docker wait {_FAKE_B145_ID}" in call for call in timeout_calls)
     assert any(f"20s docker rm -f {_FAKE_B145_ID}" in call for call in timeout_calls)
@@ -668,7 +698,7 @@ def test_b145_name_conflict_never_removes_by_name_or_unverified_cid(
         (
             "run_b145_low_pids_probe",
             '"/workspaces/vbpub/.worktrees/assay-b145" '
-            '"/host/vbpub" "dev-gates.slice"',
+            '"/host/vbpub" "dev-gates.slice" "994"',
             124,
             "exceeded 150s",
         ),
@@ -780,7 +810,8 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         "--no-build-isolation",
         "--no-index",
         "--cgroup-parent=",
-        "--cgroupns=host",
+        "ASSAY_RESOURCE_OBSERVER_SOCKET",
+        "resource-observer.sock",
     ):
         assert required in source, f"missing required gate flag: {required}"
 

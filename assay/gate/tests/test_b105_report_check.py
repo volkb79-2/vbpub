@@ -133,7 +133,7 @@ def _verifier_valid_report(lane: str, rigor: tuple[str, ...]) -> dict:
                 "argv_modified": False,
                 "env_declared": {},
                 "env_effective": {},
-                "env_passthrough": ["PATH"],
+                "env_passthrough": committed_lane["env_passthrough"],
             }
         )
         r2_policy = document["judgment"]["r2"]

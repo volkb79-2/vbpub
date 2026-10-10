@@ -188,6 +188,11 @@ The daemon's PID check is a consistency check between its configured proc view
 and local namespace, not an independent attestation that the procfs bind is
 the host's. The managed CIU Compose service provides the deployment fact with
 `pid: "host"` and an explicit host `/proc` bind.
+The required `/run/cgprofile` socket directory uses Compose's long bind form
+with `create_host_path: false`: if host-setup has not created the source,
+deployment must fail instead of Docker manufacturing an empty host directory
+that hides the missing prerequisite and leaves the daemon writing sockets to
+the wrong place.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
 session volume and the DAMON admin sysfs state required for observation, in
@@ -219,6 +224,77 @@ mismatched namespace, changed or unavailable identity, unsafe path, or
 ambiguous match is a refusal, not a guess from a numeric PID. See the worked
 command in
 [`CONSUMERS.md`](CONSUMERS.md#resolve-a-target-from-a-cockpit).
+
+### Native R2 resource observation is data-only, not a broker
+
+Assay B145 must compare process- and memory-limit event counters through the
+candidate's enforcing ancestors. The tester container stays in a private
+cgroup namespace; making it host-namespaced would reveal host hierarchy state
+and is not needed for this read. Instead, Run-Gate can mount a second,
+observer-only socket from the existing daemon:
+
+```text
+Assay worker -- {thread_id} --> resource-observer.sock
+                                      |
+                       SO_PEERCRED + host proc/cgroup view
+                                      |
+Assay worker <-- own gates-slice ancestry and counters
+```
+
+The request supplies only a native TID. The daemon binds it to the connecting
+PID/UID, proves the TID belongs to that peer and that its live threads share
+one cgroup/credential/capability state, derives the path itself, and returns only that
+peer cgroup's complete ancestry beneath `dev-gates.slice`. It does not return
+PIDs or sibling data. The daemon's own cgroup namespace is private too, so it
+maps outside-peer paths only when the leading `..` count exactly matches the
+full-root cgroup2 mount's `mountinfo` root; arbitrary normalization is
+refused. The response carries per-path limits, event counters, and mount ID.
+The DAC proof checks `cgroup.procs` on every ancestor through `/`. That also
+prevents thread-only migration through `cgroup.threads`: Linux's
+[cgroup-v2 migration rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#core-interface-files)
+require write access to `cgroup.procs` at the source/destination common
+ancestor for a TID move, so a peer cannot redirect its accounting to an
+unsampled sibling. The observer need not enumerate sibling destinations.
+
+The observer is a distinct listener, not a read-only bind of `ctl.sock`:
+filesystem read-only does not restrict the verbs of an AF_UNIX service. The
+listener accepts one `resource-limits` query and no start/stop/placement
+operation. Run-Gate validates the fixed socket and mounts only that node
+read-only, forwarding its observed group ID. It does not add a Docker socket,
+host PID namespace, host cgroup namespace, or a second daemon.
+
+The observer request is one newline-terminated JSON line, at most 4096 bytes
+including the newline, with a five-second absolute deadline. The bound
+includes the delimiter so an oversized complete line cannot be dispatched
+just because a single socket read returns it all at once. A malformed line,
+oversize request, or expired deadline does not reach the observer; the exact
+wire refusal behavior is pinned in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89)
+and contract §9.
+
+This gives the gate only the missing read path and keeps its namespace private;
+it also avoids another privileged service and duplicated authorization
+surface. It does **not** contain arbitrary code execution in cgprofile: the
+existing daemon has host-PID visibility, writable host cgroupfs for placement,
+and systemd-manager access. The protocol narrows normal requests, not the
+daemon's authority after compromise. An operator with unrestricted Docker
+access already has host-administrator capability; that fact does not reduce
+the daemon's independent compromise impact. A future broker is worthwhile
+only if its OS authority is genuinely narrower, its authenticated request
+surface is small, and the separation survives compromise of cgprofile; merely
+moving equivalent root operations to another process would move, not remove,
+the trust problem. The wire and failure behavior are specified in
+[`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and contract §9.
+
+The observed leaf belongs to the tester container, whose Assay worker threads
+share that cgroup. Two concurrent mutant commands could overlap their
+before/after counter windows: one mutant's limit event would appear in both
+windows and could be attributed to the other. P1 therefore declares
+`[lanes.r2.judge.mutation] jobs = 1`. This serializes candidate counter
+windows until per-worker cgroups and independent counter bindings exist.
+The 24-hour lane budget remains a safety ceiling; `--resume` continues the
+same exact-tree campaign after a budget stop. A limit event from any other
+process in the tester cgroup still makes a candidate inconclusive, so the
+tester lane must not launch unrelated work there during R2.
 
 The short-lived helper-placement probe runs under the injected interactive
 slice only after confirming that it matches the cockpit container's actual
@@ -255,6 +331,41 @@ that could repeatedly rebuild already-reserved entries. Linux also refuses a
 resize while any kdamond is running, including a monitor owned by another
 program; see upstream v7.1 [`nr_kdamonds_store()` and directory growth
 path](https://github.com/torvalds/linux/blob/v7.1/mm/damon/sysfs.c#L1923-L1944).
+
+The sysfs registry is not a complete inventory of every kernel DAMON user.
+For example, the kernel's special-purpose `DAMON_STAT` module can run through
+the DAMON API outside the sysfs `nr_kdamonds` table. Linux documents these
+special-purpose modules as mutually exclusive: while one is active, another
+DAMON start can return `-EBUSY` ([design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html),
+[DAMON_STAT](https://docs.kernel.org/admin-guide/mm/damon/stat.html)). On the
+RG-55 host, `damon_stat/enabled` read `Y` while `nr_kdamonds` read `0`, and a
+real cgprofile start returned `EBUSY`. The zero registry count therefore did
+not establish that the host DAMON facility was free. cgprofile does not
+disable or reconfigure `DAMON_STAT`: that would silently change host-wide
+monitoring outside the lane's authority. It marks DAMON unavailable and
+continues ordinary profiling under R-36h. See
+[`CONSUMERS.md`'s host troubleshooting note](CONSUMERS.md#host-damon_stat-exclusivity)
+for read-only checks and the operator procedure.
+
+This is a deliberate choice of interface, not a preference for sysfs as a
+generic convenience. `DAMON_STAT` is designed to expose compact global
+statistics: whole-physical-memory idle-time percentiles and estimated
+bandwidth, with automatically tuned intervals. It does not give cgprofile a
+per-lane target boundary. DAMON sysfs is the generic privileged programming
+ABI: it lets cgprofile configure virtual-address contexts and PID targets for
+the specific process tree it has resolved, and request statistics without an
+action that changes workload memory. That targeting and result shape are what
+RG-55 needs. The cost is exclusive ownership of DAMON while the sysfs monitor
+runs; when another special-purpose module such as `DAMON_STAT` is active,
+cgprofile must preserve it and report DAMON unavailable rather than silently
+reconfigure host policy ([DAMON sysfs usage](https://docs.kernel.org/7.1/admin-guide/mm/damon/usage.html),
+[DAMON_STAT](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html)). The
+operator-approved 2026-10-09 live probe confirmed
+that relationship: with the host's `DAMON_STAT` setting temporarily `N`, the
+real daemon collected 36 per-session DAMON records; after stopping the session,
+`DAMON_STAT` was restored to `Y`. The kernel build on this Debian 13 host sets
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`; other Debian kernels may carry different
+configs.
 
 Each newly reserved `state` node is held open as an identity pin. The kernel's
 kernfs identity lets cgprofile detect a later same-count rewrite that leaves

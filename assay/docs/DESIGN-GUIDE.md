@@ -617,7 +617,10 @@ rather than from the declared budget.
 
 A candidate that reaches a process or memory limit has not shown that the test
 suite caught a mutant. Before native R2 starts candidates, Assay requires a
-visible cgroup v2 path through the hierarchy root. The sampler reads
+verified cgroup v2 path through the hierarchy root. It prefers its local view;
+when that view specifically proves ancestors are hidden, an explicitly
+configured peer-bound observer may provide the complete ancestry. No other
+local-reader failure falls back to a remote view. The sampler reads
 `/proc/thread-self/cgroup`, because a worker thread in a threaded cgroup v2
 subtree can have a different cgroup from the process leader; `/proc/self/cgroup`
 would identify the wrong execution context. The capability guard likewise
@@ -650,7 +653,9 @@ ancestor. A read-only mount alone cannot stop `CLONE_INTO_CGROUP` from moving a
 candidate into an existing child; the kernel checks inode permissions without
 the mount's read-only flag. Assay refuses when candidate credentials or
 capabilities can write those files, and refuses overmounts that shadow a
-sampled path.
+sampled path. A hidden ancestor is still a refusal unless the caller explicitly
+supplies the separate observer-only endpoint described in
+[`CONSUMERS.md`](CONSUMERS.md#native-r2-resource-limit-observation-b145).
 
 For each started full candidate command, Assay records the selected counters
 immediately before and after it. If the lane stops before a full command starts,
@@ -665,9 +670,13 @@ event cannot be hidden by a later command. A positive delta never certifies a
 kill or survivor. The visible cgroup paths, controller availability, and
 configured limits must match between the bracketing samples. If they change,
 or if a required counter is missing, malformed, or unreadable, native R2 fails
-closed. B148 refuses before R0 when native candidates are selected but the
-preflight cannot see all ancestors; a candidate-time loss of observation
-remains `ERROR/EXEC_FAILED`. Worker
+closed. A cgroup mount rooted below the hierarchy root refuses native R2
+before its candidate sweep; a hidden local ancestor requires the explicit
+observer and is refused when that endpoint is absent or unprovable. B148
+performs the same local-first/explicit-observer capability check before R0,
+but only when the deterministically selected native candidate set is
+non-empty and within `max_mutants`; inventory failures remain refusals, not
+empty-set results. Worker
 creation failure at the executor boundary yields a payload-free
 `ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
 cannot escape the verdict path. This contract observes cgroup v2 events; it
@@ -675,9 +684,9 @@ does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. Resume state with a positive counter delta is rejected for reuse, and
-the worker capability guard advances the judge identity to `/7`, so `/4`,
-`/5`, and `/6` B145 records are cold starts. The B114 cold-witness policy
-advances the identity to `/8`; the mutation-state schema number
+the B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
+identity inputs advanced it to `/8`, and the RG-89 observer policy advances
+it to `/9`; older records are cold starts. The mutation-state schema number
 does not change: this is a change in what the judge identity covers, not the
 record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
@@ -693,9 +702,12 @@ submit any candidate. The plan uses the same declared source roots, operator
 selection, candidate ceiling and deterministic shard function as R2. A
 selected candidate with an unavailable hierarchy produces
 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
-The operator must run the lane where the complete ancestor hierarchy can be
-observed; Assay does not choose a Docker cgroup namespace or add a config
-override for this fact.
+The probe uses the same local-first reader as candidate sampling; only a
+specific hidden-ancestor refusal may consult the caller's explicitly configured
+observer-only socket. This lets test containers retain private cgroup
+namespaces without turning the full host hierarchy into their interface.
+Assay does not choose a Docker cgroup namespace or add a lane override for this
+fact.
 
 The refusal does not apply to ingested R2, unsupported discovery, an empty
 candidate selection, or a discovery result over `max_mutants`; those cases
@@ -2395,6 +2407,23 @@ the module name `assay_judge_conftest`), so its `from conftest import` never
 competes with the judge's; a judge test may not import from it, and a layout
 test enforces that.
 
+### Unprivileged host-slice preflight for tester-unified
+
+The registered outer driver verifies that `CGROUP_PARENT_DEV_GATES` names a
+loaded, instantiated, resource-configured slice before starting gate probes.
+Its short verifier runs in the trusted interactive slice, with a private
+cgroup namespace, a three-CPU cap, no capabilities, no network, and a
+read-only host cgroupfs bind. It queries the host system manager through the
+mounted system-bus socket as UID 1003, using only `GetUnit` and
+`GetProperty` calls for `LoadState`, `FragmentPath`, and the slice's
+`ControlGroup`. The driver deliberately does not mount
+`/run/systemd/private`: `systemctl` uses that local private transport even
+when `DBUS_SYSTEM_BUS_ADDRESS` is set, and that socket would provide broader
+manager authority. The verifier instead gives `busctl` the system-bus address
+explicitly and never runs workload code in this container. A miss, unreadable
+bus, missing cgroup, or all-default resource knobs refuses before the suite;
+there is no transient-slice or Docker-unconfined fallback.
+
 ### Full-source self-qualification (B105)
 
 The separate `self-qualification` gate is deliberately invoked only when a
@@ -3675,14 +3704,15 @@ The mask/lexer tests prove which bytes assay replaces; only a real catalog can
 say the replacement *means* something. The gate proves that with assay's own
 material and no consumer checkout. After the ordinary registered
 `tester-unified` suite exits green, the outer driver starts a second, dedicated
-`tester-unified` container for SQL qualification. It uses `--cgroupns=host` so
-the real `assay run` witness can see the cgroup hierarchy B145 requires; only
-this phase receives the Docker socket, which it uses to run the pinned
-PostgreSQL fixture. The driver mounts the exact-OID clone of the gated commit
-and runs `gate/python/qualify_sql.py` there with the image's Python 3.14
-interpreter. A red ordinary tester ends the script first, so PostgreSQL never
-runs after a red tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified`
-between the tester and the receipt.
+`tester-unified` container for SQL qualification. Its cgroup namespace stays
+private; the read-only resource-observer socket provides the runner's verified
+ancestor counters when B145 proves the local namespace hides them. Only this
+phase receives the Docker socket, which it uses to run the pinned PostgreSQL
+fixture. The driver mounts the exact-OID clone of the gated commit and runs
+`gate/python/qualify_sql.py` there with the image's Python 3.14 interpreter. A
+red ordinary tester ends the script first, so PostgreSQL never runs after a red
+tester. The phase prints `ASSAY_GATE_PHASE=sql-qualified` between the tester
+and the receipt.
 
 **Inputs, all in the repository.** The schema is
 `tests/fixtures/mutation/sql/qualification/01-schema.sql` (sha256 pinned in

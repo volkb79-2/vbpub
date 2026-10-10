@@ -36,12 +36,14 @@ container name in use, the docker environment lost mid-run, an
 incomplete witness): visible and rerunnable, never skipped and never green.
 
 **Environment.** The registered gate runs this harness in a dedicated
-``tester-unified`` container with ``--cgroupns=host``. That is required by
-B145: native R2 must see the cgroup hierarchy through its root. Only this
-qualification container receives the Docker socket, because it owns the
-pinned PostgreSQL fixture; the ordinary installed-wheel suite never receives
-it. The qualification container runs ``--network none`` in the cgroup slice
-the caller passes. Its visible name starts ``run-gate-assay-sql-`` so peer
+``tester-unified`` container with a private cgroup namespace and the
+read-only cgprofile resource-observer socket. B145 native R2 uses that
+observer only when local namespace visibility proves host ancestors are
+hidden. Only this qualification container receives the Docker socket, because
+it owns the pinned PostgreSQL fixture; the ordinary installed-wheel suite
+never receives it. The qualification container runs ``--network none`` in
+the cgroup slice the caller passes. Its visible name starts
+``run-gate-assay-sql-`` so peer
 gates see it. The harness addresses PostgreSQL by its Docker ID and records
 that ID so the outer gate can retry cleanup without risking a same-name
 container. Before PostgreSQL starts the

@@ -3,9 +3,10 @@
 # verifies the configured gates cgroup through cgroup-parent.sh, launches
 # tester-unified with the network disabled, and emits the final receipt marker
 # only after Docker returns zero AND the SQL qualification phase (W5, A-480)
-# has passed in a separate cgroup-visible tester-unified container, against a
-# real PostgreSQL reached through a socket mounted only into that phase. The
-# inner mode is invoked only inside the ordinary self-hosting container.
+# has passed in a separate tester-unified container against real PostgreSQL.
+# The Docker socket is mounted only into that phase; native R2 phases receive
+# only cgprofile's separate read-only resource-observer socket. The inner mode
+# is invoked only inside the ordinary self-hosting container.
 #
 # P24 (A-198-A-201): the wheel this gate self-hosts through is no longer built
 # from the bind-mounted worktree with an ambient-setuptools PYTHONPATH shim.
@@ -21,6 +22,30 @@
 set -euo pipefail
 
 die() { printf 'tester-unified-gate: %s\n' "$*" >&2; exit 1; }
+
+RESOURCE_OBSERVER_SOURCE="/run/cgprofile/resource-observer.sock"
+RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
+
+resource_observer_gid() {
+  local parent_uid parent_mode socket_uid socket_gid socket_mode
+  [[ -d /run/cgprofile && ! -L /run/cgprofile ]] \
+    || die 'cgprofile observer directory is absent, not a directory, or a symlink'
+  read -r parent_uid parent_mode < <(stat -Lc '%u %a' /run/cgprofile) \
+    || die 'could not inspect the cgprofile observer directory'
+  [[ "$parent_uid" == 0 ]] \
+    || die 'cgprofile observer directory is not root-owned'
+  (( (8#$parent_mode & 0002) == 0 )) \
+    || die 'cgprofile observer directory is world-writable'
+  [[ -S "$RESOURCE_OBSERVER_SOURCE" && ! -L "$RESOURCE_OBSERVER_SOURCE" ]] \
+    || die "cgprofile observer endpoint is not a Unix socket: $RESOURCE_OBSERVER_SOURCE"
+  read -r socket_uid socket_gid socket_mode < <(stat -Lc '%u %g %a' "$RESOURCE_OBSERVER_SOURCE") \
+    || die 'could not inspect the cgprofile observer socket'
+  [[ "$socket_uid" == 0 && "$socket_gid" == "$(stat -Lc %g /run/cgprofile)" ]] \
+    || die 'cgprofile observer socket ownership does not match its root-owned directory'
+  (( (8#$socket_mode & 0007) == 0 && (8#$socket_mode & 0020) != 0 )) \
+    || die 'cgprofile observer socket must be group-connectable and not accessible to other users'
+  printf '%s\n' "$socket_gid"
+}
 
 assay_git() {
   command git \
@@ -838,7 +863,7 @@ wait_for_container_log_follower() {
 }
 
 run_registered_tester_container() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3"
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4"
   local forwarded_env=() container_id cidfile_id wait_status logs_status inventory
   _assay_gate_container_name="run-gate-assay-selfhosted-${BASHPID}-${RANDOM}-$(date +%s)"
   _assay_gate_container_ownership_token="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" \
@@ -865,16 +890,21 @@ run_registered_tester_container() {
     --label "assay.gate.owner=$_assay_gate_container_ownership_token" \
     --name "$_assay_gate_container_name" \
     --init \
-    --cgroupns=host \
     --cgroup-parent="$cgroup_parent" \
+    --cpus=3 \
+    --group-add "$observer_gid" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
     -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
+    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     tester-unified:local \
     bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree")" \
     || die "could not start named tester-unified container"
+  docker update --cpus=3 "$_assay_gate_container_name" >/dev/null \
+    || die "could not apply the tester-unified container CPU cap"
   if [[ -z "$container_id" ]]; then
     [[ ! -s "$_assay_gate_container_ownership_file" ]] || _assay_gate_launch_evidence_ambiguous=1
     die 'docker run returned an empty container ID'
@@ -1015,7 +1045,7 @@ run_b145_bounded_wait_acceptance_probe() {
     --label "assay.b145-probe.owner=$_assay_b145_probe_owner_token" \
     --name "$_assay_b145_probe_container_name" \
     --init \
-    --cgroupns=host \
+    --cpus=3 \
     --pids-limit=16 \
     --cgroup-parent="$cgroup_parent" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
@@ -1034,6 +1064,8 @@ run_b145_bounded_wait_acceptance_probe() {
       cleanup_b145_probe_container || true
       die "could not start the B145 bounded-wait probe container (docker run exit $launch_rc)"
     }
+  docker update --cpus=3 "$_assay_b145_probe_container_name" >/dev/null \
+    || die 'could not apply the B145 bounded-wait probe CPU cap'
   _assay_b145_probe_container_id="$container_id"
   if [[ ! "$container_id" =~ ^[0-9a-f]{64}$ || ! -f "$_assay_b145_probe_cidfile" ]]; then
     _assay_b145_probe_evidence_ambiguous=1
@@ -1070,12 +1102,13 @@ run_b145_bounded_wait_acceptance_probe() {
 }
 
 # Run the real resource-limit regression in a small, detached tester-unified
-# container. Host cgroup namespace visibility is required so Assay can observe
-# the finite pids.max at this container and its ancestors. The explicit cap
-# bounds the fork probe even if its test regresses; the inner and outer limits
-# bound the test process and Docker wait independently.
+# container. Its cgroup namespace stays private; the read-only observer socket
+# supplies the verified ancestor counters needed to observe the finite pids.max
+# at this container and its ancestors. The explicit cap bounds the fork probe
+# even if its test regresses; the inner and outer limits bound the test process
+# and Docker wait independently.
 run_b145_low_pids_probe() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3"
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4"
   local container_id cidfile_id wait_status wait_rc logs launch_rc wait_timeout_seconds=150
   command -v timeout >/dev/null 2>&1 \
     || die 'the B145 low-pids probe requires the host timeout command'
@@ -1089,15 +1122,18 @@ run_b145_low_pids_probe() {
     --label "assay.b145-probe.owner=$_assay_b145_probe_owner_token" \
     --name "$_assay_b145_probe_container_name" \
     --init \
-    --cgroupns=host \
+    --cpus=3 \
     --pids-limit=32 \
     --cgroup-parent="$cgroup_parent" \
+    --group-add "$observer_gid" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     -e ASSAY_B145_LOW_PIDS_PROBE=1 \
     -e "ASSAY_GATE_PROBE_WORKTREE=$worktree" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     tester-unified:local \
     bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
     || {
@@ -1110,6 +1146,8 @@ run_b145_low_pids_probe() {
       cleanup_b145_probe_container || true
       die "could not start the B145 low-pids acceptance container (docker run exit $launch_rc)"
     }
+  docker update --cpus=3 "$_assay_b145_probe_container_name" >/dev/null \
+    || die 'could not apply the B145 low-pids probe CPU cap'
   _assay_b145_probe_container_id="$container_id"
   if [[ ! "$container_id" =~ ^[0-9a-f]{64}$ || ! -f "$_assay_b145_probe_cidfile" ]]; then
     _assay_b145_probe_evidence_ambiguous=1
@@ -1205,16 +1243,17 @@ finish_registered_gate() {
 #
 # Real-PostgreSQL evidence the ordinary tester suite cannot produce because it
 # has no Docker socket. It runs only after that suite exits green, in a separate
-# tester-unified container with `--cgroupns=host`, from a private exact-OID clone
-# of the gated commit. The socket is scoped to this qualification runner so its
-# real Assay witness can use B145's cgroup counters while driving the pinned
-# PostgreSQL container. Reads `worktree` and `host_repo_root` from the caller's
-# dynamic scope. Exit 3 means the environment could not answer; it passes
-# through with no receipt or COMPLETE marker.
+# private-cgroup-namespace tester-unified container from a private exact-OID
+# clone of the gated commit. The Docker socket is scoped to this qualification
+# runner; the read-only resource-observer socket supplies only its own cgroup
+# ancestry to the real Assay witness while driving the pinned PostgreSQL
+# container. Reads `worktree` and `host_repo_root` from the caller's dynamic
+# scope. Exit 3 means the environment could not answer; it passes through with
+# no receipt or COMPLETE marker.
 run_sql_qualification() {
-  local commit="$1" cgroup="$2" socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
+  local commit="$1" cgroup="$2" observer_gid="$3" docker_socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
   local shared=0 docker_socket=/var/run/docker.sock run_id runner_launch_status runner_launch_stderr
-  local forwarded_env=() sql_runner_script
+  local forwarded_env=() group_add_args=() sql_runner_script
   # (CD50) The harness opt-in follows the gate's, and only for the exact value 1.
   if [[ "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" == 1 ]]; then
     shared=1
@@ -1232,9 +1271,14 @@ run_sql_qualification() {
     || die "SQL clone is not the gated commit $commit"
   [[ -S "$docker_socket" ]] \
     || die "Docker socket $docker_socket is unavailable to the SQL qualification launcher"
-  socket_gid="$(stat -Lc %g "$docker_socket")" \
+  docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
     || die "could not read Docker socket group for $docker_socket"
-  [[ "$socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $socket_gid"
+  [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
+  [[ "$observer_gid" =~ ^[0-9]+$ ]] || die "resource observer socket group is malformed: $observer_gid"
+  group_add_args=(--group-add "$docker_socket_gid")
+  if [[ "$observer_gid" != "$docker_socket_gid" ]]; then
+    group_add_args+=(--group-add "$observer_gid")
+  fi
   if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
     forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
   fi
@@ -1291,23 +1335,26 @@ cat "$scratch/expected.marker"
     --label "assay.sql-gate.owner=$_assay_sql_ownership_token" \
     --name "$_assay_sql_runner_container_name" \
     --init \
-    --cgroupns=host \
     --cgroup-parent="$cgroup" \
     --cpus=3 \
-    --group-add "$socket_gid" \
+    "${group_add_args[@]}" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup" \
+    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     --mount "type=bind,src=$docker_socket,dst=/var/run/docker.sock" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     -w /workspaces/vbpub \
     tester-unified:local \
     bash -c "$sql_runner_script" assay-sql-qualification \
       "$worktree" "$_assay_sql_scratch" "$commit" "$cgroup" \
       "$_assay_sql_container_name" "$_assay_sql_runner_container_name" "$shared" \
       "$_assay_sql_ownership_token" 2>"$runner_launch_stderr")"; then
+    docker update --cpus=3 "$_assay_sql_runner_container_name" >/dev/null \
+      || die 'could not apply the SQL qualification runner CPU cap'
     cat "$runner_launch_stderr" >&2
   else
     runner_launch_status=$?
@@ -1330,7 +1377,7 @@ cat "$scratch/expected.marker"
       printf 'ASSAY_GATE_INCONCLUSIVE=sql-qualification-runner-name-conflict — rerun\n' >&2
       exit 3
     fi
-    die 'could not start the cgroup-visible SQL qualification container'
+    die 'could not start the observer-enabled SQL qualification container'
   fi
   if [[ -z "$container_id" ]]; then
     [[ ! -s "$_assay_sql_runner_ownership_file" ]] || _assay_sql_runner_launch_evidence_ambiguous=1
@@ -1409,13 +1456,14 @@ cat "$scratch/expected.marker"
 }
 
 run_registered_gate() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree observer_gid
   # (CD50) The shared-host opt-in is validated before anything else, so a typo
   # never launches and never touches the receipt.
   case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
     '' | 1) ;;
     *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
   esac
+  observer_gid="$(resource_observer_gid)"
   # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
   # makes this run inconclusive before it captures, clears or builds anything.
   # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
@@ -1444,11 +1492,11 @@ run_registered_gate() {
   _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
   trap cleanup_assay_gate_container EXIT
   run_b145_bounded_wait_acceptance_probe "$host_repo_root" "$cgroup_parent"
-  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent"
+  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid"
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
-  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
-  run_sql_qualification "$commit" "$cgroup_parent"
+  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid"
+  run_sql_qualification "$commit" "$cgroup_parent" "$observer_gid"
   finish_registered_gate "$worktree" "$commit" "$tree"
 }
 

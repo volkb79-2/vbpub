@@ -85,9 +85,12 @@ environment = "tester-unified"
 clean_tree = true
 budget = "30m"
 
-# Mutation (R2). Bare-host and serial (HOST LOAD §6: 8 cores shared with a
-# production game server, jobs = 1 in assay.toml's own [lanes.r2.judge.
-# mutation] — no headroom for parallel mutant workers).
+# Mutation (R2). Run in tester-unified with its private cgroup namespace;
+# the observer-only cgprofile socket supplies the hidden host ancestry needed
+# by Assay B145 without exposing the daemon control socket or using
+# --cgroupns=host. Assay runs two isolated mutant workers and Docker caps this
+# container at 3 CPUs, below dev-gates.slice's 5-CPU ceiling. The shared
+# tester cgroup makes Assay's resource-event windows serial (jobs = 1).
 #
 # RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
 # (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of
@@ -105,9 +108,13 @@ budget = "30m"
 [lanes.assay-r2]
 kind = "assay"
 assay_lane = "r2"                   # -> assay.toml [lanes.r2]
-environment = "bare-host"
+environment = "tester-unified"
+resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+
+[lanes.assay-r2.resources]
+cpus = "3"
 
 # R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, including
 # the median-not-mean `duration_stats` RG-27 trap). A

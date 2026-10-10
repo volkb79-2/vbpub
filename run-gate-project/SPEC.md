@@ -90,6 +90,14 @@ Rev 18 (run-gate rev 55): RG-84 refuses to run as container PID 1 and compares
 the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
 each real lane; any resource event or unreadable comparison returns
 infrastructure ERROR with the raw lane status retained.
+Rev 19 (run-gate rev 57): RG-89 adds the opt-in
+`resource_observer = "cgprofile"` lane contract for native Assay R2 in a
+private cgroup namespace; only cgprofile's observer-only socket is mounted
+read-only and its observed GID is granted to the tester container.
+Rev 20 (run-gate rev 58): RG-89 also permits that explicit read-only observer
+mount on `tester-unified` command lanes, so nested qualification drivers can
+receive the endpoint without hand-rolling mounts. The lane declaration is
+the opt-in; Run-Gate does not infer command semantics from argv.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -295,7 +303,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   table — `memory`, `memory_swap`, `cpu_weight`, `io_weight`, `shared`,
   `cpus` (RG-48, rev 10)), `profile` (RG-55, rev 10: `false` to disable
   profiling for this lane outright, or a table `{enabled, damon}`
-  overriding `[profile]`'s own defaults — `R-43h`), `description` (optional
+  overriding `[profile]`'s own defaults — `R-43h`),
+  `resource_observer` (RG-89: only `"cgprofile"`, only on an Assay or command
+  lane explicitly using `environment = "tester-unified"`; command wrappers
+  that launch Assay preserve the endpoint variable for that process; it mounts a separate
+  observer-only Unix socket read-only, grants its observed GID, and fails
+  closed if that host socket or its ownership/mode is not safe), `description` (optional
   non-empty string, one line, shown by `--help`), `required_env` (optional
   unique list of valid environment-variable names this lane's tests
   REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
@@ -1913,12 +1926,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       that names no path there — absent, or `null` — falls back to the
       config, so neither a pre-rev-34 record nor a lane that has just become
       an assay lane loses its watch in silence.
-  - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
-    timestamp today, so the rate is measured against run-gate's OWN clock
-    from the first event it observed and advancement is the file's mtime.
-    Where an event already carries `elapsed_s` (assay B065) it is PREFERRED,
-    so the same implementation becomes exact when B065 lands — no rewrite,
-    and no second reading of the same fact.
+  - **`R-40d` Run-relative timing.** Assay's progress records carry
+    `emitted_at` and `elapsed_s` (B065), so Run-Gate prefers the record's
+    elapsed time when estimating rate; older streams fall back to Run-Gate's
+    own clock and the file mtime. Rate counts candidate events in the active
+    run segment, not the campaign-wide index, and ETA uses Assay's
+    `pending_total` when available. With a `run` header, a missing, invalid,
+    or inconsistent `pending_total` suppresses the ETA; campaign-index
+    fallback is retained only for legacy streams with no `run` header. These
+    estimates are diagnostic only and do not alter the verdict. The run
+    boundary and reset behavior are
+    specified by `R-40g`.
   - **`R-40e` The documented shape.** For a mutation lane: a generous assay
     `budget` + `judge.mutation.budget_per_candidate` + run-gate
     `stall_timeout`. For R0/R1: `budget` is the command's own bound and
@@ -1941,6 +1959,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     judging the lane — "its progress file" or "its own log output" — so an
     operator never has to guess which of the two mechanisms a given
     `stall_timeout` bounds.
+  - **`R-40g` Assay progress is scoped to the latest run header (RG-90,
+    rev 59).** Assay appends a `run` event at the start of each invocation;
+    Run-Gate considers candidate events only after the latest valid `run`
+    event in that append-only file. A watcher that sees a newer run header
+    resets its prior candidate, rate, and silence baselines before observing
+    the new run. Candidates from a previous invocation are history, not
+    current progress, and cannot arm or satisfy the current run's stall
+    timer. Candidate rate counts events in the active segment, because a
+    resumed candidate's campaign-wide index is paired with a run-relative
+    elapsed clock. When Assay provides `pending_total`, ETA uses that remaining
+    work count minus candidates completed in the active segment. A legacy
+    stream with no `run` header retains whole-file behavior. Run-Gate does not
+    truncate the stream, which Assay uses for resume history.
 
 - `R-41` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
   no longer depends on every CALLER wrapping its own `flock` around the
@@ -2330,6 +2361,49 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     --no-local` and is unaffected. A sibling `config.worktree` that exists
     gets the `R-45b` sanitized read-only overlay; module plus sibling
     config files are capped at 256 (infrastructure error beyond).
+
+- `R-46` **Private-namespace Assay R2 resource observer (RG-89).**
+  `resource_observer = "cgprofile"` is an optional, closed lane key. It is
+  legal only when `kind = "assay"` or `kind = "command"` and the lane
+  explicitly names `environment = "tester-unified"`. The lane declaration
+  is the opt-in; command wrappers that launch Assay R2 must preserve the
+  inherited endpoint variable for that process. The endpoint remains a
+  read-only query bound to the command's own peer. Before building Docker argv, Run-Gate
+  lstat-checks the fixed source
+  `/run/cgprofile/resource-observer.sock`: it must be a Unix socket, root
+  owned, in the root-owned socket directory with matching GID, group
+  connectable, and not accessible to other users. Missing or unsafe state is
+  infrastructure ERROR; Docker must not invent a bind source. The container
+  receives only that socket file at
+  `/tmp/cgprofile-resource-observer.sock`, via a read-only bind; Run-Gate
+  supplies the observed socket GID as a supplementary group and sets
+  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container target. It does not
+  mount `ctl.sock`, grant the Docker socket, or change the container's
+  private PID/cgroup/network namespaces.
+  - The observer listener belongs to the existing cgprofile daemon and accepts
+    exactly one `resource-limits` request with a positive native thread ID.
+    It has no `start`, `stop`, `place`, or other control verbs. The daemon
+    binds the request to `SO_PEERCRED`, proves the requested native TID maps
+    to a live thread of that peer, proves all peer threads share cgroup and
+    credentials, and refuses capability/DAC states that could migrate the
+    peer into an unsampled cgroup. The request cannot name a PID, path, or
+    slice. The service maps the private-namespace cgroup path through its
+    mountinfo-verified full-root cgroup2 mount and returns only that peer
+    cgroup's ancestry beneath the configured gates slice—never PIDs,
+    processes, or sibling cgroup data.
+  - Assay first uses its already-validated local cgroup view. It calls the
+    configured observer only for the specific hidden-ancestor refusal; other
+    local errors do not trigger fallback. It validates the response schema,
+    thread identity, full leaf-to-root ancestry, mount IDs, limits, and event
+    counters before using the sample. Per-path deltas remain internal to
+    Assay: an event at a shared ancestor without a matching candidate-leaf
+    delta is an infrastructure error with no candidate bucket. Only a
+    candidate-attributable resource event may classify a started candidate as
+    `crashed`; a resource event never certifies `killed` or `survived`.
+  - This is a read-only observation seam in the existing daemon, not a host
+    broker, placement authority, or namespace-sharing shortcut. The separate
+    socket is required because a read-only filesystem bind does not restrict
+    the verbs accepted by a Unix socket protocol.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
