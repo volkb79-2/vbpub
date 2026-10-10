@@ -841,6 +841,7 @@ def test_b110_pilot_and_screen_are_registered_bare_host_lanes_with_exact_bounds(
                 ".assay/b110-pilot-selection.json",
                 ".assay/b110-pilot-summary.json",
                 ".assay/b110-pilot-run.log",
+                ".assay/r2-manifest-b110-pilot.txt",
                 ".assay/b110-pilot-attempt-window.json",
                 ".assay/b110-pilot-attempt.log",
                 ".assay/b110-pilot-artifacts.sha256",
@@ -908,11 +909,14 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     assert lane["resources"] == {"shared": ["assay-self-qualification"]}
     assert lane["exit_map"] == {"3": "ERROR"}
     assert lane["artifacts"] == [
+        ".assay",
         ".assay/analysis-r2-pilot-plan.json",
         ".assay/analysis-r2-pilot-candidates.txt",
         ".assay/analysis-r2-pilot-selection.json",
         ".assay/analysis-r2-pilot-summary.json",
         ".assay/analysis-r2-pilot-run.log",
+        ".assay/analysis-r2-pilot-attestation.json",
+        ".assay/r2-manifest-analysis-r2-pilot.txt",
         ".assay/progress-analysis-r2-pilot.jsonl",
         ".assay/analysis-r2-pilot-state",
     ]
@@ -929,7 +933,8 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     for marker in (
         "--candidates-file", "--cold-witness", "--resume", "--state-dir",
         "--progress", "--campaign-deadline", "analysis_r2_pilot_select.py",
-        "analysis_r2_pilot_check.py", "ANALYSIS_R2_PILOT_VERIFIED=1",
+        "analysis_r2_pilot_check.py", "--attestation",
+        "ANALYSIS_R2_PILOT_VERIFIED=", "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=",
     ):
         assert marker in pilot
     assert 'analysis-r2-pilot) run_analysis_r2_pilot; exit 0 ;;' in script
@@ -942,10 +947,55 @@ def _shell_function_body(script: str, name: str) -> str:
     return "\n".join(lines[start : end + 1]) + "\n"
 
 
-@pytest.mark.parametrize("expired_bound", ["invocation", "campaign"])
+@pytest.mark.parametrize("expired_bound", ["invocation", "campaign", "none"])
 def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     tmp_path: Path, expired_bound: str
 ):
+    marker_file = tmp_path / "checker-output.txt"
+    marker_file.write_text("ANALYSIS_R2_PILOT_VERIFIED=" + "a" * 64 + "\n", encoding="ascii")
+    proc = _run_analysis_r2_pilot_inner_harness(
+        tmp_path, checker_output=marker_file, expired_bound=expired_bound
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    if expired_bound == "none":
+        assert "STATUS=0" in proc.stdout
+        assert proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "a" * 64) == 1
+        assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+    else:
+        assert "STATUS=124" in proc.stdout
+        assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
+        assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" not in proc.stdout
+        assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"ANALYSIS_R2_PILOT_VERIFIED=1\n\n",
+        b"ANALYSIS_R2_PILOT_VERIFIED=" + b"a" * 63 + b"\n",
+        b"ANALYSIS_R2_PILOT_VERIFIED=" + b"a" * 64 + b"\x00\n",
+        b"ANALYSIS_R2_PILOT_VERIFIED=" + b"a" * 64 + b"\nEXTRA\n",
+    ],
+)
+def test_b131_pilot_requires_byte_exact_checker_stdout(tmp_path: Path, payload: bytes):
+    checker_output = tmp_path / "checker-output.bin"
+    checker_output.write_bytes(payload)
+    proc = _run_analysis_r2_pilot_inner_harness(tmp_path, checker_output=checker_output)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "STATUS=1" in proc.stdout
+    assert "ANALYSIS_R2_PILOT_CHECKER_MARKER_INVALID=1" in proc.stderr
+    assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" not in proc.stdout
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+
+
+def _run_analysis_r2_pilot_inner_harness(
+    tmp_path: Path,
+    *,
+    checker_output: Path,
+    expired_bound: str = "none",
+) -> subprocess.CompletedProcess[str]:
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     pilot = _shell_function_body(script, "run_analysis_r2_pilot")
     function_path = tmp_path / "analysis-pilot-function.sh"
@@ -959,7 +1009,15 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     scratch = tmp_path / "scratch"
     python = scratch / "run-venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == - ]]; then exec python3 \"$@\"; fi\n"
+        "case \"$*\" in\n"
+        "  *analysis_r2_pilot_check.py*) cat \"$PILOT_CHECKER_OUTPUT\" ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
     python.chmod(0o755)
 
     bin_dir = tmp_path / "bin"
@@ -1017,15 +1075,11 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     )
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env["PILOT_CHECKER_OUTPUT"] = str(checker_output)
 
-    proc = subprocess.run(
+    return subprocess.run(
         ["bash", str(harness)], capture_output=True, text=True, env=env, timeout=30
     )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "STATUS=124" in proc.stdout
-    assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
-    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
 
 
 def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
@@ -1071,6 +1125,7 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     assert '"$assay_bin" verify "$assay_state_root/verdict-b110-screen.json"' in screen
     assert "b110_screen_report_check.py" in screen
     assert "B110_SCREEN_VERIFIED=1" in screen
+    assert '--repo-root "$worktree"' in screen
     assert "--expected-exit-code \"$screen_status\"" in screen
     assert "--output b110-screen-run.log --stderr-to-stdout" in screen
     assert "--campaign-deadline" not in screen
@@ -1119,6 +1174,7 @@ def test_b110_pilot_early_refusal_clears_attempt_outputs_but_keeps_resume_progre
         "b110-pilot-selection.json",
         "b110-pilot-summary.json",
         "b110-pilot-run.log",
+        "r2-manifest-b110-pilot.txt",
     )
     for name in stale_outputs:
         (cwd / ".assay" / name).write_text("stale", encoding="utf-8")

@@ -29,6 +29,11 @@ run_source_host_checker() {
     | python3 - "$@"
 }
 
+run_source_analysis_pilot_checker() {
+  assay_git -C "$worktree" show "$source_commit:assay/tools/analysis_r2_pilot_host_check.py" \
+    | python3 - "$@"
+}
+
 clear_prior_outputs() {
   local output_lane="$1" marker
   local expected_assay_args=()
@@ -223,6 +228,8 @@ if [[ "$lane" == b110-screen || "$lane" == b110-pilot || "$lane" == analysis-r2-
       "$assay_state_dir/analysis-r2-pilot-selection.json" \
       "$assay_state_dir/analysis-r2-pilot-summary.json" \
       "$assay_state_dir/analysis-r2-pilot-run.log" \
+      "$assay_state_dir/r2-manifest-analysis-r2-pilot.txt" \
+      "$assay_state_dir/analysis-r2-pilot-attestation.json" \
       || die 'cannot remove prior B131 pilot outputs before launcher admission'
   fi
 fi
@@ -463,6 +470,8 @@ esac
 if [[ "$lane" == analysis-r2-pilot ]]; then
   printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
   printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER=%s\n' "$container_name"
+  printf 'ASSAY_ANALYSIS_R2_PILOT_DEADLINE_ARTIFACT=%s\n' \
+    "$project/.assay/campaign-deadline-analysis-r2-pilot-${source_commit:0:12}.json"
 else
   printf 'ASSAY_B105_GATE_WAIT_TIMEOUT=%s\n' "$wait_timeout_label"
   printf 'ASSAY_B105_GATE_CONTAINER=%s\n' "$container_name"
@@ -493,7 +502,7 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   assay-b105-inner "${inner_argv[@]}" >"$launch_output" 2>"$launch_error" &
 launch_pid=$!
 if wait "$launch_pid"; then
-  launch_status=0
+launch_status=0
 else
   launch_status=$?
 fi
@@ -676,14 +685,25 @@ case "$lane" in
     mapfile -t analysis_pilot_exit_markers < <(grep -E '^ANALYSIS_R2_PILOT_EXIT=(0|[1-9][0-9]{0,2})$' "$scratch/container.log" || true)
     [[ ${#analysis_pilot_exit_markers[@]} -eq 1 && "${analysis_pilot_exit_markers[0]}" == 'ANALYSIS_R2_PILOT_EXIT=6' ]] \
       || die 'B131 pilot did not report exactly one complete exit status (6)'
-    mapfile -t analysis_pilot_completion_markers < <(grep -Fx 'ANALYSIS_R2_PILOT_VERIFIED=1' "$scratch/container.log" || true)
-    [[ ${#analysis_pilot_completion_markers[@]} -eq 1 ]] \
-      || die 'B131 pilot exit 6 lacks its source-bound evidence verification marker'
+    if grep -Fxq 'ANALYSIS_R2_PILOT_VERIFIED=1' "$scratch/container.log"; then
+      die 'B131 pilot container log contains the outer completion marker'
+    fi
     marker=ANALYSIS_R2_PILOT_VERIFIED=1
     ;;
 esac
-grep -Fxq "$marker" "$scratch/container.log" \
-  || die "Assay qualification container exited zero without $marker"
+analysis_pilot_attestation_sha256=""
+container_marker="$marker"
+if [[ "$lane" == analysis-r2-pilot ]]; then
+  mapfile -t analysis_pilot_attestation_markers < <(
+    grep -E '^ANALYSIS_R2_PILOT_CHECKER_VERIFIED=[0-9a-f]{64}$' "$scratch/container.log" || true
+  )
+  [[ ${#analysis_pilot_attestation_markers[@]} -eq 1 ]] \
+    || die 'B131 pilot did not emit exactly one evidence-attestation digest'
+  analysis_pilot_attestation_sha256="${analysis_pilot_attestation_markers[0]#ANALYSIS_R2_PILOT_CHECKER_VERIFIED=}"
+  container_marker="ANALYSIS_R2_PILOT_CHECKER_VERIFIED=$analysis_pilot_attestation_sha256"
+fi
+grep -Fxq "$container_marker" "$scratch/container.log" \
+  || die "Assay qualification container exited zero without $container_marker"
 
 [[ "$(assay_git -C "$worktree" rev-parse HEAD)" == "$source_commit" ]] \
   || die 'selected worktree HEAD changed during B105 qualification'
@@ -693,6 +713,42 @@ final_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=al
   || die 'cannot read selected worktree status after B105 qualification'
 [[ -z "$final_status" ]] \
   || die 'selected worktree became dirty during B105 qualification'
+
+if [[ "$lane" == analysis-r2-pilot ]]; then
+  attestation_path="$project/.assay/analysis-r2-pilot-attestation.json"
+  deadline_artifact="$project/.assay/campaign-deadline-analysis-r2-pilot-${source_commit:0:12}.json"
+  if ! host_evidence_marker="$(run_source_analysis_pilot_checker \
+    --project-root "$project" \
+    --attestation "$attestation_path" \
+    --deadline "$deadline_artifact" \
+    --expected-commit "$source_commit" \
+    --expected-tree "$source_tree" \
+    --expected-sha256 "$analysis_pilot_attestation_sha256")"; then
+    die 'host rejected B131 pilot evidence after the judge container exited'
+  fi
+  [[ "$host_evidence_marker" == "ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED=$analysis_pilot_attestation_sha256" ]] \
+    || die 'host returned a malformed B131 evidence verification marker'
+  [[ "$(assay_git -C "$worktree" rev-parse HEAD)" == "$source_commit" ]] \
+    || die 'selected worktree HEAD changed during final B131 host verification'
+  [[ "$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" == "$source_tree" ]] \
+    || die 'selected worktree tree changed during final B131 host verification'
+  final_status="$(assay_git -C "$worktree" status --porcelain --untracked-files=all)" \
+    || die 'cannot read selected worktree status after final B131 host verification'
+  [[ -z "$final_status" ]] \
+    || die 'selected worktree became dirty during final B131 host verification'
+  if ! final_host_evidence_marker="$(run_source_analysis_pilot_checker \
+    --project-root "$project" \
+    --attestation "$attestation_path" \
+    --deadline "$deadline_artifact" \
+    --expected-commit "$source_commit" \
+    --expected-tree "$source_tree" \
+    --expected-sha256 "$analysis_pilot_attestation_sha256")"; then
+    die 'host rejected B131 pilot evidence during the final publication check'
+  fi
+  [[ "$final_host_evidence_marker" == "ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED=$analysis_pilot_attestation_sha256" ]] \
+    || die 'host returned a malformed B131 final evidence verification marker'
+  host_evidence_marker="$final_host_evidence_marker"
+fi
 
 if [[ "$lane" == b110-pilot ]]; then
   if ! pilot_snapshot_receipt="$(run_source_host_checker \
@@ -747,17 +803,20 @@ if [[ "$lane" == b110-pilot ]]; then
   exit 0
 fi
 
-printf '%s\n' "$marker"
 case "$lane" in
   b110-pilot|b110-screen)
+    printf '%s\n' "$marker"
     printf 'ASSAY_B110_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
     printf 'ASSAY_B110_GATE_COMPLETE=%s\n' "$lane"
     ;;
   analysis-r2-pilot)
     printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+    printf '%s\n' "$host_evidence_marker"
+    printf '%s\n' "$marker"
     printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=%s\n' "$lane"
     ;;
   *)
+    printf '%s\n' "$marker"
     printf 'ASSAY_B105_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
     printf 'ASSAY_B105_GATE_COMPLETE=%s\n' "$lane"
     ;;

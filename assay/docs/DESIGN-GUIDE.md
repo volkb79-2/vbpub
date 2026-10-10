@@ -1381,7 +1381,12 @@ prints a separate JSON summary and never writes a verdict artifact. A standard
 verdict is the input to verification and downstream release decisions; omitting
 it prevents a partial candidate inventory from being mistaken for a complete
 PASS. The summary says `qualifying: false` and reports each bucket, selected
-candidate, and any unresolved ID.
+candidate, and any unresolved ID. Schema `/2` also retains the cold-witness R2
+command and its coverage/R2 baselines when present. A registered gate retains
+the ordered R2 collection manifest separately: the report checker compares its
+count and digest with the baseline, then binds each candidate's collection
+facts and failed-call witness to that collection. This prevents a fabricated
+node ID or unrelated collection digest from turning a pilot result green.
 
 Exit code **6** is intentionally outside the ordinary `EXIT_CODES` map. It
 means the selected pilot inventory completed, regardless of whether R2 passed
@@ -2581,7 +2586,13 @@ summary, per-candidate state, progress stream, resumed dispositions, two-hour
 campaign deadline, 90-minute attempt window, wheel identity and resource-limit
 evidence. The summary records the current sweep's `judge_sha256` captured in
 memory; the checker requires the candidates progress event and every state
-record to match it. It writes a SHA-256 manifest over the validated files. The
+record to match it. The `/2` summary also carries the effective declared and
+transformed R2 command, configuration digest, and coverage/R2 baselines. The
+retained `.assay/r2-manifest-b110-pilot.txt` is part of the checked artifact
+set; candidate collection facts and kill witnesses must match those baselines
+and collected test nodes. The checker requires elapsed and phase measurements
+in progress and compares CPU/RSS/phase/startup values with resumable state. It
+writes a SHA-256 manifest over the validated files. The
 host copies those bytes into
 `.assay/b110-pilot-evidence/`, checks the exact inventory and content digests,
 and atomically publishes that directory as the retained evidence snapshot.
@@ -2840,7 +2851,7 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; qualification of the current transform against dstdns is pending |
+| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; both current dstdns canaries passed with retained schema-v15 verdicts and verifier transcripts |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
 
 **B087 registers both adapter transforms through the shared isolated canary
@@ -2852,10 +2863,11 @@ the function body's lines remain uncovered. The runner accepts only the
 matching `COMMAND_FAILED` or `UNCOVERED_LINES` result after a passing control,
 respectively. The live R3 oracles cover ESM and CommonJS; a separate Vitest
 fixture replay confirms the body lines remain missing under both Istanbul
-and V8 artifacts. The original dstdns attempt used a different uncovered-line
-transform; current real-consumer qualification remains open. The report at
-`nyxloom-trove/reports/B087-js-r3-qualification.md` records that evidence gap.
-No verdict or schema rule changed.
+and V8 artifacts. Both current dstdns canaries passed with retained schema-v15
+verdicts and verifier transcripts; the report at
+`nyxloom-trove/reports/B087-js-r3-qualification.md` records their scope and
+evidence. That consumer evidence is distinct from the integrated Assay release
+gate. No verdict or schema rule changed.
 
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own
@@ -4417,9 +4429,26 @@ thresholds.
 
 The registered `analysis-r2-pilot` gate runs the selected sample with cold
 witnesses, resumable state, a progress stream and one persisted campaign
-deadline. The host binds the selection and completed exit-6 summary to the
-clean source commit/tree, plan bytes, wheel identity, candidate file, state,
-progress and B145 resource evidence. No verdict is written: a completed sample
+deadline. The `/2` summary records the effective R2 command and its collection
+baselines. `.assay/r2-manifest-analysis-r2-pilot.txt` is retained and checked
+against the R2 baseline; candidate collection evidence and failed-call
+witnesses must resolve to those baseline facts and manifest nodes. The checker
+also requires candidate elapsed and phase evidence and binds CPU/RSS/phase/
+startup measurements between progress and resumable state. The host binds the
+selection and completed exit-6 summary to the clean source commit/tree, plan
+bytes, wheel identity, candidate file, state, progress and B145 resource
+evidence. The checker records an attestation over each file's content and
+filesystem identity, including single-link status, and rechecks the entire set
+after validation. After the judge container exits, the host compares the
+attested identities and contents again before the registered gate reports
+success. After the evidence scan, it rechecks the judged commit/tree and clean
+worktree, then confirms the two-hour campaign deadline is still active. The
+outer launcher repeats the Git check immediately before its completion marker.
+This second boundary catches replacement or mutation after the inner checker
+runs. The campaign deadline name includes the source commit; the
+registered host runner prints its resolved path in the lane output because
+declaring the containing `.assay` directory does not disclose a child file.
+No verdict is written: a completed sample
 is a measurement, while timeout, partial state, host refusal or resource limit
 is incomplete. Only measurements from this pilot may set an analysis-specific
 worker envelope, full-run budget and GO policy; a separate stage must add and

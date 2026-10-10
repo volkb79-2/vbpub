@@ -39,6 +39,18 @@ completed; it is not a full R2 qualification or a release gate. A full analysis
 R2 claim awaits a separate decision based on measured pilot results. See the
 [B131 design](docs/DESIGN-GUIDE.md#analysis-package-r2-pilot-b131) and
 [pilot procedure](docs/CONSUMERS.md#run-the-analysis-package-r2-pilot-b131).
+The gate verifies pilot-summary schema `/2`, binds its recorded R2 command and
+both collection baselines to the judged source, and retains the ordered R2
+test manifest. Candidate collection evidence and each kill witness must match
+that manifest; the checker also binds per-candidate resource measurements in
+progress to the resumable state record and rechecks every evidence file before
+it emits its attestation marker. The registered host runner checks the
+attestation again after the judge container exits, comparing file identity,
+content, hard-link count and the exact state inventory. It prints the resolved
+commit-specific campaign-deadline path in the gate output; the `.assay`
+directory entry alone does not identify that file. Before completion, the host
+also rechecks the judged commit/tree and clean worktree, then confirms that the
+campaign deadline remains active.
 A source checkout needs both `src` and `analysis/src` on the path for `analyze`;
 an installed wheel or zipapp needs nothing extra:
 
@@ -356,7 +368,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); current dstdns qualification is pending |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both current dstdns canaries passed with retained v15 verdicts and verifier transcripts; integrated release evidence is separate |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
 
@@ -375,8 +387,9 @@ Three genuinely different states, worth keeping distinct:
   - **Implemented but unregistered** — code may exist without being
   callable through the CLI until it is wired and proven. JavaScript R3
   used to be this state; B087 registers it and adds local real-Vitest
-  oracles. Requalification of the current transform against dstdns remains
-  open ([report](nyxloom-trove/reports/B087-js-r3-qualification.md)).
+  oracles. Both current dstdns canaries passed with retained v15 verdicts and
+  verifier transcripts; the [report](nyxloom-trove/reports/B087-js-r3-qualification.md)
+  records the canary scope and evidence.
 
 Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
 (the single authority for what's registered — its own docstring notes this
@@ -717,8 +730,10 @@ producer contract are in the
 [JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
 R3 (the cause-sensitive canary) is registered for JavaScript through B087.
 The two adapter transforms are judged by the existing isolated canary runner;
-local real-Vitest tests exercise the current code, while dstdns qualification
-of the current transform is pending. The verdict schema is unchanged.
+local real-Vitest tests exercise the current code, and both current dstdns
+canaries passed with retained v15 verdicts and verifier transcripts. Those
+canaries are distinct from the integrated Assay release gate. The verdict
+schema is unchanged.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the
@@ -816,8 +831,10 @@ to execute a bounded selection from a native R2 plan; `--pilot-jobs` can set
 1–8 workers for that run. A pilot skips R3, writes no verdict, and returns exit
 code 6 only when every selected candidate has a completed disposition. Exit 6
 means “pilot measurement completed,” never “the lane passed”; use the JSON
-summary and its mutation buckets to read the result. Pilot state is tied to one
-selection and lane and must stay separate from qualifying campaign state. See
+summary and its mutation buckets to read the result. Pilot summaries use schema
+`assay-pilot-summary/2` and include the recorded R2 command when a cold-witness
+baseline ran. Pilot state is tied to one selection and lane and must stay
+separate from qualifying campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
 
@@ -826,7 +843,12 @@ The registered B110 pilot retains a host-verified evidence snapshot at
 `.assay/b110-pilot-evidence.receipt.json`. After validating a successful
 run-gate transcript, the host also retains
 `.assay/b110-pilot-evidence.attestation.json`, binding the snapshot digest to
-that transcript. The launcher pins the admitted `.assay` directory through an
+that transcript. Its snapshot includes
+`.assay/r2-manifest-b110-pilot.txt`; the `/2` summary records the declared and
+transformed R2 command and its coverage/R2 baselines. The independent report
+checker requires each candidate's collection evidence and kill witness to
+agree with those facts and checks resource measurements against progress.
+The launcher pins the admitted `.assay` directory through an
 open directory descriptor while Assay creates campaign, candidate, mutation
 state, deadline and progress files beneath it. The next attempt checks and
 archives this snapshot before source-cleanliness and later host-admission

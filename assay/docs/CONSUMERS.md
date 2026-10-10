@@ -1059,8 +1059,15 @@ run. The gate then reports completion only after an independent checker
 recomputes the selected IDs
 from the exact source plan and validates the summary's in-memory current-sweep
 `judge_sha256`; the candidates progress event and every candidate state record
-must match that value. It also validates resource evidence, pending and resumed
-progress, campaign deadline, the 90-minute attempt window and wheel digest. The 90-minute cap
+must match that value. Its `/2` summary records the effective declared and
+transformed R2 command, configuration digest, and coverage/R2 baselines. The
+gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
+recomputes its ordered collection digest, requires candidate collection facts
+to match the appropriate baseline, and requires every kill witness to name a
+collected test. It validates candidate elapsed and phase evidence and binds
+CPU/RSS/phase/startup measurements between progress and state. It also
+validates resource evidence, pending and resumed progress, campaign deadline,
+the 90-minute attempt window and wheel digest. The 90-minute cap
 includes report checking, final source/deadline checks and completion markers.
 The checker writes
 `.assay/b110-pilot-artifacts.sha256`; the host pins that manifest and its listed
@@ -1888,10 +1895,9 @@ inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
 by the existing cause-sensitive canary runner. Assay still ships no JS/TS
 mutation engine, so a *native* R2 lane is still refused. B087 registers R3
-and local real-Vitest tests exercise both mechanisms. Requalification of the
-current uncovered-line transform against dstdns is pending; the earlier
-operator-reported dstdns attempt used different code and did not retain its
-verdicts or verifier transcripts. See the
+and local real-Vitest tests exercise both mechanisms. Both current dstdns
+canaries passed with retained schema-v15 verdicts and verifier transcripts;
+the integrated Assay release gate is separate. See the
 [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
@@ -2142,8 +2148,10 @@ from a cold `node_modules`. This triples the cost of that lane. The lane's
 `mechanism` is exactly one of `import-break` or `uncovered-line`; declare
 separate lanes if you want to exercise both, and budget each lane for its own
 baseline and two canary commands. R3 is registered and has local real-Vitest
-oracles. Qualification of the current transform against dstdns remains open;
-see the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
+oracles. Both current dstdns canaries passed with retained v15 verdicts and
+verifier transcripts; the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md)
+records the evidence and scope. This is distinct from Assay's integrated
+release gate.
 
 Gitignore what the run writes — the coverage directory, and anything your
 runner drops beside it — in the same change that adds the lane:
@@ -5129,11 +5137,33 @@ then selects a deterministic bounded sample: one candidate for every
 candidate-bearing source-file/operator pair, all `python:falsy-swap`
 candidates, and ranked fill to up to 40 candidates by default. The gate verifies the
 source, plan, selected ids, pilot state/progress, cold-witness evidence,
-resource counters and actual exit before returning success.
+resource counters and actual exit before returning success. It writes
+`.assay/r2-manifest-analysis-r2-pilot.txt`; the `/2` summary records the
+effective R2 command, configuration digest and coverage/R2 baselines. The
+checker compares the manifest with the R2 baseline, binds candidate collection
+evidence and kill-witness nodes to that manifest, and compares progress resource
+measurements with state. Before success, the checker compares every input and
+state record with the bytes and filesystem identities it validated, refusing
+hard links and replacement inodes. It writes
+`.assay/analysis-r2-pilot-attestation.json` and prints its digest in the
+container log. After the container exits, the host rechecks the attested file
+contents, identities, hard-link counts, state inventory and verdict absence
+before emitting the outer completion marker. It rechecks the judged commit/tree
+and clean worktree after the evidence scan, then confirms the campaign deadline
+is still active. The campaign deadline is named
+`.assay/campaign-deadline-analysis-r2-pilot-<commit12>.json`; the registered
+host runner prints the resolved absolute path as
+`ASSAY_ANALYSIS_R2_PILOT_DEADLINE_ARTIFACT=...`. The `.assay` directory entry
+in the artifact inventory names its containing directory, not that dynamic
+child file.
 
 Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
 operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`
-for the completed sample; and `.assay/progress-analysis-r2-pilot.jsonl` plus
+for the completed sample and source-bound `r2_command`; and
+`.assay/r2-manifest-analysis-r2-pilot.txt` for the ordered baseline collection.
+The checker verifies that each candidate's collection evidence matches its
+baseline and each kill witness names a collected test. Read
+`.assay/progress-analysis-r2-pilot.jsonl` plus
 `.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
 gate means only that the sample completed and its evidence verified. It does
 not create a verdict or qualify the full plan. A timeout, partial sample,

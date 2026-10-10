@@ -81,6 +81,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   exclusive registered-gate window.
 
 ### Fixed
+- Bind B110 and B131 pilot collection evidence to the committed R2 command,
+  coverage/R2 baselines and retained ordered test manifest. A killed candidate
+  must name a collected failed-call node; elapsed and phase measurements are
+  required in progress, and resource measurements must agree with resumable
+  state. The B131 checker attests each file's content and filesystem identity,
+  including single-link status; the host rechecks the attestation after the
+  judge container exits, rechecks the judged Git tree and cleanliness, and
+  confirms that the campaign deadline is still active. The registered runner prints the resolved
+  commit-specific campaign deadline path. Pilot summaries now use schema `/2`
+  to carry the source-checkable command facts.
 - Leave a candidate unclassified and out of resume state when lane or campaign
   termination interrupts its post-command snapshot integrity check (B117).
 - Require the B105 and B110 report checkers to validate one bounded parsed
@@ -149,6 +159,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   after verifying that it names the pinned state inode; require non-kills to
   use full execution without a witness, require witness-cold kills to include
   an R2 failed-call prefix, and reject witness-prefix reuse in the B131 pilot.
+- Require the B131 analysis-pilot checker to emit its attestation digest; the
+  outer launcher verifies that digest and the current evidence after the
+  container exits before emitting the registered completion marker.
+- Rebuild the complete ordered B105 target inventory from committed source
+  when checking a B110 survivor screen; a truncated producer plan and matching
+  verdict can no longer certify an incomplete screen.
+- Correct B087's public qualification status: the two retained dstdns canaries
+  passed, while Assay release evidence remains a separate claim.
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->

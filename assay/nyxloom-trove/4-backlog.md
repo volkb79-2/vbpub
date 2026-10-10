@@ -9493,7 +9493,7 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
-**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07), rebased onto main `6086d4c9` (2026-10-08). Local real-Vitest oracles and both current dstdns R3 canaries pass; the registered Assay gate remains pending controller release. The branch is not merged or released.**
+**Status: IMPLEMENTED and integrated in local Assay `main` at `a5659aff` (2026-10-10). Both retained current dstdns R3 canaries passed, and registered `tester-unified` passed on that exact integration commit. The current B131 remediation diff requires its own exact-tip review and registered gate before release; B087 itself is not yet released.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
@@ -10893,7 +10893,7 @@ campaign must remain explicitly incomplete.
 
 ## B107 — candidate `hung` outcomes lack time-aligned resource evidence, so an actual deadlock cannot be distinguished from a resource stall
 
-**Status: OPEN (filed 2026-09-26 from the RG-55 P6 exact-tree R2 campaign).**
+**Status: DONE — shipped in `assay-v8.0.0`. The accepted pressure-aware implementation and review are in the release ancestry; `CHANGES.md` records the B107 fixes.**
 
 **Observed:** the same P6 mutation candidate
 `0a38e7d8ab99ea0483119223cf9b8e38184e85124ca37f631ee264fed7a135d1`
@@ -11531,7 +11531,7 @@ inventories refuse.
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
-- [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
+- [ ] The v14 → v15 cold start, B145 judge-identity `/7` → `/8` transition, and B114 `/8` → `/9` transition.
 - [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [ ] B148's full cgroup visibility preflight refuses selected native candidates before R0 and reports the same candidate-selection facts in `assay plan`.
 - [ ] The B105 wrapper binds its kernel-hostname lookup to the cockpit's mount/PID namespaces, and the MDT host `initializeCommand` verifies its declared cgroup slices before Docker creates the cockpit.
@@ -11604,7 +11604,7 @@ inventories refuse.
 
 ## B118 — B110 P7: non-qualifying pilot candidate selection
 
-**Status: IN PROGRESS (filed 2026-09-28; A-474; P7a and P7b are merged, P7b as `cbd605445`; P7c artifact-attestation and review rounds 24–33 are on `assay-b118-p7c-artifact-attestation-20261009`. The latest fixes pin the checker, deadline, output files, and attempt-log read to the admitted `.assay` descriptor, then repeat full content/source/deadline and snapshot/archive checks at completion. The round-32 focused suite passes 268 tests; round-33 Sol xhigh accepts the exact diff. Registered `tester-unified` passed on commit `68f8a477`; five B131 integration reviews found twelve concrete progress/inventory checker gaps, now fixed on `assay-b131-r2`; final exact-tree review and same-tip gates remain pending. The fixed B105 pilot run is a separate B110 acceptance item; B131 will run its own measured sample after integration; brief `reports/b110/P7-pilot-tooling.md`).**
+**Status: IN PROGRESS (filed 2026-09-28; A-474; P7a and P7b are merged, P7b as `cbd605445`; P7c artifact-attestation and review rounds 24–33 are on `assay-b118-p7c-artifact-attestation-20261009`. The latest fixes pin the checker, deadline, output files, and attempt-log read to the admitted `.assay` descriptor, then repeat full content/source/deadline and snapshot/archive checks at completion. The round-32 focused suite passes 268 tests; round-33 Sol xhigh accepts the exact diff. Registered `tester-unified` passed on commit `68f8a477`; five B131 integration reviews found twelve concrete progress/inventory checker gaps. The subsequent exact-tree round-three review found that interrupted resumed runs may lack `resume_merged` and may emit sparse indexes; the checker now permits those only on incomplete prior segments and retains complete-segment coverage checks. The 341-test B131/B110 run predates the round-seven through round-nine repairs and must be rerun. Round-nine Sol xhigh review accepted the complete integration diff; current registered tests/gates and both bounded pilots remain pending. B131 will run its own measured sample after integration; brief `reports/b110/P7-pilot-tooling.md`).**
 
 **Scope:**
 - `assay run --candidates-file` (no verdict, exit 6, R3 not run) and `--pilot-jobs`;
@@ -11823,7 +11823,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and now has a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package.
+**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and now has a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package. The second review's five findings, round-three review's three findings, and rounds seven/eight's three further findings are repaired with regression oracles. The earlier 341-test B131/B110 run predates the last fixes. Round-nine Sol xhigh review accepted the complete diff with no findings. Registered gates and both bounded pilots remain pending.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 

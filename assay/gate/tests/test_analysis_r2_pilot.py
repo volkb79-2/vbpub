@@ -6,6 +6,8 @@ import contextlib
 import hashlib
 import io
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +19,7 @@ import pytest
 
 from assay.candidate_identity import candidate_id_from_fields
 from assay.mutation import MUTATION_BUCKETS, MUTATION_STATE_SCHEMA_VERSION
+from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT
 
 
@@ -53,14 +56,19 @@ def _repository(tmp_path: Path) -> tuple[Path, str, str]:
     assay_dir = root / "assay"
     assay_dir.mkdir()
     shutil.copyfile(PROJECT_ROOT / "assay.toml", assay_dir / "assay.toml")
+    shutil.copyfile(PROJECT_ROOT / "pyproject.toml", assay_dir / "pyproject.toml")
     shutil.copytree(PROJECT_ROOT / "src" / "assay", assay_dir / "src" / "assay")
     (assay_dir / "analysis" / "tests").mkdir(parents=True)
+    (assay_dir / "analysis" / "tests" / "test_contract.py").write_text(
+        "def test_contract():\n    assert True\n", encoding="utf-8"
+    )
     for relative in selector.TARGETS:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         source = (
             "def first(a, b):\n    return a == b\n\n"
-            "def second(a, b):\n    return a != b\n"
+            "def second(a, b):\n    return a != b\n\n"
+            "def third(a, b):\n    return a <= b\n"
             if relative == selector.TARGETS[1]
             else ""
         )
@@ -99,7 +107,7 @@ def _rows(
 
 def _planned_rows(root: Path, commit: str) -> list[dict[str, object]]:
     rows = selector._derive_committed_inventory(root, commit)
-    assert len(rows) == 2
+    assert len(rows) == 3
     return rows
 
 
@@ -164,16 +172,50 @@ def _producer_progress_bytes(events: list[dict]) -> bytes:
     ).encode()
 
 
-def _valid_pilot(tmp_path: Path) -> dict:
+def _r2_command(root: Path, commit: str, *, lane_name: str, nodes: list[str]) -> dict:
+    import tomllib
+
+    assay_dir = root / "assay"
+    config = tomllib.loads((assay_dir / "assay.toml").read_text(encoding="utf-8"))
+    declared = config["lanes"][lane_name]["argv"]
+    baseline = {
+        "collection_count": len(nodes),
+        "collection_sha256": collection_digest(nodes),
+        "duplicates": 0,
+        "hook_fingerprint_sha256": "c" * 64,
+        "hook_count": 1,
+        "runtime_fingerprint_sha256": "d" * 64,
+    }
+    return {
+        "transform": R2_TRANSFORM_ID,
+        "argv_declared": declared,
+        "argv_transformed": list(transform_argv(declared)),
+        "appended": list(R2_APPENDED),
+        "cwd": "assay",
+        "config_sha256": hashlib.sha256(
+            (assay_dir / "pyproject.toml").read_bytes()
+        ).hexdigest(),
+        "coverage_baseline": baseline,
+        "r2_baseline": {**baseline, "wall_s": 1.25},
+    }
+
+
+def _valid_pilot(tmp_path: Path, *, size: int = 1) -> dict:
     root, commit, tree = _repository(tmp_path)
     rows = _planned_rows(root, commit)
     plan = _plan(root, commit, tree, rows)
     plan_raw = (json.dumps(plan, sort_keys=True) + "\n").encode()
-    candidates_raw, selection_raw = _write_selection(root, tmp_path, plan, size=1)
+    candidates_raw, selection_raw = _write_selection(root, tmp_path, plan, size=size)
     selection = json.loads(selection_raw)
-    assert len(selection["selected_ids"]) == 1
-    identity = selection["selected_ids"][0]
-    row = next(row for row in rows if row["id"] == identity)
+    selected_ids = selection["selected_ids"]
+    assert len(selected_ids) == size
+    row_by_id = {row["id"]: row for row in rows}
+    manifest_nodes = ["analysis/tests/test_contract.py::test_contract"]
+    r2_manifest_path = tmp_path / "r2-manifest-analysis-r2-pilot.txt"
+    r2_manifest_path.write_bytes(("\n".join(manifest_nodes) + "\n").encode())
+    r2_command = _r2_command(
+        root, commit, lane_name=selector.LANE, nodes=manifest_nodes
+    )
     wheel_sha256 = "a" * 64
     created = datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -198,62 +240,77 @@ def _valid_pilot(tmp_path: Path) -> dict:
     state_dir.mkdir()
     (state_dir / "PILOT-STATE").write_text(json.dumps({
         "schema": "assay-pilot-state/1",
-        "selection_sha256": selector.common._plan_sha256([identity]),
+        "selection_sha256": selector.common._plan_sha256(selected_ids),
         "lane": selector.LANE,
     }), encoding="utf-8")
     resources = _zero_resources()
-    record = {
-        "candidate_id": identity,
-        "path": row["path"],
-        "operator": row["operator"],
-        "source_sha256": row["source_sha256"],
-        "mutated_file_sha256": row["mutated_file_sha256"],
-        "replacement_sha256": selection["selected"][0]["replacement_sha256"],
-        "start_byte": row["start_byte"],
-        "end_byte": row["end_byte"],
-        "lineno": row["lineno"],
-        "description": row["description"],
-        "outcome_bucket": "killed",
-        "campaign_deadline_sha256": deadline_sha256,
-        "schema_version": MUTATION_STATE_SCHEMA_VERSION,
-        "judge_sha256": "b" * 64,
-        "execution": {
-            "mode": "full",
-            "witness": {
-                "node_id": "test_contract",
-                "when": "call",
-                "outcome": "failed",
-                "session_exit_status": 1,
-                "process_exit_status": 1,
-            },
+    cost_resources = {
+        "cpu_seconds": None,
+        "peak_rss_bytes": None,
+        "phase_seconds": {
+            "materialize": 0.1,
+            "command": 0.2,
+            "integrity": 0.1,
+            "teardown": 0.1,
         },
-        "evidence": {
-            "command": "declared",
-            "collection_count": 1,
-            "collection_sha256": "c" * 64,
-            "hook_fingerprint_sha256": "d" * 64,
-            "started_count": None,
-            "failed_call_index": None,
-        },
-        "terminal_result": {
-            "outcome": "FAIL",
-            "reason_code": "COMMAND_FAILED",
-            "returncode": 1,
-        },
-        "resource_limit_evidence": resources,
+        "startup_seconds": None,
     }
-    (state_dir / f"{identity}.json").write_text(json.dumps(record), encoding="utf-8")
+    for selected in selection["selected"]:
+        identity = selected["id"]
+        row = row_by_id[identity]
+        record = {
+            "candidate_id": identity,
+            "path": row["path"],
+            "operator": row["operator"],
+            "source_sha256": row["source_sha256"],
+            "mutated_file_sha256": row["mutated_file_sha256"],
+            "replacement_sha256": selected["replacement_sha256"],
+            "start_byte": row["start_byte"],
+            "end_byte": row["end_byte"],
+            "lineno": row["lineno"],
+            "description": row["description"],
+            "outcome_bucket": "killed",
+            "campaign_deadline_sha256": deadline_sha256,
+            "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+            "judge_sha256": "b" * 64,
+            "execution": {
+                "mode": "full",
+                "witness": {
+                    "node_id": manifest_nodes[0],
+                    "when": "call",
+                    "outcome": "failed",
+                    "session_exit_status": 1,
+                    "process_exit_status": 1,
+                },
+            },
+            "evidence": {
+                "command": "declared",
+                "collection_count": r2_command["coverage_baseline"]["collection_count"],
+                "collection_sha256": r2_command["coverage_baseline"]["collection_sha256"],
+                "hook_fingerprint_sha256": r2_command["coverage_baseline"]["hook_fingerprint_sha256"],
+                "started_count": None,
+                "failed_call_index": None,
+            },
+            "resources": cost_resources,
+            "terminal_result": {
+                "outcome": "FAIL",
+                "reason_code": "COMMAND_FAILED",
+                "returncode": 1,
+            },
+            "resource_limit_evidence": resources,
+        }
+        (state_dir / f"{identity}.json").write_text(json.dumps(record), encoding="utf-8")
 
     buckets = {name: 0 for name in MUTATION_BUCKETS}
-    buckets["killed"] = 1
+    buckets["killed"] = size
     summary = {
-        "schema": "assay-pilot-summary/1",
+        "schema": "assay-pilot-summary/2",
         "qualifying": False,
         "completed": True,
         "lane": selector.LANE,
         "commit": commit,
         "jobs": 1,
-        "requested": 1,
+        "requested": size,
         "selection_sha256": selection["selection_sha256"],
         "judge_sha256": "b" * 64,
         "candidates_file_sha256": hashlib.sha256(candidates_raw).hexdigest(),
@@ -261,16 +318,20 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "r0": "PASS",
         "r1": "PASS",
         "r2": {"status": "PASS", "reason_code": None},
+        "r2_command": r2_command,
         "r3": "not-run: pilot",
         "unresolved": [],
         "buckets": buckets,
-        "candidates": [{
-            "id": identity,
-            "path": row["path"],
-            "operator": row["operator"],
-            "bucket": "killed",
-            "execution_mode": "full",
-        }],
+        "candidates": [
+            {
+                "id": identity,
+                "path": row_by_id[identity]["path"],
+                "operator": row_by_id[identity]["operator"],
+                "bucket": "killed",
+                "execution_mode": "full",
+            }
+            for identity in selected_ids
+        ],
     }
     summary_raw = (json.dumps(summary, sort_keys=True) + "\n").encode()
     progress_events = [
@@ -278,16 +339,16 @@ def _valid_pilot(tmp_path: Path) -> dict:
         {
             "event": "candidates",
             "commit": commit,
-            "candidate_total": 1,
-            "selected_total": 1,
-            "pending_total": 1,
+            "candidate_total": size,
+            "selected_total": size,
+            "pending_total": size,
             "selection_sha256": selection["selection_sha256"],
             "judge_sha256": "b" * 64,
         },
         {
             "event": "baseline",
             "candidate_index": -1,
-            "candidate_total": 1,
+            "candidate_total": size,
             "path": ".",
             "operator": "baseline",
             "start_byte": 0,
@@ -296,25 +357,31 @@ def _valid_pilot(tmp_path: Path) -> dict:
             "emitted_at": "2026-10-09T10:00:01Z",
             "elapsed_s": 1.0,
         },
-        {
-            "event": "candidate",
-            "candidate_id": identity,
-            "candidate_index": 0,
-            "candidate_total": 1,
-            "path": row["path"],
-            "operator": row["operator"],
-            "lineno": row["lineno"],
-            "description": row["description"],
-            "start_byte": row["start_byte"],
-            "end_byte": row["end_byte"],
-            "mutated_file_sha256": row["mutated_file_sha256"],
-            "outcome_bucket": "killed",
-            "execution_mode": "full",
-            "resource_limit_evidence": resources,
-        },
+        *[
+            {
+                "event": "candidate",
+                "candidate_id": identity,
+                "candidate_index": index,
+                "candidate_total": size,
+                "path": row_by_id[identity]["path"],
+                "operator": row_by_id[identity]["operator"],
+                "lineno": row_by_id[identity]["lineno"],
+                "description": row_by_id[identity]["description"],
+                "start_byte": row_by_id[identity]["start_byte"],
+                "end_byte": row_by_id[identity]["end_byte"],
+                "mutated_file_sha256": row_by_id[identity]["mutated_file_sha256"],
+                "outcome_bucket": "killed",
+                "execution_mode": "full",
+                "elapsed_seconds": 2.5,
+                "tests_completed": None,
+                **cost_resources,
+                "resource_limit_evidence": resources,
+            }
+            for index, identity in enumerate(selected_ids)
+        ],
         {
             "event": "end",
-            "candidate_total": 1,
+            "candidate_total": size,
             "buckets": buckets,
             "reason": None,
             "emitted_at": "2026-10-09T10:01:00Z",
@@ -344,6 +411,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "expected_wheel_sha256": wheel_sha256,
         "expected_exit_code": 6,
         "repo_root": root,
+        "r2_manifest_path": r2_manifest_path,
     }
 
 
@@ -500,7 +568,7 @@ def test_analysis_selector_rejects_plan_that_omits_a_committed_candidate(
 ):
     root, commit, tree = _repository(tmp_path)
     rows = _planned_rows(root, commit)
-    assert len(rows) == 2
+    assert len(rows) == 3
     plan_path = tmp_path / "incomplete-plan.json"
     plan_path.write_text(
         json.dumps(_plan(root, commit, tree, rows[:-1]), sort_keys=True),
@@ -580,6 +648,227 @@ def test_analysis_pilot_accepts_consistent_complete_evidence(tmp_path: Path):
     checker.verify_pilot(**_valid_pilot(tmp_path))
 
 
+def test_analysis_pilot_ignores_unrelated_prior_progress_segments(tmp_path: Path):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    stale_segment = [
+        {
+            "event": "run",
+            "lane": "self-qualification",
+            "commit": "0" * 40,
+            "rigor": ["R0", "R1", "R2"],
+        },
+        {"event": "legacy-progress-marker"},
+    ]
+    evidence["progress_raw"] = _producer_progress_bytes(stale_segment + events)
+
+    checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_a_kill_witness_absent_from_the_r2_manifest(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    summary = json.loads(evidence["summary_raw"])
+    identity = summary["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["execution"]["witness"]["node_id"] = "invented::test_not_collected"
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="witness node is not in the R2 manifest"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_candidate_evidence_from_another_collection(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    summary = json.loads(evidence["summary_raw"])
+    identity = summary["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["evidence"]["collection_sha256"] = "e" * 64
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="collection_sha256 differs from coverage_baseline"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_requires_cost_measurements_and_binds_them_to_state(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    candidate = next(event for event in events if event["event"] == "candidate")
+    del candidate["elapsed_seconds"]
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match="elapsed_seconds is invalid"):
+        checker.verify_pilot(**evidence)
+
+    second_tmp = tmp_path / "second"
+    second_tmp.mkdir()
+    evidence = _valid_pilot(second_tmp)
+    summary = json.loads(evidence["summary_raw"])
+    identity = summary["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["resources"]["phase_seconds"]["command"] += 0.5
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cost measurements differ from state"):
+        checker.verify_pilot(**evidence)
+
+
+def _checker_cli_arguments(
+    tmp_path: Path,
+) -> tuple[dict[str, object], list[str], dict[str, Path]]:
+    evidence = _valid_pilot(tmp_path)
+    inputs = {
+        "--plan": ("plan.json", evidence["plan_raw"]),
+        "--selection": ("selection.json", evidence["selection_raw"]),
+        "--candidates": ("candidates.txt", evidence["candidates_raw"]),
+        "--summary": ("summary.json", evidence["summary_raw"]),
+        "--run-log": ("run.log", b"pilot stderr\n"),
+        "--progress": ("progress.jsonl", evidence["progress_raw"]),
+        "--r2-manifest": ("r2-manifest.txt", evidence["r2_manifest_path"].read_bytes()),
+        "--deadline": ("deadline.json", evidence["deadline_raw"]),
+    }
+    argv: list[str] = []
+    paths: dict[str, Path] = {}
+    for option, (name, payload) in inputs.items():
+        path = tmp_path / name
+        path.write_bytes(payload)
+        paths[option] = path
+        argv.extend((option, str(path)))
+    verdict = tmp_path / "verdict.json"
+    attestation = tmp_path / "attestation.json"
+    argv.extend((
+        "--state-dir", str(evidence["state_dir"]),
+        "--verdict", str(verdict),
+        "--attestation", str(attestation),
+        "--repo-root", str(evidence["repo_root"]),
+        "--expected-commit", evidence["expected_commit"],
+        "--expected-tree", evidence["expected_tree"],
+        "--expected-wheel-sha256", evidence["expected_wheel_sha256"],
+        "--expected-exit-code", str(evidence["expected_exit_code"]),
+    ))
+    return evidence, argv, paths
+
+
+def _run_checker_cli_with_valid_evidence(
+    tmp_path: Path,
+) -> tuple[int, str, dict[str, Path]]:
+    _evidence, argv, paths = _checker_cli_arguments(tmp_path)
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = checker.main(argv)
+    return status, output.getvalue(), paths
+
+
+def test_analysis_pilot_checker_cli_emits_one_completion_marker_after_complete_evidence(
+    tmp_path: Path,
+):
+    status, output, paths = _run_checker_cli_with_valid_evidence(tmp_path)
+
+    assert status == 0
+    assert re.fullmatch(r"ANALYSIS_R2_PILOT_VERIFIED=[0-9a-f]{64}\n", output)
+    attestation = tmp_path / "attestation.json"
+    attestation_raw = attestation.read_bytes()
+    assert hashlib.sha256(attestation_raw).hexdigest() == output.split("=", 1)[1].strip()
+    attested_files = json.loads(attestation_raw)["files"]
+    assert attested_files["run log"]["sha256"] == hashlib.sha256(
+        paths["--run-log"].read_bytes()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "progress", "manifest", "deadline", "run-log", "state",
+        "plan-replaced-identical", "summary-hardlink",
+    ],
+)
+def test_analysis_pilot_cli_rechecks_evidence_before_emitting_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+):
+    evidence, argv, paths = _checker_cli_arguments(tmp_path)
+    original_check_progress = checker._check_progress
+
+    def change_evidence_after_validation(*args, **kwargs):
+        result = original_check_progress(*args, **kwargs)
+        if target == "progress":
+            paths["--progress"].write_text("changed after validation\n", encoding="utf-8")
+        elif target == "run-log":
+            paths["--run-log"].write_text("changed after validation\n", encoding="utf-8")
+        elif target in {"manifest", "deadline"}:
+            option = "--r2-manifest" if target == "manifest" else "--deadline"
+            paths[option].write_text("changed after validation\n", encoding="utf-8")
+        elif target == "plan-replaced-identical":
+            plan_path = paths["--plan"]
+            content = plan_path.read_bytes()
+            plan_path.unlink()
+            plan_path.write_bytes(content)
+        elif target == "summary-hardlink":
+            summary_path = paths["--summary"]
+            os.link(summary_path, tmp_path / "summary-hardlink.json")
+        else:
+            identity = json.loads(evidence["summary_raw"])["candidates"][0]["id"]
+            (evidence["state_dir"] / f"{identity}.json").write_text(
+                "changed after validation\n",
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(checker, "_check_progress", change_evidence_after_validation)
+    output = io.StringIO()
+    errors = io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        status = checker.main(argv)
+
+    assert status == 2
+    assert (
+        "changed during evidence validation" in errors.getvalue()
+        or "single-link" in errors.getvalue()
+    )
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in output.getvalue()
+
+
+def test_analysis_pilot_rechecks_earlier_files_after_later_artifact_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _evidence, argv, paths = _checker_cli_arguments(tmp_path)
+    original_read = checker._read_bytes
+    summary_reads = 0
+
+    def change_plan_after_summary_reread(path: Path, **kwargs):
+        nonlocal summary_reads
+        raw = original_read(path, **kwargs)
+        if path == paths["--summary"]:
+            summary_reads += 1
+            if summary_reads == 2:
+                plan = paths["--plan"]
+                content = plan.read_bytes()
+                plan.unlink()
+                plan.write_bytes(content)
+        return raw
+
+    monkeypatch.setattr(checker, "_read_bytes", change_plan_after_summary_reread)
+    output = io.StringIO()
+    errors = io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        status = checker.main(argv)
+
+    assert status == 2
+    assert "plan changed before the evidence boundary" in errors.getvalue()
+    assert "ANALYSIS_R2_PILOT_VERIFIED=" not in output.getvalue()
+
+
 @pytest.mark.parametrize(
     ("case", "message"),
     [
@@ -630,6 +919,9 @@ def test_analysis_pilot_accepts_resumed_candidate_with_complete_resume_accountin
 ):
     evidence = _valid_pilot(tmp_path)
     prior_run = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    prior_candidate = next(event for event in prior_run if event["event"] == "candidate")
+    resumed_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    resumed_buckets[prior_candidate["outcome_bucket"]] = 1
     current_run = [
         {
             "event": "run",
@@ -668,16 +960,16 @@ def test_analysis_pilot_accepts_resumed_candidate_with_complete_resume_accountin
             "elapsed_s": 0.2,
         },
         {
-            "event": "end",
-            "candidate_total": 0,
-            "buckets": {name: 0 for name in MUTATION_BUCKETS},
-            "reason": None,
+            "event": "resume_merged",
+            "resumed_total": 1,
             "emitted_at": "2026-10-09T10:02:01Z",
             "elapsed_s": 1.0,
         },
         {
-            "event": "resume_merged",
-            "resumed_total": 1,
+            "event": "end",
+            "candidate_total": 1,
+            "buckets": resumed_buckets,
+            "reason": None,
             "emitted_at": "2026-10-09T10:02:02Z",
             "elapsed_s": 1.1,
         },
@@ -694,6 +986,419 @@ def test_analysis_pilot_accepts_resumed_candidate_with_complete_resume_accountin
     evidence["progress_raw"] = _producer_progress_bytes(prior_run + current_run)
 
     checker.verify_pilot(**evidence)
+
+
+def _three_attempt_incomplete_end_pilot(
+    tmp_path: Path, *, corrupt_middle_end: bool = False
+) -> dict:
+    evidence = _valid_pilot(tmp_path, size=3)
+    original = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    candidates = {
+        event["candidate_id"]: event
+        for event in original
+        if event["event"] == "candidate"
+    }
+    selected = json.loads(evidence["selection_raw"])["selected_ids"]
+    summary = json.loads(evidence["summary_raw"])
+
+    def header() -> dict[str, object]:
+        return {
+            "event": "run",
+            "lane": selector.LANE,
+            "commit": evidence["expected_commit"],
+            "rigor": ["R0", "R1", "R2"],
+        }
+
+    def candidates_event(pending: int) -> dict[str, object]:
+        return {
+            "event": "candidates",
+            "commit": evidence["expected_commit"],
+            "candidate_total": 3,
+            "selected_total": 3,
+            "pending_total": pending,
+            "selection_sha256": summary["selection_sha256"],
+            "judge_sha256": "b" * 64,
+        }
+
+    def baseline() -> dict[str, object]:
+        return {
+            "event": "baseline",
+            "candidate_index": -1,
+            "candidate_total": 3,
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        }
+
+    def candidate(identity: str, *, index: int, pending: int) -> dict[str, object]:
+        event = dict(candidates[identity])
+        event["candidate_index"] = index
+        event["candidate_total"] = pending
+        return event
+
+    first = [
+        header(),
+        candidates_event(3),
+        baseline(),
+        candidate(selected[0], index=0, pending=3),
+    ]
+    middle_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    middle_buckets["killed"] = 2
+    middle_buckets["budget_exceeded"] = 1
+    if corrupt_middle_end:
+        middle_buckets["killed"] = 1
+        middle_buckets["budget_exceeded"] = 2
+    middle = [
+        header(),
+        {
+            "event": "resume",
+            "candidate_total": 3,
+            "resumed_total": 1,
+            "rejected_total": 0,
+            "rejudged_total": 0,
+        },
+        candidates_event(2),
+        baseline(),
+        candidate(selected[1], index=0, pending=2),
+        {"event": "resume_merged", "resumed_total": 1},
+        {
+            "event": "end",
+            "candidate_total": 3,
+            "buckets": middle_buckets,
+            "reason": None,
+        },
+        {
+            "event": "verdict_written",
+            "outcome": "BUDGET_EXCEEDED",
+            "reason_code": "LANE_TIMEOUT",
+            "exit_code": 4,
+            "destination": None,
+        },
+    ]
+    final_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    final_buckets.update(summary["buckets"])
+    final = [
+        header(),
+        {
+            "event": "resume",
+            "candidate_total": 3,
+            "resumed_total": 2,
+            "rejected_total": 0,
+            "rejudged_total": 0,
+        },
+        candidates_event(1),
+        baseline(),
+        candidate(selected[2], index=0, pending=1),
+        {"event": "resume_merged", "resumed_total": 2},
+        {
+            "event": "end",
+            "candidate_total": 3,
+            "buckets": final_buckets,
+            "reason": None,
+        },
+        {
+            "event": "verdict_written",
+            "outcome": "PASS",
+            "reason_code": None,
+            "exit_code": 6,
+            "destination": None,
+        },
+    ]
+    evidence["progress_raw"] = _producer_progress_bytes(first + middle + final)
+    return evidence
+
+
+def _pilot_with_replayed_resumed_candidate_in_interrupted_attempt(
+    tmp_path: Path,
+) -> dict:
+    evidence = _valid_pilot(tmp_path, size=2)
+    original = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    candidates = {
+        event["candidate_id"]: event
+        for event in original
+        if event["event"] == "candidate"
+    }
+    selected = json.loads(evidence["selection_raw"])["selected_ids"]
+    summary = json.loads(evidence["summary_raw"])
+
+    def header() -> dict[str, object]:
+        return {
+            "event": "run",
+            "lane": selector.LANE,
+            "commit": evidence["expected_commit"],
+            "rigor": ["R0", "R1", "R2"],
+        }
+
+    def candidates_event(pending: int) -> dict[str, object]:
+        return {
+            "event": "candidates",
+            "commit": evidence["expected_commit"],
+            "candidate_total": 2,
+            "selected_total": 2,
+            "pending_total": pending,
+            "selection_sha256": summary["selection_sha256"],
+            "judge_sha256": "b" * 64,
+        }
+
+    def baseline() -> dict[str, object]:
+        return {
+            "event": "baseline",
+            "candidate_index": -1,
+            "candidate_total": 2,
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        }
+
+    def candidate(identity: str, *, index: int, pending: int) -> dict[str, object]:
+        event = dict(candidates[identity])
+        event["candidate_index"] = index
+        event["candidate_total"] = pending
+        return event
+
+    def resume() -> dict[str, object]:
+        return {
+            "event": "resume",
+            "candidate_total": 2,
+            "resumed_total": 1,
+            "rejected_total": 0,
+            "rejudged_total": 0,
+        }
+
+    first = [
+        header(),
+        candidates_event(2),
+        baseline(),
+        candidate(selected[0], index=0, pending=2),
+    ]
+    interrupted = [
+        header(),
+        resume(),
+        candidates_event(1),
+        baseline(),
+        candidate(selected[0], index=0, pending=1),
+    ]
+    final = [
+        header(),
+        resume(),
+        candidates_event(1),
+        baseline(),
+        candidate(selected[1], index=0, pending=1),
+        {"event": "resume_merged", "resumed_total": 1},
+        {
+            "event": "end",
+            "candidate_total": 2,
+            "buckets": summary["buckets"],
+            "reason": None,
+        },
+        {
+            "event": "verdict_written",
+            "outcome": summary["r2"]["status"],
+            "reason_code": summary["r2"]["reason_code"],
+            "exit_code": 6,
+            "destination": None,
+        },
+    ]
+    evidence["progress_raw"] = _producer_progress_bytes(first + interrupted + final)
+    return evidence
+
+
+def test_analysis_pilot_accepts_incomplete_resumed_attempt_end_with_prefix_indexes(
+    tmp_path: Path,
+):
+    evidence = _three_attempt_incomplete_end_pilot(tmp_path)
+
+    checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_a_later_single_worker_index_after_a_gap(
+    tmp_path: Path,
+):
+    evidence = _three_attempt_incomplete_end_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    middle_header = [i for i, event in enumerate(events) if event.get("event") == "run"][1]
+    middle_candidate = next(
+        event for event in events[middle_header:] if event.get("event") == "candidate"
+    )
+    identity = json.loads(evidence["selection_raw"])["selected_ids"][2]
+    plan = json.loads(evidence["plan_raw"])
+    row = next(row for row in plan["candidates"] if row["id"] == identity)
+    middle_candidate["candidate_id"] = identity
+    middle_candidate["candidate_index"] = 1
+    for field in (
+        "path", "operator", "lineno", "description", "start_byte", "end_byte",
+        "mutated_file_sha256",
+    ):
+        middle_candidate[field] = row[field]
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match="invalid candidate_index"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_replaying_a_resumed_candidate_in_an_interrupted_attempt(
+    tmp_path: Path,
+):
+    evidence = _pilot_with_replayed_resumed_candidate_in_interrupted_attempt(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="progress run 2 resume count exceeds prior candidate dispositions",
+    ):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_terminal_fail_when_prior_sweep_exceeded_budget(
+    tmp_path: Path,
+):
+    evidence = _three_attempt_incomplete_end_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    middle_header = [i for i, event in enumerate(events) if event.get("event") == "run"][1]
+    middle_terminal = next(
+        event for event in events[middle_header:] if event.get("event") == "verdict_written"
+    )
+    middle_terminal.update(
+        outcome="FAIL", reason_code="MUTANTS_SURVIVED", exit_code=1
+    )
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match="terminal outcome is weaker than its mutation sweep"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_resumed_outcome_reassigned_to_missing_candidates(
+    tmp_path: Path,
+):
+    evidence = _three_attempt_incomplete_end_pilot(
+        tmp_path, corrupt_middle_end=True
+    )
+
+    with pytest.raises(ValueError, match="end buckets cannot arise from its resume history"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_allows_prior_terminal_outcome_to_differ_after_rejudge(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    prior_run = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    prior_candidate = next(event for event in prior_run if event["event"] == "candidate")
+    prior_candidate["outcome_bucket"] = "survived"
+    prior_end = next(event for event in prior_run if event["event"] == "end")
+    prior_end["buckets"] = {name: 0 for name in MUTATION_BUCKETS}
+    prior_end["buckets"]["survived"] = 1
+    prior_terminal = next(
+        event for event in prior_run if event["event"] == "verdict_written"
+    )
+    prior_terminal.update(
+        outcome="FAIL", reason_code="MUTANTS_SURVIVED", exit_code=6
+    )
+
+    summary = json.loads(evidence["summary_raw"])
+    selection = json.loads(evidence["selection_raw"])
+    current_candidate = dict(prior_candidate)
+    current_candidate.update(
+        candidate_index=0,
+        candidate_total=1,
+        outcome_bucket="killed",
+    )
+    current_run = [
+        {
+            "event": "run",
+            "lane": selector.LANE,
+            "commit": evidence["expected_commit"],
+            "rigor": ["R0", "R1", "R2"],
+        },
+        {
+            "event": "resume",
+            "candidate_total": 1,
+            "resumed_total": 0,
+            "rejected_total": 0,
+            "rejudged_total": 1,
+        },
+        {
+            "event": "candidates",
+            "commit": evidence["expected_commit"],
+            "candidate_total": 1,
+            "selected_total": 1,
+            "pending_total": 1,
+            "selection_sha256": selection["selection_sha256"],
+            "judge_sha256": "b" * 64,
+        },
+        {
+            "event": "baseline",
+            "candidate_index": -1,
+            "candidate_total": 1,
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        },
+        current_candidate,
+        {
+            "event": "end",
+            "candidate_total": 1,
+            "buckets": summary["buckets"],
+            "reason": None,
+        },
+        {
+            "event": "verdict_written",
+            "outcome": "PASS",
+            "reason_code": None,
+            "exit_code": 6,
+            "destination": None,
+        },
+    ]
+    evidence["progress_raw"] = _producer_progress_bytes(prior_run + current_run)
+
+    checker.verify_pilot(**evidence)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("impossible-exit", "has an impossible exit code"),
+        (
+            "destination",
+            "unexpectedly names an artifact destination",
+        ),
+        (
+            "pass-with-survivor",
+            "PASS outcome contradicts its mutation sweep",
+        ),
+    ],
+)
+def test_analysis_pilot_rejects_impossible_prior_terminal_records(
+    tmp_path: Path, damage: str, message: str
+):
+    evidence = _valid_pilot(tmp_path)
+    final_run = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    prior_run = [dict(event) for event in final_run]
+    prior_terminal = next(
+        event for event in prior_run if event["event"] == "verdict_written"
+    )
+    if damage == "impossible-exit":
+        prior_terminal["exit_code"] = 99
+    elif damage == "destination":
+        prior_terminal["destination"] = "/tmp/verdict.json"
+    else:
+        prior_candidate = next(
+            event for event in prior_run if event["event"] == "candidate"
+        )
+        prior_candidate["outcome_bucket"] = "survived"
+        prior_end = next(event for event in prior_run if event["event"] == "end")
+        prior_end["buckets"] = {name: 0 for name in MUTATION_BUCKETS}
+        prior_end["buckets"]["survived"] = 1
+        prior_terminal.update(outcome="PASS", reason_code=None, exit_code=6)
+    evidence["progress_raw"] = _producer_progress_bytes(prior_run + final_run)
+
+    with pytest.raises(ValueError, match=message):
+        checker.verify_pilot(**evidence)
 
 
 def test_analysis_pilot_rejects_resume_accounting_that_does_not_partition_selection(
@@ -774,8 +1479,8 @@ def test_analysis_pilot_rejects_witness_prefix_reuse_for_selected_candidates(
     state_record["execution"].update({
         "mode": "witness-prefix",
         "prior_verdict_sha256": "f" * 64,
-        "prior_node_id": "test_contract",
-        "current_node_id": "test_contract",
+        "prior_node_id": "analysis/tests/test_contract.py::test_contract",
+        "current_node_id": "analysis/tests/test_contract.py::test_contract",
     })
     state_record["evidence"].update({
         "command": "r2",
@@ -829,7 +1534,7 @@ def test_analysis_pilot_killed_full_candidate_requires_declared_command_evidence
     state_record["evidence"]["command"] = "r2"
     state_path.write_text(json.dumps(state_record), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="lacks declared-command evidence"):
+    with pytest.raises(ValueError, match="requires declared-command evidence"):
         checker.verify_pilot(**evidence)
 
 

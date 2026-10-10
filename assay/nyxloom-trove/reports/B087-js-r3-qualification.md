@@ -134,3 +134,14 @@ logs.
 This section records only the original attempt and its evidence gaps. The
 current qualification above supersedes its acceptance status. B087 remains
 unreleased pending the integrated registered Assay gate and exact-tip review.
+
+## Controller status update (2026-10-10)
+
+B087 is integrated in local Assay `main` at
+`a5659aff3d416dd745a57c459757e16da63eab51`. The registered `tester-unified`
+gate passed on that exact commit; its retained controller log is
+`/tmp/run-gate/lanes/tester-unified/292d7fb570617424f3c6834e0066d04c.log`.
+This confirms the Assay integration gate, not a rerun of either dstdns canary;
+the two canary claims remain bound to the retained verdicts and verifier
+transcripts described above. B087 has not been released. The current B131
+remediation changes still need an exact-tip review and gate before release.

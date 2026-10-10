@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from b110_pilot_report_check import derive_b105_inventory
+
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PLAN_BYTES = 16 * 1024 * 1024
@@ -98,6 +100,7 @@ def verify_screen(
     expected_commit: str,
     expected_tree: str,
     expected_exit_code: int,
+    repo_root: Path,
 ) -> None:
     if not _HEX40.fullmatch(expected_commit) or not _HEX40.fullmatch(expected_tree):
         raise ValueError("expected commit and tree must be full lowercase Git IDs")
@@ -106,6 +109,15 @@ def verify_screen(
     planned_ids = _require_inventory(
         plan, expected_commit=expected_commit, expected_tree=expected_tree
     )
+    expected_rows, _replacement_sha256_by_id, _sources = derive_b105_inventory(
+        repo_root=repo_root,
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+    )
+    if plan["candidates"] != expected_rows:
+        raise ValueError(
+            "plan candidate inventory differs from the complete committed B105 whole-target lane"
+        )
     if not isinstance(verdict, dict):
         raise ValueError("verdict is not an object")
     if verdict.get("commit") != expected_commit:
@@ -184,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--expected-exit-code", required=True, type=int)
+    parser.add_argument("--repo-root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         plan = _read_json(args.plan, max_bytes=_MAX_PLAN_BYTES)
@@ -194,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_commit=args.expected_commit,
             expected_tree=args.expected_tree,
             expected_exit_code=args.expected_exit_code,
+            repo_root=args.repo_root,
         )
     except (OSError, ValueError) as exc:
         print(f"b110_screen_report_check: {exc}", file=sys.stderr)
