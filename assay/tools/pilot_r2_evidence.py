@@ -336,7 +336,13 @@ def validate_pilot_resume_queue(
             or not 0 <= candidate_index < pending_total
             or candidate_index <= previous_index
         ):
-            raise ValueError(f"{context} candidate indexes do not address the resume queue")
+            raise ValueError(
+                f"{context} candidate indexes do not address the resume queue "
+                f"(identity={identity!r}, selected_position="
+                f"{selected_position.get(identity) if isinstance(identity, str) else None}, "
+                f"index={candidate_index!r}, previous_index={previous_index}, "
+                f"pending_total={pending_total})"
+            )
         position = selected_position[identity]
         if position <= previous_position:
             raise ValueError(f"{context} candidate order differs from its resume queue")

@@ -1010,14 +1010,14 @@ def _verify_progress(
             index for index, event in enumerate(segment)
             if event.get("event") == "verdict_written"
         ]
-        candidate_positions = [
+        prior_candidate_positions = [
             index for index, event in enumerate(segment)
             if event.get("event") == "candidate"
         ]
         terminal_boundary = min(
             [*end_positions, *verdict_positions], default=len(segment)
         )
-        if any(index >= terminal_boundary for index in candidate_positions):
+        if any(index >= terminal_boundary for index in prior_candidate_positions):
             raise ValueError("prior pilot candidate follows its end or terminal event")
         if (
             len(end_positions) > 1
@@ -1103,7 +1103,10 @@ def _verify_progress(
             merged_position = next(index for index, event in enumerate(segment) if event is prior_merged)
             if (
                 merged_position <= meta_position
-                or (candidate_positions and merged_position <= max(candidate_positions))
+                or (
+                    prior_candidate_positions
+                    and merged_position <= max(prior_candidate_positions)
+                )
                 or (end_positions and merged_position >= end_positions[0])
             ):
                 raise ValueError("prior pilot resume_merged event is out of order")
@@ -1129,14 +1132,14 @@ def _verify_progress(
         if (
             len(baseline_positions) != 1
             or baseline_positions[0] <= meta_position
-            or any(index <= baseline_positions[0] for index in candidate_positions)
+            or any(index <= baseline_positions[0] for index in prior_candidate_positions)
         ):
             raise ValueError("prior pilot candidates are not ordered after their baseline")
 
         prior_dispositions = set(previous_by_id)
         prior_ids: set[str] = set()
         prior_indexes: set[int] = set()
-        for index in candidate_positions:
+        for index in prior_candidate_positions:
             event = segment[index]
             identity = event.get("candidate_id")
             candidate_index = event.get("candidate_index")
@@ -1165,7 +1168,7 @@ def _verify_progress(
         pilot_r2_evidence.validate_pilot_resume_queue(
             selected_order=selected_order,
             prior_dispositions=prior_dispositions,
-            candidate_events=[segment[index] for index in candidate_positions],
+            candidate_events=[segment[index] for index in prior_candidate_positions],
             pending_total=prior_pending,
             resumed_total=prior_resumed_total,
             context="prior pilot resume queue",
@@ -1179,14 +1182,14 @@ def _verify_progress(
             }
             pilot_r2_evidence.validate_pilot_end_accounting(
                 selected_order=selected_order,
-                candidate_events=[segment[index] for index in candidate_positions],
+                candidate_events=[segment[index] for index in prior_candidate_positions],
                 prior_buckets=prior_history_buckets,
                 pending_total=prior_pending,
                 resumed_total=prior_resumed_total,
                 end_buckets=prior_end["buckets"],
                 context="incomplete prior pilot end",
             )
-            missing_pending = prior_pending - len(candidate_positions)
+            missing_pending = prior_pending - len(prior_candidate_positions)
             if missing_pending == 0:
                 if prior_indexes != set(range(prior_pending)):
                     raise ValueError(

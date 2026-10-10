@@ -757,19 +757,21 @@ def _checker_cli_arguments(
     return evidence, argv, paths
 
 
-def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
-    _evidence, argv, _paths = _checker_cli_arguments(tmp_path)
+def _run_checker_cli_with_valid_evidence(
+    tmp_path: Path,
+) -> tuple[int, str, dict[str, Path]]:
+    _evidence, argv, paths = _checker_cli_arguments(tmp_path)
 
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         status = checker.main(argv)
-    return status, output.getvalue()
+    return status, output.getvalue(), paths
 
 
 def test_analysis_pilot_checker_cli_emits_one_completion_marker_after_complete_evidence(
     tmp_path: Path,
 ):
-    status, output = _run_checker_cli_with_valid_evidence(tmp_path)
+    status, output, paths = _run_checker_cli_with_valid_evidence(tmp_path)
 
     assert status == 0
     assert re.fullmatch(r"ANALYSIS_R2_PILOT_VERIFIED=[0-9a-f]{64}\n", output)
@@ -1222,10 +1224,16 @@ def test_analysis_pilot_rejects_a_later_single_worker_index_after_a_gap(
     middle_candidate = next(
         event for event in events[middle_header:] if event.get("event") == "candidate"
     )
-    middle_candidate["candidate_id"] = json.loads(evidence["selection_raw"])[
-        "selected_ids"
-    ][2]
+    identity = json.loads(evidence["selection_raw"])["selected_ids"][2]
+    plan = json.loads(evidence["plan_raw"])
+    row = next(row for row in plan["candidates"] if row["id"] == identity)
+    middle_candidate["candidate_id"] = identity
     middle_candidate["candidate_index"] = 1
+    for field in (
+        "path", "operator", "lineno", "description", "start_byte", "end_byte",
+        "mutated_file_sha256",
+    ):
+        middle_candidate[field] = row[field]
     evidence["progress_raw"] = _producer_progress_bytes(events)
 
     with pytest.raises(ValueError, match="invalid candidate_index"):

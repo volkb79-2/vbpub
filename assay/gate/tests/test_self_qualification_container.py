@@ -1012,7 +1012,6 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
     container_exit_position = outer_proc.stdout.index(
         "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=0"
     )
-    checker_marker_position = outer_proc.stdout.index(checker_marker)
     host_marker_position = outer_proc.stdout.index(host_marker)
     outer_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_VERIFIED=1")
     complete_position = outer_proc.stdout.index("ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot")

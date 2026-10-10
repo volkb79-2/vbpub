@@ -1354,9 +1354,7 @@ def _write_interrupted_resumed_progress(fixture: dict[str, object]) -> None:
         and (event.get("event") != "candidate" or event is sparse_candidate)
     ]
 
-    plan_doc = json.loads((artifact_dir / "b110-pilot-plan.json").read_text())
     summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
-    rows_by_id = {row["id"]: row for row in plan_doc["candidates"]}
     second_resume = {
         "event": "run",
         "lane": "self-qualification",
@@ -2640,18 +2638,18 @@ def test_b110_pilot_checker_rejects_resume_progress_that_cannot_support_summary(
     if damage == "pending-buckets":
         assert "end buckets disagree with its merged candidate events" in result.stderr
     else:
-        assert "no same-selection progress disposition" in result.stderr
+        assert "resume queue totals disagree with prior dispositions" in result.stderr
 
 
 @pytest.mark.parametrize(
     ("damage", "expected_error"),
     [
-        ("wrong-prior-commit", "no same-selection progress disposition"),
+        ("wrong-prior-commit", "resume queue totals disagree with prior dispositions"),
         ("wrong-prior-totals", "prior pilot candidates event totals are invalid"),
         ("candidate-after-end", "prior pilot candidate follows its end or terminal event"),
         ("candidate-after-verdict", "prior pilot candidate follows its end or terminal event"),
         ("contradictory-end", "prior pilot end total differs from its candidates event"),
-        ("wrong-prior-rigor", "no same-selection progress disposition"),
+        ("wrong-prior-rigor", "resume queue totals disagree with prior dispositions"),
         ("unsupported-prior-end", "prior pilot refused end event contradicts its candidates event"),
     ],
 )
