@@ -263,9 +263,11 @@ def _candidate_ids(candidates_raw: bytes) -> set[str]:
     return candidate_ids
 
 
-def _expected_artifacts(candidate_ids: set[str], commit: str) -> set[str]:
+def _expected_artifacts(
+    candidate_ids: set[str], commit: str, *, inventory_version: int = 2
+) -> set[str]:
     deadline_name = f"campaign-deadline-b110-pilot-{commit[:12]}.json"
-    return {
+    expected = {
         ".assay/b110-pilot-plan.json",
         ".assay/b110-pilot-candidates.txt",
         ".assay/b110-pilot-selection.json",
@@ -277,6 +279,9 @@ def _expected_artifacts(candidate_ids: set[str], commit: str) -> set[str]:
         ".assay/b110-pilot-state/PILOT-STATE",
         *(f".assay/b110-pilot-state/{identity}.json" for identity in candidate_ids),
     }
+    if inventory_version >= 2:
+        expected.add(".assay/r2-manifest-b110-pilot.txt")
+    return expected
 
 
 def _parse_manifest(raw: bytes, expected: set[str], *, label: str) -> dict[str, str]:
@@ -457,7 +462,10 @@ def _parse_snapshot_receipt(raw: bytes) -> dict[str, Any]:
     if set(receipt) != expected_keys:
         raise ValueError("published pilot snapshot receipt has missing or unknown fields")
     if (
-        receipt.get("schema") != "assay-b110-pilot-evidence-receipt/1"
+        receipt.get("schema") not in {
+            "assay-b110-pilot-evidence-receipt/1",
+            "assay-b110-pilot-evidence-receipt/2",
+        }
         or not isinstance(receipt.get("commit"), str)
         or _HEX40.fullmatch(receipt["commit"]) is None
         or not isinstance(receipt.get("tree"), str)
@@ -470,6 +478,15 @@ def _parse_snapshot_receipt(raw: bytes) -> dict[str, Any]:
     ):
         raise ValueError("published pilot snapshot receipt does not bind a valid source and digest")
     return receipt
+
+
+def _receipt_inventory_version(receipt: dict[str, Any]) -> int:
+    schema = receipt.get("schema")
+    if schema == "assay-b110-pilot-evidence-receipt/1":
+        return 1
+    if schema == "assay-b110-pilot-evidence-receipt/2":
+        return 2
+    raise ValueError("published pilot snapshot receipt has an unknown inventory version")
 
 
 def _parse_snapshot_attestation(raw: bytes) -> dict[str, Any]:
@@ -602,7 +619,7 @@ def _snapshot_receipt_bytes(
     snapshot_sha256: str,
 ) -> bytes:
     receipt = {
-        "schema": "assay-b110-pilot-evidence-receipt/1",
+        "schema": "assay-b110-pilot-evidence-receipt/2",
         "campaign": args.campaign,
         "commit": args.commit,
         "tree": args.tree,
@@ -879,6 +896,7 @@ def clear_prior_outputs(args: argparse.Namespace) -> tuple[int, int, int]:
             "b110-pilot-selection.json",
             "b110-pilot-summary.json",
             "b110-pilot-run.log",
+            "r2-manifest-b110-pilot.txt",
             "b110-pilot-attempt.log",
             "b110-pilot-attempt-window.json",
             "b110-pilot-artifacts.sha256",
@@ -993,6 +1011,7 @@ def _verify_snapshot_directory(
     args: argparse.Namespace,
     *,
     snapshot_sha256: str,
+    inventory_version: int | None = None,
     require_active_deadlines: bool = True,
 ) -> tuple[int, int, bytes, bytes]:
     _require_read_only(os.fstat(snapshot_fd), label="snapshot directory")
@@ -1021,7 +1040,15 @@ def _verify_snapshot_directory(
         candidate_ids = _candidate_ids(
             _read_fd(candidate_fd, limit=1024 * 1024, label="snapshot pilot candidate file")
         )
-        expected = _expected_artifacts(candidate_ids, args.commit)
+        if inventory_version is None:
+            inventory_version = getattr(args, "snapshot_inventory_version", 2)
+        if inventory_version not in {1, 2}:
+            raise ValueError("pilot snapshot inventory version is unsupported")
+        expected = _expected_artifacts(
+            candidate_ids,
+            args.commit,
+            inventory_version=inventory_version,
+        )
         expected_snapshot = _snapshot_paths(expected)
         index_entries = _parse_manifest(index_raw, expected_snapshot, label="pilot snapshot index")
         if _directory_names(snapshot_fd, label="pilot evidence snapshot") != _snapshot_top_level(expected_snapshot):
@@ -1166,6 +1193,8 @@ def verify_published_snapshot(
         assay_info = os.fstat(assay_fd)
         _check_expected_assay_identity(args, assay_info)
         receipt_fd, receipt_info, receipt_raw = _read_snapshot_receipt(assay_fd, args)
+        receipt = _parse_snapshot_receipt(receipt_raw)
+        snapshot_inventory_version = _receipt_inventory_version(receipt)
         if _path_exists(assay_fd, _SNAPSHOT_PENDING):
             if not allow_pending:
                 raise ValueError("published pilot evidence still has an incomplete-publication marker")
@@ -1192,7 +1221,10 @@ def verify_published_snapshot(
         )
         snapshot_info = os.fstat(snapshot_fd)
         campaign_expires_ns, attempt_expires_ns, _deadline_raw, _window_raw = _verify_snapshot_directory(
-            snapshot_fd, args, snapshot_sha256=args.snapshot_sha256
+            snapshot_fd,
+            args,
+            snapshot_sha256=args.snapshot_sha256,
+            inventory_version=snapshot_inventory_version,
         )
         state_fd = os.open(
             "b110-pilot-state",
@@ -1285,7 +1317,10 @@ def verify_published_snapshot(
             _final_deadline_raw,
             _final_window_raw,
         ) = _verify_snapshot_directory(
-            snapshot_fd, args, snapshot_sha256=args.snapshot_sha256
+            snapshot_fd,
+            args,
+            snapshot_sha256=args.snapshot_sha256,
+            inventory_version=snapshot_inventory_version,
         )
         _check_same_directory_path(
             assay_fd,
@@ -1305,7 +1340,10 @@ def verify_published_snapshot(
             _final_deadline_raw,
             _final_window_raw,
         ) = _verify_snapshot_directory(
-            snapshot_fd, args, snapshot_sha256=args.snapshot_sha256
+            snapshot_fd,
+            args,
+            snapshot_sha256=args.snapshot_sha256,
+            inventory_version=snapshot_inventory_version,
         )
         if _hash_fd(
             receipt_fd,
@@ -2173,6 +2211,7 @@ def archive_prior_snapshot(args: argparse.Namespace) -> tuple[str, str | None]:
                 tree=retained_tree,
                 manifest_sha256=receipt["manifest_sha256"],
                 snapshot_sha256=receipt["snapshot_sha256"],
+                snapshot_inventory_version=_receipt_inventory_version(receipt),
             )
             snapshot_fd = os.open(
                 _SNAPSHOT_NAME,

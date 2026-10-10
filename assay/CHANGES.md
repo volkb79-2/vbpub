@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- Empty on purpose: CMRU rejects a tagged release while this section has
+     hand-written notes (KI-30). Versioned release history is generated from
+     project commits; feature and migration details live in README.md and
+     docs/CONSUMERS.md. -->
+
+<!-- cmru: release history -->
+
+## [9.0.0] - 2026-10-10
+<!-- cmru: generated -->
+<!-- cmru: source-end=dcbc73d31c11fdb30ac61e0f15294c2c1dd14584 -->
+
 ### BREAKING CHANGE
 - verdict schema v15 is a hard cut from v14. `assay verify` rejects v14 and
   older verdicts; v12–v14 verdicts are cold starts for `--reuse-from`, and
@@ -11,150 +22,113 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   repin Assay before relying on v15 verdict fields.
 
 ### Added
-- Add opt-in native R2 resource-counter observation through cgprofile's
-  observer-only Unix socket when the local cgroup reader proves relevant
-  ancestors are hidden; bind replies to the caller's native thread and fail
-  closed on identity or ancestry mismatch (RG-89).
-- Add the separate native `analysis-r2` lane and the registered
-  `analysis-r2-pilot` measurement gate. The deterministic sample covers every
-  candidate-bearing file/operator stratum and the full rare-operator census;
-  verified completion is non-qualifying and writes no verdict. The full
-  analysis R2 budget and GO policy remain a later decision based on pilot data.
-- Add registered B110 `b110-pilot` and `b110-screen` gate modes. The pilot
-  requires an independently verified exit-6 measurement with a recomputed
-  source selection, complete summary whose in-memory current-sweep
-  `judge_sha256` matches the candidates progress event and every state record,
-  plus resume progress, no process or memory limit event, and a host-pinned
-  manifest over the exact retained artifacts. The host publishes a content-
-  checked evidence
-  snapshot with a separate source and digest receipt, reports its index digest,
-  and rechecks the snapshot and campaign and attempt deadlines after writing
-  provisional completion markers; it emits another digest marker only after
-  that final check. Retries require the marker in the owner-only run-gate
-  transcript, bound history capture and file hashing/copying, and preserve live
-  evidence when history is unavailable. Pre-archive host refusals exit 3,
-  mapped to run-gate `ERROR`, so they cannot replace an earlier eligible pass.
-  Live snapshot publication uses a pending receipt while the snapshot and
-  final receipt are written separately; a validated snapshot, receipt,
-  version-2 attestation and read-only copy of its verified run-gate transcript
-  are published to the archive by one atomic no-replace directory rename.
-  Post-publication failures withdraw the archive entry with another atomic
-  no-replace move, retrying a fresh private incomplete directory if the prior
-  destination directory disappears and using a private `.assay` fallback if
-  the recreated destination is unsafe. Quarantine of prior evidence also uses
-  no-replace moves so an empty destination directory cannot be overwritten;
-  when the incomplete path is unsafe, quarantine uses the private unverified-
-  evidence fallback or a private collision-resistant sibling and records the
-  selected destination. The full-plan survivor screen must pass Assay
-  verification and bind its native mutation inventory to the
-  current plan and actual producer exit status, with a completed R2 `PASS` or
-  `FAIL`, before it can report completion. R2 errors, budget exhaustion and
-  inconclusive results remain incomplete. The pilot caps each invocation at
-  90 minutes for campaign setup, planning, selection, Assay execution, report
-  checking and final completion checks inside its persisted two-hour campaign;
-  the screen's 5-hour Assay
-  lane budget is its effective work bound, with longer wrappers reserved for
-  cleanup.
-- Add non-qualifying native-R2 pilot selection with `--candidates-file` and
-  `--pilot-jobs`, per-candidate resumable state, a selection-bound sentinel,
-  and a deterministic stratified candidate selector with bounded, loader-safe
-  output. Completed pilot runs print a separate summary and exit 6; they never
-  write a verdict or run R3.
-- Serialize pilot and qualifying resume runs by requested state path and
-  admitted store inode; locks are nonblocking, independent of `TMPDIR`, and
-  keep parent replacement from splitting exclusivity. Require terminal command
-  evidence before trusting a per-candidate budget record as a completed
-  disposition.
-- Add opt-in native Python R2 cold witnesses. Assay proves the no-coverage
-  command, ordered collection and hook facts; a `witness-cold` kill records its
-  failed test call and labels later tests unrun. Hook trust is pinned to
-  reviewed Hypothesis 6.156.6 and pytest-cov 7.1.0 source identities, with
-  dynamic hook changes invalidating the proof. Survivors and uncertain runs
-  execute the full declared suite.
-- Persist campaign deadlines across preflight, resume and retry, and bind B105
-  reports to the source commit, lane command, pytest configuration, manifest
-  and deadline.
-- Bound mutation worker submissions to the configured job count while keeping
-  candidate events ordered.
-
-### Changed
-- B105's bare-host wrapper mounts the full workspace root at its physical host
-  path and `/workspaces/vbpub`, preserving linked-worktree Git paths. It checks
-  both the interactive probe parent and gates slice through the host system
-  bus before using the gates slice; B105 still requires Docker access and an
-  exclusive registered-gate window.
+- feat(assay): integrate B114, B118 pilot, and B131 (f01944ebf)
+- feat(assay): attest B110 bounded pilot evidence (012293e04)
+- feat(assay): add bounded analysis R2 pilot (63801dc27)
+- feat(assay): declare analysis R2 lane for B131 (bfa33c79c)
+- feat(assay): add B110 pilot and screen gates (f0814096c)
+- feat(assay): add bounded B110 pilot selection (7b7143d68)
 
 ### Fixed
-- Convert deeply nested or otherwise unparsable resource-observer JSON into a
-  structured observation refusal rather than leaking `RecursionError` (RG-89).
-- Leave a candidate unclassified and out of resume state when lane or campaign
-  termination interrupts its post-command snapshot integrity check (B117).
-- Require the B105 and B110 report checkers to validate one bounded parsed
-  report snapshot and account for every planned candidate exactly once across
-  all six terminal outcome buckets. A separate verifier read or matching
-  aggregate counts no longer certify a different or incomplete report.
-- Archive prior B110 pilot evidence before retry cleanliness and host-admission
-  checks can replace its eligible same-commit history entry; accept a valid
-  ineligible latest record with an unresolved HEAD while retaining earlier
-  eligible history; and verify moved file, symlink and directory identities
-  during quarantine. Reject contradictory completed summaries and restore
-  snapshot modes when quarantine fails.
-- Keep the previous resumable candidate record until its replacement is
-  durable, roll back failed state commits, and refuse to return a completed
-  mutation result when deadline expiry occurs during final aggregation.
-- Refuse native R2 before R0 when B145's full cgroup hierarchy is unavailable
-  for a selected candidate set within the mutation cap; expose the same
-  capability and selection applicability in `assay plan` (B148).
-- Require cold-policy full kills to carry declared-command coverage evidence
-  and a verified failed-call witness. Accept a declared retry's witness anywhere
-  in its verified started prefix, and bind B105 full-kill witnesses to the R2
-  manifest.
-- Close caller-owned receipt descriptors and return `ERROR/EXEC_FAILED` when
-  receipt-pipe or reader initialization fails; the candidate stays unclassified
-  and cannot escape accounting as an unhandled exception (B114).
-- Bind B110 pilot selections to a clean checkout's exact plan commit/tree and
-  each planned source file's SHA-256; report the plan digest and selected IDs,
-  and require scanner hard-site spans to point to the exact token on the declared line.
-- Pin pytest built-in hook callable identities before candidate conftests load;
-  a same-module/path substitution can no longer certify a cold kill or survivor
-  with an unchanged hook fingerprint. Pin Assay's generated receipt hooks and
-  all four materialized liveness hooks before candidate conftests too, and pin
-  reviewed external hook code objects so replacements and in-place code
-  changes make the attempt unsupported.
-- Make B105's same-commit wheel reproducible from the commit timestamp, refuse
-  an existing campaign's wheel-digest mismatch before run-closure installation
-  or lane work, check plan-independent deadline refusals before parsing an R2
-  plan, and read reports, plans, tester receipts, deadlines and manifests as
-  bounded no-follow regular files (64 MiB, 16 MiB and 4 KiB for report, plan
-  and receipt).
-- Read pytest 9's `pytest.toml` and `.pytest.toml` before the other recognized
-  config formats when checking whether cold-witness `addopts` run sequentially;
-  also inspect the native `[tool.pytest]` table in `pyproject.toml` (B135).
-  Separate recognized pytest option values from test selectors; unresolved
-  bare paths, unknown option arity, and root-selection overrides disable cold
-  witness instead of producing a guessed admission result.
-- Include test-path directories in cold-witness pytest config admission, and
-  refuse unresolved paths or `--pyargs` when the selected configuration cannot
-  be established.
-- Bind the B105 cockpit lookup to its mount and PID namespace identities,
-  preventing a matching hostname from naming another container; document the
-  MDT host bootstrap's pre-start cgroup-slice check and persisted campaign clock.
-- Capture private cold-witness receipts over a bounded framed pipe, rejecting
-  extra or trailing bytes so post-session hooks cannot rewrite a witness;
-  safely read the ordered manifest and recheck the campaign deadline at the
-  candidate integrity boundary.
-- Let bounded input readers open an explicit `/proc/<pid>/fd/<fd>` directory
-  root supplied by the B110 launcher, then retain no-follow traversal for
-  every child. Keep pilot mutation-state locks and writes attached to the
-  admitted directory descriptor, so campaign, candidate, deadline and progress
-  paths work without falling back to a renameable `.assay` pathname.
-- Require each B110 killed-state record's collection command to match its
-  execution mode: a full attempt uses declared-command evidence, while witness
-  attempts use R2 evidence.
-- Bind the B110 pilot summary's state path to the supplied proc-fd spelling
-  after verifying that it names the pinned state inode; require non-kills to
-  use full execution without a witness, require witness-cold kills to include
-  an R2 failed-call prefix, and reject witness-prefix reuse in the B131 pilot.
+- fix(assay): validate pilot resume segments correctly (4b620ee7a)
+- fix(assay): harden bounded R2 pilot evidence (80b11d3fd)
+- fix(assay): recheck pilot artifacts before success (1ee2a4ed6)
+- fix(assay): bind pilot evidence to R2 collection and cost (2e7f04c9a)
+- fix(assay): harden B131 pilot completion evidence (cfbe9d874)
+- fix(assay): verify pilot markers and complete screen inventory (982c67813)
+- fix(assay): restore B105 inventory gate after B114 (1fb63396e)
+- fix(assay): close B114 deadline and inventory gaps (8b3bffe0c)
+- fix(assay): anchor B105 fixture worktree at repo root (1dd54c91f)
+- fix(assay): close B114 probe and replay gaps (976b5c410)
+- fix: harden B114 xdist and host unit proof (e97156e32)
+- fix: close B114 config and cgroup review findings (ea9de716e)
+- fix(assay): close B105 and cold witness gaps (0720efc56)
+- fix(assay): harden B105 admission and cleanup (a50d1e1b6)
+- fix(assay): guard opt-in JavaScript qualification runtime (5fb7c2822)
+- fix(assay): make JavaScript canary lint-safe (6a9c3d1b7)
+- fix(assay): support CommonJS uncovered-line canaries (b8a17389a)
+- fix(assay): complete v15 SQL witness fixture (869b49248)
+- fix(assay): synchronize receipt descriptor ownership (b3e706adc)
+- fix(assay): close receipt setup failures safely (b0d97239c)
+- fix(assay): classify receipt reader startup failures (4ec3b35ea)
+- fix(assay): harden receipt capture cleanup (c43c97764)
+- fix(assay): isolate receipt drain descriptors (dee6f9a3d)
+- fix(assay): secure cold-witness receipt boundary (6c89ea61a)
+- fix(assay): leave interrupted candidates unclassified (c08afa4be)
+- fix(assay): qualify v15 cold witness and cgroup preflight (e1e6b5d6c)
+- fix(assay): require proof for cold-policy full kills (4fe8c25a9)
+- fix(assay): pin liveness hooks and bound B105 inputs (52d601632)
+- fix(assay): close B114 hook and B105 input review gaps (70bf4493e)
+- fix(assay): harden B114 cold witness and B105 retries (e3a33c5eb)
+- fix(assay): close B114 cold-witness proof gaps (14c2a5f4d)
+- fix(assay): harden B114 cold-witness proof (6ccf0297c)
+
+### Changed
+- merge: Assay B087 into B131 integration (1b5f61a91)
+- merge: current Assay main into B131 (896087018)
+- merge: latest Assay main into B131 (5291fb584)
+- Repair B114 acceptance test fixtures (cb26ee27a)
+- B087: close out dstdns canary evidence (47fbaac66)
+- Fix Assay cold-witness and cgroup admission (03f3c592c)
+- assay: register JavaScript R3 canaries (64ff969fc)
+- assay: close B114 cold witness review findings (50060dc57)
+- assay: implement B114 cold-witness campaign (82cee58ce)
+
+### Documentation
+- docs(assay): clarify B117 prerequisite evidence (dcca9e912)
+- docs(assay): reconcile B110 pilot and gate status (551924752)
+- docs(assay): record integrated B114 B118 B131 acceptance (595b4069b)
+- docs(assay): record B131 review disposition (e568fbaf4)
+- docs(assay): add B131 pilot report (d4d2cb285)
+- docs(assay): record B087 provisional integration (8bee38a08)
+- docs(assay): reconcile B131 dependency plan (c592ab6bc)
+- docs(assay): record B131 latest-main reconciliation (61514d3b1)
+- docs(assay): record B114 integration review acceptance (970acb1c6)
+- docs(assay): record B114 integration gate repair (30fd138b9)
+- docs(assay): record B118 P7a implementation commit (e3c3f4c82)
+- docs(assay): record B114 focused test result (e32e57594)
+- docs(assay): record B114 review closeout (2aec1becf)
+- docs(assay): record final B087 review (ad17ab38a)
+- docs(assay): record B087 rebase on v15 main (8ba0f14cd)
+- docs(assay): record B087 real JavaScript qualification (3769d6484)
+- docs(assay): record B114 cap review (af46e6fde)
+- docs(assay): record B114 oracle review (65a912f3e)
+- docs(assay): record final B114 review (fadf35ecf)
+- docs(assay): record B114 follow-up lint checks (4beb41c27)
+- docs(assay): record cockpit cgroup diagnostic (c7096fb8d)
+- docs(assay): record final B114 review (5d1ff0583)
+- docs(assay): record B114 verification checkpoint (941fa055f)
+- docs(assay): reconcile B110 prerequisites against Wave A (c6c1567d3)
+- docs(assay): reconcile B114 for verdict v15 (549f9a283)
+
+### Testing
+- test(assay): verify final analysis pilot source check (dcbc73d3)
+- test(assay): synchronize fake pilot log completion (e413254c)
+- test(assay): scope schema note check to current release (14365c139)
+- test(assay): accept versioned schema migration notes (4dbe27605)
+- test(assay): fix B131 pilot launcher oracle tuple (b8713d567)
+- test(assay): pin deferred B110 ledger refusal (8c4b9c84a)
+- test(assay): reject non-array mutation buckets (6133f78d6)
+- test(assay): protect every mutation outcome bucket (046f4831c)
+- test(assay): refresh B105 exclusion inventory (26f79288b)
+- test(assay): allow candidate oracle to submit fixture sites (18476448f)
+- test(assay): target candidate receipt startup failure (466a94eeb)
+- test(assay): inject receipt failure in inline candidate (e2f5109f3)
+- test(assay): contain receipt reader cleanup (d324754c8)
+- test(assay): contain late-reader oracle cleanup (8fe585ec3)
+- test(assay): prove late reader cannot access reused fd (9ffec7644)
+- test(assay): prevent timeout oracle natural-exit false pass (1b2a82e71)
+- test(assay): bound timeout oracle cleanup safely (66cbe5f2d)
+- test(assay): exercise real auto-budget timeout cleanup (a3d38ddae)
+- test(assay): make timeout cleanup oracle deterministic (de3939a3a)
+- test(assay): widen auto-timeout child cleanup observation (936283f08)
+- test(assay): fail on stale verdict schema fixture (f2ad0ac63)
+- test(assay): follow current verdict schema in analysis oracle (6ddbd213e)
+- test(assay): fixture cgroup observation refusal (40f93c0d9)
+- test(assay): close B114 review oracle gaps (6fe264626)
+- test(assay): align B114 gate fixtures with v15 (37470c55f)
+- test(assay): stabilize receipt fd reuse regression (6078d159b)
+- test(assay): close B114 proof gaps (d3d3e458f)
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
@@ -211,10 +185,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): prevent cgroup process-limit or OOM events from becoming native
   R2 kills or survivors; sample candidate and visible-ancestor event counters,
   bind them to the executing worker's cgroup, capabilities, and selected mount,
-  reject affected resume records, use the explicit peer-bound resource
-  observer only when a private cgroup namespace hides ancestors, and advance
-  the judge identity to `/8`, cold-starting all earlier B145 evidence (B145,
-  RG-89)
+  reject affected resume records, and advance the judge identity to `/7`,
+  cold-starting the earlier `/4`, `/5`, and `/6` B145 evidence (B145)
 - fix(assay): disable automatic Git maintenance and detached maintenance for
   every Assay Git child, independent of image, system, or consumer config
   (B147)
@@ -298,7 +270,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(assay): deterministic mutant-guard tests, one per component, under a
   line-event budget (B113)
 
-<!-- cmru: release history -->
 
 ## [7.2.0] - 2026-09-30
 <!-- cmru: generated -->

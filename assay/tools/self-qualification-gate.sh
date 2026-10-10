@@ -78,6 +78,7 @@ run_b110_pilot_inner() {
     "$assay_state_root/b110-pilot-selection.json" \
     "$assay_state_root/b110-pilot-summary.json" \
     "$assay_state_root/b110-pilot-run.log" \
+    "$assay_state_root/r2-manifest-b110-pilot.txt" \
     "$assay_state_root/b110-pilot-artifacts.sha256"
   # P7R2-4: init FIRST, so `assay plan` and the selector run inside the 2 h campaign
   # and the outer failsafe only has to cover the build plus the campaign.
@@ -167,6 +168,7 @@ run_b110_pilot_inner() {
       "$assay_bin" run self-qualification --file assay.toml \
       --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 3 --cold-witness --resume \
       --state-dir "$assay_state_root/b110-pilot-state" --progress "$assay_state_root/progress-b110-pilot.jsonl" \
+      --r2-manifest "$assay_state_root/r2-manifest-b110-pilot.txt" \
       --campaign-deadline "$pilot_deadline"
   pilot_status=$?
   set -e
@@ -264,6 +266,7 @@ run_analysis_r2_pilot() {
   local pilot_step_budget_s campaign_budget_s remaining_s pilot_status
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
   local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
+  local pilot_checker_stdout pilot_attestation_sha256
   local state_dir=.assay/analysis-r2-pilot-state
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
@@ -271,10 +274,12 @@ run_analysis_r2_pilot() {
   local summary_path=.assay/analysis-r2-pilot-summary.json
   local run_log_path=.assay/analysis-r2-pilot-run.log
   local progress_path=.assay/progress-analysis-r2-pilot.jsonl
+  local r2_manifest_path=.assay/r2-manifest-analysis-r2-pilot.txt
   local verdict_path=.assay/verdict-analysis-r2.json
+  local attestation_path=.assay/analysis-r2-pilot-attestation.json
 
   rm -f -- "$plan_path" "$candidates_path" "$selection_path" \
-    "$summary_path" "$run_log_path" \
+    "$summary_path" "$run_log_path" "$r2_manifest_path" "$attestation_path" \
     || { echo "ANALYSIS_R2_PILOT_OUTPUT_CLEANUP_FAILED=1" >&2; return 1; }
   if [[ -e "$verdict_path" || -L "$verdict_path" ]]; then
     echo "ANALYSIS_R2_PILOT_PREEXISTING_VERDICT=1" >&2
@@ -357,6 +362,7 @@ run_analysis_r2_pilot() {
     "$assay_bin" run analysis-r2 --file assay.toml \
       --candidates-file "$candidates_path" --cold-witness --resume \
       --state-dir "$state_dir" --progress "$progress_path" \
+      --r2-manifest "$r2_manifest_path" \
       --campaign-deadline "$pilot_deadline" \
       > "$summary_path" 2> "$run_log_path"
   pilot_status=$?
@@ -383,22 +389,41 @@ run_analysis_r2_pilot() {
     echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
     return 124
   fi
+  pilot_checker_stdout="$scratch/analysis-r2-pilot-checker.stdout"
   set +e
   timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
     "$scratch/run-venv/bin/python" \
     "$scratch/source/assay/tools/analysis_r2_pilot_check.py" \
       --plan "$plan_path" --selection "$selection_path" \
       --candidates "$candidates_path" --summary "$summary_path" \
+      --run-log "$run_log_path" \
       --progress "$progress_path" --deadline "$pilot_deadline" \
+      --r2-manifest "$r2_manifest_path" \
       --state-dir "$state_dir" --verdict "$verdict_path" \
+      --attestation "$attestation_path" \
       --repo-root "$worktree" --expected-commit "$source_commit" \
       --expected-tree "$source_tree" --expected-wheel-sha256 "$wheel_digest" \
-      --expected-exit-code "$pilot_status"
+      --expected-exit-code "$pilot_status" >"$pilot_checker_stdout"
   checker_status=$?
   set -e
   if (( checker_status != 0 )); then
     echo "ANALYSIS_R2_PILOT_CHECKER_EXIT=$checker_status" >&2
     return "$checker_status"
+  fi
+  if ! pilot_attestation_sha256="$("$scratch/run-venv/bin/python" - "$pilot_checker_stdout" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_bytes()
+match = re.fullmatch(rb"ANALYSIS_R2_PILOT_VERIFIED=([0-9a-f]{64})\n", raw)
+if match is None:
+    raise SystemExit(1)
+print(match.group(1).decode("ascii"))
+PYEOF
+)"; then
+    echo "ANALYSIS_R2_PILOT_CHECKER_MARKER_INVALID=1" >&2
+    return 1
   fi
   ensure_source_unchanged
   campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
@@ -407,7 +432,7 @@ run_analysis_r2_pilot() {
     echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
     return 124
   fi
-  echo "ANALYSIS_R2_PILOT_VERIFIED=1"
+  echo "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=$pilot_attestation_sha256"
 }
 
 run_b110_screen() {
@@ -455,6 +480,7 @@ run_b110_screen() {
   screen_checker_output="$("$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_screen_report_check.py" \
     --plan "$assay_state_root/b110-screen-plan.json" \
     --verdict "$assay_state_root/verdict-b110-screen.json" \
+    --repo-root "$worktree" \
     --expected-commit "$source_commit" --expected-tree "$source_tree" \
     --expected-exit-code "$screen_status")" \
     || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }

@@ -133,17 +133,50 @@ def _assert_recent_verdict_migrations_are_documented(
     )
 
 
+def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> None:
+    headings = list(re.finditer(
+        r"^## \[([^\]]+)\](?: - \d{4}-\d{2}-\d{2})?$",
+        changes,
+        re.MULTILINE,
+    ))
+    sections = [
+        (
+            heading.group(1),
+            changes[
+                heading.end():
+                headings[index + 1].start() if index + 1 < len(headings) else len(changes)
+            ],
+        )
+        for index, heading in enumerate(headings)
+    ]
+    unreleased = next((body for name, body in sections if name == "Unreleased"), "")
+    latest_release = next((body for name, body in sections if name != "Unreleased"), "")
+    note = f"verdict schema v{version}"
+    assert note in unreleased or note in latest_release, (
+        f"{note} is missing from [Unreleased] and the latest versioned section"
+    )
+
+
 def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-    # The topmost section is `[Unreleased]` between releases and the folded
-    # release section (e.g. `[8.0.0]`) in a release candidate, where no
-    # `[Unreleased]` heading exists any more.
-    newest = changes.split("\n## [", 1)[1].split("\n## [", 1)[0]
-    assert f"verdict schema v{VERDICT_SCHEMA_VERSION}" in newest
+    # During development the current cut is under `[Unreleased]`; release
+    # preparation folds it into the newest dated section. Older releases must
+    # not mask a missing note in either current location.
+    _assert_current_verdict_schema_is_documented(changes, VERDICT_SCHEMA_VERSION)
     consumer_text = CONSUMERS.read_text(encoding="utf-8")
     _assert_recent_verdict_migrations_are_documented(
         consumer_text, VERDICT_SCHEMA_VERSION
     )
+
+
+def test_current_verdict_schema_check_ignores_historical_release_notes():
+    changes = (
+        "## [Unreleased]\n\n"
+        "## [9.0.0] - 2026-10-10\nNo current schema note.\n\n"
+        "## [8.0.0] - 2026-10-07\nverdict schema v15\n"
+    )
+    with pytest.raises(AssertionError, match="latest versioned section"):
+        _assert_current_verdict_schema_is_documented(changes, 15)
 
 
 def test_consumers_migration_check_detects_a_missing_recent_cut():

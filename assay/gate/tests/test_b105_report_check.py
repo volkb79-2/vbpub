@@ -1203,6 +1203,28 @@ def test_o11_the_plan_that_agrees_with_the_report_is_accepted(tmp_path):
     assert "B105_REPORT_ACCEPTED=self-qualification" in result.stdout
 
 
+def test_reserved_non_null_equivalence_ledger_is_refused_until_b110_p10b(tmp_path):
+    document, _ = _r2_case()
+    document["judgment"]["r2"]["equivalence_ledger"] = {
+        "path": "equivalence-ledger.json",
+        "sha256": "a" * 64,
+        "entry_count": 1,
+        "audit_sha256": "b" * 64,
+    }
+
+    result = _run_checker(
+        tmp_path,
+        document,
+        lane=SELF_QUALIFICATION,
+        rigor=SELF_QUALIFICATION_RIGOR,
+    )
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("B105_REPORT_REJECTED=")
+    assert "ledger binding not implemented (B110-P10b)" in result.stderr
+    assert "B105_REPORT_ACCEPTED" not in result.stdout
+
+
 def test_o11_refusal_1_an_r2_report_without_a_plan(tmp_path):
     document, _ = _r2_case()
     _refused_by_scope(tmp_path, document, None, "no plan was given")

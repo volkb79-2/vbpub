@@ -18,6 +18,8 @@ from typing import Any
 
 import b110_pilot_select as common
 import analysis_r2_pilot_select as selector
+import pilot_r2_evidence
+import pilot_r2_snapshot
 from assay.candidate_identity import candidate_id_from_fields
 from assay import __version__ as ASSAY_VERSION
 from assay.mutation import (
@@ -38,30 +40,129 @@ _MAX_PROGRESS_BYTES = 16 * 1024 * 1024
 _MAX_PROGRESS_EVENTS = 50_000
 _MAX_PROGRESS_LINE_BYTES = 64 * 1024
 _MAX_DEADLINE_BYTES = 64 * 1024
+_MAX_RUN_LOG_BYTES = 64 * 1024 * 1024
 _MAX_STATE_BYTES = 16 * 1024 * 1024
 
 
-def _read_bytes(path: Path, *, maximum: int) -> bytes:
-    pinned = common._pin_input(path)
+def _read_bytes(
+    path: Path,
+    *,
+    maximum: int,
+    require_single_link: bool = True,
+    snapshot_out: dict[str, Any] | None = None,
+) -> bytes:
+    if not require_single_link:
+        raise ValueError("pilot evidence files must have exactly one hard link")
+    raw, snapshot = pilot_r2_snapshot.read_file(path, maximum=maximum)
+    if snapshot_out is not None:
+        snapshot_out.clear()
+        snapshot_out.update(snapshot)
+    return raw
+
+
+def _verify_unchanged_evidence(
+    *,
+    inputs: list[tuple[str, Path, bytes, int, dict[str, Any]]],
+    manifest_path: Path,
+    manifest_snapshot: dict[str, Any],
+    state_dir: Path,
+    state_snapshot: dict[str, Any],
+    verdict_path: Path,
+) -> dict[str, Any]:
+    files: dict[str, dict[str, Any]] = {}
+    for label, path, expected, maximum, expected_identity in inputs:
+        current_identity: dict[str, Any] = {}
+        current = _read_bytes(
+            path,
+            maximum=maximum,
+            snapshot_out=current_identity,
+        )
+        if current != expected or current_identity != expected_identity:
+            raise ValueError(f"pilot {label} changed during evidence validation")
+        files[label] = {
+            "identity": expected_identity,
+            "sha256": hashlib.sha256(expected).hexdigest(),
+        }
+
+    manifest_identity: dict[str, Any] = {}
+    manifest_raw = _read_bytes(
+        manifest_path,
+        maximum=pilot_r2_evidence._MANIFEST_MAX_BYTES,
+        snapshot_out=manifest_identity,
+    )
+    if (
+        hashlib.sha256(manifest_raw).hexdigest() != manifest_snapshot["sha256"]
+        or manifest_identity != manifest_snapshot["identity"]
+    ):
+        raise ValueError("pilot R2 manifest changed during evidence validation")
+    files["manifest"] = {
+        "identity": manifest_snapshot["identity"],
+        "sha256": manifest_snapshot["sha256"],
+    }
+
+    state_directory = pilot_r2_snapshot.directory_snapshot(state_dir)
+    expected_directory = {
+        "path": state_snapshot["path"],
+        "directory": state_snapshot["directory"],
+        "names": state_snapshot["names"],
+    }
+    if state_directory != expected_directory:
+        raise ValueError("pilot state inventory changed during evidence validation")
+    for name, expected_file in state_snapshot["files"].items():
+        maximum = _MAX_DEADLINE_BYTES if name == "PILOT-STATE" else _MAX_STATE_BYTES
+        current_identity: dict[str, Any] = {}
+        current = _read_bytes(
+            state_dir / name,
+            maximum=maximum,
+            snapshot_out=current_identity,
+        )
+        if (
+            hashlib.sha256(current).hexdigest() != expected_file["sha256"]
+            or current_identity != expected_file["identity"]
+        ):
+            raise ValueError(f"pilot state record {name} changed during evidence validation")
+        files[f"state/{name}"] = expected_file
+
+    # The second metadata sweep catches changes to an earlier file while a later
+    # file was being read. The host wrapper repeats this check after the judge
+    # container exits, using the attestation emitted below.
+    for label, _path, _expected, _maximum, expected_identity in inputs:
+        if pilot_r2_snapshot.stat_file(Path(expected_identity["path"])) != expected_identity:
+            raise ValueError(f"pilot {label} changed before the evidence boundary")
+    if pilot_r2_snapshot.stat_file(manifest_path) != manifest_snapshot["identity"]:
+        raise ValueError("pilot R2 manifest changed before the evidence boundary")
+    if pilot_r2_snapshot.directory_snapshot(state_dir) != expected_directory:
+        raise ValueError("pilot state inventory changed before the evidence boundary")
+    for name, expected_file in state_snapshot["files"].items():
+        if pilot_r2_snapshot.stat_file(state_dir / name) != expected_file["identity"]:
+            raise ValueError(f"pilot state record {name} changed before the evidence boundary")
+
+    verdict_snapshot = pilot_r2_snapshot.path_is_absent(verdict_path)
+    return {
+        "files": files,
+        "state_directory": expected_directory,
+        "verdict": verdict_snapshot,
+    }
+
+
+def _write_attestation(path: Path, document: dict[str, Any]) -> str:
+    raw = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
     try:
-        info = os.fstat(pinned.file_fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"{path} is not a regular file")
-        if info.st_size > maximum:
-            raise ValueError(f"{path} exceeds the {maximum}-byte limit")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(pinned.file_fd, min(1024 * 1024, maximum + 1 - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > maximum:
-                raise ValueError(f"{path} exceeds the {maximum}-byte limit")
-        return b"".join(chunks)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("pilot attestation output is not a single-link regular file")
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short write to pilot attestation")
+            view = view[written:]
+        os.fsync(descriptor)
     finally:
-        pinned.close()
+        os.close(descriptor)
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _json(raw: bytes, *, label: str) -> Any:
@@ -343,24 +444,35 @@ def _check_pilot_state(
     plan_by_id: dict[str, dict[str, Any]],
     outcome_by_id: dict[str, dict[str, Any]],
     deadline_sha256: str,
+    r2_baselines: dict[str, Any],
+    artifact_snapshot: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, dict[str, Any]]]:
-    if state_dir.is_symlink() or not state_dir.is_dir():
-        raise ValueError("pilot state directory is missing or is a symlink")
+    directory = pilot_r2_snapshot.directory_snapshot(state_dir)
     expected_names = {"PILOT-STATE", *(f"{identity}.json" for identity in selected_ids)}
-    try:
-        entries = list(os.scandir(state_dir))
-    except OSError as exc:
-        raise ValueError(f"cannot inspect pilot state directory: {exc}") from exc
-    observed_names: set[str] = set()
-    for entry in entries:
-        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
-            raise ValueError(f"pilot state entry {entry.name!r} is not a regular file")
-        observed_names.add(entry.name)
+    observed_names = set(directory["names"])
     if observed_names != expected_names:
         raise ValueError("pilot state inventory differs from the selected candidates")
+    if artifact_snapshot is not None:
+        artifact_snapshot.update(
+            path=directory["path"],
+            directory=directory["directory"],
+            names=directory["names"],
+            files={},
+        )
     sentinel_path = state_dir / "PILOT-STATE"
+    sentinel_identity: dict[str, Any] = {}
+    sentinel_raw = _read_bytes(
+        sentinel_path,
+        maximum=_MAX_DEADLINE_BYTES,
+        snapshot_out=sentinel_identity,
+    )
+    if artifact_snapshot is not None:
+        artifact_snapshot["files"]["PILOT-STATE"] = {
+            "identity": sentinel_identity,
+            "sha256": hashlib.sha256(sentinel_raw).hexdigest(),
+        }
     sentinel = _json(
-        _read_bytes(sentinel_path, maximum=_MAX_DEADLINE_BYTES),
+        sentinel_raw,
         label="PILOT-STATE",
     )
     if (
@@ -381,8 +493,20 @@ def _check_pilot_state(
     resources_by_id: dict[str, dict[str, Any]] = {}
     judge_identities: set[str] = set()
     for identity in selected_ids:
+        record_name = f"{identity}.json"
+        record_identity: dict[str, Any] = {}
+        record_raw = _read_bytes(
+            state_dir / record_name,
+            maximum=_MAX_STATE_BYTES,
+            snapshot_out=record_identity,
+        )
+        if artifact_snapshot is not None:
+            artifact_snapshot["files"][record_name] = {
+                "identity": record_identity,
+                "sha256": hashlib.sha256(record_raw).hexdigest(),
+            }
         record = _json(
-            _read_bytes(state_dir / f"{identity}.json", maximum=_MAX_STATE_BYTES),
+            record_raw,
             label=f"pilot state record {identity}",
         )
         planned = plan_by_id[identity]
@@ -451,16 +575,32 @@ def _check_pilot_state(
             if outcome["bucket"] == "survived":
                 if checked_evidence.started_count is not None:
                     raise ValueError(f"pilot survivor {identity} carries failed-prefix evidence")
-            else:
-                mode = outcome["execution_mode"]
-                if mode == "full":
-                    if checked_evidence.command != "declared" or checked_evidence.started_count is not None:
-                        raise ValueError(f"cold full kill {identity} lacks declared-command evidence")
-                elif mode == "witness-cold":
-                    if checked_evidence.command != "r2" or checked_evidence.started_count is None:
-                        raise ValueError(f"cold witness kill {identity} lacks R2 failed-prefix evidence")
-                else:
-                    raise ValueError(f"cold kill {identity} has unsupported execution mode {mode!r}")
+            pilot_r2_evidence.validate_candidate_evidence(
+                evidence,
+                baselines=r2_baselines,
+                candidate_id=identity,
+            )
+        elif record.get("evidence") is not None:
+            pilot_r2_evidence.validate_candidate_evidence(
+                record["evidence"],
+                baselines=r2_baselines,
+                candidate_id=identity,
+            )
+        if outcome["bucket"] == "killed":
+            pilot_r2_evidence.validate_kill_witness(
+                record.get("execution"),
+                record["evidence"],
+                nodes=r2_baselines["nodes"],
+                candidate_id=identity,
+            )
+        elif execution.mode != "full" or execution.witness is not None:
+            raise ValueError(
+                f"pilot non-kill {identity} must use full execution without a witness"
+            )
+        cost_resources = pilot_r2_evidence.validate_state_measurements(
+            record,
+            candidate_id=identity,
+        )
         raw_resources = record.get("resource_limit_evidence")
         if not isinstance(raw_resources, dict):
             raise ValueError(f"pilot state record {identity} has no B145 resource evidence")
@@ -473,6 +613,7 @@ def _check_pilot_state(
         resources_by_id[identity] = {
             "resource_limit_evidence": resources.to_dict(),
             "liveness_resource_evidence": record.get("liveness_resource_evidence"),
+            "cost_resources": cost_resources,
         }
         if not _terminal_result_matches_bucket(
             record, cold_witness=True, resource_limit_hit=False
@@ -516,10 +657,47 @@ def _check_progress(
     state_resources_by_id: dict[str, dict[str, Any]],
     summary_r2: dict[str, Any],
 ) -> None:
+    boundaries = [index for index, event in enumerate(events) if event.get("event") == "run"]
+    if not boundaries or boundaries[0] != 0:
+        raise ValueError("progress does not begin with a run header")
+    segments = [
+        events[start : boundaries[index + 1] if index + 1 < len(boundaries) else len(events)]
+        for index, start in enumerate(boundaries)
+    ]
+    final_segment = segments[-1]
+    final_header = final_segment[0]
+    final_metadata = [event for event in final_segment if event.get("event") == "candidates"]
+    if (
+        final_header.get("lane") != LANE
+        or final_header.get("commit") != expected_commit
+        or len(final_metadata) != 1
+        or final_metadata[0].get("selection_sha256") != common._plan_sha256(selected_ids)
+        or final_metadata[0].get("judge_sha256") != expected_judge_sha256
+    ):
+        raise ValueError("final progress run does not bind this lane, source, selection and judge")
+
+    # A lane can append to an existing progress file. Only segments whose
+    # source, selection and judge all match may supply resume dispositions;
+    # stale commits and unrelated selections carry no candidate authority.
+    bound_events: list[dict[str, Any]] = []
+    for segment in segments:
+        header = segment[0]
+        if header.get("lane") != LANE or header.get("commit") != expected_commit:
+            continue
+        metadata = [event for event in segment if event.get("event") == "candidates"]
+        if (
+            len(metadata) == 1
+            and metadata[0].get("selection_sha256") == common._plan_sha256(selected_ids)
+            and metadata[0].get("judge_sha256") == expected_judge_sha256
+        ):
+            bound_events.extend(segment)
+    events = bound_events
+
     selected = set(selected_ids)
     observed: dict[str, list[tuple[str, str]]] = defaultdict(list)
     latest_resources: dict[str, dict[str, Any]] = {}
     latest_liveness: dict[str, Any] = {}
+    latest_cost_resources: dict[str, dict[str, Any]] = {}
     runs: list[dict[str, Any]] = []
     current_run: dict[str, Any] | None = None
     for index, event in enumerate(events, 1):
@@ -535,11 +713,15 @@ def _check_progress(
                 "selected_total": None,
                 "pending_total": None,
                 "candidate_ids": [],
+                "candidate_indexes": [],
                 "terminal_exit": None,
+                "terminal_event": None,
                 "end": None,
+                "sweep_complete": False,
                 "candidate_events": {},
                 "resume_event": None,
                 "resume_merged_event": None,
+                "prior_candidate_ids": set(observed),
             }
             runs.append(current_run)
             if event.get("lane") != LANE or event.get("commit") != expected_commit:
@@ -635,8 +817,14 @@ def _check_progress(
                 raise ValueError(f"progress candidate {identity} has a wrong pending candidate_total")
             if (
                 type(event.get("candidate_index")) is not int
-                or event["candidate_index"] != len(current_run["candidate_ids"])
+                or event["candidate_index"] < 0
                 or event["candidate_index"] >= current_run["pending_total"]
+                or event["candidate_index"] != len(current_run["candidate_ids"])
+                or event["candidate_index"] in current_run["candidate_indexes"]
+                or (
+                    current_run["candidate_indexes"]
+                    and event["candidate_index"] <= current_run["candidate_indexes"][-1]
+                )
             ):
                 raise ValueError(f"progress candidate {identity} has an invalid candidate_index")
             if identity in current_run["candidate_ids"]:
@@ -656,11 +844,22 @@ def _check_progress(
             execution_mode = event.get("execution_mode")
             if not isinstance(execution_mode, str) or not execution_mode:
                 raise ValueError(f"progress candidate {identity} has no execution mode")
+            cost_measurements = pilot_r2_evidence.validate_progress_measurements(
+                event,
+                candidate_id=identity,
+            )
             current_run["candidate_ids"].append(identity)
+            current_run["candidate_indexes"].append(event["candidate_index"])
             current_run["candidate_events"][identity] = event
             observed[identity].append((bucket, execution_mode))
             latest_resources[identity] = resource_evidence.to_dict()
             latest_liveness[identity] = event.get("liveness_resource_evidence")
+            latest_cost_resources[identity] = {
+                field: cost_measurements[field]
+                for field in (
+                    "cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds"
+                )
+            }
         elif kind == "end":
             if (
                 current_run is None
@@ -676,7 +875,7 @@ def _check_progress(
                 raise ValueError(f"progress end event {index} has missing or unknown fields")
             if (
                 type(event.get("candidate_total")) is not int
-                or event["candidate_total"] != current_run["pending_total"]
+                or event["candidate_total"] != current_run["selected_total"]
                 or event.get("reason") is not None
                 or not isinstance(event.get("buckets"), dict)
                 or set(event["buckets"]) != set(MUTATION_BUCKETS)
@@ -684,11 +883,55 @@ def _check_progress(
                 or not _valid_progress_timing(event)
             ):
                 raise ValueError(f"progress end event {index} is not a completed mutation sweep")
-            expected_buckets = {name: 0 for name in MUTATION_BUCKETS}
-            for candidate in current_run["candidate_events"].values():
-                expected_buckets[candidate["outcome_bucket"]] += 1
-            if event["buckets"] != expected_buckets:
-                raise ValueError(f"progress end event {index} buckets differ from its candidate events")
+            candidate_count = len(current_run["candidate_ids"])
+            missing_pending = current_run["pending_total"] - candidate_count
+            if missing_pending < 0:
+                raise ValueError(f"progress end event {index} has too many candidate events")
+            current_run["sweep_complete"] = (
+                missing_pending == 0
+                and set(current_run["candidate_indexes"])
+                == set(range(current_run["pending_total"]))
+            )
+            resume_event = current_run["resume_event"]
+            resumed_total = 0 if resume_event is None else resume_event["resumed_total"]
+            if (resumed_total > 0) != (current_run["resume_merged_event"] is not None):
+                raise ValueError(
+                    f"progress end event {index} precedes or omits its resume_merged marker"
+                )
+            if sum(event["buckets"].values()) != current_run["selected_total"]:
+                raise ValueError(
+                    f"progress end event {index} buckets do not account for the selected candidates"
+                )
+            resume_event = current_run["resume_event"]
+            resumed_total = 0 if resume_event is None else resume_event["resumed_total"]
+            prior_buckets = {
+                identity: history[-1][0]
+                for identity, history in observed.items()
+                if identity not in current_run["candidate_events"] and history
+            }
+            pilot_r2_evidence.validate_pilot_end_accounting(
+                selected_order=selected_ids,
+                candidate_events=list(current_run["candidate_events"].values()),
+                prior_buckets=prior_buckets,
+                pending_total=current_run["pending_total"],
+                resumed_total=resumed_total,
+                end_buckets=event["buckets"],
+                context=f"progress end event {index}",
+                require_prefix_indexes=True,
+            )
+            if current_run["sweep_complete"]:
+                expected_buckets = {name: 0 for name in MUTATION_BUCKETS}
+                for identity in selected_ids:
+                    history = observed.get(identity)
+                    if not history:
+                        raise ValueError(
+                            f"progress end event {index} has no disposition for selected candidate {identity}"
+                        )
+                    expected_buckets[history[-1][0]] += 1
+                if event["buckets"] != expected_buckets:
+                    raise ValueError(
+                        f"progress end event {index} buckets differ from its merged candidate events"
+                    )
             current_run["end"] = event
         elif kind == "resume":
             if (
@@ -723,15 +966,28 @@ def _check_progress(
             if (
                 current_run["end"] is None
                 or type(event.get("exit_code")) is not int
-                or event.get("destination") is not None
-                or event.get("outcome") != summary_r2.get("status")
-                or event.get("reason_code") != summary_r2.get("reason_code")
                 or not _valid_progress_timing(event)
             ):
                 raise ValueError(f"progress terminal event {index} is not a pilot-only completion")
+            pilot_r2_evidence.validate_pilot_terminal_event(
+                event,
+                context=f"progress terminal event {index}",
+                end_buckets=current_run["end"]["buckets"],
+            )
+            if event["exit_code"] == 6 and not current_run["sweep_complete"]:
+                raise ValueError(
+                    f"progress terminal event {index} claims completion with missing candidates"
+                )
             current_run["terminal_exit"] = event["exit_code"]
+            current_run["terminal_event"] = event
         elif kind == "resume_merged":
-            if current_run is None or current_run["end"] is None or current_run["terminal_exit"] is not None:
+            if (
+                current_run is None
+                or not current_run["candidates_seen"]
+                or not current_run["baseline_seen"]
+                or current_run["end"] is not None
+                or current_run["terminal_exit"] is not None
+            ):
                 raise ValueError(f"progress resume_merged event {index} is out of run order")
             resume_event = current_run["resume_event"]
             if (
@@ -749,6 +1005,19 @@ def _check_progress(
             raise ValueError(f"progress event {index} follows the mutation sweep end")
     if not runs:
         raise ValueError("progress has no run header")
+    for run_number, run in enumerate(runs, start=1):
+        if not run["candidates_seen"]:
+            continue
+        resume_event = run["resume_event"]
+        resumed_total = 0 if resume_event is None else resume_event["resumed_total"]
+        pilot_r2_evidence.validate_pilot_resume_queue(
+            selected_order=selected_ids,
+            prior_dispositions=run["prior_candidate_ids"],
+            candidate_events=list(run["candidate_events"].values()),
+            pending_total=run["pending_total"],
+            resumed_total=resumed_total,
+            context=f"progress run {run_number}",
+        )
     final_run = runs[-1]
     resume_event = final_run["resume_event"]
     resumed_total = 0 if resume_event is None else resume_event["resumed_total"]
@@ -760,8 +1029,16 @@ def _check_progress(
         or final_run["end"] is None
         or final_run["terminal_exit"] != 6
         or len(final_run["candidate_ids"]) != final_run["pending_total"]
+        or not final_run["sweep_complete"]
     ):
         raise ValueError("final progress run is not a complete exit-6 pilot")
+    final_terminal = final_run["terminal_event"]
+    if (
+        final_terminal is None
+        or final_terminal.get("outcome") != summary_r2.get("status")
+        or final_terminal.get("reason_code") != summary_r2.get("reason_code")
+    ):
+        raise ValueError("final pilot terminal verdict differs from the validated summary")
     final_positions = [selected_ids.index(identity) for identity in final_run["candidate_ids"]]
     if final_positions != sorted(final_positions):
         raise ValueError("final progress candidate order differs from the selected plan order")
@@ -776,6 +1053,8 @@ def _check_progress(
         state_liveness = state_evidence["liveness_resource_evidence"]
         if latest_liveness.get(identity) != state_liveness:
             raise ValueError(f"latest progress liveness evidence differs from state for candidate {identity}")
+        if latest_cost_resources.get(identity) != state_evidence["cost_resources"]:
+            raise ValueError(f"latest progress cost measurements differ from state for candidate {identity}")
         if outcome["bucket"] == "hung" and (
             not _valid_hung_resource_evidence(latest_liveness.get(identity))
             or latest_liveness[identity] != state_liveness
@@ -797,7 +1076,8 @@ def verify_pilot(
     expected_wheel_sha256: str,
     expected_exit_code: int,
     repo_root: Path,
-) -> None:
+    r2_manifest_path: Path,
+) -> dict[str, Any]:
     if _HEX40.fullmatch(expected_commit) is None or _HEX40.fullmatch(expected_tree) is None:
         raise ValueError("expected commit and tree must be full lowercase Git ids")
     if type(expected_exit_code) is not int or expected_exit_code != 6:
@@ -826,7 +1106,7 @@ def verify_pilot(
     summary = _json(summary_raw, label="pilot summary")
     if not isinstance(summary, dict):
         raise ValueError("pilot summary is not an object")
-    if summary.get("schema") != "assay-pilot-summary/1":
+    if summary.get("schema") != "assay-pilot-summary/2":
         raise ValueError("pilot summary has an unknown schema")
     if summary.get("qualifying") is not False or summary.get("completed") is not True:
         raise ValueError("pilot summary is not a complete non-qualifying measurement")
@@ -836,7 +1116,7 @@ def verify_pilot(
         "schema", "qualifying", "completed", "lane", "commit", "jobs",
         "requested", "selection_sha256", "judge_sha256",
         "candidates_file_sha256", "state_dir", "r0", "r1", "r2", "r3",
-        "buckets", "candidates", "unresolved",
+        "r2_command", "buckets", "candidates", "unresolved",
     }:
         raise ValueError("pilot summary has missing or unknown fields")
     if summary.get("lane") != LANE or summary.get("commit") != commit:
@@ -860,6 +1140,13 @@ def verify_pilot(
         raise ValueError("pilot summary has no completed R2 outcome")
     if r2.get("reason_code") is not None and not isinstance(r2.get("reason_code"), str):
         raise ValueError("pilot summary R2 reason_code is malformed")
+    r2_baselines = pilot_r2_evidence.validate_r2_command(
+        summary.get("r2_command"),
+        repo_root=repo_root,
+        expected_commit=commit,
+        expected_lane=LANE,
+        manifest_path=r2_manifest_path,
+    )
     if summary.get("unresolved") != []:
         raise ValueError("pilot summary has unresolved selected candidates")
     raw_buckets = summary.get("buckets")
@@ -902,12 +1189,15 @@ def verify_pilot(
     if r2 != expected_r2:
         raise ValueError("pilot R2 result differs from the validated candidate outcomes")
 
+    state_snapshot: dict[str, Any] = {}
     expected_judge_sha256, state_resources_by_id = _check_pilot_state(
         state_dir,
         selected_ids=selected_ids,
         plan_by_id=plan_by_id,
         outcome_by_id=outcome_by_id,
         deadline_sha256=deadline_sha256,
+        r2_baselines=r2_baselines,
+        artifact_snapshot=state_snapshot,
     )
     if summary.get("judge_sha256") != expected_judge_sha256:
         raise ValueError("pilot summary judge_sha256 differs from state and progress")
@@ -922,6 +1212,13 @@ def verify_pilot(
         state_resources_by_id=state_resources_by_id,
         summary_r2=r2,
     )
+    return {
+        "manifest": {
+            "identity": r2_baselines["manifest_identity"],
+            "sha256": r2_baselines["manifest_sha256"],
+        },
+        "state_snapshot": state_snapshot,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -930,10 +1227,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
+    parser.add_argument("--run-log", type=Path, required=True)
     parser.add_argument("--progress", type=Path, required=True)
+    parser.add_argument("--r2-manifest", type=Path, required=True)
     parser.add_argument("--deadline", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--verdict", type=Path, required=True)
+    parser.add_argument("--attestation", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--expected-tree", required=True)
@@ -941,26 +1241,109 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-exit-code", required=True, type=int)
     args = parser.parse_args(argv)
     try:
-        if args.verdict.exists() or args.verdict.is_symlink():
-            raise ValueError("pilot created a verdict artifact; B131 pilot is measurement only")
-        verify_pilot(
-            plan_raw=_read_bytes(args.plan, maximum=_MAX_JSON_BYTES),
-            selection_raw=_read_bytes(args.selection, maximum=_MAX_JSON_BYTES),
-            candidates_raw=_read_bytes(args.candidates, maximum=common._CANDIDATE_FILE_LIMIT),
-            summary_raw=_read_bytes(args.summary, maximum=_MAX_JSON_BYTES),
-            progress_raw=_read_bytes(args.progress, maximum=_MAX_PROGRESS_BYTES),
-            deadline_raw=_read_bytes(args.deadline, maximum=_MAX_DEADLINE_BYTES),
+        pilot_r2_snapshot.path_is_absent(args.verdict)
+        input_identities: dict[str, dict[str, Any]] = {}
+        plan_identity: dict[str, Any] = {}
+        plan_raw = _read_bytes(
+            args.plan, maximum=_MAX_JSON_BYTES, snapshot_out=plan_identity
+        )
+        input_identities["plan"] = plan_identity.copy()
+        selection_identity: dict[str, Any] = {}
+        selection_raw = _read_bytes(
+            args.selection, maximum=_MAX_JSON_BYTES, snapshot_out=selection_identity
+        )
+        input_identities["selection"] = selection_identity.copy()
+        candidates_identity: dict[str, Any] = {}
+        candidates_raw = _read_bytes(
+            args.candidates,
+            maximum=common._CANDIDATE_FILE_LIMIT,
+            snapshot_out=candidates_identity,
+        )
+        input_identities["candidate file"] = candidates_identity.copy()
+        summary_identity: dict[str, Any] = {}
+        summary_raw = _read_bytes(
+            args.summary, maximum=_MAX_JSON_BYTES, snapshot_out=summary_identity
+        )
+        input_identities["summary"] = summary_identity.copy()
+        run_log_identity: dict[str, Any] = {}
+        run_log_raw = _read_bytes(
+            args.run_log, maximum=_MAX_RUN_LOG_BYTES, snapshot_out=run_log_identity
+        )
+        input_identities["run log"] = run_log_identity.copy()
+        progress_identity: dict[str, Any] = {}
+        progress_raw = _read_bytes(
+            args.progress, maximum=_MAX_PROGRESS_BYTES, snapshot_out=progress_identity
+        )
+        input_identities["progress"] = progress_identity.copy()
+        deadline_identity: dict[str, Any] = {}
+        deadline_raw = _read_bytes(
+            args.deadline, maximum=_MAX_DEADLINE_BYTES, snapshot_out=deadline_identity
+        )
+        input_identities["deadline"] = deadline_identity.copy()
+        snapshot = verify_pilot(
+            plan_raw=plan_raw,
+            selection_raw=selection_raw,
+            candidates_raw=candidates_raw,
+            summary_raw=summary_raw,
+            progress_raw=progress_raw,
+            deadline_raw=deadline_raw,
             state_dir=args.state_dir,
             expected_commit=args.expected_commit,
             expected_tree=args.expected_tree,
             expected_wheel_sha256=args.expected_wheel_sha256,
             expected_exit_code=args.expected_exit_code,
             repo_root=args.repo_root,
+            r2_manifest_path=args.r2_manifest,
+        )
+        attested_snapshot = _verify_unchanged_evidence(
+            inputs=[
+                ("plan", args.plan, plan_raw, _MAX_JSON_BYTES, input_identities["plan"]),
+                (
+                    "selection", args.selection, selection_raw, _MAX_JSON_BYTES,
+                    input_identities["selection"],
+                ),
+                (
+                    "candidate file",
+                    args.candidates,
+                    candidates_raw,
+                    common._CANDIDATE_FILE_LIMIT,
+                    input_identities["candidate file"],
+                ),
+                (
+                    "summary", args.summary, summary_raw, _MAX_JSON_BYTES,
+                    input_identities["summary"],
+                ),
+                (
+                    "run log", args.run_log, run_log_raw, _MAX_RUN_LOG_BYTES,
+                    input_identities["run log"],
+                ),
+                (
+                    "progress", args.progress, progress_raw, _MAX_PROGRESS_BYTES,
+                    input_identities["progress"],
+                ),
+                (
+                    "deadline", args.deadline, deadline_raw, _MAX_DEADLINE_BYTES,
+                    input_identities["deadline"],
+                ),
+            ],
+            manifest_path=args.r2_manifest,
+            manifest_snapshot=snapshot["manifest"],
+            state_dir=args.state_dir,
+            state_snapshot=snapshot["state_snapshot"],
+            verdict_path=args.verdict,
+        )
+        attestation_sha256 = _write_attestation(
+            args.attestation,
+            {
+                "schema": "assay-analysis-r2-pilot-evidence-attestation/2",
+                "commit": args.expected_commit,
+                **attested_snapshot,
+            },
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"analysis_r2_pilot_check: {exc}", file=sys.stderr)
         return 2
-    print("ANALYSIS_R2_PILOT_VERIFIED=1")
+    print(f"ANALYSIS_R2_PILOT_VERIFIED={attestation_sha256}")
     return 0
 
 

@@ -5,11 +5,13 @@ import importlib.util
 import json
 import os
 import argparse
+import shutil
 import stat
 import subprocess
 import sys
 import threading
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -27,6 +29,7 @@ from assay.mutation import (
     plan_sha256,
     valid_hung_resource_evidence,
 )
+from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT
 
 
@@ -228,6 +231,12 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
 """,
         encoding="utf-8",
     )
+    project_assay = repo / "assay"
+    shutil.copyfile(PROJECT_ROOT / "pyproject.toml", project_assay / "pyproject.toml")
+    (project_assay / "tests").mkdir()
+    (project_assay / "tests" / "test_sample.py").write_text(
+        "def test_sample():\n    assert True\n", encoding="utf-8"
+    )
     targets = []
     for path, raw_source in ((GO_PATH, go_source), (BOOL_PATH, bool_source)):
         text = raw_source.decode("utf-8")
@@ -273,7 +282,51 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
     commit = _git(repo, "rev-parse", "HEAD")
     tree = _git(repo, "rev-parse", "HEAD^{tree}")
 
-    project_assay = repo / "assay"
+    manifest_nodes = ["tests/test_sample.py::test_sample"]
+    r2_manifest_path = project_assay / ".assay" / "r2-manifest-b110-pilot.txt"
+    r2_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    r2_manifest_path.write_bytes(("\n".join(manifest_nodes) + "\n").encode())
+    lane_config = tomllib.loads((project_assay / "assay.toml").read_text(encoding="utf-8"))
+    declared_argv = lane_config["lanes"]["self-qualification"]["argv"]
+    baseline = {
+        "collection_count": len(manifest_nodes),
+        "collection_sha256": collection_digest(manifest_nodes),
+        "duplicates": 0,
+        "hook_fingerprint_sha256": "e" * 64,
+        "hook_count": 1,
+        "runtime_fingerprint_sha256": "f" * 64,
+    }
+    r2_command = {
+        "transform": R2_TRANSFORM_ID,
+        "argv_declared": declared_argv,
+        "argv_transformed": list(transform_argv(declared_argv)),
+        "appended": list(R2_APPENDED),
+        "cwd": "assay",
+        "config_sha256": hashlib.sha256(
+            (project_assay / "pyproject.toml").read_bytes()
+        ).hexdigest(),
+        "coverage_baseline": baseline,
+        "r2_baseline": {**baseline, "wall_s": 1.25},
+    }
+    report_checker = _load_module("b110_pilot_report_check_fixture", CHECKER_PATH)
+    r2_baselines = report_checker.pilot_r2_evidence.validate_r2_command(
+        r2_command,
+        repo_root=repo,
+        expected_commit=commit,
+        expected_lane="self-qualification",
+        manifest_path=r2_manifest_path,
+    )
+    cost_resources = {
+        "cpu_seconds": None,
+        "peak_rss_bytes": None,
+        "phase_seconds": {
+            "materialize": 0.1,
+            "command": 0.2,
+            "integrity": 0.1,
+            "teardown": 0.1,
+        },
+        "startup_seconds": None,
+    }
     artifact_dir = project_assay / ".assay"
     state_dir = artifact_dir / "b110-pilot-state"
     state_dir.mkdir(parents=True)
@@ -371,12 +424,13 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
             "execution": {"mode": "full"},
             "evidence": {
                 "command": "r2",
-                "collection_count": 1,
-                "collection_sha256": "d" * 64,
-                "hook_fingerprint_sha256": "e" * 64,
+                "collection_count": r2_command["r2_baseline"]["collection_count"],
+                "collection_sha256": r2_command["r2_baseline"]["collection_sha256"],
+                "hook_fingerprint_sha256": r2_command["r2_baseline"]["hook_fingerprint_sha256"],
                 "started_count": None,
                 "failed_call_index": None,
             },
+            "resources": cost_resources,
             "campaign_deadline_sha256": deadline_sha256,
             "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
         }
@@ -390,7 +444,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
     }
     (state_dir / "PILOT-STATE").write_text(json.dumps(sentinel) + "\n", encoding="utf-8")
     summary = {
-        "schema": "assay-pilot-summary/1",
+        "schema": "assay-pilot-summary/2",
         "qualifying": False,
         "completed": True,
         "lane": "self-qualification",
@@ -404,6 +458,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         "r0": "PASS",
         "r1": "PASS",
         "r2": {"status": "FAIL", "reason_code": "MUTANTS_SURVIVED"},
+        "r2_command": r2_command,
         "r3": "not-run: pilot",
         "buckets": buckets,
         "candidates": candidate_rows,
@@ -457,6 +512,9 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
                 "execution_mode": row["execution_mode"],
                 "mutated_file_sha256": plan_by_id[row["id"]]["mutated_file_sha256"],
                 "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
+                "elapsed_seconds": 2.5,
+                "tests_completed": None,
+                **cost_resources,
             }
             for index, row in enumerate(candidate_rows)
         ],
@@ -488,11 +546,15 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         "selected_ids": selected_ids,
         "plan_rows": rows,
         "replacement_sha256_by_id": replacement_sha256_by_id,
+        "r2_baselines": r2_baselines,
         "selection_sha256": selection_sha256,
         "deadline_sha256": deadline_sha256,
         "summary": summary,
         "deadline": deadline_path.relative_to(project_assay),
         "attempt_window": artifact_dir / "b110-pilot-attempt-window.json",
+        "r2_manifest_path": r2_manifest_path,
+        "r2_command": r2_command,
+        "cost_resources": cost_resources,
     }
 
 
@@ -527,6 +589,7 @@ def _verify_fixture_with_first_hung(
         deadline_sha256=fixture["deadline_sha256"],
         expected_judge_sha256="b" * 64,
         replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+        r2_baselines=fixture["r2_baselines"],
     )
 
 
@@ -579,6 +642,7 @@ def test_pilot_state_requires_collection_evidence_for_a_full_kill(tmp_path: Path
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -609,7 +673,7 @@ def test_pilot_state_rejects_r2_collection_evidence_for_a_full_kill(tmp_path: Pa
     assert record["evidence"]["command"] == "r2"
     state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="collection evidence command does not match execution mode"):
+    with pytest.raises(ValueError, match="full kill .* requires declared-command evidence"):
         checker._verify_state(
             fixture["state_dir"],
             selected_ids=fixture["selected_ids"],
@@ -619,6 +683,59 @@ def test_pilot_state_rejects_r2_collection_evidence_for_a_full_kill(tmp_path: Pa
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
+        )
+
+
+def test_pilot_state_rejects_a_full_kill_witness_absent_from_the_r2_manifest(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    checker = _load_module("b110_pilot_report_check_uncollected_witness_test", CHECKER_PATH)
+    identity = fixture["selected_ids"][0]
+    dispositions = {
+        row["id"]: dict(row) for row in fixture["summary"]["candidates"]
+    }
+    dispositions[identity].update({"bucket": "killed", "execution_mode": "full"})
+    state_path = fixture["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["outcome_bucket"] = "killed"
+    record["terminal_result"] = {
+        "outcome": "FAIL",
+        "reason_code": "COMMAND_FAILED",
+        "returncode": 1,
+    }
+    record["execution"] = {
+        "mode": "full",
+        "witness": {
+            "node_id": "invented::test_not_collected",
+            "when": "call",
+            "outcome": "failed",
+            "session_exit_status": 1,
+            "process_exit_status": 1,
+        },
+    }
+    record["evidence"].update({
+        "command": "declared",
+        "collection_count": fixture["r2_baselines"]["coverage_baseline"]["collection_count"],
+        "collection_sha256": fixture["r2_baselines"]["coverage_baseline"]["collection_sha256"],
+        "hook_fingerprint_sha256": fixture["r2_baselines"]["coverage_baseline"]["hook_fingerprint_sha256"],
+        "started_count": None,
+        "failed_call_index": None,
+    })
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="witness node is not in the R2 manifest"):
+        checker._verify_state(
+            fixture["state_dir"],
+            selected_ids=fixture["selected_ids"],
+            rows=fixture["plan_rows"],
+            dispositions=dispositions,
+            selection_sha256=fixture["selection_sha256"],
+            deadline_sha256=fixture["deadline_sha256"],
+            expected_judge_sha256="b" * 64,
+            replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -672,6 +789,7 @@ def test_pilot_state_rejects_non_kill_execution_witness(
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -713,7 +831,7 @@ def test_pilot_state_rejects_witness_cold_kill_without_failed_prefix(
     })
     state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="cold-witness kill lacks R2 failed-prefix evidence"):
+    with pytest.raises(ValueError, match="cold-witness kill .* not the manifest node"):
         checker._verify_state(
             fixture["state_dir"],
             selected_ids=fixture["selected_ids"],
@@ -723,6 +841,7 @@ def test_pilot_state_rejects_witness_cold_kill_without_failed_prefix(
             deadline_sha256=fixture["deadline_sha256"],
             expected_judge_sha256="b" * 64,
             replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
         )
 
 
@@ -750,7 +869,7 @@ def test_pilot_state_accepts_witness_cold_kill_with_failed_prefix(
     record["execution"] = {
         "mode": "witness-cold",
         "witness": {
-            "node_id": "test_contract",
+            "node_id": fixture["r2_baselines"]["nodes"][0],
             "when": "call",
             "outcome": "failed",
             "session_exit_status": 1,
@@ -773,6 +892,7 @@ def test_pilot_state_accepts_witness_cold_kill_with_failed_prefix(
         deadline_sha256=fixture["deadline_sha256"],
         expected_judge_sha256="b" * 64,
         replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+        r2_baselines=fixture["r2_baselines"],
     )
     assert records[identity]["execution"]["mode"] == "witness-cold"
 
@@ -790,6 +910,9 @@ def test_hung_progress_must_carry_the_validated_liveness_trace(tmp_path: Path):
         "execution_mode": record["execution"]["mode"],
         "mutated_file_sha256": record["mutated_file_sha256"],
         "resource_limit_evidence": record["resource_limit_evidence"],
+        "elapsed_seconds": 2.5,
+        "tests_completed": None,
+        **record["resources"],
     }
     progress_facts = {
         "resumed_ids": set(),
@@ -1056,6 +1179,31 @@ def _load_host_checker():
     return _load_module("b110_pilot_host_check_tests", HOST_CHECK_PATH)
 
 
+def test_b110_snapshot_inventory_v2_adds_the_r2_manifest_and_keeps_v1_readable():
+    host = _load_host_checker()
+    candidate_ids = {"c" * 64}
+    commit = "a" * 40
+    assert ".assay/r2-manifest-b110-pilot.txt" in host._expected_artifacts(
+        candidate_ids, commit
+    )
+    assert ".assay/r2-manifest-b110-pilot.txt" not in host._expected_artifacts(
+        candidate_ids, commit, inventory_version=1
+    )
+    for version in (1, 2):
+        receipt = {
+            "schema": f"assay-b110-pilot-evidence-receipt/{version}",
+            "campaign": f"b110-pilot-{commit[:12]}",
+            "commit": commit,
+            "tree": "b" * 40,
+            "manifest_sha256": "d" * 64,
+            "snapshot_sha256": "e" * 64,
+        }
+        parsed = host._parse_snapshot_receipt(
+            (json.dumps(receipt, sort_keys=True) + "\n").encode()
+        )
+        assert host._receipt_inventory_version(parsed) == version
+
+
 def _write_resumed_progress(
     fixture: dict[str, object], *, corrupt_end_buckets: bool = False, omit_prior_candidate: bool = False
 ) -> None:
@@ -1067,10 +1215,9 @@ def _write_resumed_progress(
     selected = list(fixture["selected_ids"])
     resumed_id = selected[0]
     pending_ids = selected[1:]
-    pending_buckets = {name: 0 for name in MUTATION_BUCKETS}
-    for identity in pending_ids:
-        pending_buckets[dispositions[identity]["bucket"]] += 1
-    end_buckets = dict(pending_buckets)
+    end_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    for identity in selected:
+        end_buckets[dispositions[identity]["bucket"]] += 1
     if corrupt_end_buckets:
         end_buckets["survived"] = max(0, end_buckets["survived"] - 1)
     events = [
@@ -1105,6 +1252,9 @@ def _write_resumed_progress(
                 "execution_mode": record["execution"]["mode"],
                 "mutated_file_sha256": record["mutated_file_sha256"],
                 "resource_limit_evidence": record["resource_limit_evidence"],
+                "elapsed_seconds": 2.5,
+                "tests_completed": None,
+                **record["resources"],
             }
         )
     events.extend(
@@ -1144,17 +1294,20 @@ def _write_resumed_progress(
             "execution_mode": dispositions[identity]["execution_mode"],
             "mutated_file_sha256": rows_by_id[identity]["mutated_file_sha256"],
             "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
+            "elapsed_seconds": 2.5,
+            "tests_completed": None,
+            **fixture["cost_resources"],
         }
         for index, identity in enumerate(pending_ids)
     )
     events.extend(
         [
+            {"event": "resume_merged", "resumed_total": 1},
             {
-                "event": "end", "candidate_total": len(pending_ids),
+                "event": "end", "candidate_total": len(selected),
                 "buckets": end_buckets, "reason": None,
                 "emitted_at": "2026-10-09T00:00:00Z", "elapsed_s": 0.9,
             },
-            {"event": "resume_merged", "resumed_total": 1},
             {
                 "event": "verdict_written",
                 "outcome": "FAIL",
@@ -1172,6 +1325,228 @@ def _write_resumed_progress(
     )
 
 
+def _write_interrupted_resumed_progress(fixture: dict[str, object]) -> None:
+    _write_resumed_progress(fixture)
+    artifact_dir = fixture["artifact_dir"]
+    events = [
+        json.loads(line)
+        for line in (artifact_dir / "progress-b110-pilot.jsonl").read_text().splitlines()
+    ]
+    run_positions = [
+        index for index, event in enumerate(events) if event.get("event") == "run"
+    ]
+    assert len(run_positions) == 2
+    selected = list(fixture["selected_ids"])
+    assert len(selected) >= 4
+
+    first_run = events[run_positions[0] : run_positions[1]]
+    second_attempt = events[run_positions[1] :]
+    second_candidates = [
+        event for event in second_attempt if event.get("event") == "candidate"
+    ]
+    sparse_candidate = next(
+        event for event in second_candidates if event["candidate_index"] == 1
+    )
+    assert sparse_candidate["candidate_id"] == selected[2]
+    second_attempt = [
+        event for event in second_attempt
+        if event.get("event") not in {"resume_merged", "end", "verdict_written"}
+        and (event.get("event") != "candidate" or event is sparse_candidate)
+    ]
+
+    summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
+    second_resume = {
+        "event": "run",
+        "lane": "self-qualification",
+        "commit": fixture["commit"],
+        "rigor": ["R0", "R1", "R2"],
+    }
+    pending_ids = [identity for identity in selected if identity not in {selected[0], selected[2]}]
+    third_attempt: list[dict[str, object]] = [
+        second_resume,
+        {
+            "event": "resume",
+            "candidate_total": len(selected),
+            "resumed_total": 2,
+            "rejected_total": 0,
+            "rejudged_total": 0,
+        },
+        {
+            "event": "candidates",
+            "candidate_total": len(selected),
+            "selected_total": len(selected),
+            "pending_total": len(pending_ids),
+            "commit": fixture["commit"],
+            "judge_sha256": "b" * 64,
+            "selection_sha256": fixture["selection_sha256"],
+        },
+        {
+            "candidate_index": -1,
+            "candidate_total": len(selected),
+            "event": "baseline",
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        },
+    ]
+    for index, identity in enumerate(pending_ids):
+        event = dict(next(item for item in second_candidates if item["candidate_id"] == identity))
+        event["candidate_index"] = index
+        event["candidate_total"] = len(pending_ids)
+        third_attempt.append(event)
+    buckets = {name: 0 for name in MUTATION_BUCKETS}
+    for row in summary["candidates"]:
+        buckets[row["bucket"]] += 1
+    third_attempt.extend(
+        [
+            {"event": "resume_merged", "resumed_total": 2},
+            {
+                "event": "end",
+                "candidate_total": len(selected),
+                "buckets": buckets,
+                "reason": None,
+            },
+            {
+                "event": "verdict_written",
+                "outcome": summary["r2"]["status"],
+                "reason_code": summary["r2"]["reason_code"],
+                "exit_code": 6,
+                "destination": None,
+            },
+        ]
+    )
+    final_events = _producer_progress_events(first_run + second_attempt + third_attempt)
+    (artifact_dir / "progress-b110-pilot.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in final_events), encoding="utf-8"
+    )
+
+
+def _write_interrupted_resumed_progress_with_incomplete_end(
+    fixture: dict[str, object], *, corrupt_reused_bucket: bool = False
+) -> None:
+    _write_interrupted_resumed_progress(fixture)
+    artifact_dir = fixture["artifact_dir"]
+    path = artifact_dir / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    starts = [index for index, event in enumerate(events) if event.get("event") == "run"]
+    assert len(starts) == 3
+    first_run = events[starts[0] : starts[1]]
+    second_attempt = events[starts[1] : starts[2]]
+    third_attempt = events[starts[2] :]
+    selected = list(fixture["selected_ids"])
+    summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
+    dispositions = {row["id"]: row["bucket"] for row in summary["candidates"]}
+    current_event = next(event for event in second_attempt if event.get("event") == "candidate")
+    assert current_event["candidate_id"] == selected[2]
+    buckets = {name: 0 for name in MUTATION_BUCKETS}
+    buckets[dispositions[selected[0]]] += 1  # reused from attempt one
+    buckets[current_event["outcome_bucket"]] += 1
+    buckets["budget_exceeded"] += len(selected) - 2
+    if corrupt_reused_bucket:
+        reused_bucket = dispositions[selected[0]]
+        assert buckets[reused_bucket] > 0
+        buckets[reused_bucket] -= 1
+        buckets["budget_exceeded"] += 1
+    second_attempt.extend(
+        [
+            {"event": "resume_merged", "resumed_total": 1},
+            {
+                "event": "end",
+                "candidate_total": len(selected),
+                "buckets": buckets,
+                "reason": None,
+            },
+            {
+                "event": "verdict_written",
+                "outcome": "BUDGET_EXCEEDED",
+                "reason_code": "LANE_TIMEOUT",
+                "exit_code": 4,
+                "destination": None,
+            },
+        ]
+    )
+    final_events = _producer_progress_events(first_run + second_attempt + third_attempt)
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in final_events), encoding="utf-8"
+    )
+
+
+def _prepend_incomplete_ended_attempt(
+    fixture: dict[str, object], *, terminal_damage: str | None = None
+) -> None:
+    artifact_dir = fixture["artifact_dir"]
+    path = artifact_dir / "progress-b110-pilot.jsonl"
+    final_events = [json.loads(line) for line in path.read_text().splitlines()]
+    selected = list(fixture["selected_ids"])
+    final_candidates = [event for event in final_events if event.get("event") == "candidate"]
+    assert len(selected) >= 2
+    sparse_candidate = dict(final_candidates[1])
+    sparse_candidate["candidate_index"] = 1
+    sparse_candidate["candidate_total"] = len(selected)
+    buckets = {name: 0 for name in MUTATION_BUCKETS}
+    buckets[sparse_candidate["outcome_bucket"]] = 1
+    buckets["budget_exceeded"] += len(selected) - 1
+    prior_events: list[dict[str, object]] = [
+        {
+            "event": "run",
+            "lane": "self-qualification",
+            "commit": fixture["commit"],
+            "rigor": ["R0", "R1", "R2"],
+        },
+        {
+            "event": "candidates",
+            "commit": fixture["commit"],
+            "candidate_total": len(selected),
+            "selected_total": len(selected),
+            "pending_total": len(selected),
+            "judge_sha256": "b" * 64,
+            "selection_sha256": fixture["selection_sha256"],
+        },
+        {
+            "event": "baseline",
+            "candidate_index": -1,
+            "candidate_total": len(selected),
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        },
+        sparse_candidate,
+        {
+            "event": "end",
+            "candidate_total": len(selected),
+            "buckets": buckets,
+            "reason": None,
+        },
+        {
+            "event": "verdict_written",
+            "outcome": "BUDGET_EXCEEDED",
+            "reason_code": "LANE_TIMEOUT",
+            "exit_code": 4,
+            "destination": None,
+        },
+    ]
+    if terminal_damage == "impossible-exit":
+        prior_events[-1]["exit_code"] = 99
+    elif terminal_damage == "destination":
+        prior_events[-1]["destination"] = "/tmp/verdict.json"
+    elif terminal_damage == "contradictory-pass":
+        prior_events[-1].update(
+            outcome="PASS", reason_code=None, exit_code=2
+        )
+    elif terminal_damage == "fail-despite-budget":
+        prior_events[-1].update(
+            outcome="FAIL", reason_code="MUTANTS_SURVIVED", exit_code=1
+        )
+    all_events = _producer_progress_events(prior_events + final_events)
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in all_events), encoding="utf-8"
+    )
+
+
 def test_b110_pilot_checker_attests_a_complete_source_bound_run(tmp_path: Path):
     fixture = _fixture(tmp_path)
 
@@ -1181,6 +1556,28 @@ def test_b110_pilot_checker_attests_a_complete_source_bound_run(tmp_path: Path):
     assert "B110_PILOT_VERIFIED=1" in result.stdout
     assert "B110_PILOT_ATTESTATION_SHA256=" in result.stdout
     assert (fixture["artifact_dir"] / "b110-pilot-artifacts.sha256").is_file()
+
+
+def test_b110_pilot_checker_rejects_candidate_indexes_swapped_between_identities(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    candidates = [event for event in events if event.get("event") == "candidate"]
+    assert len(candidates) >= 2
+    first_index = candidates[0]["candidate_index"]
+    candidates[0]["candidate_index"] = candidates[1]["candidate_index"]
+    candidates[1]["candidate_index"] = first_index
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in _producer_progress_events(events)),
+        encoding="utf-8",
+    )
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert "candidate indexes contradict prior resume dispositions" in result.stderr
 
 
 def test_progress_candidate_total_is_the_selected_pilot_size_not_full_plan(tmp_path: Path):
@@ -1255,6 +1652,7 @@ def test_progress_candidate_total_is_the_selected_pilot_size_not_full_plan(tmp_p
         expected_commit=commit,
         selection_sha256=selection_digest,
         selected_ids=set(identities),
+        selected_order=identities,
         plan_rows=rows,
         plan_total=100,
         expected_judge_sha256="b" * 64,
@@ -2125,6 +2523,94 @@ def test_b110_pilot_checker_accepts_resume_only_with_same_judge_progress(tmp_pat
     assert "B110_PILOT_VERIFIED=1" in result.stdout
 
 
+def test_b110_pilot_checker_accepts_interrupted_resumed_attempt_with_sparse_indexes(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    _write_interrupted_resumed_progress(fixture)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert "B110_PILOT_VERIFIED=1" in result.stdout
+
+
+def test_b110_pilot_checker_accepts_incomplete_ended_prior_attempt_with_sparse_indexes(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    _prepend_incomplete_ended_attempt(fixture)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert "B110_PILOT_VERIFIED=1" in result.stdout
+
+
+def test_b110_pilot_checker_accepts_incomplete_resumed_attempt_end(tmp_path: Path):
+    fixture = _fixture(tmp_path)
+    _write_interrupted_resumed_progress_with_incomplete_end(fixture)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert "B110_PILOT_VERIFIED=1" in result.stdout
+
+
+def test_b110_pilot_checker_rejects_reused_outcome_reassigned_to_missing_candidates(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    _write_interrupted_resumed_progress_with_incomplete_end(
+        fixture, corrupt_reused_bucket=True
+    )
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert "end buckets cannot arise from its resume history" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected_error"),
+    [
+        ("impossible-exit", "prior pilot terminal verdict has an impossible exit code"),
+        ("destination", "prior pilot terminal verdict unexpectedly names an artifact destination"),
+        ("contradictory-pass", "PASS outcome contradicts its mutation sweep"),
+        (
+            "fail-despite-budget",
+            "terminal outcome is weaker than its mutation sweep",
+        ),
+    ],
+)
+def test_b110_pilot_checker_rejects_impossible_prior_terminal_records(
+    tmp_path: Path, damage: str, expected_error: str
+):
+    fixture = _fixture(tmp_path)
+    _prepend_incomplete_ended_attempt(fixture, terminal_damage=damage)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert expected_error in result.stderr
+
+
+@pytest.mark.parametrize("rigor", [["R2"], ["R0", "R1", "R2", "R3"]])
+def test_b110_pilot_checker_requires_exact_current_pilot_rigor(
+    tmp_path: Path, rigor: list[str]
+):
+    fixture = _fixture(tmp_path)
+    path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    next(event for event in events if event.get("event") == "run")["rigor"] = rigor
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert "run header does not bind the expected R2 source run" in result.stderr
+
+
 @pytest.mark.parametrize(
     "damage", ["pending-buckets", "missing-prior-candidate", "wrong-prior-selection"]
 )
@@ -2150,9 +2636,103 @@ def test_b110_pilot_checker_rejects_resume_progress_that_cannot_support_summary(
 
     assert result.returncode == 2
     if damage == "pending-buckets":
-        assert "pending totals disagree" in result.stderr
+        assert "end buckets disagree with its merged candidate events" in result.stderr
     else:
-        assert "no same-selection progress disposition" in result.stderr
+        assert "resume queue totals disagree with prior dispositions" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected_error"),
+    [
+        ("wrong-prior-commit", "resume queue totals disagree with prior dispositions"),
+        ("wrong-prior-totals", "prior pilot candidates event totals are invalid"),
+        ("candidate-after-end", "prior pilot candidate follows its end or terminal event"),
+        ("candidate-after-verdict", "prior pilot candidate follows its end or terminal event"),
+        ("contradictory-end", "prior pilot end total differs from its candidates event"),
+        ("wrong-prior-rigor", "resume queue totals disagree with prior dispositions"),
+        ("unsupported-prior-end", "prior pilot refused end event contradicts its candidates event"),
+    ],
+)
+def test_b110_pilot_checker_rejects_invalid_prior_resume_segments(
+    tmp_path: Path,
+    damage: str,
+    expected_error: str,
+):
+    fixture = _fixture(tmp_path)
+    _write_resumed_progress(
+        fixture,
+        omit_prior_candidate=damage == "unsupported-prior-end",
+    )
+    path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    prior_meta = next(event for event in events if event.get("event") == "candidates")
+    if damage == "wrong-prior-commit":
+        prior_meta["commit"] = "0" * 40
+    elif damage == "wrong-prior-totals":
+        prior_meta["candidate_total"] = 0
+    elif damage == "wrong-prior-rigor":
+        events[0]["rigor"] = ["R2"]
+    elif damage == "contradictory-end":
+        next_run = next(
+            index for index, event in enumerate(events)
+            if index > 0 and event.get("event") == "run"
+        )
+        events.insert(
+            next_run,
+            {
+                "event": "end",
+                "candidate_total": 0,
+                "buckets": {name: 0 for name in MUTATION_BUCKETS},
+                "reason": None,
+                "emitted_at": "2026-10-09T00:00:00Z",
+                "elapsed_s": 0.5,
+            },
+        )
+    elif damage == "unsupported-prior-end":
+        next_run = next(
+            index for index, event in enumerate(events)
+            if index > 0 and event.get("event") == "run"
+        )
+        events.insert(
+            next_run,
+            {
+                "event": "end",
+                "candidate_total": len(fixture["selected_ids"]),
+                "buckets": {name: 0 for name in MUTATION_BUCKETS},
+                "reason": "unsupported",
+                "emitted_at": "2026-10-09T00:00:00Z",
+                "elapsed_s": 0.5,
+            },
+        )
+    else:
+        prior_candidate = next(event for event in events if event.get("event") == "candidate")
+        marker = (
+            {
+                "event": "end",
+                "candidate_total": 1,
+                "buckets": {name: 0 for name in MUTATION_BUCKETS},
+                "reason": None,
+                "emitted_at": "2026-10-09T00:00:00Z",
+                "elapsed_s": 0.5,
+            }
+            if damage == "candidate-after-end"
+            else {
+                "event": "verdict_written",
+                "outcome": "PASS",
+                "reason_code": None,
+                "exit_code": 6,
+                "destination": None,
+                "emitted_at": "2026-10-09T00:00:01Z",
+                "elapsed_s": 0.6,
+            }
+        )
+        events.insert(events.index(prior_candidate), marker)
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert expected_error in result.stderr
 
 
 @pytest.mark.parametrize(

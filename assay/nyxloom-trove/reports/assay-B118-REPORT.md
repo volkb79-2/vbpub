@@ -1,4 +1,31 @@
-# B118 implementation report — P7c follow-up in progress
+# B118 implementation report — bounded pilot pending
+
+## Current integration status — 2026-10-10
+
+P7a/P7b/P7c are integrated in local `main`; the final integrated
+`tester-unified` gate passed on `b8713d5672c92ff323a832ae8de65d567493cf2e`
+and B114's MDT `smoke` passed (**119 passed, 6 skipped, 6 subtests**). The
+B105 preflight refused before launching its child at **1,280,720,896
+bytes** on `b8713d56`. A fresh retry on documentation-only descendant
+`595b4069` again refused before launch with **1,375,588,352 bytes** of headroom
+against the 2 GiB requirement
+(`/tmp/run-gate/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`).
+No B110 pilot or B105 R2 campaign ran. Retry after capacity returns; preserve
+all `.assay` state and do not treat the gate pass as pilot or qualification
+evidence.
+
+## Controller integration follow-up — interrupted resume checker (2026-10-10)
+
+The B131 integration's third exact-tree review found two B110 report-checker
+refusals after valid interrupted resumes: a resumed attempt may end before
+`resume_merged`, and concurrent workers may persist a sparse set of candidate
+indexes before interruption. The checker now allows both forms only when the
+prior segment has no completed `end`; a completed segment still needs the
+merge marker and full pending-index coverage. A three-attempt regression uses
+producer-shaped progress and verifies that the final resumed report is
+accepted. The combined B131/B110 focused suite passes 341 tests and the docs
+contract passes 56. Final exact-tree review, same-tip gates, and the B105
+bounded pilot remain pending.
 
 **Base:** `3589a57f1cf462f82aab0683a05dc0bda6be2c3c`  
 **P7a branch:** `assay-b118-p7-pilot`  
@@ -1123,3 +1150,17 @@ unchanged by review. The focused B131/B110 checker suites pass **123 tests**;
 Python compilation and `git diff --check` pass. Same-tip registered gates and
 both bounded pilot measurements remain pending; a separate RG89 `r1` gate was
 active at this checkpoint, so no B131 gate was launched concurrently.
+
+## Cross-project integration follow-up — B131 reviews seven–nine (2026-10-10)
+
+The later B131 integration reviews found that incomplete attempts could claim
+unavailable resumed candidate dispositions, B110 candidate indexes could be
+swapped between identities, and the registered B131 run log was not included
+in the host attestation. The shared resume-queue validator now binds sparse
+and prefix indexes to candidate identity and prior dispositions for every
+attempt, including interrupted attempts. B131 attestation schema 2 includes a
+snapshot and digest for `analysis-r2-pilot-run.log`, which the host rechecks
+after source verification. Producer-shaped rejection oracles cover these
+cases. Round-nine Sol xhigh review of the complete Assay diff accepted with no
+findings; static checks pass. The updated registered suite and B110 fixed
+pilot are still pending on this exact tree.
