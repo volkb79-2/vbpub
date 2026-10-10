@@ -112,7 +112,7 @@ def _resolve_peer_snapshot(
             (entry for entry in task_root.iterdir() if entry.name.isdecimal()),
             key=lambda entry: int(entry.name),
         )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ProcessLookupError) as exc:
         raise _PeerSnapshotChanged("peer thread directory disappeared") from exc
     except OSError as exc:
         raise ResourceObserverError("cannot enumerate authenticated peer threads") from exc
@@ -158,7 +158,7 @@ def _resolve_peer_snapshot(
 def _proc_start_ticks(path: Path) -> int:
     try:
         text = path.read_text(encoding="ascii")
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ProcessLookupError) as exc:
         raise _PeerSnapshotChanged("peer process stat file disappeared") from exc
     except (OSError, UnicodeError) as exc:
         raise ResourceObserverError("cannot read authenticated peer process identity") from exc
@@ -179,7 +179,7 @@ def _task_facts(task_dir: Path) -> dict[str, Any]:
     cgroup_file = task_dir / "cgroup"
     try:
         cgroup_text = cgroup_file.read_text(encoding="ascii")
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ProcessLookupError) as exc:
         raise _PeerSnapshotChanged("peer thread cgroup file disappeared") from exc
     except (OSError, UnicodeError) as exc:
         raise ResourceObserverError("cannot read peer thread cgroup identity") from exc

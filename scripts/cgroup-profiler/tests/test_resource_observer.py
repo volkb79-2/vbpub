@@ -630,6 +630,36 @@ def test_observation_retries_peer_status_process_lookup_race_once(tmp_path, monk
     assert reads == 1
 
 
+@pytest.mark.parametrize(
+    ("method_name", "relative_path"),
+    [
+        ("read_text", "4242/stat"),
+        ("iterdir", "4242/task"),
+        ("read_text", "4242/task/4242/cgroup"),
+    ],
+)
+def test_observation_retries_other_peer_procfs_esrch_once(
+    tmp_path, monkeypatch, method_name, relative_path
+):
+    kwargs = _fixture(tmp_path)
+    vanished_path = Path(kwargs["proc_root"]) / relative_path
+    original = getattr(Path, method_name)
+    reads = 0
+
+    def lookup_race(path, *args, **call_kwargs):
+        nonlocal reads
+        if path == vanished_path and reads == 0:
+            reads += 1
+            raise ProcessLookupError(errno.ESRCH, "peer exited", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, method_name, lookup_race)
+    result = _observe(kwargs)
+
+    assert result["thread_id"] == kwargs["thread_id"]
+    assert reads == 1
+
+
 def test_observation_fails_closed_after_repeated_peer_procfs_disappearance(
     tmp_path, monkeypatch
 ):
@@ -680,6 +710,39 @@ def test_observation_fails_closed_after_repeated_peer_status_lookup_race(
         _observe(kwargs)
 
     assert 1 < reads <= resource_observer._PEER_SNAPSHOT_ATTEMPTS
+
+
+@pytest.mark.parametrize(
+    ("method_name", "relative_path"),
+    [
+        ("read_text", "4242/stat"),
+        ("iterdir", "4242/task"),
+        ("read_text", "4242/task/4242/cgroup"),
+    ],
+)
+def test_observation_refuses_persistent_other_peer_procfs_esrch(
+    tmp_path, monkeypatch, method_name, relative_path
+):
+    kwargs = _fixture(tmp_path)
+    vanished_path = Path(kwargs["proc_root"]) / relative_path
+    original = getattr(Path, method_name)
+    reads = 0
+
+    def lookup_race(path, *args, **call_kwargs):
+        nonlocal reads
+        if path == vanished_path:
+            reads += 1
+            raise ProcessLookupError(errno.ESRCH, "peer exited", str(path))
+        return original(path, *args, **call_kwargs)
+
+    monkeypatch.setattr(Path, method_name, lookup_race)
+    with pytest.raises(
+        resource_observer.ResourceObserverError,
+        match="peer process or thread disappeared during identity verification",
+    ):
+        _observe(kwargs)
+
+    assert reads == resource_observer._PEER_SNAPSHOT_ATTEMPTS
 
 
 def test_observation_reports_status_permission_failure_without_retry(tmp_path, monkeypatch):

@@ -9,6 +9,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ## [Unreleased]
 
 ### Changed
+- fix(cgprofile): serialize P1 native R2 mutants while they share one tester
+  cgroup, so overlapping workers cannot attribute a peer's resource-limit
+  event to the wrong candidate; resume the longer exact-tree campaign
 - deploy(cgprofile): run only the managed daemon in the host PID namespace so
   DAMON sysfs can resolve host `pid_target` values; keep cgroup/network modes
   private, require explicit mode verification at startup, and document the
@@ -19,7 +22,8 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ### Fixed
 - fix(cgprofile): treat `ProcessLookupError` while reading a peer task's
-  procfs status as a transient snapshot race; retry the bounded identity scan
+  procfs identity as a transient snapshot race at status, stat, task
+  enumeration, and cgroup reads; retry the bounded identity scan
   and still refuse when the peer cannot be proven (RG-89)
 - fix(cgprofile): refuse a missing host socket-directory bind source instead
   of letting Compose create an empty directory that hides the host-setup

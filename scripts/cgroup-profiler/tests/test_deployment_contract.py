@@ -1,10 +1,18 @@
 """Structural checks for the daemon's security-sensitive Compose contract."""
 
 from pathlib import Path
+import tomllib
 
 
 COMPOSE_TEMPLATE = Path(__file__).resolve().parents[1] / "ciu.compose.yml.j2"
 PROJECT_ROOT = COMPOSE_TEMPLATE.parent
+
+
+def test_observer_r2_serializes_mutants_that_share_one_tester_cgroup():
+    gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assay = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["r2"]["resource_observer"] == "cgprofile"
+    assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
 
 
 def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():

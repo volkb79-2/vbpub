@@ -199,6 +199,21 @@ environment = "tester-unified"
 resource_observer = "cgprofile"
 ```
 
+For native R2 in a tester container shared by Assay workers, serialize
+candidate windows in that lane's `assay.toml`:
+
+```toml
+[lanes.r2.judge.mutation]
+jobs = 1
+```
+
+The observer samples the tester cgroup, so overlapping workers could count
+one worker's limit event against another mutant. A 24-hour budget is a
+resumable safety window; rerun the exact `r2` command in
+[Run the P1 review gates](#run-the-p1-review-gates) from the same committed
+tree after an incomplete window. See the
+[resource-observation rationale](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
+
 The existing host `/run/cgprofile` directory bind is sufficient for the
 devcontainer to see the daemon-created socket; no second host mount or new
 host-setup unit is needed. Host-setup must create this directory first;

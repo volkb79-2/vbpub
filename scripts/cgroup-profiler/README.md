@@ -45,7 +45,10 @@ expose the same top-level compatibility option.
 
 P1's registered mutation lane takes its changed-lines base from the gate
 request. Supply the recorded comparison commit with `--base` for `r2` and the
-full `gate`, and inspect the Assay plan before a long run. See the
+full `gate`, and inspect the Assay plan before a long run. Native R2 runs one
+mutant at a time because its resource event counters belong to the shared
+tester cgroup; an incomplete 24-hour window resumes on the same exact tree.
+See the
 [`design rationale`](docs/DESIGN-GUIDE.md#mutation-comparison-base) and
 [`exact commands`](docs/CONSUMERS.md#run-the-p1-review-gates).
 

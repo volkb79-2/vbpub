@@ -285,6 +285,17 @@ moving equivalent root operations to another process would move, not remove,
 the trust problem. The wire and failure behavior are specified in
 [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and contract §9.
 
+The observed leaf belongs to the tester container, whose Assay worker threads
+share that cgroup. Two concurrent mutant commands could overlap their
+before/after counter windows: one mutant's limit event would appear in both
+windows and could be attributed to the other. P1 therefore declares
+`[lanes.r2.judge.mutation] jobs = 1`. This serializes candidate counter
+windows until per-worker cgroups and independent counter bindings exist.
+The 24-hour lane budget remains a safety ceiling; `--resume` continues the
+same exact-tree campaign after a budget stop. A limit event from any other
+process in the tester cgroup still makes a candidate inconclusive, so the
+tester lane must not launch unrelated work there during R2.
+
 The short-lived helper-placement probe runs under the injected interactive
 slice only after confirming that it matches the cockpit container's actual
 Docker parent. It asks host systemd for `LoadState`, `FragmentPath`, and
