@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "3cc1ef2ded762e087397e45923eeacc365bbc296"
+input_revision: "3ccb752800d5a0c8de7d756b86882e3f1edc64fe"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-275
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-551
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -22,6 +22,8 @@ scope:
     - run-gate-project/SPEC.md
     - run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
     - run-gate-project/CHANGES.md
+    - run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md
+    - run-gate-project/nyxloom-trove/RG55-INTERFACE-CONTRACT.md
     - scripts/cgroup-profiler/
     - cmru/
     - run-gate-project/nyxloom-trove/reports/
@@ -155,12 +157,15 @@ topos/*
 ciu/docs/CIU-V8-*ROUND4*
 ```
 
-The shared main checkout currently has two intentional operator changes:
-`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` and
-`modern-debian-tools-python-debug/host-setup/Preventing another misplaced
-BuildKit.md`. Do not stage, reset, clean, or commit either. Do not use a broad
-Docker removal or prune command. Never use `--cgroupns=host`, `--pid=host`, or
-`--net=host`.
+The shared main checkout was clean when this packet was refreshed, but its
+status is live and may change. Always inspect it before any merge and preserve
+all unrelated or operator-owned changes; never stage, reset, or clean them.
+Do not use a broad Docker removal or prune command. Never use
+`--cgroupns=host` or `--net=host`. Host PID namespace is prohibited for
+workload, gate, helper, and test containers. The sole explicit exception is
+the CIU-managed cgprofile host daemon's `pid: host`, authorized by RW-467 so
+DAMON sysfs `pid_target` resolves host PIDs; deploy that daemon only through
+its declared CIU singleton workflow, never an ad-hoc Docker command.
 
 Host contention is an allowed operating condition, not a defect to eliminate.
 The requirement is that functional outcomes and mutation classifications are
@@ -198,8 +203,9 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-267). The log, current git state, assay JSON, process state, and
-   Docker state outrank prose in an old brief.
+   through the latest ruling (RW-551 at this checkpoint; refresh from the
+   selected tree before review). The log, current git state, assay JSON,
+   process state, and Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
 4. `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`,
@@ -211,13 +217,20 @@ Read the controller materials in this order:
    current branch diff. Also read `run-gate-project/SPEC.md`,
    `run-gate-project/CONSUMERS.md`, `run-gate-project/LANE-AUTHORING.md`,
    the relevant package `README`, `docs/DESIGN-GUIDE.md`, and
-   `docs/CONSUMERS.md`.
+   `docs/CONSUMERS.md`. For P5 also read
+   `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REPORT.md`,
+   `scripts/cgroup-profiler/nyxloom-trove/nyxloom.toml`, and
+   `scripts/cgroup-profiler/tests/test_serve_placement.py`.
 
 The settled decisions are not product questions to reopen. Private helper
 names and equivalent decomposition remain free; public names, serialized
 shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ## Target packets and current state
+
+The P5 state below was refreshed for this candidate. The P1/P4/P6/CMRU
+sections that follow are planning snapshots, not current branch, gate, or
+process truth; refresh them before selecting any of those targets.
 
 ### `P5`: run-gate v1.1 client, revision 61
 
@@ -246,21 +259,54 @@ documentation. It does not implement RG-56's atomic registry reservation;
 RG-56 remains OPEN under RW-283. RG-72 is a separate, already-fixed failed-
 Assay-evidence issue and is not P5's backlog identifier.
 
-The current candidate is revision 61, not the historical rev-47 tree. The
-controller will supply its exact final HEAD. Review the full diff and require
-green `selftest`, `assay-r1`, `assay-r3`, `doctor`, changed-line line+branch
-coverage, and live acceptance probes before provisional merge. The operator
-authorizes a provisional merge after those checks and a fresh Sol ACCEPT; run
-exact-tree `assay-r2` and `gate-full` asynchronously in attached CIU worktrees
-after that merge, without mutating the judged tree. Those long-run results
-remain release blockers. Any repair changes the judged tree and requires
-fresh exact-tree short gates/review plus resumed or restarted long-run
-evidence before release. P1/P6 mutation jobs may be running in their separate
-worktrees; do not edit, switch, or invalidate them.
-Check the new request shape against both contract mirrors, run live acceptance
-probes for socket and Docker-exec carriers where the installed daemon permits,
-and disclose the cockpit's known `place-refused:no-gates-slice` condition if
-the unrebuilt devcontainer cannot expose the host gates slice. Do not merge,
+The current candidate is an **integrated diff, not a P5-only branch**. Its
+code checkpoint contains 67 changed paths across Run-Gate, Assay, and
+cgroup-profiler relative to main
+`efaf112945233e3a8f6d53f2fef136439d18d089`; merge commit
+`83c7d4a21a30ba1180a16c50e3092c326a91e4f7` brings in the RG-89 observer
+candidate, and `ae0ff0979` restores the P5 branch on that integration. Review
+the complete diff that a provisional merge would land, including the
+Assay/cgroup-profiler observer path; do not certify those package changes from
+P5 gates alone. Record any distinct package/release holds separately. The
+controller's exact gate, host-probe, and unresolved-evidence record is
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REPORT.md`.
+The integrated cgroup-profiler helper refactor has a prior fresh Sol ACCEPT
+for provisional integration under RW-437, not for release; its final-source
+R2, the DAMON-start fix validation, and live DAMON evidence remain open.
+
+The current P3 delta adds CP-19 origin-unit lifetime protection: inventory the
+full source cgroup subtree before initial and later moves; refuse a known
+last-member move as `place-refused:origin-scope-would-empty`; refuse unknown
+membership as `place-refused:identity-unavailable`; never guess a restoration
+parent. Its tests, interface mirrors, README, DESIGN-GUIDE, CONSUMERS, and
+program design rationale are in the diff. The design explicitly discloses
+that this observation is not an atomic lease against an unrelated source
+process exiting between check and move. Review whether that residual race is
+acceptable for the settled exact-restore contract. Also account for the
+previous live `--on-stall kill` probe's `place-refused:write-failed` cleanup
+warning; it is not a clean-stop receipt until reproduced or explained.
+
+The candidate is Run-Gate revision 61. CMRU currently resolves its next
+release to `23.11.0`; the original `23.9.0`/rev-43 handoff is historical.
+The report's current unit/coverage/canary receipts are interim runs on a dirty
+worktree. The controller supplies the exact final HEAD; require final
+Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor`, plus
+cgroup-profiler `unit`, whole-package `coverage`, `canary`, and Nyxloom config
+lint on that committed tree. The P5 footprint manifest must remain tracked.
+Before review, require candidate-daemon live acceptance on the exact code:
+socket/exec parity, the CP-19 pre-move refusal, anchored placement/restore,
+and on-stall kill cleanup. The controller will use CIU to replace the one
+host daemon only while idle, then restore it from main; do not launch a sibling
+or use raw Docker to bypass the singleton.
+
+The operator authorizes provisional merge only after those checks and a fresh
+Sol ACCEPT. Run exact-tree `assay-r2` and `gate-full` asynchronously in
+attached CIU worktrees after that merge, without mutating the judged tree.
+Those long-run results remain release blockers. Any repair changes the judged
+tree and requires fresh exact-tree short gates/review plus resumed or
+restarted long-run evidence before release. P1/P6 mutation jobs may be running
+in their separate worktrees; inspect process/container state and do not edit,
+switch, or invalidate them. Check both contract mirrors. Do not merge,
 release, install, start the final daemon, or touch dstdns.
 
 ### `P1`: cgprofile 1.0.0 daemon
@@ -542,13 +588,12 @@ perform those operations after your ACCEPT and the required post-review gates.
    run against a 600-second budget. It is evidence for a future measurement /
    infrastructure follow-up only. Do not touch dstdns or rewrite RG-55's
    contention-agnostic principle from that observation.
-10. Assay 6.3 is being prepared in the operator-owned
-    `.worktrees/assay-source-backed-20260916` worktree to remove internal
-    hard pins before release. Do not edit that worktree or create another
-    re-vendoring cycle. If a P5 gate is refused solely because this checkout's
-    assay pin is stale, report the exact dependency and let the controller
-    rerun it after the source-backed 6.3 release; do not misclassify that
-    sequencing issue as a P5 product failure.
+10. In-repository consumers must use the candidate worktree's source-backed
+    Assay, not a cockpit-installed wheel or a historical version pin. Verify
+    the actual gate invocation and its preflight on this exact tree. If a gate
+    refuses, classify the concrete dependency/configuration mismatch; do not
+    silently fall back to an older released Assay or call an infrastructure
+    refusal a P5 product failure.
 
 ## Mechanical BLOCKED rule
 

@@ -528,9 +528,19 @@ New `start` options (all optional, all ignored without `--place`):
 At start, the daemon journals the initial token PID identities and their
 original units, asks systemd to create the transient scope with those PIDs,
 and reads the resulting scope path and delegation properties back from the
-manager. It creates the leaf only below that verified scope, moves each
-validated PID into it through systemd, and enables controllers only after the
-scope root is empty. Later descendants follow the same identity-checked path.
+manager. Before the initial transfer it inventories the complete cgroup
+subtree of each recorded origin systemd unit. If moving the selected PIDs
+would leave a source unit with no live process, placement is refused before
+the transfer as `place-refused:origin-scope-would-empty`; it repeats this
+check immediately before each later move from an origin unit. Unknown or
+inconsistent membership refuses as `place-refused:identity-unavailable`.
+This is a pre-move observation, not a lease: an unrelated process can exit
+between the check and systemd's transfer. If the source unit disappears in
+that race, the daemon never guesses a broader restoration destination; it
+retains the incomplete journal and reports the placement error. It creates
+the leaf only below the verified scope, moves each validated PID into it
+through systemd, and enables controllers only after the scope root is empty.
+Later descendants follow the same identity-checked path.
 The gates slice and scope remain systemd-owned; cgprofile creates/removes only
 its exact leaf. On stop, surviving processes are restored to their recorded
 origins before the leaf is removed and the empty scope is stopped. Failed or
@@ -653,6 +663,8 @@ ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 (systemd refused or could not verify the delegated scope),
 `place-refused:no-target-pids`, `place-refused:no-host-proc-view`,
 `place-refused:identity-unavailable`, `place-refused:recovery-state-unavailable`,
+`place-refused:origin-scope-would-empty` (the requested transfer would empty
+an original systemd unit and make exact restoration unavailable),
 `place-refused:parent-not-gates-slice` (scope path or ownership failed
 verification), `bad-policy` (an unparsable policy
 option, or a requested kill that cannot be safely enforced — exit 2, the

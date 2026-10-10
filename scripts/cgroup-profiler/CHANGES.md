@@ -47,6 +47,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   profiling finishes normally and preserves the wrapped command's verdict
   (RG-55 P1)
 - fix(cgprofile): D-31 placement ownership — create a systemd-delegated transient scope under the verified gates slice, keep the leaf below it, journal PID identity/origins for safe stop and restart recovery, and document that leaf memory limits/counters are cgroup charges rather than total RSS
+- fix(cgprofile): refuse initial or later placement moves that would empty an origin systemd unit, and fail closed when its complete process membership cannot be proved; document the residual concurrent-exit race and exact-restore behavior
 - fix(cgprofile): CP-11 — retry identity-checked placement recovery for journal-only startup crashes and finished manifests with incomplete cleanup; retain unknown scopes/leaves for operator attention
 - fix(cgprofile): fail closed on non-ESRCH lane-PID migration write errors; refuse placement and remove an empty leaf instead of reporting successful placement
 - fix(cgprofile): restore P6 survivors through the verified host-proc/systemd bridge; record successful moves and retain/report a leaf when survivor enumeration or restoration is indeterminate

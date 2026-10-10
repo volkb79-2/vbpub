@@ -505,6 +505,31 @@ a non-delegated slice a valid destination or transfer ownership of its tree.
    failure, and do not claim a clean stop. A requested kill targets only the
    exact profiler-owned leaf and is verified against the lane and a sibling.
 
+The restore destination has a lifecycle of its own. A Docker-created source
+`.scope` can be unloaded by systemd when its last process moves away; a
+journaled unit name and cgroup path do not keep that unit alive. Therefore,
+before the initial `StartTransientUnit(PIDs=...)`, placement inventories the
+entire recorded origin unit subtree (not only the root's `cgroup.procs`) and
+requires at least one current process that is not among the PIDs being moved.
+If the requested move would empty the source, it refuses before creating the
+destination scope or changing the journal. Later descendant migration repeats
+the same test immediately before attaching a process from its origin. A known
+last-member move is reported as `place-refused:origin-scope-would-empty`;
+unreadable, malformed, or inconsistent membership is
+`place-refused:identity-unavailable`. Neither state permits a guessed parent
+or other substitute destination. This guard preserves the exact-unit restore
+contract for the observed lifecycle, including processes in source child
+cgroups.
+
+This is deliberately an observation guard, not a source-unit lease: another
+source process can exit after inventory and before systemd completes the
+move. The manager API does not condition the move on the source still having
+another member. Eliminating that race would require an explicit source
+lifetime mechanism or a different launch/placement architecture; neither is
+part of this change. If the race occurs, recovery remains fail-closed and
+preserves evidence rather than inventing a restore target. CP-19 tracks the
+remaining lifecycle edge for future design work.
+
 The API transition and controller-enable ordering are implementation gates,
 not assumptions: prove them on the deployed systemd/kernel combination,
 including process arrival during placement, process exit during restore,

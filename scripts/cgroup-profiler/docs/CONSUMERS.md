@@ -139,6 +139,18 @@ If that happens, keep the sessions volume and inspect the returned
 restoration. `ctl gc` preserves an incomplete journal, including when the
 normal count or age limit has been reached. Do not delete that session record
 to make the retention count look clean.
+
+Placement can also be refused before moving any PID when moving the selected
+set would empty its original systemd unit. The session may still start for
+ordinary observation with `placement.leaf: null` and
+`placement.error: "place-refused:origin-scope-would-empty"`; a one-process
+container scope is the common example. Unknown source membership is refused
+as `place-refused:identity-unavailable`. Do not rely on an unrelated process
+as a permanent source-unit lease: it can exit between the daemon's check and
+the systemd move. If exact restoration cannot be proved, retain the session
+directory and recovery journal; the daemon will not fall back to a parent
+cgroup.
+
 On startup `serve` requires the daemon-only host-PID mode and verifies that
 PID 1 in the configured proc view belongs to the daemon's PID namespace; a
 missing or mismatched view is refused. This is a consistency check, not an

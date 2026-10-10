@@ -8853,3 +8853,48 @@ Run-Gate `selftest` on exact candidate `e11ef15de20102dc6ff9f125894ecb73a05a1617
 Run-Gate `assay-r1` on the same exact tree is PASS: run `1c771281e522b76e4b05753f3436f2ba`, Assay R0/R1 exit 0, 1,146/1,146 changed lines and 344/344 branches. The wrapper's final log did not preserve its exact-container CPU-update receipt because the watcher appended to the same file the live gate was writing; therefore this run is not final host-cap evidence. Its history records a 625.762-second invocation including R-45 admission, 814,899,200-byte lane peak, no OOM/limit drift, and 4.89% memory PSI `full avg10` at the gate start. No verdict failure or mutation campaign occurred.
 
 Ruling: give the shared `tester-unified` environment an explicit default `resources.cpus = "3"`, with a config regression, so R1/R3 and other lanes receive the cap in `docker run` rather than relying only on an after-launch watcher. The focused config regression passes (1 passed). The watcher must write its cap receipt to a separate file; rerun all final P5 short gates and doctor on the resulting committed tree. Do not transfer the `e11ef15d` receipts to that new tree. The other agent's gate and all unrelated containers were left untouched.
+
+### RW-550 — 2026-10-10 20:23:51 UTC — reconcile the P5 log checkpoint and pass cgprofile gates
+
+The candidate's committed controller log already contains RW-549; only the
+main checkout's older log stops at RW-483. An initial read used main's tail
+for both trees and created an uncommitted, misplaced RW-484 note in the
+candidate. That block was removed before commit. No candidate history was
+rewritten or lost; RW-550 is appended after the candidate's existing RW-549.
+
+On the current candidate working tree, including the uncommitted CP-19
+origin-unit guard and its tests/docs, cgroup-profiler `unit` passed 2,499
+tests (4 warnings) in 129.60s. Whole-package `coverage` passed 2,499 tests in
+125.64s and reported 8,389 statements, 3,110 branches, 100% line coverage,
+and 100% branch coverage. Exact containers were
+`cgprofile-gate-697833-1791663112` and
+`cgprofile-gate-700570-1791663449`, each in `dev-gates.slice`, verified at
+3 CPUs and 1-GiB memory; both scripts removed their own containers.
+
+The canary suite passed all seven canaries (7 rejected, 0 survived) in exact
+container `rg55-p3-origin-canary-20261010-r2`, exit 0, under the same slice,
+3-CPU cap, and 1-GiB memory limit. Its first launch exited 255 before product
+tests because the read-only container root prevented writing Git's global
+safe-directory config; that exact container was removed, and the successful
+retry redirected `GIT_CONFIG_GLOBAL` to writable `/tmp`. No product gate
+failed. These are interim working-tree results; final committed-tree gates,
+Run-Gate short lanes, P5 Sol review, candidate-daemon live probes, R2/full
+gate, and release remain. No merge or release was made.
+
+### RW-551 — 2026-10-10 20:25:52 UTC — retain the host daemon singleton during candidate acceptance
+
+`host-escape cat /sys/module/damon_stat/parameters/enabled` returned `Y`,
+confirming the DAMON-off/on probe restored the host setting. The supported
+`host-escape` path also reported and restored the cgroup2 mount's missing
+`nsdelegate`, `memory_recursiveprot`, and `memory_hugetlb_accounting` options.
+The candidate's CIU identity is `ready`, registered, on branch
+`rg55-p5-transport-port-20261010`, currently dirty at base commit `3ccb7528`.
+
+The cgroup-profiler CIU template and README explicitly define one daemon per
+host: a second worktree must collide on the fixed `cgprofile-host-daemon`
+name, not create a sibling. Therefore candidate-daemon live acceptance will
+use CIU's stop/deploy lifecycle on that exact singleton only after checking
+zero sessions, preserving the named session volume; after the probe, restore
+the daemon from main with `ciu up`. Do not start a sidecar or use raw Docker
+to bypass the declared singleton. No daemon change or candidate deployment
+was made by this ruling.

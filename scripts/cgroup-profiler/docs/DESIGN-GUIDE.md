@@ -97,6 +97,30 @@ session. Retention requires a positively complete placement journal before it
 may prune a finished session, since a finished summary alone cannot prove that
 the process left the delegated scope.
 
+### Preserve the original unit so stop can restore into it
+
+`StartTransientUnit(PIDs=...)` moves the initial lane processes out of their
+source systemd units. If that empties a Docker-created `.scope`, systemd may
+retire the source unit immediately; the recorded unit/subgroup is then no
+longer a valid exact restoration target. Before the initial transfer,
+cgprofile inventories each recorded source unit's full cgroup subtree and
+requires at least one non-moving process to remain. It repeats the check
+immediately before each later migration from an origin unit. A known final
+member produces `place-refused:origin-scope-would-empty`; unavailable or
+inconsistent membership produces `place-refused:identity-unavailable`. Both
+are placement refusals, not session failures, and they never authorize a move
+to a guessed parent cgroup.
+
+This is a bounded precondition, not an atomic lease on the source unit: an
+unrelated process can exit after enumeration and before systemd completes a
+move. The manager API does not combine the membership observation and PID
+transfer into one conditional operation. If such a race removes the origin
+unit, cgprofile fails closed, preserves the journal/leaf evidence, and reports
+the incomplete restore rather than inventing a destination. Eliminating that
+race would require a stronger source-lifetime mechanism (or launching the
+workload inside its final leaf); neither is silently claimed by this
+placement contract.
+
 ### Memory accounting is charge-based
 
 Placement moves already-running processes; it does not move memory charges for

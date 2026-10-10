@@ -378,7 +378,11 @@ see the consumer note for the live probe and safe host procedure.
   creating a session because there is no verified kill boundary. Run-gate
   requests that policy only when its existing resource plan already requested
   placement; otherwise its local watchdog remains verdict authority. A
-  malformed cap value is `bad-argument` (exit 2, no session) — the client
+  one-process origin unit may be refused as
+  `place-refused:origin-scope-would-empty`: systemd retires an empty source
+  scope, leaving no exact unit for stop-time restoration. Membership that
+  cannot be established is refused as `place-refused:identity-unavailable`.
+  A malformed cap value is `bad-argument` (exit 2, no session) — the client
   typed it wrong, not the host.
 - **Placement memory is charge-based, not total RSS.** After successful
   placement, cgroup memory counters and the leaf's `memory.high`/`memory.max`
