@@ -9,6 +9,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      project commits; feature and migration details live in README.md and
      docs/CONSUMERS.md. -->
 
+<!-- cmru: release history -->
+
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=e464cebcfc17c1929354f3ebc6bf9e3e355576a8 -->
@@ -149,116 +151,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(assay): deterministic mutant-guard tests, one per component, under a
   line-event budget (B113)
 
-<!-- cmru: release history -->
-
-## [8.1.0] - 2026-10-10
-<!-- cmru: generated -->
-<!-- cmru: source-end=9a89cd32adaabe7a8b8dc3d142ac3af446468824 -->
-
-### Added
-- feat(assay): integrate B114, B118 pilot, and B131 (f01944ebf)
-- feat(assay): attest B110 bounded pilot evidence (012293e04)
-- feat(assay): add bounded analysis R2 pilot (63801dc27)
-- feat(assay): declare analysis R2 lane for B131 (bfa33c79c)
-- feat(assay): add B110 pilot and screen gates (f0814096c)
-- feat(assay): add bounded B110 pilot selection (7b7143d68)
-
-### Fixed
-- fix(assay): validate pilot resume segments correctly (4b620ee7a)
-- fix(assay): harden bounded R2 pilot evidence (80b11d3fd)
-- fix(assay): recheck pilot artifacts before success (1ee2a4ed6)
-- fix(assay): bind pilot evidence to R2 collection and cost (2e7f04c9a)
-- fix(assay): harden B131 pilot completion evidence (cfbe9d874)
-- fix(assay): verify pilot markers and complete screen inventory (982c67813)
-- fix(assay): restore B105 inventory gate after B114 (1fb63396e)
-- fix(assay): close B114 deadline and inventory gaps (8b3bffe0c)
-- fix(assay): anchor B105 fixture worktree at repo root (1dd54c91f)
-- fix(assay): close B114 probe and replay gaps (976b5c410)
-- fix: harden B114 xdist and host unit proof (e97156e32)
-- fix: close B114 config and cgroup review findings (ea9de716e)
-- fix(assay): close B105 and cold witness gaps (0720efc56)
-- fix(assay): harden B105 admission and cleanup (a50d1e1b6)
-- fix(assay): guard opt-in JavaScript qualification runtime (5fb7c2822)
-- fix(assay): make JavaScript canary lint-safe (6a9c3d1b7)
-- fix(assay): support CommonJS uncovered-line canaries (b8a17389a)
-- fix(assay): complete v15 SQL witness fixture (869b49248)
-- fix(assay): synchronize receipt descriptor ownership (b3e706adc)
-- fix(assay): close receipt setup failures safely (b0d97239c)
-- fix(assay): classify receipt reader startup failures (4ec3b35ea)
-- fix(assay): harden receipt capture cleanup (c43c97764)
-- fix(assay): isolate receipt drain descriptors (dee6f9a3d)
-- fix(assay): secure cold-witness receipt boundary (6c89ea61a)
-- fix(assay): leave interrupted candidates unclassified (c08afa4be)
-- fix(assay): qualify v15 cold witness and cgroup preflight (e1e6b5d6c)
-- fix(assay): require proof for cold-policy full kills (4fe8c25a9)
-- fix(assay): pin liveness hooks and bound B105 inputs (52d601632)
-- fix(assay): close B114 hook and B105 input review gaps (70bf4493e)
-- fix(assay): harden B114 cold witness and B105 retries (e3a33c5eb)
-- fix(assay): close B114 cold-witness proof gaps (14c2a5f4d)
-- fix(assay): harden B114 cold-witness proof (6ccf0297c)
-
-### Changed
-- merge: Assay B087 into B131 integration (1b5f61a91)
-- merge: current Assay main into B131 (896087018)
-- merge: latest Assay main into B131 (5291fb584)
-- Repair B114 acceptance test fixtures (cb26ee27a)
-- B087: close out dstdns canary evidence (47fbaac66)
-- Fix Assay cold-witness and cgroup admission (03f3c592c)
-- assay: register JavaScript R3 canaries (64ff969fc)
-- assay: close B114 cold witness review findings (50060dc57)
-- assay: implement B114 cold-witness campaign (82cee58ce)
-
-### Documentation
-- docs(assay): clarify B117 prerequisite evidence (dcca9e912)
-- docs(assay): reconcile B110 pilot and gate status (551924752)
-- docs(assay): record integrated B114 B118 B131 acceptance (595b4069b)
-- docs(assay): record B131 review disposition (e568fbaf4)
-- docs(assay): add B131 pilot report (d4d2cb285)
-- docs(assay): record B087 provisional integration (8bee38a08)
-- docs(assay): reconcile B131 dependency plan (c592ab6bc)
-- docs(assay): record B131 latest-main reconciliation (61514d3b1)
-- docs(assay): record B114 integration review acceptance (970acb1c6)
-- docs(assay): record B114 integration gate repair (30fd138b9)
-- docs(assay): record B118 P7a implementation commit (e3c3f4c82)
-- docs(assay): record B114 focused test result (e32e57594)
-- docs(assay): record B114 review closeout (2aec1becf)
-- docs(assay): record final B087 review (ad17ab38a)
-- docs(assay): record B087 rebase on v15 main (8ba0f14cd)
-- docs(assay): record B087 real JavaScript qualification (3769d6484)
-- docs(assay): record B114 cap review (af46e6fde)
-- docs(assay): record B114 oracle review (65a912f3e)
-- docs(assay): record final B114 review (fadf35ecf)
-- docs(assay): record B114 follow-up lint checks (4beb41c27)
-- docs(assay): record cockpit cgroup diagnostic (c7096fb8d)
-- docs(assay): record final B114 review (5d1ff0583)
-- docs(assay): record B114 verification checkpoint (941fa055f)
-- docs(assay): reconcile B110 prerequisites against Wave A (c6c1567d3)
-- docs(assay): reconcile B114 for verdict v15 (549f9a283)
-
-### Testing
-- test(assay): fix B131 pilot launcher oracle tuple (b8713d567)
-- test(assay): pin deferred B110 ledger refusal (8c4b9c84a)
-- test(assay): reject non-array mutation buckets (6133f78d6)
-- test(assay): protect every mutation outcome bucket (046f4831c)
-- test(assay): refresh B105 exclusion inventory (26f79288b)
-- test(assay): allow candidate oracle to submit fixture sites (18476448f)
-- test(assay): target candidate receipt startup failure (466a94eeb)
-- test(assay): inject receipt failure in inline candidate (e2f5109f3)
-- test(assay): contain receipt reader cleanup (d324754c8)
-- test(assay): contain late-reader oracle cleanup (8fe585ec3)
-- test(assay): prove late reader cannot access reused fd (9ffec7644)
-- test(assay): prevent timeout oracle natural-exit false pass (1b2a82e71)
-- test(assay): bound timeout oracle cleanup safely (66cbe5f2d)
-- test(assay): exercise real auto-budget timeout cleanup (a3d38ddae)
-- test(assay): make timeout cleanup oracle deterministic (de3939a3a)
-- test(assay): widen auto-timeout child cleanup observation (936283f08)
-- test(assay): fail on stale verdict schema fixture (f2ad0ac63)
-- test(assay): follow current verdict schema in analysis oracle (6ddbd213e)
-- test(assay): fixture cgroup observation refusal (40f93c0d9)
-- test(assay): close B114 review oracle gaps (6fe264626)
-- test(assay): align B114 gate fixtures with v15 (37470c55f)
-- test(assay): stabilize receipt fd reuse regression (6078d159b)
-- test(assay): close B114 proof gaps (d3d3e458f)
 
 ## [7.2.0] - 2026-09-30
 <!-- cmru: generated -->
