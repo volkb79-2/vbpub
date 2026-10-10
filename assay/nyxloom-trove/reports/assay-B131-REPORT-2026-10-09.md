@@ -97,3 +97,20 @@ R2 and provides no evidence for this worktree. The current remediation still
 needs an exact-tip Sol xhigh review and registered `tester-unified`,
 `self-qualification-preflight`, and MDT `smoke` acceptance before the B131
 analysis-pilot gate can start.
+
+## Controller update — provisional registered gate and P10 deferral (2026-10-10)
+
+Registered `tester-unified` passed on `e568fbaf429576fef729cbd6ac852943e9858a16`
+(tree `82ef718f5b6acebb7eb271ae3fc91165f0a75d70`; gate log
+`/tmp/run-gate/lanes/tester-unified/de548b3853edb09a6b5cb0f0801396d4.log`).
+The pass covered the self-hosted Assay lane, analysis lane, independent
+self-hosting, SQL qualification and B145 process-limit probes. The receipt is
+preserved under `assay/.assay/registered-gate/tester-unified.json`. This is a
+provisional pass: the final direct B105 refusal regression and exact merged
+tree gates are still pending.
+
+P10a remains **REVISE**, and P10b producer/audit is deferred from this release.
+The reserved non-null ledger wire remains unusable for a B105 qualification:
+the source-bound B105 checker rejects it with
+`ledger binding not implemented (B110-P10b)`. A direct checker regression now
+asserts that refusal, rather than relying on the implementation guard alone.

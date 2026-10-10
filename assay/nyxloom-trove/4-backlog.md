@@ -11531,7 +11531,7 @@ inventories refuse.
 **Acceptance:**
 - [ ] All four briefs' oracles pass.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
-- [ ] The v14 → v15 cold start and B145 judge-identity `/7` → `/8` transition.
+- [ ] The v14 → v15 cold start, B145 judge-identity `/7` → `/8` transition, and B114 `/8` → `/9` transition.
 - [ ] Direct prerequisite acceptance for B115 and B117; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [ ] B148's full cgroup visibility preflight refuses selected native candidates before R0 and reports the same candidate-selection facts in `assay plan`.
 - [ ] The B105 wrapper binds its kernel-hostname lookup to the cockpit's mount/PID namespaces, and the MDT host `initializeCommand` verifies its declared cgroup slices before Docker creates the cockpit.
