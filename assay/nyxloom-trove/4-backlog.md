@@ -11532,7 +11532,8 @@ inventories refuse.
 - [ ] All four briefs' oracles pass.
 - [ ] One v14 → v15 hard cut, with golden fixtures, W9 frozen and W10 added as the B114/v15 evidence asset; use the current registered gate layout without restoring retired W9/Topos steps.
 - [ ] The v14 → v15 cold start, B145 judge-identity `/7` → `/8` transition, and B114 `/8` → `/9` transition.
-- [x] Direct prerequisite acceptance for B115 and B117 is covered by the integrated `tester-unified` gate at `b8713d56`; B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
+- [x] B115/P4 direct prerequisite acceptance is covered by the integrated `tester-unified` gate at `b8713d56`.
+- [ ] B117/P6 test oracles and integrated `tester-unified` passed at `b8713d56`, but its direct prerequisite acceptance remains open until `self-qualification-preflight` passes; see B117. B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
 - [x] B148's full cgroup visibility preflight refuses selected native candidates before R0 and reports the same candidate-selection facts in `assay plan`; covered by the integrated `tester-unified` gate at `b8713d56`.
 - [ ] The B105 wrapper binds its kernel-hostname lookup to the cockpit's mount/PID namespaces, and the MDT host `initializeCommand` verifies its declared cgroup slices before Docker creates the cockpit.
 - [ ] Docs are synced.
@@ -11638,7 +11639,7 @@ inventories refuse.
 - [x] Round-31 Sol xhigh findings: repeat full snapshot digest and identity verification after archive publication checks; verify source commit/tree/cleanliness and both deadlines after final snapshot and path checks; emit the host-verified marker only from that final verifier. The full focused suite passes 263 tests in 206.46s, with shell/Python syntax, diff check, and gate listing green.
 - [x] Round-32 Sol xhigh findings: after final Git checks, repeat snapshot digest/deadline validation and receipt/path checks; after the archive snapshot sweep, rehash and revalidate the receipt, attestation, and archived transcript. Six targeted race tests pass; the full focused suite passes 268 tests in 213.92s.
 - [x] Fresh independent Sol xhigh review accepts the complete exact diff, including untracked files (round 33; `/tmp/assay-b118-round33-review.md`; HEAD and status unchanged).
-- [x] Registered `tester-unified` passed first at the committed P7c tip `68f8a477b761fe650fdae6268cbe77e46ae148a0` (receipt tree `14d9211c804c5e84d4414fbecd49b019f05b407e`; log `/tmp/run-gate/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`) and later on the integrated B131/B110 tree at `b8713d56` (log `/tmp/run-gate/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log), covering the round-34/38 checker repairs.
+- [x] Registered `tester-unified` passed first at the committed P7c tip `68f8a477b761fe650fdae6268cbe77e46ae148a0` (receipt tree `14d9211c804c5e84d4414fbecd49b019f05b407e`). It later passed on the integrated B131/B110 tree at `b8713d56`, covering the round-34/38 checker repairs. Logs: P7c `/tmp/run-gate/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`; integrated `/tmp/run-gate/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`.
 - [ ] B105 preflight and both bounded pilots remain pending. Latest retry on `595b4069` refused before child launch with 1,375,588,352 bytes of `dev-gates.slice` headroom against 2,147,483,648 bytes required; log `/tmp/run-gate/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`.
 
 ## B119 — B110 P9: distributed/async mutation evidence
