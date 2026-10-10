@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "e72dd6f09fd15ef7b5eb4ffad401d1a91855d950"
+input_revision: "e26bfb469323a14cda80e7cd9fc96fffc966e809"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-552
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-553
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -203,7 +203,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (RW-552 at this checkpoint; refresh from the
+   through the latest ruling (RW-553 at this checkpoint; refresh from the
    selected tree before review). The log, current git state, assay JSON,
    process state, and Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
@@ -274,7 +274,7 @@ The integrated cgroup-profiler helper refactor has a prior fresh Sol ACCEPT
 for provisional integration under RW-437, not for release; its final-source
 R2 and DAMON-start fix validation remain separate requirements. Current live
 DAMON measurements and candidate runtime probes are in the refreshed P5
-report and RW-552.
+report and RW-553.
 
 The committed CP-19 addition provides origin-unit lifetime protection: inventory the
 full source cgroup subtree before initial and later moves; refuse a known
@@ -292,15 +292,25 @@ considered alongside the successful candidate probes, not erased.
 
 The candidate is Run-Gate revision 61. CMRU currently resolves its next
 release to `23.11.0`; the original `23.9.0`/rev-43 handoff is historical.
-Cgroup-profiler unit, whole-package coverage, and canary receipts are now
-recorded for exact tree `465f67d0` in the P5 report; the final evidence/log
-refresh will move HEAD, so require those package gates plus Run-Gate
-`selftest`, `assay-r1`, `assay-r3`, and `doctor` on the final quiet review
-tree. The P5 footprint manifest must remain tracked. Candidate-image live
-acceptance—socket/exec parity, CP-19 refusal, anchored placement/restore,
-on-stall kill, and a matched DAMON pair—is recorded in the report and
-RW-552. The main-managed daemon has been restored; do not launch a sibling
-or use raw Docker to bypass the singleton.
+Cgroup-profiler unit, whole-package coverage, and canary receipts are recorded
+for exact code tree `465f67d0`; Run-Gate `selftest` and cgroup-profiler's
+registered `r0-r1` coverage passed on evidence tree `db6d5b73`. The controller
+report records both. The evidence/report commit is `e26bfb469`; this packet
+refresh follows it, so all listed short gates must be rerun on the final quiet
+review tree. Run-Gate `assay-r1` has not yet started because admission waited
+for gates-slice capacity and was canceled before container creation. Required
+short checks are cgroup-profiler unit/coverage/canary, Nyxloom lint, Run-Gate
+`selftest`, `assay-r1`, `assay-r3`, and `doctor`. The P5 footprint manifest
+must remain tracked. Candidate-image live acceptance—socket/exec parity,
+CP-19 refusal, anchored placement/restore, on-stall kill, and a matched DAMON
+pair—is recorded in the report and RW-553. The main-managed daemon has been
+restored; do not launch a sibling or use raw Docker to bypass the singleton.
+
+Assay source changes are part of the integrated diff and CMRU resolves the
+next Assay version to `9.1.0`. Run-Gate's source-backed Assay R1/R2 lanes do
+not certify Assay's own release suite: its registered `tester-unified` gate
+must be run on the final Assay source tree before releasing that package.
+Track this as a separate package/release hold, not as a P5 gate failure.
 
 The operator authorizes provisional merge only after those checks and a fresh
 Sol ACCEPT. Run exact-tree `assay-r2` and `gate-full` asynchronously in
