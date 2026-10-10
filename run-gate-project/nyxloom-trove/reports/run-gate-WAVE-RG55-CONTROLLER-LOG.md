@@ -8773,3 +8773,29 @@ declared a 3-CPU cap; the temporary post-launch `docker update` watcher left no
 receipt before the exact container was removed, so this log does not claim a
 separate update confirmation. The next selftest must capture its exact
 container cap at launch.
+
+### RW-545 — 2026-10-10 16:33:39 UTC — diagnose integrated P5 selftest failure and keep RG-56 separate
+
+The corrected selftest ran on exact tree `3cc1ef2ded762e087397e45923eeacc365bbc296`
+and finished FAIL/exit 1: 1,726 passed, 111 failed, 2 skipped, and one teardown
+error. The separate `.run-gate/history.json` record is FAIL, revision 61,
+duration 874.898 seconds; the profile records a 609,009,664-byte container
+peak, 1,048,551,424-byte gates-slice peak, zero OOM kills and zero memory-limit
+drift. The container argv included `--cpus 3`; the profiler disclosed DAMON
+unavailable with `EBUSY`, which did not alter the test verdict.
+
+The failures are a harness regression from the prior repair, not 111 product
+failures: pytest put fixture repositories under unmounted `/tmp/rgt.*`, so
+doctor/mountinfo could not map them to a host path. One stale-lock test also
+intentionally left a directory that its new autouse teardown guard correctly
+flagged. Repair the temp root as a short `/tmp` lexical path symlinked into
+the bind-mounted worktree, keep Git's ceiling on the resolved mounted target,
+and remove the deliberate lock directory only after its non-removal oracle.
+
+The same review pass found that R-45's helper supports dry-run `would-wait`,
+but all three CLI lane runners return before the read-only profiler/host
+preflight; the contract therefore is not met at CLI level. Repair all three
+lane kinds with read-only dry-run probes only: never sleep, reserve, start a
+profiler session, or start the lane. Reconcile stale P5 handoff/backlog text
+with RW-283: P5 delivers R-45's bounded observational wait-then-proceed;
+RG-56's separate atomic registry admission remains OPEN and out of this wave.

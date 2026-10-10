@@ -3451,14 +3451,16 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     assert "lifecycle owner's confirmation" in changes
 
 
-def test_selftest_lane_uses_short_per_run_pytest_scratch_root():
-    """The selftest lane uses a short unique temp root for AF_UNIX tests.
+def test_selftest_lane_uses_bind_mounted_short_pytest_scratch_root():
+    """Keep lexical socket paths short while fixture repos stay mount-visible.
 
     Tester images need not define a working directory, so the command first
     enters this project's directory. A repo/worktree path can exceed Linux's
-    AF_UNIX pathname limit when pytest puts socket fixtures beneath it; use a
-    short per-run /tmp root and make that same path Git's ceiling so temporary
-    repositories cannot discover the source checkout above it.
+    AF_UNIX pathname limit when pytest puts socket fixtures beneath it. A
+    short per-run /tmp path is symlinked into this bind-mounted worktree:
+    socket paths stay short while doctor/mountinfo tests can still derive the
+    fixture repository's host path. Git's ceiling uses the resolved mounted
+    target so temporary repositories cannot discover the source checkout.
     """
     config = tomllib.loads((RUN_GATE_DIR / "run-gate.toml").read_text())
     argv = config["lanes"]["selftest"]["argv"]
@@ -3467,10 +3469,14 @@ def test_selftest_lane_uses_short_per_run_pytest_scratch_root():
     script = argv[2]
     cwd = script.index("cd {worktree}/run-gate-project && ")
     scratch = script.index("RUN_GATE_TMP=$(mktemp -d /tmp/rgt.XXXXXX) && ")
-    ceiling = script.index('GIT_CEILING_DIRECTORIES="$RUN_GATE_TMP"')
+    target = script.index("RUN_GATE_TARGET=$(mktemp -d .run-gate/selftest.XXXXXX)")
+    link = script.index('ln -s "$PWD/$RUN_GATE_TARGET" "$RUN_GATE_TMP/source"')
+    ceiling = script.index(
+        'GIT_CEILING_DIRECTORIES="$(realpath "$RUN_GATE_TMP/source")"')
     assert cwd == 0
-    assert cwd < scratch < ceiling < script.index("-m pytest")
-    assert '--basetemp "$RUN_GATE_TMP"' in script
+    assert cwd < scratch < target < link < ceiling < script.index("-m pytest")
+    assert '--basetemp "$RUN_GATE_TMP/source/pytest"' in script
+    assert "trap 'status=$?" in script
 
 
 def test_source_and_external_assay_commands_have_distinct_probe_identity():
@@ -4979,6 +4985,46 @@ class TestDryRun:
         dry_line = _docker_argv_line(dry.stdout)
         assert norm(dry_line) == live_norm
         assert "DRY RUN" in dry.stdout
+
+    def test_profiled_container_dry_run_discloses_would_wait_without_start(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "on")
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        preflights = []
+
+        def preflight(*args, **kwargs):
+            preflights.append((args[6], kwargs.get("dry_run")))
+            print("run-gate: admission: would wait — fixture", flush=True)
+            return {"admission": {"state": "would-wait"}}
+
+        monkeypatch.setattr(run_gate, "prepare_profile_start", preflight)
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        assert preflights == [("container", True)]
+        assert "admission: would wait" in capsys.readouterr().out
+        assert docker_runs(log) == []
+        assert docker_execs(log) == []
+
+    @pytest.mark.parametrize("docker, target_id", [
+        (None, None), ("/usr/bin/docker", None),
+    ])
+    def test_bare_host_dry_run_skips_admission_without_daemon_target(
+            self, tmp_path, monkeypatch, capsys, docker, target_id):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: docker)
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda _docker: (target_id, "target unavailable"))
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: pytest.fail(
+                "no daemon preflight without a resolvable target"))
+        plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "interval": "1s", "damon": True, "source": "test",
+                "token": "fixture-token"}
+        assert run_gate.run_bare_host_lane(
+            {"kind": "command", "argv": ["true"]}, "unit", tmp_path,
+            tmp_path, tmp_path, dry_run=True, profile_plan=plan) == 0
+        assert "DRY RUN" in capsys.readouterr().out
 
     def test_assay_lane_dry_run_discloses_no_verdict(self, tmp_path,
                                                      monkeypatch):
@@ -19170,15 +19216,20 @@ class TestDoctorStaleLockCheck:
         lock_dir = _shared_lock_dir()
         stale_dir = lock_dir / "run-gate-exec-old-runner.lock"
         stale_dir.mkdir()
-        two_days_ago = time.time() - 2 * 86400
-        os.utime(stale_dir, (two_days_ago, two_days_ago))
-        code, out = self._doctor(tmp_path, monkeypatch, capsys)
-        assert "[INFO] stale coordination locks" in out
-        assert "1 entry older than 1 day" in out
-        assert "1 as a DIRECTORY (never legitimate" in out
-        assert code == 0
-        assert stale_dir.is_dir(), "doctor must never remove a stale lock"
-        stale_dir.rmdir()  # this test's own cleanup, not doctor's
+        try:
+            two_days_ago = time.time() - 2 * 86400
+            os.utime(stale_dir, (two_days_ago, two_days_ago))
+            code, out = self._doctor(tmp_path, monkeypatch, capsys)
+            assert "[INFO] stale coordination locks" in out
+            assert "1 entry older than 1 day" in out
+            assert "1 as a DIRECTORY (never legitimate" in out
+            assert code == 0
+            assert stale_dir.is_dir(), "doctor must never remove a stale lock"
+        finally:
+            # The doctor must leave this deliberate corruption in place for
+            # the assertion above. The test, not shared fixture teardown,
+            # owns cleanup after proving that non-removal behavior.
+            stale_dir.rmdir()
 
     def test_lock_exactly_one_day_old_is_not_stale(self, tmp_path, monkeypatch,
                                                     capsys):
@@ -20011,8 +20062,9 @@ class TestProfilingOrchestration:
         assert result["host"] is None
         assert "host probe failed unexpectedly" in result["reason"]
 
+    @pytest.mark.parametrize("dry_run", [False, True])
     def test_prepare_profile_start_passes_host_to_placement_and_admission(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, dry_run):
         class Client:
             def __init__(self, *args, **kwargs):
                 pass
@@ -20025,16 +20077,19 @@ class TestProfilingOrchestration:
 
         placement = {"place": True, "request": 1}
         admission = {"state": "admitted"}
+        admission_calls = []
         monkeypatch.setattr(run_gate, "ProfilerClient", Client)
         monkeypatch.setattr(run_gate, "profile_placement_plan",
                             lambda *args: placement)
         monkeypatch.setattr(run_gate, "profile_admission",
-                            lambda *args: admission)
+                            lambda *args, **kwargs:
+                            (admission_calls.append(kwargs) or admission))
         result = run_gate.prepare_profile_start(
             self._lane(), "suite", tmp_path, tmp_path, "docker", self._plan(),
-            "container-shared")
+            "container-shared", dry_run=dry_run)
         assert result["placement"] == placement
         assert result["admission"] == admission
+        assert admission_calls == [{"dry_run": dry_run}]
 
     def test_prepare_profile_start_keeps_default_placement_for_other_scope(
             self, tmp_path, monkeypatch):
@@ -20053,7 +20108,7 @@ class TestProfilingOrchestration:
         monkeypatch.setattr(run_gate, "profile_placement_plan",
                             lambda *args: placement)
         monkeypatch.setattr(run_gate, "profile_admission",
-                            lambda *args: {"state": "admitted"})
+                            lambda *args, **kwargs: {"state": "admitted"})
         result = run_gate.prepare_profile_start(
             self._lane(), "suite", tmp_path, tmp_path, "docker", self._plan(),
             "container")
@@ -20927,16 +20982,29 @@ class TestBareHostProfilingWiring:
     def test_dry_run_has_no_run_record(self, tmp_path, monkeypatch, capsys):
         # main() never builds a run_record for --dry-run — the ONLY way to
         # exercise run_bare_host_lane's `run_record is not None` guard's
-        # False side. Also proves the plan is REHEARSED, never attempted
-        # for real -- no docker shim is installed at all, so a live attempt
-        # would fail loudly (docker not found) rather than silently pass.
-        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        # False side. The Docker and profiler seams below prove the read-only
+        # preflight runs, but no daemon session or lane starts.
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "on")
         repo, proj = make_history_repo(tmp_path, self._config())
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda _docker: (RG55_CONTAINER_ID, None))
+        preflights = []
+
+        def preflight(*args, **kwargs):
+            preflights.append((args[6], kwargs.get("dry_run")))
+            print("run-gate: admission: would wait — fixture", flush=True)
+            return {"admission": {"state": "would-wait"}}
+
+        monkeypatch.setattr(run_gate, "prepare_profile_start", preflight)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "DRY RUN — profile plan: daemon" in out
         assert "container-shared" in out
+        assert "admission: would wait" in out
+        assert preflights == [("container-shared", True)]
+        assert docker_execs(log) == [] and lane_runs(log) == []
         assert not (proj / ".run-gate" / "history.json").exists()
 
     def test_daemon_path_targets_self_id_scope_and_injects_token(
@@ -22500,7 +22568,7 @@ class TestExecLaneProfilingWiring:
 
     def test_exec_lane_dry_run_prints_the_profile_plan(
             self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "on")
         repo = make_repo(tmp_path)
         cfg = """\
             schema_version = 1
@@ -22515,17 +22583,28 @@ class TestExecLaneProfilingWiring:
             clean_tree = false
         """
         proj = make_project(repo, cfg)
-        fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
         body = body.replace('case "$1" in',
                             'case "$1" in\n  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        preflights = []
+
+        def preflight(*args, **kwargs):
+            preflights.append((args[6], kwargs.get("dry_run")))
+            print("run-gate: admission: would wait — fixture", flush=True)
+            return {"admission": {"state": "would-wait"}}
+
+        monkeypatch.setattr(run_gate, "prepare_profile_start", preflight)
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "DRY RUN — profile plan: daemon" in out
         assert "scope 'container-shared'" in out
+        assert "admission: would wait" in out
+        assert preflights == [("container-shared", True)]
+        assert docker_execs(log) == []
 
     def test_run_exec_lane_tolerates_no_run_record(self, tmp_path, monkeypatch):
         # main() never calls run_exec_lane's live (non-dry) path with

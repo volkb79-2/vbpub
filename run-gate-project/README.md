@@ -91,7 +91,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    idle clock while host memory PSI `full avg10` is above 5. Before an
    ephemeral lane starts, admission checks the verified gates slice; any
    wait is bounded by `admission_wait` (10m default), then the lane proceeds
-   with one warning rather than being refused or changing its verdict.
+   with one warning rather than being refused or changing its verdict. This
+   is an observational headroom check, not an atomic reservation; see the
+   [admission design rationale](docs/DESIGN-GUIDE.md#bounded-headroom-admission-is-observational-not-atomic).
 
 ## Gate and evidence
 

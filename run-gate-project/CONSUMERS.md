@@ -1583,14 +1583,16 @@ would silently drop every other lane's committed data).
   tail next to the run's own peak and the standing history median — three
   numbers, one line: what just happened, what has been typical, and what
   was budgeted.
-- **RG-56 admission (P5).** Before a daemon-backed lane starts, run-gate reads
+- **RG-55/P5 bounded headroom wait (R-45).** Before a daemon-backed lane starts, run-gate reads
   the gates slice through the profiler registry. When the lane's declared or
   derived request would exceed the 90% headroom threshold, it waits in 30-second
   checks, prints a notice at most once per minute, and then proceeds after the
   bounded `admission_wait` (10 minutes by default) with one warning. It never
   refuses a lane or changes its verdict because of host load; `--dry-run`
-  reports the decision without waiting. Ephemeral lanes are admitted before
-  Docker starts and use the parent resolved by their declared cgroup policy:
+  reports `would-wait` without waiting or starting a profiler session. This
+  check does not reserve capacity and is not the open atomic RG-56 protocol.
+  Ephemeral lanes perform the check before Docker starts and use the parent
+  resolved by their declared cgroup policy:
   `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
   The selected source is required; absence fails closed instead of launching
   under Docker's unconfined default. Long-running application stacks receive

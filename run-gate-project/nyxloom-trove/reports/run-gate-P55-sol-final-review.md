@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "477a8e7a8cf71370a3c89ca37189a4e838b69f1e"
+input_revision: "3cc1ef2ded762e087397e45923eeacc365bbc296"
 depends_on: []
 session: fresh
 source:
@@ -16,6 +16,7 @@ scope:
     - run-gate-project/run-gate.py
     - run-gate-project/tests/
     - run-gate-project/README.md
+    - run-gate-project/docs/DESIGN-GUIDE.md
     - run-gate-project/CONSUMERS.md
     - run-gate-project/LANE-AUTHORING.md
     - run-gate-project/SPEC.md
@@ -72,12 +73,14 @@ review_focus:
 ## Invocation contract
 
 The operator may hand this packet to the reviewer by path instead of pasting
-its body. The first message to the fresh Sol xhigh session should therefore
-contain these literal instructions (change only the target when appropriate):
+its body. The first message to the fresh Sol xhigh session must name exactly
+one target and the absolute packet path inside that target's selected
+worktree. The P5 example below is current for this candidate; for another
+target, substitute both the target and that worktree's packet path:
 
 ```
 REVIEW_TARGET=P5
-Read /workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
+Read /workspaces/vbpub/.worktrees/rg55-p5-transport-port-20261010/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
 Follow that packet as the review contract. Review exactly the selected target, make scoped repairs when needed, and return the required verdict and artifact. Do not merge or release.
 ```
 
@@ -216,11 +219,11 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ## Target packets and current state
 
-### `P5`: run-gate v1.1 client, revision 47
+### `P5`: run-gate v1.1 client, revision 61
 
-Worktree: `.worktrees/rg55-p5-assay63-reconcile`, branch
-`rg55-p5-assay63-reconcile`; the controller supplies the exact final HEAD
-when dispatching review. Read:
+Worktree: `.worktrees/rg55-p5-transport-port-20261010`, branch
+`rg55-p5-transport-port-20261010`; the controller supplies the exact final
+HEAD when dispatching review. Read:
 
 ```
 run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-HANDOFF.md
@@ -235,22 +238,25 @@ run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
 run-gate-project/CHANGES.md
 ```
 
-This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
-transport seam, one-reader daemon watch with ended/failed retry and fallback,
-policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
-admission, schema-2 nullable watch/placement history, and synchronized
-adopter-facing documentation. This is the final source-backed reconciliation
-tree before the required quiet-tree gates; all prior P5 evidence is
-provisional because the Assay judge and mainline source integration changed.
-Review the full diff and require green `selftest`, `assay-r1`, `assay-r3`,
-`doctor`, changed-line branch coverage, and live acceptance probes before
-review. The operator authorizes a provisional merge after those checks and a
-fresh Sol ACCEPT; run exact-tree `assay-r2` and `gate-full` asynchronously in
-attached CIU worktrees after that merge, without mutating the judged tree.
-Those two long-run results remain release blockers. Any repair changes the
-judged tree and requires fresh exact-tree short gates/review plus resumed or
-restarted long-run evidence before release. P1/P6 mutation jobs may be running
-in their separate worktrees; do not edit, switch, or invalidate them.
+This target implements the RG-55/P5 v1.1 socket/exec transport seam,
+one-reader daemon watch with ended/failed retry and fallback, policy authoring,
+gates-slice parent and placement, R-45's bounded observational headroom wait,
+schema-2 nullable watch/placement history, and synchronized adopter-facing
+documentation. It does not implement RG-56's atomic registry reservation;
+RG-56 remains OPEN under RW-283. RG-72 is a separate, already-fixed failed-
+Assay-evidence issue and is not P5's backlog identifier.
+
+The current candidate is revision 61, not the historical rev-47 tree. The
+controller will supply its exact final HEAD. Review the full diff and require
+green `selftest`, `assay-r1`, `assay-r3`, `doctor`, changed-line line+branch
+coverage, and live acceptance probes before provisional merge. The operator
+authorizes a provisional merge after those checks and a fresh Sol ACCEPT; run
+exact-tree `assay-r2` and `gate-full` asynchronously in attached CIU worktrees
+after that merge, without mutating the judged tree. Those long-run results
+remain release blockers. Any repair changes the judged tree and requires
+fresh exact-tree short gates/review plus resumed or restarted long-run
+evidence before release. P1/P6 mutation jobs may be running in their separate
+worktrees; do not edit, switch, or invalidate them.
 Check the new request shape against both contract mirrors, run live acceptance
 probes for socket and Docker-exec carriers where the installed daemon permits,
 and disclose the cockpit's known `place-refused:no-gates-slice` condition if
@@ -521,10 +527,10 @@ perform those operations after your ACCEPT and the required post-review gates.
    with no shadowing or empty-default path? RW-319 already authorizes up to
    three current RG-55 mutation lanes under the verified five-CPU
    `dev-gates.slice`; that operational ruling does not approve RG56 changes.
-6. Which exact post-review release order is still valid: cgprofile 1.0.0
-   from the P1-only main snapshot, cgprofile 1.1.0 after P6, then run-gate
-   23.10.0 / revision 47 after P5's current-main integration? Identify
-   any dependency that makes a sequence unsafe, but do not release it yourself.
+6. Do not rely on the historical release sequence or version/revision numbers
+   printed in older P1/P6/P5 reports. The controller owns release order and
+   must derive it from current CMRU state plus the operator's current release
+   authorization. Do not release, tag, publish, or install from this review.
 7. Can the final P3 probes use both the docker-exec and host socket carriers
    against the real daemon after it is installed from main? If the cockpit is
    not rebuilt, record the socket absence and `place-refused:no-gates-slice`

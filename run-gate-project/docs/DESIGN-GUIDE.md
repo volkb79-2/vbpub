@@ -81,6 +81,32 @@ counters also produce ERROR and retain the raw status when available, because
 run-gate cannot certify the run. A dry run starts no lane and does not sample
 these counters.
 
+## Bounded headroom admission is observational, not atomic
+
+Before a daemon-backed lane starts, R-45 reads the profiler's host document
+and compares the verified gates slice's current memory plus the lane's declared
+or derived request with 90% of its maximum. If headroom is short, run-gate
+checks every 30 seconds for at most `[profile].admission_wait` (10 minutes by
+default). Headroom appearing admits immediately; expiry emits one warning and
+the lane proceeds. Missing or indeterminate capacity is disclosed as skipped.
+Host pressure, profiler availability, and this wait never become a functional
+or mutation verdict.
+
+This policy is deliberately an observation and bounded courtesy wait, not a
+capacity reservation. Two callers can read the same headroom before either
+starts, so the check cannot promise that aggregate demand stays below the
+slice ceiling. It improves disclosure and avoids some avoidable overlap; it
+does not close the race or provide cross-worktree admission control. A dry run
+performs only the read-only version/host probes needed to report `would-wait`;
+it does not sleep, reserve capacity, start a profiler session, or start the
+lane.
+
+The atomic reservation protocol is a separate open RG-56 design. It requires
+the daemon to validate and reserve demand against its complete live registry
+before any lane process or container exists, then bind that reservation to
+the eventual target. R-45 must not be described as delivering RG-56: its
+non-reserving behavior and its non-effect on the verdict are intentional.
+
 ## Private-namespace R2 uses a read-only cgroup observer
 
 Assay B145 must see every enforcing ancestor of a mutation worker. A private

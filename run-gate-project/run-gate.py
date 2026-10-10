@@ -4559,13 +4559,15 @@ def profile_admission(client: ProfilerClient, lane_name: str,
 
 def prepare_profile_start(lane: dict, lane_name: str, project_dir: Path,
                           worktree: Path, docker: str, plan: dict,
-                          scope: str) -> dict | None:
-    """Perform the pre-start daemon/host read needed by an ephemeral lane.
+                          scope: str, *, dry_run: bool = False) -> dict | None:
+    """Perform the read-only daemon/host preflight before a lane starts.
 
     The returned client is reused by `start_lane_profiling`, so auto transport
     selection and the host/admission read happen once per invocation.  A
     failed optional probe returns a context with its reason; the caller still
     starts the lane and the normal basic fallback remains authoritative.
+    Dry runs may request the same host facts to disclose `would-wait`, but
+    admission never sleeps and no profiler session is started.
     """
     if not plan.get("enabled"):
         return None
@@ -4603,7 +4605,8 @@ def prepare_profile_start(lane: dict, lane_name: str, project_dir: Path,
             lane, lane_name, project_dir, host_doc)
         context["admission"] = profile_admission(
             client, lane_name, admission_plan, plan.get(
-                "admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT), host_doc)
+                "admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT), host_doc,
+            dry_run=dry_run)
         if scope == "container-shared":
             context["placement"] = admission_plan
     return context
@@ -11386,6 +11389,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             docker, lane, env, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, slice_name, dry_run=dry_run)
     if dry_run:
+        if profiling:
+            # R-45: read the daemon's current headroom once so a dry run can
+            # disclose `would-wait`; this preflight is read-only and never
+            # reserves capacity, starts a session, or sleeps.
+            prepare_profile_start(lane, lane_name, project_dir, worktree,
+                                  docker, profile_plan, "container",
+                                  dry_run=True)
         # RG-8: the plan above IS what the live run executes — same assembly
         # code path, only the `docker run` itself skipped. Unconditional
         # (RW-17 finding): `print_profile_plan_dry_run` already branches on
@@ -11395,9 +11405,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         print_profile_plan_dry_run(profile_plan, "container")
         print("run-gate: DRY RUN — no container was started", flush=True)
         return 0
-    # RG-56/C7: admission is a pre-start gate.  The daemon host read and any
-    # wait therefore happen before Docker creates the lane, never after a
-    # supposedly admitted lane is already consuming capacity.
+    # RG-55/R-45: admission is a pre-start headroom check. The daemon host
+    # read and any wait therefore happen before Docker creates the lane,
+    # never after a supposedly admitted lane is already consuming capacity.
     profile_preflight = (prepare_profile_start(
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
@@ -11697,6 +11707,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             repo, project_dir, worktree, slice_name or "",
             resolved_container_name=name, dry_run=dry_run)
     if dry_run:
+        if profiling:
+            # R-45 applies to persistent runners too; the read-only preflight
+            # must not wait or start a profiling session.
+            prepare_profile_start(lane, lane_name, project_dir, worktree,
+                                  docker, profile_plan, "container-shared",
+                                  dry_run=True)
         # RG-8: name resolution + running-check above are rehearsed too —
         # a dry-run against a stopped runner reports the real refusal.
         # Unconditional (RW-17 finding, same as the ephemeral path):
@@ -12034,6 +12050,18 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
     if dry_run:
+        if profile_plan and profile_plan["enabled"]:
+            # Match the live bare-host order: only a discoverable Docker
+            # target can be daemon-backed. The read-only host preflight then
+            # reports R-45 `would-wait` without starting a session or child.
+            dry_docker = shutil.which("docker")
+            if dry_docker:
+                target_id, _target_reason = resolve_self_container_id(
+                    dry_docker)
+                if target_id is not None:
+                    prepare_profile_start(
+                        lane, lane_name, project_dir, worktree, dry_docker,
+                        profile_plan, "container-shared", dry_run=True)
         # RG-8/RW-17: the plan is REHEARSED, never attempted for real —
         # `start_bare_host_profiling` is not even called on this branch,
         # mirroring run_container_lane/run_exec_lane's own dry-run rule. The

@@ -1,4 +1,4 @@
-# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-72 transport/watch/placement, RG-56 admission)
+# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-55 transport/watch/placement, R-45 headroom wait)
 
 **Historical implementer contract:** FRESH Sonnet session, checkpoint clause on (HARD).
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
@@ -54,14 +54,17 @@ brief (controller's).
    shapes per verb), `cgprofile-P6-FOLLOWUPS-REPORT.md` (probe evidence).
 5. `SPEC.md` R-04, R-09, R-29, R-30, R-36, R-39, R-40, R-41, R-43 a–i,
    R-44; `CONSUMERS.md` §6; `LANE-AUTHORING.md`; `CHANGES.md`;
-   backlog RG-56 (exists) — RG-72 you file (C1).
+   current RG-55/P5, RG-56, and RG-72 backlog entries (C1 is scoped to
+   RG-55/P5; RW-283 keeps RG-56 OPEN and RG-72 belongs to a separate issue).
 
 ## Deliverables (commit each separately, in this order)
 
-**C1 — backlog rows.** File **RG-72** (policy author / watch consumer /
-transport seam / placement requests — mechanism, proposed contract, oracle
-sketch per row convention, provenance RW-29..RW-35) and update RG-56's
-"next wave" wording to "this package (P5)". No code.
+**C1 — backlog record (current integration correction).** Keep the P5
+transport/watch/placement and R-45 bounded headroom wait under the existing
+**RG-55/P5** row. Do not create or overwrite RG-72: current main assigns RG-72
+to the separate failed-Assay-evidence issue (fixed at rev 49). RG-56 remains
+the distinct atomic reservation gap and stays OPEN under controller ruling
+RW-283. No code.
 
 **C2 — transport seam (D-30, §8.1).** `[profile] transport = "auto" |
 "exec" | "socket"` (default `auto`; env `RUN_GATE_PROFILE_TRANSPORT`
@@ -137,40 +140,27 @@ raise resources.memory or the gates slice"). R-43 gains sub-rules;
 LANE-AUTHORING documents `resources.memory`/`memory_max`; `--dry-run`
 prints the placement plan.
 
-**C7 — RG-56 admission (D-6; corrected contract, dependency-gated).** The
-earlier "wait-then-proceed, never refuse" sketch is superseded by the
-corrected RG-56 design at
-`run-gate-RG56-ADMISSION-DESIGN-REPAIR-HANDOFF.md` (checkpoint
-`92a2c097`). P5 must implement that contract, not the old status-then-start
-approximation: a targetless, atomic daemon `admit` reserves the normalized
-positive `reservation_bytes` before any ephemeral container, exec/bare-host
-child, profiler session, or mutation worker starts; a later target-bound
-`start --reservation-token` binds the existing target and performs the
-placement/read-back barrier. The daemon is authoritative for the loaded
-`CGROUP_PARENT_DEV_GATES` unit, both memory-PSI readings, finite memory
-limits, complete pending/live registry, generation, and checked aggregate
-capacity. Missing or stale facts, unknown live demand, invalid demand, a
-conflict, or projected demand over either limit is an admission refusal,
-never an empty-set/zero fallback and never a product or mutation result.
-`--allow-pressure` can bypass only a valid PSI block; it cannot bypass
-capacity, provenance, registry, generation, placement, or identity errors.
-`admission_wait` is an explicit configuration value with no code fallback;
-expiry is infrastructure refusal and resumable. `--dry-run` is
-side-effect-free. The current two-container RG-55 cap remains binding until
-the producer/consumer acceptance gates pass; `additional_slots` is a
-capacity reading, never a literal slot authorization. The implementing
-packet must use the corrected handoff's exact request/response fields,
-reason codes, lifecycle, and focused acceptance oracles.
+**C7 — R-45 bounded headroom wait; RG-56 remains OPEN.** P5 implements only
+the current `SPEC.md` R-45 contract: a read-only `ctl host` snapshot, a
+bounded wait while measured gates-slice headroom is below threshold, then
+proceed with one warning. It does not reserve demand or atomically account
+for concurrent callers. The corrected targetless RG-56 reservation design at
+`run-gate-RG56-ADMISSION-DESIGN-REPAIR-HANDOFF.md` (checkpoint `92a2c097`)
+is a separate dependency-gated future wave; RW-283 records that it remains
+OPEN. Do not mark RG-56 fixed or implement its protocol as part of P5. Keep
+R-45's no-verdict-change and dry-run-without-wait semantics intact.
 
 **C8 — records.** Inflight and history entries gain `watch` and
 `placement` (nullable); history schema STAYS 2 (additive — re-prove RG-27's
 two traps on the new keys); `history --json` prints them; `stats` and
 `footprint` unchanged in v1.1.
 
-**C9 — close-out.** SPEC R-40a/b, R-43 j–l, R-45 (admission), Rev bump;
-README; CONSUMERS §6 (transport, gates slice, admission); LANE-AUTHORING;
-CHANGES `[Unreleased]` per RG id; RG-56 + RG-72 → FIXED with evidence;
-`__revision__ = 43`; `usage()`; the `doctor` output in the REPORT.
+**C9 — close-out.** SPEC R-40a/b, R-43 j–l, R-45 (bounded headroom wait),
+revision bump; README; DESIGN-GUIDE rationale; CONSUMERS §6 (transport,
+gates slice, R-45); LANE-AUTHORING; CHANGES `[Unreleased]` under RG-55/P5;
+RG-55/P5 status closes only with its exact gates and review evidence. RG-56
+remains OPEN (RW-283); RG-72 is a separate already-fixed issue. Record the
+`doctor` output in the REPORT.
 
 ## Live probes (yours; daemon state is announced in the dispatch message)
 

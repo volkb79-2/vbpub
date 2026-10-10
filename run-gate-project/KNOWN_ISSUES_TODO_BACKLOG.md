@@ -73,7 +73,7 @@ SPEC §9.
 | RG-53 | `coverage_gate.py` ignored `missing_branches` while claiming branch coverage | Minor | FIXED 2026-09-12 (RG-55 wave) |
 | RG-54 | Assay's merge-commit base behavior contradicted the apparent resolved base | Major | CLOSED 2026-09-30 — first-parent behavior is deliberate and false PASS is blocked |
 | RG-55 | no per-lane resource profile was measured or persisted | Major | FIXED 2026-09-12 |
-| RG-56 | profiler-registry admission has no capacity control | Minor | OPEN |
+| RG-56 | profiler-registry admission has no atomic capacity reservation | Minor | OPEN |
 | RG-57 | bare-host lanes did not record resource profiles | Minor | FIXED 2026-09-12 |
 | RG-58 | bare-host `stall_timeout` declarations had no config-load warning | Minor | FIXED 2026-09-12 |
 | RG-59 | daemon-absent profiling warning named the wrong cause | Minor | FIXED 2026-09-12 |
@@ -4450,62 +4450,59 @@ this entry originally left open:
   MiB / ≥ 70 MiB respectively) — full transcripts in
   `nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`.
 
-Admission control on top of this data was deliberately deferred from the
-measurement-only P1/P2 implementation and filed forward as **RG-56**. P5 now
-applies the measured data through the delivered wait-then-proceed contract
-below; the historical acceptance evidence in this RG-55 row remains
-measurement-only. This entry's dstdns cross-reference
+Atomic admission control on top of this data was deliberately deferred from
+the measurement-only P1/P2 implementation and remains **RG-56 OPEN**. P5
+consumes measured data only for R-45's bounded, observational headroom
+wait-then-proceed behavior; it does not reserve capacity or close the race
+between concurrent callers. The historical acceptance evidence in this RG-55
+row remains measurement-only. This entry's dstdns cross-reference
 (`docs/testing/RIGOR-COVERAGE-POLICY.md` "Resource-profiling and
 scheduling") is RG-56's to apply.
 
-## RG-56 — admission control on the profiler registry (this package, P5)
+## RG-56 — atomic admission reservation on the profiler registry (future wave)
 
 **Provenance:** RG-55 plan D-6 (`run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`),
 operator interview 2026-09-12 ("swap usage is never the gate; PSI is").
 
 ### Mechanism
 
-Inputs: the committed `run-gate.footprint.json` (expected footprint per
-lane, RG-55's own D-9), `cgprofile ctl status` (the live daemon's session
-registry — sessions across ALL projects/worktrees, the cross-project
-registry RG-45's direction 2 already asked for — plus host and per-slice
-PSI), and the lane's own `resources` declaration (RG-48). RG-55 measured
-and recorded these inputs; this package (P5) spends them on admission.
+Run-Gate R-45 currently reads a snapshot of the gates slice's memory usage and
+may wait briefly before proceeding. That read does not reserve capacity: two
+callers can observe the same headroom and both start. There is no accepted
+daemon operation that accounts atomically for pending and live demand across
+projects and worktrees. R-45 improves visibility but is not cross-worktree
+capacity control.
 
-### Delivered contract (P5)
+### Proposed contract (design-only; not delivered by P5)
 
-Before starting a daemon-backed lane, run-gate reads `cgprofile ctl host` and
-derives the lane request from declared `resources.memory` or the committed
-manifest median. When the verified gates slice's current memory plus that
-request exceeds 90% of the slice maximum, it waits in 30-second checks,
-prints a waiting notice at most once per minute, and honors
-`[profile].admission_wait` (10 minutes by default). It admits as soon as
-headroom appears; when the bound expires it proceeds with exactly one warning.
-There is no `--allow-pressure` bypass and no refusal based on host load:
-pressure, registry contention, transport failure, and the wait bound are
-scheduling facts, never a lane verdict. `--dry-run` reports `would-wait`
-without sleeping or starting a lane. The admission check is before an
-ephemeral Docker start.
+The future implementation must obtain authoritative host-unit, memory-PSI,
+finite-limit, complete-registry, generation, and checked aggregate-demand
+facts from the daemon. It must reserve a normalized positive
+`reservation_bytes` atomically before an ephemeral container, exec/bare-host
+child, profiler session, or mutation worker starts; a later target-bound start
+binds that reservation to the actual target and verifies placement. Missing,
+stale, incomplete, or unexplained state and unknown demand refuse as
+infrastructure coordination, never as a functional or mutation result.
+Pressure override, wait bounds, lifecycle, provenance, reason codes, and
+dry-run semantics follow the separate corrected RG-56 design-only handoff and
+its dependency/acceptance gates. No slot count is inferred from CPU limits or
+telemetry.
 
-**Cross-reference:** SPEC-V8 S16.6 (ciu gate's admission ledger, keyed on
-the slice cgroup directory) should consume the SAME registry once it
-exists, rather than growing an independent one — see SPEC-V8.md Appendix
-D.6.
+### Oracles (future implementation)
 
-### Oracles
+- Prove atomic reservation under concurrent callers; one caller cannot spend
+  the same observed headroom twice.
+- Prove complete live/pending registry reconciliation, owner/generation
+  binding, checked aggregate arithmetic, and refusal on missing or stale facts.
+- Prove exact gates-slice provenance, memory/PSI policy, target-binding and
+  placement read-back, wait/override lifecycle, and dry-run without waiting or
+  reserving.
+- Keep all capacity refusals distinct from lane and mutation verdicts.
 
-- `TestProfileAdmission` covers immediate admission, wait-then-admit after a
-  host reading clears, bounded proceed with one warning, and dry-run without
-  sleeping; it also proves missing capacity is disclosed as skipped.
-- Placement tests cover declared and manifest-derived requests, explicit and
-  gates-slice-derived ceilings, and no-request refusal to place.
-- Transport/watch tests cover byte-for-byte socket requests, auto version
-  probing, explicit carrier failures, one reader, event recording, ended-watch
-  reattach followed by in-process fallback, and the `killed`/`reported`
-  distinction.
+### Status — OPEN (RW-283; future dependency-gated admission wave)
 
-### Status — FIXED in P5 implementation; final status closes with the P5
-R1/R2/R3 evidence and release.
+P5 delivers only the non-reserving R-45 behavior specified in `SPEC.md`.
+Do not mark RG-56 fixed based on that wait or its tests.
 
 ## RG-57 — bare-host lanes record no resource profile (RG-55 v1 gap)
 
@@ -5094,7 +5091,7 @@ rather than "fixed" by silently retrying past them without a trace.
 **Provenance:** RG-55 plan D-6 and D-17..D-30; controller rulings RW-29..
 RW-35; interface contract v1.1 §8. This row is the implementation record for
 the policy author, daemon-watch consumer, transport seam, placement requests,
-and RG-56 admission consumer delivered by P5.
+and R-45 bounded headroom wait delivered by P5. It does not close RG-56.
 
 ### Mechanism
 
@@ -5102,9 +5099,10 @@ The run-gate client currently reaches the optional cgprofile daemon only by
 `docker exec`, samples progress in-process, leaves placement to the ambient
 Docker/systemd parent, and applies its older slice-memory check before a
 lane starts. Those separate paths cannot consume the v1.1 daemon's socket
-carrier, streaming watch, read-back placement, or cross-project registry
-admission contract. A second independent scheduler would also disagree with
-the daemon's live registry and host PSI readings.
+carrier, streaming watch, or read-back placement. The old slice-memory check
+also lacked the bounded R-45 disclosure behavior. Cross-worktree atomic
+reservation remains a separate RG-56 problem; P5 does not implement that
+registry protocol.
 
 ### Proposed contract
 
@@ -5146,8 +5144,11 @@ an ended stream without a verdict is never itself a lane verdict.
   bare-host lanes; ephemeral Docker argv uses the gates slice variable.
 - With a fake host registry/clock, assert immediate admission, wait-then-
   proceed after pressure clears, bounded proceed with one warning, and that
-  dry-run never waits. Re-prove schema-2 history round-trips with both new
-  nullable fields and run the complete R1/R2/R3 gates before release.
+  dry-run never waits. At CLI level, cover all three lane modes: report
+  `would-wait` from read-only probes without sleeping, reserving, starting a
+  profiler session, or starting the lane. Re-prove schema-2 history
+  round-trips with both new nullable fields and run the complete R1/R2/R3
+  gates before release.
 
 ### Status — FIXED in P5 implementation; final status closes with the P5
 R1/R2/R3 evidence and release.
