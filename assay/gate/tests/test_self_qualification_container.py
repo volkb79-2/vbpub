@@ -452,8 +452,42 @@ def committed_worktree():
         git("commit", "--quiet", "-m", "seed B105 launcher fixture")
         yield worktree
     finally:
-        shutil.rmtree(gate_evidence_root(worktree), ignore_errors=True)
-        shutil.rmtree(worktree, ignore_errors=True)
+        _remove_fixture_tree(gate_evidence_root(worktree))
+        _remove_fixture_tree(worktree)
+
+
+def _remove_fixture_tree(path: Path) -> None:
+    """Remove fixture output after restoring test-created read-only evidence."""
+    if path.is_symlink():
+        path.unlink()
+        return
+    if not path.exists():
+        return
+    for root, dirs, files in os.walk(path, topdown=True, followlinks=False):
+        root_path = Path(root)
+        os.chmod(root_path, stat.S_IRWXU)
+        for name in dirs:
+            child = root_path / name
+            if not child.is_symlink():
+                os.chmod(child, stat.S_IRWXU)
+        for name in files:
+            child = root_path / name
+            if not child.is_symlink():
+                os.chmod(child, stat.S_IRUSR | stat.S_IWUSR)
+    shutil.rmtree(path)
+
+
+def test_fixture_cleanup_removes_read_only_evidence_tree(tmp_path: Path):
+    tree = tmp_path / "readonly-fixture"
+    evidence = tree / "assay" / ".assay" / "b110-pilot-evidence"
+    evidence.mkdir(parents=True)
+    payload = evidence / "snapshot.sha256"
+    payload.write_text("digest\n", encoding="ascii")
+    os.chmod(payload, stat.S_IRUSR)
+    os.chmod(evidence, stat.S_IRUSR | stat.S_IXUSR)
+    os.chmod(evidence.parent, stat.S_IRUSR | stat.S_IXUSR)
+    _remove_fixture_tree(tree)
+    assert not tree.exists()
 
 
 def gate_evidence_root(worktree: Path) -> Path:
