@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "e26bfb469323a14cda80e7cd9fc96fffc966e809"
+input_revision: "43168068ab9250d8c96cffce0ae8d14150868c28"
 depends_on: []
 session: fresh
 source:
@@ -295,11 +295,12 @@ release to `23.11.0`; the original `23.9.0`/rev-43 handoff is historical.
 Cgroup-profiler unit, whole-package coverage, and canary receipts are recorded
 for exact code tree `465f67d0`; Run-Gate `selftest` and cgroup-profiler's
 registered `r0-r1` coverage passed on evidence tree `db6d5b73`. The controller
-report records both. The evidence/report commit is `e26bfb469`; this packet
+report records both. The evidence/report commit is `43168068`; this packet
 refresh follows it, so all listed short gates must be rerun on the final quiet
 review tree. Run-Gate `assay-r1` has not yet started because admission waited
 for gates-slice capacity and was canceled before container creation. Required
-short checks are cgroup-profiler unit/coverage/canary, Nyxloom lint, Run-Gate
+short checks are cgroup-profiler unit/coverage/canary and its local Nyxloom
+lint, Run-Gate
 `selftest`, `assay-r1`, `assay-r3`, and `doctor`. The P5 footprint manifest
 must remain tracked. Candidate-image live acceptance—socket/exec parity,
 CP-19 refusal, anchored placement/restore, on-stall kill, and a matched DAMON
@@ -311,6 +312,12 @@ next Assay version to `9.1.0`. Run-Gate's source-backed Assay R1/R2 lanes do
 not certify Assay's own release suite: its registered `tester-unified` gate
 must be run on the final Assay source tree before releasing that package.
 Track this as a separate package/release hold, not as a P5 gate failure.
+
+The Run-Gate subdirectory is not a registered Nyxloom project and has no
+local `nyxloom-trove/nyxloom.toml`; local `nyxloom lint` returns L0 there.
+The controller records this scope limit in the P5 report. Do not run
+`nyxloomctl lint` for this task because its host-wide registry includes the
+forbidden `/workspaces/dstdns` checkout.
 
 The operator authorizes provisional merge only after those checks and a fresh
 Sol ACCEPT. Run exact-tree `assay-r2` and `gate-full` asynchronously in
