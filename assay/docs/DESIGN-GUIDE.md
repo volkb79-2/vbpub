@@ -3767,8 +3767,10 @@ explicit column collations. Unknown or conflicting types do not establish a
 safe widening. String `IN` widening refuses explicitly collated columns
 because the adapter cannot prove a generated literal is distinct under an
 arbitrary collation. The qualification appends one focused SQL construct
-at a time and runs a construct-specific assertion through the same
-apply/dump/test script. The
+at a time. Cases with a generated site or a historical comparison rewrite
+run a construct-specific assertion through the same apply/dump/test script;
+a no-site case without a comparison rewrite asserts the focused site count.
+The
 script writes an `apply`, `dump`, or `test` phase receipt before entering each
 phase. A current adapter-generated site that fails during apply or dump is a
 qualification error; it cannot be reported as a mutation crash or kill. The

@@ -777,10 +777,12 @@ repository or socket bind source is missing. See
 [§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
 
 The qualification also runs separate PostgreSQL hazard cases for constructs
-outside the 24-row matrix. Each focused case has a construct-specific SQL
-assertion that runs against its baseline and any historical comparison rewrite;
-generated sites are also run through the same apply/dump/test path. SQL lanes
-can use changed-lines or whole-target candidate
+outside the 24-row matrix. Cases with a generated site or a historical
+comparison rewrite carry a construct-specific SQL assertion, which runs
+against the baseline and the rewrite. A no-site case without a comparison
+rewrite asserts that the adapter emitted no focused site. Generated sites are
+also run through the same apply/dump/test path. SQL lanes can use changed-lines
+or whole-target candidate
 scope. Before site discovery, the adapter scans every tracked, recognized,
 non-test SQL source under the declared `source_roots`, including unchanged
 files, for `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` attachments,

@@ -1877,12 +1877,13 @@ in `nyxloom-trove/4-backlog.md`:
 
 - **SQL edge constructs (B132).** The registered SQL qualification includes
   a PostgreSQL hazard set separate from the representative 24-row matrix.
-  Each case has a construct-specific SQL assertion that runs against its
-  baseline and any historical comparison rewrite, and records whether
-  PostgreSQL failed during apply, dump, or test. The case definitions alone
-  are not qualification evidence; use the passing registered gate receipt for
-  the exact package commit. If a current generated site fails before its probe
-  runs, qualification fails; that is not a kill.
+  Cases with a generated site or a historical comparison rewrite have a
+  construct-specific SQL assertion that runs against the baseline and rewrite.
+  A no-site case without a comparison rewrite asserts zero focused sites.
+  Qualification records whether PostgreSQL failed during apply, dump, or test.
+  The case definitions alone are not qualification evidence; use the passing
+  registered gate receipt for the exact package commit. If a current generated
+  site fails before its probe runs, qualification fails; that is not a kill.
   The adapter offers no site for either half of a linked `UNIQUE USING INDEX`
   or `PRIMARY KEY USING INDEX` pair, or for an enum string check whose resolved
   type cannot be established.
