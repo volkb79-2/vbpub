@@ -17,9 +17,10 @@
 # physical_path()'s REAL /proc/self/mountinfo lookup against pytest's own
 # tmp_path fixtures (only `docker run` itself is faked; RG-3's dual-mount and
 # friends need a genuinely host-mounted path to resolve). Pytest's default
-# /tmp is private to tester-unified, so keep its basetemp under this
-# bind-mounted checkout. This preserves the real mountinfo comparison while
-# allowing the registered selftest lane to run in tester-unified.
+# /tmp is private to tester-unified, so keep pytest's basetemp under this
+# bind-mounted checkout. This preserves the real mountinfo comparison. Tests
+# that bind AF_UNIX sockets use their own short /tmp fixture, because pytest
+# resolves basetemp symlinks and the checkout path can exceed sun_path.
 #
 # Coverage discipline (2026-08-24 decision): the release lane enforces DIFF
 # coverage at 100% (topos/nyxloom estate pattern, vendored thin gate in
@@ -45,7 +46,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate && RUN_GATE_TMP=$(mktemp -d /tmp/rgt.XXXXXX) && RUN_GATE_TARGET= && trap 'status=$?; rm -rf \"$RUN_GATE_TMP\"; if [ -n \"$RUN_GATE_TARGET\" ]; then rm -rf \"$RUN_GATE_TARGET\"; fi; exit \"$status\"' EXIT && RUN_GATE_TARGET=$(mktemp -d .run-gate/selftest.XXXXXX) && ln -s \"$PWD/$RUN_GATE_TARGET\" \"$RUN_GATE_TMP/source\" && GIT_CEILING_DIRECTORIES=\"$(realpath \"$RUN_GATE_TMP/source\")\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp \"$RUN_GATE_TMP/source/pytest\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 

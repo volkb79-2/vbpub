@@ -471,15 +471,40 @@ def profiling_off_by_default(monkeypatch):
     which declare `[profile]`, and most of which pin an EXACT docker call
     log, argv list, or stdout/stderr — would silently pick up a new
     `docker exec <daemon> cgprofile ctl version` probe, very likely a further
-    basic-path-fallback `docker exec` (no real daemon ever runs in these
-    fixtures), a new `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new
-    disclosure lines, on every single run. `run_gate.PROFILE_AMBIENT_ENV_VAR`
+    basic-path-fallback `docker exec`, a new `-e RUN_GATE_PROFILE_SESSION=`
+    argv flag, and new disclosure lines, on every single run.
+    `run_gate.PROFILE_AMBIENT_ENV_VAR`
     (`RUN_GATE_PROFILE`, RW-17) is `resolve_profile_settings()`'s own
     unconditional 'on'/'off' override, checked before any config table — it
     exists as a real operator knob (SPEC R-43g) and this fixture reuses it.
     The RG-55 wiring tests that mean to exercise the real default explicitly
     `monkeypatch.delenv` it (or set it to 'on')."""
     monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
+
+
+@pytest.fixture(autouse=True)
+def isolate_host_profiler_socket(monkeypatch):
+    """Never let unit tests auto-select the cockpit's real host daemon."""
+    socket_path = run_gate.PROFILE_SOCKET_PATH_DEFAULT
+    real_exists = os.path.exists
+
+    def exists_without_host_socket(path):
+        try:
+            candidate = os.fspath(path)
+        except TypeError:
+            return real_exists(path)
+        if candidate == socket_path:
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(run_gate.os.path, "exists", exists_without_host_socket)
+
+
+@pytest.fixture
+def short_socket_root():
+    """AF_UNIX tests need a short path; pytest's repo-mounted tmp_path is long."""
+    with tempfile.TemporaryDirectory(prefix="rg-", dir="/tmp") as root:
+        yield Path(root)
 
 
 SIMPLE_LANE = """\
@@ -3451,31 +3476,27 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     assert "lifecycle owner's confirmation" in changes
 
 
-def test_selftest_lane_uses_bind_mounted_short_pytest_scratch_root():
-    """Keep lexical socket paths short while fixture repos stay mount-visible.
+def test_selftest_lane_uses_bind_mounted_pytest_scratch_root():
+    """Keep pytest fixture repositories mount-visible in tester-unified.
 
     Tester images need not define a working directory, so the command first
-    enters this project's directory. A repo/worktree path can exceed Linux's
-    AF_UNIX pathname limit when pytest puts socket fixtures beneath it. A
-    short per-run /tmp path is symlinked into this bind-mounted worktree:
-    socket paths stay short while doctor/mountinfo tests can still derive the
-    fixture repository's host path. Git's ceiling uses the resolved mounted
-    target so temporary repositories cannot discover the source checkout.
+    enters this project's directory. Pytest resolves its basetemp path, so a
+    symlink to /tmp does not keep fixture paths short. Keep basetemp beneath
+    this bind-mounted checkout for doctor/mountinfo tests; AF_UNIX tests use
+    their own short /tmp fixture. Git's ceiling prevents temporary repositories
+    from discovering the source checkout.
     """
     config = tomllib.loads((RUN_GATE_DIR / "run-gate.toml").read_text())
     argv = config["lanes"]["selftest"]["argv"]
 
     assert argv[:2] == ["bash", "-c"] and len(argv) == 3
     script = argv[2]
-    cwd = script.index("cd {worktree}/run-gate-project && ")
-    scratch = script.index("RUN_GATE_TMP=$(mktemp -d /tmp/rgt.XXXXXX) && ")
-    target = script.index("RUN_GATE_TARGET=$(mktemp -d .run-gate/selftest.XXXXXX)")
-    link = script.index('ln -s "$PWD/$RUN_GATE_TARGET" "$RUN_GATE_TMP/source"')
-    ceiling = script.index(
-        'GIT_CEILING_DIRECTORIES="$(realpath "$RUN_GATE_TMP/source")"')
-    assert cwd == 0
-    assert cwd < scratch < target < link < ceiling < script.index("-m pytest")
-    assert '--basetemp "$RUN_GATE_TMP/source/pytest"' in script
+    assert script.startswith(
+        "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && "
+        "RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && ")
+    assert 'RUN_GATE_ABS="$(realpath "$RUN_GATE_TMP")"' in script
+    assert 'GIT_CEILING_DIRECTORIES="$RUN_GATE_ABS"' in script
+    assert '--basetemp "$RUN_GATE_ABS"' in script
     assert "trap 'status=$?" in script
 
 
@@ -18085,8 +18106,10 @@ class TestLastSuccessful:
 # ---------------------------------------------------------------------------
 
 class TestProfilerClient:
-    def _socket_round_trip(self, tmp_path, response: str):
-        path = tmp_path / "cgprofile.sock"
+    def _socket_round_trip(self, short_socket_root: Path, response: str):
+        path = short_socket_root / "cgprofile.sock"
+        assert len(os.fsencode(path)) < 108, \
+            "AF_UNIX fixture path must be short"
         listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
                                           run_gate.socket.SOCK_STREAM)
         listener.bind(str(path))
@@ -18174,9 +18197,10 @@ class TestProfilerClient:
         assert reason is None
         assert doc == json.loads(golden)
 
-    def test_socket_start_emits_the_v11_request_shape(self, tmp_path):
+    def test_socket_start_emits_the_v11_request_shape(self, short_socket_root):
         response = '{"ok": true, "contract": 1, "session": "s-test"}\n'
-        path, received, thread = self._socket_round_trip(tmp_path, response)
+        path, received, thread = self._socket_round_trip(
+            short_socket_root, response)
         client = run_gate.ProfilerClient(
             "docker", run_gate.PROFILE_DAEMON_DEFAULT,
             transport="socket", socket_path=str(path))
@@ -18215,8 +18239,9 @@ class TestProfilerClient:
          '{"ok": true, "contract": 1, "summary": {}}\n'),
     ])
     def test_socket_request_uses_wire_args_for_non_start_verbs(
-            self, tmp_path, verb, args, body):
-        path, received, thread = self._socket_round_trip(tmp_path, body)
+            self, short_socket_root, verb, args, body):
+        path, received, thread = self._socket_round_trip(
+            short_socket_root, body)
         client = run_gate.ProfilerClient(
             "docker", run_gate.PROFILE_DAEMON_DEFAULT,
             transport="socket", socket_path=str(path))
@@ -18230,9 +18255,10 @@ class TestProfilerClient:
         assert wire["contract"] == 1
         assert wire["args"] == ({"session": args[0]} if args else {})
 
-    def test_auto_selects_socket_only_after_version_probe(self, tmp_path):
+    def test_auto_selects_socket_only_after_version_probe(
+            self, short_socket_root):
         path, received, thread = self._socket_round_trip(
-            tmp_path, '{"ok": true, "contract": 1}\n')
+            short_socket_root, '{"ok": true, "contract": 1}\n')
         client = run_gate.ProfilerClient(
             "docker", run_gate.PROFILE_DAEMON_DEFAULT,
             transport="auto", socket_path=str(path))
@@ -18266,21 +18292,23 @@ class TestProfilerClient:
         assert client.carrier == "socket"
         assert calls == ["version", "host"]
 
-    def test_socket_path_failure_is_a_profile_reason(self, tmp_path):
+    def test_socket_path_failure_is_a_profile_reason(self, short_socket_root):
         client = run_gate.ProfilerClient(
             "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="socket", socket_path=str(tmp_path / "absent.sock"))
+            transport="socket",
+            socket_path=str(short_socket_root / "absent.sock"))
         doc, reason = client.version()
         assert doc is None
         assert "path absent" in reason
 
     def test_socket_watch_stream_is_single_reader_and_preserves_events(
-            self, tmp_path):
+            self, short_socket_root):
         response = (
             '{"event":"reading","reading":{"memory_current_bytes":7}}\n'
             '{"event":"verdict","watch":{"verdict":"reported",'
             '"reason":"brief gap"}}\n')
-        path, received, thread = self._socket_round_trip(tmp_path, response)
+        path, received, thread = self._socket_round_trip(
+            short_socket_root, response)
         client = run_gate.ProfilerClient(
             "docker", run_gate.PROFILE_DAEMON_DEFAULT,
             transport="socket", socket_path=str(path))

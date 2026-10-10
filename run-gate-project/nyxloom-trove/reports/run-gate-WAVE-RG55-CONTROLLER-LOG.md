@@ -8799,3 +8799,43 @@ lane kinds with read-only dry-run probes only: never sleep, reserve, start a
 profiler session, or start the lane. Reconcile stale P5 handoff/backlog text
 with RW-283: P5 delivers R-45's bounded observational wait-then-proceed;
 RG-56's separate atomic registry admission remains OPEN and out of this wave.
+
+### RW-546 — 2026-10-10 17:07:31 UTC — separate short socket fixtures from mounted pytest scratch
+
+The next exact-tree selftest on `df380f235d2ad77d1c86768f8bc8508b327edc62`
+ran in container `run-gate-vbpub-selftest-479775-1791651043` and finished
+FAIL/exit 1: 1,832 passed, 9 failed, 2 skipped. The structured history record
+`1275570284c35ac88efc5f3e7bda2986` reports 763.287 seconds total and 163
+seconds in pytest; no mutation campaign ran. At launch, memory PSI `full
+avg10` was 0.04; the container was started after the 10-minute R-45 wait and
+received the exact-name `docker update --cpus=3`.
+
+Eight failures are the AF_UNIX client tests: pytest resolves the symlinked
+`--basetemp`, so the actual `tmp_path` remains under the long mounted
+worktree path and exceeds `sun_path`. Keep pytest basetemp under the mounted
+worktree for real mountinfo/host-path tests, but give only socket protocol
+tests a per-test short `/tmp` fixture and assert its encoded path fits the
+Unix-socket limit. The remaining failure is a static estate oracle expecting
+the established `mkdir -p .run-gate/` command prefix; retain that prefix in
+the lane command. Do not weaken or skip any failing oracle. DAMON was
+unavailable with `EBUSY` under host `DAMON_STAT=Y`; this remains telemetry,
+not a selftest verdict. Changed-line coverage and all later gates remain
+pending on the repaired committed tree.
+
+### RW-547 — 2026-10-10 17:09:27 UTC — isolate cockpit socket from fake-client tests
+
+After the host socket mount became available in the cockpit, a focused local
+run of `TestProfilerClient` showed that its default `auto` clients could
+select the real `/run/cgprofile/ctl.sock` instead of the fake Docker seam.
+The attempted fixture start was refused for an invalid token/argument and the
+fixture stop returned `unknown-session`; no session was started or stopped.
+This did not affect the registered tester-unified selftest, whose socket
+tests were failing only on path length, but it made cockpit iteration
+environment-dependent and risked accidental host-daemon traffic.
+
+Add an autouse test isolation seam that treats only the default host socket
+path as absent; explicit per-test socket fixtures continue to exercise the
+socket carrier. A per-test `/tmp` socket root is length-asserted below the
+Unix `sun_path` bound. The complete `TestProfilerClient` class, the selftest
+lane static oracle, and the bind-mounted scratch-root oracle now pass locally
+(61 passed). This is test isolation, not a product behavior change.
