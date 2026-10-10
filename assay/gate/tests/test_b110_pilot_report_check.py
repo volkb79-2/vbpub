@@ -2310,6 +2310,60 @@ def test_b110_pilot_checker_rejects_resume_progress_that_cannot_support_summary(
 
 
 @pytest.mark.parametrize(
+    ("damage", "expected_error"),
+    [
+        ("wrong-prior-commit", "no same-selection progress disposition"),
+        ("wrong-prior-totals", "prior pilot candidates event totals are invalid"),
+        ("candidate-after-end", "prior pilot candidate follows its end or terminal event"),
+        ("candidate-after-verdict", "prior pilot candidate follows its end or terminal event"),
+    ],
+)
+def test_b110_pilot_checker_rejects_invalid_prior_resume_segments(
+    tmp_path: Path,
+    damage: str,
+    expected_error: str,
+):
+    fixture = _fixture(tmp_path)
+    _write_resumed_progress(fixture)
+    path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    prior_meta = next(event for event in events if event.get("event") == "candidates")
+    if damage == "wrong-prior-commit":
+        prior_meta["commit"] = "0" * 40
+    elif damage == "wrong-prior-totals":
+        prior_meta["candidate_total"] = 0
+    else:
+        prior_candidate = next(event for event in events if event.get("event") == "candidate")
+        marker = (
+            {
+                "event": "end",
+                "candidate_total": 1,
+                "buckets": {name: 0 for name in MUTATION_BUCKETS},
+                "reason": None,
+                "emitted_at": "2026-10-09T00:00:00Z",
+                "elapsed_s": 0.5,
+            }
+            if damage == "candidate-after-end"
+            else {
+                "event": "verdict_written",
+                "outcome": "PASS",
+                "reason_code": None,
+                "exit_code": 6,
+                "destination": None,
+                "emitted_at": "2026-10-09T00:00:01Z",
+                "elapsed_s": 0.6,
+            }
+        )
+        events.insert(events.index(prior_candidate), marker)
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert expected_error in result.stderr
+
+
+@pytest.mark.parametrize(
     ("event_name", "field", "damage"),
     [
         ("resume", "emitted_at", "missing"),

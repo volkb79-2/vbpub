@@ -709,7 +709,9 @@ def test_analysis_pilot_requires_cost_measurements_and_binds_them_to_state(
         checker.verify_pilot(**evidence)
 
 
-def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
+def _checker_cli_arguments(
+    tmp_path: Path,
+) -> tuple[dict[str, object], list[str], dict[str, Path]]:
     evidence = _valid_pilot(tmp_path)
     inputs = {
         "--plan": ("plan.json", evidence["plan_raw"]),
@@ -721,9 +723,11 @@ def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
         "--deadline": ("deadline.json", evidence["deadline_raw"]),
     }
     argv: list[str] = []
+    paths: dict[str, Path] = {}
     for option, (name, payload) in inputs.items():
         path = tmp_path / name
         path.write_bytes(payload)
+        paths[option] = path
         argv.extend((option, str(path)))
     verdict = tmp_path / "verdict.json"
     argv.extend((
@@ -735,6 +739,11 @@ def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
         "--expected-wheel-sha256", evidence["expected_wheel_sha256"],
         "--expected-exit-code", str(evidence["expected_exit_code"]),
     ))
+    return evidence, argv, paths
+
+
+def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
+    _evidence, argv, _paths = _checker_cli_arguments(tmp_path)
 
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
@@ -749,6 +758,41 @@ def test_analysis_pilot_checker_cli_emits_one_completion_marker_after_complete_e
 
     assert status == 0
     assert output == "ANALYSIS_R2_PILOT_VERIFIED=1\n"
+
+
+@pytest.mark.parametrize("target", ["progress", "manifest", "deadline", "state"])
+def test_analysis_pilot_cli_rechecks_evidence_before_emitting_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+):
+    evidence, argv, paths = _checker_cli_arguments(tmp_path)
+    original_check_progress = checker._check_progress
+
+    def change_evidence_after_validation(*args, **kwargs):
+        result = original_check_progress(*args, **kwargs)
+        if target == "progress":
+            paths["--progress"].write_text("changed after validation\n", encoding="utf-8")
+        elif target in {"manifest", "deadline"}:
+            option = "--r2-manifest" if target == "manifest" else "--deadline"
+            paths[option].write_text("changed after validation\n", encoding="utf-8")
+        else:
+            identity = json.loads(evidence["summary_raw"])["candidates"][0]["id"]
+            (evidence["state_dir"] / f"{identity}.json").write_text(
+                "changed after validation\n",
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(checker, "_check_progress", change_evidence_after_validation)
+    output = io.StringIO()
+    errors = io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        status = checker.main(argv)
+
+    assert status == 2
+    assert "changed during evidence validation" in errors.getvalue()
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in output.getvalue()
 
 
 @pytest.mark.parametrize(

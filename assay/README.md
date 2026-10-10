@@ -43,7 +43,10 @@ The gate verifies pilot-summary schema `/2`, binds its recorded R2 command and
 both collection baselines to the judged source, and retains the ordered R2
 test manifest. Candidate collection evidence and each kill witness must match
 that manifest; the checker also binds per-candidate resource measurements in
-progress to the resumable state record.
+progress to the resumable state record and rechecks every evidence file before
+it emits its success marker. The registered artifact inventory includes the
+`.assay` directory because the campaign deadline filename includes the judged
+commit.
 A source checkout needs both `src` and `analysis/src` on the path for `analyze`;
 an installed wheel or zipapp needs nothing extra:
 

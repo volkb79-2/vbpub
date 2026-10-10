@@ -65,6 +65,13 @@ def _read_manifest(path: Path) -> tuple[list[str], str]:
             raw.extend(block)
         if len(raw) > _MANIFEST_MAX_BYTES:
             raise ValueError("R2 manifest exceeds the 64 MiB limit")
+        after = os.fstat(descriptor)
+        if (
+            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            or len(raw) != after.st_size
+        ):
+            raise ValueError("R2 manifest changed while it was being read")
     finally:
         os.close(descriptor)
 

@@ -42,12 +42,16 @@ _MAX_DEADLINE_BYTES = 64 * 1024
 _MAX_STATE_BYTES = 16 * 1024 * 1024
 
 
-def _read_bytes(path: Path, *, maximum: int) -> bytes:
+def _read_bytes(
+    path: Path, *, maximum: int, require_single_link: bool = False
+) -> bytes:
     pinned = common._pin_input(path)
     try:
         info = os.fstat(pinned.file_fd)
         if not stat.S_ISREG(info.st_mode):
             raise ValueError(f"{path} is not a regular file")
+        if require_single_link and info.st_nlink != 1:
+            raise ValueError(f"{path} is not a single-link regular file")
         if info.st_size > maximum:
             raise ValueError(f"{path} exceeds the {maximum}-byte limit")
         chunks: list[bytes] = []
@@ -60,9 +64,66 @@ def _read_bytes(path: Path, *, maximum: int) -> bytes:
             total += len(chunk)
             if total > maximum:
                 raise ValueError(f"{path} exceeds the {maximum}-byte limit")
+        after = os.fstat(pinned.file_fd)
+        if (
+            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            or total != after.st_size
+        ):
+            raise ValueError(f"{path} changed while it was being read")
         return b"".join(chunks)
     finally:
         pinned.close()
+
+
+def _verify_unchanged_evidence(
+    *,
+    inputs: list[tuple[str, Path, bytes, int]],
+    manifest_path: Path,
+    manifest_sha256: str,
+    state_dir: Path,
+    state_snapshot: dict[str, Any],
+) -> None:
+    for label, path, expected, maximum in inputs:
+        current = _read_bytes(path, maximum=maximum)
+        if current != expected:
+            raise ValueError(f"pilot {label} changed during evidence validation")
+
+    manifest_raw = _read_bytes(
+        manifest_path,
+        maximum=pilot_r2_evidence._MANIFEST_MAX_BYTES,
+        require_single_link=True,
+    )
+    if hashlib.sha256(manifest_raw).hexdigest() != manifest_sha256:
+        raise ValueError("pilot R2 manifest changed during evidence validation")
+
+    try:
+        state_info = state_dir.lstat()
+    except OSError as exc:
+        raise ValueError(f"pilot state directory changed during evidence validation: {exc}") from exc
+    if (
+        stat.S_ISLNK(state_info.st_mode)
+        or not stat.S_ISDIR(state_info.st_mode)
+        or (state_info.st_dev, state_info.st_ino)
+        != state_snapshot["identity"]
+    ):
+        raise ValueError("pilot state directory changed during evidence validation")
+    try:
+        entries = list(os.scandir(state_dir))
+    except OSError as exc:
+        raise ValueError(f"cannot recheck pilot state inventory: {exc}") from exc
+    names: set[str] = set()
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+            raise ValueError(f"pilot state entry {entry.name!r} changed during evidence validation")
+        names.add(entry.name)
+    if names != set(state_snapshot["names"]):
+        raise ValueError("pilot state inventory changed during evidence validation")
+    for name, expected_sha256 in state_snapshot["hashes"].items():
+        maximum = _MAX_DEADLINE_BYTES if name == "PILOT-STATE" else _MAX_STATE_BYTES
+        current = _read_bytes(state_dir / name, maximum=maximum)
+        if hashlib.sha256(current).hexdigest() != expected_sha256:
+            raise ValueError(f"pilot state record {name} changed during evidence validation")
 
 
 def _json(raw: bytes, *, label: str) -> Any:
@@ -345,8 +406,13 @@ def _check_pilot_state(
     outcome_by_id: dict[str, dict[str, Any]],
     deadline_sha256: str,
     r2_baselines: dict[str, Any],
+    artifact_snapshot: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, dict[str, Any]]]:
-    if state_dir.is_symlink() or not state_dir.is_dir():
+    try:
+        state_info = state_dir.lstat()
+    except OSError as exc:
+        raise ValueError(f"pilot state directory is missing or unreadable: {exc}") from exc
+    if stat.S_ISLNK(state_info.st_mode) or not stat.S_ISDIR(state_info.st_mode):
         raise ValueError("pilot state directory is missing or is a symlink")
     expected_names = {"PILOT-STATE", *(f"{identity}.json" for identity in selected_ids)}
     try:
@@ -360,9 +426,20 @@ def _check_pilot_state(
         observed_names.add(entry.name)
     if observed_names != expected_names:
         raise ValueError("pilot state inventory differs from the selected candidates")
+    if artifact_snapshot is not None:
+        artifact_snapshot.update(
+            identity=(state_info.st_dev, state_info.st_ino),
+            names=tuple(sorted(observed_names)),
+            hashes={},
+        )
     sentinel_path = state_dir / "PILOT-STATE"
+    sentinel_raw = _read_bytes(sentinel_path, maximum=_MAX_DEADLINE_BYTES)
+    if artifact_snapshot is not None:
+        artifact_snapshot["hashes"]["PILOT-STATE"] = hashlib.sha256(
+            sentinel_raw
+        ).hexdigest()
     sentinel = _json(
-        _read_bytes(sentinel_path, maximum=_MAX_DEADLINE_BYTES),
+        sentinel_raw,
         label="PILOT-STATE",
     )
     if (
@@ -383,8 +460,17 @@ def _check_pilot_state(
     resources_by_id: dict[str, dict[str, Any]] = {}
     judge_identities: set[str] = set()
     for identity in selected_ids:
+        record_name = f"{identity}.json"
+        record_raw = _read_bytes(
+            state_dir / record_name,
+            maximum=_MAX_STATE_BYTES,
+        )
+        if artifact_snapshot is not None:
+            artifact_snapshot["hashes"][record_name] = hashlib.sha256(
+                record_raw
+            ).hexdigest()
         record = _json(
-            _read_bytes(state_dir / f"{identity}.json", maximum=_MAX_STATE_BYTES),
+            record_raw,
             label=f"pilot state record {identity}",
         )
         planned = plan_by_id[identity]
@@ -866,7 +952,7 @@ def verify_pilot(
     expected_exit_code: int,
     repo_root: Path,
     r2_manifest_path: Path,
-) -> None:
+) -> dict[str, Any]:
     if _HEX40.fullmatch(expected_commit) is None or _HEX40.fullmatch(expected_tree) is None:
         raise ValueError("expected commit and tree must be full lowercase Git ids")
     if type(expected_exit_code) is not int or expected_exit_code != 6:
@@ -978,6 +1064,7 @@ def verify_pilot(
     if r2 != expected_r2:
         raise ValueError("pilot R2 result differs from the validated candidate outcomes")
 
+    state_snapshot: dict[str, Any] = {}
     expected_judge_sha256, state_resources_by_id = _check_pilot_state(
         state_dir,
         selected_ids=selected_ids,
@@ -985,6 +1072,7 @@ def verify_pilot(
         outcome_by_id=outcome_by_id,
         deadline_sha256=deadline_sha256,
         r2_baselines=r2_baselines,
+        artifact_snapshot=state_snapshot,
     )
     if summary.get("judge_sha256") != expected_judge_sha256:
         raise ValueError("pilot summary judge_sha256 differs from state and progress")
@@ -999,6 +1087,10 @@ def verify_pilot(
         state_resources_by_id=state_resources_by_id,
         summary_r2=r2,
     )
+    return {
+        "manifest_sha256": r2_baselines["manifest_sha256"],
+        "state_snapshot": state_snapshot,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1021,13 +1113,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verdict.exists() or args.verdict.is_symlink():
             raise ValueError("pilot created a verdict artifact; B131 pilot is measurement only")
-        verify_pilot(
-            plan_raw=_read_bytes(args.plan, maximum=_MAX_JSON_BYTES),
-            selection_raw=_read_bytes(args.selection, maximum=_MAX_JSON_BYTES),
-            candidates_raw=_read_bytes(args.candidates, maximum=common._CANDIDATE_FILE_LIMIT),
-            summary_raw=_read_bytes(args.summary, maximum=_MAX_JSON_BYTES),
-            progress_raw=_read_bytes(args.progress, maximum=_MAX_PROGRESS_BYTES),
-            deadline_raw=_read_bytes(args.deadline, maximum=_MAX_DEADLINE_BYTES),
+        plan_raw = _read_bytes(args.plan, maximum=_MAX_JSON_BYTES)
+        selection_raw = _read_bytes(args.selection, maximum=_MAX_JSON_BYTES)
+        candidates_raw = _read_bytes(
+            args.candidates, maximum=common._CANDIDATE_FILE_LIMIT
+        )
+        summary_raw = _read_bytes(args.summary, maximum=_MAX_JSON_BYTES)
+        progress_raw = _read_bytes(args.progress, maximum=_MAX_PROGRESS_BYTES)
+        deadline_raw = _read_bytes(args.deadline, maximum=_MAX_DEADLINE_BYTES)
+        snapshot = verify_pilot(
+            plan_raw=plan_raw,
+            selection_raw=selection_raw,
+            candidates_raw=candidates_raw,
+            summary_raw=summary_raw,
+            progress_raw=progress_raw,
+            deadline_raw=deadline_raw,
             state_dir=args.state_dir,
             expected_commit=args.expected_commit,
             expected_tree=args.expected_tree,
@@ -1036,6 +1136,27 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=args.repo_root,
             r2_manifest_path=args.r2_manifest,
         )
+        _verify_unchanged_evidence(
+            inputs=[
+                ("plan", args.plan, plan_raw, _MAX_JSON_BYTES),
+                ("selection", args.selection, selection_raw, _MAX_JSON_BYTES),
+                (
+                    "candidate file",
+                    args.candidates,
+                    candidates_raw,
+                    common._CANDIDATE_FILE_LIMIT,
+                ),
+                ("summary", args.summary, summary_raw, _MAX_JSON_BYTES),
+                ("progress", args.progress, progress_raw, _MAX_PROGRESS_BYTES),
+                ("deadline", args.deadline, deadline_raw, _MAX_DEADLINE_BYTES),
+            ],
+            manifest_path=args.r2_manifest,
+            manifest_sha256=snapshot["manifest_sha256"],
+            state_dir=args.state_dir,
+            state_snapshot=snapshot["state_snapshot"],
+        )
+        if args.verdict.exists() or args.verdict.is_symlink():
+            raise ValueError("pilot created a verdict artifact; B131 pilot is measurement only")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"analysis_r2_pilot_check: {exc}", file=sys.stderr)
         return 2

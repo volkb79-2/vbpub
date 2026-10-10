@@ -5142,7 +5142,11 @@ resource counters and actual exit before returning success. It writes
 effective R2 command, configuration digest and coverage/R2 baselines. The
 checker compares the manifest with the R2 baseline, binds candidate collection
 evidence and kill-witness nodes to that manifest, and compares progress resource
-measurements with state.
+measurements with state. Before it emits the success marker, it rereads and
+compares every input and state record with the bytes it validated. The campaign
+deadline is named
+`.assay/campaign-deadline-analysis-r2-pilot-<commit12>.json`; run-gate declares
+the `.assay` directory to disclose this commit-specific artifact.
 
 Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
 operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`

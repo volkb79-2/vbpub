@@ -4437,7 +4437,10 @@ also requires candidate elapsed and phase evidence and binds CPU/RSS/phase/
 startup measurements between progress and resumable state. The host binds the
 selection and completed exit-6 summary to the clean source commit/tree, plan
 bytes, wheel identity, candidate file, state, progress and B145 resource
-evidence. No verdict is written: a completed sample
+evidence, then the checker rereads those files and rechecks the state inventory
+before emitting success. The run-gate artifact inventory declares `.assay` to
+expose the campaign deadline file, whose name includes the source commit. No
+verdict is written: a completed sample
 is a measurement, while timeout, partial state, host refusal or resource limit
 is incomplete. Only measurements from this pilot may set an analysis-specific
 worker envelope, full-run budget and GO policy; a separate stage must add and

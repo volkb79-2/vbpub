@@ -909,6 +909,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     assert lane["resources"] == {"shared": ["assay-self-qualification"]}
     assert lane["exit_map"] == {"3": "ERROR"}
     assert lane["artifacts"] == [
+        ".assay",
         ".assay/analysis-r2-pilot-plan.json",
         ".assay/analysis-r2-pilot-candidates.txt",
         ".assay/analysis-r2-pilot-selection.json",

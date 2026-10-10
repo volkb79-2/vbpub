@@ -128,6 +128,8 @@ artifacts = [
 # state store and report checker bind the bounded sample to the exact plan,
 # commit, tree, wheel, campaign deadline, collected test manifest,
 # cold-witness/resource evidence and per-candidate measurements.
+# The campaign deadline filename includes the judged commit, so disclose its
+# containing state directory alongside the fixed-name pilot artifacts.
 [lanes.analysis-r2-pilot]
 kind = "command"
 environment = "bare-host"
@@ -137,6 +139,7 @@ resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "140m"
 artifacts = [
+  ".assay",
   ".assay/analysis-r2-pilot-plan.json",
   ".assay/analysis-r2-pilot-candidates.txt",
   ".assay/analysis-r2-pilot-selection.json",

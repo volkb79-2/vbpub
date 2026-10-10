@@ -961,26 +961,104 @@ def _verify_progress(
             break
         segment = events[segment_start:segment_end]
         run = segment[0]
-        if run.get("lane") != "self-qualification" or run.get("commit") != expected_commit:
-            continue
-        meta = [event for event in segment if event.get("event") == "candidates"]
         if (
-            len(meta) != 1
-            or meta[0].get("judge_sha256") != judge_sha256
-            or meta[0].get("selection_sha256") != selection_sha256
+            run.get("lane") != "self-qualification"
+            or run.get("commit") != expected_commit
+            or not isinstance(run.get("rigor"), list)
+            or "R2" not in run["rigor"]
         ):
             continue
-        for event in segment:
+        meta = [event for event in segment if event.get("event") == "candidates"]
+        if len(meta) != 1:
+            continue
+        candidates_meta = meta[0]
+        if (
+            candidates_meta.get("commit") != expected_commit
+            or candidates_meta.get("judge_sha256") != judge_sha256
+            or candidates_meta.get("selection_sha256") != selection_sha256
+        ):
+            continue
+        prior_total = candidates_meta.get("candidate_total")
+        prior_selected = candidates_meta.get("selected_total")
+        prior_pending = candidates_meta.get("pending_total")
+        if (
+            type(prior_total) is not int
+            or prior_total != len(selected_ids)
+            or type(prior_selected) is not int
+            or prior_selected != len(selected_ids)
+            or type(prior_pending) is not int
+            or prior_pending < 0
+            or prior_pending > len(selected_ids)
+        ):
+            raise ValueError("prior pilot candidates event totals are invalid")
+
+        meta_position = next(index for index, event in enumerate(segment) if event is candidates_meta)
+        end_positions = [
+            index for index, event in enumerate(segment)
+            if event.get("event") == "end"
+        ]
+        verdict_positions = [
+            index for index, event in enumerate(segment)
+            if event.get("event") == "verdict_written"
+        ]
+        if (
+            len(end_positions) > 1
+            or len(verdict_positions) > 1
+            or (
+                end_positions
+                and verdict_positions
+                and end_positions[0] > verdict_positions[0]
+            )
+        ):
+            raise ValueError("prior pilot progress has malformed terminal ordering")
+        candidate_positions = [
+            index for index, event in enumerate(segment)
+            if event.get("event") == "candidate"
+        ]
+        terminal_boundary = min(
+            [*end_positions, *verdict_positions], default=len(segment)
+        )
+        if any(index >= terminal_boundary for index in candidate_positions):
+            raise ValueError("prior pilot candidate follows its end or terminal event")
+        if verdict_positions and verdict_positions[0] != len(segment) - 1:
+            raise ValueError("prior pilot progress has malformed terminal ordering")
+        if not candidate_positions:
+            continue
+        baseline_positions = [
+            index for index, event in enumerate(segment)
+            if event.get("event") == "baseline"
+        ]
+        if (
+            len(baseline_positions) != 1
+            or baseline_positions[0] <= meta_position
+            or any(index <= baseline_positions[0] for index in candidate_positions)
+        ):
+            raise ValueError("prior pilot candidates are not ordered after their baseline")
+
+        prior_ids: set[str] = set()
+        prior_indexes: set[int] = set()
+        for index in candidate_positions:
+            event = segment[index]
             identity = event.get("candidate_id")
+            candidate_index = event.get("candidate_index")
             if (
-                event.get("event") == "candidate"
-                and isinstance(identity, str)
-                and identity in selected_ids
+                not isinstance(identity, str)
+                or identity not in selected_ids
+                or identity in prior_ids
+                or type(candidate_index) is not int
+                or candidate_index < 0
+                or candidate_index >= prior_pending
+                or candidate_index in prior_indexes
+                or type(event.get("candidate_total")) is not int
+                or event["candidate_total"] != prior_pending
             ):
-                require_candidate_matches_plan(
-                    event, identity, context="prior pilot progress"
-                )
-                previous_by_id[identity] = event
+                raise ValueError("prior pilot candidate event has invalid identity or totals")
+            require_candidate_matches_plan(
+                event, identity, context="prior pilot progress"
+            )
+            prior_ids.add(identity)
+            prior_indexes.add(candidate_index)
+            previous_by_id[identity] = event
 
     return {
         "sha256": hashlib.sha256(raw).hexdigest(),
