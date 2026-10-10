@@ -3437,12 +3437,12 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
 def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
-    # The tagged release remains source rev 55; RG-90 is the current
-    # unreleased revision. RG-89 stays at the revision that introduced its
-    # observer contract. Historical release metadata must not drift when the
-    # launcher revision advances.
+    # The tagged release remains source rev 55. RG-90's telemetry change is
+    # historical at rev 60; the restored P5 transport is the current rev 61.
+    # RG-89 stays at the revision that introduced its observer contract.
     assert "This section describes released source rev 55." in changes
-    assert f"RG-90, rev {run_gate.__revision__}" in changes
+    assert "RG-90, rev 60" in changes
+    assert f"RG-55/P5, rev {run_gate.__revision__}" in changes
     assert "RG-89, rev 58" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
@@ -3451,15 +3451,14 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     assert "lifecycle owner's confirmation" in changes
 
 
-def test_selftest_lane_creates_scratch_root_before_pytest_and_ceiling():
-    """The selftest lane enters the project and creates its scratch root.
+def test_selftest_lane_uses_short_per_run_pytest_scratch_root():
+    """The selftest lane uses a short unique temp root for AF_UNIX tests.
 
-    pytest `--basetemp` makes only the leaf directory (no parents), and in a
-    fresh checkout `.run-gate/` does not exist, so without the leading
-    `mkdir -p` pytest dies before collecting anything. Tester images need not
-    define a working directory, so the command must first enter this project's
-    directory in the selected worktree. The same scratch path anchors
-    GIT_CEILING_DIRECTORIES, so the mkdir must run before both.
+    Tester images need not define a working directory, so the command first
+    enters this project's directory. A repo/worktree path can exceed Linux's
+    AF_UNIX pathname limit when pytest puts socket fixtures beneath it; use a
+    short per-run /tmp root and make that same path Git's ceiling so temporary
+    repositories cannot discover the source checkout above it.
     """
     config = tomllib.loads((RUN_GATE_DIR / "run-gate.toml").read_text())
     argv = config["lanes"]["selftest"]["argv"]
@@ -3467,12 +3466,11 @@ def test_selftest_lane_creates_scratch_root_before_pytest_and_ceiling():
     assert argv[:2] == ["bash", "-c"] and len(argv) == 3
     script = argv[2]
     cwd = script.index("cd {worktree}/run-gate-project && ")
-    mkdir = script.index("mkdir -p .run-gate/selftest-tmp && ")
+    scratch = script.index("RUN_GATE_TMP=$(mktemp -d /tmp/rgt.XXXXXX) && ")
+    ceiling = script.index('GIT_CEILING_DIRECTORIES="$RUN_GATE_TMP"')
     assert cwd == 0
-    assert cwd < mkdir
-    assert mkdir < script.index("GIT_CEILING_DIRECTORIES=")
-    assert mkdir < script.index("-m pytest")
-    assert "--basetemp .run-gate/selftest-tmp" in script
+    assert cwd < scratch < ceiling < script.index("-m pytest")
+    assert '--basetemp "$RUN_GATE_TMP"' in script
 
 
 def test_source_and_external_assay_commands_have_distinct_probe_identity():
@@ -20672,6 +20670,8 @@ class TestContainerProfilingDefensiveBranches:
         monkeypatch.setattr(run_gate, "physical_path", lambda path: path)
         monkeypatch.setattr(run_gate, "dual_mount_flags",
                             lambda *args: ["-v", "host:container"])
+        monkeypatch.setattr(run_gate, "git_config_overlay_flags",
+                            lambda *_args, **_kwargs: [])
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *args: None)
         monkeypatch.setattr(run_gate, "prepare_profile_start",
                             lambda *args, **kwargs: {"state": "admitted"})
@@ -21336,8 +21336,14 @@ class TestBareHostProfilingWiring:
                 raise OSError("planted bare watch failure")
 
         class Process:
+            returncode = None
+
             def wait(self, timeout=None):
+                self.returncode = 0
                 return 0
+
+            def poll(self):
+                return self.returncode
 
         repo = make_repo(tmp_path)
         fake_docker(tmp_path, monkeypatch)
@@ -21391,15 +21397,22 @@ class TestBareHostProfilingWiring:
                 return Watch()
 
         class Process:
+            pid = 4242
+
             def __init__(self):
                 self.wait_calls = 0
                 self.terminated = False
+                self.returncode = None
 
             def wait(self, timeout=None):
                 self.wait_calls += 1
                 if timeout is not None and not self.terminated:
                     raise subprocess.TimeoutExpired("bare lane", timeout)
+                self.returncode = 0
                 return 0
+
+            def poll(self):
+                return self.returncode
 
             def terminate(self):
                 self.terminated = True
@@ -21412,8 +21425,17 @@ class TestBareHostProfilingWiring:
                                 "daemon": "d", "session": "s-bare-killed",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
+        process = Process()
+        killpg_calls = []
+
+        def _killpg(pid, sig):
+            assert pid == process.pid
+            killpg_calls.append(sig)
+            process.terminated = True
+
+        monkeypatch.setattr(run_gate.os, "killpg", _killpg)
         monkeypatch.setattr(run_gate.subprocess, "Popen",
-                            lambda *args, **kwargs: Process())
+                            lambda *args, **kwargs: process)
         monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
                             lambda *args, **kwargs: {"resources": None,
                                                      "profile_error": None,
@@ -21427,6 +21449,8 @@ class TestBareHostProfilingWiring:
                 {"kind": "command", "environment": "bare-host",
                  "argv": ["true"], "clean_tree": False},
                 "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+        assert process.terminated
+        assert len(killpg_calls) == 1
 
     def test_bare_host_ended_watch_reattaches_then_continues_without_liveness(
             self, tmp_path, monkeypatch, capsys):
@@ -21458,12 +21482,17 @@ class TestBareHostProfilingWiring:
         class Process:
             def __init__(self):
                 self.wait_calls = 0
+                self.returncode = None
 
             def wait(self, timeout=None):
                 self.wait_calls += 1
                 if timeout is not None and self.wait_calls <= 2:
                     raise subprocess.TimeoutExpired("bare lane", timeout)
+                self.returncode = 0
                 return 0
+
+            def poll(self):
+                return self.returncode
 
         repo = make_repo(tmp_path)
         fake_docker(tmp_path, monkeypatch)
@@ -21519,12 +21548,17 @@ class TestBareHostProfilingWiring:
         class Process:
             def __init__(self):
                 self.wait_calls = 0
+                self.returncode = None
 
             def wait(self, timeout=None):
                 self.wait_calls += 1
                 if timeout is not None and self.wait_calls == 1:
                     raise subprocess.TimeoutExpired("bare lane", timeout)
+                self.returncode = 0
                 return 0
+
+            def poll(self):
+                return self.returncode
 
         repo = make_repo(tmp_path)
         fake_docker(tmp_path, monkeypatch)

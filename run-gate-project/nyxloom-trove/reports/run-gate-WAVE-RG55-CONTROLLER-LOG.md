@@ -8742,3 +8742,34 @@ assay-r1 708/807 MiB, selftest 568/777 MiB, and unknown assay-r3 peak; the
 consumer transcript is updated. This data-only commit is the final candidate
 tree; rerun the exact short gates and doctor after commit. No R2/full gate,
 merge, or release is in progress.
+
+### RW-544 — 2026-10-10 16:14:25 UTC — restore P5 test portability after first integrated selftest
+
+On exact P5 candidate `baee9f92e9d4c978f8048952f75dbc1d533001ea` (based on
+the Assay B114 / RG-89 integration `83c7d4a21a30ba1180a16c50e3092c326a91e4f7`),
+Run-Gate `selftest` completed after its 10-minute headroom wait. The separate
+history record `06e7ce35a84b4035e3e6f54a103eb5d0` is FAIL/exit 1: 1,823 passed,
+14 failed, 2 skipped; pytest took 164 seconds. No mutation campaign ran.
+
+The 14 failures group into four test/harness causes, not yet evidence of a
+production behavior failure: eight AF_UNIX client tests failed before their
+protocol assertions because `.run-gate/selftest-tmp` plus the linked-worktree
+path exceeded Linux's socket-path limit; four bare-host tests used `Popen`
+fakes missing `poll()` and (for the kill case) process-group behavior; the
+container placement test's Docker-only `subprocess.run` fake also intercepted
+Git config sanitization; and the changelog oracle treated RG-90 rev 60 as the
+current revision after P5 restored rev 61. The repair moves pytest's per-run
+scratch root to a short `/tmp` path with the same Git ceiling, completes those
+test doubles, isolates the config seam, and records the revision boundary.
+Fifteen focused regressions pass after this repair; full selftest, changed-line
+coverage, and all final gates remain pending.
+
+The profile history records container memory peak 672,120,832 bytes, gates
+slice peak 1,048,674,304 bytes, zero OOM kills and zero memory-limit drift,
+with memory PSI `full avg10` 0.12% at the end. The profiler used the socket
+carrier and correctly disclosed DAMON unavailable with `EBUSY` under the
+restored host `DAMON_STAT=Y`; this did not affect the gate result. The lane
+declared a 3-CPU cap; the temporary post-launch `docker update` watcher left no
+receipt before the exact container was removed, so this log does not claim a
+separate update confirmation. The next selftest must capture its exact
+container cap at launch.

@@ -45,7 +45,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/selftest-tmp && GIT_CEILING_DIRECTORIES=\"$PWD/.run-gate/selftest-tmp\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp .run-gate/selftest-tmp --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && RUN_GATE_TMP=$(mktemp -d /tmp/rgt.XXXXXX) && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_TMP\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp \"$RUN_GATE_TMP\" --cov=. --cov-branch --cov-report=json:coverage.json && exec /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 

@@ -10,7 +10,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Added
 - feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
-- feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence
+- feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence (RG-55/P5, rev 61)
 
 ### Changed
 - maintenance(run-gate): refresh the tracked lane-footprint manifest and consumer transcript from current daemon-backed histories; keep the short-lived assay-r3 memory peak unknown when profiling cannot attach
