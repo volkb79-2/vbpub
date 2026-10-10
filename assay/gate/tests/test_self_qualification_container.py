@@ -28,7 +28,9 @@ REPO_ROOT = PROJECT_ROOT.parent
 SCRIPT = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
 CGROUP_HELPER = PROJECT_ROOT / "tools" / "cgroup-parent.sh"
 PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "b110_pilot_host_check.py"
+ANALYSIS_PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "analysis_r2_pilot_host_check.py"
 CONTAINER_ID = "a" * 64
+ANALYSIS_PILOT_ATTESTATION = "f" * 64
 
 
 FAKE_GIT = r'''#!/usr/bin/env python3
@@ -373,18 +375,18 @@ if args and args[0] == "logs":
             )
         elif mode == "analysis-pilot-duplicate-marker":
             print("ANALYSIS_R2_PILOT_EXIT=6")
-            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
-            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "f" * 64)
+            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "f" * 64)
         elif mode == "analysis-pilot-premature-final-marker":
             print("ANALYSIS_R2_PILOT_EXIT=6")
-            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "f" * 64)
             print("ANALYSIS_R2_PILOT_VERIFIED=1")
         else:
             print("ANALYSIS_R2_PILOT_EXIT=6")
             if mode == "analysis-pilot-b110-marker":
                 print("B110_SCREEN_EXIT=1")
             if mode != "analysis-pilot-unverified":
-                print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+                print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "f" * 64)
     sys.stdout.flush()
     raise SystemExit(0)
 if args and args[0] == "stop":
@@ -418,6 +420,7 @@ def committed_worktree():
     shutil.copy2(SCRIPT, project / "tools" / SCRIPT.name)
     shutil.copy2(CGROUP_HELPER, project / "tools" / CGROUP_HELPER.name)
     shutil.copy2(PILOT_HOST_CHECK, project / "tools" / PILOT_HOST_CHECK.name)
+    shutil.copy2(ANALYSIS_PILOT_HOST_CHECK, project / "tools" / ANALYSIS_PILOT_HOST_CHECK.name)
 
     def git(*args: str) -> None:
         subprocess.run(
@@ -598,8 +601,38 @@ def run_launcher(
         or host_receipt_write_fails
         or host_archive_receipt_move_fails
         or host_archive_receipt_read_fails
+        or lane == "analysis-r2-pilot"
     ):
         injected_parts = []
+        if lane == "analysis-r2-pilot":
+            injected_parts.append("""
+if '--expected-sha256' in sys.argv:
+    expected = sys.argv[sys.argv.index('--expected-sha256') + 1]
+    if os.environ.get('DOCKER_MODE') == 'analysis-host-check-dirties-evidence':
+        counter_path = __import__('pathlib').Path(os.environ['ANALYSIS_HOST_CHECK_CALL_COUNT'])
+        count = int(counter_path.read_text(encoding='ascii')) if counter_path.exists() else 0
+        counter_path.write_text(str(count + 1), encoding='ascii')
+        if count == 0:
+            summary = __import__('pathlib').Path(
+                os.environ['DOCKER_WORKTREE'], 'assay', '.assay', 'analysis-r2-pilot-summary.json'
+            )
+            summary.parent.mkdir(parents=True, exist_ok=True)
+            summary.write_text('changed during outer source check\\n', encoding='ascii')
+        else:
+            print('injected final B131 evidence refusal', file=sys.stderr)
+            raise SystemExit(42)
+        print('ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED=' + expected)
+        raise SystemExit(0)
+    if os.environ.get('DOCKER_MODE') == 'analysis-host-check-fails':
+        print('injected B131 host evidence refusal', file=sys.stderr)
+        raise SystemExit(42)
+    if os.environ.get('DOCKER_MODE') == 'analysis-host-check-dirties':
+        __import__('pathlib').Path(os.environ['DOCKER_WORKTREE'], 'assay', 'README.md').write_text(
+            'changed during final B131 host verification\\n', encoding='utf-8'
+        )
+    print('ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED=' + expected)
+    raise SystemExit(0)
+""")
         if host_verify_fails:
             injected_parts.append(
                 "if '--verify-published-snapshot' in sys.argv:\n"
@@ -692,6 +725,7 @@ if '--archive-prior-snapshot' in sys.argv:
             "1" if tamper_host_checker_after_final_status else "0"
         ),
         "HOST_CHECKER_TAMPER_COUNT": str(tmp_path / "host-checker-tamper-count"),
+        "ANALYSIS_HOST_CHECK_CALL_COUNT": str(tmp_path / "analysis-host-check-call-count"),
         "TIMEOUT_TRACE": str(tmp_path / "timeout.jsonl"),
         "FAST_DOCKER_TIMEOUT": "1" if fast_docker_timeout else "0",
     }
@@ -893,9 +927,12 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         ("b110-pilot", "pilot-campaign-expired", "two-hour campaign deadline is not active"),
         ("analysis-r2-pilot", "analysis-pilot-incomplete", "complete exit status (6)"),
         ("analysis-r2-pilot", "analysis-pilot-b110-marker", "B110-mode marker"),
-        ("analysis-r2-pilot", "analysis-pilot-unverified", "evidence verification marker"),
-        ("analysis-r2-pilot", "analysis-pilot-duplicate-marker", "evidence verification marker"),
+        ("analysis-r2-pilot", "analysis-pilot-unverified", "evidence-attestation digest"),
+        ("analysis-r2-pilot", "analysis-pilot-duplicate-marker", "exactly one evidence-attestation digest"),
         ("analysis-r2-pilot", "analysis-pilot-premature-final-marker", "outer completion marker"),
+        ("analysis-r2-pilot", "analysis-host-check-fails", "host rejected B131 pilot evidence"),
+        ("analysis-r2-pilot", "analysis-host-check-dirties-evidence", "host rejected B131 pilot evidence during the final publication check"),
+        ("analysis-r2-pilot", "analysis-host-check-dirties", "selected worktree became dirty during final B131 host verification"),
     ],
 )
 def test_b110_child_evidence_is_required_before_outer_completion(
@@ -920,6 +957,14 @@ def test_analysis_r2_pilot_emits_lane_specific_launch_markers(
     assert proc.returncode == 0, proc.stderr
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_WAIT_TIMEOUT=2h15m" in proc.stdout
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER=run-gate-assay-analysis-r2-pilot-" in proc.stdout
+    commit = subprocess.run(
+        ["git", "-C", str(committed_worktree), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert (
+        "ASSAY_ANALYSIS_R2_PILOT_DEADLINE_ARTIFACT="
+        f"{committed_worktree}/assay/.assay/campaign-deadline-analysis-r2-pilot-{commit[:12]}.json"
+    ) in proc.stdout
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" in proc.stdout
     assert "ASSAY_B105_GATE_WAIT_TIMEOUT=" not in proc.stdout
 
@@ -931,7 +976,8 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
     checker_dir.mkdir()
     checker_status, checker_output = _run_checker_cli_with_valid_evidence(checker_dir)
     assert checker_status == 0
-    assert checker_output == "ANALYSIS_R2_PILOT_VERIFIED=1\n"
+    attestation_sha256 = checker_output.strip().split("=", 1)[1]
+    assert checker_output == f"ANALYSIS_R2_PILOT_VERIFIED={attestation_sha256}\n"
 
     inner_dir = tmp_path / "inner"
     inner_dir.mkdir()
@@ -942,7 +988,10 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
     )
     assert inner_proc.returncode == 0, inner_proc.stderr
     assert "STATUS=0" in inner_proc.stdout
-    assert inner_proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1") == 1
+    checker_marker = f"ANALYSIS_R2_PILOT_CHECKER_VERIFIED={attestation_sha256}"
+    host_marker = f"ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED={attestation_sha256}"
+    assert inner_proc.stdout.count(checker_marker) == 1
+    assert host_marker not in inner_proc.stdout
     assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in inner_proc.stdout
 
     inner_log = tmp_path / "container-inner.log"
@@ -957,15 +1006,21 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
         inner_pilot_log=inner_log,
     )
     assert outer_proc.returncode == 0, outer_proc.stderr
-    assert outer_proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1") == 1
+    assert outer_proc.stdout.count(checker_marker) == 1
+    assert outer_proc.stdout.count(host_marker) == 1
     assert outer_proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 1
     container_exit_position = outer_proc.stdout.index(
         "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=0"
     )
-    checker_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+    checker_marker_position = outer_proc.stdout.index(checker_marker)
+    host_marker_position = outer_proc.stdout.index(host_marker)
     outer_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_VERIFIED=1")
     complete_position = outer_proc.stdout.index("ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot")
-    assert checker_marker_position < container_exit_position < outer_marker_position < complete_position
+    # The checker marker originates in the container and may reach the live
+    # log follower on either side of the docker-wait result. The host
+    # attestation must be emitted only after the container has exited, and the
+    # outer success marker must follow that host-side check.
+    assert container_exit_position < host_marker_position < outer_marker_position < complete_position
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" in outer_proc.stdout
 
 
@@ -980,7 +1035,7 @@ def test_analysis_r2_pilot_outer_marker_waits_for_final_source_check(
     )
 
     assert proc.returncode != 0
-    assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1" in proc.stdout
+    assert f"ANALYSIS_R2_PILOT_CHECKER_VERIFIED={ANALYSIS_PILOT_ATTESTATION}" in proc.stdout
     assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" not in proc.stdout
     assert "selected worktree became dirty during B105 qualification" in proc.stderr

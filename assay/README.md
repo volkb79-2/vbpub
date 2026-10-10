@@ -44,9 +44,13 @@ both collection baselines to the judged source, and retains the ordered R2
 test manifest. Candidate collection evidence and each kill witness must match
 that manifest; the checker also binds per-candidate resource measurements in
 progress to the resumable state record and rechecks every evidence file before
-it emits its success marker. The registered artifact inventory includes the
-`.assay` directory because the campaign deadline filename includes the judged
-commit.
+it emits its attestation marker. The registered host runner checks the
+attestation again after the judge container exits, comparing file identity,
+content, hard-link count and the exact state inventory. It prints the resolved
+commit-specific campaign-deadline path in the gate output; the `.assay`
+directory entry alone does not identify that file. Before completion, the host
+also rechecks the judged commit/tree and clean worktree, then confirms that the
+campaign deadline remains active.
 A source checkout needs both `src` and `analysis/src` on the path for `analyze`;
 an installed wheel or zipapp needs nothing extra:
 

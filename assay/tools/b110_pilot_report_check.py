@@ -51,6 +51,7 @@ _LIMITS = {
 }
 _MAX_PROGRESS_EVENTS = 50_000
 _MAX_PROGRESS_LINE_BYTES = 64 * 1024
+_PILOT_RIGOR = ["R0", "R1", "R2"]
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -687,6 +688,7 @@ def _verify_progress(
     expected_commit: str,
     selection_sha256: str,
     selected_ids: set[str],
+    selected_order: list[str],
     plan_rows: list[dict[str, Any]],
     plan_total: int,
     dispositions: dict[str, dict[str, Any]],
@@ -733,8 +735,7 @@ def _verify_progress(
     if (
         current[0].get("lane") != "self-qualification"
         or current[0].get("commit") != expected_commit
-        or not isinstance(current[0].get("rigor"), list)
-        or "R2" not in current[0]["rigor"]
+        or current[0].get("rigor") != _PILOT_RIGOR
     ):
         raise ValueError("pilot progress run header does not bind the expected R2 source run")
     verdict_events = [event for event in current if event.get("event") == "verdict_written"]
@@ -849,6 +850,16 @@ def _verify_progress(
     merged_events = [event for event in current if event.get("event") == "resume_merged"]
     if len(resume_events) > 1 or len(merged_events) > 1:
         raise ValueError("pilot progress contains duplicate resume accounting events")
+    if resume_events:
+        resume_position = next(index for index, event in enumerate(current) if event is resume_events[0])
+        if resume_position >= candidates_position:
+            raise ValueError("pilot resume event follows its candidates identity event")
+    if merged_events:
+        merged_position = next(index for index, event in enumerate(current) if event is merged_events[0])
+        if merged_position >= end_position or merged_position <= baseline_position:
+            raise ValueError("pilot resume_merged event is outside the completed sweep")
+        if candidate_positions and merged_position <= max(candidate_positions):
+            raise ValueError("pilot resume_merged event precedes its pending candidates")
     pending_total = candidates_meta["pending_total"]
     resumed_total = rejected_total = rejudged_total = 0
     if resume_events:
@@ -936,19 +947,18 @@ def _verify_progress(
     if len(observed_candidates) != pending_total or observed_indexes != set(range(pending_total)):
         raise ValueError("pilot progress does not report every pending candidate exactly once")
     end = ends[0]
-    pending_buckets = {name: 0 for name in MUTATION_BUCKETS}
-    for event in current_candidate_events.values():
-        pending_buckets[event["outcome_bucket"]] += 1
     end_buckets = end.get("buckets")
     if (
         type(end.get("candidate_total")) is not int
-        or end["candidate_total"] != pending_total
+        or end["candidate_total"] != pilot_total
         or not isinstance(end_buckets, dict)
         or set(end_buckets) != set(MUTATION_BUCKETS)
-        or any(type(value) is not int for value in end_buckets.values())
-        or end_buckets != pending_buckets
+        or any(type(value) is not int or value < 0 for value in end_buckets.values())
     ):
-        raise ValueError("pilot progress pending totals disagree with its candidate events")
+        raise ValueError("pilot progress end totals disagree with the selected candidates")
+    pilot_r2_evidence.validate_pilot_terminal_event(
+        terminal, context="pilot terminal verdict", end_buckets=end_buckets
+    )
 
     # Each reused state record must have a prior progress disposition from a
     # run with the same source and judge. This ties resume state to observable
@@ -964,8 +974,7 @@ def _verify_progress(
         if (
             run.get("lane") != "self-qualification"
             or run.get("commit") != expected_commit
-            or not isinstance(run.get("rigor"), list)
-            or "R2" not in run["rigor"]
+            or run.get("rigor") != _PILOT_RIGOR
         ):
             continue
         meta = [event for event in segment if event.get("event") == "candidates"]
@@ -1001,16 +1010,6 @@ def _verify_progress(
             index for index, event in enumerate(segment)
             if event.get("event") == "verdict_written"
         ]
-        if (
-            len(end_positions) > 1
-            or len(verdict_positions) > 1
-            or (
-                end_positions
-                and verdict_positions
-                and end_positions[0] > verdict_positions[0]
-            )
-        ):
-            raise ValueError("prior pilot progress has malformed terminal ordering")
         candidate_positions = [
             index for index, event in enumerate(segment)
             if event.get("event") == "candidate"
@@ -1020,10 +1019,109 @@ def _verify_progress(
         )
         if any(index >= terminal_boundary for index in candidate_positions):
             raise ValueError("prior pilot candidate follows its end or terminal event")
+        if (
+            len(end_positions) > 1
+            or len(verdict_positions) > 1
+            or (verdict_positions and not end_positions)
+            or (
+                end_positions
+                and verdict_positions
+                and end_positions[0] > verdict_positions[0]
+            )
+        ):
+            raise ValueError("prior pilot progress has malformed terminal ordering")
         if verdict_positions and verdict_positions[0] != len(segment) - 1:
             raise ValueError("prior pilot progress has malformed terminal ordering")
-        if not candidate_positions:
-            continue
+        prior_end: dict[str, Any] | None = None
+        if end_positions:
+            prior_end = segment[end_positions[0]]
+            if set(prior_end) != {
+                "event", "candidate_total", "buckets", "reason", "emitted_at", "elapsed_s",
+            } or not _valid_progress_timing(prior_end):
+                raise ValueError("prior pilot end event is malformed")
+            if (
+                type(prior_end.get("candidate_total")) is not int
+                or prior_end["candidate_total"] != prior_total
+            ):
+                raise ValueError("prior pilot end total differs from its candidates event")
+            end_buckets = prior_end.get("buckets")
+            if (
+                not isinstance(end_buckets, dict)
+                or set(end_buckets) != set(MUTATION_BUCKETS)
+                or any(type(value) is not int or value < 0 for value in end_buckets.values())
+            ):
+                raise ValueError("prior pilot end buckets are malformed")
+            if prior_end.get("reason") is not None and (
+                not isinstance(prior_end["reason"], str) or not prior_end["reason"]
+            ):
+                raise ValueError("prior pilot end reason is malformed")
+            if prior_end.get("reason") is not None:
+                raise ValueError("prior pilot refused end event contradicts its candidates event")
+
+        prior_resume_events = [event for event in segment if event.get("event") == "resume"]
+        prior_merged_events = [event for event in segment if event.get("event") == "resume_merged"]
+        if len(prior_resume_events) > 1 or len(prior_merged_events) > 1:
+            raise ValueError("prior pilot progress has duplicate resume accounting events")
+        prior_resumed_total = 0
+        if prior_resume_events:
+            prior_resume = prior_resume_events[0]
+            if set(prior_resume) != {
+                "event", "candidate_total", "resumed_total", "rejected_total",
+                "rejudged_total", "emitted_at", "elapsed_s",
+            } or not _valid_progress_timing(prior_resume):
+                raise ValueError("prior pilot resume event is malformed")
+            if prior_resume.get("candidate_total") != prior_total:
+                raise ValueError("prior pilot resume total differs from its candidates event")
+            for field in ("resumed_total", "rejected_total", "rejudged_total"):
+                if type(prior_resume.get(field)) is not int or prior_resume[field] < 0:
+                    raise ValueError(f"prior pilot resume event has invalid {field}")
+            prior_resumed_total = prior_resume["resumed_total"]
+            if (
+                prior_resumed_total + prior_pending != prior_total
+                or prior_resume["rejected_total"] + prior_resume["rejudged_total"] > prior_pending
+            ):
+                raise ValueError("prior pilot resume totals do not partition the selected candidates")
+            if next(index for index, event in enumerate(segment) if event is prior_resume) >= meta_position:
+                raise ValueError("prior pilot resume event follows its candidates identity event")
+        elif prior_pending != prior_total:
+            raise ValueError("prior pilot pending total omits candidates without resume accounting")
+        if (
+            prior_resumed_total == 0 and prior_merged_events
+        ) or (
+            prior_resumed_total > 0
+            and prior_end is not None
+            and len(prior_merged_events) != 1
+        ):
+            raise ValueError("prior pilot resume_merged event does not match completed resume accounting")
+        if prior_merged_events:
+            prior_merged = prior_merged_events[0]
+            if set(prior_merged) != {"event", "resumed_total", "emitted_at", "elapsed_s"} or (
+                prior_merged.get("resumed_total") != prior_resumed_total
+                or not _valid_progress_timing(prior_merged)
+            ):
+                raise ValueError("prior pilot resume_merged event is malformed")
+            merged_position = next(index for index, event in enumerate(segment) if event is prior_merged)
+            if (
+                merged_position <= meta_position
+                or (candidate_positions and merged_position <= max(candidate_positions))
+                or (end_positions and merged_position >= end_positions[0])
+            ):
+                raise ValueError("prior pilot resume_merged event is out of order")
+        if verdict_positions:
+            prior_verdict = segment[verdict_positions[0]]
+            if set(prior_verdict) != {
+                "event", "outcome", "reason_code", "exit_code", "destination",
+                "emitted_at", "elapsed_s",
+            } or (
+                not isinstance(prior_verdict.get("outcome"), str)
+                or (
+                    prior_verdict.get("reason_code") is not None
+                    and not isinstance(prior_verdict.get("reason_code"), str)
+                )
+                or type(prior_verdict.get("exit_code")) is not int
+                or not _valid_progress_timing(prior_verdict)
+            ):
+                raise ValueError("prior pilot terminal verdict is malformed")
         baseline_positions = [
             index for index, event in enumerate(segment)
             if event.get("event") == "baseline"
@@ -1035,6 +1133,7 @@ def _verify_progress(
         ):
             raise ValueError("prior pilot candidates are not ordered after their baseline")
 
+        prior_dispositions = set(previous_by_id)
         prior_ids: set[str] = set()
         prior_indexes: set[int] = set()
         for index in candidate_positions:
@@ -1051,6 +1150,9 @@ def _verify_progress(
                 or candidate_index in prior_indexes
                 or type(event.get("candidate_total")) is not int
                 or event["candidate_total"] != prior_pending
+                or event.get("outcome_bucket") not in MUTATION_BUCKETS
+                or not isinstance(event.get("execution_mode"), str)
+                or not event["execution_mode"]
             ):
                 raise ValueError("prior pilot candidate event has invalid identity or totals")
             require_candidate_matches_plan(
@@ -1059,6 +1161,79 @@ def _verify_progress(
             prior_ids.add(identity)
             prior_indexes.add(candidate_index)
             previous_by_id[identity] = event
+
+        pilot_r2_evidence.validate_pilot_resume_queue(
+            selected_order=selected_order,
+            prior_dispositions=prior_dispositions,
+            candidate_events=[segment[index] for index in candidate_positions],
+            pending_total=prior_pending,
+            resumed_total=prior_resumed_total,
+            context="prior pilot resume queue",
+        )
+
+        if prior_end is not None:
+            prior_history_buckets = {
+                identity: event["outcome_bucket"]
+                for identity, event in previous_by_id.items()
+                if identity not in prior_ids
+            }
+            pilot_r2_evidence.validate_pilot_end_accounting(
+                selected_order=selected_order,
+                candidate_events=[segment[index] for index in candidate_positions],
+                prior_buckets=prior_history_buckets,
+                pending_total=prior_pending,
+                resumed_total=prior_resumed_total,
+                end_buckets=prior_end["buckets"],
+                context="incomplete prior pilot end",
+            )
+            missing_pending = prior_pending - len(candidate_positions)
+            if missing_pending == 0:
+                if prior_indexes != set(range(prior_pending)):
+                    raise ValueError(
+                        "completed prior pilot candidate indexes do not cover the pending queue"
+                    )
+                merged_buckets = {name: 0 for name in MUTATION_BUCKETS}
+                for identity in selected_ids:
+                    event = previous_by_id.get(identity)
+                    if event is None:
+                        raise ValueError(
+                            "prior pilot end has no disposition for a selected candidate"
+                        )
+                    merged_buckets[event["outcome_bucket"]] += 1
+                if prior_end["buckets"] != merged_buckets:
+                    raise ValueError(
+                        "prior pilot end buckets disagree with its merged candidate events"
+                    )
+            if verdict_positions:
+                pilot_r2_evidence.validate_pilot_terminal_event(
+                    prior_verdict,
+                    context="prior pilot terminal verdict",
+                    end_buckets=prior_end["buckets"],
+                )
+            if verdict_positions and prior_verdict["exit_code"] == 6 and missing_pending:
+                raise ValueError(
+                    "prior pilot terminal claims completion with missing candidate events"
+                )
+
+    pilot_r2_evidence.validate_pilot_resume_queue(
+        selected_order=selected_order,
+        prior_dispositions=set(previous_by_id),
+        candidate_events=[current[index] for index in candidate_positions],
+        pending_total=pending_total,
+        resumed_total=resumed_total,
+        context="current pilot resume queue",
+    )
+
+    merged_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    for identity in selected_ids:
+        event = current_candidate_events.get(identity) or previous_by_id.get(identity)
+        if event is None:
+            raise ValueError(
+                "pilot end has no same-selection progress disposition for a selected candidate"
+            )
+        merged_buckets[event["outcome_bucket"]] += 1
+    if end["buckets"] != merged_buckets:
+        raise ValueError("pilot progress end buckets disagree with its merged candidate events")
 
     return {
         "sha256": hashlib.sha256(raw).hexdigest(),
@@ -1312,6 +1487,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
             expected_commit=args.expected_commit,
             selection_sha256=selection_sha256,
             selected_ids=set(selected_ids),
+            selected_order=selected_ids,
             plan_rows=rows,
             plan_total=len(rows),
             dispositions=dispositions,

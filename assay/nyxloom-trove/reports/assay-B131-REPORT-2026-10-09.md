@@ -2,10 +2,11 @@
 
 **Date:** 2026-10-09  
 **Status:** Stage 1 implementation is provisionally integrated on
-`assay-b131-r2`. The exact-tree Sol xhigh review of the final remediation
-delta is accepted. Registered gates and the measured analysis pilot remain
-pending. This package does not claim full analysis R2 qualification or make
-it a release requirement.
+`assay-b131-r2`. The round-nine exact-tree Sol xhigh review accepted the
+current diff with no findings after rounds seven and eight identified and
+closed three additional evidence/resume gaps. Registered gates and both
+bounded pilot measurements remain pending. This package does not claim full
+analysis R2 qualification or make it a release requirement.
 
 ## Claim and boundary
 
@@ -114,3 +115,78 @@ The reserved non-null ledger wire remains unusable for a B105 qualification:
 the source-bound B105 checker rejects it with
 `ledger binding not implemented (B110-P10b)`. A direct checker regression now
 asserts that refusal, rather than relying on the implementation guard alone.
+
+## Controller follow-up — second exact-tip review repairs (2026-10-10)
+
+The second Sol xhigh read-only review of the B131 remediation at HEAD
+`1ee2a4ed6b06ec5dc4c4179f4a794717d08be486` found five issues. B131 evidence
+readers now bind each regular file and its parent directory to device/inode,
+link count, mode, size and timestamps, reject hard links, and recheck the
+snapshot after all evidence reads. A source-commit-bound host verifier repeats
+the attestation, deadline, state inventory and verdict-absence checks after the
+judge container exits and before outer success. The B110 report checker now
+reconciles every prior terminal with its candidate events and requires exact
+pilot rigor `R0/R1/R2`. The registered lane prints the resolved commit-specific
+deadline artifact path. Its output reports container exit before host
+verification and outer success.
+
+The focused B131/B110 suite passed **333 tests in 238.56 seconds**; the
+marker-path regression passed separately (**1 test in 2.73 seconds**). The
+final `git diff --check`, shell syntax and Python compilation checks passed.
+The exact-tip review and registered gates are still pending, as are the B131
+bounded measurement and separate B110 fixed pilot. This follow-up records
+controller-side repairs and does not claim B114/B118/B131 acceptance yet.
+
+The public documentation contract was rerun after the synced README,
+DESIGN-GUIDE, and CONSUMERS changes and passed **56 tests in 1.44 seconds**.
+
+## Controller follow-up — round-three review repairs (2026-10-10)
+
+The exact-tree Sol xhigh review found three issues in the full integration and
+current diff; its report is `/tmp/assay-b131-final-review-round3.md`. HEAD and
+worktree-status snapshots matched before and after. The host verifier now
+rehashes every attested artifact after the final source check, including
+ignored summary and progress files that can change without making Git dirty.
+The outer launcher performs a final host verification after its own source
+recheck and emits the completion marker only after both pass.
+
+The B110 progress checker now permits a prior resumed attempt to stop before
+`resume_merged` and permits sparse candidate indexes in incomplete segments.
+It still requires `resume_merged` and complete pending-index coverage when a
+prior segment reports a completed `end`. A three-attempt producer-shaped
+regression covers a partial first run, a sparse interrupted resumed run, and a
+complete third resume.
+
+The full focused B131/B110 suite passed **341 tests in 249.57 seconds**; the
+documentation contract passed **56 tests in 0.30 seconds**. `git diff
+--check`, shell syntax and Python compilation passed. The follow-up exact-tree
+review, registered same-tip gates, B105 fixed pilot, and B131 measured pilot
+remain pending.
+
+## Controller follow-up — exact-tree reviews rounds seven–nine (2026-10-10)
+
+Round seven found that interrupted attempts could claim prior candidate
+dispositions that did not exist and that B110 could accept candidate indexes
+detached from their identities. The shared resume-queue check now binds each
+emitted candidate's selected position and pending index to dispositions seen
+before that attempt, including incomplete attempts without an `end` record;
+B110's sparse indexes remain supported when they address the actual pending
+queue. Producer-shaped regressions cover the replayed-resume and swapped-index
+cases.
+
+Round eight found that `.assay/analysis-r2-pilot-run.log` was registered but
+outside both attestations. The inner checker now snapshots and hashes that
+single-link file; attestation schema 2 includes it, and the host inventory
+rechecks it after container exit and after source verification. Tests cover
+replacement and post-scan mutation.
+
+The round-nine Sol xhigh review accepted the complete Assay diff with no
+actionable findings. It was bound to HEAD
+`1ee2a4ed6b06ec5dc4c4179f4a794717d08be486`, working-diff SHA256
+`9ae7c55c8214610afcd7b77d09d0ea4289d50038927e7ab91a6a94da07beb5da`, and
+matching before/after HEAD, status and untracked-file hashes. Python
+compilation, shell syntax and `git diff --check` pass after these repairs.
+Registered `tester-unified`, `self-qualification-preflight`, the B114 MDT
+`smoke` lane, the fixed B105 bounded pilot, and the B131 analysis pilot have
+not yet run on this tip. The earlier 341-test focused run predates rounds
+seven–nine and is not current acceptance evidence.

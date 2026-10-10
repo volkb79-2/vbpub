@@ -915,6 +915,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
         ".assay/analysis-r2-pilot-selection.json",
         ".assay/analysis-r2-pilot-summary.json",
         ".assay/analysis-r2-pilot-run.log",
+        ".assay/analysis-r2-pilot-attestation.json",
         ".assay/r2-manifest-analysis-r2-pilot.txt",
         ".assay/progress-analysis-r2-pilot.jsonl",
         ".assay/analysis-r2-pilot-state",
@@ -932,8 +933,8 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     for marker in (
         "--candidates-file", "--cold-witness", "--resume", "--state-dir",
         "--progress", "--campaign-deadline", "analysis_r2_pilot_select.py",
-        "analysis_r2_pilot_check.py", "ANALYSIS_R2_PILOT_VERIFIED=1",
-        "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1",
+        "analysis_r2_pilot_check.py", "--attestation",
+        "ANALYSIS_R2_PILOT_VERIFIED=", "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=",
     ):
         assert marker in pilot
     assert 'analysis-r2-pilot) run_analysis_r2_pilot; exit 0 ;;' in script
@@ -951,7 +952,7 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     tmp_path: Path, expired_bound: str
 ):
     marker_file = tmp_path / "checker-output.txt"
-    marker_file.write_text("ANALYSIS_R2_PILOT_VERIFIED=1\n", encoding="ascii")
+    marker_file.write_text("ANALYSIS_R2_PILOT_VERIFIED=" + "a" * 64 + "\n", encoding="ascii")
     proc = _run_analysis_r2_pilot_inner_harness(
         tmp_path, checker_output=marker_file, expired_bound=expired_bound
     )
@@ -959,18 +960,23 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     assert proc.returncode == 0, proc.stderr
     if expired_bound == "none":
         assert "STATUS=0" in proc.stdout
-        assert proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1") == 1
+        assert proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "a" * 64) == 1
         assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
     else:
         assert "STATUS=124" in proc.stdout
         assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
-        assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1" not in proc.stdout
+        assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" not in proc.stdout
         assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
 
 
 @pytest.mark.parametrize(
     "payload",
-    [b"ANALYSIS_R2_PILOT_VERIFIED=1\n\n", b"ANALYSIS_R2_PILOT_VERIFIED=1\x00\n"],
+    [
+        b"ANALYSIS_R2_PILOT_VERIFIED=1\n\n",
+        b"ANALYSIS_R2_PILOT_VERIFIED=" + b"a" * 63 + b"\n",
+        b"ANALYSIS_R2_PILOT_VERIFIED=" + b"a" * 64 + b"\x00\n",
+        b"ANALYSIS_R2_PILOT_VERIFIED=" + b"a" * 64 + b"\nEXTRA\n",
+    ],
 )
 def test_b131_pilot_requires_byte_exact_checker_stdout(tmp_path: Path, payload: bytes):
     checker_output = tmp_path / "checker-output.bin"
@@ -980,7 +986,7 @@ def test_b131_pilot_requires_byte_exact_checker_stdout(tmp_path: Path, payload: 
     assert proc.returncode == 0, proc.stderr
     assert "STATUS=1" in proc.stdout
     assert "ANALYSIS_R2_PILOT_CHECKER_MARKER_INVALID=1" in proc.stderr
-    assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1" not in proc.stdout
+    assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" not in proc.stdout
     assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
 
 
@@ -1005,6 +1011,7 @@ def _run_analysis_r2_pilot_inner_harness(
     python.parent.mkdir(parents=True)
     python.write_text(
         "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == - ]]; then exec python3 \"$@\"; fi\n"
         "case \"$*\" in\n"
         "  *analysis_r2_pilot_check.py*) cat \"$PILOT_CHECKER_OUTPUT\" ;;\n"
         "esac\n"

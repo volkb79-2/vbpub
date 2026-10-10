@@ -4437,10 +4437,18 @@ also requires candidate elapsed and phase evidence and binds CPU/RSS/phase/
 startup measurements between progress and resumable state. The host binds the
 selection and completed exit-6 summary to the clean source commit/tree, plan
 bytes, wheel identity, candidate file, state, progress and B145 resource
-evidence, then the checker rereads those files and rechecks the state inventory
-before emitting success. The run-gate artifact inventory declares `.assay` to
-expose the campaign deadline file, whose name includes the source commit. No
-verdict is written: a completed sample
+evidence. The checker records an attestation over each file's content and
+filesystem identity, including single-link status, and rechecks the entire set
+after validation. After the judge container exits, the host compares the
+attested identities and contents again before the registered gate reports
+success. After the evidence scan, it rechecks the judged commit/tree and clean
+worktree, then confirms the two-hour campaign deadline is still active. The
+outer launcher repeats the Git check immediately before its completion marker.
+This second boundary catches replacement or mutation after the inner checker
+runs. The campaign deadline name includes the source commit; the
+registered host runner prints its resolved path in the lane output because
+declaring the containing `.assay` directory does not disclose a child file.
+No verdict is written: a completed sample
 is a measurement, while timeout, partial state, host refusal or resource limit
 is incomplete. Only measurements from this pilot may set an analysis-specific
 worker envelope, full-run budget and GO policy; a separate stage must add and

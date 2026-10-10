@@ -1215,10 +1215,9 @@ def _write_resumed_progress(
     selected = list(fixture["selected_ids"])
     resumed_id = selected[0]
     pending_ids = selected[1:]
-    pending_buckets = {name: 0 for name in MUTATION_BUCKETS}
-    for identity in pending_ids:
-        pending_buckets[dispositions[identity]["bucket"]] += 1
-    end_buckets = dict(pending_buckets)
+    end_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    for identity in selected:
+        end_buckets[dispositions[identity]["bucket"]] += 1
     if corrupt_end_buckets:
         end_buckets["survived"] = max(0, end_buckets["survived"] - 1)
     events = [
@@ -1303,12 +1302,12 @@ def _write_resumed_progress(
     )
     events.extend(
         [
+            {"event": "resume_merged", "resumed_total": 1},
             {
-                "event": "end", "candidate_total": len(pending_ids),
+                "event": "end", "candidate_total": len(selected),
                 "buckets": end_buckets, "reason": None,
                 "emitted_at": "2026-10-09T00:00:00Z", "elapsed_s": 0.9,
             },
-            {"event": "resume_merged", "resumed_total": 1},
             {
                 "event": "verdict_written",
                 "outcome": "FAIL",
@@ -1326,6 +1325,230 @@ def _write_resumed_progress(
     )
 
 
+def _write_interrupted_resumed_progress(fixture: dict[str, object]) -> None:
+    _write_resumed_progress(fixture)
+    artifact_dir = fixture["artifact_dir"]
+    events = [
+        json.loads(line)
+        for line in (artifact_dir / "progress-b110-pilot.jsonl").read_text().splitlines()
+    ]
+    run_positions = [
+        index for index, event in enumerate(events) if event.get("event") == "run"
+    ]
+    assert len(run_positions) == 2
+    selected = list(fixture["selected_ids"])
+    assert len(selected) >= 4
+
+    first_run = events[run_positions[0] : run_positions[1]]
+    second_attempt = events[run_positions[1] :]
+    second_candidates = [
+        event for event in second_attempt if event.get("event") == "candidate"
+    ]
+    sparse_candidate = next(
+        event for event in second_candidates if event["candidate_index"] == 1
+    )
+    assert sparse_candidate["candidate_id"] == selected[2]
+    second_attempt = [
+        event for event in second_attempt
+        if event.get("event") not in {"resume_merged", "end", "verdict_written"}
+        and (event.get("event") != "candidate" or event is sparse_candidate)
+    ]
+
+    plan_doc = json.loads((artifact_dir / "b110-pilot-plan.json").read_text())
+    summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
+    rows_by_id = {row["id"]: row for row in plan_doc["candidates"]}
+    second_resume = {
+        "event": "run",
+        "lane": "self-qualification",
+        "commit": fixture["commit"],
+        "rigor": ["R0", "R1", "R2"],
+    }
+    pending_ids = [identity for identity in selected if identity not in {selected[0], selected[2]}]
+    third_attempt: list[dict[str, object]] = [
+        second_resume,
+        {
+            "event": "resume",
+            "candidate_total": len(selected),
+            "resumed_total": 2,
+            "rejected_total": 0,
+            "rejudged_total": 0,
+        },
+        {
+            "event": "candidates",
+            "candidate_total": len(selected),
+            "selected_total": len(selected),
+            "pending_total": len(pending_ids),
+            "commit": fixture["commit"],
+            "judge_sha256": "b" * 64,
+            "selection_sha256": fixture["selection_sha256"],
+        },
+        {
+            "candidate_index": -1,
+            "candidate_total": len(selected),
+            "event": "baseline",
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        },
+    ]
+    for index, identity in enumerate(pending_ids):
+        event = dict(next(item for item in second_candidates if item["candidate_id"] == identity))
+        event["candidate_index"] = index
+        event["candidate_total"] = len(pending_ids)
+        third_attempt.append(event)
+    buckets = {name: 0 for name in MUTATION_BUCKETS}
+    for row in summary["candidates"]:
+        buckets[row["bucket"]] += 1
+    third_attempt.extend(
+        [
+            {"event": "resume_merged", "resumed_total": 2},
+            {
+                "event": "end",
+                "candidate_total": len(selected),
+                "buckets": buckets,
+                "reason": None,
+            },
+            {
+                "event": "verdict_written",
+                "outcome": summary["r2"]["status"],
+                "reason_code": summary["r2"]["reason_code"],
+                "exit_code": 6,
+                "destination": None,
+            },
+        ]
+    )
+    final_events = _producer_progress_events(first_run + second_attempt + third_attempt)
+    (artifact_dir / "progress-b110-pilot.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in final_events), encoding="utf-8"
+    )
+
+
+def _write_interrupted_resumed_progress_with_incomplete_end(
+    fixture: dict[str, object], *, corrupt_reused_bucket: bool = False
+) -> None:
+    _write_interrupted_resumed_progress(fixture)
+    artifact_dir = fixture["artifact_dir"]
+    path = artifact_dir / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    starts = [index for index, event in enumerate(events) if event.get("event") == "run"]
+    assert len(starts) == 3
+    first_run = events[starts[0] : starts[1]]
+    second_attempt = events[starts[1] : starts[2]]
+    third_attempt = events[starts[2] :]
+    selected = list(fixture["selected_ids"])
+    summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
+    dispositions = {row["id"]: row["bucket"] for row in summary["candidates"]}
+    current_event = next(event for event in second_attempt if event.get("event") == "candidate")
+    assert current_event["candidate_id"] == selected[2]
+    buckets = {name: 0 for name in MUTATION_BUCKETS}
+    buckets[dispositions[selected[0]]] += 1  # reused from attempt one
+    buckets[current_event["outcome_bucket"]] += 1
+    buckets["budget_exceeded"] += len(selected) - 2
+    if corrupt_reused_bucket:
+        reused_bucket = dispositions[selected[0]]
+        assert buckets[reused_bucket] > 0
+        buckets[reused_bucket] -= 1
+        buckets["budget_exceeded"] += 1
+    second_attempt.extend(
+        [
+            {"event": "resume_merged", "resumed_total": 1},
+            {
+                "event": "end",
+                "candidate_total": len(selected),
+                "buckets": buckets,
+                "reason": None,
+            },
+            {
+                "event": "verdict_written",
+                "outcome": "BUDGET_EXCEEDED",
+                "reason_code": "LANE_TIMEOUT",
+                "exit_code": 4,
+                "destination": None,
+            },
+        ]
+    )
+    final_events = _producer_progress_events(first_run + second_attempt + third_attempt)
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in final_events), encoding="utf-8"
+    )
+
+
+def _prepend_incomplete_ended_attempt(
+    fixture: dict[str, object], *, terminal_damage: str | None = None
+) -> None:
+    artifact_dir = fixture["artifact_dir"]
+    path = artifact_dir / "progress-b110-pilot.jsonl"
+    final_events = [json.loads(line) for line in path.read_text().splitlines()]
+    selected = list(fixture["selected_ids"])
+    final_candidates = [event for event in final_events if event.get("event") == "candidate"]
+    assert len(selected) >= 2
+    sparse_candidate = dict(final_candidates[1])
+    sparse_candidate["candidate_index"] = 1
+    sparse_candidate["candidate_total"] = len(selected)
+    buckets = {name: 0 for name in MUTATION_BUCKETS}
+    buckets[sparse_candidate["outcome_bucket"]] = 1
+    buckets["budget_exceeded"] += len(selected) - 1
+    prior_events: list[dict[str, object]] = [
+        {
+            "event": "run",
+            "lane": "self-qualification",
+            "commit": fixture["commit"],
+            "rigor": ["R0", "R1", "R2"],
+        },
+        {
+            "event": "candidates",
+            "commit": fixture["commit"],
+            "candidate_total": len(selected),
+            "selected_total": len(selected),
+            "pending_total": len(selected),
+            "judge_sha256": "b" * 64,
+            "selection_sha256": fixture["selection_sha256"],
+        },
+        {
+            "event": "baseline",
+            "candidate_index": -1,
+            "candidate_total": len(selected),
+            "path": ".",
+            "operator": "baseline",
+            "start_byte": 0,
+            "end_byte": 0,
+            "mutated_file_sha256": "",
+        },
+        sparse_candidate,
+        {
+            "event": "end",
+            "candidate_total": len(selected),
+            "buckets": buckets,
+            "reason": None,
+        },
+        {
+            "event": "verdict_written",
+            "outcome": "BUDGET_EXCEEDED",
+            "reason_code": "LANE_TIMEOUT",
+            "exit_code": 4,
+            "destination": None,
+        },
+    ]
+    if terminal_damage == "impossible-exit":
+        prior_events[-1]["exit_code"] = 99
+    elif terminal_damage == "destination":
+        prior_events[-1]["destination"] = "/tmp/verdict.json"
+    elif terminal_damage == "contradictory-pass":
+        prior_events[-1].update(
+            outcome="PASS", reason_code=None, exit_code=2
+        )
+    elif terminal_damage == "fail-despite-budget":
+        prior_events[-1].update(
+            outcome="FAIL", reason_code="MUTANTS_SURVIVED", exit_code=1
+        )
+    all_events = _producer_progress_events(prior_events + final_events)
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in all_events), encoding="utf-8"
+    )
+
+
 def test_b110_pilot_checker_attests_a_complete_source_bound_run(tmp_path: Path):
     fixture = _fixture(tmp_path)
 
@@ -1335,6 +1558,28 @@ def test_b110_pilot_checker_attests_a_complete_source_bound_run(tmp_path: Path):
     assert "B110_PILOT_VERIFIED=1" in result.stdout
     assert "B110_PILOT_ATTESTATION_SHA256=" in result.stdout
     assert (fixture["artifact_dir"] / "b110-pilot-artifacts.sha256").is_file()
+
+
+def test_b110_pilot_checker_rejects_candidate_indexes_swapped_between_identities(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    candidates = [event for event in events if event.get("event") == "candidate"]
+    assert len(candidates) >= 2
+    first_index = candidates[0]["candidate_index"]
+    candidates[0]["candidate_index"] = candidates[1]["candidate_index"]
+    candidates[1]["candidate_index"] = first_index
+    path.write_text(
+        "".join(json.dumps(event) + "\n" for event in _producer_progress_events(events)),
+        encoding="utf-8",
+    )
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert "candidate indexes contradict prior resume dispositions" in result.stderr
 
 
 def test_progress_candidate_total_is_the_selected_pilot_size_not_full_plan(tmp_path: Path):
@@ -1409,6 +1654,7 @@ def test_progress_candidate_total_is_the_selected_pilot_size_not_full_plan(tmp_p
         expected_commit=commit,
         selection_sha256=selection_digest,
         selected_ids=set(identities),
+        selected_order=identities,
         plan_rows=rows,
         plan_total=100,
         expected_judge_sha256="b" * 64,
@@ -2279,6 +2525,94 @@ def test_b110_pilot_checker_accepts_resume_only_with_same_judge_progress(tmp_pat
     assert "B110_PILOT_VERIFIED=1" in result.stdout
 
 
+def test_b110_pilot_checker_accepts_interrupted_resumed_attempt_with_sparse_indexes(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    _write_interrupted_resumed_progress(fixture)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert "B110_PILOT_VERIFIED=1" in result.stdout
+
+
+def test_b110_pilot_checker_accepts_incomplete_ended_prior_attempt_with_sparse_indexes(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    _prepend_incomplete_ended_attempt(fixture)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert "B110_PILOT_VERIFIED=1" in result.stdout
+
+
+def test_b110_pilot_checker_accepts_incomplete_resumed_attempt_end(tmp_path: Path):
+    fixture = _fixture(tmp_path)
+    _write_interrupted_resumed_progress_with_incomplete_end(fixture)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert "B110_PILOT_VERIFIED=1" in result.stdout
+
+
+def test_b110_pilot_checker_rejects_reused_outcome_reassigned_to_missing_candidates(
+    tmp_path: Path,
+):
+    fixture = _fixture(tmp_path)
+    _write_interrupted_resumed_progress_with_incomplete_end(
+        fixture, corrupt_reused_bucket=True
+    )
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert "end buckets cannot arise from its resume history" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected_error"),
+    [
+        ("impossible-exit", "prior pilot terminal verdict has an impossible exit code"),
+        ("destination", "prior pilot terminal verdict unexpectedly names an artifact destination"),
+        ("contradictory-pass", "PASS outcome contradicts its mutation sweep"),
+        (
+            "fail-despite-budget",
+            "terminal outcome is weaker than its mutation sweep",
+        ),
+    ],
+)
+def test_b110_pilot_checker_rejects_impossible_prior_terminal_records(
+    tmp_path: Path, damage: str, expected_error: str
+):
+    fixture = _fixture(tmp_path)
+    _prepend_incomplete_ended_attempt(fixture, terminal_damage=damage)
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert expected_error in result.stderr
+
+
+@pytest.mark.parametrize("rigor", [["R2"], ["R0", "R1", "R2", "R3"]])
+def test_b110_pilot_checker_requires_exact_current_pilot_rigor(
+    tmp_path: Path, rigor: list[str]
+):
+    fixture = _fixture(tmp_path)
+    path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    next(event for event in events if event.get("event") == "run")["rigor"] = rigor
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+    result = _run_checker(fixture)
+
+    assert result.returncode == 2
+    assert "run header does not bind the expected R2 source run" in result.stderr
+
+
 @pytest.mark.parametrize(
     "damage", ["pending-buckets", "missing-prior-candidate", "wrong-prior-selection"]
 )
@@ -2304,7 +2638,7 @@ def test_b110_pilot_checker_rejects_resume_progress_that_cannot_support_summary(
 
     assert result.returncode == 2
     if damage == "pending-buckets":
-        assert "pending totals disagree" in result.stderr
+        assert "end buckets disagree with its merged candidate events" in result.stderr
     else:
         assert "no same-selection progress disposition" in result.stderr
 
@@ -2316,6 +2650,9 @@ def test_b110_pilot_checker_rejects_resume_progress_that_cannot_support_summary(
         ("wrong-prior-totals", "prior pilot candidates event totals are invalid"),
         ("candidate-after-end", "prior pilot candidate follows its end or terminal event"),
         ("candidate-after-verdict", "prior pilot candidate follows its end or terminal event"),
+        ("contradictory-end", "prior pilot end total differs from its candidates event"),
+        ("wrong-prior-rigor", "no same-selection progress disposition"),
+        ("unsupported-prior-end", "prior pilot refused end event contradicts its candidates event"),
     ],
 )
 def test_b110_pilot_checker_rejects_invalid_prior_resume_segments(
@@ -2324,7 +2661,10 @@ def test_b110_pilot_checker_rejects_invalid_prior_resume_segments(
     expected_error: str,
 ):
     fixture = _fixture(tmp_path)
-    _write_resumed_progress(fixture)
+    _write_resumed_progress(
+        fixture,
+        omit_prior_candidate=damage == "unsupported-prior-end",
+    )
     path = fixture["artifact_dir"] / "progress-b110-pilot.jsonl"
     events = [json.loads(line) for line in path.read_text().splitlines()]
     prior_meta = next(event for event in events if event.get("event") == "candidates")
@@ -2332,6 +2672,40 @@ def test_b110_pilot_checker_rejects_invalid_prior_resume_segments(
         prior_meta["commit"] = "0" * 40
     elif damage == "wrong-prior-totals":
         prior_meta["candidate_total"] = 0
+    elif damage == "wrong-prior-rigor":
+        events[0]["rigor"] = ["R2"]
+    elif damage == "contradictory-end":
+        next_run = next(
+            index for index, event in enumerate(events)
+            if index > 0 and event.get("event") == "run"
+        )
+        events.insert(
+            next_run,
+            {
+                "event": "end",
+                "candidate_total": 0,
+                "buckets": {name: 0 for name in MUTATION_BUCKETS},
+                "reason": None,
+                "emitted_at": "2026-10-09T00:00:00Z",
+                "elapsed_s": 0.5,
+            },
+        )
+    elif damage == "unsupported-prior-end":
+        next_run = next(
+            index for index, event in enumerate(events)
+            if index > 0 and event.get("event") == "run"
+        )
+        events.insert(
+            next_run,
+            {
+                "event": "end",
+                "candidate_total": len(fixture["selected_ids"]),
+                "buckets": {name: 0 for name in MUTATION_BUCKETS},
+                "reason": "unsupported",
+                "emitted_at": "2026-10-09T00:00:00Z",
+                "elapsed_s": 0.5,
+            },
+        )
     else:
         prior_candidate = next(event for event in events if event.get("event") == "candidate")
         marker = (

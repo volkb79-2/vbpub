@@ -5142,11 +5142,20 @@ resource counters and actual exit before returning success. It writes
 effective R2 command, configuration digest and coverage/R2 baselines. The
 checker compares the manifest with the R2 baseline, binds candidate collection
 evidence and kill-witness nodes to that manifest, and compares progress resource
-measurements with state. Before it emits the success marker, it rereads and
-compares every input and state record with the bytes it validated. The campaign
-deadline is named
-`.assay/campaign-deadline-analysis-r2-pilot-<commit12>.json`; run-gate declares
-the `.assay` directory to disclose this commit-specific artifact.
+measurements with state. Before success, the checker compares every input and
+state record with the bytes and filesystem identities it validated, refusing
+hard links and replacement inodes. It writes
+`.assay/analysis-r2-pilot-attestation.json` and prints its digest in the
+container log. After the container exits, the host rechecks the attested file
+contents, identities, hard-link counts, state inventory and verdict absence
+before emitting the outer completion marker. It rechecks the judged commit/tree
+and clean worktree after the evidence scan, then confirms the campaign deadline
+is still active. The campaign deadline is named
+`.assay/campaign-deadline-analysis-r2-pilot-<commit12>.json`; the registered
+host runner prints the resolved absolute path as
+`ASSAY_ANALYSIS_R2_PILOT_DEADLINE_ARTIFACT=...`. The `.assay` directory entry
+in the artifact inventory names its containing directory, not that dynamic
+child file.
 
 Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
 operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`

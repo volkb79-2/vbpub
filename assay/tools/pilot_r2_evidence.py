@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import re
-import stat
 import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
 
+from assay.errors import EXIT_CODES, Outcome, REASON_CODES, ReasonCode
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
+from assay.verdict import MUTATION_BUCKETS, ROLLUP_PRECEDENCE
+import pilot_r2_snapshot
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _MANIFEST_MAX_BYTES = 64 * 1024 * 1024
@@ -45,41 +46,325 @@ _PHASE_FIELDS = {"materialize", "command", "integrity", "teardown"}
 _STARTUP_FIELDS = {"to_session_start", "to_first_test"}
 
 
-def _read_manifest(path: Path) -> tuple[list[str], str]:
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
-    descriptor = os.open(path, flags)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ValueError("R2 manifest is not a single-link regular file")
-        if info.st_size > _MANIFEST_MAX_BYTES:
-            raise ValueError("R2 manifest exceeds the 64 MiB limit")
-        raw = bytearray()
-        while len(raw) <= _MANIFEST_MAX_BYTES:
-            block = os.read(
-                descriptor,
-                min(1024 * 1024, _MANIFEST_MAX_BYTES + 1 - len(raw)),
-            )
-            if not block:
-                break
-            raw.extend(block)
-        if len(raw) > _MANIFEST_MAX_BYTES:
-            raise ValueError("R2 manifest exceeds the 64 MiB limit")
-        after = os.fstat(descriptor)
-        if (
-            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-            or len(raw) != after.st_size
-        ):
-            raise ValueError("R2 manifest changed while it was being read")
-    finally:
-        os.close(descriptor)
+def validate_pilot_terminal_event(
+    event: dict[str, Any],
+    *,
+    context: str,
+    end_buckets: dict[str, int] | None = None,
+) -> None:
+    """Validate the pilot wrapper's terminal outcome and exit-code contract.
 
-    content = bytes(raw)
+    Exit 6 is the pilot-only completion sentinel. Otherwise the event carries
+    the verdict's ordinary exit code, except that a non-completed PASS is
+    converted to exit 2 so a partial pilot cannot look successful.
+    """
+    raw_outcome = event.get("outcome")
+    try:
+        outcome = Outcome(raw_outcome)
+    except (TypeError, ValueError):
+        raise ValueError(f"{context} has an unknown outcome") from None
+
+    raw_reason = event.get("reason_code")
+    if raw_reason is None:
+        reason = None
+    else:
+        try:
+            reason = ReasonCode(raw_reason)
+        except (TypeError, ValueError):
+            raise ValueError(f"{context} has an unknown reason code") from None
+    if (reason is None and outcome is not Outcome.PASS) or (
+        reason is not None and reason not in REASON_CODES[outcome]
+    ):
+        raise ValueError(f"{context} has a reason code that does not belong to its outcome")
+
+    exit_code = event.get("exit_code")
+    if type(exit_code) is not int or exit_code not in {1, 2, 3, 4, 5, 6}:
+        raise ValueError(f"{context} has an impossible exit code")
+    if event.get("destination") is not None:
+        raise ValueError(f"{context} unexpectedly names an artifact destination")
+    if end_buckets is not None:
+        if end_buckets["crashed"]:
+            r2_outcome = Outcome.ERROR
+        elif end_buckets["budget_exceeded"]:
+            r2_outcome = Outcome.BUDGET_EXCEEDED
+        elif end_buckets["hung"]:
+            r2_outcome = Outcome.BUDGET_EXCEEDED
+        elif end_buckets["survived"]:
+            # Both pilot lanes judge at the native 100% mutation floor.
+            r2_outcome = Outcome.FAIL
+        elif end_buckets["killed"] == 0 and end_buckets["equivalent"] > 0:
+            r2_outcome = Outcome.INCONCLUSIVE
+        elif sum(end_buckets.values()) == 0:
+            r2_outcome = Outcome.INCONCLUSIVE
+        else:
+            r2_outcome = Outcome.PASS
+
+        # The pilot terminal event is the R0-R2 rollup. R0/R1 may contribute
+        # an outcome that outranks R2, but the rollup cannot be weaker than R2.
+        precedence = (*ROLLUP_PRECEDENCE, Outcome.PASS)
+        if precedence.index(outcome) > precedence.index(r2_outcome):
+            if outcome is Outcome.PASS:
+                raise ValueError(f"{context} PASS outcome contradicts its mutation sweep")
+            raise ValueError(
+                f"{context} terminal outcome is weaker than its mutation sweep"
+            )
+    if exit_code != 6:
+        expected = 2 if outcome is Outcome.PASS else EXIT_CODES[outcome]
+        if exit_code != expected:
+            raise ValueError(f"{context} exit code disagrees with its outcome")
+
+
+def validate_pilot_end_accounting(
+    *,
+    selected_order: list[str],
+    candidate_events: list[dict[str, Any]],
+    prior_buckets: dict[str, str],
+    pending_total: int,
+    resumed_total: int,
+    end_buckets: dict[str, int],
+    context: str,
+    require_prefix_indexes: bool = False,
+) -> None:
+    """Prove an end bucket vector can arise from this pending/resume history.
+
+    Progress records name completed pending candidates, but an interrupted
+    attempt can omit timed-out candidates. Candidate indexes still reveal how
+    many selected identities were resumed before each emitted candidate. A
+    small flow check then proves that the exact resumed outcomes, emitted
+    outcomes, and omitted pending candidates (budget-exceeded) can produce
+    the end buckets. A lower-bound check alone can mislabel a reused prior
+    kill as another timeout.
+    """
+    if (
+        not selected_order
+        or len(selected_order) != len(set(selected_order))
+        or set(end_buckets) != set(MUTATION_BUCKETS)
+        or any(type(end_buckets[name]) is not int or end_buckets[name] < 0 for name in MUTATION_BUCKETS)
+        or sum(end_buckets.values()) != len(selected_order)
+        or type(pending_total) is not int
+        or type(resumed_total) is not int
+        or pending_total < 0
+        or resumed_total < 0
+        or pending_total + resumed_total != len(selected_order)
+        or len(candidate_events) > pending_total
+    ):
+        raise ValueError(f"{context} totals do not partition the selected candidates")
+
+    selected_position = {identity: index for index, identity in enumerate(selected_order)}
+    current_buckets = {name: 0 for name in MUTATION_BUCKETS}
+    event_by_position: list[tuple[int, int]] = []
+    seen_ids: set[str] = set()
+    seen_indexes: set[int] = set()
+    last_position = -1
+    last_index = -1
+    for event in candidate_events:
+        identity = event.get("candidate_id")
+        candidate_index = event.get("candidate_index")
+        bucket = event.get("outcome_bucket")
+        if (
+            not isinstance(identity, str)
+            or identity not in selected_position
+            or identity in seen_ids
+            or type(candidate_index) is not int
+            or not 0 <= candidate_index < pending_total
+            or candidate_index in seen_indexes
+            or bucket not in MUTATION_BUCKETS
+        ):
+            raise ValueError(f"{context} contains an invalid candidate disposition")
+        position = selected_position[identity]
+        if position <= last_position or candidate_index <= last_index:
+            raise ValueError(f"{context} candidate dispositions are out of selected order")
+        if require_prefix_indexes and candidate_index != len(event_by_position):
+            raise ValueError(f"{context} single-worker candidate indexes are not a prefix")
+        seen_ids.add(identity)
+        seen_indexes.add(candidate_index)
+        current_buckets[bucket] += 1
+        event_by_position.append((position, candidate_index))
+        last_position = position
+        last_index = candidate_index
+
+    missing_pending = pending_total - len(candidate_events)
+    required_resumed_buckets = {
+        name: end_buckets[name] - current_buckets[name]
+        for name in MUTATION_BUCKETS
+    }
+    required_resumed_buckets["budget_exceeded"] -= missing_pending
+    if (
+        any(value < 0 for value in required_resumed_buckets.values())
+        or sum(required_resumed_buckets.values()) != resumed_total
+    ):
+        raise ValueError(f"{context} buckets disagree with pending and resumed totals")
+
+    # Each gap between emitted events has an exact resumed count: for an
+    # event at selected position p and pending index i, exactly p-i selected
+    # identities before it were resumed. Reused outcomes in each gap are
+    # assigned to bucket nodes below.
+    groups: list[tuple[int, dict[str, int]]] = []
+    previous_position = -1
+    previous_resumed_before = 0
+    for position, candidate_index in event_by_position:
+        resumed_before = position - candidate_index
+        gap_ids = selected_order[previous_position + 1 : position]
+        required_in_gap = resumed_before - previous_resumed_before
+        capacities = {name: 0 for name in MUTATION_BUCKETS}
+        for identity in gap_ids:
+            bucket = prior_buckets.get(identity)
+            if bucket in capacities:
+                capacities[bucket] += 1
+        if required_in_gap < 0 or required_in_gap > sum(capacities.values()):
+            raise ValueError(f"{context} candidate indexes contradict prior resume evidence")
+        groups.append((required_in_gap, capacities))
+        previous_position = position
+        previous_resumed_before = resumed_before
+
+    trailing_ids = selected_order[previous_position + 1 :]
+    trailing_required = resumed_total - previous_resumed_before
+    trailing_capacities = {name: 0 for name in MUTATION_BUCKETS}
+    for identity in trailing_ids:
+        bucket = prior_buckets.get(identity)
+        if bucket in trailing_capacities:
+            trailing_capacities[bucket] += 1
+    if trailing_required < 0 or trailing_required > sum(trailing_capacities.values()):
+        raise ValueError(f"{context} resumed total contradicts prior resume evidence")
+    groups.append((trailing_required, trailing_capacities))
+
+    # Bipartite capacitated matching: every gap supplies its known number of
+    # resumed candidates, and each bucket must receive exactly the number the
+    # end record attributes to reused state.
+    group_count = len(groups)
+    source = 0
+    group_base = 1
+    bucket_base = group_base + group_count
+    sink = bucket_base + len(MUTATION_BUCKETS)
+    graph: list[list[list[int]]] = [[] for _ in range(sink + 1)]
+
+    def add_edge(start: int, stop: int, capacity: int) -> None:
+        forward = [stop, len(graph[stop]), capacity]
+        reverse = [start, len(graph[start]), 0]
+        graph[start].append(forward)
+        graph[stop].append(reverse)
+
+    bucket_indexes = {name: index for index, name in enumerate(MUTATION_BUCKETS)}
+    for group_index, (required, capacities) in enumerate(groups):
+        node = group_base + group_index
+        add_edge(source, node, required)
+        for name, capacity in capacities.items():
+            if capacity:
+                add_edge(node, bucket_base + bucket_indexes[name], capacity)
+    for name, required in required_resumed_buckets.items():
+        add_edge(bucket_base + bucket_indexes[name], sink, required)
+
+    flow = 0
+    while True:
+        parent: list[tuple[int, int] | None] = [None] * len(graph)
+        parent[source] = (source, -1)
+        queue = [source]
+        for node in queue:
+            for edge_index, edge in enumerate(graph[node]):
+                if edge[2] > 0 and parent[edge[0]] is None:
+                    parent[edge[0]] = (node, edge_index)
+                    queue.append(edge[0])
+                    if edge[0] == sink:
+                        break
+            if parent[sink] is not None:
+                break
+        if parent[sink] is None:
+            break
+        amount = resumed_total - flow
+        node = sink
+        while node != source:
+            previous, edge_index = parent[node]  # type: ignore[misc]
+            amount = min(amount, graph[previous][edge_index][2])
+            node = previous
+        node = sink
+        while node != source:
+            previous, edge_index = parent[node]  # type: ignore[misc]
+            edge = graph[previous][edge_index]
+            edge[2] -= amount
+            graph[node][edge[1]][2] += amount
+            node = previous
+        flow += amount
+        if flow == resumed_total:
+            break
+    if flow != resumed_total:
+        raise ValueError(f"{context} end buckets cannot arise from its resume history")
+
+
+def validate_pilot_resume_queue(
+    *,
+    selected_order: list[str],
+    prior_dispositions: set[str],
+    candidate_events: list[dict[str, Any]],
+    pending_total: int,
+    resumed_total: int,
+    context: str,
+) -> None:
+    """Prove candidate indexes address the queue left by prior dispositions.
+
+    A resume event records a count, not candidate IDs. The index/identity pairs
+    still constrain which prior identities could have been reused: for a
+    candidate at selected position ``p`` and pending index ``i``, exactly
+    ``p - i`` earlier selected identities must have been resumed. Every such
+    identity must have a disposition before this attempt. This also validates
+    interrupted attempts that have no end event to trigger bucket accounting.
+    """
+    if (
+        not selected_order
+        or len(selected_order) != len(set(selected_order))
+        or not prior_dispositions <= set(selected_order)
+        or type(pending_total) is not int
+        or type(resumed_total) is not int
+        or pending_total < 0
+        or resumed_total < 0
+        or pending_total + resumed_total != len(selected_order)
+        or resumed_total > len(prior_dispositions)
+        or len(candidate_events) > pending_total
+    ):
+        raise ValueError(f"{context} resume queue totals disagree with prior dispositions")
+
+    selected_position = {identity: index for index, identity in enumerate(selected_order)}
+    previous_position = -1
+    previous_resumed_before = 0
+    previous_index = -1
+    for event in candidate_events:
+        identity = event.get("candidate_id")
+        candidate_index = event.get("candidate_index")
+        if (
+            not isinstance(identity, str)
+            or identity not in selected_position
+            or type(candidate_index) is not int
+            or not 0 <= candidate_index < pending_total
+            or candidate_index <= previous_index
+        ):
+            raise ValueError(f"{context} candidate indexes do not address the resume queue")
+        position = selected_position[identity]
+        if position <= previous_position:
+            raise ValueError(f"{context} candidate order differs from its resume queue")
+        resumed_before = position - candidate_index
+        gap_ids = selected_order[previous_position + 1 : position]
+        available_in_gap = sum(identity in prior_dispositions for identity in gap_ids)
+        required_in_gap = resumed_before - previous_resumed_before
+        if required_in_gap < 0 or required_in_gap > available_in_gap:
+            raise ValueError(f"{context} candidate indexes contradict prior resume dispositions")
+        previous_position = position
+        previous_index = candidate_index
+        previous_resumed_before = resumed_before
+
+    trailing_ids = selected_order[previous_position + 1 :]
+    resumed_after = resumed_total - previous_resumed_before
+    available_after = sum(identity in prior_dispositions for identity in trailing_ids)
+    if resumed_after < 0 or resumed_after > available_after:
+        raise ValueError(f"{context} resume count exceeds prior candidate dispositions")
+
+
+def _read_manifest(path: Path) -> tuple[list[str], str, dict[str, Any]]:
+    content, identity = pilot_r2_snapshot.read_file(
+        path, maximum=_MANIFEST_MAX_BYTES
+    )
     if content and not content.endswith(b"\n"):
         raise ValueError("R2 manifest is missing its final newline")
     if not content:
-        return [], hashlib.sha256(content).hexdigest()
+        return [], hashlib.sha256(content).hexdigest(), identity
     lines = content[:-1].split(b"\n")
     if any(
         not line
@@ -94,7 +379,7 @@ def _read_manifest(path: Path) -> tuple[list[str], str]:
         raise ValueError("R2 manifest contains a non-UTF-8 node ID") from exc
     if len(nodes) != len(set(nodes)):
         raise ValueError("R2 manifest contains duplicate node IDs")
-    return nodes, hashlib.sha256(content).hexdigest()
+    return nodes, hashlib.sha256(content).hexdigest(), identity
 
 
 def _git_file(repo_root: Path, commit: str, relative_path: str) -> bytes:
@@ -202,7 +487,7 @@ def validate_r2_command(
     ):
         raise ValueError("pilot coverage and R2 baseline collections differ")
 
-    nodes, manifest_sha256 = _read_manifest(manifest_path)
+    nodes, manifest_sha256, manifest_identity = _read_manifest(manifest_path)
     if (
         len(nodes) != r2["collection_count"]
         or collection_digest(nodes) != r2["collection_sha256"]
@@ -211,6 +496,7 @@ def validate_r2_command(
     return {
         "nodes": nodes,
         "manifest_sha256": manifest_sha256,
+        "manifest_identity": manifest_identity,
         "coverage_baseline": coverage,
         "r2_baseline": r2,
     }
