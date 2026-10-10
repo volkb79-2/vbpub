@@ -135,6 +135,14 @@ and no product PASS/FAIL. It must be relaunched on the final quiet tree after
 the competing gate releases capacity. No external container was stopped or
 modified.
 
+Nyxloom lint passed from `scripts/cgroup-profiler` on this candidate tree.
+The Run-Gate directory has neither a local `nyxloom-trove/nyxloom.toml` nor a
+host-registered project root, so `nyxloom lint` from `run-gate-project`
+returns L0 (`no owning project found`) rather than linting its review packet.
+I did not invoke `nyxloomctl lint`: its host registry includes `/workspaces/dstdns`,
+which is explicitly outside this task's access boundary. This is a lint-scope
+limitation, not a Run-Gate test verdict.
+
 ## Live carrier, placement, liveness, and DAMON evidence
 
 The original live-probe entries below are historical checkpoint evidence;
