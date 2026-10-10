@@ -460,15 +460,20 @@ class _ResolvedRepo:
     git_dir: Path
 
 
-def _nearest_git_marker(start: Path) -> Path:
+def _nearest_git_marker(start: Path, *, stop_at: Path | None = None) -> Path:
     """Walk *start*'s finite ancestor chain to the nearest directory holding
     a non-symlink ``.git`` directory or regular gitfile (A-173). Never asks
     git — a repository-local ``core.worktree`` cannot lie about a fact this
     function derives purely from the filesystem. Refuses no marker found, a
     symlink marker, and a marker that is neither a directory nor a regular
-    file.
+    file. When *stop_at* is supplied, it must be an ancestor of *start* and
+    the walk ends there; this bounds callers that own a smaller filesystem
+    namespace without changing the production default.
     """
     candidate = start.resolve()
+    boundary = stop_at.resolve() if stop_at is not None else None
+    if boundary is not None and boundary != candidate and boundary not in candidate.parents:
+        raise _git_failed(f"{boundary} is not an ancestor of {candidate}; refusing repository-marker walk")
     while True:
         marker = candidate / ".git"
         try:
@@ -481,6 +486,8 @@ def _nearest_git_marker(start: Path) -> Path:
             if not (stat_module.S_ISDIR(marker_stat.st_mode) or stat_module.S_ISREG(marker_stat.st_mode)):
                 raise _git_failed(f"{marker} is neither a directory nor a regular file; refused")
             return candidate
+        if candidate == boundary:
+            raise _git_failed(f"no .git marker found in any ancestor of {start.resolve()} within {boundary}")
         parent = candidate.parent
         if parent == candidate:
             raise _git_failed(f"no .git marker found in any ancestor of {start.resolve()}")

@@ -16,8 +16,9 @@ what it printed.
 
 from __future__ import annotations
 
-from conftest import PROJECT_ROOT
+import pytest
 
+from conftest import PROJECT_ROOT
 from assay.adapters.sql import SqlAdapter
 
 ADAPTER = SqlAdapter()
@@ -124,6 +125,38 @@ def test_qualification_schema_produces_a_fully_valid_batch_end_to_end():
     assert operators_seen == set(MUTATION_OPERATORS_BY_LANGUAGE["sql"])
 
 
+def test_mutation_collector_provides_cross_file_sql_context():
+    from assay.mutation import MutationTarget, collect_mutation_sites
+
+    index_source = (
+        "CREATE UNIQUE INDEX s.attached ON s.t (a);\n"
+        "CREATE UNIQUE INDEX other.independent ON other.t (b);\n"
+    )
+    attachment_source = (
+        "ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX s.attached;\n"
+    )
+    targets = [
+        MutationTarget(
+            path="db/schema/01-index.sql",
+            text=index_source,
+            lines=frozenset(_all_lines(index_source)),
+        ),
+        MutationTarget(
+            path="db/schema/02-attach.sql",
+            text=attachment_source,
+            lines=frozenset(_all_lines(attachment_source)),
+        ),
+    ]
+    jobs = collect_mutation_sites(
+        targets,
+        adapter=ADAPTER,
+        operators=("sql:drop-unique",),
+        limit=100,
+    )
+    assert len(jobs) == 1
+    assert jobs[0].site.lineno == 2
+
+
 # =============================================================================
 # The seven operators -- span, replacement (carve §3.2's table)
 # =============================================================================
@@ -135,6 +168,13 @@ def test_drop_check_replaces_the_whole_check_clause_with_check_true():
     assert _span_text(source, site) == b"CHECK (a > 0)"
     assert site.replacement == b"CHECK (true)"
     assert site.lineno == 1
+
+
+def test_drop_check_also_neutralizes_a_policy_with_check_predicate():
+    source = "CREATE POLICY p ON t WITH CHECK (owner_id = current_user_id());\n"
+    site = _one_site(source, "sql:drop-check")
+    assert _span_text(source, site) == b"CHECK (owner_id = current_user_id())"
+    assert site.replacement == b"CHECK (true)"
 
 
 def test_drop_unique_column_form_replaces_bare_unique_with_check_true():
@@ -149,6 +189,117 @@ def test_drop_unique_table_form_replaces_unique_and_its_column_list():
     site = _one_site(source, "sql:drop-unique")
     assert _span_text(source, site) == b"UNIQUE (a, b)"
     assert site.replacement == b"CHECK (true)"
+
+
+def test_drop_unique_constraint_removes_deferrability_options_with_the_key():
+    source = "CREATE TABLE t (a INT, CONSTRAINT uq UNIQUE (a) DEFERRABLE INITIALLY DEFERRED);\n"
+    site = _one_site(source, "sql:drop-unique")
+    assert _span_text(source, site) == b"UNIQUE (a) DEFERRABLE INITIALLY DEFERRED"
+    assert site.replacement == b"CHECK (true)"
+
+
+def test_drop_unique_constraint_removes_nulls_and_include_options_with_the_key():
+    source = (
+        "CREATE TABLE t (a INT, payload TEXT, "
+        "CONSTRAINT uq UNIQUE NULLS NOT DISTINCT (a) INCLUDE (payload));\n"
+    )
+    site = _one_site(source, "sql:drop-unique")
+    assert _span_text(source, site) == b"UNIQUE NULLS NOT DISTINCT (a) INCLUDE (payload)"
+    assert site.replacement == b"CHECK (true)"
+
+
+def test_drop_unique_using_index_refuses_both_halves_of_the_linked_pair():
+    source = (
+        "CREATE TABLE t (a INT);\n"
+        "CREATE UNIQUE INDEX idx ON t (a);\n"
+        "ALTER TABLE t ADD CONSTRAINT uq UNIQUE USING INDEX idx;\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_drop_unique_using_index_matches_quoted_and_schema_qualified_names():
+    source = (
+        'CREATE TABLE s.t (a INT);\n'
+        'CREATE UNIQUE INDEX s."Mixed Idx" ON s.t (a);\n'
+        'ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX s."Mixed Idx";\n'
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_drop_unique_using_index_keeps_unrelated_unique_indexes_mutable():
+    source = (
+        "CREATE TABLE t (a INT);\n"
+        "CREATE UNIQUE INDEX attached ON t (a);\n"
+        "ALTER TABLE t ADD CONSTRAINT uq UNIQUE USING INDEX attached;\n"
+        "CREATE UNIQUE INDEX independent ON t (a);\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].lineno == 4
+
+
+def test_drop_unique_using_index_does_not_suppress_same_name_in_another_schema():
+    source = (
+        "CREATE TABLE s.t (a INT);\n"
+        "CREATE UNIQUE INDEX s.idx ON s.t (a);\n"
+        "ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX s.idx;\n"
+        "CREATE UNIQUE INDEX other.idx ON other.t (a);\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].lineno == 4
+
+
+def test_drop_unique_using_index_link_is_detected_across_sql_files():
+    index_source = "CREATE UNIQUE INDEX s.attached ON s.t (a);\n"
+    attachment_source = (
+        "ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX s.attached;\n"
+    )
+    adapter = ADAPTER
+    context = adapter.prepare_mutation_context((index_source, attachment_source))
+    sites = adapter.generate_mutation_sites_with_context(
+        index_source,
+        _all_lines(index_source),
+        operators=("sql:drop-unique",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+def test_drop_unique_using_index_parses_create_index_modifiers():
+    source = (
+        "CREATE TABLE t (a INT);\n"
+        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS attached ON t (a);\n"
+        "ALTER TABLE t ADD CONSTRAINT uq UNIQUE USING INDEX attached;\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_drop_unique_using_index_trivia_does_not_suppress_unrelated_index():
+    source = (
+        "CREATE UNIQUE INDEX attached ON t (a);\n"
+        "ALTER TABLE t ADD CONSTRAINT uq UNIQUE USING INDEX /* attached */ attached;\n"
+        "CREATE UNIQUE INDEX independent ON t (b);\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].lineno == 3
 
 
 def test_drop_unique_index_form_replaces_create_unique_index_with_create_index():
@@ -261,6 +412,21 @@ def test_drop_foreign_key_table_form_spans_through_the_on_delete_action():
     assert site.replacement == b"CHECK (true)"
 
 
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [
+        ("MATCH FULL", "FOREIGN KEY (a) REFERENCES other(id) MATCH FULL"),
+        ("DEFERRABLE INITIALLY DEFERRED", "FOREIGN KEY (a) REFERENCES other(id) DEFERRABLE INITIALLY DEFERRED"),
+        ("ON DELETE SET NULL (a)", "FOREIGN KEY (a) REFERENCES other(id) ON DELETE SET NULL (a)"),
+    ],
+)
+def test_drop_foreign_key_spans_the_full_postgres_constraint_options(tail, expected):
+    source = f"CREATE TABLE t (a INT, FOREIGN KEY (a) REFERENCES other(id) {tail});\n"
+    site = _one_site(source, "sql:drop-foreign-key")
+    assert _span_text(source, site) == expected.encode("ascii")
+    assert site.replacement == b"CHECK (true)"
+
+
 def test_drop_foreign_key_bare_column_form_spans_the_references_clause():
     source = "CREATE TABLE t (a INT REFERENCES other(id));\n"
     site = _one_site(source, "sql:drop-foreign-key")
@@ -362,6 +528,72 @@ def test_rule3_widen_check_in_all_string_members_widen_with_an_unused_string():
     assert site.replacement == b", '__assay_widened__')"
 
 
+def test_rule3_enum_check_with_string_members_has_no_widening_site():
+    source = (
+        "CREATE TYPE task_state AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE task (state task_state, CHECK (state IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize(
+    "constraint_sql",
+    [
+        "CREATE TABLE task (state public.task_state, CHECK (state IN ('open', 'closed')));\n",
+        "CREATE TABLE task (state public.task_state);\n"
+        "ALTER TABLE task ADD CHECK (state IN ('open', 'closed'));\n",
+    ],
+)
+def test_rule3_schema_qualified_enum_columns_are_recognized_for_inline_and_alter_checks(
+    constraint_sql,
+):
+    source = "CREATE TYPE public.task_state AS ENUM ('open', 'closed');\n" + constraint_sql
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize(
+    "alter_stmt",
+    [
+        "ALTER TABLE task ALTER COLUMN state TYPE public.task_state;\n",
+        "ALTER TABLE IF EXISTS ONLY task ALTER state SET DATA TYPE public.task_state;\n",
+    ],
+)
+def test_rule3_column_type_change_to_enum_refuses_string_widening(alter_stmt):
+    source = (
+        "CREATE TYPE public.task_state AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE task (state text);\n"
+        + alter_stmt
+        + "ALTER TABLE task ADD CHECK (state IN ('open', 'closed'));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_type_change_in_another_file_refuses_string_widening():
+    check_source = (
+        "CREATE TABLE task (state text);\n"
+        "ALTER TABLE task ADD CHECK (state IN ('open', 'closed'));\n"
+    )
+    type_change = "ALTER TABLE task ALTER COLUMN state TYPE public.task_state;\n"
+    context = ADAPTER.prepare_mutation_context((check_source, type_change))
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
 def test_rule3_widen_check_in_avoids_colliding_with_an_existing_member():
     """If a consumer's own list already contains the default synthetic
     literal, a numeric suffix is used instead -- the new literal must never
@@ -375,6 +607,101 @@ def test_rule3_control_all_unsigned_integer_members_widen_with_max_plus_one():
     source = "CREATE TABLE t (k INT CHECK (k IN (1, 2, 5)));\n"
     site = _one_site(source, "sql:widen-check-in")
     assert site.replacement == b", 6)"
+
+
+def test_integer_in_widening_stays_inside_a_smallint_column_range():
+    source = "CREATE TABLE t (k SMALLINT CHECK (k IN (32767, 32766)));\n"
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", -32768)"
+
+
+def test_integer_in_widening_refuses_unknown_types_and_out_of_range_members():
+    for source in (
+        "CREATE TABLE t (k MONEY CHECK (k IN (1, 2)));\n",
+        "CREATE TABLE t (k SMALLINT CHECK (k IN (32767, 32768)));\n",
+        "CREATE TABLE t (k NUMERIC(2,0) CHECK (k IN (1, 2)));\n",
+    ):
+        sites = ADAPTER.generate_mutation_sites(
+            source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+        )
+        assert sites == (), source
+
+
+def test_widen_check_in_reduces_a_not_in_exclusion_list():
+    source = "CREATE TABLE t (k INT CHECK (k NOT IN (1, 2)));\n"
+    site = _one_site(source, "sql:widen-check-in")
+    assert _span_text(source, site) == b"2"
+    assert site.replacement == b"1"
+    assert b"NOT IN (1, 1)" in source.encode("utf-8").replace(
+        _span_text(source, site), site.replacement
+    )
+
+
+@pytest.mark.parametrize("column_type", ["TEXT", "CHAR(2)", "VARCHAR(2)"])
+def test_widen_check_in_refuses_string_not_in_without_comparison_semantics(column_type):
+    source = f"CREATE TABLE t (k {column_type} CHECK (k NOT IN ('a', 'b')));\n"
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_widen_check_in_refuses_integer_not_in_without_a_known_exact_type():
+    source = "CREATE TABLE t (k DOUBLE PRECISION CHECK (k NOT IN (1, 2)));\n"
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_widen_check_in_does_not_mix_column_types_for_same_table_name_in_two_schemas():
+    source = (
+        "CREATE TABLE public.task (k DOUBLE PRECISION);\n"
+        "CREATE TABLE archive.task (k INTEGER);\n"
+        "ALTER TABLE public.task ADD CHECK (k NOT IN (1, 2));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_widen_check_in_refuses_string_not_in_for_schema_qualified_enum():
+    source = (
+        "CREATE TYPE public.task_state AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE task (state public.task_state);\n"
+        "ALTER TABLE task ADD CHECK (state NOT IN ('open', 'closed'));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_widen_check_in_removes_a_unique_value_when_the_final_value_is_duplicated():
+    source = "CREATE TABLE t (k INT CHECK (k NOT IN (1, 2, 2)));\n"
+    site = _one_site(source, "sql:widen-check-in")
+    assert _span_text(source, site) == b"1"
+    assert site.replacement == b"2"
+    assert b"NOT IN (2, 2, 2)" in source.encode("utf-8").replace(
+        _span_text(source, site), site.replacement
+    )
+
+
+def test_widen_check_in_skips_a_singleton_not_in_list():
+    source = "CREATE TABLE t (k INT CHECK (k NOT IN (1)));\n"
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_widen_check_in_skips_a_duplicate_only_not_in_list():
+    source = "CREATE TABLE t (k INT CHECK (k NOT IN (1, 1)));\n"
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
 
 
 def test_rule3_mixed_shape_members_produce_no_site():
@@ -653,8 +980,16 @@ def test_replacement_invariant_is_actually_wired_into_generate_mutation_sites(mo
 
     real_candidates = sql_module._all_candidate_sites
 
-    def _poisoned_candidates(source, masked, dollar_bodies, declare_spans):
-        sites = list(real_candidates(source, masked, dollar_bodies, declare_spans))
+    def _poisoned_candidates(source, masked, dollar_bodies, declare_spans, *, context=None):
+        sites = list(
+            real_candidates(
+                source,
+                masked,
+                dollar_bodies,
+                declare_spans,
+                context=context,
+            )
+        )
         sites.append(
             sql_module._Site(
                 lineno=1,
@@ -827,6 +1162,12 @@ def test_rule3_control_an_empty_in_list_produces_no_site():
     (``IN ()``) produces one EMPTY member once split -- refused the same
     way any other non-literal shape is (an honest gap, not a crash)."""
     source = "CREATE TABLE t (k INT CHECK (k IN ()));\n"
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+    source = "CREATE TABLE t (k INT CHECK (k NOT IN ()));\n"
     sites = ADAPTER.generate_mutation_sites(
         source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
     )

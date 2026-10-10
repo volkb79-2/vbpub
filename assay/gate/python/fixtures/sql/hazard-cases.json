@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "unique-deferrable",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "UNIQUE (value)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_unique_deferrable (value integer,\n-- ASSAY-FOCUS: unique-deferrable\n  CONSTRAINT assay_b132_unique_deferrable UNIQUE (value) DEFERRABLE INITIALLY DEFERRED\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  SET CONSTRAINTS ALL IMMEDIATE;\n  BEGIN\n    INSERT INTO assay_b132_unique_deferrable (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unique-nulls-not-distinct",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "UNIQUE",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_unique_nulls_not_distinct (value integer,\n-- ASSAY-FOCUS: unique-nulls-not-distinct\n  CONSTRAINT assay_b132_unique_nulls_not_distinct UNIQUE NULLS NOT DISTINCT (value)\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_nulls_not_distinct (value) VALUES (NULL), (NULL);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unique-include",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "UNIQUE (value)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_unique_include (value integer, payload text,\n-- ASSAY-FOCUS: unique-include\n  CONSTRAINT assay_b132_unique_include UNIQUE (value) INCLUDE (payload)\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_include (value, payload) VALUES (1, 'a'), (1, 'b');\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unique-using-index-constraint",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": null,
+      "expected_probe_sqlstate": null,
+      "probe": {
+        "before": "UNIQUE",
+        "after": "CHECK (true)"
+      },
+      "assertion": null,
+      "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\n-- ASSAY-FOCUS: unique-using-index-constraint\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
+    },
+    {
+      "id": "unique-using-index-index",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": null,
+      "expected_probe_sqlstate": null,
+      "probe": {
+        "before": "CREATE UNIQUE INDEX",
+        "after": "CREATE INDEX"
+      },
+      "assertion": null,
+      "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\n-- ASSAY-FOCUS: unique-using-index-index\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
+    },
+    {
+      "id": "fk-match-full",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "FOREIGN KEY (a, b) REFERENCES assay_b132_fk_match_full_parent (a, b)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_fk_match_full_parent (a integer, b integer, PRIMARY KEY (a, b));\n-- ASSAY-FOCUS: fk-match-full\nCREATE TABLE assay_b132_fk_match_full_child (a integer, b integer, CONSTRAINT assay_b132_fk_match_full FOREIGN KEY (a, b) REFERENCES assay_b132_fk_match_full_parent (a, b) MATCH FULL);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_match_full_parent (a, b) VALUES (1, 1);\n  BEGIN\n    INSERT INTO assay_b132_fk_match_full_child (a, b) VALUES (1, NULL);\n  EXCEPTION WHEN foreign_key_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "fk-deferrable",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "FOREIGN KEY (parent_id) REFERENCES assay_b132_fk_deferrable_parent (id)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_fk_deferrable_parent (id integer PRIMARY KEY);\n-- ASSAY-FOCUS: fk-deferrable\nCREATE TABLE assay_b132_fk_deferrable_child (parent_id integer, CONSTRAINT assay_b132_fk_deferrable FOREIGN KEY (parent_id) REFERENCES assay_b132_fk_deferrable_parent (id) DEFERRABLE INITIALLY DEFERRED);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_deferrable_child (parent_id) VALUES (999);\n  BEGIN\n    SET CONSTRAINTS ALL IMMEDIATE;\n  EXCEPTION WHEN foreign_key_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "fk-set-null-columns",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "FOREIGN KEY (a, b) REFERENCES assay_b132_fk_set_null_parent (a, b) ON DELETE SET NULL",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_fk_set_null_parent (a integer, b integer, PRIMARY KEY (a, b));\n-- ASSAY-FOCUS: fk-set-null-columns\nCREATE TABLE assay_b132_fk_set_null_child (a integer, b integer, CONSTRAINT assay_b132_fk_set_null FOREIGN KEY (a, b) REFERENCES assay_b132_fk_set_null_parent (a, b) ON DELETE SET NULL (b));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_set_null_parent (a, b) VALUES (1, 2);\n  INSERT INTO assay_b132_fk_set_null_child (a, b) VALUES (1, 2);\n  DELETE FROM assay_b132_fk_set_null_parent WHERE a = 1 AND b = 2;\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_fk_set_null_child WHERE a = 1 AND b IS NULL\n  ) THEN\n    RAISE EXCEPTION 'K01';\n  END IF;\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "not-null-identity",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_not_null_identity (\n-- ASSAY-FOCUS: not-null-identity\n  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL, payload integer\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_identity (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN SQLSTATE '428C9' THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "not-null-serial",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_not_null_serial (\n-- ASSAY-FOCUS: not-null-serial\n  id serial NOT NULL, payload integer\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_serial (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "not-null-primary-key",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_not_null_pk (\n-- ASSAY-FOCUS: not-null-primary-key\n  id integer NOT NULL PRIMARY KEY, payload integer\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_pk (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "enum-check-string-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "IN ('open', 'closed')",
+        "after": "IN ('open', 'closed', '__assay_widened__')"
+      },
+      "source": "CREATE TYPE assay_b132_status AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_enum_check (status assay_b132_status,\n-- ASSAY-FOCUS: enum-check-string-widen\n  CHECK (status IN ('open', 'closed'))\n);\n",
+      "expected_probe_sqlstate": null,
+      "assertion": null
+    },
+    {
+      "id": "generated-expression",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": null,
+      "expected_probe_bucket": null,
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_generated (base integer,\n-- ASSAY-FOCUS: generated-expression\n  value integer GENERATED ALWAYS AS (base + 1) STORED NOT NULL\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_generated (base) VALUES (NULL);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "event-trigger",
+      "operator": "sql:drop-trigger",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE FUNCTION assay_b132_event_trigger_fn() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$;\n-- ASSAY-FOCUS: event-trigger\nCREATE EVENT TRIGGER assay_b132_event_trigger ON ddl_command_start EXECUTE FUNCTION assay_b132_event_trigger_fn();\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "quoted-fk-target",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE \"assay b132 quoted parent\" (\"id value\" integer PRIMARY KEY);\n-- ASSAY-FOCUS: quoted-fk-target\nCREATE TABLE assay_b132_quoted_child (parent_id integer, CONSTRAINT assay_b132_quoted_fk FOREIGN KEY (parent_id) REFERENCES \"assay b132 quoted parent\" (\"id value\"));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "do-block-trigger",
+      "operator": "sql:drop-trigger",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_do_trigger (value integer);\nCREATE FUNCTION assay_b132_do_trigger_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;\n-- ASSAY-FOCUS: do-block-trigger\nDO $$ BEGIN EXECUTE 'CREATE TRIGGER assay_b132_do_trigger BEFORE INSERT ON assay_b132_do_trigger FOR EACH ROW EXECUTE FUNCTION assay_b132_do_trigger_fn()'; END $$;\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    }
+  ]
+}

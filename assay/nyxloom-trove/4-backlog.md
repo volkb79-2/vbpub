@@ -190,7 +190,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 
 **Later waves (open, not scheduled)**
 - B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
-- B087 — JavaScript/TypeScript canary (R3) — provisionally merged into `assay-b131-r2` at `1b5f61a9`; both dstdns R3 canaries PASS with retained schema-v15 verdicts and verifier transcripts; integrated `tester-unified` gate and exact-tip review pending; unreleased
+- B087 — JavaScript/TypeScript canary (R3) — **SHIPPED in `assay-v9.0.0`**; the tag's generated changelog records merge `1b5f61a91`; both dstdns R3 canaries PASS with retained schema-v15 verdicts and verifier transcripts.
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
@@ -9493,7 +9493,7 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
-**Status: IMPLEMENTED and integrated in local Assay `main` at `a5659aff` (2026-10-10). Both retained current dstdns R3 canaries passed, and registered `tester-unified` passed on that exact integration commit. The current B131 remediation diff requires its own exact-tip review and registered gate before release; B087 itself is not yet released.**
+**Status: SHIPPED in `assay-v9.0.0` (2026-10-10).** The tag contains the B087 integration, and the generated 9.0.0 changelog records `merge: Assay B087 into B131 integration` (`1b5f61a91`). The prior “not yet released” note was stale. Both retained current dstdns R3 canaries and the registered gate had passed on the exact integration commit before the release.
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
@@ -11829,35 +11829,34 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B132 — SQL constructs PostgreSQL may refuse
 
-**Status: OPEN (found by the W5 carve, 2026-09-29).** The SQL adapter generates mutation sites for:
-- `UNIQUE … DEFERRABLE`, `NULLS NOT DISTINCT`, `INCLUDE` and `USING INDEX` constraints;
+**Status: IN PROGRESS; exact-tip registered SQL measurement pending.** The SQL adapter generates mutation sites for:
+- `UNIQUE … DEFERRABLE`, `NULLS NOT DISTINCT` and `INCLUDE` constraints;
 - FK clauses with `MATCH FULL`, `DEFERRABLE` or `SET NULL (col)`.
+- It refuses both halves of a linked `UNIQUE USING INDEX` pair (A-487), while unrelated unique indexes remain mutable.
 
-That PostgreSQL rejects the mutated DDL is reasoned, not measured. If it does, one such construct on a changed line turns a consumer's lane into `ERROR`. Measure each construct on W5's harness, then either stop generating the site or classify the refusal explicitly.
+The pinned `hazard-cases.json` runs each focused site through a construct-specific behavioral probe outside the 24-row matrix. The shell writes a stage receipt (`apply`, `dump` or `test`); a current site that fails before tests is a qualification error, never a `crashed` candidate. Historical rewrites can be pinned as crashed only with an exact apply-stage SQLSTATE. Current bucket and historical probe results are intentionally unpinned until the registered PostgreSQL gate measures them.
 
-**Added by W5 (A-480; CD22).** W5's schema deliberately does not exercise these constructs, because a mutant PostgreSQL refuses is `crashed`, not a kill, and belongs to a hazard-construct probe rather than to the representative matrix:
-- *Unknown outcome:* `NOT NULL` dropped from an `IDENTITY`, `serial` or primary-key column; a string widen of an `IN` list on an enum column.
+**Added by W5 (A-480; CD22).** W5's 24-row schema deliberately does not exercise these constructs; their catalog behavior needs a separate focused probe rather than extrapolation from the matrix:
+- *Unmeasured behavior:* `NOT NULL` dropped from an `IDENTITY`, `serial` or primary-key column; a string widen of an `IN` list on an enum column.
 - *Not reached by the schema:* generated expressions, `EVENT` triggers, quoted foreign-key targets, triggers created inside a `DO` block.
 
-All of it needs an ad-hoc-construct mode of `gate/python/qualify_sql.py`: a way to run one construct's mutant through the same apply/dump/test command and record the bucket, without adding a row to the matrix.
+The separate hazard-case data provides the focused non-matrix mode, with construct assertions and the same apply/dump/test path. A current site's application failure stops qualification instead of entering a mutation bucket.
 
 **Measured SQLSTATE fact (W5 Work 0, CD53; PostgreSQL 18.6, the digest-pinned image).** A violated `ON DELETE RESTRICT` foreign key raises SQLSTATE **23001** (`restrict_violation`), not 23503; a violated `ON DELETE NO ACTION` (the default) still raises **23503** (`foreign_key_violation`). A probe or hazard-construct test that means "the foreign-key refusal happened" must catch both (`foreign_key_violation OR restrict_violation`); W5's K18 and K20 do, and K19 (NO ACTION) needs only 23503. Any `EXCEPTION WHEN foreign_key_violation` written against a RESTRICT key will not catch the refusal on 18.x.
 
 ## B133 — SQL operator labels misdescribe their effect
 
-**Status: OPEN (found by the W5 carve).** Two operators do something other than their label says:
-- the `NOT IN` "widening" operator actually narrows the list;
-- drop-check also rewrites `CREATE POLICY … WITH CHECK`.
+**Status: FIXED (A-486; declared built-in types only).** `sql:widen-check-in` adds a literal to `IN` only for homogeneous strings on a built-in character column or unsigned integers on a bounded integer column. The integer is in range and unused. For integer `NOT IN`, it removes one uniquely listed value only on a declared bounded integer column. String comparisons can collapse source-distinct values under types such as `CHAR(n)` or selected collations; unknown and approximate types also produce no site. Singleton, empty, malformed, mixed, non-literal, and duplicate-only lists produce no site. `sql:drop-check` keeps its existing predicate behavior for table `CHECK (...)` and policy `WITH CHECK (...)`; README, DESIGN-GUIDE, and CONSUMERS describe both forms.
 
-Fix the labels or the behaviour, whichever the SQL design intends, and update the docs' operator table.
+Focused adapter tests pin the valid `IN` and `NOT IN` rewrites, duplicate and singleton refusal, and the policy form. The closed operator IDs remain unchanged.
 
 ## B134 — the git-marker refusal test depends on the host's `/tmp`
 
-**Status: OPEN (found 2026-09-29 during Wave A W3–W6).**
+**Status: FIXED (2026-10-10).**
 
 `tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` creates `tmp_path/a/b/c` and expects `_nearest_git_marker` to find no `.git` in any ancestor. On a host with a stray `/tmp/.git`, the walk finds that marker and the test fails. On this devcontainer the stray marker is an empty directory created 2026-09-28 22:17 by an unknown process. The failure is local only: gate containers have their own `/tmp`. But `git.py`'s refusal line (`:457`, `:459` after W6) is covered only by this test, so a local B105 coverage run misses it for an environmental reason.
 
-Fix: make the test hermetic. Give it an ancestor chain it controls: either stop the walk at a boundary the test passes in, or seam the root the walk ends at. Keep the refusal assertion exact. Also find out whether any assay test can create `.git` outside its own `tmp_path`.
+Fix: `_nearest_git_marker` accepts a validated `stop_at` ancestor for bounded callers; the refusal test places a marker above that boundary and asserts the exact message. A paired test confirms a marker at the boundary is still found. The test audit found one intentional outside-`tmp_path` fixture: `gate/tests/test_self_qualification_container.py::committed_worktree` creates a uniquely named repository under `assay/.worktrees` and removes it in `finally`; the remaining repository/worktree test fixtures create their `.git` data under their own `tmp_path`.
 
 ## B135 — the mutation witness ignores pytest 9's `pytest.toml`
 

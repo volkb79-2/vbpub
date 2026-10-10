@@ -3530,6 +3530,24 @@ of a real corpus's only two `ON DELETE RESTRICT` foreign keys. A parser would
 buy nothing further, because none of the seven operators needs to know what
 *kind* of statement it is in — only where its own span starts and ends.
 
+**Operator names describe the effect on the predicate.**
+`sql:widen-check-in` appends a member to `IN (...)` only for homogeneous
+string literals on a declared built-in character column or unsigned integer
+literals on a declared bounded integer column. The integer is chosen inside
+the column's range and outside the current list. For integer-literal
+`NOT IN (...)` on a declared bounded integer column, the adapter removes one
+uniquely listed excluded member, which widens the accepted set. String
+equality depends on the column's type and collation: for example, `CHAR(n)`
+ignores trailing spaces, so two source-distinct strings can compare equal.
+String `NOT IN` lists and integer lists with unknown or approximate column
+types therefore have no site. A singleton, empty, duplicate-only, or
+non-literal `NOT IN` list is also not a site because no safe removal can
+widen it while preserving valid SQL (A-486).
+`sql:drop-check` deliberately covers both table `CHECK (...)` constraints
+and policy `WITH CHECK (...)` predicates, replacing either expression with
+`true`. Keeping the operator IDs stable avoids a public lane-vocabulary
+change while making the effect explicit (A-486).
+
 **Fail closed, not fail open.** An unterminated string, dollar quote, or
 block comment raises `MutationDiscoveryError` (`ERROR`/
 `MUTATION_DISCOVERY_FAILED`) rather than silently discovering sites in the
@@ -3735,6 +3753,26 @@ runs the same probes (the witness), and the normalized verdict is compared with
 the committed `expected/sql-r2-witness.json`. An incomplete witness (hung or
 budget-exceeded entries, `LANE_TIMEOUT`) is inconclusive and is checked before
 the FAIL requirement.
+
+**Hazard constructs are measured separately from the matrix (B132).** The
+SQL lane is whole-target, so its context pre-scan sees every selected SQL file
+before generating sites. It links `UNIQUE USING INDEX` references across files
+and marks columns with any `ALTER COLUMN ... TYPE` change unknown for literal
+widening. The qualification appends one focused SQL construct at a time and
+runs a construct-specific assertion through the same apply/dump/test script. The
+script writes an `apply`, `dump`, or `test` phase receipt before entering each
+phase. A current adapter-generated site that fails during apply or dump is a
+qualification error; it cannot be reported as a mutation crash or kill. The
+historical comparison rewrite may be recorded as `crashed` only when it fails
+during apply with its exact pinned SQLSTATE. Behavior probes exercise the
+construct itself: duplicate values for uniqueness, partial-null and deferred
+foreign keys, column-specific `SET NULL`, and null inserts for `NOT NULL`
+cases. This avoids relying on unrelated matrix tests to classify a changed
+catalog. `UNIQUE USING INDEX` is a linked pair: changing the constraint alone
+leaves the index enforcing uniqueness, while changing the index alone makes
+the attachment invalid, so neither half is a one-site mutation. Enum string
+checks and ambiguous equality cases are refused when the scanner cannot prove
+the relevant type.
 
 **The residue premise, now a loud failure.** The old premise was that a mutant
 re-applied onto a database that already carries the schema silently does

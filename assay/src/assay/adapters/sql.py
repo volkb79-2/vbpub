@@ -53,10 +53,11 @@ from A-283), each with its own scanner-level exclusion:**
 2. Where ``NOT NULL`` is immediately preceded by ``SET``, the span widens to
    ``SET NOT NULL`` and the replacement is ``DROP NOT NULL`` (``SET NULL``
    is a syntax error).
-3. ``sql:widen-check-in`` is literal-shape-aware: all-string members widen
-   with an unused string literal, all-unsigned-integer members widen with
-   ``max(members) + 1``, anything else (mixed shapes, casts, column
-   references, calls, subqueries) emits no site at all.
+3. ``sql:widen-check-in`` is literal-shape-aware: all-string ``IN`` members
+   widen only on a declared built-in character column; all-unsigned-integer
+   members widen only on a declared bounded integer column, using an unused
+   in-range value. Anything else (mixed shapes, casts, column references,
+   calls, subqueries, or unknown types) emits no site at all.
 4. (A-283) No ``sql:drop-not-null`` site where ``NOT NULL`` is immediately
    preceded by ``DROP`` -- the mirror of rule 2, and the very text rule 2's
    own replacement emits; ``DROP NULL`` is a syntax error.
@@ -278,6 +279,14 @@ class _Site(NamedTuple):
     replacement: bytes
 
 
+class _SqlMutationContext(NamedTuple):
+    """Cross-file facts needed to avoid splitting linked SQL constructs."""
+
+    attached_indexes: frozenset[tuple[bytes | None, bytes]]
+    unresolved_index_attachment: bool
+    altered_columns: frozenset[tuple[tuple[bytes | None, bytes], bytes]]
+
+
 # --- shared regex fragments ---------------------------------------------------
 
 _CHECK_OPEN_RE = re.compile(rb"\bCHECK\b\s*\(", re.IGNORECASE)
@@ -288,12 +297,93 @@ _REFERENCED_TARGET_RE = re.compile(
     rb"REFERENCES\s+[A-Za-z_][A-Za-z0-9_.]*(?:\s*\([^()]*\))?", re.IGNORECASE
 )
 _ON_ACTION_RE = re.compile(
-    rb"\s*ON\s+(?:DELETE|UPDATE)\s+(?:NO\s+ACTION|RESTRICT|CASCADE|SET\s+NULL|SET\s+DEFAULT)",
+    rb"\s*ON\s+(?:DELETE|UPDATE)\s+(?:NO\s+ACTION|RESTRICT|CASCADE|SET\s+NULL(?:\s*\([^()]*\))?|SET\s+DEFAULT)",
     re.IGNORECASE,
+)
+_FK_MODIFIER_RE = re.compile(
+    rb"\s*(?:MATCH\s+(?:FULL|PARTIAL|SIMPLE)|(?:NOT\s+)?DEFERRABLE|"
+    rb"INITIALLY\s+(?:DEFERRED|IMMEDIATE)|NOT\s+VALID)\b",
+    re.IGNORECASE,
+)
+_UNIQUE_NULLS_RE = re.compile(rb"\s+NULLS\s+(?:NOT\s+)?DISTINCT\b", re.IGNORECASE)
+_UNIQUE_INCLUDE_RE = re.compile(rb"\s*INCLUDE\b", re.IGNORECASE)
+_UNIQUE_WITH_RE = re.compile(rb"\s*WITH\b", re.IGNORECASE)
+_UNIQUE_DEFERRABILITY_RE = re.compile(
+    rb"\s*(?:NOT\s+)?DEFERRABLE\b|\s*INITIALLY\s+(?:DEFERRED|IMMEDIATE)\b",
+    re.IGNORECASE,
+)
+_SQL_IDENTIFIER = rb'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)'
+_UNIQUE_USING_INDEX_RE = re.compile(
+    rb"\s*USING\s+INDEX\s+"
+    + _SQL_IDENTIFIER
+    + rb"(?:\s*\.\s*"
+    + _SQL_IDENTIFIER
+    + rb")?",
+    re.IGNORECASE,
+)
+_UNIQUE_INDEX_TABLESPACE_RE = re.compile(
+    rb"\s*USING\s+INDEX\s+TABLESPACE\s+" + _SQL_IDENTIFIER,
+    re.IGNORECASE,
+)
+_UNIQUE_USING_INDEX_ATTACHMENT_RE = re.compile(
+    rb"\bUNIQUE\b\s+USING\s+INDEX\b(?!\s+TABLESPACE\b)",
+    re.IGNORECASE,
+)
+_USING_INDEX_ATTACHMENT_RE = re.compile(
+    rb"\s*USING\s+INDEX\b(?!\s+TABLESPACE\b)", re.IGNORECASE
 )
 _WEAKEN_DELETE_RE = re.compile(rb"\bON\s+DELETE\s+(RESTRICT|NO\s+ACTION)\b", re.IGNORECASE)
 _CREATE_TRIGGER_RE = re.compile(
     rb"\bCREATE\b(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\b", re.IGNORECASE
+)
+_CREATE_TABLE_RE = re.compile(rb"\bCREATE\s+TABLE\b", re.IGNORECASE)
+_ALTER_TABLE_RE = re.compile(rb"\bALTER\s+TABLE\b", re.IGNORECASE)
+_TABLE_NAME_AFTER_CREATE_RE = re.compile(
+    rb"\s*(?:IF\s+NOT\s+EXISTS\s+)?"
+    rb"(?:(?P<schema>[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?"
+    rb"(?P<table>[A-Za-z_][A-Za-z0-9_$]*)",
+    re.IGNORECASE,
+)
+_TABLE_NAME_AFTER_ALTER_RE = re.compile(
+    rb"\s*(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?"
+    rb"(?:(?P<schema>[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?"
+    rb"(?P<table>[A-Za-z_][A-Za-z0-9_$]*)",
+    re.IGNORECASE,
+)
+_ALTER_COLUMN_TYPE_RE = re.compile(
+    rb"\bALTER\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?"
+    rb"(?P<column>[A-Za-z_][A-Za-z0-9_$]*)\s+"
+    rb"(?:TYPE|SET\s+DATA\s+TYPE)\s+"
+    rb"(?:(?P<type_schema>[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?"
+    rb"(?P<type>[A-Za-z_][A-Za-z0-9_$]*)\b",
+    re.IGNORECASE,
+)
+_ENUM_TYPE_RE = re.compile(
+    rb"\bCREATE\s+TYPE\s+(?:(?P<schema>[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?"
+    rb"(?P<type>[A-Za-z_][A-Za-z0-9_$]*)\s+AS\s+ENUM\b",
+    re.IGNORECASE,
+)
+_ENUM_COLUMN_DECL_RE = re.compile(
+    rb"\s*(?P<column>[A-Za-z_][A-Za-z0-9_$]*)\s+"
+    rb"(?:(?P<type_schema>[A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*)?"
+    rb"(?P<type>[A-Za-z_][A-Za-z0-9_$]*)\b",
+    re.IGNORECASE,
+)
+_SIMPLE_IDENT_AT_END_RE = re.compile(rb"\b([A-Za-z_][A-Za-z0-9_$]*)\s*$")
+_INTEGER_TYPE_BOUNDS = {
+    b"smallint": (-(2**15), 2**15 - 1),
+    b"int2": (-(2**15), 2**15 - 1),
+    b"smallserial": (-(2**15), 2**15 - 1),
+    b"integer": (-(2**31), 2**31 - 1),
+    b"int": (-(2**31), 2**31 - 1),
+    b"int4": (-(2**31), 2**31 - 1),
+    b"serial": (-(2**31), 2**31 - 1),
+    b"bigint": (-(2**63), 2**63 - 1),
+    b"int8": (-(2**63), 2**63 - 1),
+    b"bigserial": (-(2**63), 2**63 - 1),
+}
+_SAFE_STRING_COLUMN_TYPES = frozenset(
+    {b"text", b"varchar", b"character", b"char", b"bpchar", b"name"}
 )
 _CREATE_UNIQUE_INDEX_RE = re.compile(rb"\bCREATE\s+UNIQUE\s+INDEX\b", re.IGNORECASE)
 _UNIQUE_RE = re.compile(rb"\bUNIQUE\b", re.IGNORECASE)
@@ -317,9 +407,13 @@ def _extend_references_clause(masked: bytes, start: int) -> int | None:
     end = target.end()
     while True:
         action = _ON_ACTION_RE.match(masked, end)
-        if action is None:
+        if action is not None:
+            end = action.end()
+            continue
+        modifier = _FK_MODIFIER_RE.match(masked, end)
+        if modifier is None:
             return end
-        end = action.end()
+        end = modifier.end()
 
 
 # --- sql:drop-check ------------------------------------------------------
@@ -348,11 +442,267 @@ def _scan_drop_check(source: bytes, masked: bytes) -> "list[_Site]":
 # --- sql:drop-unique -------------------------------------------------------
 
 
-def _scan_drop_unique(source: bytes, masked: bytes) -> "list[_Site]":
+def _unique_constraint_end(masked: bytes, keyword_end: int) -> int | None:
+    """Return the full UNIQUE constraint span end, including its index and
+    deferrability options, or ``None`` for an unbalanced option list."""
+    cursor = keyword_end
+    included_end = keyword_end
+    nulls = _UNIQUE_NULLS_RE.match(masked, cursor)
+    if nulls is not None:
+        cursor = nulls.end()
+        included_end = cursor
+
+    while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
+        cursor += 1
+    if cursor < len(masked) and masked[cursor] == _OPEN_PAREN:
+        close = _find_matching_close_paren(masked, cursor)
+        if close is None:
+            return None
+        cursor = close + 1
+        included_end = cursor
+
+    while True:
+        option_start = cursor
+        while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
+            cursor += 1
+        option = _UNIQUE_INDEX_TABLESPACE_RE.match(masked, option_start)
+        if option is None:
+            option = _UNIQUE_USING_INDEX_RE.match(masked, option_start)
+        if option is not None:
+            cursor = option.end()
+            included_end = cursor
+            continue
+        option = _UNIQUE_DEFERRABILITY_RE.match(masked, option_start)
+        if option is not None:
+            cursor = option.end()
+            included_end = cursor
+            continue
+        option = _UNIQUE_INCLUDE_RE.match(masked, option_start)
+        if option is not None:
+            cursor = option.end()
+            while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
+                cursor += 1
+            if cursor >= len(masked) or masked[cursor] != _OPEN_PAREN:
+                return None
+            close = _find_matching_close_paren(masked, cursor)
+            if close is None:
+                return None
+            cursor = close + 1
+            included_end = cursor
+            continue
+        option = _UNIQUE_WITH_RE.match(masked, option_start)
+        if option is not None:
+            cursor = option.end()
+            while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
+                cursor += 1
+            if cursor >= len(masked) or masked[cursor] != _OPEN_PAREN:
+                return None
+            close = _find_matching_close_paren(masked, cursor)
+            if close is None:
+                return None
+            cursor = close + 1
+            included_end = cursor
+            continue
+        return included_end
+
+
+def _normalize_sql_identifier(token: bytes) -> bytes:
+    """Normalize one parsed unqualified SQL identifier for source-local
+    index linking. Unquoted names fold to lower case; quoted names preserve
+    case and unescape doubled quotes."""
+    if token.startswith(b'"') and token.endswith(b'"'):
+        return token[1:-1].replace(b'""', b'"')
+    return token.lower()
+
+
+def _skip_sql_trivia(source: bytes, pos: int) -> int | None:
+    """Advance past SQL whitespace, line comments and nested block comments."""
+    while pos < len(source):
+        if source[pos] in b" \t\r\n\f\v":
+            pos += 1
+            continue
+        if source.startswith(b"--", pos):
+            newline = source.find(b"\n", pos + 2)
+            return len(source) if newline < 0 else _skip_sql_trivia(source, newline + 1)
+        if source.startswith(b"/*", pos):
+            depth = 1
+            cursor = pos + 2
+            while cursor < len(source) and depth:
+                if source.startswith(b"/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith(b"*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return None
+            pos = cursor
+            continue
+        break
+    return pos
+
+
+def _read_sql_identifier(source: bytes, pos: int) -> tuple[bytes, int] | None:
+    """Read one ASCII or double-quoted SQL identifier after trivia."""
+    pos = _skip_sql_trivia(source, pos)
+    if pos is None or pos >= len(source):
+        return None
+    if source[pos] == ord('"'):
+        cursor = pos + 1
+        while cursor < len(source):
+            if source[cursor] == ord('"'):
+                if cursor + 1 < len(source) and source[cursor + 1] == ord('"'):
+                    cursor += 2
+                    continue
+                return source[pos : cursor + 1], cursor + 1
+            cursor += 1
+        return None
+    match = re.match(rb"[A-Za-z_][A-Za-z0-9_$]*", source[pos:])
+    if match is None:
+        return None
+    return match.group(0), pos + match.end()
+
+
+def _read_qualified_sql_identifier(
+    source: bytes, pos: int
+) -> tuple[bytes | None, bytes] | None:
+    first = _read_sql_identifier(source, pos)
+    if first is None:
+        return None
+    first_token, cursor = first
+    after_first = _skip_sql_trivia(source, cursor)
+    if after_first is None:
+        return None
+    if after_first < len(source) and source[after_first] == ord('.'):
+        second = _read_sql_identifier(source, after_first + 1)
+        if second is None:
+            return None
+        second_token, _ = second
+        return _normalize_sql_identifier(first_token), _normalize_sql_identifier(second_token)
+    return None, _normalize_sql_identifier(first_token)
+
+
+def _read_create_index_name(source: bytes, pos: int) -> tuple[bytes | None, bytes] | None:
+    """Read a CREATE INDEX name, including optional modifiers and comments."""
+    name_pos = pos
+    word = _read_sql_identifier(source, pos)
+    if word is None:
+        return None
+    raw_word, cursor = word
+    if not raw_word.startswith(b'"') and raw_word.upper() == b"CONCURRENTLY":
+        name_pos = cursor
+        word = _read_sql_identifier(source, cursor)
+        if word is None:
+            return None
+        raw_word, cursor = word
+    if not raw_word.startswith(b'"') and raw_word.upper() == b"IF":
+        not_word = _read_sql_identifier(source, cursor)
+        if not_word is None or not_word[0].upper() != b"NOT":
+            return None
+        exists_word = _read_sql_identifier(source, not_word[1])
+        if exists_word is None or exists_word[0].upper() != b"EXISTS":
+            return None
+        cursor = exists_word[1]
+        name_pos = cursor
+    return _read_qualified_sql_identifier(source, name_pos)
+
+
+def _table_key_from_match(match: re.Match[bytes]) -> tuple[bytes | None, bytes]:
+    schema = match.group("schema")
+    return (
+        None if schema is None else schema.lower(),
+        match.group("table").lower(),
+    )
+
+
+def _type_name_from_match(match: re.Match[bytes]) -> bytes:
+    name = match.group("type").lower()
+    schema = match.group("type_schema")
+    if schema is not None and schema.lower() != b"pg_catalog":
+        return schema.lower() + b"." + name
+    return name
+
+
+def _collect_altered_columns(masked: bytes) -> frozenset[tuple[tuple[bytes | None, bytes], bytes]]:
+    altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
+    for alter in _ALTER_TABLE_RE.finditer(masked):
+        table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
+        if table_name is None:
+            continue
+        table_key = _table_key_from_match(table_name)
+        statement_end = masked.find(b";", table_name.end())
+        if statement_end < 0:
+            statement_end = len(masked)
+        for changed in _ALTER_COLUMN_TYPE_RE.finditer(masked, table_name.end(), statement_end):
+            altered_columns.add((table_key, changed.group("column").lower()))
+    return frozenset(altered_columns)
+
+
+def _collect_sql_mutation_context(sources: Sequence[str]) -> _SqlMutationContext:
+    """Find attached indexes and type-changing columns across SQL targets."""
+    attached_indexes: set[tuple[bytes | None, bytes]] = set()
+    unresolved_index_attachment = False
+    altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
+    for text in sources:
+        source = text.encode("utf-8")
+        masked = lex_sql(source).mask
+        for attachment in _UNIQUE_USING_INDEX_ATTACHMENT_RE.finditer(masked):
+            reference = _read_qualified_sql_identifier(source, attachment.end())
+            if reference is None:
+                unresolved_index_attachment = True
+            else:
+                attached_indexes.add(reference)
+        altered_columns.update(_collect_altered_columns(masked))
+    return _SqlMutationContext(
+        frozenset(attached_indexes),
+        unresolved_index_attachment,
+        frozenset(altered_columns),
+    )
+
+
+def _scan_drop_unique(
+    source: bytes,
+    masked: bytes,
+    *,
+    context: _SqlMutationContext | None = None,
+) -> "list[_Site]":
     sites = []
     index_form_spans: list[tuple[int, int]] = []
+    attached_indexes: set[tuple[bytes | None, bytes]] = set()
+    unresolved_attachment = False
+    for attachment in _UNIQUE_USING_INDEX_ATTACHMENT_RE.finditer(masked):
+        reference = _read_qualified_sql_identifier(source, attachment.end())
+        if reference is None:
+            # If the attachment target cannot be parsed, suppress all unique
+            # index sites conservatively below.  The constraint half is
+            # already excluded by the USING INDEX check.
+            unresolved_attachment = True
+            continue
+        attached_indexes.add(reference)
+    if context is not None:
+        attached_indexes.update(context.attached_indexes)
+        unresolved_attachment = unresolved_attachment or context.unresolved_index_attachment
     for m in _CREATE_UNIQUE_INDEX_RE.finditer(masked):
         index_form_spans.append((m.start(), m.end()))
+        index_name_parts = _read_create_index_name(source, m.end())
+        index_schema, index_name = index_name_parts if index_name_parts is not None else (None, None)
+        linked = any(
+            attached_name == index_name
+            and (
+                attached_schema is None
+                or index_schema is None
+                or attached_schema == index_schema
+            )
+            for attached_schema, attached_name in attached_indexes
+        )
+        if unresolved_attachment or (attached_indexes and index_name is None) or linked:
+            # Mutating either half of an attached pair is unsafe as one site:
+            # changing the index alone makes USING INDEX refuse the DDL, while
+            # changing the constraint alone leaves the unique index enforcing
+            # the same rule. Refuse the linked index site.
+            continue
         sites.append(
             _Site(
                 lineno=line_for_offset(source, m.start()),
@@ -363,19 +713,16 @@ def _scan_drop_unique(source: bytes, masked: bytes) -> "list[_Site]":
                 replacement=b"CREATE INDEX",
             )
         )
-    n = len(masked)
     for m in _UNIQUE_RE.finditer(masked):
         if _inside_any(index_form_spans, m.start()):
             continue
-        j = m.end()
-        while j < n and masked[j : j + 1].isspace():
-            j += 1
-        end = m.end()
-        if j < n and masked[j] == _OPEN_PAREN:
-            close = _find_matching_close_paren(masked, j)
-            if close is None:
-                continue
-            end = close + 1
+        if _USING_INDEX_ATTACHMENT_RE.match(masked, m.end()) is not None:
+            # The existing index and its constraint form one semantic unit;
+            # a single-site replacement cannot remove both safely.
+            continue
+        end = _unique_constraint_end(masked, m.end())
+        if end is None:
+            continue
         sites.append(
             _Site(
                 lineno=line_for_offset(source, m.start()),
@@ -555,8 +902,94 @@ def _scan_drop_trigger(
 # --- sql:widen-check-in ------------------------------------------------------
 
 
-def _scan_widen_check_in(source: bytes, masked: bytes) -> "list[_Site]":
+def _scan_widen_check_in(
+    source: bytes,
+    masked: bytes,
+    *,
+    context: _SqlMutationContext | None = None,
+) -> "list[_Site]":
     sites = []
+    enum_types = {
+        (
+            match.group("schema").lower() + b"." + match.group("type").lower()
+            if match.group("schema") is not None
+            else match.group("type").lower()
+        )
+        for match in _ENUM_TYPE_RE.finditer(masked)
+    }
+    table_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
+    column_types_by_table: dict[tuple[bytes | None, bytes], dict[bytes, bytes]] = {}
+    altered_columns = set(_collect_altered_columns(masked))
+    if context is not None:
+        altered_columns.update(context.altered_columns)
+    for table_match in _CREATE_TABLE_RE.finditer(masked):
+        table_name = _TABLE_NAME_AFTER_CREATE_RE.match(masked, table_match.end())
+        table_open = masked.find(b"(", table_match.end())
+        if table_name is None or table_open == -1:
+            continue
+        table_close = _find_matching_close_paren(masked, table_open)
+        if table_close is None:
+            continue
+        table_key = (
+            None if table_name.group("schema") is None else table_name.group("schema").lower(),
+            table_name.group("table").lower(),
+        )
+        table_spans.append((table_open, table_close, table_key))
+        column_types: dict[bytes, bytes] = {}
+        table_body = masked[table_open + 1 : table_close]
+        for start, end in _split_top_level(table_body):
+            column = _ENUM_COLUMN_DECL_RE.match(table_body[start:end])
+            if column is None or column.group("column").upper() in {
+                b"CONSTRAINT",
+                b"PRIMARY",
+                b"UNIQUE",
+                b"CHECK",
+                b"FOREIGN",
+                b"EXCLUDE",
+            }:
+                continue
+            type_name = column.group("type").lower()
+            type_schema = column.group("type_schema")
+            if type_schema is not None and type_schema.lower() != b"pg_catalog":
+                type_name = type_schema.lower() + b"." + type_name
+            column_types[column.group("column").lower()] = type_name
+        column_types_by_table[table_key] = column_types
+
+    def columns_for_check(check_start: int) -> dict[bytes, bytes]:
+        def with_alter_refusals(table_key: tuple[bytes | None, bytes]) -> dict[bytes, bytes]:
+            result = dict(column_types_by_table.get(table_key, {}))
+            for altered_table, column_name in altered_columns:
+                same_table = (
+                    altered_table[1] == table_key[1]
+                    and (
+                        altered_table[0] is None
+                        or table_key[0] is None
+                        or altered_table[0] == table_key[0]
+                    )
+                )
+                if same_table:
+                    result[column_name] = b"<altered>"
+            return result
+
+        for table_start, table_end, table_key in table_spans:
+            if table_start < check_start < table_end:
+                return with_alter_refusals(table_key)
+
+        previous_semicolon = masked.rfind(b";", 0, check_start)
+        alter_matches = tuple(
+            _ALTER_TABLE_RE.finditer(masked, previous_semicolon + 1, check_start)
+        )
+        if alter_matches:
+            alter = alter_matches[-1]
+            table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
+            if table_name is not None:
+                table_key = (
+                    None if table_name.group("schema") is None else table_name.group("schema").lower(),
+                    table_name.group("table").lower(),
+                )
+                return with_alter_refusals(table_key)
+        return {}
+
     for check_m in _CHECK_OPEN_RE.finditer(masked):
         open_paren = check_m.end() - 1
         check_close = _find_matching_close_paren(masked, open_paren)
@@ -566,6 +999,7 @@ def _scan_widen_check_in(source: bytes, masked: bytes) -> "list[_Site]":
         region_offset = open_paren + 1
         for in_m in _IN_OPEN_RE.finditer(region):
             in_open = region_offset + in_m.end() - 1
+            is_not_in = re.search(rb"\bNOT\s*$", region[: in_m.start()], re.IGNORECASE) is not None
             # `in_open` is a "(" strictly inside the already-balanced span
             # `(open_paren, check_close)` -- checked non-None above -- so a
             # fresh bracket-match from `in_open` is GUARANTEED to find its
@@ -586,13 +1020,99 @@ def _scan_widen_check_in(source: bytes, masked: bytes) -> "list[_Site]":
             # trailing comma) can make this fire.
             if any(not member for member in members):
                 continue
-            if all(_STRING_MEMBER_RE.fullmatch(member) for member in members):
+            all_strings = all(_STRING_MEMBER_RE.fullmatch(member) for member in members)
+            all_unsigned_integers = all(
+                _INT_MEMBER_RE.fullmatch(member) for member in members
+            )
+            lhs = region[: in_m.start()]
+            if is_not_in:
+                lhs = re.sub(rb"\bNOT\s*$", b"", lhs, flags=re.IGNORECASE)
+            column_match = _SIMPLE_IDENT_AT_END_RE.search(lhs)
+            column_types = columns_for_check(check_m.start())
+            if all_strings and not is_not_in:
+                column_type = (
+                    None
+                    if column_match is None
+                    else column_types.get(column_match.group(1).lower())
+                )
+                if column_type not in _SAFE_STRING_COLUMN_TYPES or column_type in enum_types:
+                    # Unknown/user-defined types can reject an otherwise
+                    # well-formed new literal (notably enum labels). Keep the
+                    # supported branch on known built-in character types.
+                    continue
+            if is_not_in:
+                # String equality depends on PostgreSQL's resolved column type
+                # and collation (for example, CHAR(n) ignores trailing spaces),
+                # so source-distinct strings need not be comparison-distinct.
+                # Only widen a homogeneous integer list on a declared bounded
+                # integer type whose equality cannot collapse two values.
+                if len(members) < 2 or not all_unsigned_integers or column_match is None:
+                    continue
+                column_type = column_types.get(column_match.group(1).lower())
+                bounds = _INTEGER_TYPE_BOUNDS.get(column_type)
+                if bounds is None:
+                    continue
+                values = [int(member) for member in members]
+                if any(value < bounds[0] or value > bounds[1] for value in values):
+                    continue
+                counts = {value: values.count(value) for value in values}
+                unique_indexes = [
+                    index for index, value in enumerate(values) if counts[value] == 1
+                ]
+                if not unique_indexes:
+                    continue
+                remove_index = unique_indexes[-1]
+                replacement_index = next(
+                    index for index in range(len(members)) if index != remove_index
+                )
+
+                def literal_span(index: int) -> tuple[int, int]:
+                    member_start, member_end = member_spans[index]
+                    raw = source[
+                        in_open + 1 + member_start : in_open + 1 + member_end
+                    ]
+                    leading = len(raw) - len(raw.lstrip())
+                    trailing = len(raw) - len(raw.rstrip())
+                    return (
+                        in_open + 1 + member_start + leading,
+                        in_open + 1 + member_end - trailing,
+                    )
+
+                removal_start, removal_end = literal_span(remove_index)
+                replacement_start, replacement_end = literal_span(replacement_index)
+                sites.append(
+                    _Site(
+                        lineno=line_for_offset(source, removal_start),
+                        operator="sql:widen-check-in",
+                        description="NOT IN (...) widened by removing one unique member",
+                        start=removal_start,
+                        end=removal_end,
+                        replacement=source[replacement_start:replacement_end],
+                    )
+                )
+                continue
+            if all_strings:
                 existing = {_decode_string_literal(member) for member in members}
                 new_value = _unused_string_literal(existing)
                 replacement = b", '" + new_value + b"')"
                 description = f"IN (...) widened with '{new_value.decode('ascii')}'"
-            elif all(_INT_MEMBER_RE.fullmatch(member) for member in members):
-                new_int = max(int(member) for member in members) + 1
+            elif all_unsigned_integers:
+                if column_match is None:
+                    continue
+                column_type = column_types.get(column_match.group(1).lower())
+                bounds = _INTEGER_TYPE_BOUNDS.get(column_type)
+                if bounds is None:
+                    continue
+                values = [int(member) for member in members]
+                if any(value < bounds[0] or value > bounds[1] for value in values):
+                    continue
+                upper = max(values)
+                new_int = upper + 1 if upper < bounds[1] else bounds[0]
+                if new_int in values:
+                    # The fallback is the lower bound. Existing members are
+                    # unsigned, so this is outside the member set and within
+                    # the declared integer type.
+                    continue
                 replacement = f", {new_int})".encode("ascii")
                 description = f"IN (...) widened with {new_int}"
             else:
@@ -615,6 +1135,7 @@ def _all_candidate_sites(
     masked: bytes,
     dollar_bodies: tuple[tuple[int, int], ...],
     declare_spans: list[tuple[int, int]],
+    context: _SqlMutationContext | None = None,
 ) -> "list[_Site]":
     """Every candidate from every scanner, in the operator table's own
     order (§3.2) -- never itself filtered by *lines*/*operators*/*limit*;
@@ -623,12 +1144,12 @@ def _all_candidate_sites(
     :func:`assay.adapters.python._generate_python_sites` (A-281)."""
     sites: list[_Site] = []
     sites.extend(_scan_drop_check(source, masked))
-    sites.extend(_scan_drop_unique(source, masked))
+    sites.extend(_scan_drop_unique(source, masked, context=context))
     sites.extend(_scan_drop_not_null(source, masked, declare_spans))
     sites.extend(_scan_drop_foreign_key(source, masked))
     sites.extend(_scan_weaken_delete_action(source, masked))
     sites.extend(_scan_drop_trigger(source, masked, dollar_bodies))
-    sites.extend(_scan_widen_check_in(source, masked))
+    sites.extend(_scan_widen_check_in(source, masked, context=context))
     return sites
 
 
@@ -722,6 +1243,10 @@ class SqlAdapter:
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         raise NotImplementedError(_UNREACHABLE.format(name="inject_uncovered_line"))
 
+    def prepare_mutation_context(self, sources: Sequence[str]) -> _SqlMutationContext:
+        """Pre-scan all lane targets for cross-file DDL dependencies."""
+        return _collect_sql_mutation_context(sources)
+
     def generate_mutation_sites(
         self,
         text: str,
@@ -730,7 +1255,26 @@ class SqlAdapter:
         operators: tuple[str, ...],
         limit: int,
     ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
-        """Never ``"UNSUPPORTED"`` -- SQL has an engine (the lexer), so an
+        return self.generate_mutation_sites_with_context(
+            text,
+            lines,
+            operators=operators,
+            limit=limit,
+            context=None,
+        )
+
+    def generate_mutation_sites_with_context(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+        context: _SqlMutationContext | None,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """Generate bounded sites using cross-file DDL facts when available.
+
+        Never ``"UNSUPPORTED"`` -- SQL has an engine (the lexer), so an
         input it cannot lex is a discovery failure
         (:class:`~assay.mutation.MutationDiscoveryError`, raised by
         :func:`~assay.adapters.sql_lex.lex_sql` and left to propagate
@@ -742,7 +1286,9 @@ class SqlAdapter:
 
         heap: list[tuple[_Worst, int, _Site]] = []
         seen = 0
-        for site in _all_candidate_sites(source, lex.mask, lex.dollar_bodies, declare_spans):
+        for site in _all_candidate_sites(
+            source, lex.mask, lex.dollar_bodies, declare_spans, context=context
+        ):
             if site.lineno not in lines or site.operator not in selected:
                 continue
             if not _replacement_is_safe(site.operator, site.replacement):

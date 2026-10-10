@@ -781,12 +781,15 @@ def collect_mutation_sites(
     into ONE deterministic job list, or report adapter-wide capability
     absence (P21/A-180/A-183).
 
-    Targets are visited in ``path`` order, and each call receives only the
-    REMAINING capacity — so the total number of descriptors this function
-    ever holds is bounded by *limit* regardless of how many candidates the
-    files actually contain. Once capacity is exhausted, later files are not
-    called at all: that is what makes the bound a work bound and not merely
-    a reporting one.
+    Targets are visited in ``path`` order, and each per-file discovery call
+    receives only the REMAINING capacity — so the total number of candidate
+    descriptors this function ever holds is bounded by *limit* regardless of
+    how many candidates the files actually contain. An adapter with
+    cross-file rules may do one metadata pre-scan over all selected target
+    texts before bounded site discovery; that pre-scan may not materialize
+    candidate descriptors. Once capacity is exhausted, later files are not
+    sent to per-file site discovery, which keeps candidate generation bounded
+    rather than merely truncating the report.
 
     Three results, deliberately distinguishable (A-183):
 
@@ -813,18 +816,36 @@ def collect_mutation_sites(
         )
     _check_operator_policy(operators)
 
+    ordered_targets = sorted(targets, key=lambda item: item.path)
+    context_preparer = getattr(adapter, "prepare_mutation_context", None)
+    mutation_context = (
+        context_preparer(tuple(target.text for target in ordered_targets))
+        if callable(context_preparer)
+        else None
+    )
+    contextual_generator = getattr(adapter, "generate_mutation_sites_with_context", None)
+
     jobs: list[MutantJob] = []
     remaining = limit
     saw_supported = False
-    for target in sorted(targets, key=lambda item: item.path):
+    for target in ordered_targets:
         if remaining <= 0:
             break
-        result = adapter.generate_mutation_sites(
-            target.text,
-            set(target.lines),
-            operators=operators,
-            limit=remaining,
-        )
+        if mutation_context is not None and callable(contextual_generator):
+            result = contextual_generator(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+                context=mutation_context,
+            )
+        else:
+            result = adapter.generate_mutation_sites(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+            )
         if result == UNSUPPORTED:
             if saw_supported:
                 raise MutationDiscoveryError(

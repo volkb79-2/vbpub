@@ -1875,16 +1875,29 @@ assay qualifies this adapter against a real PostgreSQL 18.6 with its own schema
 not against your schema. Two families are outside that evidence and are tracked
 in `nyxloom-trove/4-backlog.md`:
 
-- **Constructs PostgreSQL may refuse (B132).** A generated mutant can be
-  invalid DDL the qualification never exercises: `NOT NULL` dropped from an
-  `IDENTITY`/`serial`/primary-key column, a string widen of an enum `CHECK`
-  (unknown outcomes), and constructs the schema does not reach (generated
-  expressions, `EVENT` triggers, quoted foreign-key targets, triggers created
-  inside a `DO` block). Such a mutant is `crashed`, never a kill; a probe for
-  them needs an ad-hoc-construct mode of the qualification harness.
-- **Operator labels (B133).** `sql:widen-check-in` on a `NOT IN` list
-  *narrows* the check, and `sql:drop-check` also rewrites `CREATE POLICY ...
-  WITH CHECK`; the operator names describe the common case only.
+- **SQL edge constructs (B132).** The registered SQL qualification includes
+  a PostgreSQL hazard set separate from the representative 24-row matrix.
+  Each case has a construct-specific behavior probe and records whether
+  PostgreSQL failed during apply, dump, or test. The case definitions alone
+  are not qualification evidence; use the passing registered gate receipt for
+  the exact package commit. If a current generated site fails before its probe
+  runs, qualification fails; that is not a kill.
+  The adapter offers no site for either half of a linked `UNIQUE USING INDEX`
+  pair, or for an enum string check whose resolved type cannot be established.
+  String `NOT IN` rewrites are refused because PostgreSQL type and collation
+  rules can make distinct source strings compare equal; for example,
+  `CHAR(n)` ignores trailing spaces. Historical comparison probes that fail at
+  apply are useful only with an exact SQLSTATE pin.
+- **Operator behavior (B133).** `sql:widen-check-in` appends a member to
+  `IN ('open', 'pending')` only for homogeneous literals on declared built-in
+  character columns or bounded integer columns. An integer `NOT IN` list on a
+  declared bounded integer column can remove one uniquely listed excluded
+  member, which widens the accepted set. It emits no site for string `NOT IN`
+  lists, unknown or approximate column types, out-of-range integer members, a
+  singleton, empty, duplicate-only, non-literal, or mixed lists. The
+  `sql:drop-check` operator applies to both table constraints and
+  row security policies: it replaces `CHECK (predicate)` or `WITH CHECK
+  (predicate)` with the corresponding `true` clause.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 

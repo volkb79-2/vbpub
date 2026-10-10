@@ -776,6 +776,19 @@ uses Docker IDs for both container lifecycles and fails closed when a daemon-sid
 repository or socket bind source is missing. See
 [§11 of the design guide](docs/DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
 
+The qualification also runs separate PostgreSQL hazard cases for constructs
+outside the 24-row matrix. Each generated site has a construct-specific
+behavioral probe. SQL lanes use whole-target scope; before site discovery the
+adapter scans all selected SQL files to link `UNIQUE USING INDEX` pairs and
+identify columns changed by `ALTER COLUMN ... TYPE`. The harness records
+whether apply, dump, or test failed; a current generated site that fails before
+tests is a qualification error, never a `crashed` mutation result. Historical comparison probes may be recorded as
+crashes only when their apply-stage SQLSTATE is pinned exactly. A
+`UNIQUE USING INDEX` constraint and its attached unique index are one semantic
+unit, so neither half is offered as a one-site mutation. String `NOT IN`
+rewrites are also refused because PostgreSQL equality can collapse distinct
+source strings, such as values compared as `CHAR(n)`.
+
 The two B015 semantic families, `python:uuid-equality-swap` and
 `python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
 over assay's own source they produced 87 sites, none of which
@@ -794,6 +807,18 @@ sql:drop-check         sql:drop-unique        sql:drop-not-null
 sql:drop-foreign-key    sql:weaken-delete-action    sql:drop-trigger
 sql:widen-check-in
 ```
+
+`sql:widen-check-in` adds a member to `IN` only for homogeneous string
+literals on declared built-in character columns or unsigned integer literals
+on declared bounded integer columns. For an integer `NOT IN` list on a
+declared bounded integer column, it removes one uniquely listed excluded
+value so the predicate accepts a wider set. It emits no site for string
+`NOT IN` lists, unknown or approximate column types, out-of-range integer
+members, a singleton, empty, duplicate-only, non-literal, or mixed `NOT IN`
+list.
+`sql:drop-check`
+replaces the predicate with `true` for both a table `CHECK (...)` constraint
+and a policy's `WITH CHECK (...)` clause.
 
 Two `judge.mutation` config keys exist only for a SQL lane:
 `equivalence_artifact` (a project-relative path the lane's command writes
