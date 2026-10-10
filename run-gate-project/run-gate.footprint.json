@@ -1,28 +1,28 @@
 {
-  "distilled_at": "2026-10-10T03:48:09Z",
-  "from_commit": "8b8d1480f0b099a535f3821913a7f84f90605e9c",
+  "distilled_at": "2026-10-10T03:56:07Z",
+  "from_commit": "5b2d169ca36e96b2c5d2273cd68564ef13f11f18",
   "generated_by": "run-gate",
   "keep": 10,
   "lanes": {
     "assay-r1": {
-      "completed_runs": 4,
+      "completed_runs": 5,
       "cpu_cores": {
-        "avg_median": 0.776,
-        "max": 0.789
+        "avg_median": 0.786,
+        "max": 0.794
       },
       "duration_s": {
         "max": 208.708,
-        "median": 185.03
+        "median": 184.937
       },
       "hot_set_bytes": {
         "p90_max": null,
         "p90_median": null
       },
-      "last_at": "2026-10-10T03:44:31Z",
-      "last_commit": "8b8d1480f0b099a535f3821913a7f84f90605e9c",
+      "last_at": "2026-10-10T03:52:01Z",
+      "last_commit": "5b2d169ca36e96b2c5d2273cd68564ef13f11f18",
       "memory_full_stall_s": {
         "max": 3.708,
-        "median": 1.185
+        "median": 0.726
       },
       "memory_peak_bytes": {
         "max": 846188544,
@@ -34,26 +34,26 @@
       },
       "method": "daemon",
       "peak_at_floor": null,
-      "runs": 4,
+      "runs": 5,
       "scope": "container",
       "source": "memory.peak"
     },
     "assay-r3": {
-      "completed_runs": 4,
+      "completed_runs": 5,
       "cpu_cores": {
         "avg_median": null,
         "max": null
       },
       "duration_s": {
         "max": 1.956,
-        "median": 1.585
+        "median": 1.461
       },
       "hot_set_bytes": {
         "p90_max": null,
         "p90_median": null
       },
-      "last_at": "2026-10-10T03:47:52Z",
-      "last_commit": "8b8d1480f0b099a535f3821913a7f84f90605e9c",
+      "last_at": "2026-10-10T03:55:27Z",
+      "last_commit": "5b2d169ca36e96b2c5d2273cd68564ef13f11f18",
       "memory_full_stall_s": {
         "max": 0.0,
         "median": 0.0
@@ -68,33 +68,33 @@
       },
       "method": "basic",
       "peak_at_floor": null,
-      "runs": 4,
+      "runs": 5,
       "scope": "container",
       "source": "memory.peak"
     },
     "selftest": {
-      "completed_runs": 3,
+      "completed_runs": 4,
       "cpu_cores": {
-        "avg_median": 0.746,
+        "avg_median": 0.75,
         "max": 0.758
       },
       "duration_s": {
         "max": 182.116,
-        "median": 163.033
+        "median": 162.558
       },
       "hot_set_bytes": {
         "p90_max": null,
         "p90_median": null
       },
-      "last_at": "2026-10-10T03:40:54Z",
-      "last_commit": "8b8d1480f0b099a535f3821913a7f84f90605e9c",
+      "last_at": "2026-10-10T03:48:44Z",
+      "last_commit": "5b2d169ca36e96b2c5d2273cd68564ef13f11f18",
       "memory_full_stall_s": {
         "max": 1.661,
-        "median": 0.585
+        "median": 0.525
       },
       "memory_peak_bytes": {
         "max": 815185920,
-        "median": 797933568
+        "median": 595243008
       },
       "memory_peak_over_baseline_bytes": {
         "max": null,
@@ -102,7 +102,7 @@
       },
       "method": "daemon",
       "peak_at_floor": null,
-      "runs": 3,
+      "runs": 4,
       "scope": "container",
       "source": "memory.peak"
     }

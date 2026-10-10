@@ -8730,3 +8730,15 @@ selftest 761/777 MiB, assay-r3 peak unknown. This is a measured-data refresh,
 not a product-code change. The manifest/docs/log commit is the final candidate
 tree; rerun the short gates and doctor on that committed tip, then obtain the
 fresh Sol review. No R2/full gate is running, and no merge or release was made.
+
+### RW-543 — 2026-10-10 03:56:14 UTC — settle footprint drift from the latest exact-tree history
+
+Run-Gate doctor on `5b2d169ca36e96b2c5d2273cd68564ef13f11f18` reported zero
+failures but a selftest peak drift just over the configured 25% tolerance:
+the latest measured cgroup peak was lower than the earlier manifest median.
+Regenerate the manifest from the current history rather than suppressing the
+warning or widening tolerance. The latest `footprint --write` records
+assay-r1 708/807 MiB, selftest 568/777 MiB, and unknown assay-r3 peak; the
+consumer transcript is updated. This data-only commit is the final candidate
+tree; rerun the exact short gates and doctor after commit. No R2/full gate,
+merge, or release is in progress.
