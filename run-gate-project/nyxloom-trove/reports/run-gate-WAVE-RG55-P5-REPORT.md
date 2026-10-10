@@ -1,21 +1,22 @@
 # RG-55 P5 — Run-Gate v1.1 integration report
 
-**State: in progress. This report is not a merge, release, or shipment
-authorization.** Candidate worktree
-`.worktrees/rg55-p5-transport-port-20261010` is based on
-`3ccb752800d5a0c8de7d756b86882e3f1edc64fe` and currently has uncommitted P3
-origin-scope protection, regressions, and documentation. The candidate has
-passed an interim package unit gate on that working tree; final exact-tree
-gates, live acceptance against the updated daemon, fresh Sol review, and
-asynchronous exact-tree R2/full-gate work remain outstanding.
+**State: in progress; this report does not authorize merge, release, or
+shipment.** Candidate branch `rg55-p5-transport-port-20261010` is at committed
+tree `465f67d060dcbdb7a47e92e95ee082405f14ca67`. CP-19 origin-scope
+protection, regressions, and docs are committed. Candidate cgroup-profiler
+unit, whole-package coverage, and canary gates passed on that tree, and live
+carrier/placement/liveness/DAMON probes are complete. Final Run-Gate short
+gates on the refreshed evidence tree, fresh Sol review, and exact-tree
+`assay-r2`/`gate-full` remain outstanding.
 
 ## Candidate identity and release boundary
 
 - Main/origin base at this checkpoint: `efaf112945233e3a8f6d53f2fef136439d18d089`.
-- Candidate base: worktree `.worktrees/rg55-p5-transport-port-20261010`,
-  branch `rg55-p5-transport-port-20261010`, base commit
-  `3ccb752800d5a0c8de7d756b86882e3f1edc64fe`; the current P3 delta is
-  intentionally uncommitted while its tests and docs are being completed.
+- Candidate: worktree `.worktrees/rg55-p5-transport-port-20261010`, branch
+  `rg55-p5-transport-port-20261010`, HEAD
+  `465f67d060dcbdb7a47e92e95ee082405f14ca67` at the time of these receipts.
+  This includes the prior integrated code checkpoint `3ccb7528` plus the
+  committed CP-19 guard, tests, and docs.
 - Run-Gate revision: 61. CMRU reports the next Run-Gate version as
   `23.11.0`; the P5 handoff's original `23.9.0` / revision 43 is historical.
 - CMRU reports Assay's next version as `9.1.0`; cgroup-profiler has no
@@ -30,9 +31,9 @@ asynchronous exact-tree R2/full-gate work remain outstanding.
   (`e5d9962c25e18d443f5e3712c906fff57c0d561e`) is also included. RW-437
   records a fresh Sol/xhigh ACCEPT for provisional integration after its
   r0-r1 (2,275 tests, 100% line+branch) and r3 (7/7 canaries rejected).
-  RW-438 explicitly says that this is not release readiness: the final-source
-  R2, the initial-DAMON-start fix's final validation, and live DAMON evidence
-  remain separate requirements.
+  RW-438 explicitly says this is not release readiness: final-source R2 and
+  the initial-DAMON-start fix's final validation remain separate
+  requirements. Live DAMON evidence is now recorded below.
 
 ## Earlier Run-Gate short-gate evidence on base commit 3ccb
 
@@ -51,6 +52,10 @@ PASS. R3's history record is PASS/exit 0. Each verdict was read separately
 from its gate log. R-45 admission delayed the first two gates by about ten
 minutes; they proceeded after the bounded wait. Memory PSI full avg10 stayed
 below the launch threshold. Profiling did not alter any gate verdict.
+
+The following cgroup-profiler unit/coverage/canary paragraphs are historical
+interim receipts from the dirty working tree; current committed-tree receipts
+follow in a separate section below.
 
 After the P3 edits, the cgroup-profiler package's declared `unit` gate passed
 on the current working tree: 2,499 passed, 4 warnings in 129.60s. It ran in
@@ -77,16 +82,35 @@ These receipts cease to be exact-HEAD evidence after any candidate commit.
 After the final report/packet/log edits, rerun the required short gates and
 doctor on the final quiet tree before review.
 
+## Exact committed-tree cgroup-profiler gates
+
+On candidate tree `465f67d060dcbdb7a47e92e95ee082405f14ca67`, cgroup-profiler
+`unit` passed: 2,499 passed, 4 warnings, 126.08s, in exact container
+`cgprofile-gate-712557-1791664303`. Whole-package `coverage` passed: 2,499
+passed, 8,389 statements, 3,110 branches, 100% line and branch coverage,
+125.35s, in `cgprofile-gate-714038-1791664472`. Both were verified under
+`dev-gates.slice` at 3 CPUs and 1-GiB memory; the gate scripts removed their
+own containers. The canary gate rejected all seven canaries (7 rejected,
+0 survived, exit 0) in exact container `rg55-p5-canary-465f67d0-01`, detached
+under `dev-gates.slice` with the same limits. A first harness attempt failed
+before tests because its read-only root blocked Git's safe-directory write;
+that exact container was removed and the retry used writable `/tmp`. No
+product canary failed. Nyxloom lint passed, the interface-contract mirrors
+were byte-identical, and `git diff --check` passed.
+
+These receipts are exact for `465f67d0`; later report/log/packet commits
+change final HEAD. Rerun cgroup-profiler unit, whole-package coverage,
+canary, Nyxloom lint, Run-Gate `selftest`, `assay-r1`, `assay-r3`, and
+`doctor` on the final quiet review tree. Earlier Run-Gate receipts on
+`3ccb7528` remain historical only.
+
 ## Live carrier, placement, liveness, and DAMON evidence
 
-The currently running host daemon is `cgprofile-host-daemon`, image
-`cgprofile:local`, reports `cgprofile 0.0.0-dev`, and currently has zero live
-sessions. Its socket carrier is mounted in the cockpit. The live evidence
-below was collected against that deployed image before the candidate's new
-origin-scope guard. Candidate-daemon acceptance must use CIU to replace this
-host singleton only while it has zero sessions, then restore the daemon from
-main after the probes; do not create a second daemon or bypass the CIU
-lifecycle.
+The original live-probe entries below are historical checkpoint evidence;
+they include the pre-CP-19 restore warning and are superseded for candidate
+acceptance by the later subsection. The host singleton is now restored from
+main, `cgprofile-host-daemon` reports the main revision, its socket is
+listening, `DAMON_STAT=Y`, and its session registry is empty.
 
 **Carrier parity:** the same synthetic workload completed through the socket
 and Docker-exec carriers, one measurement at a time with the daemon otherwise
@@ -154,27 +178,81 @@ reported that the cgroup2 mount lacked `nsdelegate`,
 `memory_recursiveprot`, and `memory_hugetlb_accounting`, then restored those
 options via its supported host self-heal. Raw `/tmp/rg55-p3-*` probe logs are
 not present in this resumed environment; this report preserves the exact
-measurements recorded in the prior controller checkpoint. Candidate-daemon
-live probes and a durable evidence bundle are still required for final P3
-closeout.
+measurements recorded in the prior controller checkpoint. Those historical
+logs do not supply candidate proof; current candidate-image probes and the
+fresh DAMON pair are recorded in the following subsections.
+
+### Candidate live acceptance on daemon image revision `465f67d0`
+
+CIU-104 correctly refused `ciu up` from the candidate worktree because another
+checkout owns the fixed host singleton. The candidate image was built locally
+and its revision label verified; candidate `ciu up --dry-run` rendered. To
+exercise candidate runtime code without bypassing ownership, the main
+checkout's CIU lifecycle replaced the idle singleton with the local candidate
+image and preserved its session volume. The daemon was then rebuilt from main
+and redeployed via main CIU. No sidecar daemon was used.
+
+The socket and Docker-exec carriers profiled the same synthetic target
+container, one at a time. Socket session `s-20261010T204614Z-7e44` recorded 39
+samples, 3,710,976-byte baseline, and 29,134,848-byte peak. Exec session
+`s-20261010T204636Z-71e6` recorded 37 samples, 3,751,936-byte baseline, and
+29,188,096-byte peak. The 53,248-byte peak difference is about 0.18%; both
+start/watch/status/stop paths succeeded with DAMON off.
+
+The CP-19 one-process probe (`s-20261010T204712Z-6ecd`) returned
+`place-refused:origin-scope-would-empty`, `leaf: null`, and `pids_moved: 0`;
+host systemd had no transient scope for the token. The anchored placement
+probe (`s-20261010T204739Z-8f82`) moved one PID to its delegated leaf, retained
+the Docker-origin anchor, then restored the PID to its original Docker scope.
+Its summary had `placement.error=null`, the transient systemd scope was
+`LoadState=not-found`, and the daemon returned to zero sessions/leaves.
+
+The successful on-stall retry (`s-20261010T204842Z-fe02`) used
+`--idle-bound 3 --on-stall kill --place`: one PID moved, the watcher returned
+`stalled`/`killed`, applied `cgroup.kill`, and ended with reason `killed`.
+The target exited, `placement.error=null`, its transient scope disappeared,
+and the daemon was idle afterward. The first harness attempt had a Python
+syntax error before the probe; its exact container was removed. The successful
+retry is the evidence; the old `write-failed` warning is not being hidden or
+relabelled—the repaired candidate now refuses the last-member move and the
+anchored case restores cleanly.
+
+### Fresh DAMON pair on `dev-gates.slice`
+
+The approved pair used identical 96-MiB allocation / 8-MiB hot-set workloads,
+`tester-unified:local`, 256-MiB memory limits, and 3-CPU caps. Each exact
+container was verified under `dev-gates.slice`; the daemon had no concurrent
+sessions. Off session `s-20261010T205743Z-446c` lasted 100s with 99 samples,
+105,103,360-byte target memory peak, and no DAMON series. On session
+`s-20261010T205934Z-123e` lasted 102s with 97 samples; DAMON status was `on`
+for one target, hot-set median/p90 8,433,664 bytes and peak 8,974,336 bytes.
+The host had `DAMON_STAT=Y` for the off run; it was temporarily set to `N`
+for the on run, then restored and verified `Y`.
+
+Aggregate `cgprofile.slice` CPU increased 2.045920 CPU-seconds over the 100s
+off interval and 2.138164 over the 102s on interval. Duration-normalized
+rates were 0.020459 and 0.020962 cores, a difference of 0.000503 cores
+(about 0.0503% of one CPU). Three daemon `docker stats` samples were: off
+2.02%, 1.91%, 13.70% CPU and 25.12, 25.23, 25.04 MiB; on 0.41%, 2.40%,
+0.42% CPU and 31.61, 33.62, 35.22 MiB. Host loadavg1 was 2.28→1.74 off and
+2.02→1.76 on; host memory PSI full avg10 was 0.97→0.03 off and 0.11→0.00
+on. All PSI values stayed below the launch threshold. The earlier 19:46
+pair estimated about 0.41% of one CPU, so these remain noisy sequential
+aggregate observations—not a calibrated or universal overhead guarantee.
+Neither host load nor profile data changed a functional verdict.
 
 ## Still required
 
-1. Commit the P3 implementation/docs and run final cgroup-profiler unit,
-   whole-package coverage, and canary gates plus Run-Gate selftest, assay-r1,
-   assay-r3, and doctor on the final committed tree.
-2. With the daemon idle, use CIU's supported host-singleton workflow to
-   exercise the candidate daemon: socket/exec parity, pre-move refusal of a
-   one-process origin unit, anchored shared-scope placement/restore, and
-   on-stall kill. Establish whether the earlier restore warning was a benign
-   zombie/reap race or a product cleanup defect, and restore the main-managed
-   daemon state after the probe.
-3. Refresh the report and Sol packet with those receipts and the exact input
-   revision. Obtain a fresh Sol xhigh ACCEPT; any review repair requires
-   same-reviewer verification and rerunning affected gates. Then provisionally
-   merge the authorized integration.
-4. Run `assay-r2` and `gate-full` asynchronously against the exact judged
-   tree in attached CIU worktrees; any code repair must be backported and
+1. Commit this report and RW-552 with the review packet's final input
+   revision. Then rerun cgroup-profiler unit, whole-package coverage, canary,
+   Nyxloom lint, Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor` on
+   the final quiet review tree.
+2. Obtain a fresh Sol xhigh P5 review of the complete integrated diff. Any
+   review repair requires same-reviewer verification and rerunning affected
+   gates. Provisional merge is authorized after review and short-gate
+   evidence; it does not satisfy release readiness.
+3. Run `assay-r2` and `gate-full` asynchronously against the exact judged
+   tree in attached CIU worktrees. Any code repair must be backported and
    judged again before release. Classify every survivor and resolve or
    explicitly backlog each remaining safety/quality finding, then perform the
    package releases/installations authorized by the release plan.

@@ -8898,3 +8898,58 @@ zero sessions, preserving the named session volume; after the probe, restore
 the daemon from main with `ciu up`. Do not start a sidecar or use raw Docker
 to bypass the declared singleton. No daemon change or candidate deployment
 was made by this ruling.
+
+### RW-552 — 2026-10-10 21:03:13 UTC — complete candidate probes and restore main daemon
+
+Candidate P5 tree `465f67d060dcbdb7a47e92e95ee082405f14ca67` now has committed
+CP-19 origin-scope protection. On that exact tree, cgroup-profiler unit
+passed (2,499 tests, 4 warnings, 126.08s); whole-package coverage passed
+(2,499 tests, 8,389 statements, 3,110 branches, 100% lines and branches,
+125.35s); and all seven canaries were rejected. Their exact containers and
+limits are recorded in the P5 report. Nyxloom lint passed, the two contract
+mirrors were byte-identical, and `git diff --check` passed. These results
+precede this ruling/report refresh and must be repeated on the final review
+tree.
+
+CIU-104 correctly refused candidate-worktree takeover of the fixed
+`cgprofile-host-daemon` singleton. Candidate `ciu up --dry-run` rendered; for
+runtime probes, the main checkout's CIU lifecycle replaced the idle singleton
+with the locally built image whose OCI revision label was `465f67d0`, while
+preserving its session volume. This exercised candidate daemon code without
+creating a sidecar or bypassing CIU ownership. The image was then rebuilt
+from main and redeployed via main CIU; current daemon image label is
+`efaf112945233e3a8f6d53f2fef136439d18d089`, socket listening, no live
+sessions, and host `DAMON_STAT=Y` verified. No unrelated container or volume
+was removed.
+
+Candidate live receipts: socket/exec parity sessions
+`s-20261010T204614Z-7e44` and `s-20261010T204636Z-71e6` measured peaks
+29,134,848 and 29,188,096 bytes (53,248-byte difference). CP-19 session
+`s-20261010T204712Z-6ecd` refused the one-process origin scope as
+`place-refused:origin-scope-would-empty`, with zero PIDs moved and no leaf.
+Anchored placement session `s-20261010T204739Z-8f82` moved one PID, then
+restored it to its original Docker scope; the transient unit disappeared and
+`placement.error=null`. Successful on-stall session
+`s-20261010T204842Z-fe02` killed the exact leaf after the 3-second idle
+bound, finalized with `verdict=killed`, exited the target PID, restored the
+anchor scope cleanly, and left no session or leaf. A preceding harness
+attempt had a Python syntax error before testing; its exact container was
+removed and is not counted as product evidence.
+
+The newly approved DAMON pair ran after the main daemon was restored, using
+identical synthetic workloads in separate `dev-gates.slice` containers
+(96-MiB allocation, 8-MiB hot set, 256-MiB memory, 3 CPUs). Off session
+`s-20261010T205743Z-446c`: 100s, 99 samples, daemon-slice CPU +2.045920s,
+no DAMON series. On session `s-20261010T205934Z-123e`: 102s, 97 samples,
+DAMON `on`, hot median/p90 8,433,664 bytes, daemon-slice CPU +2.138164s.
+Duration-normalized CPU rates differ by 0.000503 cores (about 0.0503% of one
+CPU); this is one sequential aggregate-counter observation, not per-session
+attribution or a universal overhead guarantee. Three `docker stats` samples,
+host load, and PSI are recorded in the P5 report. `DAMON_STAT` transitioned
+Y→N→Y and was verified Y afterward. An initial orchestration syntax error
+before any target launch was corrected and did not create a container.
+
+No Run-Gate release, P5 review, provisional merge, or package release occurred
+under this ruling. Final committed-tree short gates and fresh Sol review
+remain prerequisites for provisional merge; exact-tree R2/full gate remain
+release blockers.
