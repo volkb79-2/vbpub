@@ -134,7 +134,30 @@ def test_a_git_marker_that_is_neither_a_directory_nor_a_regular_file_is_refused(
     assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
 
 
-def test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused(tmp_path: Path):
+def test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    start = tmp_path / "isolated" / "project"
+    start.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def hide_git_markers(path: Path):
+        if path.name == ".git":
+            raise FileNotFoundError(path)
+        return original_lstat(path)
+
+    # Keep the production unbounded walk independent of where pytest places
+    # its temp directory, while letting every non-marker filesystem check run
+    # normally.
+    monkeypatch.setattr(Path, "lstat", hide_git_markers)
+    with pytest.raises(AssayError) as excinfo:
+        git_module._nearest_git_marker(start)
+
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+    assert "within" not in str(excinfo.value)
+
+
+def test_git_marker_above_explicit_walk_boundary_is_ignored(tmp_path: Path):
     """A marker above the explicitly owned walk root is outside this probe."""
     boundary = tmp_path / "walk-boundary"
     lonely = boundary / "a" / "b" / "c"

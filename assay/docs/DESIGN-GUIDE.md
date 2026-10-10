@@ -966,9 +966,12 @@ use it as policy, and `assay verify` checks only its existing non-PASS and
 byte-bound rules.
 
 Lane validation also warns on stderr when a declared coverage lane invokes
-pytest directly or through `python -m pytest` with `--maxfail`, `--exitfirst`,
-or `-x` (including short-option clusters). Early stopping can leave a coverage
-artifact incomplete. This is advisory and does not invalidate the lane;
+pytest directly or through Python's initial `-m pytest` form with an effective
+nonzero failure limit from `--maxfail`, `--exitfirst`, or `-x` (including
+short-option clusters). `--maxfail=0` clears an earlier fail-fast setting, and
+later settings take precedence. Tokens after `python -c` or a script path are
+not interpreted as pytest options. Early stopping can leave a coverage artifact
+incomplete. This is advisory and does not invalidate the lane;
 machine-readable stdout is unchanged. Unknown pytest/plugin option grammars
 are left unclassified rather than guessed.
 
@@ -3793,9 +3796,15 @@ fit the former. Because the scan does not resolve ordered DDL, finding a
 `DROP TABLE` invalidates that table's type facts, including facts from a later
 recreate. A table rename or schema move invalidates facts for both names.
 Unknown or
-conflicting types do not establish a safe widening. Array suffixes stay in
-the resolved type, so arrays are not treated as scalar text or integer
-columns. An unqualified table name that could resolve to a temporary relation
+conflicting types do not establish a safe widening. `CREATE TABLE AS` query
+results are not type-inferred; only an explicit parenthesized column list in
+that statement supplies type facts, so a later table cannot donate its type.
+`CREATE TABLE IF NOT EXISTS` supplies no type facts because the statement may
+be a no-op. An unqualified declaration is also not attributed to a
+schema-qualified target because Assay does not resolve the session's
+`search_path`.
+Array suffixes stay in the resolved type, so arrays are not treated as scalar
+text or integer columns. An unqualified table name that could resolve to a temporary relation
 or an explicit `pg_temp` name has no widening site because the scanner does
 not model session or search-path state. String `IN` widening
 refuses explicitly collated columns because the adapter cannot prove a

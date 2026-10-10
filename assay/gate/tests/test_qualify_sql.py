@@ -98,7 +98,7 @@ def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
     assert q.PROBES_SHA256.startswith("36249c03") and q.PROBES_SHA256.endswith("488c")
-    assert q.HAZARD_CASES_SHA256 == "bb229be45b60b7444c6c141ab03ee2897405d731b31e0dc8026a04da550da27b"
+    assert q.HAZARD_CASES_SHA256 == "f7978d797c1dc2da8bfc1528be2e4dcf652eee6c0b30dba9a3ef6d124643379d"
 
 
 def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
@@ -131,6 +131,9 @@ def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
         "select-into-pg-temp-shadow-widen",
         "table-rename-stale-type",
         "table-schema-move-stale-type",
+        "create-table-as-does-not-borrow-later-type",
+        "if-not-exists-does-not-supply-type",
+        "unqualified-type-does-not-apply-to-qualified-table",
     }
     assert all(case["assertion"] for case in cases if case["expected_site_count"] == 1)
     assert all(case["assertion"] for case in cases if case["probe"] is not None)

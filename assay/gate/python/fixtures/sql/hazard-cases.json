@@ -328,6 +328,39 @@
       "source": "CREATE TYPE assay_b132_move_state AS ENUM ('open', 'closed');\nCREATE SCHEMA assay_b132_archive;\nCREATE TABLE public.assay_b132_move_task (status text);\nALTER TABLE public.assay_b132_move_task SET SCHEMA assay_b132_archive;\nCREATE TABLE public.assay_b132_move_task AS SELECT 'open'::assay_b132_move_state AS status;\n-- ASSAY-FOCUS: table-schema-move-stale-type\nALTER TABLE public.assay_b132_move_task ADD CHECK (status IN ('open', 'closed'));\n",
       "assertion": null,
       "expected_probe_sqlstate": null
+    },
+    {
+      "id": "create-table-as-does-not-borrow-later-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_ctas_state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_ctas_task AS SELECT 'open'::assay_b132_ctas_state AS status;\nCREATE TABLE assay_b132_ctas_decoy (status text);\n-- ASSAY-FOCUS: create-table-as-does-not-borrow-later-type\nALTER TABLE assay_b132_ctas_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "if-not-exists-does-not-supply-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_ifne_state AS ENUM ('open', 'closed');\nCREATE TABLE public.assay_b132_ifne_task AS SELECT 'open'::assay_b132_ifne_state AS status;\nCREATE TABLE IF NOT EXISTS public.assay_b132_ifne_task (status text);\n-- ASSAY-FOCUS: if-not-exists-does-not-supply-type\nALTER TABLE public.assay_b132_ifne_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unqualified-type-does-not-apply-to-qualified-table",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE public.assay_b132_qualified_state AS ENUM ('open', 'closed');\nCREATE SCHEMA assay_b132_qualified_archive;\nSET search_path TO assay_b132_qualified_archive;\nCREATE TABLE assay_b132_qualified_task (status text);\nRESET search_path;\nCREATE TABLE public.assay_b132_qualified_task AS SELECT 'open'::public.assay_b132_qualified_state AS status;\n-- ASSAY-FOCUS: unqualified-type-does-not-apply-to-qualified-table\nALTER TABLE public.assay_b132_qualified_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
     }
   ]
 }

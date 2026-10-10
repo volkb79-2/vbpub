@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from assay.adapters.python import PythonAdapter
+from assay.adapters.sql import SqlAdapter
 from assay.mutation import (
     MutationDiscoveryError,
     MutationSite,
@@ -214,6 +215,20 @@ def test_no_targets_returns_the_supported_empty_tuple():
         == ()
     )
     assert adapter.calls == []
+
+
+def test_no_targets_do_not_scan_context_sources():
+    """An empty candidate set requires no language-context scan."""
+    assert (
+        collect_mutation_sites(
+            (),
+            adapter=SqlAdapter(),
+            operators=("sql:widen-check-in",),
+            limit=1,
+            context_sources=("SELECT 'unterminated",),
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize(

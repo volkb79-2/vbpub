@@ -136,6 +136,71 @@ def test_sql_context_invalidates_column_types_after_cross_file_table_drop():
     assert sites == ()
 
 
+def test_sql_context_create_table_as_does_not_borrow_a_later_table_type():
+    context_source = (
+        "CREATE TYPE mood AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE t AS SELECT 'open'::mood AS state;\n"
+        "CREATE TABLE decoy (state text);\n"
+    )
+    check_source = "ALTER TABLE t ADD CHECK (state IN ('open', 'closed'));\n"
+    context = SqlAdapter().prepare_mutation_context((context_source,))
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
+def test_sql_context_does_not_trust_if_not_exists_column_types():
+    context_source = (
+        "CREATE TYPE mood AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE t AS SELECT 'open'::mood AS state;\n"
+        "CREATE TABLE IF NOT EXISTS t (state text);\n"
+    )
+    check_source = "ALTER TABLE t ADD CHECK (state IN ('open', 'closed'));\n"
+    context = SqlAdapter().prepare_mutation_context((context_source,))
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
+def test_sql_context_does_not_apply_unqualified_column_types_to_qualified_table():
+    context_source = (
+        "CREATE SCHEMA archive;\n"
+        "SET search_path TO archive;\n"
+        "CREATE TABLE task (state text);\n"
+        "CREATE TABLE public.task AS SELECT 'open'::mood AS state;\n"
+    )
+    check_source = (
+        "ALTER TABLE public.task ADD CHECK (state IN ('open', 'closed'));\n"
+    )
+    context = SqlAdapter().prepare_mutation_context(
+        ("CREATE TYPE mood AS ENUM ('open', 'closed');\n", context_source)
+    )
+
+    sites = SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({1}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+
+    assert sites == ()
+
+
 def test_sql_context_does_not_invalidate_a_qualified_other_schema_table():
     table_source = "CREATE TABLE public.task (status text);\n"
     unrelated_drop = "DROP TABLE archive.task;\n"

@@ -677,6 +677,35 @@ def _table_key_from_match(match: re.Match[bytes]) -> tuple[bytes | None, bytes]:
     )
 
 
+def _create_table_column_list(
+    masked: bytes, table_match: re.Match[bytes]
+) -> tuple[re.Match[bytes], int, int] | None:
+    """Return this statement's parenthesized CREATE TABLE column list.
+
+    ``CREATE TABLE AS`` has no declared column types. Searching for the next
+    opening parenthesis can cross its semicolon and misattribute a later table's
+    columns to the earlier relation, so the header and matching close must both
+    stay inside this statement.
+    """
+    statement_end = masked.find(b";", table_match.end())
+    if statement_end < 0:
+        statement_end = len(masked)
+    table_name = _TABLE_NAME_AFTER_CREATE_RE.match(
+        masked, table_match.end(), statement_end
+    )
+    if table_name is None:
+        return None
+    table_open = table_name.end()
+    while table_open < statement_end and masked[table_open] in b" \t\r\n\f\v":
+        table_open += 1
+    if table_open >= statement_end or masked[table_open] != _OPEN_PAREN:
+        return None
+    table_close = _find_matching_close_paren(masked, table_open)
+    if table_close is None or table_close >= statement_end:
+        return None
+    return table_name, table_open, table_close
+
+
 def _type_name_from_match(match: re.Match[bytes]) -> bytes:
     name = _normalize_sql_identifier(match.group("type"))
     schema = match.group("type_schema")
@@ -707,6 +736,25 @@ def _next_sql_keyword(
     if match is None:
         return None
     return match.group(0).upper(), cursor + match.end()
+
+
+def _create_table_is_if_not_exists(
+    source: bytes, masked: bytes, table_match: re.Match[bytes]
+) -> bool:
+    """Whether this CREATE TABLE declaration can be a no-op.
+
+    When the relation already exists, PostgreSQL ignores the declared column
+    list. Its types therefore cannot establish facts about the relation that
+    will actually be used by later DDL.
+    """
+    keyword = _next_sql_keyword(source, masked, table_match.end())
+    if keyword is None or keyword[0] != b"IF":
+        return False
+    not_keyword = _next_sql_keyword(source, masked, keyword[1])
+    if not_keyword is None or not_keyword[0] != b"NOT":
+        return False
+    exists_keyword = _next_sql_keyword(source, masked, not_keyword[1])
+    return exists_keyword is not None and exists_keyword[0] == b"EXISTS"
 
 
 def _read_alter_table_identity(
@@ -1011,7 +1059,7 @@ def _collect_altered_columns(
 
 
 def _collect_table_column_metadata(
-    masked: bytes,
+    source: bytes, masked: bytes
 ) -> tuple[
     frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
     frozenset[tuple[tuple[bytes | None, bytes], bytes]],
@@ -1019,13 +1067,12 @@ def _collect_table_column_metadata(
     declared_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
     collated: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for table_match in _CREATE_TABLE_RE.finditer(masked):
-        table_name = _TABLE_NAME_AFTER_CREATE_RE.match(masked, table_match.end())
-        table_open = masked.find(b"(", table_match.end())
-        if table_name is None or table_open == -1:
+        if _create_table_is_if_not_exists(source, masked, table_match):
             continue
-        table_close = _find_matching_close_paren(masked, table_open)
-        if table_close is None:
+        column_list = _create_table_column_list(masked, table_match)
+        if column_list is None:
             continue
+        table_name, table_open, table_close = column_list
         table_key = _table_key_from_match(table_name)
         table_body = masked[table_open + 1 : table_close]
         for start, end in _split_top_level(table_body):
@@ -1076,7 +1123,7 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
         dropped_tables.update(_collect_dropped_tables(source, masked))
         temporary_table_names.update(_collect_temporary_table_names(source, masked))
         relocated_tables.update(_collect_relocated_tables(source, masked))
-        declared, collated = _collect_table_column_metadata(masked)
+        declared, collated = _collect_table_column_metadata(source, masked)
         declared_column_types.update(declared)
         collated_columns.update(collated)
     return _SqlMutationContext(
@@ -1556,7 +1603,9 @@ def _scan_widen_check_in(
         for match in _ENUM_TYPE_RE.finditer(masked)
     }
     table_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
-    declared_column_types, local_collated_columns = _collect_table_column_metadata(masked)
+    declared_column_types, local_collated_columns = _collect_table_column_metadata(
+        source, masked
+    )
     all_declared_column_types = set(declared_column_types)
     collated_columns = set(local_collated_columns)
     altered_columns = set(_collect_altered_columns(source, masked))
@@ -1571,13 +1620,10 @@ def _scan_widen_check_in(
         temporary_table_names.update(context.temporary_table_names)
         relocated_tables.update(context.relocated_tables)
     for table_match in _CREATE_TABLE_RE.finditer(masked):
-        table_name = _TABLE_NAME_AFTER_CREATE_RE.match(masked, table_match.end())
-        table_open = masked.find(b"(", table_match.end())
-        if table_name is None or table_open == -1:
+        column_list = _create_table_column_list(masked, table_match)
+        if column_list is None:
             continue
-        table_close = _find_matching_close_paren(masked, table_open)
-        if table_close is None:
-            continue
+        table_name, table_open, table_close = column_list
         table_key = _table_key_from_match(table_name)
         table_spans.append((table_open, table_close, table_key))
     table_spans.sort(key=lambda item: item[0])
@@ -1677,10 +1723,10 @@ def _scan_widen_check_in(
             collated = collated_by_name.get(table_key[1], set())
             altered = altered_by_name.get(table_key[1], set())
         else:
-            raw_types = {}
-            for candidate_key in ((None, table_key[1]), table_key):
-                for column_name, values in types_by_table.get(candidate_key, {}).items():
-                    raw_types.setdefault(column_name, set()).update(values)
+            # An unqualified CREATE TABLE's schema depends on search_path.
+            # It cannot establish the type of a qualified relation with the
+            # same name; only an exact schema-qualified declaration can.
+            raw_types = types_by_table.get(table_key, {})
             collated = collated_by_table.get((None, table_key[1]), set()) | collated_by_table.get(
                 table_key, set()
             )

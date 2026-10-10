@@ -125,6 +125,22 @@ def test_coverage_lane_warns_about_pytest_fail_fast_options(project: Project):
     assert "coverage artifact incomplete" in warnings[0]
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        '["pytest", "tests", "--maxfail=0"]',
+        '["pytest", "tests", "-x", "--maxfail=0"]',
+        '["pytest", "tests", "--maxfail=1", "--maxfail=0"]',
+    ],
+)
+def test_coverage_lane_does_not_warn_when_effective_maxfail_is_zero(
+    argv: str, project: Project
+):
+    lane = load_lane_file(project.write(set_key(R1_LANE, "argv", argv))).lane("package")
+
+    assert lane_validation_warnings(lane) == ()
+
+
 def test_coverage_lane_does_not_treat_pytest_option_values_as_fail_fast(
     project: Project,
 ):

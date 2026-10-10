@@ -818,6 +818,8 @@ def collect_mutation_sites(
     _check_operator_policy(operators)
 
     ordered_targets = sorted(targets, key=lambda item: item.path)
+    if not ordered_targets:
+        return ()
     context_preparer = getattr(adapter, "prepare_mutation_context", None)
     def context_texts() -> Iterator[str]:
         if context_sources is not None:

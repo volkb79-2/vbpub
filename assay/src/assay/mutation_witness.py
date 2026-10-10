@@ -693,12 +693,15 @@ def _contains_xdist_option(tokens: Sequence[str]) -> bool:
 
 
 def pytest_fail_fast_option(argv: Sequence[str]) -> str | None:
-    """Return an explicit pytest fail-fast option in a direct pytest argv.
+    """Return a pytest fail-fast option only for an actual pytest invocation.
 
     Lane validation uses this to warn when early exit can leave a declared
-    coverage report incomplete. Values of options such as ``-k`` and
-    ``--rootdir`` are consumed with pytest's own option tables so a value like
-    ``-x`` is not mistaken for a fail-fast switch.
+    coverage report incomplete. The accepted command forms are the direct
+    ``pytest`` executable and Python's initial ``-m pytest`` form; interpreter
+    script arguments after ``-c`` or a script path are never re-read as a
+    command. Values of options such as ``-k`` and ``--rootdir`` are consumed
+    with pytest's own option tables so a value like ``-x`` is not mistaken for
+    a fail-fast switch.
     """
     tokens = tuple(argv)
     if not tokens:
@@ -706,27 +709,73 @@ def pytest_fail_fast_option(argv: Sequence[str]) -> str | None:
     first = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
     if first == "pytest":
         args = tokens[1:]
-    else:
-        start = next(
-            (
-                index + 2
-                for index, token in enumerate(tokens[:-1])
-                if token == "-m" and tokens[index + 1] == "pytest"
-            ),
-            None,
-        )
-        if start is None:
+    elif re.fullmatch(r"python(?:\d+(?:\.\d+)*t?)?(?:\.exe)?", first, re.IGNORECASE):
+        python_flag_options = {
+            "-b", "-bb", "-B", "-d", "-E", "-h", "-i", "-I", "-O", "-OO",
+            "-P", "-q", "-R", "-s", "-S", "-u", "-v", "-vv", "-vvv", "-V", "-VV",
+        }
+        cursor = 1
+        args = None
+        while cursor < len(tokens):
+            token = tokens[cursor]
+            if token == "-m":
+                if cursor + 1 >= len(tokens) or tokens[cursor + 1] != "pytest":
+                    return None
+                args = tokens[cursor + 2 :]
+                break
+            if token in ("-c", "--"):
+                return None
+            if token in ("-W", "-X"):
+                if cursor + 1 >= len(tokens):
+                    return None
+                cursor += 2
+                continue
+            if (token.startswith("-W") and token != "-W") or (
+                token.startswith("-X") and token != "-X"
+            ):
+                cursor += 1
+                continue
+            if token in python_flag_options:
+                cursor += 1
+                continue
+            # A positional script/file or an unclassified interpreter option
+            # means later `-m pytest` tokens are not the executed command.
             return None
-        args = tokens[start:]
+        if args is None:
+            return None
+    else:
+        return None
 
     index = 0
+    effective_fail_fast: str | None = None
     while index < len(args):
         token = args[index]
         if token == "--":
             break
         option = token.partition("=")[0]
-        if option in ("--maxfail", "--exitfirst"):
-            return option
+        if option == "--maxfail":
+            if "=" in token:
+                raw_value = token.partition("=")[2]
+                index += 1
+            else:
+                if index + 1 >= len(args):
+                    return None
+                raw_value = args[index + 1]
+                index += 2
+            try:
+                maxfail = int(raw_value)
+            except ValueError:
+                # An invalid value makes pytest fail before producing the
+                # coverage artifact; do not describe it as an early stop.
+                return None
+            effective_fail_fast = "--maxfail" if maxfail else None
+            continue
+        if option == "--exitfirst":
+            if "=" in token:
+                return None
+            effective_fail_fast = "--exitfirst"
+            index += 1
+            continue
         if token.startswith("--"):
             has_value = "=" in token
             if option in PYTEST_LONG_VALUE_OPTIONS:
@@ -750,7 +799,9 @@ def pytest_fail_fast_option(argv: Sequence[str]) -> str | None:
             while position < len(body):
                 letter = body[position]
                 if letter == "x":
-                    return "-x"
+                    effective_fail_fast = "-x"
+                    position += 1
+                    continue
                 if letter in COLD_PYTEST_FLAG_OPTIONS:
                     position += 1
                     continue
@@ -762,7 +813,7 @@ def pytest_fail_fast_option(argv: Sequence[str]) -> str | None:
                 # Stop rather than classify a value as an Assay warning.
                 return None
         index += 1
-    return None
+    return effective_fail_fast
 
 
 def _contains_override_ini_option(tokens: Sequence[str]) -> bool:

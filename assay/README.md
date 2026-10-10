@@ -794,7 +794,11 @@ file can establish a column's type; type modifiers are retained, so bounded
 `varchar(n)` is not mistaken for unbounded `varchar` when deciding whether the
 fixed widening sentinel fits. If the scan finds a `DROP TABLE` for a table, it
 treats all type facts for that table as unsafe because it does not resolve DDL
-order. Unknown or conflicting types remain ineligible for literal widening.
+order. Unknown or conflicting types remain ineligible for literal widening. `CREATE TABLE AS` query results are not type-inferred; Assay reads type facts only from an explicit parenthesized column list in that statement, so a later table cannot supply its column type.
+`CREATE TABLE IF NOT EXISTS` declarations do not establish type facts because
+they may be no-ops. An unqualified declaration also cannot establish a type
+for a schema-qualified reference: its schema depends on the session's
+`search_path`.
 Array columns are not treated as scalar text or integer columns. An unqualified
 reference that may resolve to a temporary table, or an explicit `pg_temp`
 reference, gets no widening site. A table drop, rename, or schema move
@@ -1455,7 +1459,11 @@ why it is a separate identity probe from lane execution.
 
 When retained R0 output names a failed test, `assay run` reports the first
 recognized failure in its summary and in the R0 claim's unstructured
-`detail`. A pytest fail-fast option (`--maxfail`, `--exitfirst`, or `-x`) on a
-coverage lane produces an advisory on stderr because early stopping can leave
-the coverage artifact incomplete; the lane remains valid. See the [R0 failure
+`detail`. A nonzero effective pytest failure limit (`--maxfail`, `--exitfirst`,
+or `-x`) on a coverage lane produces an advisory on stderr because early
+stopping can leave the coverage artifact incomplete; `--maxfail=0` clears an
+earlier fail-fast setting, and later settings take precedence. The lane remains
+valid. Detection is limited to the `pytest` executable or Python's initial
+`-m pytest` form; options after `python -c` or a script path are not treated as
+pytest flags. See the [R0 failure
 diagnostics and coverage warning design](docs/DESIGN-GUIDE.md#r0-failure-diagnostics-and-coverage-fail-fast-warning).

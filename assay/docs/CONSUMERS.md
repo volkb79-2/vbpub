@@ -1931,7 +1931,7 @@ bounded integer columns. Fixed-length
   and `PRIMARY KEY USING INDEX` link an index to its constraint; neither half
   is safe to mutate alone. A declaration in another included file can establish
   the type for a literal-widening candidate, while unknown or conflicting
-  types are refused. Declare roots that cover the complete DDL corpus the lane
+  types are refused. `CREATE TABLE AS` query results are not type-inferred; Assay reads type facts only from an explicit parenthesized column list in that statement, so a later table cannot supply its column type. `CREATE TABLE IF NOT EXISTS` declarations do not establish types because PostgreSQL may skip them when the table already exists. Unqualified declarations are not used to infer types for schema-qualified references because their schema depends on session `search_path`. Declare roots that cover the complete DDL corpus the lane
   command applies; a dependency outside those roots cannot inform the scan.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
@@ -4282,9 +4282,13 @@ Where it goes:
   the first failure visible in the bounded output tail the verdict retains.
   The R0 claim's existing `detail` field carries the same first-failure
   diagnostic; its closed outcome/reason pair and schema remain unchanged. A
-  coverage lane with direct pytest invocation and `--maxfail`, `--exitfirst`,
-  or `-x` also emits an advisory to stderr because fail-fast can leave the
-  artifact incomplete. If a post-run refusal replaces the R0 claim, `detail`
+  coverage lane that invokes the `pytest` executable or Python's initial
+  `-m pytest` form with a nonzero effective limit from `--maxfail`,
+  `--exitfirst`, or `-x` also emits an advisory to stderr because fail-fast can
+  leave the artifact incomplete. `--maxfail=0` clears an earlier fail-fast
+  setting, and later settings take precedence. Tokens after `python -c` or a
+  script path are not treated as pytest flags.
+  If a post-run refusal replaces the R0 claim, `detail`
   keeps both the failure and refusal text. The warning does not alter lane
   validity or JSON stdout.
 - **From a library caller**, to whatever stream you pass as `diagnostics=` to
