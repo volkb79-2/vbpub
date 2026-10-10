@@ -457,6 +457,66 @@ def test_p22_pump_closes_a_broken_pipe_and_stops_submitting_that_writer(
     assert selector.keys == {}
 
 
+def test_p22_pump_delivers_reader_bytes_and_unregisters_at_eof(monkeypatch):
+    selector = None
+    pump_events = []
+    reader_fd = None
+    open_fds = []
+    try:
+        selector = git.selectors.DefaultSelector()
+        unregister = selector.unregister
+
+        def record_unregister(fileobj):
+            pump_events.append(("unregister", fileobj))
+            return unregister(fileobj)
+
+        monkeypatch.setattr(selector, "unregister", record_unregister)
+        monkeypatch.setattr(git.selectors, "DefaultSelector", lambda: selector)
+        read = git.os.read
+
+        def record_read(fd, size):
+            chunk = read(fd, size)
+            if fd == reader_fd:
+                pump_events.append(("read", chunk))
+            return chunk
+
+        monkeypatch.setattr(git.os, "read", record_read)
+        reader_fd, writer_fd = git.os.pipe()
+        open_fds.extend((reader_fd, writer_fd))
+        git.os.write(writer_fd, b"payload")
+        git.os.close(writer_fd)
+        open_fds.remove(writer_fd)
+        received = []
+
+        def receive_nonempty(chunk):
+            assert chunk
+            received.append(chunk)
+            pump_events.append(("callback", chunk))
+
+        git._p22_pump(
+            (),
+            deadline=SimpleNamespace(remaining=lambda _what: 1.0),
+            what="test reader EOF",
+            writers={},
+            readers={reader_fd: receive_nonempty},
+        )
+        assert b"".join(received) == b"payload"
+        assert pump_events == [
+            ("read", b"payload"),
+            ("callback", b"payload"),
+            ("read", b""),
+            ("unregister", reader_fd),
+        ]
+    finally:
+        for fd in open_fds:
+            try:
+                git.os.close(fd)
+            except OSError:
+                pass
+        if selector is not None:
+            selector.close()
+
+
 def test_p22_pump_timeout_closes_pending_descriptor_even_if_close_races(
     monkeypatch,
 ):
