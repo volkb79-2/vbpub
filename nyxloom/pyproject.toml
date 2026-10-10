@@ -16,8 +16,11 @@ dependencies = [
   # cli-extended-v0.2.0 tag), but 0.2.0 was never tested here, so the floor
   # is not lowered to it. Same floor as cmru. Published to GitHub Releases only;
   # the bare name is unclaimed on PyPI, so install the cli-extended wheel
-  # first / alongside with `--no-index` or `--find-links` (CX-D2); the
-  # install command is in cmru.toml [env] NYXLOOM_RELEASE_NOTES.
+  # first / alongside with `--no-index` or `--find-links` (CX-D2). When
+  # upgrading from nyxloom 0.10.0, reinstall the official cli-extended wheel
+  # AFTER the nyxloom wheel: pip otherwise removes files formerly shared by
+  # both distributions but considers cli-extended already satisfied. See
+  # docs/CONSUMERS.md; cmru.toml [env] NYXLOOM_RELEASE_NOTES owns release setup.
   "cli-extended>=0.3.0",
   "PyYAML>=6",
   "jsonschema>=4",
