@@ -5592,6 +5592,12 @@ class TestResourcesCpusValidation:
         """)
         assert cfg["environments"]["e"]["resources"]["cpus"] == "3"
 
+    def test_repository_tester_environment_declares_three_cpu_default(self):
+        root_config = (Path(run_gate.__file__).resolve().parents[1]
+                       / "run-gate.root.toml")
+        cfg = run_gate._read_toml(root_config)
+        assert cfg["environments"]["tester-unified"]["resources"]["cpus"] == "3"
+
     def test_invalid_environment_cpus_rejected(self, tmp_path):
         with pytest.raises(run_gate.GateError, match="cpus"):
             self._load(tmp_path, """\
