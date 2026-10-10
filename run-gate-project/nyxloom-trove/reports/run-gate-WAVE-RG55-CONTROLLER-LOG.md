@@ -8682,3 +8682,23 @@ without affecting that gate. No P1 R2 or full gate was active. The exact
 reconciled tree still needs Run-Gate selftest/R1/R3 and cgprofile r0-r1/r3,
 then exact-candidate P1 R2 and the registered full gates. No prior-tree
 mutation result is transferred.
+
+### RW-540 — 2026-10-10 03:20:36 UTC — RG-90 refuses an ETA without a current-run remainder
+
+Sol's P1 round-9 review accepted the P1/RG-89 product conditionally and
+reported S1 in the adjacent RG-90 progress telemetry: when the latest Assay
+`run` header exists but its `candidates` event omits `pending_total`,
+`ProgressWatch._report()` used the legacy `candidate_total - candidate_index`
+fallback and could invent an ETA from a campaign-wide index. This contradicted
+RW-535, which reserves that fallback for streams with no `run` header.
+
+Ruling: current-run streams may emit an ETA only from a valid, consistent
+`pending_total`; if it is absent, invalid, or inconsistent, disclose the
+candidate without a rate/ETA. Preserve the campaign-index fallback only for
+legacy streams without a `run` header. This is diagnostic telemetry and does
+not alter Assay outcomes. The controller is applying the correction as
+Run-Gate revision 60, with a regression for a current header and missing
+remainder plus consumer/spec/design/backlog updates. Re-run the registered
+Run-Gate selftest with exact changed-line/branch coverage and obtain a fresh
+Sol review before integrating this additional change. No mutation or full
+gate is running.

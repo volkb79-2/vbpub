@@ -1931,8 +1931,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     elapsed time when estimating rate; older streams fall back to Run-Gate's
     own clock and the file mtime. Rate counts candidate events in the active
     run segment, not the campaign-wide index, and ETA uses Assay's
-    `pending_total` when available. These estimates are diagnostic only and
-    do not alter the verdict. The run boundary and reset behavior are
+    `pending_total` when available. With a `run` header, a missing, invalid,
+    or inconsistent `pending_total` suppresses the ETA; campaign-index
+    fallback is retained only for legacy streams with no `run` header. These
+    estimates are diagnostic only and do not alter the verdict. The run
+    boundary and reset behavior are
     specified by `R-40g`.
   - **`R-40e` The documented shape.** For a mutation lane: a generous assay
     `budget` + `judge.mutation.budget_per_candidate` + run-gate

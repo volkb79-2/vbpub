@@ -107,7 +107,7 @@ SPEC §9.
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test are in the candidate; final package acceptance and release pending) |
 | RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
-| RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | IN PROGRESS (RG-55 R2 exposed stale `579/1059`; latest-run fencing, run-local rate/remaining-work calculation, and regression tests are in the candidate) |
+| RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5881,9 +5881,8 @@ host cgroup namespace or receives an unbounded host-process view.
 
 ## RG-90 — append-only Assay progress leaks the previous run's candidate into the current status
 
-**Status:** IN PROGRESS (observed during the RG-55 P1 R2 relaunch on
-2026-10-10; the watcher reported `candidate 579/1059` before the new run had
-judged any candidate).
+**Status:** FIXED (rev 60; the original stale-candidate report and the
+follow-up malformed-current-run ETA finding are both closed).
 
 **Observed.** Assay appends a `{"event":"run"}` header for every invocation
 to the same progress JSONL path so `--resume` can preserve its history. Run-
@@ -5905,10 +5904,18 @@ Assay's `pending_total` for the remaining-work estimate when available. Keep
 the file append-only so Assay's own resume history is preserved. Streams
 predating run headers retain their legacy behavior.
 
+The final review also found a related declaration boundary: when a current
+`run` header exists but its `candidates` event omits or invalidates
+`pending_total`, do not fall back to `candidate_total - candidate_index`.
+That index is campaign-wide and its remainder is not authoritative for this
+invocation. The legacy index fallback is limited to streams with no `run`
+header.
+
 **Oracles.** A fresh watcher over old candidates plus a current run header
 reports no candidate progress and cannot stall on the old event. An already
 attached watcher observes the new header, clears prior state, and reports only
 the new run's candidates. A resumed campaign with a high campaign index and
 low run-relative elapsed time reports rate and ETA from current-run candidate
 events and pending work. Same-run movement, re-attach silence, torn-line
-handling, and legacy streams without headers continue to pass.
+handling, malformed/missing current-run `pending_total`, and legacy streams
+without headers continue to pass.

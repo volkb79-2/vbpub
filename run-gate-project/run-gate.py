@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 59  # rev 59: RG-90 scope progress to the latest Assay run
+__revision__ = 60  # rev 60: suppress ETA without current-run pending_total
 # R2 Assay lanes and explicit tester-unified command wrappers may opt into
 # the cgprofile observer-only socket; its mount, GID grant, and namespace
 # constraints are closed in the lane schema.
@@ -9445,7 +9445,8 @@ class ProgressWatch:
     def _report(self, index: int, total: object, elapsed: object,
                 now: float, completed: int,
                 pending_total: int | None,
-                pending_total_seen: bool) -> None:
+                pending_total_seen: bool,
+                has_run_header: bool) -> None:
         rate = self._rate_per_min(completed, elapsed, now)
         if self._first is None and completed > 0:
             self._first = (completed, now, elapsed)
@@ -9453,10 +9454,12 @@ class ProgressWatch:
         if pending_total_seen:
             if pending_total is not None and pending_total >= completed:
                 remaining = pending_total - completed
-        elif isinstance(total, int) and not isinstance(total, bool) \
+        elif not has_run_header \
+                and isinstance(total, int) and not isinstance(total, bool) \
                 and total > index:
-            # Older Assay streams did not publish pending_total. Preserve
-            # their campaign-index estimate when no exact remainder exists.
+            # Only pre-header legacy streams may use campaign indexes as a
+            # remaining-work proxy. A current run with a missing or invalid
+            # pending_total has no trustworthy ETA declaration.
             remaining = total - index
         head = f"run-gate: progress {self.lane}: candidate {index}"
         if isinstance(total, int) and not isinstance(total, bool):
@@ -9568,7 +9571,8 @@ class ProgressWatch:
                 # Real MOVEMENT restarts the silence clock.
                 self._token_at = now
             self._report(index, newest.get("candidate_total"), elapsed, now,
-                         completed, pending_total, pending_total_seen)
+                         completed, pending_total, pending_total_seen,
+                         has_run_header=run_boundary is not None)
         if self.stall_seconds is None:
             return None              # no stall_timeout: disclosure only
         age = now - self._token_at

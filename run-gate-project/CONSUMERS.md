@@ -620,9 +620,12 @@ invocation. Run-Gate attributes candidate status and silence only to records
 after the newest header, so old candidates retained for resume are not
 presented as work completed by the current invocation. Rates count the
 current run's candidate events, while remaining-work ETAs use Assay's
-`pending_total` when available; the campaign-wide candidate index is not
-divided by the new run's elapsed clock. Do not truncate the progress file to
-reset monitoring; `--resume` owns that history. See the
+`pending_total` when available. If a `run` header exists but its current-run
+`pending_total` is absent, invalid, or inconsistent, Run-Gate suppresses the
+ETA; campaign-index fallback is reserved for legacy streams without a `run`
+header. The campaign-wide candidate index is never divided by the new run's
+elapsed clock. Do not truncate the progress file to reset monitoring;
+`--resume` owns that history. See the
 [progress design](docs/DESIGN-GUIDE.md#progress-is-scoped-to-the-current-assay-run).
 
 ### Shared assay lane imports

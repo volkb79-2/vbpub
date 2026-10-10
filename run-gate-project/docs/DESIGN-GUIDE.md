@@ -338,8 +338,11 @@ run-local telemetry; it does not change the Assay verdict. Assay also keeps
 `candidate_index` campaign-wide while restarting `elapsed_s` at each `run`
 header. Run-Gate counts candidate events in the active segment for rate and
 uses `pending_total` for the remaining-work ETA when that field is present;
-dividing a resumed campaign index by the new invocation's elapsed time would
-report an artificially fast rate.
+for a stream with a `run` header, an absent, invalid, or inconsistent
+`pending_total` suppresses the ETA instead of falling back to a campaign
+index. Only legacy streams with no `run` header retain that fallback. Dividing
+a resumed campaign index by the new invocation's elapsed time would report an
+artificially fast rate.
 
 See [SPEC.md §5](../SPEC.md#5-execution-contract) for the normative reader
 behavior.

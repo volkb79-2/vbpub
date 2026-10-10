@@ -14974,7 +14974,7 @@ class TestProgressWatch:
     def test_a_moving_file_yields_rate_and_eta_from_run_gates_own_clock(
             self, tmp_path, capsys):
         w = self._watch(tmp_path)
-        write_progress(w.path, candidate(10))
+        write_progress(w.path, candidate(10), header=False)
         assert w.watch.poll() is None
         # First observation is a BASELINE: one event and no clock in the file
         # is not a measurement, and inventing a rate would be the guess this
@@ -15008,6 +15008,8 @@ class TestProgressWatch:
         w = self._watch(tmp_path)
         write_progress(
             w.path,
+            {"event": "candidates", "candidate_total": 172,
+             "pending_total": 172},
             *(candidate(i, elapsed_s=i * 20) for i in range(61)),
         )   # 60 intervals / 20 minutes = 3.0/min
         assert w.watch.poll() is None
@@ -15046,10 +15048,28 @@ class TestProgressWatch:
         assert "candidate 1/172" in out
         assert "ETA" not in out
 
+    def test_current_run_without_pending_total_suppresses_legacy_eta(
+            self, tmp_path, capsys):
+        """A run header opts into current-run declarations; absence is not
+        permission to guess remaining work from the campaign-wide index."""
+        w = self._watch(tmp_path)
+        write_progress(
+            w.path,
+            {"event": "candidates", "candidate_total": 172},
+            candidate(0, elapsed_s=10), candidate(1, elapsed_s=20),
+        )
+
+        assert w.watch.poll() is None
+
+        out = capsys.readouterr().out
+        assert "candidate 1/172" in out
+        assert "/min" not in out and "ETA" not in out
+
     def test_elapsed_rate_uses_delta_from_first_observed_event(
             self, tmp_path, capsys):
         w = self._watch(tmp_path)
-        write_progress(w.path, candidate(579, total=1059, elapsed_s=600))
+        write_progress(w.path, candidate(579, total=1059, elapsed_s=600),
+                       header=False)
         assert w.watch.poll() is None
         capsys.readouterr()
         append_progress(w.path, candidate(580, total=1059, elapsed_s=660))
