@@ -1508,41 +1508,35 @@ into `run-gate.footprint.json`, next to `run-gate.toml`, and that file is
 answers to "does this belong in git" for a reason: one is this checkout's
 raw log, the other is the distilled number everyone downstream should see).
 
-Captured from a real, clean-tree, profiled `selftest` PASS on this project
-itself (RG-55's own "consequence to exploit": run-gate-project's own lanes
-are all bare-host, so RG-57 makes this project self-hosting for RG-61's
-own transcript) — a `rusage`-sourced entry, since no `cgprofile-host-daemon`
-was reachable in this environment. Verbatim (including the `.run-gate/`
-store path, which is checkout-relative — this capture ran from the RG-55
-wave's own `rg55-followups-run-gate` worktree, not `run-gate-project/`
-directly; the table's own shape is the part that generalizes):
+Captured from clean-tree, profiled PASSes on candidate `6d7e3ef15e26`
+(2026-10-10), with `cgprofile-host-daemon` reachable. `assay-r1` and
+`selftest` use daemon-backed container `memory.peak`; host `DAMON_STAT` made
+the optional DAMON series unavailable with `EBUSY`, without affecting either
+verdict. The short `assay-r3` canaries completed before the daemon could
+resolve their container, so their peak remains unknown, not zero. This
+supersedes the September `rusage-maxrss` sample, which measured the lane
+child's RSS rather than the whole container cgroup: the values from those two
+sources are not directly comparable as a workload change. Verbatim output
+(the `.run-gate/` path is checkout-relative; the table shape generalizes):
 
 ```console
 $ ./run-gate.py footprint --write
-run-gate rev 42 — lane resource footprint
-store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
-manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
+run-gate rev 60 — lane resource footprint
+store: /workspaces/vbpub/.worktrees/rg89-p1-r2-20261009/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/.worktrees/rg89-p1-r2-20261009/run-gate-project/run-gate.footprint.json
   LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
-  assay-r1                4    266 MiB/289 MiB            -          -    0.61        -     179.5s [source: rusage-maxrss]
-  assay-r3                5    198 MiB/201 MiB            -          -    0.74        -      15.9s [source: rusage-maxrss]
-  selftest                5    285 MiB/286 MiB            -          -    0.56        -     172.3s [source: rusage-maxrss]
+  assay-r1                3    788 MiB/807 MiB            -          -    0.77     1.6s     185.1s
+  assay-r3                3          -/-                  -          -       -     0.0s       1.7s
+  selftest                2    445 MiB/777 MiB            -          -    0.75     0.9s     171.5s
 ```
 
-(Recaptured RW-51/session 6, round-2 review's own S6 finding: the PRIOR
-capture above was one generation stale — its `assay-r1`/`assay-r3` rows
-were distilled partly from PRE-repair, pre-`wait4` runs, so they carried
-`"peak_at_floor": null` (unknown, because those older records predate the
-`floor_bytes` field entirely) even though the surrounding prose claimed
-every row was known not to be floor-bound. This capture's `--write` ran
-after a fresh, clean-tree `selftest` PASS on the CURRENT tip, so every
-contributing entry for all three lanes is `wait4`-era (RW-43/B1) with a
-REAL, non-null `peak_at_floor`: all three medians above are honest
-`os.wait4()` numbers and none of the three is floor-bound
-(`"peak_at_floor": false` for `assay-r1`, `assay-r3`, and `selftest`
-alike — `LANE-AUTHORING.md`'s own footprint-budgeting section shows what
-a floor-bound entry looks like instead). The manifest's `meta.expected`
-consumers get from this also now carries `"source": "rusage-maxrss"`
-alongside the medians, per contract Sec 3a (B5, round-2 review).)
+(This refresh uses the daemon's cgroup `memory.peak` for `assay-r1` and
+`selftest`; `peak_at_floor` is unknown for those daemon measurements, not
+false. `assay-r3` has no peak because its ephemeral target disappeared before
+the daemon attached, so its expected memory value remains null. The manifest
+records the source and method per lane. DAMON sample count was zero because
+`DAMON_STAT` was enabled; this is optional evidence and does not invalidate
+the ordinary cgroup footprint or lane verdict.)
 
 A lane with no profiled PASS run yet is simply OMITTED (absent means
 unknown, never zero) — `--write` REFUSES outright (exit 2, naming why) when

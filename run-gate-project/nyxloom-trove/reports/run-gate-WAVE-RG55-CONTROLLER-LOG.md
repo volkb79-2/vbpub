@@ -8702,3 +8702,18 @@ remainder plus consumer/spec/design/backlog updates. Re-run the registered
 Run-Gate selftest with exact changed-line/branch coverage and obtain a fresh
 Sol review before integrating this additional change. No mutation or full
 gate is running.
+
+### RW-541 — 2026-10-10 03:40:05 UTC — refresh the tracked resource footprint
+
+On exact candidate `6d7e3ef15e26fee96e41a2e6702604d349773207`, Run-Gate
+selftest, R1, and R3 passed; cgprofile R0/R1 and R3 passed; doctor reported
+zero failures but warned that the tracked footprint was distilled 27 days
+earlier and substantially understated current daemon-backed R1/selftest
+container peaks. `footprint --write` now records the current history:
+assay-r1 median/max 788/807 MiB, selftest 445/777 MiB. The short assay-r3
+canaries exited before the daemon resolved the target, so their peak is
+unknown (null), not zero. The CONSUMERS transcript now records this source
+change from old `rusage-maxrss` to container `memory.peak` and the DAMON
+unavailable disclosure. These documentation/manifest edits are a new tree;
+all exact-tree gates and the fresh Sol review must be repeated after commit.
+No R2/full gate is running, and no merge or release was made.
