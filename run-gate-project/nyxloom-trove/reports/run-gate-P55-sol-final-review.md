@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "3ccb752800d5a0c8de7d756b86882e3f1edc64fe"
+input_revision: "e72dd6f09fd15ef7b5eb4ffad401d1a91855d950"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-551
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-552
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -203,7 +203,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (RW-551 at this checkpoint; refresh from the
+   through the latest ruling (RW-552 at this checkpoint; refresh from the
    selected tree before review). The log, current git state, assay JSON,
    process state, and Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
@@ -272,31 +272,34 @@ controller's exact gate, host-probe, and unresolved-evidence record is
 `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REPORT.md`.
 The integrated cgroup-profiler helper refactor has a prior fresh Sol ACCEPT
 for provisional integration under RW-437, not for release; its final-source
-R2, the DAMON-start fix validation, and live DAMON evidence remain open.
+R2 and DAMON-start fix validation remain separate requirements. Current live
+DAMON measurements and candidate runtime probes are in the refreshed P5
+report and RW-552.
 
-The current P3 delta adds CP-19 origin-unit lifetime protection: inventory the
+The committed CP-19 addition provides origin-unit lifetime protection: inventory the
 full source cgroup subtree before initial and later moves; refuse a known
 last-member move as `place-refused:origin-scope-would-empty`; refuse unknown
 membership as `place-refused:identity-unavailable`; never guess a restoration
 parent. Its tests, interface mirrors, README, DESIGN-GUIDE, CONSUMERS, and
 program design rationale are in the diff. The design explicitly discloses
 that this observation is not an atomic lease against an unrelated source
-process exiting between check and move. Review whether that residual race is
-acceptable for the settled exact-restore contract. Also account for the
-previous live `--on-stall kill` probe's `place-refused:write-failed` cleanup
-warning; it is not a clean-stop receipt until reproduced or explained.
+process exiting between check and move; review that residual race against the
+settled exact-restore contract. Candidate-image live probes now establish the
+CP-19 last-member refusal, clean anchored restore, and on-stall kill cleanup;
+see the exact session evidence in the P5 report. The earlier
+`place-refused:write-failed` warning remains historical evidence and must be
+considered alongside the successful candidate probes, not erased.
 
 The candidate is Run-Gate revision 61. CMRU currently resolves its next
 release to `23.11.0`; the original `23.9.0`/rev-43 handoff is historical.
-The report's current unit/coverage/canary receipts are interim runs on a dirty
-worktree. The controller supplies the exact final HEAD; require final
-Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor`, plus
-cgroup-profiler `unit`, whole-package `coverage`, `canary`, and Nyxloom config
-lint on that committed tree. The P5 footprint manifest must remain tracked.
-Before review, require candidate-daemon live acceptance on the exact code:
-socket/exec parity, the CP-19 pre-move refusal, anchored placement/restore,
-and on-stall kill cleanup. The controller will use CIU to replace the one
-host daemon only while idle, then restore it from main; do not launch a sibling
+Cgroup-profiler unit, whole-package coverage, and canary receipts are now
+recorded for exact tree `465f67d0` in the P5 report; the final evidence/log
+refresh will move HEAD, so require those package gates plus Run-Gate
+`selftest`, `assay-r1`, `assay-r3`, and `doctor` on the final quiet review
+tree. The P5 footprint manifest must remain tracked. Candidate-image live
+acceptance—socket/exec parity, CP-19 refusal, anchored placement/restore,
+on-stall kill, and a matched DAMON pair—is recorded in the report and
+RW-552. The main-managed daemon has been restored; do not launch a sibling
 or use raw Docker to bypass the singleton.
 
 The operator authorizes provisional merge only after those checks and a fresh
