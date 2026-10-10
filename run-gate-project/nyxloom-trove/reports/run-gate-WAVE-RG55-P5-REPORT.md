@@ -1,13 +1,14 @@
 # RG-55 P5 — Run-Gate v1.1 integration report
 
 **State: in progress; this report does not authorize merge, release, or
-shipment.** Candidate branch `rg55-p5-transport-port-20261010` is at committed
-tree `465f67d060dcbdb7a47e92e95ee082405f14ca67`. CP-19 origin-scope
-protection, regressions, and docs are committed. Candidate cgroup-profiler
-unit, whole-package coverage, and canary gates passed on that tree, and live
-carrier/placement/liveness/DAMON probes are complete. Final Run-Gate short
-gates on the refreshed evidence tree, fresh Sol review, and exact-tree
-`assay-r2`/`gate-full` remain outstanding.
+shipment.** Candidate branch `rg55-p5-transport-port-20261010` was at
+`db6d5b73693ec1a42b0a4f5a254df145a2a6946a` before this evidence refresh. The
+candidate code is unchanged from `465f67d060dcbdb7a47e92e95ee082405f14ca67`;
+the intervening commits record probes and review metadata. The exact `db6d`
+tree passed Run-Gate `selftest` and cgroup-profiler's registered `r0-r1`
+coverage lane. Final-tree cgroup-profiler unit/canary gates, Run-Gate
+`assay-r1`/`assay-r3`/`doctor`, Nyxloom lint, fresh Sol review, and exact-tree
+mutation/full gates remain outstanding.
 
 ## Candidate identity and release boundary
 
@@ -103,6 +104,36 @@ change final HEAD. Rerun cgroup-profiler unit, whole-package coverage,
 canary, Nyxloom lint, Run-Gate `selftest`, `assay-r1`, `assay-r3`, and
 `doctor` on the final quiet review tree. Earlier Run-Gate receipts on
 `3ccb7528` remain historical only.
+
+## Resumed gate evidence on `db6d5b73` (before this report/log refresh)
+
+Run-Gate `selftest` completed PASS on the quiet candidate tree
+`db6d5b73693ec1a42b0a4f5a254df145a2a6946a` at 2026-10-10 21:18:48Z. Its
+separately read history record is run `05f3bbad164f46f31ba8566f59b0c3b3`,
+exit 0, duration 148.785s; the exact container was
+`run-gate-vbpub-selftest-753342-1791666979` (`dev-gates.slice`, 3 CPUs,
+1-GiB memory). It reported 1,843 passed, 2 skipped, 1 warning, with
+759/759 changed executable lines and 344/344 branches covered. The profile
+was unavailable with `EBUSY` because host `DAMON_STAT=Y`; this did not change
+the test verdict. The approved DAMON pair is separate live-measurement
+evidence, not a requirement that every gate run have DAMON samples.
+
+The cgroup-profiler registered `r0-r1` coverage lane then completed PASS on
+the same `db6d` tree: 2,499 passed, 4 pytest warnings, 132.07s; all 8,389
+statements and 3,110 branches were covered (100% line and branch coverage).
+Its exact test container was `cgprofile-gate-757826-1791667475`, read back
+under `dev-gates.slice` at 3 CPUs, then removed by the runner. The output also
+contained one expected test-fixture diagnostic: it could not change a
+temporary socket's owner in the unprivileged container; pytest still passed.
+This is the package coverage lane, not a separate `unit` or canary receipt.
+
+Run-Gate `assay-r1` did not start. Its admission preflight found 937 MiB used
+of the 1,536-MiB gates slice with 1,063 MiB required; the registered runner
+waited for capacity and was canceled after 300 seconds before creating a
+container. The command exited 2 from that cancellation, with no assay verdict
+and no product PASS/FAIL. It must be relaunched on the final quiet tree after
+the competing gate releases capacity. No external container was stopped or
+modified.
 
 ## Live carrier, placement, liveness, and DAMON evidence
 
@@ -243,10 +274,11 @@ Neither host load nor profile data changed a functional verdict.
 
 ## Still required
 
-1. Commit this report and RW-552 with the review packet's final input
-   revision. Then rerun cgroup-profiler unit, whole-package coverage, canary,
-   Nyxloom lint, Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor` on
-   the final quiet review tree.
+1. Commit this report and RW-553, then refresh the Sol packet's
+   `input_revision`. Rerun cgroup-profiler unit, whole-package coverage,
+   canary, Nyxloom lint, Run-Gate `selftest`, `assay-r1`, `assay-r3`, and
+   `doctor` on the final quiet review tree. The `db6d` receipts above are
+   useful history but are not exact-HEAD final evidence after this refresh.
 2. Obtain a fresh Sol xhigh P5 review of the complete integrated diff. Any
    review repair requires same-reviewer verification and rerunning affected
    gates. Provisional merge is authorized after review and short-gate
@@ -254,8 +286,14 @@ Neither host load nor profile data changed a functional verdict.
 3. Run `assay-r2` and `gate-full` asynchronously against the exact judged
    tree in attached CIU worktrees. Any code repair must be backported and
    judged again before release. Classify every survivor and resolve or
-   explicitly backlog each remaining safety/quality finding, then perform the
-   package releases/installations authorized by the release plan.
+   explicitly backlog each remaining safety/quality finding.
+4. Treat Assay as a separate package in this integrated diff: CMRU currently
+   resolves its next version as `9.1.0`, and Assay's own registered
+   `tester-unified` release gate must pass on its final source tree before
+   releasing that package. Run-Gate P5 gates do not certify Assay's package
+   suite. cgroup-profiler's first combined P1/P6 release remains `1.0.0`; do
+   not create a `1.1.0` release absent new material changes. Resolve the
+   current CMRU release state before publishing/installing any package.
 
 No package has been released or installed from this candidate, and no
 provisional merge has been made.

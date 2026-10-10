@@ -8953,3 +8953,46 @@ No Run-Gate release, P5 review, provisional merge, or package release occurred
 under this ruling. Final committed-tree short gates and fresh Sol review
 remain prerequisites for provisional merge; exact-tree R2/full gate remain
 release blockers.
+
+### RW-553 — 2026-10-10 21:39:07 UTC — resume controller work and refresh P5 evidence
+
+Controller work resumed from the clean P5 integration branch at
+`db6d5b73693ec1a42b0a4f5a254df145a2a6946a`, based on main
+`efaf112945233e3a8f6d53f2fef136439d18d089`. The candidate code is unchanged
+from `465f67d0`; `db6d` records probe and Sol-packet metadata.
+
+On exact tree `db6d5b73693ec1a42b0a4f5a254df145a2a6946a`, Run-Gate
+`selftest` passed at 21:18:48Z: 1,843 passed, 2 skipped, 1 warning;
+759/759 changed executable lines and 344/344 branches were covered. The exact
+container was `run-gate-vbpub-selftest-753342-1791666979`, placed in
+`dev-gates.slice`, configured for 3 CPUs and 1-GiB memory. Its profiler
+recorded DAMON unavailable (`EBUSY`) while host `DAMON_STAT=Y`; this was not a
+test verdict input.
+
+The same tree's cgroup-profiler registered `r0-r1` coverage lane passed:
+2,499 passed, 4 warnings, 132.07s; 8,389/8,389 statements and 3,110/3,110
+branches (100%/100%). Exact test container
+`cgprofile-gate-757826-1791667475` was verified under `dev-gates.slice` at 3
+CPUs and then removed by the runner. It emitted a temporary-socket ownership
+diagnostic in an unprivileged fixture, but the test suite passed. This is
+coverage evidence only, not the separate package `unit` or canary gate.
+
+Run-Gate `assay-r1` was started after a dry run and did not create a test
+container. Admission observed 937 MiB of 1,536 MiB used, with 1,063 MiB
+required; the run waited up to 300 seconds and was canceled before launch so
+the report/packet could be committed before the final gates. It exited 2 from
+the cancellation and produced no assay verdict. It must be rerun on the final
+quiet tree after capacity is available. A separate agent's container was
+left untouched.
+
+The final report and this ruling are being committed before refreshing the
+Sol packet's `input_revision`; the packet commit will then precede all final
+short gates. Therefore neither the `db6d` selftest nor coverage receipt is
+claimed as exact final-HEAD evidence after that commit. Outstanding gates are
+cgroup-profiler unit/coverage/canary and Nyxloom lint; Run-Gate selftest,
+assay-r1, assay-r3, and doctor; then a fresh Sol P5 review. Long exact-tree
+R2/full-gate checks remain release blockers. Assay's separate registered
+`tester-unified` gate remains a release hold for its next version `9.1.0`;
+cgroup-profiler's first combined P1/P6 release is `1.0.0`, with no speculative
+`1.1.0` absent material changes. No merge, release, install, or daemon
+replacement was performed.
