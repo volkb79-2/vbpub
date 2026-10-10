@@ -652,6 +652,28 @@ class SnapshotRepository:
             )
         return self._read_blob(entry.oid, entry.size, deadline)
 
+    def paths_under(self, root: PurePosixPath) -> tuple[PurePosixPath, ...]:
+        """Return frozen manifest leaves contained by one repo-relative root.
+
+        This path-only view never consults a worktree or the filesystem.
+        ``.`` means the whole repository; other roots may name a directory
+        or one exact leaf. Symlink leaves are returned too so callers that
+        need bytes still pass them through :meth:`read_regular_file` and get
+        its fail-closed refusal.
+        """
+        self._check_open()
+        if not isinstance(root, PurePosixPath):
+            raise ValueError(f"root must be PurePosixPath, got {root!r}")
+        if root != PurePosixPath("."):
+            root = _normalize_path(root)
+        return tuple(
+            entry.path
+            for entry in self._manifest.entries
+            if root == PurePosixPath(".")
+            or entry.path == root
+            or entry.path.is_relative_to(root)
+        )
+
     def _read_blob(self, oid: str, size: int, deadline: "_git._P22Deadline") -> bytes:
         collected = bytearray()
         _batch_objects(

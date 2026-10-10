@@ -3754,12 +3754,19 @@ the committed `expected/sql-r2-witness.json`. An incomplete witness (hung or
 budget-exceeded entries, `LANE_TIMEOUT`) is inconclusive and is checked before
 the FAIL requirement.
 
-**Hazard constructs are measured separately from the matrix (B132).** The
-SQL lane is whole-target, so its context pre-scan sees every selected SQL file
-before generating sites. It links `UNIQUE USING INDEX` references across files
-and marks columns with any `ALTER COLUMN ... TYPE` change unknown for literal
-widening. The qualification appends one focused SQL construct at a time and
-runs a construct-specific assertion through the same apply/dump/test script. The
+**Hazard constructs are measured separately from the matrix (B132).** Candidate
+scope may be changed-lines or whole-target, but safety context scans every
+tracked, recognized SQL source under `judge.source_roots`, including unchanged
+files, before generating sites. This is required because the command applies a
+DDL corpus while the candidate list is only a sampling policy. A lane must
+declare roots covering its complete applied DDL corpus. The context links
+`UNIQUE USING INDEX` references across files, marks columns with any
+`ALTER COLUMN ... TYPE` change unknown for literal widening, and tracks
+explicit column collations. String `IN` widening refuses explicitly collated
+columns because the adapter cannot prove a generated literal is distinct under
+an arbitrary collation. The qualification appends one focused SQL construct
+at a time and runs a construct-specific assertion through the same
+apply/dump/test script. The
 script writes an `apply`, `dump`, or `test` phase receipt before entering each
 phase. A current adapter-generated site that fails during apply or dump is a
 qualification error; it cannot be reported as a mutation crash or kill. The

@@ -3472,6 +3472,59 @@ def _read_prepared_source_text(
         ) from exc
 
 
+def _mutation_context_sources(
+    *,
+    prepared: "isolation.SnapshotRepository",
+    snapshot_repo_top: Path,
+    source_root_paths: Sequence[Path],
+    adapter: LanguageAdapter,
+    deadline: LaneDeadline,
+) -> Iterator[str] | None:
+    """Read every adapter source under the declared roots for cross-file rules.
+
+    Candidate selection controls which files may produce mutants. It cannot
+    narrow facts needed to decide whether a candidate is safe: for example,
+    an unchanged migration may attach a unique index declared in a changed
+    file. Context bytes come only from the prepared commit manifest.
+    """
+    if not callable(getattr(adapter, "prepare_mutation_context", None)):
+        return None
+
+    roots: set[PurePosixPath] = set()
+    for root in source_root_paths:
+        try:
+            relative = root.relative_to(snapshot_repo_top)
+        except ValueError as exc:
+            raise AssayError(
+                f"mutation source root {root} is outside the prepared repository "
+                f"{snapshot_repo_top}; cross-file context cannot be established",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            ) from exc
+        roots.add(PurePosixPath(relative.as_posix()))
+
+    paths = {
+        path
+        for root in roots
+        for path in prepared.paths_under(root)
+        if any(
+            fnmatch.fnmatch(path.as_posix(), pattern)
+            for pattern in adapter.source_globs
+        )
+        and not any(
+            part in adapter.excluded_dir_names for part in path.parts[:-1]
+        )
+    }
+
+    def read_context() -> Iterator[str]:
+        for path in sorted(paths):
+            yield _read_prepared_source_text(
+                prepared, path.as_posix(), deadline=deadline
+            )
+
+    return read_context()
+
+
 def _mutation_targets_from_diff(
     added: diff.AddedLines,
     *,
@@ -4979,6 +5032,13 @@ def _run_prepared_lane(
                     plan=r2_plan if cold_witness else plan,
                     deadline=deadline,
                     targets=targets,
+                    context_sources=_mutation_context_sources(
+                        prepared=prepared,
+                        snapshot_repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                        adapter=adapter,
+                        deadline=deadline,
+                    ),
                     adapter=adapter,
                     jobs=lane.judge.mutation.jobs,
                     max_mutants=lane.judge.mutation.max_mutants,

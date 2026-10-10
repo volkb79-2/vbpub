@@ -1890,14 +1890,22 @@ in `nyxloom-trove/4-backlog.md`:
   apply are useful only with an exact SQLSTATE pin.
 - **Operator behavior (B133).** `sql:widen-check-in` appends a member to
   `IN ('open', 'pending')` only for homogeneous literals on declared built-in
-  character columns or bounded integer columns. An integer `NOT IN` list on a
-  declared bounded integer column can remove one uniquely listed excluded
+  character columns without an explicit `COLLATE` clause, or bounded integer
+  columns. An integer `NOT IN` list on a declared bounded integer column can remove one uniquely listed excluded
   member, which widens the accepted set. It emits no site for string `NOT IN`
   lists, unknown or approximate column types, out-of-range integer members, a
   singleton, empty, duplicate-only, non-literal, or mixed lists. The
   `sql:drop-check` operator applies to both table constraints and
   row security policies: it replaces `CHECK (predicate)` or `WITH CHECK
   (predicate)` with the corresponding `true` clause.
+
+  Candidate selection and safety context have different scopes. A SQL lane
+  may use the default changed-lines mode or `whole_target` to choose which
+  files can produce mutants. Before discovery, Assay reads every tracked SQL
+  recognized SQL source under `judge.source_roots` from the prepared commit, including
+  unchanged files, to resolve cross-file index attachments, type changes and
+  collations. Declare roots that cover the complete DDL corpus the lane
+  command applies; a dependency outside those roots cannot inform the scan.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 

@@ -157,6 +157,28 @@ def test_mutation_collector_provides_cross_file_sql_context():
     assert jobs[0].site.lineno == 2
 
 
+def test_mutation_collector_context_includes_unchanged_sql_sources():
+    from assay.mutation import MutationTarget, collect_mutation_sites
+
+    index_source = "CREATE UNIQUE INDEX idx ON s.t (a);\n"
+    attachment_source = (
+        "ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX idx;\n"
+    )
+    target = MutationTarget(
+        path="db/schema/01-index.sql",
+        text=index_source,
+        lines=frozenset(_all_lines(index_source)),
+    )
+    jobs = collect_mutation_sites(
+        [target],
+        adapter=ADAPTER,
+        operators=("sql:drop-unique",),
+        limit=100,
+        context_sources=iter((attachment_source,)),
+    )
+    assert jobs == ()
+
+
 # =============================================================================
 # The seven operators -- span, replacement (carve §3.2's table)
 # =============================================================================
@@ -251,6 +273,20 @@ def test_drop_unique_using_index_does_not_suppress_same_name_in_another_schema()
         "CREATE TABLE s.t (a INT);\n"
         "CREATE UNIQUE INDEX s.idx ON s.t (a);\n"
         "ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX s.idx;\n"
+        "CREATE UNIQUE INDEX other.idx ON other.t (a);\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].lineno == 4
+
+
+def test_unqualified_index_and_attachment_resolve_to_the_table_schema():
+    source = (
+        "CREATE TABLE s.t (a INT);\n"
+        "CREATE UNIQUE INDEX idx ON s.t (a);\n"
+        "ALTER TABLE s.t ADD CONSTRAINT uq UNIQUE USING INDEX idx;\n"
         "CREATE UNIQUE INDEX other.idx ON other.t (a);\n"
     )
     sites = ADAPTER.generate_mutation_sites(
@@ -557,6 +593,18 @@ def test_rule3_schema_qualified_enum_columns_are_recognized_for_inline_and_alter
     assert sites == ()
 
 
+def test_rule3_cast_expression_cannot_be_mistaken_for_its_last_identifier():
+    source = (
+        "CREATE TYPE status_enum AS ENUM ('open', 'closed');\n"
+        "CREATE TABLE task (status status_enum, status_enum text, "
+        "CHECK (status::status_enum IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
 @pytest.mark.parametrize(
     "alter_stmt",
     [
@@ -570,6 +618,31 @@ def test_rule3_column_type_change_to_enum_refuses_string_widening(alter_stmt):
         "CREATE TABLE task (state text);\n"
         + alter_stmt
         + "ALTER TABLE task ADD CHECK (state IN ('open', 'closed'));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_quoted_alter_column_type_change_refuses_string_widening():
+    source = (
+        'CREATE TYPE public.status_enum AS ENUM (\'open\', \'closed\');\n'
+        'CREATE TABLE "Task" ("Status" text);\n'
+        'ALTER TABLE "Task" ALTER COLUMN "Status" TYPE public.status_enum '
+        'USING "Status"::public.status_enum;\n'
+        'ALTER TABLE "Task" ADD CHECK ("Status" IN (\'open\', \'closed\'));\n'
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_explicitly_collated_string_column_has_no_widening_site():
+    source = (
+        'CREATE TABLE task (status text COLLATE "und-x-icu", '
+        "CHECK (status IN ('open', 'closed')));\n"
     )
     sites = ADAPTER.generate_mutation_sites(
         source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000

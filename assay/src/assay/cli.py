@@ -3821,6 +3821,13 @@ def _discover_plan_jobs(
                 adapter=adapter,
                 operators=operators,
                 limit=lane.judge.mutation.max_mutants + 1,
+                context_sources=runner._mutation_context_sources(
+                    prepared=prepared,
+                    snapshot_repo_top=prepared.spec.repo_top,
+                    source_root_paths=source_root_paths,
+                    adapter=adapter,
+                    deadline=deadline,
+                ),
             )
     return _PlanDiscovery(
         commit=commit,

@@ -776,6 +776,7 @@ def collect_mutation_sites(
     adapter: LanguageAdapter,
     operators: tuple[str, ...],
     limit: int,
+    context_sources: Iterable[str] | None = None,
 ) -> tuple[MutantJob, ...] | Literal["UNSUPPORTED"]:
     """Aggregate bounded candidate sites across possibly many changed files
     into ONE deterministic job list, or report adapter-wide capability
@@ -785,9 +786,9 @@ def collect_mutation_sites(
     receives only the REMAINING capacity — so the total number of candidate
     descriptors this function ever holds is bounded by *limit* regardless of
     how many candidates the files actually contain. An adapter with
-    cross-file rules may do one metadata pre-scan over all selected target
-    texts before bounded site discovery; that pre-scan may not materialize
-    candidate descriptors. Once capacity is exhausted, later files are not
+    cross-file rules may do one metadata pre-scan over *context_sources*;
+    when omitted, selected target texts remain the context. That scan may
+    not materialize candidate descriptors. Once capacity is exhausted, later files are not
     sent to per-file site discovery, which keeps candidate generation bounded
     rather than merely truncating the report.
 
@@ -818,8 +819,13 @@ def collect_mutation_sites(
 
     ordered_targets = sorted(targets, key=lambda item: item.path)
     context_preparer = getattr(adapter, "prepare_mutation_context", None)
+    def context_texts() -> Iterator[str]:
+        if context_sources is not None:
+            yield from context_sources
+        yield from (target.text for target in ordered_targets)
+
     mutation_context = (
-        context_preparer(tuple(target.text for target in ordered_targets))
+        context_preparer(context_texts())
         if callable(context_preparer)
         else None
     )
@@ -3026,6 +3032,7 @@ def run_mutation(
     plan: CommandPlan,
     deadline: LaneDeadline,
     targets: Iterable[MutationTarget],
+    context_sources: Iterable[str] | None = None,
     adapter: LanguageAdapter,
     jobs: int,
     max_mutants: int,
@@ -3485,7 +3492,11 @@ def run_mutation(
         from .runner import execute_plan, resolve_run_cwd
 
         collected = collect_mutation_sites(
-            targets, adapter=adapter, operators=operators, limit=max_mutants + 1
+            targets,
+            adapter=adapter,
+            operators=operators,
+            limit=max_mutants + 1,
+            context_sources=context_sources,
         )
         if expected_plan_sha256 is not None:
             if (

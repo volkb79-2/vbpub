@@ -135,6 +135,7 @@ items:
   - {id: B131, title: "R2 for the analysis package (own lane, own suite), after the v15 cold witness", type: feature, component: analysis, context_estimate: small}
   - {id: B132, title: "SQL adapter emits mutants for constructs PostgreSQL may refuse (UNIQUE DEFERRABLE / NULLS NOT DISTINCT / INCLUDE / USING INDEX; FK MATCH FULL / DEFERRABLE / SET NULL (col)) -- measure on W5's harness", type: bug, component: sql, context_estimate: small}
   - {id: B133, title: "SQL operator labels misdescribe their effect (NOT IN 'widening' narrows; drop-check also rewrites CREATE POLICY ... WITH CHECK)", type: bug, component: sql, context_estimate: small}
+  - {id: B134, title: "the git-marker refusal test depends on the host's /tmp", type: bugfix, component: tests, context_estimate: small}
   - {id: B136, title: "assay analyze plan-estimate never checks that the baseline progress file belongs to the planned lane (assay plan JSON carries no lane name), so a foreign lane's baseline yields plausible budget numbers", type: bugfix, component: analysis, context_estimate: small}
   - {id: B137, title: "assay plan / analyze plan-estimate cannot estimate an ingested (Stryker) JavaScript R2 lane; no provisional-ceiling source for its first-run budget", type: feature, component: analysis, context_estimate: medium}
   - {id: B138, title: "docs/CONSUMERS.md has no consolidated v12 -> v13 migration section (v11 -> v12 has one); the v13 facts are scattered", type: feature, component: docs, context_estimate: small}
@@ -11834,6 +11835,8 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 - FK clauses with `MATCH FULL`, `DEFERRABLE` or `SET NULL (col)`.
 - It refuses both halves of a linked `UNIQUE USING INDEX` pair (A-487), while unrelated unique indexes remain mutable.
 
+The adapter reads every tracked SQL source under the lane's declared roots for cross-file context, independently of changed-lines or whole-target candidate selection. Roots must cover the complete applied DDL corpus. It resolves unqualified `USING INDEX` names through the attachment table's schema when known and refuses string widening for explicitly collated columns.
+
 The pinned `hazard-cases.json` runs each focused site through a construct-specific behavioral probe outside the 24-row matrix. The shell writes a stage receipt (`apply`, `dump` or `test`); a current site that fails before tests is a qualification error, never a `crashed` candidate. Historical rewrites can be pinned as crashed only with an exact apply-stage SQLSTATE. Current bucket and historical probe results are intentionally unpinned until the registered PostgreSQL gate measures them.
 
 **Added by W5 (A-480; CD22).** W5's 24-row schema deliberately does not exercise these constructs; their catalog behavior needs a separate focused probe rather than extrapolation from the matrix:
@@ -11846,7 +11849,7 @@ The separate hazard-case data provides the focused non-matrix mode, with constru
 
 ## B133 — SQL operator labels misdescribe their effect
 
-**Status: FIXED (A-486; declared built-in types only).** `sql:widen-check-in` adds a literal to `IN` only for homogeneous strings on a built-in character column or unsigned integers on a bounded integer column. The integer is in range and unused. For integer `NOT IN`, it removes one uniquely listed value only on a declared bounded integer column. String comparisons can collapse source-distinct values under types such as `CHAR(n)` or selected collations; unknown and approximate types also produce no site. Singleton, empty, malformed, mixed, non-literal, and duplicate-only lists produce no site. `sql:drop-check` keeps its existing predicate behavior for table `CHECK (...)` and policy `WITH CHECK (...)`; README, DESIGN-GUIDE, and CONSUMERS describe both forms.
+**Status: FIXED (A-486; declared built-in types only).** `sql:widen-check-in` adds a literal to `IN` only for homogeneous strings on a built-in character column without an explicit `COLLATE`, or unsigned integers on a bounded integer column. The integer is in range and unused. For integer `NOT IN`, it removes one uniquely listed value only on a declared bounded integer column. String comparisons can collapse source-distinct values under types such as `CHAR(n)` or explicit collations; unknown and approximate types also produce no site. Cast expressions are not treated as simple column references. Singleton, empty, malformed, mixed, non-literal, and duplicate-only lists produce no site. `sql:drop-check` keeps its existing predicate behavior for table `CHECK (...)` and policy `WITH CHECK (...)`; README, DESIGN-GUIDE, and CONSUMERS describe both forms.
 
 Focused adapter tests pin the valid `IN` and `NOT IN` rewrites, duplicate and singleton refusal, and the policy form. The closed operator IDs remain unchanged.
 
