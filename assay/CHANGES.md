@@ -13,7 +13,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [9.0.0] - 2026-10-10
 <!-- cmru: generated -->
-<!-- cmru: source-end=14365c139de307d928cd51c91f3b0d1e53ca0ea5 -->
+<!-- cmru: source-end=e413254c1ee9fb952c09d2372463169d1168b96e -->
 
 ### BREAKING CHANGE
 - verdict schema v15 is a hard cut from v14. `assay verify` rejects v14 and
@@ -102,6 +102,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs(assay): reconcile B114 for verdict v15 (549f9a283)
 
 ### Testing
+- test(assay): synchronize fake pilot log completion (e413254c)
 - test(assay): scope schema note check to current release (14365c139)
 - test(assay): accept versioned schema migration notes (4dbe27605)
 - test(assay): fix B131 pilot launcher oracle tuple (b8713d567)
