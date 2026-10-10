@@ -826,10 +826,12 @@ def test_self_qualification_run_gate_uses_cgroup_visible_wrapper_and_verifies_re
 
 def test_b110_pilot_and_screen_are_registered_bare_host_lanes_with_exact_bounds():
     run_gate = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"]
+    screen_script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
+    assert "timeout --verbose --signal=TERM --kill-after=30s 25800s \\" in screen_script
     expected = {
         B110_PILOT_ID: {
             "argv": [
-                "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m",
+                "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "8400s",
                 "bash", "{worktree}/assay/tools/self-qualification-container.sh",
                 "{worktree}", B110_PILOT_ID,
             ],
@@ -858,7 +860,7 @@ def test_b110_pilot_and_screen_are_registered_bare_host_lanes_with_exact_bounds(
         },
         B110_SCREEN_ID: {
             "argv": [
-                "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m",
+                "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "27000s",
                 "bash", "{worktree}/assay/tools/self-qualification-container.sh",
                 "{worktree}", B110_SCREEN_ID,
             ],
@@ -901,7 +903,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     assert lane["environment"] == "bare-host"
     assert lane["clean_tree"] is True
     assert lane["argv"] == [
-        "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m",
+        "timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "8400s",
         "bash", "{worktree}/assay/tools/self-qualification-container.sh",
         "{worktree}", B131_PILOT_ID,
     ]
