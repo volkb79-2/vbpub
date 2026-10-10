@@ -1508,7 +1508,7 @@ into `run-gate.footprint.json`, next to `run-gate.toml`, and that file is
 answers to "does this belong in git" for a reason: one is this checkout's
 raw log, the other is the distilled number everyone downstream should see).
 
-Captured from clean-tree, profiled PASSes on candidate `6d7e3ef15e26`
+Captured from clean-tree, profiled PASSes on candidate `8b8d1480f0b0`
 (2026-10-10), with `cgprofile-host-daemon` reachable. `assay-r1` and
 `selftest` use daemon-backed container `memory.peak`; host `DAMON_STAT` made
 the optional DAMON series unavailable with `EBUSY`, without affecting either
@@ -1525,9 +1525,9 @@ run-gate rev 60 — lane resource footprint
 store: /workspaces/vbpub/.worktrees/rg89-p1-r2-20261009/run-gate-project/.run-gate/history.json
 manifest written: /workspaces/vbpub/.worktrees/rg89-p1-r2-20261009/run-gate-project/run-gate.footprint.json
   LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
-  assay-r1                3    788 MiB/807 MiB            -          -    0.77     1.6s     185.1s
-  assay-r3                3          -/-                  -          -       -     0.0s       1.7s
-  selftest                2    445 MiB/777 MiB            -          -    0.75     0.9s     171.5s
+  assay-r1                4    708 MiB/807 MiB            -          -    0.78     1.2s     185.0s
+  assay-r3                4          -/-                  -          -       -     0.0s       1.6s
+  selftest                3    761 MiB/777 MiB            -          -    0.75     0.6s     163.0s
 ```
 
 (This refresh uses the daemon's cgroup `memory.peak` for `assay-r1` and

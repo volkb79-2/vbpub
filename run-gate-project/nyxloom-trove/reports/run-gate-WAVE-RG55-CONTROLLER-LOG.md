@@ -8717,3 +8717,16 @@ change from old `rusage-maxrss` to container `memory.peak` and the DAMON
 unavailable disclosure. These documentation/manifest edits are a new tree;
 all exact-tree gates and the fresh Sol review must be repeated after commit.
 No R2/full gate is running, and no merge or release was made.
+
+### RW-542 — 2026-10-10 03:48:17 UTC — distill after the exact-tree measurement refresh
+
+The first RW-541 refresh was generated from the `6d7e3ef15e26` histories.
+The subsequent exact-tree selftest on `8b8d1480f0b0` added a daemon-backed
+measurement and moved the selftest history median from 445 MiB to 761 MiB;
+leaving the manifest unchanged would immediately retain a false drift warning.
+After the exact-tree R1/R3 passes, regenerate once more from the `8b8d1480f0b0`
+history and update the consumer transcript: assay-r1 708/807 MiB,
+selftest 761/777 MiB, assay-r3 peak unknown. This is a measured-data refresh,
+not a product-code change. The manifest/docs/log commit is the final candidate
+tree; rerun the short gates and doctor on that committed tip, then obtain the
+fresh Sol review. No R2/full gate is running, and no merge or release was made.
