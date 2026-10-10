@@ -229,7 +229,7 @@ if args and args[0] == "wait":
     if mode == "blocked-wait":
         while not read_state().get("stopped"):
             time.sleep(0.05)
-    if mode == "analysis-pilot-inner-log":
+    if mode in {"analysis-pilot-inner-log", "analysis-host-check-dirties"}:
         log_follow_done = Path(os.environ["DOCKER_LOG_FOLLOW_DONE"])
         deadline = time.monotonic() + 10
         while not log_follow_done.is_file():
@@ -393,7 +393,7 @@ if args and args[0] == "logs":
             if mode != "analysis-pilot-unverified":
                 print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "f" * 64)
     sys.stdout.flush()
-    if mode == "analysis-pilot-inner-log" and "--follow" in args:
+    if mode in {"analysis-pilot-inner-log", "analysis-host-check-dirties"} and "--follow" in args:
         Path(os.environ["DOCKER_LOG_FOLLOW_DONE"]).write_text("done\n", encoding="ascii")
     raise SystemExit(0)
 if args and args[0] == "stop":
@@ -1036,26 +1036,20 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
 def test_analysis_r2_pilot_outer_marker_waits_for_final_source_check(
     tmp_path: Path, committed_worktree: Path
 ):
-    inner_log = tmp_path / "analysis-pilot-container.log"
-    inner_log.write_text(
-        "ANALYSIS_R2_PILOT_EXIT=6\n"
-        f"ANALYSIS_R2_PILOT_CHECKER_VERIFIED={ANALYSIS_PILOT_ATTESTATION}\n",
-        encoding="ascii",
-    )
+    # The fake host verifier dirties the selected tree after returning its
+    # valid marker. The final source check must suppress outer completion.
     proc, _calls, _elapsed = run_launcher(
         tmp_path,
         committed_worktree,
         lane="analysis-r2-pilot",
-        mode="analysis-pilot-inner-log",
-        status_dirty_at=2,
-        inner_pilot_log=inner_log,
+        mode="analysis-host-check-dirties",
     )
 
     assert proc.returncode != 0
     assert f"ANALYSIS_R2_PILOT_CHECKER_VERIFIED={ANALYSIS_PILOT_ATTESTATION}" in proc.stdout
     assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" not in proc.stdout
-    assert "selected worktree became dirty during B105 qualification" in proc.stderr
+    assert "selected worktree became dirty during final B131 host verification" in proc.stderr
 
 
 def test_pilot_host_publishes_snapshot_and_returns_its_digest(
