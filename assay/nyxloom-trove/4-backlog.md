@@ -197,7 +197,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
 - B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — SHIPPED in `assay-v8.0.0` (2026-10-07; B145/B147 wave; contaminated post-03:11Z results must be discarded before retry)
-- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — SUMMARY SHIPPED in `assay-v8.0.0`; two residuals remain open: retain the first failure in the verdict and warn when coverage is combined with `--maxfail`/`-x`
+- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — summary shipped in `assay-v8.0.0`; residuals implemented in candidate `assay-b132-b134-fast` under A-489, pending final registered gate and release: retain the first failure in the verdict and warn when coverage is combined with `--maxfail`/`-x`
 - B147 — hermetic Git boundary permits detached automatic maintenance — SHIPPED in `assay-v8.0.0` (2026-10-07 with B145)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
@@ -12139,9 +12139,9 @@ residual section below.
 
 **Oracles:** a deterministic R0 fixture with multiple failing tests reports `FAIL` and the first failure in execution order; a command that cannot produce an R0 measurement retains its existing `NO_MEASUREMENT` result and reason.
 
-**Residual, OPEN.** cmru filed a duplicate of this item as B146 on its integration branch (W0-GATE finding BG-03, the `--maxfail` and missing `coverage.json` case). Its two extra expectations were dropped at the 2026-10-06 merge and are not implemented:
-- (2) carry the first failure in the verdict itself, not only in the summary line;
-- (3) the lane validator warns when `--maxfail`/`-x` is combined with a coverage report.
+**Residuals implemented in candidate `assay-b132-b134-fast` under A-489; pending final registered gate and release.** cmru filed a duplicate of this item on its integration branch (W0-GATE finding BG-03, the `--maxfail` and missing `coverage.json` case). The prior merge dropped these two expectations, now included in this candidate:
+- (2) carry the first failure in the existing unstructured R0 `claim.detail` field, not only in the summary line;
+- (3) warn on stderr when a coverage lane uses pytest `--maxfail`/`--exitfirst`/`-x`.
 
 ## B147 — Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance
 

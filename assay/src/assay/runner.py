@@ -124,6 +124,7 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .failure_summary import first_failing_test
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -1454,9 +1455,9 @@ def _execute_plan_inner(
     # them, a PASS that carries them IS the signature of an overridden exit
     # code. The verdict's own contract already allows this
     # (`Verdict.result_stdout_tail`: "a PASS whose evidence was not
-    # requested"), and `Claim.detail` deliberately is NOT used here -- that
-    # field is forbidden on a PASS claim, which is precisely the direction
-    # worth annotating, so an asymmetric FAIL-only note would be noise.
+    # requested"), and `Claim.detail` is not used here -- that field is
+    # forbidden on a PASS claim. B146 uses it only for recognized R0 failures;
+    # this verified PASS over a non-zero exit is not such a failure.
     # The reason code stays A-073's own, unchanged in MEANING (B078 changes
     # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
     # member, so the closed vocabulary A-050 guards is untouched. The two
@@ -1597,12 +1598,24 @@ def build_r0_claim(result: CommandResult) -> Claim:
     a caller (P05) that already has a :class:`CommandResult` never has to
     reconstruct this by hand.
     """
+    failing_test = (
+        first_failing_test(result.stdout_tail, result.stderr_tail)
+        if result.outcome is Outcome.FAIL
+        else None
+    )
+    detail = (
+        f"R0 command failed; first failing test: {failing_test}"
+        if failing_test is not None
+        else None
+    )
     return Claim(
         rigor="R0",
         source="computed",
         status=result.outcome,
         verified_by_assay=True,
         reason_code=result.reason_code,
+        detail=detail,
+        detail_dropped_bytes=0 if detail is not None else None,
     )
 
 

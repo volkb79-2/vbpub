@@ -692,6 +692,79 @@ def _contains_xdist_option(tokens: Sequence[str]) -> bool:
     return False
 
 
+def pytest_fail_fast_option(argv: Sequence[str]) -> str | None:
+    """Return an explicit pytest fail-fast option in a direct pytest argv.
+
+    Lane validation uses this to warn when early exit can leave a declared
+    coverage report incomplete. Values of options such as ``-k`` and
+    ``--rootdir`` are consumed with pytest's own option tables so a value like
+    ``-x`` is not mistaken for a fail-fast switch.
+    """
+    tokens = tuple(argv)
+    if not tokens:
+        return None
+    first = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if first == "pytest":
+        args = tokens[1:]
+    else:
+        start = next(
+            (
+                index + 2
+                for index, token in enumerate(tokens[:-1])
+                if token == "-m" and tokens[index + 1] == "pytest"
+            ),
+            None,
+        )
+        if start is None:
+            return None
+        args = tokens[start:]
+
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            break
+        option = token.partition("=")[0]
+        if option in ("--maxfail", "--exitfirst"):
+            return option
+        if token.startswith("--"):
+            has_value = "=" in token
+            if option in PYTEST_LONG_VALUE_OPTIONS:
+                index += 1 if has_value else 2
+            elif option in PYTEST_LONG_OPTIONAL_VALUE_OPTIONS:
+                index += 2 if (
+                    not has_value
+                    and index + 1 < len(args)
+                    and not args[index + 1].startswith("-")
+                ) else 1
+            elif has_value or option not in PYTEST_LONG_FLAG_OPTIONS:
+                # Plugin options can add value grammars. Do not mistake an
+                # unknown option's value for a fail-fast switch.
+                return None
+            else:
+                index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            body = token[1:]
+            position = 0
+            while position < len(body):
+                letter = body[position]
+                if letter == "x":
+                    return "-x"
+                if letter in COLD_PYTEST_FLAG_OPTIONS:
+                    position += 1
+                    continue
+                if letter in COLD_PYTEST_VALUE_OPTIONS:
+                    if position == len(body) - 1:
+                        index += 1
+                    break
+                # An unknown short spelling has an unknown value grammar.
+                # Stop rather than classify a value as an Assay warning.
+                return None
+        index += 1
+    return None
+
+
 def _contains_override_ini_option(tokens: Sequence[str]) -> bool:
     """Detect ``-o`` even when pytest bundles it with other short flags."""
     for token in tokens:

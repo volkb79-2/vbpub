@@ -1434,5 +1434,13 @@ diagnostics begin with `ASSAY <version> — declared-lane judge` as line 1 at
 every lane and analysis verb depth, using the existing metadata-backed
 `assay.__version__`. The top-level `assay --version` probe prints exactly one
 `assay <version>` line to stdout, exits 0, and writes nothing to stderr.
-Normal command output is unchanged. See the [design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility)
-for why this is a separate identity probe from lane execution.
+The version probe does not change the output behavior of other commands. See
+the [design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility) for
+why it is a separate identity probe from lane execution.
+
+When retained R0 output names a failed test, `assay run` reports the first
+recognized failure in its summary and in the R0 claim's unstructured
+`detail`. A pytest fail-fast option (`--maxfail`, `--exitfirst`, or `-x`) on a
+coverage lane produces an advisory on stderr because early stopping can leave
+the coverage artifact incomplete; the lane remains valid. See the [R0 failure
+diagnostics and coverage warning design](docs/DESIGN-GUIDE.md#r0-failure-diagnostics-and-coverage-fail-fast-warning).

@@ -1,11 +1,11 @@
 """Name the first failing test in a captured R0 command output (B146).
 
-Pure text reading, advisory and display-only. It never changes an outcome, a
-reason code or a verdict field: ``assay run``'s one-line headline stays the
-verdict's own pair. Its only job is to let the concise summary say that the R0
-command measurably failed, and which test failed first, even when a later
-refusal (for example ``NO_MEASUREMENT``/``DIRTY_TREE`` after a failing suite
-dirtied the tree) is what the headline reports.
+Pure text reading. It never changes an outcome or reason code: ``assay run``'s
+one-line headline stays the verdict's own pair. The recognized name is copied
+to the R0 claim's unstructured ``detail`` field and the concise summary, so a
+consumer can see that the R0 command measurably failed and which test failed
+first, even when a later refusal (for example ``NO_MEASUREMENT``/``DIRTY_TREE``
+after a failing suite dirtied the tree) is what the headline reports.
 
 Recognised producers, each of which a lane's declared R0 command may be:
 

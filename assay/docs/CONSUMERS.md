@@ -4103,12 +4103,13 @@ v10 without your product changing:**
 
 ### If you read refusals: `claim.detail` is now on the wire
 
-A non-PASS claim may carry `detail` (the refusing sentence) and
+A non-PASS claim may carry `detail` (a refusal sentence or, for a recognized
+R0 test failure, its failure diagnostic) and
 `detail_dropped_bytes` beside it. The pair is all-or-nothing, a PASS claim
 carries neither, and the text is bounded at 2048 UTF-8 bytes with the head
 kept. **Nothing is required of you** — the field is optional and additive.
-It is **declared, not verified**: assay copies the sentence it printed and
-never parses it. The closed `(outcome, reason_code)` pair remains the only
+It is **declared, not verified**: assay does not validate the diagnostic's
+meaning. The closed `(outcome, reason_code)` pair remains the only
 machine-readable statement in the document; a gate that pattern-matches
 `detail` is reading diagnosis as policy.
 
@@ -4258,6 +4259,11 @@ Where it goes:
   measurably failed. A run whose output names no failing test prints no such
   line, so a genuine no-measurement is never recast as a test failure. NAME is
   the first failure visible in the bounded output tail the verdict retains.
+  The R0 claim's existing `detail` field carries the same first-failure
+  diagnostic; its closed outcome/reason pair and schema remain unchanged. A
+  coverage lane with direct pytest invocation and `--maxfail`, `--exitfirst`,
+  or `-x` also emits an advisory to stderr because fail-fast can leave the
+  artifact incomplete. The warning does not alter lane validity or JSON stdout.
 - **From a library caller**, to whatever stream you pass as `diagnostics=` to
   `assay.runner.run_lane`. Nothing is written to the process's stderr behind
   your back; omit the argument and assay stays silent, exactly as before.

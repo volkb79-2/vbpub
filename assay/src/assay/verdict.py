@@ -298,9 +298,9 @@ __all__ = [
 #:   itself states, REQUIRED under `producer = "ingested"` and FORBIDDEN under
 #:   `"native"`, so an ingested R2 PASS is re-derivable against the policy that
 #:   actually decided it instead of against a constant the loader forced.
-#: * `claim.detail` + `claim.detail_dropped_bytes` (B053/A-428) -- the refusing
-#:   sentence on the wire, on NON-PASS claims only, bounded at
-#:   `CLAIM_DETAIL_BYTES` with B014's truncation convention.
+#: * `claim.detail` + `claim.detail_dropped_bytes` (B053/A-428/A-489) -- an
+#:   unstructured refusal or R0 failure diagnostic on NON-PASS claims only,
+#:   bounded at `CLAIM_DETAIL_BYTES` with B014's truncation convention.
 #:   Declared-not-verified (A-230a): assay copies it and never parses it.
 #: * `PROVENANCE_UNVERIFIED` (B004/A-276/A-430) in the `NO_MEASUREMENT` set,
 #:   plus the `evidence` narrowing it pays for: `source = "adjudicated"` now
@@ -3901,15 +3901,15 @@ class Claim:
     mutation: Mutation | None = None
     #: (F015/A-433, schema v10) the R4 payload. Wire shape only at the cut.
     red_first: RedFirstResult | None = None
-    #: (B053/DA-D2(c), A-428, schema v10) the refusing sentence, byte-copied
-    #: from the text the same conversion site puts on the diagnostics stream,
-    #: so the line a caller reads and the document a consumer archives can
-    #: never say different things.
+    #: (B053/DA-D2(c), A-428, schema v10; A-489) an unstructured diagnostic:
+    #: normally the refusing sentence byte-copied from the diagnostics stream,
+    #: or an R0 failure summary when the command output names its first failing
+    #: test. The latter is derived from the bounded output tail.
     #:
     #: **Per CLAIM, not per verdict**: one lane can refuse at two tiers for
     #: two different reasons, and a single verdict-level string would have to
-    #: pick one. **On NON-PASS claims only** — absent on ``PASS`` (there is
-    #: no refusal to explain) and absent when no refusal produced text.
+    #: pick one. **On NON-PASS claims only** — absent on ``PASS`` and absent
+    #: when no refusal text or recognized R0 failure diagnostic was produced.
     #:
     #: **Declared, not verified** (A-230a, ``producer_tool``'s own words):
     #: assay copies this text and never parses it; this layer and
@@ -4041,10 +4041,10 @@ class Claim:
         never the content.
 
         Three rules, and only three, because ``detail`` is
-        declared-not-verified (A-230a): it is present only where a refusal
-        could have produced text, its sibling byte count is present exactly
-        with it, and the retained text fits :data:`CLAIM_DETAIL_BYTES`. What
-        it SAYS is diagnosis, and this layer does not read diagnosis.
+        declared-not-verified (A-230a): it is non-PASS only, its sibling byte
+        count is present exactly with it, and the retained text fits
+        :data:`CLAIM_DETAIL_BYTES`. What it SAYS is diagnosis, and this layer
+        does not read diagnosis.
         """
         if self.detail is None:
             if self.detail_dropped_bytes is not None:
@@ -4057,7 +4057,7 @@ class Claim:
         if self.status is Outcome.PASS:
             raise ValueError(
                 f"claim[{self.rigor}]: a PASS carries no detail -- detail is "
-                f"the refusing sentence, and a pass refused nothing (A-428)"
+                f"diagnostics are only valid on non-PASS claims (A-428/A-489)"
             )
         if not isinstance(self.detail, str) or not self.detail:
             raise ValueError(

@@ -950,6 +950,26 @@ reading diagnosis as policy. A structured detail was rejected for precisely
 that reason: `reason_code` is already the structured surface, and a second
 one would re-open the vocabulary A-138/A-170 shut.
 
+### R0 failure diagnostics and coverage fail-fast warning
+
+**A-489 (B146) extends the existing unstructured `claim.detail` field.** When
+the R0 command fails and the retained output tail names a recognized test,
+Assay stores `R0 command failed; first failing test: NAME` on the R0 claim.
+The concise CLI summary reports the same first failure. The headline and
+closed `(status, reason_code)` pair remain unchanged: for example, a dirty
+tree can still make the verdict `NO_MEASUREMENT/DIRTY_TREE` while the R0
+diagnostic records that its command failed. No reason code, field or schema
+shape is added. `detail` remains declared-not-verified; consumers must not
+parse it or use it as policy, and `assay verify` checks only its existing
+non-PASS and byte-bound rules.
+
+Lane validation also warns on stderr when a declared coverage lane invokes
+pytest directly or through `python -m pytest` with `--maxfail`, `--exitfirst`,
+or `-x` (including short-option clusters). Early stopping can leave a coverage
+artifact incomplete. This is advisory and does not invalidate the lane;
+machine-readable stdout is unchanged. Unknown pytest/plugin option grammars
+are left unclassified rather than guessed.
+
 ### R0 may judge a verified-complete test report instead of the exit code (B078)
 
 By default, R0 decides the wrapped command's outcome from its raw exit code
