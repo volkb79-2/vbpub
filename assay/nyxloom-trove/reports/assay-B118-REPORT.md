@@ -1,13 +1,15 @@
-# B118 implementation report — P7c follow-up in progress
+# B118 implementation report — bounded pilot pending
 
 ## Current integration status — 2026-10-10
 
 P7a/P7b/P7c are integrated in local `main`; the final integrated
 `tester-unified` gate passed on `b8713d5672c92ff323a832ae8de65d567493cf2e`
 and B114's MDT `smoke` passed (**119 passed, 6 skipped, 6 subtests**). The
-same-tip B105 preflight refused before launching its child because the gates
-slice had **1,280,720,896 bytes** of headroom against the 2 GiB requirement
-(`/tmp/run-gate/lanes/self-qualification-preflight/009eb0b000c7cfce23427c30281c6f6d.log`).
+B105 preflight refused before launching its child at **1,280,720,896
+bytes** on `b8713d56`. A fresh retry on documentation-only descendant
+`595b4069` again refused before launch with **1,375,588,352 bytes** of headroom
+against the 2 GiB requirement
+(`/tmp/run-gate/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`).
 No B110 pilot or B105 R2 campaign ran. Retry after capacity returns; preserve
 all `.assay` state and do not treat the gate pass as pilot or qualification
 evidence.

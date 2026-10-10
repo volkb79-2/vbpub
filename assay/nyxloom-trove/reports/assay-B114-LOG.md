@@ -699,3 +699,9 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   `2cad53d926861a38f5185b00bcbf10625446d81`. Retry preflight and both bounded
   pilots after the host gates slice has the required capacity; do not claim
   B105 or B131 full R2 qualification from these checks.
+- A fresh `./run-gate.py self-qualification-preflight` retry on the
+  documentation-only descendant `595b4069` again refused before launching a
+  child: `dev-gates.slice` had 1,375,588,352 bytes of headroom against the
+  2,147,483,648-byte requirement. Log:
+  `/tmp/run-gate/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`.
+  The registered runner completed the refusal; no pilot container started.
