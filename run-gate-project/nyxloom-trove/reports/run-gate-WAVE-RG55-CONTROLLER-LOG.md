@@ -8654,3 +8654,31 @@ separately read Run-Gate history records PASS/exit 0, 155.7 seconds. The exact
 tree remains dirty pending the controller's commit; no mutation campaign or
 gate container is active. DAMON remained unavailable with `EBUSY` under host
 `DAMON_STAT`, a profiling limitation that does not affect the selftest.
+
+### RW-539 — 2026-10-10 02:47:09 UTC — reconcile current main; prior short-gate receipts are stale
+
+The private P1/RG-89 candidate was based on main `5bf6db82`; current main had
+advanced to `a5659aff` (Assay B114/B118/B131 integration), 23 commits beyond
+the candidate's merge base. Reconciled with `git merge --no-ff main` in the
+private worktree. The only conflict was `assay/CHANGES.md`; both the RG-89
+observer entry and current main's `analysis-r2` pilot entry are retained. The
+merge commit is `2631d898`. Main itself was clean and unchanged.
+
+Before reconciliation, Run-Gate `assay-r1` on exact commit `bfa975ad` had
+PASS/exit 0 in 184.937 seconds (history run
+`076595a12cf920ad9a95e33a0a03f746`). Its profiling summary recorded ordinary
+resource samples but DAMON unavailable with `EBUSY`, consistent with RW-531's
+restored host `DAMON_STAT=Y`; this is verdict-neutral. Run-Gate `assay-r3` on
+the same commit passed/exit 0 in 1.461 seconds (run
+`fc86f41e1ef99104e003b4e304d4e81f`): both canaries were rejected. The target
+had exited before cgprofile could resolve its cgroup, so this run used basic
+sampling and produced no daemon/DAMON profile evidence. These are historical
+receipts for `bfa975ad`, not evidence for the reconciled candidate.
+
+At the R3 launch check, an independent Assay B131 `tester-unified` gate was
+active in container `run-gate-assay-selfhosted-3822695-9959-1791600138`.
+The operator had authorized parallel tests; the short R3 lane completed
+without affecting that gate. No P1 R2 or full gate was active. The exact
+reconciled tree still needs Run-Gate selftest/R1/R3 and cgprofile r0-r1/r3,
+then exact-candidate P1 R2 and the registered full gates. No prior-tree
+mutation result is transferred.
