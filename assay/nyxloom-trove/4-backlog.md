@@ -208,14 +208,14 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B110 — bounded B105 runtime without increasing the approved RAM envelope — OPEN, split 2026-09-28 into B111–B121 (plan `reports/assay-B110-PLAN-2026-09-28.md`; analysis `reports/assay-B110-RUNTIME-ANALYSIS-2026-09-28.md`; decisions A-465–A-474). B110 keeps the pilot and go/no-go.
 
 **B110 split (filed 2026-09-28; briefs in `reports/b110/`; active B114 wave resumed 2026-10-07)**
-- B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — OPEN
-- B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — OPEN (after B111's leak fix)
-- B113 — P2 loop-progress guards — OPEN
-- B114 — P3 verdict v15 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — OPEN (CIU worktree `assay-b114-cold-witness`; P10a is REVISE, using P3a's partial anchor path; P10b remains blocked)
-- B115 — P4 work-queue executor — OPEN
+- B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — DONE (shipped in `assay-v7.2.0`; see detailed acceptance below)
+- B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — PARTIAL (original scope shipped or was superseded in `assay-v7.2.0`; current slow-tier remeasurement remains open)
+- B113 — P2 loop-progress guards — DONE (shipped in `assay-v7.2.0`; see detailed acceptance below)
+- B114 — P3 verdict v15 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — IN PROGRESS (integrated locally; `tester-unified` and MDT `smoke` pass on `b8713d56`; preflight refused at 1.19 GiB versus 2 GiB required. P10a is REVISE, using P3a's partial anchor path; P10b remains blocked. Retry qualification preflight when host capacity returns.)
+- B115 — P4 work-queue executor — IMPLEMENTED on the v15 integration; the integrated `tester-unified` gate passed on `b8713d56`; pending v9.0.0 release.
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
-- B117 — P6 persisted campaign deadline + process-group termination — OPEN
-- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a/P7b merged; P7c artifact-attestation, archive publication, round-24 judge/quarantine fixes, and round-28/29 descriptor/path/permission repairs are implemented on `assay-b118-p7c-artifact-attestation-20261009`. The B110 container tests pass 100; candidate-file tests pass 44; post-helper shell/report-check tests pass 9. Fresh exact-diff review and same-tip registered gates remain. B131 will run its own measured sample after integration.)
+- B117 — P6 persisted campaign deadline + process-group termination — IN PROGRESS (integrated `tester-unified` passed; its required B105 preflight refused at 1.19 GiB versus 2 GiB required; retry after capacity returns)
+- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a/P7b/P7c are integrated; the final integrated `tester-unified` gate and B114 MDT `smoke` passed on the v15 candidate. The fixed B110 pilot has not run because the shared 2 GiB host-headroom check refused; B131 still requires its own measured sample.)
 - B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
 - B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
 - B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
@@ -11468,7 +11468,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 ## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
-**Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; current plan `reports/assay-B114-PLAN-2026-10-07.md`; CIU worktree/branch `assay-b114-evidence-deadline-20261009`; v15 replaces the already shipped v14 target).**
+**Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; v15 replaces the already shipped v14 target). The implementation is provisionally merged to local `main` as `2cad53d9`; registered `tester-unified` and MDT `smoke` pass on `b8713d56`. `self-qualification-preflight` refused before child launch at 1.19 GiB against its 2 GiB headroom requirement, so the B110 pilot on B105 and B131 analysis pilot remain pending until capacity returns. P10a is REVISE on P3a's partial anchor path; P10b remains blocked.**
 
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
@@ -11557,7 +11557,7 @@ inventories refuse.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
 
-**Status: OPEN (filed 2026-09-28; A-467; brief `reports/b110/P4-work-queue-executor.md`).**
+**Status: IMPLEMENTED; acceptance is complete on the local v9.0.0 candidate, pending release (filed 2026-09-28; A-467; brief `reports/b110/P4-work-queue-executor.md`).**
 
 **Scope:**
 - Replace fully joined waves with at most `jobs` candidates in flight, submitted in order.
@@ -11566,9 +11566,9 @@ inventories refuse.
 - Emit `candidate` progress in position order through a reorder buffer.
 
 **Acceptance:**
-- [ ] The existing executor tests stay green (one fake moves to real `Future`s).
-- [ ] New boundary oracles: max in flight, no wave barrier, ordered progress.
-- [ ] tester-unified PASS.
+- [x] The existing executor tests stay green; the asynchronous completion cases use real `Future`s.
+- [x] Boundary oracles cover maximum in-flight work, no wave barrier, and ordered progress.
+- [x] Integrated `tester-unified` PASS at `b8713d56`.
 
 ## B116 — B110 P5: cheaper fresh per-candidate snapshots
 
@@ -11823,7 +11823,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and now has a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package. The second review's five findings, round-three review's three findings, and rounds seven/eight's three further findings are repaired with regression oracles. The earlier 341-test B131/B110 run predates the last fixes. Round-nine Sol xhigh review accepted the complete diff with no findings. Registered gates and both bounded pilots remain pending.
+**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and now has a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; the B105 preflight refused before child launch at 1.19 GiB against its 2 GiB requirement. The B110 and B131 bounded pilots remain pending until host capacity recovers; no full R2 qualification is claimed.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 

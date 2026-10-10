@@ -674,3 +674,28 @@ Append commands, captured exit statuses, review findings, gates, and merge/relea
   focused suite passed **84 tests** with **100%** helper branch coverage.
 - Next: merge serially and rerun registered `tester-unified` on the repaired
   main tip.
+
+## 2026-10-10 — integrated acceptance checkpoint
+
+- The full since-8.0.0 Assay Sol xhigh review found no actionable code defect;
+  its only P1 required a passing registered gate on the exact reviewed tip.
+  The repair review of the subsequent test-oracle fix also accepted with no
+  findings. Both reviews recorded unchanged HEAD/status snapshots.
+- Registered `./run-gate.py tester-unified` passed on
+  `b8713d5672c92ff323a832ae8de65d567493cf2e`; it emitted
+  `ASSAY_REGISTERED_GATE_COMPLETE=1` and `ASSAY_GATE_CONTAINER_EXIT=0`.
+  Run log: `/tmp/run-gate/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`.
+  The gate covered the self-hosted Assay lane, analysis R0/R1, self-hosting,
+  pyflakes, SQL qualification, and B145 process-limit probes.
+- The same-tip `./run-gate.py self-qualification-preflight` refused before
+  launching its child: `dev-gates.slice` had 1,280,720,896 bytes of headroom,
+  below the required 2,147,483,648 bytes. Log:
+  `/tmp/run-gate/lanes/self-qualification-preflight/009eb0b000c7cfce23427c30281c6f6d.log`.
+  No preflight container or R2 pilot was launched.
+- The B114 MDT `./run-gate.py smoke` lane passed: **119 passed, 6 skipped,
+  6 subtests**, exit 0. Log:
+  `/tmp/run-gate/lanes/smoke/a47b9fab1586f093ad1756eb5b4b6dae.log`.
+- Local `main` provisionally merged this reviewed/tested branch as
+  `2cad53d926861a38f5185b00bcbf10625446d81`. Retry preflight and both bounded
+  pilots after the host gates slice has the required capacity; do not claim
+  B105 or B131 full R2 qualification from these checks.

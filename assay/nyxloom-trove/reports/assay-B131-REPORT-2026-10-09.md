@@ -1,12 +1,16 @@
 # B131 — analysis-package R2 pilot report
 
 **Date:** 2026-10-09  
-**Status:** Stage 1 implementation is provisionally integrated on
-`assay-b131-r2`. The round-nine exact-tree Sol xhigh review accepted the
-current diff with no findings after rounds seven and eight identified and
-closed three additional evidence/resume gaps. Registered gates and both
-bounded pilot measurements remain pending. This package does not claim full
-analysis R2 qualification or make it a release requirement.
+**Status:** Stage 1 implementation is provisionally merged to local `main` as
+`2cad53d9`, from reviewed branch tip `b8713d56`. The full since-8.0.0 Sol
+xhigh review found no code defect; its sole P1 (a missing registered gate)
+was resolved by the pass below. The follow-up repair review accepted its
+exact diff. The
+registered `tester-unified` lane and MDT `smoke` passed on `b8713d56`.
+`self-qualification-preflight` refused before launching its child because the
+gates slice had 1,280,720,896 bytes of headroom against its 2 GiB requirement.
+The B110 and B131 bounded R2 pilots have not run. This package does not claim
+full analysis R2 qualification or make it a release requirement.
 
 ## Claim and boundary
 
@@ -52,16 +56,19 @@ checker suites pass **117 tests in 43.65 seconds**; safe-I/O, campaign and
 pilot-path core suites pass **124 tests in 20.96 seconds**; documentation
 contract and shipped-source pyflakes checks pass **57 tests in 10.57 seconds**.
 Python compilation and `git diff --check` pass. The final remediation review
-accepted the exact delta with no findings. Registered gates and the measured
-analysis pilot remain pending. The analysis pilot's inventory, sample
-outcome, time projection, worker envelope and GO decision are outstanding.
+accepted the exact delta with no findings. The integrated `tester-unified`
+gate passed on `b8713d56`; MDT `smoke` passed with 119 tests, 6 skips, and 6
+subtests. The B105 preflight refused before child launch at 1,280,720,896 bytes
+of gates-slice headroom (2 GiB required). Both bounded R2 pilots remain
+pending; the shared launcher applies the same headroom check to the B110 and
+B131 pilots. The analysis pilot's inventory, sample outcome, time projection,
+worker envelope and GO decision are outstanding.
 
-After integrating the reviewed B118 fix, run the final registered acceptance
-serially on the same tip: `tester-unified`,
-`self-qualification-preflight`, the B114 MDT `smoke` lane, then
-`analysis-r2-pilot`. Record actual gate/container identities and exit markers
-here. A full analysis R2 run may start asynchronously only if the completed
-pilot supports the B131-specific GO policy recorded from its measurements.
+Retry the preflight after host capacity recovers. Then run `b110-pilot` and
+`analysis-r2-pilot` serially, record their reports and decide from their
+measurements whether either full R2 campaign is justified. A full analysis R2
+run may start asynchronously only if its completed pilot supports the
+B131-specific GO policy recorded from those measurements.
 
 ## B110 dependency decisions
 
