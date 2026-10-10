@@ -47,6 +47,14 @@ if "status" in args and "--porcelain" in args:
         time.sleep(float(os.environ.get("GIT_STATUS_DELAY_SECONDS", "0")))
     if number == int(os.environ["GIT_STATUS_FAIL_AT"]):
         raise SystemExit(19)
+    if number == int(os.environ.get("GIT_STATUS_DIRTY_AT", "0")):
+        result = subprocess.run(
+            [os.environ["REAL_GIT"], *args], capture_output=True, text=True
+        )
+        sys.stdout.write(result.stdout)
+        sys.stdout.write(" M assay/tools/analysis_r2_pilot_check.py\n")
+        sys.stderr.write(result.stderr)
+        raise SystemExit(result.returncode)
     if os.environ.get("TAMPER_HOST_CHECKER_AFTER_FINAL_STATUS") == "1" and number == 2:
         result = subprocess.run(
             [os.environ["REAL_GIT"], *args], capture_output=True, text=True
@@ -219,6 +227,8 @@ if args and args[0] == "wait":
     if mode == "blocked-wait":
         while not read_state().get("stopped"):
             time.sleep(0.05)
+    if mode == "analysis-pilot-inner-log":
+        time.sleep(0.05)
     print(os.environ.get("DOCKER_WAIT_STATUS", "0"))
     raise SystemExit(0)
 if args and args[0] == "logs":
@@ -362,14 +372,19 @@ if args and args[0] == "logs":
             )
         elif mode == "analysis-pilot-duplicate-marker":
             print("ANALYSIS_R2_PILOT_EXIT=6")
-            print("ANALYSIS_R2_PILOT_VERIFIED=1")
+            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+        elif mode == "analysis-pilot-premature-final-marker":
+            print("ANALYSIS_R2_PILOT_EXIT=6")
+            print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
             print("ANALYSIS_R2_PILOT_VERIFIED=1")
         else:
             print("ANALYSIS_R2_PILOT_EXIT=6")
             if mode == "analysis-pilot-b110-marker":
                 print("B110_SCREEN_EXIT=1")
             if mode != "analysis-pilot-unverified":
-                print("ANALYSIS_R2_PILOT_VERIFIED=1")
+                print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+    sys.stdout.flush()
     raise SystemExit(0)
 if args and args[0] == "stop":
     if mode in {"stop-fails", "force-remove-fails"}:
@@ -549,6 +564,7 @@ def run_launcher(
     host_workspace_root: str | None = None,
     shared_host_value: str | None = None,
     status_fail_at: int | None = None,
+    status_dirty_at: int | None = None,
     trace_timeouts: bool = False,
     fast_docker_timeout: bool = False,
     hide_docker: bool = False,
@@ -572,7 +588,7 @@ def run_launcher(
         fake_chmod = fake_bin / "chmod"
         fake_chmod.write_text("#!/bin/sh\nexit 19\n", encoding="ascii")
         fake_chmod.chmod(0o755)
-    if status_fail_at is not None or tamper_host_checker_after_final_status or status_delay_at is not None:
+    if status_fail_at is not None or status_dirty_at is not None or tamper_host_checker_after_final_status or status_delay_at is not None:
         git = fake_bin / "git"
         git.write_text(FAKE_GIT, encoding="utf-8")
         git.chmod(0o755)
@@ -668,6 +684,7 @@ if '--archive-prior-snapshot' in sys.argv:
         "REAL_TIMEOUT": shutil.which("timeout"),
         "GIT_STATUS_COUNTER": str(tmp_path / "git-status-count"),
         "GIT_STATUS_FAIL_AT": str(status_fail_at or 0),
+        "GIT_STATUS_DIRTY_AT": str(status_dirty_at or 0),
         "GIT_STATUS_DELAY_AT": str(status_delay_at or 0),
         "GIT_STATUS_DELAY_SECONDS": str(status_delay_seconds),
         "TAMPER_HOST_CHECKER_AFTER_FINAL_STATUS": (
@@ -877,6 +894,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         ("analysis-r2-pilot", "analysis-pilot-b110-marker", "B110-mode marker"),
         ("analysis-r2-pilot", "analysis-pilot-unverified", "evidence verification marker"),
         ("analysis-r2-pilot", "analysis-pilot-duplicate-marker", "evidence verification marker"),
+        ("analysis-r2-pilot", "analysis-pilot-premature-final-marker", "outer completion marker"),
     ],
 )
 def test_b110_child_evidence_is_required_before_outer_completion(
@@ -923,7 +941,8 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
     )
     assert inner_proc.returncode == 0, inner_proc.stderr
     assert "STATUS=0" in inner_proc.stdout
-    assert inner_proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 1
+    assert inner_proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1") == 1
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in inner_proc.stdout
 
     inner_log = tmp_path / "container-inner.log"
     inner_log.write_text(inner_proc.stdout, encoding="utf-8")
@@ -937,14 +956,33 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
         inner_pilot_log=inner_log,
     )
     assert outer_proc.returncode == 0, outer_proc.stderr
-    assert outer_proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 2
+    assert outer_proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1") == 1
+    assert outer_proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 1
     container_exit_position = outer_proc.stdout.index(
         "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=0"
     )
-    first_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_VERIFIED=1")
-    final_marker_position = outer_proc.stdout.rindex("ANALYSIS_R2_PILOT_VERIFIED=1")
-    assert first_marker_position < final_marker_position < container_exit_position
+    checker_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1")
+    outer_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_VERIFIED=1")
+    complete_position = outer_proc.stdout.index("ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot")
+    assert checker_marker_position < container_exit_position < outer_marker_position < complete_position
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" in outer_proc.stdout
+
+
+def test_analysis_r2_pilot_outer_marker_waits_for_final_source_check(
+    tmp_path: Path, committed_worktree: Path
+):
+    proc, _calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="analysis-r2-pilot",
+        status_dirty_at=2,
+    )
+
+    assert proc.returncode != 0
+    assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1" in proc.stdout
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+    assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" not in proc.stdout
+    assert "selected worktree became dirty during B105 qualification" in proc.stderr
 
 
 def test_pilot_host_publishes_snapshot_and_returns_its_digest(

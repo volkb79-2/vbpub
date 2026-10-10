@@ -143,6 +143,10 @@ def derive_b105_inventory(
     The bounded B110 screen and pilot both use this same derivation so neither
     can treat a producer-supplied plan as the authority for what was judged.
     """
+    try:
+        repo_root = repo_root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"cannot resolve repository root {repo_root}: {exc}") from exc
     if not _HEX40.fullmatch(expected_commit) or not _HEX40.fullmatch(expected_tree):
         raise ValueError("expected commit and tree must be full lowercase Git IDs")
     current_commit, current_tree = selector._repository_identity(repo_root)

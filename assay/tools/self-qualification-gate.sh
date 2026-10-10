@@ -263,7 +263,8 @@ run_analysis_r2_pilot() {
   local pilot_started_s=$SECONDS pilot_cap_s=$((90 * 60))
   local pilot_step_budget_s campaign_budget_s remaining_s pilot_status
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
-  local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s pilot_checker_output
+  local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
+  local pilot_checker_stdout pilot_checker_expected
   local state_dir=.assay/analysis-r2-pilot-state
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
@@ -383,8 +384,11 @@ run_analysis_r2_pilot() {
     echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
     return 124
   fi
+  pilot_checker_stdout="$scratch/analysis-r2-pilot-checker.stdout"
+  pilot_checker_expected="$scratch/analysis-r2-pilot-checker.expected"
+  printf '%s\n' 'ANALYSIS_R2_PILOT_VERIFIED=1' >"$pilot_checker_expected"
   set +e
-  pilot_checker_output="$(timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
     "$scratch/run-venv/bin/python" \
     "$scratch/source/assay/tools/analysis_r2_pilot_check.py" \
       --plan "$plan_path" --selection "$selection_path" \
@@ -393,14 +397,14 @@ run_analysis_r2_pilot() {
       --state-dir "$state_dir" --verdict "$verdict_path" \
       --repo-root "$worktree" --expected-commit "$source_commit" \
       --expected-tree "$source_tree" --expected-wheel-sha256 "$wheel_digest" \
-      --expected-exit-code "$pilot_status")"
+      --expected-exit-code "$pilot_status" >"$pilot_checker_stdout"
   checker_status=$?
   set -e
   if (( checker_status != 0 )); then
     echo "ANALYSIS_R2_PILOT_CHECKER_EXIT=$checker_status" >&2
     return "$checker_status"
   fi
-  if [[ "$pilot_checker_output" != "ANALYSIS_R2_PILOT_VERIFIED=1" ]]; then
+  if ! cmp -s -- "$pilot_checker_stdout" "$pilot_checker_expected"; then
     echo "ANALYSIS_R2_PILOT_CHECKER_MARKER_INVALID=1" >&2
     return 1
   fi
@@ -411,7 +415,7 @@ run_analysis_r2_pilot() {
     echo "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" >&2
     return 124
   fi
-  echo "ANALYSIS_R2_PILOT_VERIFIED=1"
+  echo "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1"
 }
 
 run_b110_screen() {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from copy import deepcopy
@@ -311,6 +312,23 @@ def test_cli_rejects_coherently_truncated_plan_and_matching_verdict(tmp_path: Pa
         expected_commit=commit,
         expected_tree=tree,
     )
+    relative_repo_root = Path(os.path.relpath(repo_root, Path.cwd()))
+    relative_rows, relative_replacements, _relative_sources = checker.derive_b105_inventory(
+        repo_root=relative_repo_root,
+        expected_commit=commit,
+        expected_tree=tree,
+    )
+    assert relative_rows == full_rows
+    assert relative_replacements == replacement_sha256_by_id
+    repo_root_alias = tmp_path / "source-repo-alias"
+    repo_root_alias.symlink_to(repo_root, target_is_directory=True)
+    alias_rows, alias_replacements, _alias_sources = checker.derive_b105_inventory(
+        repo_root=repo_root_alias,
+        expected_commit=commit,
+        expected_tree=tree,
+    )
+    assert alias_rows == full_rows
+    assert alias_replacements == replacement_sha256_by_id
     assert len(full_rows) > 2
     plan, verdict = _documents()
     declared_operators = set(verdict["judgment"]["r2"]["operators"])

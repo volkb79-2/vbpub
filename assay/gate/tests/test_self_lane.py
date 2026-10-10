@@ -930,6 +930,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
         "--candidates-file", "--cold-witness", "--resume", "--state-dir",
         "--progress", "--campaign-deadline", "analysis_r2_pilot_select.py",
         "analysis_r2_pilot_check.py", "ANALYSIS_R2_PILOT_VERIFIED=1",
+        "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1",
     ):
         assert marker in pilot
     assert 'analysis-r2-pilot) run_analysis_r2_pilot; exit 0 ;;' in script
@@ -955,11 +956,29 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     assert proc.returncode == 0, proc.stderr
     if expired_bound == "none":
         assert "STATUS=0" in proc.stdout
-        assert proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 1
+        assert proc.stdout.count("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1") == 1
+        assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
     else:
         assert "STATUS=124" in proc.stdout
         assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
+        assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1" not in proc.stdout
         assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"ANALYSIS_R2_PILOT_VERIFIED=1\n\n", b"ANALYSIS_R2_PILOT_VERIFIED=1\x00\n"],
+)
+def test_b131_pilot_requires_byte_exact_checker_stdout(tmp_path: Path, payload: bytes):
+    checker_output = tmp_path / "checker-output.bin"
+    checker_output.write_bytes(payload)
+    proc = _run_analysis_r2_pilot_inner_harness(tmp_path, checker_output=checker_output)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "STATUS=1" in proc.stdout
+    assert "ANALYSIS_R2_PILOT_CHECKER_MARKER_INVALID=1" in proc.stderr
+    assert "ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1" not in proc.stdout
+    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
 
 
 def _run_analysis_r2_pilot_inner_harness(

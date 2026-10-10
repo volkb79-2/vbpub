@@ -676,14 +676,21 @@ case "$lane" in
     mapfile -t analysis_pilot_exit_markers < <(grep -E '^ANALYSIS_R2_PILOT_EXIT=(0|[1-9][0-9]{0,2})$' "$scratch/container.log" || true)
     [[ ${#analysis_pilot_exit_markers[@]} -eq 1 && "${analysis_pilot_exit_markers[0]}" == 'ANALYSIS_R2_PILOT_EXIT=6' ]] \
       || die 'B131 pilot did not report exactly one complete exit status (6)'
-    mapfile -t analysis_pilot_completion_markers < <(grep -Fx 'ANALYSIS_R2_PILOT_VERIFIED=1' "$scratch/container.log" || true)
-    [[ ${#analysis_pilot_completion_markers[@]} -eq 1 ]] \
+    if grep -Fxq 'ANALYSIS_R2_PILOT_VERIFIED=1' "$scratch/container.log"; then
+      die 'B131 pilot container log contains the outer completion marker'
+    fi
+    mapfile -t analysis_pilot_checker_markers < <(grep -Fx 'ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1' "$scratch/container.log" || true)
+    [[ ${#analysis_pilot_checker_markers[@]} -eq 1 ]] \
       || die 'B131 pilot exit 6 lacks its source-bound evidence verification marker'
     marker=ANALYSIS_R2_PILOT_VERIFIED=1
     ;;
 esac
-grep -Fxq "$marker" "$scratch/container.log" \
-  || die "Assay qualification container exited zero without $marker"
+container_marker="$marker"
+if [[ "$lane" == analysis-r2-pilot ]]; then
+  container_marker=ANALYSIS_R2_PILOT_CHECKER_VERIFIED=1
+fi
+grep -Fxq "$container_marker" "$scratch/container.log" \
+  || die "Assay qualification container exited zero without $container_marker"
 
 [[ "$(assay_git -C "$worktree" rev-parse HEAD)" == "$source_commit" ]] \
   || die 'selected worktree HEAD changed during B105 qualification'
@@ -747,17 +754,19 @@ if [[ "$lane" == b110-pilot ]]; then
   exit 0
 fi
 
-printf '%s\n' "$marker"
 case "$lane" in
   b110-pilot|b110-screen)
+    printf '%s\n' "$marker"
     printf 'ASSAY_B110_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
     printf 'ASSAY_B110_GATE_COMPLETE=%s\n' "$lane"
     ;;
   analysis-r2-pilot)
     printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+    printf '%s\n' "$marker"
     printf 'ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=%s\n' "$lane"
     ;;
   *)
+    printf '%s\n' "$marker"
     printf 'ASSAY_B105_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
     printf 'ASSAY_B105_GATE_COMPLETE=%s\n' "$lane"
     ;;
