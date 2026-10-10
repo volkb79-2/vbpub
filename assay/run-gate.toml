@@ -103,11 +103,23 @@ resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
 budget = "140m"
 artifacts = [
+  ".assay",
   ".assay/b110-pilot-plan.json",
   ".assay/b110-pilot-candidates.txt",
   ".assay/b110-pilot-selection.json",
   ".assay/b110-pilot-summary.json",
   ".assay/b110-pilot-run.log",
+  ".assay/b110-pilot-attempt-window.json",
+  ".assay/b110-pilot-attempt.log",
+  ".assay/b110-pilot-artifacts.sha256",
+  ".assay/b110-pilot-evidence",
+  ".assay/b110-pilot-evidence.receipt.json",
+  ".assay/b110-pilot-evidence.attestation.json",
+  ".assay/b110-pilot-evidence.pending.json",
+  ".assay/b110-pilot-evidence-archive",
+  ".assay/b110-pilot-evidence-incomplete",
+  ".assay/b110-pilot-evidence-unverified",
+  ".assay/b110-pilot-state",
   ".assay/progress-b110-pilot.jsonl",
 ]
 

@@ -23,6 +23,7 @@ from assay import __version__ as ASSAY_VERSION
 from assay.mutation import (
     MUTATION_STATE_SCHEMA_VERSION,
     PROGRESS_EVENTS,
+    _execution_from_state_record,
     _terminal_result_matches_bucket,
     _valid_hung_resource_evidence,
 )
@@ -89,6 +90,8 @@ def _progress_events(raw: bytes) -> list[dict[str, Any]]:
         event = _json(line, label=f"progress line {line_number}")
         if not isinstance(event, dict) or not isinstance(event.get("event"), str):
             raise ValueError(f"progress line {line_number} is not a named event object")
+        if not _valid_progress_timing(event):
+            raise ValueError(f"progress line {line_number} has malformed event timing")
         events.append(event)
     if not events:
         raise ValueError("progress stream is empty")
@@ -219,7 +222,7 @@ def _check_selection(
         source = plan_by_id[identity]
         for field in (
             "path", "operator", "source_sha256", "mutated_file_sha256",
-            "start_byte", "end_byte", "lineno", "description",
+            "replacement_sha256", "start_byte", "end_byte", "lineno", "description",
         ):
             if row.get(field) != source.get(field):
                 raise ValueError(f"selection candidate {identity} has stale {field}")
@@ -392,6 +395,7 @@ def _check_pilot_state(
             "operator": planned["operator"],
             "source_sha256": planned["source_sha256"],
             "mutated_file_sha256": planned["mutated_file_sha256"],
+            "replacement_sha256": planned["replacement_sha256"],
             "start_byte": planned["start_byte"],
             "end_byte": planned["end_byte"],
             "lineno": planned["lineno"],
@@ -410,8 +414,29 @@ def _check_pilot_state(
         if _HEX64.fullmatch(record.get("judge_sha256", "")) is None:
             raise ValueError(f"pilot state record {identity} has no judge identity")
         judge_identities.add(record["judge_sha256"])
-        if not isinstance(record.get("execution"), dict) or record["execution"].get("mode") != outcome["execution_mode"]:
+        if not isinstance(record.get("execution"), dict):
             raise ValueError(f"pilot state record {identity} execution differs from its summary")
+        try:
+            execution = _execution_from_state_record(record)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"pilot state record {identity} has invalid execution evidence: {exc}"
+            ) from exc
+        if execution.mode != outcome["execution_mode"]:
+            raise ValueError(f"pilot state record {identity} execution differs from its summary")
+        if outcome["bucket"] == "killed":
+            if execution.mode == "full" and execution.witness is None:
+                raise ValueError(
+                    f"pilot full kill {identity} lacks its failed-call witness"
+                )
+            if execution.mode not in {"full", "witness-cold"}:
+                raise ValueError(
+                    f"pilot kill {identity} has unsupported execution mode {execution.mode!r}"
+                )
+        elif execution.mode != "full" or execution.witness is not None:
+            raise ValueError(
+                f"pilot non-kill {identity} has an execution receipt reserved for kills"
+            )
         if outcome["bucket"] in {"killed", "survived"}:
             evidence = record.get("evidence")
             if not isinstance(evidence, dict) or set(evidence) != {
@@ -434,17 +459,6 @@ def _check_pilot_state(
                 elif mode == "witness-cold":
                     if checked_evidence.command != "r2" or checked_evidence.started_count is None:
                         raise ValueError(f"cold witness kill {identity} lacks R2 failed-prefix evidence")
-                elif mode == "witness-prefix":
-                    execution = record["execution"]
-                    witness = execution.get("witness")
-                    node_id = witness.get("node_id") if isinstance(witness, dict) else None
-                    if (
-                        checked_evidence.command != "r2"
-                        or checked_evidence.started_count is not None
-                        or execution.get("prior_node_id") != node_id
-                        or execution.get("current_node_id") != node_id
-                    ):
-                        raise ValueError(f"cold prefix kill {identity} has unbound R2 evidence")
                 else:
                     raise ValueError(f"cold kill {identity} has unsupported execution mode {mode!r}")
         raw_resources = record.get("resource_limit_evidence")
@@ -474,10 +488,17 @@ def _check_pilot_state(
 
 
 def _valid_progress_timing(event: dict[str, Any]) -> bool:
+    emitted_at = event.get("emitted_at")
     elapsed = event.get("elapsed_s")
+    if not isinstance(emitted_at, str) or not emitted_at:
+        return False
+    try:
+        timestamp = datetime.fromisoformat(emitted_at)
+    except ValueError:
+        return False
     return (
-        isinstance(event.get("emitted_at"), str)
-        and bool(event["emitted_at"])
+        timestamp.tzinfo is not None
+        and timestamp.utcoffset() is not None
         and type(elapsed) in (int, float)
         and math.isfinite(elapsed)
         and elapsed >= 0
@@ -660,11 +681,7 @@ def _check_progress(
                 or not isinstance(event.get("buckets"), dict)
                 or set(event["buckets"]) != set(MUTATION_BUCKETS)
                 or any(type(value) is not int or value < 0 for value in event["buckets"].values())
-                or not isinstance(event.get("emitted_at"), str)
-                or not event["emitted_at"]
-                or type(event.get("elapsed_s")) not in (int, float)
-                or not math.isfinite(event["elapsed_s"])
-                or event["elapsed_s"] < 0
+                or not _valid_progress_timing(event)
             ):
                 raise ValueError(f"progress end event {index} is not a completed mutation sweep")
             expected_buckets = {name: 0 for name in MUTATION_BUCKETS}
@@ -709,11 +726,7 @@ def _check_progress(
                 or event.get("destination") is not None
                 or event.get("outcome") != summary_r2.get("status")
                 or event.get("reason_code") != summary_r2.get("reason_code")
-                or not isinstance(event.get("emitted_at"), str)
-                or not event["emitted_at"]
-                or type(event.get("elapsed_s")) not in (int, float)
-                or not math.isfinite(event["elapsed_s"])
-                or event["elapsed_s"] < 0
+                or not _valid_progress_timing(event)
             ):
                 raise ValueError(f"progress terminal event {index} is not a pilot-only completion")
             current_run["terminal_exit"] = event["exit_code"]
@@ -817,6 +830,15 @@ def verify_pilot(
         raise ValueError("pilot summary has an unknown schema")
     if summary.get("qualifying") is not False or summary.get("completed") is not True:
         raise ValueError("pilot summary is not a complete non-qualifying measurement")
+    if "refusal" in summary:
+        raise ValueError("completed pilot summary cannot contain a refusal")
+    if set(summary) != {
+        "schema", "qualifying", "completed", "lane", "commit", "jobs",
+        "requested", "selection_sha256", "judge_sha256",
+        "candidates_file_sha256", "state_dir", "r0", "r1", "r2", "r3",
+        "buckets", "candidates", "unresolved",
+    }:
+        raise ValueError("pilot summary has missing or unknown fields")
     if summary.get("lane") != LANE or summary.get("commit") != commit:
         raise ValueError("pilot summary lane/commit differs from the bound plan")
     if type(summary.get("jobs")) is not int or summary["jobs"] != 1:
@@ -887,6 +909,8 @@ def verify_pilot(
         outcome_by_id=outcome_by_id,
         deadline_sha256=deadline_sha256,
     )
+    if summary.get("judge_sha256") != expected_judge_sha256:
+        raise ValueError("pilot summary judge_sha256 differs from state and progress")
     progress_events = _progress_events(progress_raw)
     _check_progress(
         progress_events,

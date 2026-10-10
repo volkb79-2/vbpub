@@ -21,6 +21,14 @@ from pathlib import Path
 from typing import Any
 
 import b110_pilot_select as common
+from assay.cli import _plan_rows_from_jobs, _resolve_declared_adapters
+from assay.config import load_lane_file
+from assay.mutation import (
+    MutationTarget,
+    UNSUPPORTED,
+    candidate_id,
+    collect_mutation_sites,
+)
 
 LANE = "analysis-r2"
 SOURCE_ROOT = "assay/analysis/src/assay_analysis"
@@ -95,6 +103,104 @@ def _lane_targets(repo_root: Path, commit: str) -> tuple[str, ...]:
     return tuple(sorted(TARGETS))
 
 
+def _derive_committed_inventory(
+    repo_root: Path, commit: str
+) -> list[dict[str, Any]]:
+    """Rebuild the full native mutation inventory from committed source bytes."""
+    rows, _replacement_sha256_by_id = _derive_committed_inventory_and_replacements(
+        repo_root, commit
+    )
+    return rows
+
+
+def _derive_committed_inventory_and_replacements(
+    repo_root: Path, commit: str
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Rebuild plan rows and the state-required replacement digests."""
+    root = repo_root.resolve(strict=True)
+    config_relative = "assay/assay.toml"
+    config_raw = common._read_tree_files(
+        (config_relative,), root, commit=commit
+    )[config_relative]
+    config_path = root / config_relative
+    try:
+        if config_path.is_symlink() or not config_path.is_file():
+            raise ValueError("assay.toml is not a regular file in the checkout")
+        if config_path.read_bytes() != config_raw:
+            raise ValueError("checkout assay.toml differs from its committed bytes")
+        lane_file = load_lane_file(config_path)
+        if config_path.read_bytes() != config_raw:
+            raise ValueError("assay.toml changed while the lane loader read it")
+        lane = lane_file.lane(LANE)
+    except Exception as exc:
+        raise common.SelectionError(
+            f"cannot load the committed {LANE} lane declaration: {exc}"
+        ) from exc
+    mutation = lane.judge.mutation if lane.judge is not None else None
+    if (
+        lane_file.project_root != root / "assay"
+        or lane.judge is None
+        or lane.judge.language != "python"
+        or lane.judge.mode != "whole_target"
+        or lane.judge.targets is None
+        or mutation is None
+        or mutation.operators != OPERATORS
+        or mutation.max_mutants is None
+    ):
+        raise common.SelectionError(
+            f"committed {LANE} lane cannot produce a complete Python inventory"
+        )
+    adapter = _resolve_declared_adapters(lane)
+    if adapter is None:
+        raise common.SelectionError(f"committed {LANE} lane resolves no adapter")
+
+    project_prefix = lane_file.project_root.relative_to(root).as_posix()
+    source_paths = tuple(
+        sorted(f"{project_prefix}/{relative}" for relative in lane.judge.targets)
+    )
+    expected_paths = tuple(sorted(TARGETS))
+    if source_paths != expected_paths:
+        raise common.SelectionError(
+            f"committed {LANE} target inventory differs from the fixed analysis target set"
+        )
+    try:
+        sources = common._read_tree_files(source_paths, root, commit=commit)
+        targets: list[MutationTarget] = []
+        for path in source_paths:
+            text = sources[path].decode("utf-8")
+            line_count = text.count("\n") + (0 if text.endswith("\n") else 1)
+            targets.append(
+                MutationTarget(
+                    path=path,
+                    text=text,
+                    lines=frozenset(range(1, line_count + 1)),
+                )
+            )
+        jobs = collect_mutation_sites(
+            targets,
+            adapter=adapter,
+            operators=mutation.operators,
+            limit=mutation.max_mutants + 1,
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise common.SelectionError(
+            f"cannot derive the complete committed {LANE} inventory: {exc}"
+        ) from exc
+    if jobs == UNSUPPORTED or len(jobs) > mutation.max_mutants:
+        raise common.SelectionError(
+            f"committed {LANE} lane does not expose a bounded complete candidate inventory"
+        )
+    rows = _plan_rows_from_jobs(jobs)
+    replacement_sha256_by_id = {
+        candidate_id(job): job.site.replacement_sha256 for job in jobs
+    }
+    if set(replacement_sha256_by_id) != {row["id"] for row in rows}:
+        raise common.SelectionError(
+            "committed analysis candidate ids do not match their replacement digests"
+        )
+    return rows, replacement_sha256_by_id
+
+
 def _parse_bound_plan(
     raw: bytes, *, repo_root: Path
 ) -> tuple[dict[str, Any], str, str, list[dict[str, Any]], tuple[str, ...]]:
@@ -135,7 +241,18 @@ def _parse_bound_plan(
     if document.get("by_operator") != expected_by_operator:
         raise common.SelectionError("plan by_operator counts differ from candidate rows")
     common._read_sources(rows, repo_root, commit=commit)
-    return document, commit, tree, rows, targets
+    expected_rows, replacement_sha256_by_id = (
+        _derive_committed_inventory_and_replacements(repo_root, commit)
+    )
+    if rows != expected_rows:
+        raise common.SelectionError(
+            "plan candidate inventory differs from the complete committed analysis lane"
+        )
+    bound_rows = [
+        {**row, "replacement_sha256": replacement_sha256_by_id[row["id"]]}
+        for row in rows
+    ]
+    return document, commit, tree, bound_rows, targets
 
 
 def _select(

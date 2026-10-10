@@ -2,9 +2,10 @@
 
 **Date:** 2026-10-09  
 **Status:** Stage 1 implementation is provisionally integrated on
-`assay-b131-r2`. Final exact-tip review, registered gates, and the measured
-analysis pilot remain pending. This package does not claim full analysis R2
-qualification or make it a release requirement.
+`assay-b131-r2`. The exact-tree Sol xhigh review of the final remediation
+delta is accepted. Registered gates and the measured analysis pilot remain
+pending. This package does not claim full analysis R2 qualification or make
+it a release requirement.
 
 ## Claim and boundary
 
@@ -32,16 +33,27 @@ and event counters.
 - B087 JavaScript R3 is provisionally merged at `1b5f61a9`; its retained
   dstdns canary evidence and current status are in
   [the B087 qualification report](B087-js-r3-qualification.md).
-- B118 P7c artifact attestation is being reviewed and its latest race fixes
-  have not yet been integrated into this branch.
+- B118 P7c artifact attestation passed registered `tester-unified` at
+  `68f8a477`; its implementation is present in this integration. The
+  integration reviews found seventeen progress, inventory, state and evidence
+  binding gaps, now repaired here. A follow-up strengthened two behavioral
+  oracles; the final remediation review accepted the exact delta.
 
 ## Validation state
 
-The B131-focused suite passed **183 tests in 51.77 seconds** after latest-main
-reconciliation, before B087 and B118 P7c integration. The merged tip still
-needs an independent exact-diff Sol xhigh review and the registered gates.
-The analysis pilot itself has not run; there is no measured plan inventory,
-sample outcome, time projection, worker envelope, or GO decision yet.
+The sixth exact-tree Sol xhigh review found two more defects: B110 passed
+proc-fd paths that Assay's no-follow input loader refused, and it accepted a
+full kill paired with R2 collection evidence. Assay now opens only the explicit
+proc-fd directory link and walks its child components without following
+symlinks; state-store locks and writes stay on that admitted directory. The
+B110 checker binds kill evidence to execution mode. The focused B131/B110
+checker suites pass **117 tests in 43.65 seconds**; safe-I/O, campaign and
+pilot-path core suites pass **124 tests in 20.96 seconds**; documentation
+contract and shipped-source pyflakes checks pass **57 tests in 10.57 seconds**.
+Python compilation and `git diff --check` pass. The final remediation review
+accepted the exact delta with no findings. Registered gates and the measured
+analysis pilot remain pending. The analysis pilot's inventory, sample
+outcome, time projection, worker envelope and GO decision are outstanding.
 
 After integrating the reviewed B118 fix, run the final registered acceptance
 serially on the same tip: `tester-unified`,

@@ -912,15 +912,34 @@ def _acquire_state_directory_lock(
     path_lock_fd = _acquire_state_path_lock(raw_root)
     root_fd: int | None = None
     try:
-        raw_root.parent.mkdir(parents=True, exist_ok=True)
-        root = raw_root.parent.resolve(strict=True) / raw_root.name
-        if root == root.parent:
-            raise PilotStateError("mutation state directory must not be a filesystem root")
-        root.mkdir(parents=True, exist_ok=True)
-        root_fd = os.open(
-            root,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-        )
+        if safeio._is_proc_fd_root(raw_root.parent):
+            # A gate may pin its admitted .assay directory and pass a child
+            # below /proc/PID/fd/FD. Keep that spelling rooted at the open
+            # descriptor instead of resolving it back to a renameable path.
+            root = raw_root
+            parent_fd = safeio._open_root(raw_root.parent)
+            try:
+                try:
+                    os.mkdir(raw_root.name, 0o700, dir_fd=parent_fd)
+                except FileExistsError:
+                    pass
+                root_fd = os.open(
+                    raw_root.name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+            finally:
+                os.close(parent_fd)
+        else:
+            raw_root.parent.mkdir(parents=True, exist_ok=True)
+            root = raw_root.parent.resolve(strict=True) / raw_root.name
+            if root == root.parent:
+                raise PilotStateError("mutation state directory must not be a filesystem root")
+            root.mkdir(parents=True, exist_ok=True)
+            root_fd = os.open(
+                root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
     except PilotStateError:
         if root_fd is not None:
             os.close(root_fd)
@@ -1363,6 +1382,10 @@ def _build_pilot_summary(
         "jobs": lane.judge.mutation.jobs,
         "requested": len(selected_ids),
         "selection_sha256": selection_sha256,
+        # Captured from the current mutation sweep in memory, independently
+        # of the persisted progress stream. The external pilot checker binds
+        # progress and state records to this identity.
+        "judge_sha256": judge_sha256,
         "candidates_file_sha256": candidates_file_sha256,
         "state_dir": str(state_dir),
         "r0": None if "R0" not in claims else claims["R0"].status.value,

@@ -820,6 +820,42 @@ summary and its mutation buckets to read the result. Pilot state is tied to one
 selection and lane and must stay separate from qualifying campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+
+The registered B110 pilot retains a host-verified evidence snapshot at
+`.assay/b110-pilot-evidence/`, with a separate receipt at
+`.assay/b110-pilot-evidence.receipt.json`. After validating a successful
+run-gate transcript, the host also retains
+`.assay/b110-pilot-evidence.attestation.json`, binding the snapshot digest to
+that transcript. The launcher pins the admitted `.assay` directory through an
+open directory descriptor while Assay creates campaign, candidate, mutation
+state, deadline and progress files beneath it. The next attempt checks and
+archives this snapshot before source-cleanliness and later host-admission
+checks, while the successful
+run-gate record is still available. Earlier host refusals exit 3, which the
+registered lane maps to `ERROR` so the pass remains eligible for retry. The
+snapshot index digest is
+reported with the completion markers, and the host rechecks the snapshot and
+both deadlines after writing those provisional markers; a failed final check
+makes the gate fail even if completion marker text is present. Before a retry,
+the host validates the snapshot, receipt, durable attestation and retained
+transcript. An ineligible latest record with an unresolved HEAD does not hide
+an earlier eligible pass. The transcript must include the host's digest marker
+after the final snapshot check. The verified snapshot, receipt and version-2
+attestation are staged with a read-only copy of the verified transcript at
+`b110-pilot-run-gate.log` under `.assay/b110-pilot-evidence-incomplete/`. The
+attestation names that copy and binds its digest. The complete bundle becomes
+visible under `.assay/b110-pilot-evidence-archive/<entry>/` with one atomic
+no-replace directory rename, so a later change to the external log path cannot
+change the archived transcript. If a failed post-publication check cannot use
+the incomplete area, the unverified bundle moves to the private
+`.assay/b110-pilot-evidence-unverified/` fallback or a private collision-resistant
+sibling. If the history store or transcript is unavailable before a durable attestation is
+written, the host leaves the live evidence in place and returns
+infrastructure-inconclusive exit 3. A proven digest mismatch or interrupted
+publication is preserved under the incomplete path
+before a fresh attempt. See the
+[registered pilot design](docs/DESIGN-GUIDE.md#registered-b110-pilot-and-survivor-screen-lanes-b118-p7b)
+and [retained pilot evidence](docs/CONSUMERS.md#registered-pilot-and-survivor-screen-gates).
 An invocation takes a path lock under a private directory in the system
 `/tmp` (independent of `TMPDIR`) and locks the admitted state-directory inode
 through the run. The path lock survives replacement of the store's parent;
@@ -1216,13 +1252,34 @@ you're changing assay itself:
   Two registered B110 lanes support non-qualifying R2 measurement:
   `./run-gate.py b110-pilot` selects a bounded campaign sample, while
   `./run-gate.py b110-screen` checks a complete full-plan result and can accept
-  survivors as a completed measurement. Pilot invocations cap R2 work at 90
-  minutes for campaign initialization, planning, selection and execution
-  within a persisted two-hour campaign. Assay execution uses the remaining
-  90-minute cap, followed by at most 30 seconds for termination. The screen
+  survivors as a completed measurement. Pilot invocations cap campaign
+  initialization, planning, selection, Assay execution, report checking, final
+  source/deadline checks and completion markers at 90 minutes within a persisted
+  two-hour campaign. Assay execution and evidence checks use the time remaining
+  after setup and selection; a timeout allows at most 30 seconds for process
+  termination. The screen
   uses the declared 5-hour Assay lane budget; longer
   wrapper timeouts are failure-only cleanup bounds. Neither lane qualifies
-  B105; the screen requires R0/R1 PASS, a complete current-plan R2 inventory,
+  B105. Pilot exit 6 is accepted only after an independent checker recomputes
+  the plan selection and validates the summary, candidate state, progress,
+  resumed dispositions, campaign deadline, the 90-minute attempt window,
+  wheel identity and resource evidence. Assay captures the current
+  `judge_sha256` in memory when the mutation sweep starts and includes it in
+  the JSON summary; the checker requires the progress event and each state
+  record to match that captured value. The host
+  pins and rechecks the digest manifest, publishes a read-only evidence
+  snapshot, then rechecks its bytes and both deadlines after writing completion
+  markers. Marker text is provisional; the registered command's exit status
+  determines success. A retry archives a prior snapshot only when its digest
+  matches the successful run-gate transcript. Interrupted or unverified
+  publications are preserved under
+  `.assay/b110-pilot-evidence-incomplete/` before a fresh attempt. If that path
+  is unavailable or unsafe during quarantine or archive withdrawal, the host
+  uses the private `.assay/b110-pilot-evidence-unverified/` fallback or a
+  private collision-resistant sibling; the quarantine disposition records the
+  selected destination.
+  Survivors and other pilot outcomes remain measurement results. The screen
+  requires R0/R1 PASS, a complete current-plan R2 inventory,
   and an R2 `PASS` or `FAIL` outcome. R2 errors, budget exhaustion and
   inconclusive results cannot complete the screen. See the
   [B110 design](docs/DESIGN-GUIDE.md#registered-b110-pilot-and-survivor-screen-lanes-b118-p7b)

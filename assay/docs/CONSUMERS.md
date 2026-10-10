@@ -1044,16 +1044,92 @@ Use the registered lanes for reviewable gate evidence:
 `b110-pilot` initializes a two-hour campaign after building the exact commit,
 then plans and selects candidates inside that campaign. It runs the selected
 subset with three pilot jobs, cold witnesses, resume state and a progress
-stream. Campaign initialization, planning, selection and Assay execution share
-a hard 90-minute per-invocation cap, and planning and selection are bounded by
-the remaining campaign deadline. Assay execution uses only the remaining cap,
-followed by at most 30 seconds for termination. The persisted campaign deadline
+stream. Campaign initialization, planning, selection, Assay execution, report
+checking, final source/deadline checks and completion markers share a hard
+90-minute per-invocation cap. Planning and selection are bounded by the
+remaining campaign deadline. Assay execution and evidence checks use the time
+left after setup and selection; a timeout allows at most 30 seconds for process
+termination. The persisted campaign deadline
 is the absolute two-hour bound across retries. Exit 6 is a
 complete pilot measurement, including when
-candidates survive; it is not an R2 pass or B105 qualification. The gate
-refuses campaign initialization refusal, timeout, a missing completion marker
-or any exit other than 6. It retains the run summary and stderr at
-`.assay/b110-pilot-summary.json` and `.assay/b110-pilot-run.log`.
+candidates survive; it is not an R2 pass or B105 qualification. Before the
+launcher starts Assay, it pins the admitted `.assay` directory so campaign,
+candidate, state, deadline and progress paths stay bound to it through the
+run. The gate then reports completion only after an independent checker
+recomputes the selected IDs
+from the exact source plan and validates the summary's in-memory current-sweep
+`judge_sha256`; the candidates progress event and every candidate state record
+must match that value. It also validates resource evidence, pending and resumed
+progress, campaign deadline, the 90-minute attempt window and wheel digest. The 90-minute cap
+includes report checking, final source/deadline checks and completion markers.
+The checker writes
+`.assay/b110-pilot-artifacts.sha256`; the host pins that manifest and its listed
+files, copies their verified bytes into `.assay/b110-pilot-evidence/`, and
+checks the snapshot index and exact file inventory. Snapshot files and
+directories are read-only. A separate
+`.assay/b110-pilot-evidence.receipt.json` binds the source, manifest and
+snapshot-index digests; the index digest is reported as
+`B110_PILOT_SNAPSHOT_SHA256`. After validating a successful run-gate
+transcript, the host also writes
+`.assay/b110-pilot-evidence.attestation.json`, binding that snapshot to the
+transcript run ID and content digest. This durable binding remains available if
+a later same-commit failed retry replaces run-gate's latest-history entry. A
+retry checks and archives prior evidence before source-cleanliness and later
+host-admission checks, while the successful run-gate record is still
+available. Earlier host refusals exit 3, mapped to run-gate `ERROR`, so the
+pass remains eligible for retry. An ineligible latest record with an unresolved HEAD does not hide
+an earlier eligible pass. A
+pending receipt is written before the snapshot
+is published and removed only after the final receipt, snapshot and deadlines
+verify. If the process stops before that cleanup, the next attempt preserves
+the pending marker, snapshot and any staging directory under
+`.assay/b110-pilot-evidence-incomplete/`; it does not treat those files as
+completed evidence. After writing provisional completion markers, the host
+reopens and rechecks the published snapshot and both deadlines. The gate exits
+with failure if that final check finds a changed snapshot or expired deadline,
+even if marker text was already written; command exit status determines
+success. Before a retry archives a completed snapshot, the host checks its
+digest against an eligible successful `b110-pilot` record and the owner-only
+run-gate transcript outside the judged worktree. The transcript must contain
+both the provisional snapshot digest and the host-generated digest marker
+emitted after the final snapshot check. The host stages a verified snapshot,
+receipt, durable version-2 attestation and a read-only copy of the verified
+transcript under `.assay/b110-pilot-evidence-incomplete/`. The attestation
+points to `b110-pilot-run-gate.log` and binds its content digest. The host
+publishes the complete set as `.assay/b110-pilot-evidence-archive/<entry>/`
+with one atomic no-replace directory rename, so the archive remains checkable
+after the external run-gate log path changes. If a failed post-publication
+check cannot use the incomplete area, the unverified bundle moves under the
+private `.assay/b110-pilot-evidence-unverified/` fallback or a private
+collision-resistant sibling. Prior-evidence quarantine uses the same fallback
+when the incomplete path is unavailable or unsafe, and its quarantine marker
+records the selected destination. Before the durable attestation exists,
+unavailable or malformed history or transcript evidence leaves the live files
+in place and returns exit 3. A later run-gate failure may replace the latest-
+history entry; the persisted attestation still binds the successful transcript
+to its snapshot. A valid transcript proving a different digest, an invalid
+receipt or an interrupted publication is preserved before a fresh attempt;
+when the incomplete path is unavailable or unsafe, the host uses the fallback
+above. The snapshot
+directory is the authoritative retained evidence; original attempt files stay
+available for resume until a retry replaces them. Run-gate's `artifacts` list
+discloses paths for inspection, but it does not guarantee that live files will
+survive a retry. Retain the snapshot and its archive when you need the evidence
+after another attempt.
+The registered lane also discloses `.assay` so the active commit-derived
+deadline (`campaign-deadline-b110-pilot-<commit12>.json`) is discoverable by
+its exact name. A retry archives only a prior snapshot whose full digest
+matches the successful run-gate transcript. If a publication was interrupted,
+the host preserves it under `.assay/b110-pilot-evidence-incomplete/` and
+proceeds with a fresh attempt. If run-gate history or its transcript is
+unavailable, it leaves the live snapshot and receipt in place and returns exit
+3, so the failure is recorded as infrastructure error and can be retried after
+the evidence is available. A timeout,
+resource-limit event, incomplete report, stale or missing artifact, or
+unverified exit cannot complete the gate. The summary and Assay stderr remain
+at `.assay/b110-pilot-summary.json` and `.assay/b110-pilot-run.log`; the
+outer attempt log is retained at `.assay/b110-pilot-attempt.log` as wrapper
+diagnostics and is not part of the pilot evidence manifest.
 
 Retries for the same commit reuse the persisted campaign deadline and mutation
 state; the progress stream appends resumable work. When piloting a new commit,

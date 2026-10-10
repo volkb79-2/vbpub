@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib.util
 import io
 import json
 import shutil
 import subprocess
 import sys
 from collections import Counter
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -55,10 +53,18 @@ def _repository(tmp_path: Path) -> tuple[Path, str, str]:
     assay_dir = root / "assay"
     assay_dir.mkdir()
     shutil.copyfile(PROJECT_ROOT / "assay.toml", assay_dir / "assay.toml")
+    shutil.copytree(PROJECT_ROOT / "src" / "assay", assay_dir / "src" / "assay")
+    (assay_dir / "analysis" / "tests").mkdir(parents=True)
     for relative in selector.TARGETS:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(PROJECT_ROOT.parent / relative, destination)
+        source = (
+            "def first(a, b):\n    return a == b\n\n"
+            "def second(a, b):\n    return a != b\n"
+            if relative == selector.TARGETS[1]
+            else ""
+        )
+        destination.write_text(source, encoding="utf-8")
 
     _git(root, "add", "--", "assay")
     _git(root, "commit", "-qm", "analysis R2 fixture")
@@ -88,6 +94,12 @@ def _rows(
             "lineno": 1,
             "description": f"synthetic mutation {index}",
         })
+    return rows
+
+
+def _planned_rows(root: Path, commit: str) -> list[dict[str, object]]:
+    rows = selector._derive_committed_inventory(root, commit)
+    assert len(rows) == 2
     return rows
 
 
@@ -142,13 +154,19 @@ def _zero_resources() -> dict:
     ).to_dict()
 
 
+def _producer_progress_bytes(events: list[dict]) -> bytes:
+    """Model ProgressStream's timestamp enrichment for every emitted event."""
+    for index, event in enumerate(events):
+        event.setdefault("emitted_at", "2026-10-09T10:00:00Z")
+        event.setdefault("elapsed_s", index / 10)
+    return "".join(
+        json.dumps(event, sort_keys=True) + "\n" for event in events
+    ).encode()
+
+
 def _valid_pilot(tmp_path: Path) -> dict:
     root, commit, tree = _repository(tmp_path)
-    path = selector.TARGETS[1]
-    rows = _rows(root, [
-        (path, "python:compare-swap"),
-        (path, "python:compare-swap"),
-    ])
+    rows = _planned_rows(root, commit)
     plan = _plan(root, commit, tree, rows)
     plan_raw = (json.dumps(plan, sort_keys=True) + "\n").encode()
     candidates_raw, selection_raw = _write_selection(root, tmp_path, plan, size=1)
@@ -190,6 +208,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "operator": row["operator"],
         "source_sha256": row["source_sha256"],
         "mutated_file_sha256": row["mutated_file_sha256"],
+        "replacement_sha256": selection["selected"][0]["replacement_sha256"],
         "start_byte": row["start_byte"],
         "end_byte": row["end_byte"],
         "lineno": row["lineno"],
@@ -236,6 +255,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
         "jobs": 1,
         "requested": 1,
         "selection_sha256": selection["selection_sha256"],
+        "judge_sha256": "b" * 64,
         "candidates_file_sha256": hashlib.sha256(candidates_raw).hexdigest(),
         "state_dir": str(state_dir.resolve()),
         "r0": "PASS",
@@ -310,7 +330,7 @@ def _valid_pilot(tmp_path: Path) -> dict:
             "elapsed_s": 61.0,
         },
     ]
-    progress_raw = ("".join(json.dumps(event, sort_keys=True) + "\n" for event in progress_events)).encode()
+    progress_raw = _producer_progress_bytes(progress_events)
     return {
         "plan_raw": plan_raw,
         "selection_raw": selection_raw,
@@ -361,9 +381,35 @@ def test_analysis_selector_covers_each_file_operator_stratum_and_rare_operator(t
         selector._select(rows, seed="analysis-r2-test", size=4)
 
 
+def test_analysis_pilot_checker_rejects_coherent_state_progress_judge_mismatch(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    selection = json.loads(evidence["selection_raw"])
+    identity = selection["selected_ids"][0]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    state_record = json.loads(state_path.read_text(encoding="utf-8"))
+    state_record["judge_sha256"] = "e" * 64
+    state_path.write_text(json.dumps(state_record), encoding="utf-8")
+
+    progress_events = [
+        json.loads(line) for line in evidence["progress_raw"].splitlines()
+    ]
+    candidates_event = next(
+        event for event in progress_events if event["event"] == "candidates"
+    )
+    candidates_event["judge_sha256"] = "e" * 64
+    evidence["progress_raw"] = (
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in progress_events)
+    ).encode()
+
+    with pytest.raises(ValueError, match="summary judge_sha256 differs"):
+        checker.verify_pilot(**evidence)
+
+
 def test_analysis_selector_refuses_wrong_lane_and_preserves_prior_pair(tmp_path: Path):
     root, commit, tree = _repository(tmp_path)
-    rows = _rows(root, [(selector.TARGETS[1], "python:compare-swap")])
+    rows = _planned_rows(root, commit)
     plan = _plan(root, commit, tree, rows)
     candidates, selection = _write_selection(root, tmp_path, plan, size=1)
     plan["lane"] = "analysis"
@@ -386,7 +432,7 @@ def test_analysis_selector_refuses_wrong_lane_and_preserves_prior_pair(tmp_path:
 
 def test_analysis_selector_refuses_dirty_checkout(tmp_path: Path):
     root, commit, tree = _repository(tmp_path)
-    rows = _rows(root, [(selector.TARGETS[1], "python:compare-swap")])
+    rows = _planned_rows(root, commit)
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(_plan(root, commit, tree, rows)), encoding="utf-8")
     (root / "unexpected.txt").write_text("dirty tree\n", encoding="utf-8")
@@ -428,7 +474,7 @@ def test_analysis_selector_refuses_an_empty_candidate_plan(tmp_path: Path):
 
 def test_analysis_selector_refuses_plan_source_hash_mismatch(tmp_path: Path):
     root, commit, tree = _repository(tmp_path)
-    rows = _rows(root, [(selector.TARGETS[1], "python:compare-swap")])
+    rows = _planned_rows(root, commit)
     rows[0]["source_sha256"] = "f" * 64
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(
@@ -449,9 +495,36 @@ def test_analysis_selector_refuses_plan_source_hash_mismatch(tmp_path: Path):
     assert not (tmp_path / "selection.json").exists()
 
 
+def test_analysis_selector_rejects_plan_that_omits_a_committed_candidate(
+    tmp_path: Path,
+):
+    root, commit, tree = _repository(tmp_path)
+    rows = _planned_rows(root, commit)
+    assert len(rows) == 2
+    plan_path = tmp_path / "incomplete-plan.json"
+    plan_path.write_text(
+        json.dumps(_plan(root, commit, tree, rows[:-1]), sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with contextlib.redirect_stderr(io.StringIO()) as stderr:
+        status = selector.main([
+            "--plan", str(plan_path),
+            "--repo-root", str(root),
+            "--out", str(tmp_path / "candidates.txt"),
+            "--report", str(tmp_path / "selection.json"),
+            "--size", "1",
+        ])
+
+    assert status == 2
+    assert "plan candidate inventory differs from the complete committed analysis lane" in stderr.getvalue()
+    assert not (tmp_path / "candidates.txt").exists()
+    assert not (tmp_path / "selection.json").exists()
+
+
 def test_analysis_selector_refuses_plan_output_collision(tmp_path: Path):
     root, commit, tree = _repository(tmp_path)
-    rows = _rows(root, [(selector.TARGETS[1], "python:compare-swap")])
+    rows = _planned_rows(root, commit)
     plan_path = tmp_path / "plan.json"
     plan_raw = (json.dumps(_plan(root, commit, tree, rows), sort_keys=True) + "\n").encode()
     plan_path.write_bytes(plan_raw)
@@ -474,7 +547,7 @@ def test_analysis_selector_partial_publication_leaves_no_report_commit_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     root, commit, tree = _repository(tmp_path)
-    rows = _rows(root, [(selector.TARGETS[1], "python:compare-swap")])
+    rows = _planned_rows(root, commit)
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(
         json.dumps(_plan(root, commit, tree, rows), sort_keys=True), encoding="utf-8"
@@ -618,9 +691,7 @@ def test_analysis_pilot_accepts_resumed_candidate_with_complete_resume_accountin
             "elapsed_s": 1.2,
         },
     ]
-    evidence["progress_raw"] = (
-        "".join(json.dumps(event, sort_keys=True) + "\n" for event in prior_run + current_run)
-    ).encode()
+    evidence["progress_raw"] = _producer_progress_bytes(prior_run + current_run)
 
     checker.verify_pilot(**evidence)
 
@@ -656,6 +727,98 @@ def test_analysis_pilot_rejects_summary_and_terminal_status_that_contradict_the_
         checker.verify_pilot(**evidence)
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_error"),
+    [
+        ("full", "lacks its failed-call witness"),
+        ("witness-cold", "invalid execution evidence"),
+    ],
+)
+def test_analysis_pilot_kill_requires_a_valid_execution_witness(
+    tmp_path: Path, mode: str, expected_error: str
+):
+    evidence = _valid_pilot(tmp_path)
+    identity = json.loads(evidence["summary_raw"])["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    state_record = json.loads(state_path.read_text(encoding="utf-8"))
+    state_record["execution"]["mode"] = mode
+    del state_record["execution"]["witness"]
+    if mode == "witness-cold":
+        state_record["evidence"].update({
+            "command": "r2",
+            "started_count": 1,
+            "failed_call_index": 0,
+        })
+    state_path.write_text(json.dumps(state_record), encoding="utf-8")
+
+    summary = json.loads(evidence["summary_raw"])
+    summary["candidates"][0]["execution_mode"] = mode
+    evidence["summary_raw"] = (json.dumps(summary) + "\n").encode()
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    next(event for event in events if event["event"] == "candidate")[
+        "execution_mode"
+    ] = mode
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match=expected_error):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_witness_prefix_reuse_for_selected_candidates(
+    tmp_path: Path,
+):
+    evidence = _valid_pilot(tmp_path)
+    identity = json.loads(evidence["summary_raw"])["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    state_record = json.loads(state_path.read_text(encoding="utf-8"))
+    state_record["execution"].update({
+        "mode": "witness-prefix",
+        "prior_verdict_sha256": "f" * 64,
+        "prior_node_id": "test_contract",
+        "current_node_id": "test_contract",
+    })
+    state_record["evidence"].update({
+        "command": "r2",
+        "started_count": None,
+        "failed_call_index": None,
+    })
+    state_path.write_text(json.dumps(state_record), encoding="utf-8")
+
+    summary = json.loads(evidence["summary_raw"])
+    summary["candidates"][0]["execution_mode"] = "witness-prefix"
+    evidence["summary_raw"] = (json.dumps(summary) + "\n").encode()
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    next(event for event in events if event["event"] == "candidate")[
+        "execution_mode"
+    ] = "witness-prefix"
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match="unsupported execution mode 'witness-prefix'"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_completed_summary_rejects_refusal(tmp_path: Path):
+    evidence = _valid_pilot(tmp_path)
+    summary = json.loads(evidence["summary_raw"])
+    summary["refusal"] = {"status": "ERROR", "reason_code": "EXEC_FAILED"}
+    evidence["summary_raw"] = (json.dumps(summary) + "\n").encode()
+
+    with pytest.raises(ValueError, match="completed pilot summary cannot contain a refusal"):
+        checker.verify_pilot(**evidence)
+
+
+def test_analysis_pilot_rejects_malformed_typed_execution_witness(tmp_path: Path):
+    evidence = _valid_pilot(tmp_path)
+    identity = json.loads(evidence["summary_raw"])["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    record["execution"]["witness"]["node_id"] = ""
+    state_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid execution evidence"):
+        checker.verify_pilot(**evidence)
+
+
 def test_analysis_pilot_killed_full_candidate_requires_declared_command_evidence(
     tmp_path: Path,
 ):
@@ -677,6 +840,62 @@ def test_analysis_pilot_rejects_progress_end_bucket_mismatch(tmp_path: Path):
     evidence["progress_raw"] = ("".join(json.dumps(event) + "\n" for event in events)).encode()
 
     with pytest.raises(ValueError, match="end event.*buckets"):
+        checker.verify_pilot(**evidence)
+
+
+@pytest.mark.parametrize("event_name", ["end", "verdict_written"])
+def test_analysis_pilot_rejects_malformed_progress_timestamps(
+    tmp_path: Path, event_name: str
+):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    event = next(item for item in events if item["event"] == event_name)
+    event["emitted_at"] = "not-a-timestamp"
+    evidence["progress_raw"] = (
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in events)
+    ).encode()
+
+    with pytest.raises(ValueError):
+        checker.verify_pilot(**evidence)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [("emitted_at", None), ("elapsed_s", -1.0)],
+)
+def test_analysis_pilot_rejects_candidate_events_without_producer_timing(
+    tmp_path: Path, field: str, replacement: object
+):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    candidate = next(event for event in events if event["event"] == "candidate")
+    if field == "emitted_at" and replacement is None:
+        del candidate[field]
+    else:
+        candidate[field] = replacement
+    evidence["progress_raw"] = (
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events)
+    ).encode()
+
+    with pytest.raises(ValueError, match="malformed event timing"):
+        checker.verify_pilot(**evidence)
+
+
+@pytest.mark.parametrize("damage", ["missing", "wrong"])
+def test_analysis_pilot_state_must_bind_replacement_digest(
+    tmp_path: Path, damage: str
+):
+    evidence = _valid_pilot(tmp_path)
+    identity = json.loads(evidence["summary_raw"])["candidates"][0]["id"]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    if damage == "missing":
+        del record["replacement_sha256"]
+    else:
+        record["replacement_sha256"] = "0" * 64
+    state_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="stale replacement_sha256"):
         checker.verify_pilot(**evidence)
 
 
@@ -715,6 +934,7 @@ def test_analysis_pilot_hung_progress_must_match_the_validated_state_trace(
         "reason_code": "CANDIDATE_HUNG",
         "returncode": None,
     }
+    state_record["execution"].pop("witness", None)
     state_record["liveness_resource_evidence"] = {"trace": "validated state"}
     state_path.write_text(json.dumps(state_record), encoding="utf-8")
 

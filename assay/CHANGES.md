@@ -17,12 +17,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   verified completion is non-qualifying and writes no verdict. The full
   analysis R2 budget and GO policy remain a later decision based on pilot data.
 - Add registered B110 `b110-pilot` and `b110-screen` gate modes. The pilot
-  requires a complete exit-6 measurement; the full-plan survivor screen must
-  pass Assay verification and bind its native mutation inventory to the
+  requires an independently verified exit-6 measurement with a recomputed
+  source selection, complete summary whose in-memory current-sweep
+  `judge_sha256` matches the candidates progress event and every state record,
+  plus resume progress, no process or memory limit event, and a host-pinned
+  manifest over the exact retained artifacts. The host publishes a content-
+  checked evidence
+  snapshot with a separate source and digest receipt, reports its index digest,
+  and rechecks the snapshot and campaign and attempt deadlines after writing
+  provisional completion markers; it emits another digest marker only after
+  that final check. Retries require the marker in the owner-only run-gate
+  transcript, bound history capture and file hashing/copying, and preserve live
+  evidence when history is unavailable. Pre-archive host refusals exit 3,
+  mapped to run-gate `ERROR`, so they cannot replace an earlier eligible pass.
+  Live snapshot publication uses a pending receipt while the snapshot and
+  final receipt are written separately; a validated snapshot, receipt,
+  version-2 attestation and read-only copy of its verified run-gate transcript
+  are published to the archive by one atomic no-replace directory rename.
+  Post-publication failures withdraw the archive entry with another atomic
+  no-replace move, retrying a fresh private incomplete directory if the prior
+  destination directory disappears and using a private `.assay` fallback if
+  the recreated destination is unsafe. Quarantine of prior evidence also uses
+  no-replace moves so an empty destination directory cannot be overwritten;
+  when the incomplete path is unsafe, quarantine uses the private unverified-
+  evidence fallback or a private collision-resistant sibling and records the
+  selected destination. The full-plan survivor screen must pass Assay
+  verification and bind its native mutation inventory to the
   current plan and actual producer exit status, with a completed R2 `PASS` or
   `FAIL`, before it can report completion. R2 errors, budget exhaustion and
   inconclusive results remain incomplete. The pilot caps each invocation at
-  90 minutes inside its persisted two-hour campaign; the screen's 5-hour Assay
+  90 minutes for campaign setup, planning, selection, Assay execution, report
+  checking and final completion checks inside its persisted two-hour campaign;
+  the screen's 5-hour Assay
   lane budget is its effective work bound, with longer wrappers reserved for
   cleanup.
 - Add non-qualifying native-R2 pilot selection with `--candidates-file` and
@@ -61,6 +87,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   report snapshot and account for every planned candidate exactly once across
   all six terminal outcome buckets. A separate verifier read or matching
   aggregate counts no longer certify a different or incomplete report.
+- Archive prior B110 pilot evidence before retry cleanliness and host-admission
+  checks can replace its eligible same-commit history entry; accept a valid
+  ineligible latest record with an unresolved HEAD while retaining earlier
+  eligible history; and verify moved file, symlink and directory identities
+  during quarantine. Reject contradictory completed summaries and restore
+  snapshot modes when quarantine fails.
 - Keep the previous resumable candidate record until its replacement is
   durable, roll back failed state commits, and refuse to return a completed
   mutation result when deadline expiry occurs during final aggregation.
@@ -105,6 +137,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   extra or trailing bytes so post-session hooks cannot rewrite a witness;
   safely read the ordered manifest and recheck the campaign deadline at the
   candidate integrity boundary.
+- Let bounded input readers open an explicit `/proc/<pid>/fd/<fd>` directory
+  root supplied by the B110 launcher, then retain no-follow traversal for
+  every child. Keep pilot mutation-state locks and writes attached to the
+  admitted directory descriptor, so campaign, candidate, deadline and progress
+  paths work without falling back to a renameable `.assay` pathname.
+- Require each B110 killed-state record's collection command to match its
+  execution mode: a full attempt uses declared-command evidence, while witness
+  attempts use R2 evidence.
+- Bind the B110 pilot summary's state path to the supplied proc-fd spelling
+  after verifying that it names the pinned state inode; require non-kills to
+  use full execution without a witness, require witness-cold kills to include
+  an R2 failed-call prefix, and reject witness-prefix reuse in the B131 pilot.
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->
