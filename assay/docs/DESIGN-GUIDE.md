@@ -3756,15 +3756,17 @@ the FAIL requirement.
 
 **Hazard constructs are measured separately from the matrix (B132).** Candidate
 scope may be changed-lines or whole-target, but safety context scans every
-tracked, recognized SQL source under `judge.source_roots`, including unchanged
-files, before generating sites. This is required because the command applies a
-DDL corpus while the candidate list is only a sampling policy. A lane must
-declare roots covering its complete applied DDL corpus. The context links
-`UNIQUE USING INDEX` references across files, marks columns with any
+tracked, recognized, non-test SQL source under `judge.source_roots`, including
+unchanged files, before generating sites. This is required because the command
+applies a DDL corpus while the candidate list is only a sampling policy. A lane
+must declare roots covering its complete applied DDL corpus. The context links
+both `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` references across files,
+collects column declarations and types across files, marks columns with any
 `ALTER COLUMN ... TYPE` change unknown for literal widening, and tracks
-explicit column collations. String `IN` widening refuses explicitly collated
-columns because the adapter cannot prove a generated literal is distinct under
-an arbitrary collation. The qualification appends one focused SQL construct
+explicit column collations. Unknown or conflicting types do not establish a
+safe widening. String `IN` widening refuses explicitly collated columns
+because the adapter cannot prove a generated literal is distinct under an
+arbitrary collation. The qualification appends one focused SQL construct
 at a time and runs a construct-specific assertion through the same
 apply/dump/test script. The
 script writes an `apply`, `dump`, or `test` phase receipt before entering each
@@ -3775,9 +3777,10 @@ during apply with its exact pinned SQLSTATE. Behavior probes exercise the
 construct itself: duplicate values for uniqueness, partial-null and deferred
 foreign keys, column-specific `SET NULL`, and null inserts for `NOT NULL`
 cases. This avoids relying on unrelated matrix tests to classify a changed
-catalog. `UNIQUE USING INDEX` is a linked pair: changing the constraint alone
-leaves the index enforcing uniqueness, while changing the index alone makes
-the attachment invalid, so neither half is a one-site mutation. Enum string
+catalog. `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` are linked pairs:
+changing the constraint alone leaves the index enforcing uniqueness, while
+changing the index alone makes the attachment invalid, so neither half is a
+one-site mutation. Enum string
 checks and ambiguous equality cases are refused when the scanner cannot prove
 the relevant type.
 

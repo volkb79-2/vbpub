@@ -98,7 +98,7 @@ def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
     assert q.PROBES_SHA256.startswith("36249c03") and q.PROBES_SHA256.endswith("488c")
-    assert q.HAZARD_CASES_SHA256.startswith("2b045bd9") and q.HAZARD_CASES_SHA256.endswith("f3ce7a")
+    assert q.HAZARD_CASES_SHA256 == "d9f320744c39679332e4651ba0fe00bdcaa61383ec66f2f4c9f7a850ab9fd7cb"
 
 
 def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
@@ -110,6 +110,7 @@ def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
         "unique-include",
         "unique-using-index-constraint",
         "unique-using-index-index",
+        "primary-key-using-index-index",
         "fk-match-full",
         "fk-deferrable",
         "fk-set-null-columns",

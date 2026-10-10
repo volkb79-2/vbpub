@@ -3511,6 +3511,7 @@ def _mutation_context_sources(
             fnmatch.fnmatch(path.as_posix(), pattern)
             for pattern in adapter.source_globs
         )
+        and not adapter.is_test_path(path.as_posix())
         and not any(
             part in adapter.excluded_dir_names for part in path.parts[:-1]
         )

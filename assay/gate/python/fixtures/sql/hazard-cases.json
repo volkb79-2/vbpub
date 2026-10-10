@@ -72,6 +72,17 @@
       "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\n-- ASSAY-FOCUS: unique-using-index-index\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
     },
     {
+      "id": "primary-key-using-index-index",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "expected_probe_sqlstate": null,
+      "probe": null,
+      "assertion": null,
+      "source": "CREATE TABLE assay_b132_primary_key_using_index (value integer);\n-- ASSAY-FOCUS: primary-key-using-index-index\nCREATE UNIQUE INDEX assay_b132_primary_key_using_index_idx ON assay_b132_primary_key_using_index (value);\nALTER TABLE assay_b132_primary_key_using_index ADD CONSTRAINT assay_b132_primary_key_using_index_pk PRIMARY KEY USING INDEX assay_b132_primary_key_using_index_idx;\n"
+    },
+    {
       "id": "fk-match-full",
       "operator": "sql:drop-foreign-key",
       "expected_site_count": 1,

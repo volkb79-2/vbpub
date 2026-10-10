@@ -779,18 +779,22 @@ repository or socket bind source is missing. See
 The qualification also runs separate PostgreSQL hazard cases for constructs
 outside the 24-row matrix. Each generated site has a construct-specific
 behavioral probe. SQL lanes can use changed-lines or whole-target candidate
-scope. Before site discovery, the adapter scans every tracked, recognized SQL
-source under the declared `source_roots`, including unchanged files, to link
-`UNIQUE USING INDEX` pairs, identify columns changed by `ALTER COLUMN ...
-TYPE`, and resolve explicit column collations. A SQL lane's roots must cover the complete DDL
-corpus its command applies; candidate scope decides which files can produce
-mutants, while the full root set supplies safety context. The harness records
+scope. Before site discovery, the adapter scans every tracked, recognized,
+non-test SQL source under the declared `source_roots`, including unchanged
+files, for `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` attachments,
+column declarations, `ALTER COLUMN ... TYPE` changes, and explicit column
+collations. A SQL lane's roots must cover the complete DDL corpus its command
+applies; candidate scope decides which files can produce mutants, while the
+full root set supplies safety context. A declaration in another included SQL
+file can establish a column's type; unknown or conflicting types remain
+ineligible for literal widening. The harness records
 whether apply, dump, or test failed; a current generated site that fails before
 tests is a qualification error, never a `crashed` mutation result. Historical
 comparison probes may be recorded as crashes only when their apply-stage
 SQLSTATE is pinned exactly. A
-`UNIQUE USING INDEX` constraint and its attached unique index are one semantic
-unit, so neither half is offered as a one-site mutation. String `NOT IN`
+`UNIQUE USING INDEX` or `PRIMARY KEY USING INDEX` constraint and its attached
+unique index are one semantic unit, so neither half is offered as a one-site
+mutation. String `NOT IN`
 rewrites are refused because PostgreSQL equality can collapse distinct source
 strings, such as values compared as `CHAR(n)`. String `IN` widening is also
 refused for columns with an explicit `COLLATE` clause; the adapter cannot

@@ -296,6 +296,20 @@ def test_unqualified_index_and_attachment_resolve_to_the_table_schema():
     assert sites[0].lineno == 4
 
 
+def test_primary_key_using_index_protects_pair_and_keeps_unrelated_index_mutable():
+    source = (
+        "CREATE TABLE s.t (a INT NOT NULL);\n"
+        "CREATE UNIQUE INDEX pk_idx ON s.t (a);\n"
+        "ALTER TABLE s.t ADD CONSTRAINT t_pk PRIMARY KEY USING INDEX pk_idx;\n"
+        "CREATE UNIQUE INDEX other.idx ON other.t (a);\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].lineno == 4
+
+
 def test_drop_unique_using_index_link_is_detected_across_sql_files():
     index_source = "CREATE UNIQUE INDEX s.attached ON s.t (a);\n"
     attachment_source = (
@@ -665,6 +679,74 @@ def test_rule3_type_change_in_another_file_refuses_string_widening():
         context=context,
     )
     assert sites == ()
+
+
+def test_rule3_column_type_from_another_file_enables_safe_widening():
+    table_source = "CREATE TABLE task (status text);\n"
+    check_source = (
+        "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    context = ADAPTER.prepare_mutation_context((table_source,))
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert len(sites) == 1
+    assert sites[0].replacement == b", '__assay_widened__')"
+
+
+def test_rule3_unknown_cross_file_column_type_still_refuses_widening():
+    table_source = "CREATE TABLE task (status custom_status);\n"
+    check_source = (
+        "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    context = ADAPTER.prepare_mutation_context((table_source,))
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+def test_sql_context_indexing_keeps_large_target_discovery_bounded():
+    from assay.mutation import MutationTarget, collect_mutation_sites
+
+    statements: list[str] = []
+    for index in range(1024):
+        table = f"assay_t{index}"
+        idx = f"assay_idx{index}"
+        statements.extend(
+            (
+                f"CREATE TABLE {table} (k integer, CHECK (k IN (1, 2)));\n",
+                f"CREATE UNIQUE INDEX {idx} ON {table} (k);\n",
+                f"ALTER TABLE {table} ADD CONSTRAINT {idx}_pk "
+                f"PRIMARY KEY USING INDEX {idx};\n",
+            )
+        )
+    statements.append("CREATE UNIQUE INDEX independent ON free_table (k);\n")
+    source = "".join(statements)
+    target = MutationTarget(
+        path="db/schema/large.sql",
+        text=source,
+        lines=frozenset(_all_lines(source)),
+    )
+
+    index_jobs = collect_mutation_sites(
+        (target,), adapter=ADAPTER, operators=("sql:drop-unique",), limit=1
+    )
+    check_jobs = collect_mutation_sites(
+        (target,), adapter=ADAPTER, operators=("sql:widen-check-in",), limit=1
+    )
+
+    assert isinstance(index_jobs, tuple) and len(index_jobs) == 1
+    assert index_jobs[0].site.lineno == source.count("\n")
+    assert isinstance(check_jobs, tuple) and len(check_jobs) == 1
 
 
 def test_rule3_widen_check_in_avoids_colliding_with_an_existing_member():

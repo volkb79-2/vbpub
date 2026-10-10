@@ -1883,7 +1883,8 @@ in `nyxloom-trove/4-backlog.md`:
   the exact package commit. If a current generated site fails before its probe
   runs, qualification fails; that is not a kill.
   The adapter offers no site for either half of a linked `UNIQUE USING INDEX`
-  pair, or for an enum string check whose resolved type cannot be established.
+  or `PRIMARY KEY USING INDEX` pair, or for an enum string check whose resolved
+  type cannot be established.
   String `NOT IN` rewrites are refused because PostgreSQL type and collation
   rules can make distinct source strings compare equal; for example,
   `CHAR(n)` ignores trailing spaces. Historical comparison probes that fail at
@@ -1901,10 +1902,14 @@ in `nyxloom-trove/4-backlog.md`:
 
   Candidate selection and safety context have different scopes. A SQL lane
   may use the default changed-lines mode or `whole_target` to choose which
-  files can produce mutants. Before discovery, Assay reads every tracked SQL
-  recognized SQL source under `judge.source_roots` from the prepared commit, including
-  unchanged files, to resolve cross-file index attachments, type changes and
-  collations. Declare roots that cover the complete DDL corpus the lane
+  files can produce mutants. Before discovery, Assay reads every tracked,
+  recognized, non-test SQL source under `judge.source_roots` from the prepared
+  commit, including unchanged files, to resolve cross-file index attachments,
+  column declarations, type changes and collations. Both `UNIQUE USING INDEX`
+  and `PRIMARY KEY USING INDEX` link an index to its constraint; neither half
+  is safe to mutate alone. A declaration in another included file can establish
+  the type for a literal-widening candidate, while unknown or conflicting
+  types are refused. Declare roots that cover the complete DDL corpus the lane
   command applies; a dependency outside those roots cannot inform the scan.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)

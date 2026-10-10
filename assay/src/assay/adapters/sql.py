@@ -97,6 +97,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import re
+from bisect import bisect_right
 from ..records import positional_record, record
 from pathlib import Path
 from typing import Iterable, Literal, NamedTuple, Sequence
@@ -285,6 +286,9 @@ class _SqlMutationContext(NamedTuple):
     attached_indexes: frozenset[tuple[bytes | None, bytes]]
     unresolved_index_attachment: bool
     altered_columns: frozenset[tuple[tuple[bytes | None, bytes], bytes]]
+    declared_column_types: frozenset[
+        tuple[tuple[bytes | None, bytes], bytes, bytes]
+    ]
     collated_columns: frozenset[tuple[tuple[bytes | None, bytes], bytes]]
 
 
@@ -326,8 +330,8 @@ _UNIQUE_INDEX_TABLESPACE_RE = re.compile(
     rb"\s*USING\s+INDEX\s+TABLESPACE\s+" + _SQL_IDENTIFIER,
     re.IGNORECASE,
 )
-_UNIQUE_USING_INDEX_ATTACHMENT_RE = re.compile(
-    rb"\bUNIQUE\b\s+USING\s+INDEX\b(?!\s+TABLESPACE\b)",
+_INDEX_ATTACHMENT_RE = re.compile(
+    rb"\b(?:UNIQUE|PRIMARY\s+KEY)\b\s+USING\s+INDEX\b(?!\s+TABLESPACE\b)",
     re.IGNORECASE,
 )
 _USING_INDEX_ATTACHMENT_RE = re.compile(
@@ -662,14 +666,6 @@ def _table_key_from_match(match: re.Match[bytes]) -> tuple[bytes | None, bytes]:
     )
 
 
-def _same_table_key(
-    left: tuple[bytes | None, bytes], right: tuple[bytes | None, bytes]
-) -> bool:
-    return left[1] == right[1] and (
-        left[0] is None or right[0] is None or left[0] == right[0]
-    )
-
-
 def _type_name_from_match(match: re.Match[bytes]) -> bytes:
     name = _normalize_sql_identifier(match.group("type"))
     schema = match.group("type_schema")
@@ -695,9 +691,13 @@ def _collect_altered_columns(masked: bytes) -> frozenset[tuple[tuple[bytes | Non
     return frozenset(altered_columns)
 
 
-def _collect_explicit_collated_columns(
+def _collect_table_column_metadata(
     masked: bytes,
-) -> frozenset[tuple[tuple[bytes | None, bytes], bytes]]:
+) -> tuple[
+    frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
+    frozenset[tuple[tuple[bytes | None, bytes], bytes]],
+]:
+    declared_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
     collated: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for table_match in _CREATE_TABLE_RE.finditer(masked):
         table_name = _TABLE_NAME_AFTER_CREATE_RE.match(masked, table_match.end())
@@ -712,7 +712,7 @@ def _collect_explicit_collated_columns(
         for start, end in _split_top_level(table_body):
             clause = table_body[start:end]
             column = _ENUM_COLUMN_DECL_RE.match(clause)
-            if column is None or _EXPLICIT_COLLATE_RE.search(clause) is None:
+            if column is None:
                 continue
             if (
                 not column.group("column").startswith(b'"')
@@ -727,10 +727,11 @@ def _collect_explicit_collated_columns(
                 }
             ):
                 continue
-            collated.add(
-                (table_key, _normalize_sql_identifier(column.group("column")))
-            )
-    return frozenset(collated)
+            column_name = _normalize_sql_identifier(column.group("column"))
+            declared_types.add((table_key, column_name, _type_name_from_match(column)))
+            if _EXPLICIT_COLLATE_RE.search(clause) is not None:
+                collated.add((table_key, column_name))
+    return frozenset(declared_types), frozenset(collated)
 
 
 def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext:
@@ -738,22 +739,26 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
     unresolved_index_attachment = False
     altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
+    declared_column_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
     collated_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for text in sources:
         source = text.encode("utf-8")
         masked = lex_sql(source).mask
-        for attachment in _UNIQUE_USING_INDEX_ATTACHMENT_RE.finditer(masked):
+        for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
             reference = _attachment_index_reference(source, masked, attachment)
             if reference is None:
                 unresolved_index_attachment = True
             else:
                 attached_indexes.add(reference)
         altered_columns.update(_collect_altered_columns(masked))
-        collated_columns.update(_collect_explicit_collated_columns(masked))
+        declared, collated = _collect_table_column_metadata(masked)
+        declared_column_types.update(declared)
+        collated_columns.update(collated)
     return _SqlMutationContext(
         frozenset(attached_indexes),
         unresolved_index_attachment,
         frozenset(altered_columns),
+        frozenset(declared_column_types),
         frozenset(collated_columns),
     )
 
@@ -768,7 +773,7 @@ def _scan_drop_unique(
     index_form_spans: list[tuple[int, int]] = []
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
     unresolved_attachment = False
-    for attachment in _UNIQUE_USING_INDEX_ATTACHMENT_RE.finditer(masked):
+    for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
         reference = _attachment_index_reference(source, masked, attachment)
         if reference is None:
             # If the attachment target cannot be parsed, suppress all unique
@@ -780,18 +785,27 @@ def _scan_drop_unique(
     if context is not None:
         attached_indexes.update(context.attached_indexes)
         unresolved_attachment = unresolved_attachment or context.unresolved_index_attachment
+    attached_names = {name for _, name in attached_indexes}
+    attached_any_schema = {
+        name for schema, name in attached_indexes if schema is None
+    }
+    attached_by_schema: dict[bytes, set[bytes]] = {}
+    for schema, name in attached_indexes:
+        if schema is not None:
+            attached_by_schema.setdefault(schema, set()).add(name)
     for m in _CREATE_UNIQUE_INDEX_RE.finditer(masked):
         index_form_spans.append((m.start(), m.end()))
         index_name_parts = _read_created_index_identity(source, masked, m.end())
         index_schema, index_name = index_name_parts if index_name_parts is not None else (None, None)
-        linked = any(
-            attached_name == index_name
-            and (
-                attached_schema is None
-                or index_schema is None
-                or attached_schema == index_schema
+        linked = index_name is not None and (
+            index_name in attached_any_schema
+            or (
+                index_schema is None and index_name in attached_names
             )
-            for attached_schema, attached_name in attached_indexes
+            or (
+                index_schema is not None
+                and index_name in attached_by_schema.get(index_schema, set())
+            )
         )
         if unresolved_attachment or (attached_indexes and index_name is None) or linked:
             # Mutating either half of an attached pair is unsafe as one site:
@@ -1016,10 +1030,12 @@ def _scan_widen_check_in(
         for match in _ENUM_TYPE_RE.finditer(masked)
     }
     table_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
-    column_types_by_table: dict[tuple[bytes | None, bytes], dict[bytes, bytes]] = {}
-    collated_columns = set(_collect_explicit_collated_columns(masked))
+    declared_column_types, local_collated_columns = _collect_table_column_metadata(masked)
+    all_declared_column_types = set(declared_column_types)
+    collated_columns = set(local_collated_columns)
     altered_columns = set(_collect_altered_columns(masked))
     if context is not None:
+        all_declared_column_types.update(context.declared_column_types)
         altered_columns.update(context.altered_columns)
         collated_columns.update(context.collated_columns)
     for table_match in _CREATE_TABLE_RE.finditer(masked):
@@ -1032,59 +1048,90 @@ def _scan_widen_check_in(
             continue
         table_key = _table_key_from_match(table_name)
         table_spans.append((table_open, table_close, table_key))
-        column_types: dict[bytes, bytes] = {}
-        table_body = masked[table_open + 1 : table_close]
-        for start, end in _split_top_level(table_body):
-            column = _ENUM_COLUMN_DECL_RE.match(table_body[start:end])
-            if column is None or (
-                not column.group("column").startswith(b'"')
-                and _normalize_sql_identifier(column.group("column")).upper()
-                in {
-                    b"CONSTRAINT",
-                    b"PRIMARY",
-                    b"UNIQUE",
-                    b"CHECK",
-                    b"FOREIGN",
-                    b"EXCLUDE",
-                }
-            ):
-                continue
-            type_name = _type_name_from_match(column)
-            column_types[_normalize_sql_identifier(column.group("column"))] = type_name
-        column_types_by_table[table_key] = column_types
+    table_spans.sort(key=lambda item: item[0])
+    table_starts = [span[0] for span in table_spans]
+
+    types_by_table: dict[
+        tuple[bytes | None, bytes], dict[bytes, set[bytes]]
+    ] = {}
+    types_by_name: dict[bytes, dict[bytes, set[bytes]]] = {}
+    for table_key, column_name, type_name in all_declared_column_types:
+        by_column = types_by_table.setdefault(table_key, {})
+        by_column.setdefault(column_name, set()).add(type_name)
+        by_name_column = types_by_name.setdefault(table_key[1], {})
+        by_name_column.setdefault(column_name, set()).add(type_name)
+
+    collated_by_table: dict[tuple[bytes | None, bytes], set[bytes]] = {}
+    collated_by_name: dict[bytes, set[bytes]] = {}
+    for table_key, column_name in collated_columns:
+        collated_by_table.setdefault(table_key, set()).add(column_name)
+        collated_by_name.setdefault(table_key[1], set()).add(column_name)
+
+    altered_by_table: dict[tuple[bytes | None, bytes], set[bytes]] = {}
+    altered_by_name: dict[bytes, set[bytes]] = {}
+    for table_key, column_name in altered_columns:
+        altered_by_table.setdefault(table_key, set()).add(column_name)
+        altered_by_name.setdefault(table_key[1], set()).add(column_name)
+
+    semicolons = [match.start() for match in re.finditer(rb";", masked)]
+    alter_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
+    for alter in _ALTER_TABLE_RE.finditer(masked):
+        table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
+        if table_name is None:
+            continue
+        semicolon_index = bisect_right(semicolons, alter.start())
+        statement_end = (
+            semicolons[semicolon_index]
+            if semicolon_index < len(semicolons)
+            else len(masked)
+        )
+        alter_spans.append(
+            (alter.start(), statement_end, _table_key_from_match(table_name))
+        )
+    alter_spans.sort(key=lambda item: item[0])
+    alter_starts = [span[0] for span in alter_spans]
+
+    def table_for_check(check_start: int) -> tuple[bytes | None, bytes] | None:
+        table_index = bisect_right(table_starts, check_start) - 1
+        if table_index >= 0:
+            start, end, table_key = table_spans[table_index]
+            if start < check_start < end:
+                return table_key
+        alter_index = bisect_right(alter_starts, check_start) - 1
+        if alter_index >= 0:
+            start, end, table_key = alter_spans[alter_index]
+            if start < check_start < end:
+                return table_key
+        return None
 
     def columns_for_check(
         check_start: int,
     ) -> tuple[dict[bytes, bytes], frozenset[bytes]]:
-        def with_alter_refusals(
-            table_key: tuple[bytes | None, bytes],
-        ) -> tuple[dict[bytes, bytes], frozenset[bytes]]:
-            result = dict(column_types_by_table.get(table_key, {}))
-            collated = {
-                column_name
-                for collated_table, column_name in collated_columns
-                if _same_table_key(collated_table, table_key)
-            }
-            for altered_table, column_name in altered_columns:
-                if _same_table_key(altered_table, table_key):
-                    result[column_name] = b"<altered>"
-            return result, frozenset(collated)
-
-        for table_start, table_end, table_key in table_spans:
-            if table_start < check_start < table_end:
-                return with_alter_refusals(table_key)
-
-        previous_semicolon = masked.rfind(b";", 0, check_start)
-        alter_matches = tuple(
-            _ALTER_TABLE_RE.finditer(masked, previous_semicolon + 1, check_start)
-        )
-        if alter_matches:
-            alter = alter_matches[-1]
-            table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
-            if table_name is not None:
-                table_key = _table_key_from_match(table_name)
-                return with_alter_refusals(table_key)
-        return {}, frozenset()
+        table_key = table_for_check(check_start)
+        if table_key is None:
+            return {}, frozenset()
+        if table_key[0] is None:
+            raw_types = types_by_name.get(table_key[1], {})
+            collated = collated_by_name.get(table_key[1], set())
+            altered = altered_by_name.get(table_key[1], set())
+        else:
+            raw_types = {}
+            for candidate_key in ((None, table_key[1]), table_key):
+                for column_name, values in types_by_table.get(candidate_key, {}).items():
+                    raw_types.setdefault(column_name, set()).update(values)
+            collated = collated_by_table.get((None, table_key[1]), set()) | collated_by_table.get(
+                table_key, set()
+            )
+            altered = altered_by_table.get((None, table_key[1]), set()) | altered_by_table.get(
+                table_key, set()
+            )
+        result = {
+            column_name: next(iter(values)) if len(values) == 1 else b"<ambiguous>"
+            for column_name, values in raw_types.items()
+        }
+        for column_name in altered:
+            result[column_name] = b"<altered>"
+        return result, frozenset(collated)
 
     for check_m in _CHECK_OPEN_RE.finditer(masked):
         open_paren = check_m.end() - 1
@@ -1208,7 +1255,9 @@ def _scan_widen_check_in(
             elif all_unsigned_integers:
                 if column_match is None:
                     continue
-                column_type = column_types.get(column_match.group(1).lower())
+                column_type = column_types.get(
+                    _normalize_sql_identifier(column_match.group(1))
+                )
                 bounds = _INTEGER_TYPE_BOUNDS.get(column_type)
                 if bounds is None:
                     continue
