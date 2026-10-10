@@ -1926,12 +1926,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       that names no path there — absent, or `null` — falls back to the
       config, so neither a pre-rev-34 record nor a lane that has just become
       an assay lane loses its watch in silence.
-  - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
-    timestamp today, so the rate is measured against run-gate's OWN clock
-    from the first event it observed and advancement is the file's mtime.
-    Where an event already carries `elapsed_s` (assay B065) it is PREFERRED,
-    so the same implementation becomes exact when B065 lands — no rewrite,
-    and no second reading of the same fact.
+  - **`R-40d` Run-relative timing.** Assay's progress records carry
+    `emitted_at` and `elapsed_s` (B065), so Run-Gate prefers the record's
+    elapsed time when estimating rate; older streams fall back to Run-Gate's
+    own clock and the file mtime. Rate counts candidate events in the active
+    run segment, not the campaign-wide index, and ETA uses Assay's
+    `pending_total` when available. These estimates are diagnostic only and
+    do not alter the verdict. The run boundary and reset behavior are
+    specified by `R-40g`.
   - **`R-40e` The documented shape.** For a mutation lane: a generous assay
     `budget` + `judge.mutation.budget_per_candidate` + run-gate
     `stall_timeout`. For R0/R1: `budget` is the command's own bound and
@@ -1954,6 +1956,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     judging the lane — "its progress file" or "its own log output" — so an
     operator never has to guess which of the two mechanisms a given
     `stall_timeout` bounds.
+  - **`R-40g` Assay progress is scoped to the latest run header (RG-90,
+    rev 59).** Assay appends a `run` event at the start of each invocation;
+    Run-Gate considers candidate events only after the latest valid `run`
+    event in that append-only file. A watcher that sees a newer run header
+    resets its prior candidate, rate, and silence baselines before observing
+    the new run. Candidates from a previous invocation are history, not
+    current progress, and cannot arm or satisfy the current run's stall
+    timer. Candidate rate counts events in the active segment, because a
+    resumed candidate's campaign-wide index is paired with a run-relative
+    elapsed clock. When Assay provides `pending_total`, ETA uses that remaining
+    work count minus candidates completed in the active segment. A legacy
+    stream with no `run` header retains whole-file behavior. Run-Gate does not
+    truncate the stream, which Assay uses for resume history.
 
 - `R-41` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
   no longer depends on every CALLER wrapping its own `flock` around the

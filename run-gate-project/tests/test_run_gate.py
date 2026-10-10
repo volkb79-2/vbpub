@@ -3421,11 +3421,13 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
 def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
-    # The tagged release remains source rev 55; RG-89 is the current
-    # unreleased revision. Historical release metadata must not drift when
-    # the launcher revision advances.
+    # The tagged release remains source rev 55; RG-90 is the current
+    # unreleased revision. RG-89 stays at the revision that introduced its
+    # observer contract. Historical release metadata must not drift when the
+    # launcher revision advances.
     assert "This section describes released source rev 55." in changes
-    assert f"RG-89, rev {run_gate.__revision__}" in changes
+    assert f"RG-90, rev {run_gate.__revision__}" in changes
+    assert "RG-89, rev 58" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
         in changes
@@ -14926,11 +14928,18 @@ class FakeClock:
 
 def write_progress(path: Path, *events: dict, header: bool = True) -> None:
     """Write a progress file in assay's own shape: a `run` header line, then
-    one event per candidate."""
+    zero or more progress records."""
     lines = ['{"event": "run", "lane": "cw2b_schema"}'] if header else []
     lines += [json.dumps(e) for e in events]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
+
+
+def append_progress(path: Path, *events: dict) -> None:
+    """Append records as Assay does when a progress file is resumed."""
+    with path.open("a") as stream:
+        for event in events:
+            stream.write(json.dumps(event) + "\n")
 
 
 def candidate(i: int, total: int = 172, **over) -> dict:
@@ -14972,32 +14981,87 @@ class TestProgressWatch:
         # replaces.
         assert "progress sql-mutation: candidate 10/172\n" in capsys.readouterr().out
         w.clock.advance(600)                      # 10 minutes
-        write_progress(w.path, candidate(29))     # +19 candidates
+        append_progress(w.path, *(candidate(i) for i in range(11, 30)))
         assert w.watch.poll() is None
         out = capsys.readouterr().out
         # 19 candidates in 10 min = 1.9/min; 143 left => 75m.
         assert ("run-gate: progress sql-mutation: candidate 29/172, 1.9/min, "
                 "ETA 75m") in out
 
+    def test_legacy_rate_needs_positive_elapsed_time(self, tmp_path, capsys):
+        """A legacy stream without elapsed_s cannot produce a rate when two
+        candidate events are observed at the same clock instant."""
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(10))
+        assert w.watch.poll() is None
+        capsys.readouterr()
+        append_progress(w.path, candidate(11))
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "candidate 11/172" in out
+        assert "/min" not in out and "ETA" not in out
+
     def test_an_event_carrying_elapsed_s_is_preferred_over_our_clock(
             self, tmp_path, capsys):
-        """assay B065 adds per-event timing. The same code becomes exact the
-        day it lands — no rewrite, no second implementation."""
+        """Assay's run-relative elapsed time and candidate events give an
+        exact rate when the current run's event history is visible."""
         w = self._watch(tmp_path)
-        write_progress(w.path, candidate(60, elapsed_s=1200))   # 3.0/min
+        write_progress(
+            w.path,
+            *(candidate(i, elapsed_s=i * 20) for i in range(61)),
+        )   # 60 intervals / 20 minutes = 3.0/min
         assert w.watch.poll() is None
         assert ("run-gate: progress sql-mutation: candidate 60/172, 3.0/min, "
                 "ETA 37m") in capsys.readouterr().out
 
+    def test_resumed_eta_uses_current_run_events_not_campaign_index(
+            self, tmp_path, capsys):
+        """A resumed candidate keeps its campaign-wide index, while its
+        elapsed time restarts at the new run header. Rate and remaining work
+        must therefore use current-run event count and Assay's pending_total,
+        not `candidate_index / elapsed_s`."""
+        w = self._watch(tmp_path)
+        write_progress(
+            w.path,
+            {"event": "candidates", "candidate_total": 1059,
+             "pending_total": 480},
+            *(candidate(579 + i, total=1059, elapsed_s=i * 20)
+              for i in range(61)),
+        )
+        assert w.watch.poll() is None
+        assert ("run-gate: progress sql-mutation: candidate 639/1059, "
+                "3.0/min, ETA 140m") in capsys.readouterr().out
+
+    @pytest.mark.parametrize("pending_total", [None, True, -1, "2", 1, 2])
+    def test_invalid_or_exhausted_pending_total_suppresses_eta(
+            self, tmp_path, capsys, pending_total):
+        w = self._watch(tmp_path)
+        write_progress(
+            w.path,
+            {"event": "candidates", "pending_total": pending_total},
+            candidate(0, elapsed_s=10), candidate(1, elapsed_s=20),
+        )
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "candidate 1/172" in out
+        assert "ETA" not in out
+
+    def test_elapsed_rate_uses_delta_from_first_observed_event(
+            self, tmp_path, capsys):
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(579, total=1059, elapsed_s=600))
+        assert w.watch.poll() is None
+        capsys.readouterr()
+        append_progress(w.path, candidate(580, total=1059, elapsed_s=660))
+        assert w.watch.poll() is None
+        assert ("candidate 580/1059, 1.0/min, ETA 479m"
+                in capsys.readouterr().out)
+
     def test_the_first_real_candidate_at_index_zero_yields_no_rate_not_a_crash(
             self, tmp_path, capsys):
-        """Regression (found running a real mutation lane, 2026-09-10): a
-        candidate's own `candidate_index` is 0-based, so the FIRST one to
-        complete carries `candidate_index: 0`. `0 / elapsed_s` is a literal
-        `0.0`, not "nothing to measure yet" -- treating it as a real rate
-        divided `(total - index) / rate` by zero and crashed the whole gate
-        run. index=0 must degrade to the bare-count line exactly like `rate
-        is None` already does."""
+        """Regression (found running a real mutation lane, 2026-09-10): the
+        first candidate has no interval yet, so even with elapsed time it
+        must not be treated as a zero rate or divide the ETA by zero."""
         w = self._watch(tmp_path)
         write_progress(w.path, candidate(0, elapsed_s=27.677, outcome_bucket="killed"))
         assert w.watch.poll() is None
@@ -15007,10 +15071,8 @@ class TestProgressWatch:
 
     def test_a_baseline_sentinel_at_index_negative_one_yields_no_rate(
             self, tmp_path, capsys):
-        """assay's own progress schema emits a `"baseline"` event ahead of
-        any real candidate, carrying `candidate_index: -1` as a sentinel --
-        the same B065 own-clock branch computed a nonsensical negative
-        rate/ETA from it (`-1 / elapsed_s`) before this guard."""
+        """Assay emits a `baseline` event with index -1 before candidate
+        events. It is a sentinel, not a completed candidate or rate sample."""
         w = self._watch(tmp_path)
         write_progress(w.path, {"event": "baseline", "candidate_index": -1,
                                  "candidate_total": 81, "elapsed_s": 15.9,
@@ -15063,6 +15125,61 @@ class TestProgressWatch:
         w.clock.advance(3600)
         assert w.watch.poll() is None
         assert "no candidate events" in capsys.readouterr().out
+
+    def test_a_new_run_header_hides_prior_candidates_from_a_fresh_watch(
+            self, tmp_path, capsys):
+        """Assay appends progress across --resume runs. The newest `run`
+        header, not the last candidate anywhere in the file, defines what
+        this invocation has done. A fresh watcher must not publish an old
+        candidate or arm a stall clock from it while the new baseline runs."""
+        w = self._watch(tmp_path, stall=60)
+        write_progress(w.path, candidate(579, total=1059))
+        append_progress(
+            w.path,
+            {"event": "run", "lane": "r2", "commit": "new-tree",
+             "started": "2026-10-10T00:00:00Z"},
+            {"event": "snapshot_materialized", "phase": "baseline"},
+        )
+        age_file(w.path, 3600)
+
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "no candidate events" in out
+        assert "candidate 579/1059" not in out
+        assert "ETA" not in out and "still RUNNING" not in out
+
+    def test_a_new_run_header_resets_an_existing_watch_baseline(
+            self, tmp_path, capsys):
+        """A new append boundary observed during re-attach resets the prior
+        candidate, ETA baseline, and stall clock; the current run then reports
+        only its own candidates."""
+        w = self._watch(tmp_path, stall=60)
+        write_progress(w.path, candidate(579, total=1059))
+        assert w.watch.poll() is None
+        assert "candidate 579/1059" in capsys.readouterr().out
+
+        w.clock.advance(3600)
+        append_progress(
+            w.path,
+            {"event": "run", "lane": "r2", "commit": "new-tree",
+             "started": "2026-10-10T00:00:00Z"},
+            {"event": "snapshot_materialized", "phase": "baseline"},
+        )
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "no candidate events" in out
+        assert "candidate 579/1059" not in out
+        assert "still RUNNING" not in out
+
+        append_progress(w.path, candidate(0, total=1059))
+        assert w.watch.poll() is None
+        assert "candidate 0/1059" in capsys.readouterr().out
+        w.clock.advance(60)
+        append_progress(w.path, candidate(1, total=1059))
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "candidate 1/1059" in out
+        assert "still RUNNING" not in out
 
     def test_a_torn_or_unparsable_line_is_skipped_not_fatal(self, tmp_path,
                                                             capsys):

@@ -58,7 +58,10 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `assay` and `command` lanes since RG-41; meaningless, but accepted, on
    host/exec lanes, which start nothing to watch. The documented shape for
    a mutation lane is a generous assay `budget` +
-   `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
+   `judge.mutation.budget_per_candidate` + this key; progress output is
+   scoped to the latest Assay run header, with rates and ETAs based on that
+   run's candidate events ([design rationale](docs/DESIGN-GUIDE.md#progress-is-scoped-to-the-current-assay-run)),
+   `profile` (RG-55:
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
    `R-43h`); and `resource_observer = "cgprofile"` for an Assay or command

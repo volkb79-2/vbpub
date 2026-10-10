@@ -8593,3 +8593,64 @@ Current main `5bf6db82b` (Assay B118/B110/B114 integration) was reconciled into
 the isolated RG-89 tree as merge commit `a4d68181b`; the old R2 attempt remains
 incomplete and is not evidence for this new tree. The peer-task retry repair
 and tests are now in progress on that branch. No R2 campaign is running.
+
+### RW-535 — 2026-10-10 02:26:53 UTC — isolate progress telemetry by Assay invocation
+
+The interrupted relaunch on `ace790e94` printed the previous run's
+`candidate 579/1059` because Run-Gate selected the last indexed event from the
+whole append-only JSONL file. Assay's progress contract confirms that every
+invocation writes a `run` header and that `candidate_index` is campaign-wide
+while `elapsed_s` restarts at that header. A raw campaign index divided by a
+resumed run's elapsed time therefore produces a false rate as well as stale
+status.
+
+Ruling: preserve Assay's append-only history; scope progress and silence to
+events after the latest valid `run` header. Reset an attached watch when a new
+header appears. Calculate rate from candidate-event counts in that segment;
+use `pending_total` for remaining-work ETA when declared, and suppress ETA if
+that declaration is invalid or inconsistent rather than fall back to a
+campaign-index guess. Keep legacy whole-file behavior only for streams with no
+run header. This is diagnostic telemetry only and cannot alter the Assay
+verdict. RG-90 records the fix and its regression oracles. No test gate or new
+R2 campaign has been launched for this change yet.
+
+### RW-536 — 2026-10-10 02:30:38 UTC — first RG-90 selftest found documentation-oracle drift
+
+Registered `selftest` ran in the exact `run-gate-vbpub-selftest-3802679-1791599243`
+container, capped at 3 CPUs. The separately read history record is run
+`5c000aba729d071cad280859c9347ec3`, FAIL/exit 1 after 164.442 seconds:
+1,747 passed, 2 skipped, 3 failed. The new progress regressions passed. The
+failures were two cross-document anchor checks for a link to a non-heading
+anchor in `SPEC.md`, and the changelog oracle still requiring RG-89 to equal
+the current revision after RG-90 advanced it to 59. No product-code failure
+was reported. Fix the link to the actual SPEC §5 heading, update the current
+revision oracle to RG-90 while preserving RG-89's rev-58 assertion, then rerun
+the registered gate. The gate's profile recorded host memory-full PSI at
+1.337 seconds during its 163-second lifetime; current PSI is low and no gate
+container remains. DAMON profile sampling was unavailable with `EBUSY` under
+the restored host `DAMON_STAT` policy; this is profile disclosure, not the
+selftest cause or verdict.
+
+### RW-537 — 2026-10-10 02:33:51 UTC — RG-90 tests pass; changed-line coverage needs the legacy zero-span edge
+
+After the documentation-oracle corrections, registered `selftest` run
+`41d042ccce9b1eb7739243567bc29791` completed with 1,750 passed, 2 skipped,
+and no test failures. Its separate diff-coverage phase failed at 96/98 changed
+executable lines and 55/56 branches. The only uncovered source was the
+legacy-stream `span > 0` branch in `ProgressWatch._rate_per_min` (line 9441)
+and its zero-span `return None` (line 9443): existing clock-driven tests
+covered positive elapsed time but not two candidate events observed at the
+same clock instant. Add that regression, then rerun the registered selftest;
+the last gate container is gone and current memory PSI is below the launch
+threshold. The P1 mutation campaign is still not running.
+
+### RW-538 — 2026-10-10 02:37:18 UTC — RG-90 registered selftest and diff coverage pass
+
+After adding the zero-span legacy-stream regression, registered `selftest`
+run `7168c7737769a94977df8a01e218b0a7` passed: 1,751 passed, 2 skipped,
+one existing pytest deprecation warning; the separate diff-coverage phase
+reported 98/98 changed executable lines and 56/56 branches (100%). The
+separately read Run-Gate history records PASS/exit 0, 155.7 seconds. The exact
+tree remains dirty pending the controller's commit; no mutation campaign or
+gate container is active. DAMON remained unavailable with `EBUSY` under host
+`DAMON_STAT`, a profiling limitation that does not affect the selftest.

@@ -615,6 +615,16 @@ names the resolved state directory. See the
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 for why Run-Gate does not create a configured root inside an exec runner.
 
+The progress JSONL is append-only: Assay writes a `run` header for each
+invocation. Run-Gate attributes candidate status and silence only to records
+after the newest header, so old candidates retained for resume are not
+presented as work completed by the current invocation. Rates count the
+current run's candidate events, while remaining-work ETAs use Assay's
+`pending_total` when available; the campaign-wide candidate index is not
+divided by the new run's elapsed clock. Do not truncate the progress file to
+reset monitoring; `--resume` owns that history. See the
+[progress design](docs/DESIGN-GUIDE.md#progress-is-scoped-to-the-current-assay-run).
+
 ### Shared assay lane imports
 
 An external-assay consumer can pin the judge once and import the exact lane

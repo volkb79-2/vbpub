@@ -316,6 +316,34 @@ When a visible publication has unreadable identity labels, doctor names it
 and does not recommend `admission set`: that command refuses to replace an
 object whose ownership cannot be verified.
 
+## Progress is scoped to the current Assay run
+
+Assay keeps progress in an append-only JSONL file so a later `--resume` run
+does not erase the earlier diagnostic history. Each invocation begins with a
+`run` event; that record is the attribution boundary for every later event in
+that invocation. Run-Gate therefore selects candidate events only after the
+latest valid `run` header. If an already-running watcher sees another header,
+it discards its previous candidate, ETA, and silence baseline before observing
+the new invocation. The progress file is never truncated as a monitoring fix:
+truncation would discard Assay's diagnostic history without addressing the
+consumer's attribution mistake. Streams from older Assay versions without a
+`run` event retain the previous whole-file behavior.
+
+This boundary matters especially when a campaign is resumed after a budget
+limit. The old run may have judged hundreds of candidates; those records are
+still useful history, but they are not evidence that the new process has
+started making progress. Reporting them as current can produce a false ETA or
+let a stale event seed a silence timeout. The reader treats progress as
+run-local telemetry; it does not change the Assay verdict. Assay also keeps
+`candidate_index` campaign-wide while restarting `elapsed_s` at each `run`
+header. Run-Gate counts candidate events in the active segment for rate and
+uses `pending_total` for the remaining-work ETA when that field is present;
+dividing a resumed campaign index by the new invocation's elapsed time would
+report an artificially fast rate.
+
+See [SPEC.md §5](../SPEC.md#5-execution-contract) for the normative reader
+behavior.
+
 ## Assay resume state needs an environment-owned mount
 
 Assay keeps verdict and progress beside the judged project for this run, but
