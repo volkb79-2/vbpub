@@ -349,44 +349,6 @@ _TABLE_NAME_AFTER_CREATE_RE = re.compile(
     rb"(?P<table>" + _SQL_IDENTIFIER + rb")",
     re.IGNORECASE,
 )
-_TABLE_NAME_AFTER_ALTER_RE = re.compile(
-    rb"\s*(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?"
-    rb"(?:(?P<schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
-    rb"(?P<table>" + _SQL_IDENTIFIER + rb")",
-    re.IGNORECASE,
-)
-_ALTER_COLUMN_TYPE_RE = re.compile(
-    rb"\bALTER\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?"
-    rb"(?P<column>" + _SQL_IDENTIFIER + rb")\s+"
-    rb"(?:TYPE|SET\s+DATA\s+TYPE)\s+"
-    rb"(?:(?P<type_schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
-    rb"(?P<type>" + _SQL_IDENTIFIER + rb")(?![A-Za-z0-9_$])",
-    re.IGNORECASE,
-)
-_ALTER_COLUMN_DROP_RE = re.compile(
-    rb"\bDROP\s+(?:(?:COLUMN\s+)(?:IF\s+EXISTS\s+)?|"
-    rb"(?:IF\s+EXISTS\s+)?(?!CONSTRAINT\b))(?P<column>"
-    + _SQL_IDENTIFIER
-    + rb")(?=\s|,|;|$)",
-    re.IGNORECASE,
-)
-_ALTER_COLUMN_ADD_RE = re.compile(
-    rb"\bADD\s+(?:(?:COLUMN\s+)(?:IF\s+NOT\s+EXISTS\s+)?|"
-    rb"(?:IF\s+NOT\s+EXISTS\s+)?"
-    rb"(?!(?:CONSTRAINT|CHECK|FOREIGN|PRIMARY|UNIQUE|EXCLUDE)\b))"
-    rb"(?P<column>"
-    + _SQL_IDENTIFIER
-    + rb")(?=\s)",
-    re.IGNORECASE,
-)
-_ALTER_COLUMN_RENAME_RE = re.compile(
-    rb"\bRENAME\s+(?:COLUMN\s+)?(?P<old>"
-    + _SQL_IDENTIFIER
-    + rb")\s+\bTO\b\s+(?P<new>"
-    + _SQL_IDENTIFIER
-    + rb")(?=\s|,|;|$)",
-    re.IGNORECASE,
-)
 _ENUM_TYPE_RE = re.compile(
     rb"\bCREATE\s+TYPE\s+(?:(?P<schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
     rb"(?P<type>" + _SQL_IDENTIFIER + rb")\s+AS\s+ENUM\b",
@@ -674,9 +636,9 @@ def _attachment_index_reference(
     statement_start = masked.rfind(b";", 0, attachment.start()) + 1
     alters = tuple(_ALTER_TABLE_RE.finditer(masked, statement_start, attachment.start()))
     if alters:
-        table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alters[-1].end())
-        if table_name is not None:
-            table_schema, _ = _table_key_from_match(table_name)
+        table = _read_alter_table_identity(source, masked, alters[-1].end())
+        if table is not None:
+            table_schema, _ = table[0]
             if table_schema is not None:
                 return table_schema, name
     return None, name
@@ -698,7 +660,71 @@ def _type_name_from_match(match: re.Match[bytes]) -> bytes:
     return name
 
 
-def _collect_altered_columns(masked: bytes) -> frozenset[tuple[tuple[bytes | None, bytes], bytes]]:
+def _next_sql_keyword(
+    source: bytes, masked: bytes, pos: int
+) -> tuple[bytes, int] | None:
+    """Read the next unquoted code keyword from a masked SQL source."""
+    cursor = _skip_sql_trivia(source, pos)
+    if cursor is None:
+        return None
+    match = re.match(rb"[A-Za-z_][A-Za-z0-9_$]*", masked[cursor:])
+    if match is None:
+        return None
+    return match.group(0).upper(), cursor + match.end()
+
+
+def _read_alter_table_identity(
+    source: bytes, masked: bytes, pos: int
+) -> tuple[tuple[bytes | None, bytes], int] | None:
+    """Read ALTER TABLE's possibly quoted name using lexer-validated offsets."""
+    cursor = pos
+    keyword = _next_sql_keyword(source, masked, cursor)
+    if keyword is not None and keyword[0] == b"IF":
+        exists = _next_sql_keyword(source, masked, keyword[1])
+        if exists is None or exists[0] != b"EXISTS":
+            return None
+        cursor = exists[1]
+        keyword = _next_sql_keyword(source, masked, cursor)
+    if keyword is not None and keyword[0] == b"ONLY":
+        cursor = keyword[1]
+    parsed = _read_qualified_sql_identifier_details(source, cursor)
+    if parsed is None:
+        return None
+    schema, table, end = parsed
+    # PostgreSQL accepts `name *` to include inheritance descendants. The
+    # marker belongs to the table reference, so action parsing must start
+    # after it rather than treating the first action as an unknown clause.
+    after_table = _skip_sql_trivia(source, end)
+    if (
+        after_table is not None
+        and after_table < len(masked)
+        and masked[after_table] == ord("*")
+    ):
+        end = after_table + 1
+    return (schema, table), end
+
+
+def _read_action_identifier(
+    source: bytes, masked: bytes, pos: int
+) -> tuple[bytes, int] | None:
+    """Read a column identifier only when the masked source says it is code."""
+    cursor = _skip_sql_trivia(source, pos)
+    if cursor is None:
+        return None
+    parsed = _read_sql_identifier(source, cursor)
+    if parsed is None:
+        return None
+    token, end = parsed
+    # A quoted identifier is intentionally blank in the mask. An unquoted
+    # identifier must remain visible there, which excludes strings/comments.
+    if not token.startswith(b'"') and masked[cursor:end] != token:
+        return None
+    return _normalize_sql_identifier(token), end
+
+
+def _collect_altered_columns(
+    source: bytes, masked: bytes
+) -> frozenset[tuple[tuple[bytes | None, bytes], bytes]]:
     """Return columns whose final type cannot be inferred from CREATE TABLE.
 
     This scanner does not resolve ordered DDL. Type changes, column removal,
@@ -707,38 +733,115 @@ def _collect_altered_columns(masked: bytes) -> frozenset[tuple[tuple[bytes | Non
     """
     altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for alter in _ALTER_TABLE_RE.finditer(masked):
-        table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
-        if table_name is None:
+        table = _read_alter_table_identity(source, masked, alter.end())
+        if table is None:
             continue
-        table_key = _table_key_from_match(table_name)
-        statement_end = masked.find(b";", table_name.end())
+        table_key, table_end = table
+        statement_end = masked.find(b";", table_end)
         if statement_end < 0:
             statement_end = len(masked)
-        for changed in _ALTER_COLUMN_TYPE_RE.finditer(masked, table_name.end(), statement_end):
-            altered_columns.add(
-                (table_key, _normalize_sql_identifier(changed.group("column")))
+        actions = masked[table_end:statement_end]
+        for action_start, action_end in _split_top_level(actions):
+            action_start += table_end
+            action_end += table_end
+            action = re.match(
+                rb"\s*(ALTER|DROP|ADD|RENAME)\b", masked[action_start:action_end], re.I
             )
-        for changed in _ALTER_COLUMN_DROP_RE.finditer(
-            masked, table_name.end(), statement_end
-        ):
-            altered_columns.add(
-                (table_key, _normalize_sql_identifier(changed.group("column")))
-            )
-        for changed in _ALTER_COLUMN_ADD_RE.finditer(
-            masked, table_name.end(), statement_end
-        ):
-            altered_columns.add(
-                (table_key, _normalize_sql_identifier(changed.group("column")))
-            )
-        for renamed in _ALTER_COLUMN_RENAME_RE.finditer(
-            masked, table_name.end(), statement_end
-        ):
-            altered_columns.add(
-                (table_key, _normalize_sql_identifier(renamed.group("old")))
-            )
-            altered_columns.add(
-                (table_key, _normalize_sql_identifier(renamed.group("new")))
-            )
+            if action is None:
+                continue
+            verb = action.group(1).upper()
+            cursor = action_start + action.end()
+            first_keyword = _next_sql_keyword(source, masked, cursor)
+            if verb == b"DROP":
+                if first_keyword is not None and first_keyword[0] == b"COLUMN":
+                    cursor = first_keyword[1]
+                elif first_keyword is not None and first_keyword[0] == b"CONSTRAINT":
+                    continue
+                optional = _next_sql_keyword(source, masked, cursor)
+                if optional is not None and optional[0] == b"IF":
+                    exists = _next_sql_keyword(source, masked, optional[1])
+                    if exists is None or exists[0] != b"EXISTS":
+                        continue
+                    cursor = exists[1]
+                after_optional = _next_sql_keyword(source, masked, cursor)
+                if after_optional is not None and after_optional[0] == b"CONSTRAINT":
+                    continue
+                column = _read_action_identifier(source, masked, cursor)
+                if column is not None:
+                    altered_columns.add((table_key, column[0]))
+            elif verb == b"ADD":
+                if first_keyword is not None and first_keyword[0] == b"COLUMN":
+                    cursor = first_keyword[1]
+                optional = _next_sql_keyword(source, masked, cursor)
+                if optional is not None and optional[0] == b"IF":
+                    not_word = _next_sql_keyword(source, masked, optional[1])
+                    exists = (
+                        None
+                        if not_word is None
+                        else _next_sql_keyword(source, masked, not_word[1])
+                    )
+                    if (
+                        not_word is None
+                        or not_word[0] != b"NOT"
+                        or exists is None
+                        or exists[0] != b"EXISTS"
+                    ):
+                        continue
+                    cursor = exists[1]
+                next_keyword = _next_sql_keyword(source, masked, cursor)
+                if next_keyword is not None and next_keyword[0] in {
+                    b"CONSTRAINT", b"CHECK", b"FOREIGN", b"PRIMARY", b"UNIQUE", b"EXCLUDE"
+                }:
+                    continue
+                column = _read_action_identifier(source, masked, cursor)
+                if column is not None:
+                    altered_columns.add((table_key, column[0]))
+            elif verb == b"ALTER":
+                if first_keyword is not None and first_keyword[0] == b"COLUMN":
+                    cursor = first_keyword[1]
+                optional = _next_sql_keyword(source, masked, cursor)
+                if optional is not None and optional[0] == b"IF":
+                    exists = _next_sql_keyword(source, masked, optional[1])
+                    if exists is None or exists[0] != b"EXISTS":
+                        continue
+                    cursor = exists[1]
+                column = _read_action_identifier(source, masked, cursor)
+                if column is None:
+                    continue
+                type_keyword = _next_sql_keyword(source, masked, column[1])
+                changes_type = type_keyword is not None and type_keyword[0] == b"TYPE"
+                if type_keyword is not None and type_keyword[0] == b"SET":
+                    data_keyword = _next_sql_keyword(source, masked, type_keyword[1])
+                    type_after_data = (
+                        None
+                        if data_keyword is None
+                        else _next_sql_keyword(source, masked, data_keyword[1])
+                    )
+                    changes_type = (
+                        data_keyword is not None
+                        and data_keyword[0] == b"DATA"
+                        and type_after_data is not None
+                        and type_after_data[0] == b"TYPE"
+                    )
+                if changes_type:
+                    altered_columns.add((table_key, column[0]))
+            else:  # RENAME
+                if first_keyword is not None and first_keyword[0] == b"COLUMN":
+                    cursor = first_keyword[1]
+                elif first_keyword is not None and first_keyword[0] in {
+                    b"TO", b"CONSTRAINT"
+                }:
+                    continue
+                old = _read_action_identifier(source, masked, cursor)
+                if old is None:
+                    continue
+                to_keyword = _next_sql_keyword(source, masked, old[1])
+                if to_keyword is None or to_keyword[0] != b"TO":
+                    continue
+                new = _read_action_identifier(source, masked, to_keyword[1])
+                if new is not None:
+                    altered_columns.add((table_key, old[0]))
+                    altered_columns.add((table_key, new[0]))
     return frozenset(altered_columns)
 
 
@@ -801,7 +904,7 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
                 unresolved_index_attachment = True
             else:
                 attached_indexes.add(reference)
-        altered_columns.update(_collect_altered_columns(masked))
+        altered_columns.update(_collect_altered_columns(source, masked))
         declared, collated = _collect_table_column_metadata(masked)
         declared_column_types.update(declared)
         collated_columns.update(collated)
@@ -1084,7 +1187,7 @@ def _scan_widen_check_in(
     declared_column_types, local_collated_columns = _collect_table_column_metadata(masked)
     all_declared_column_types = set(declared_column_types)
     collated_columns = set(local_collated_columns)
-    altered_columns = set(_collect_altered_columns(masked))
+    altered_columns = set(_collect_altered_columns(source, masked))
     if context is not None:
         all_declared_column_types.update(context.declared_column_types)
         altered_columns.update(context.altered_columns)
@@ -1127,8 +1230,8 @@ def _scan_widen_check_in(
     semicolons = [match.start() for match in re.finditer(rb";", masked)]
     alter_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
     for alter in _ALTER_TABLE_RE.finditer(masked):
-        table_name = _TABLE_NAME_AFTER_ALTER_RE.match(masked, alter.end())
-        if table_name is None:
+        table = _read_alter_table_identity(source, masked, alter.end())
+        if table is None:
             continue
         semicolon_index = bisect_right(semicolons, alter.start())
         statement_end = (
@@ -1137,7 +1240,7 @@ def _scan_widen_check_in(
             else len(masked)
         )
         alter_spans.append(
-            (alter.start(), statement_end, _table_key_from_match(table_name))
+            (alter.start(), statement_end, table[0])
         )
     alter_spans.sort(key=lambda item: item[0])
     alter_starts = [span[0] for span in alter_spans]

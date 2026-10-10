@@ -108,3 +108,79 @@ def test_sql_context_invalidates_type_after_cross_file_column_drop_and_readd():
     )
 
     assert sites == ()
+
+
+def test_sql_context_invalidates_type_after_quoted_cross_file_alter_identifiers():
+    enum_source = "CREATE TYPE public.task_status AS ENUM ('open', 'closed');\n"
+    cases = (
+        ("status", ("status",), 'DROP COLUMN "status"'),
+        (
+            "status",
+            ("status",),
+            'ADD COLUMN IF NOT EXISTS "status" public.task_status',
+        ),
+        (
+            "status_type",
+            ("status_type",),
+            'ALTER COLUMN "status_type" TYPE public.task_status',
+        ),
+        (
+            "status_set",
+            ("status_set",),
+            'ALTER COLUMN "status_set" SET DATA TYPE public.task_status',
+        ),
+        (
+            "status_before_rename",
+            ("status_before_rename", "status_after_rename"),
+            'RENAME COLUMN "status_before_rename" TO "status_after_rename"',
+        ),
+        (
+            "status_after_rename",
+            ("status_before_rename", "status_after_rename"),
+            'RENAME COLUMN "status_before_rename" TO "status_after_rename"',
+        ),
+        (
+            "status_star",
+            ("status_star",),
+            '* ALTER COLUMN "status_star" TYPE public.task_status',
+        ),
+    )
+
+    for column, declared_columns, action in cases:
+        # Each action gets a fresh text-only baseline. Its check has a real
+        # widening site until that specific action's identifiers are parsed.
+        table_source = (
+            "CREATE TABLE public.task ("
+            + ", ".join(f"{name} text" for name in declared_columns)
+            + ");\n"
+        )
+        check_source = (
+            "ALTER TABLE public.task ADD CHECK ("
+            f"{column} IN ('open', 'closed'));\n"
+        )
+        baseline = SqlAdapter().prepare_mutation_context((enum_source, table_source))
+        baseline_sites = SqlAdapter().generate_mutation_sites_with_context(
+            check_source,
+            frozenset({1}),
+            operators=("sql:widen-check-in",),
+            limit=1000,
+            context=baseline,
+        )
+        assert len(baseline_sites) == 1
+
+        altered = SqlAdapter().prepare_mutation_context(
+            (
+                enum_source,
+                table_source,
+                f'ALTER TABLE public."task" {action};\n',
+            )
+        )
+        altered_sites = SqlAdapter().generate_mutation_sites_with_context(
+            check_source,
+            frozenset({1}),
+            operators=("sql:widen-check-in",),
+            limit=1000,
+            context=altered,
+        )
+
+        assert altered_sites == ()
