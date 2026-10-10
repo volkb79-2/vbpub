@@ -106,6 +106,11 @@ The dashboard remains the daemon's HTTP/SSE client. The wheel does not add a
 remote `nyxloomctl` API client. Project-local authoring and harness extraction
 remain usable when the daemon is unavailable.
 
+Nyxloom's human CLIs use `cli-extended` as a separate runtime wheel. A one-time
+repair is required when upgrading an environment from Nyxloom 0.10.0; follow
+the [consumer upgrade steps](docs/CONSUMERS.md#upgrade-from-nyxloom-0100) and
+see the [wheel ownership rationale](docs/DESIGN-GUIDE.md#the-cli-extended-wheel-ownership-boundary).
+
 `nyxloom lint` discovers and checks the current project's configured handoffs;
 `nyxloomctl lint` retains the all-registered-project scan. Managed backlog
 creation remains scriptable and also supports `nyxloom backlog new

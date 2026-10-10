@@ -4,7 +4,24 @@ schema_version = 1
 kind = "none"
 
 [env]
-NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\n\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development.\n\n**Install**\n\nnyxloom depends on the `cli-extended` wheel (`cli-extended>=0.3.0`), published to GitHub Releases only, never PyPI. Download it beside this wheel and install it first:\n```bash\npipx install --preinstall ./cli_extended-*.whl nyxloom-*.whl\n```"
+NYXLOOM_RELEASE_NOTES = """## nyxloom wheel
+
+Files-first, daemon-supervised control plane for role-separated AI-assisted development.
+
+**Install**
+
+nyxloom depends on the `cli-extended` wheel (`cli-extended>=0.3.0`), published to GitHub Releases only, never PyPI. Download it beside this wheel.
+
+For a clean install:
+```bash
+pipx install --preinstall ./cli_extended-*.whl nyxloom-*.whl
+```
+
+When upgrading an existing Nyxloom 0.10.0 install, pip may remove the shared `cli_extended/` files when it replaces Nyxloom, while leaving the dependency metadata in place. After the Nyxloom install/upgrade, restore the dependency files from the official wheel:
+```bash
+pipx runpip nyxloom install --force-reinstall ./cli_extended-*.whl
+```
+"""
 
 [project]
 id = "nyxloom"

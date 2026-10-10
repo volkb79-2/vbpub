@@ -16,6 +16,23 @@ the broad lane now has a consistent minimum reach contract.
 Hypothesis remains appropriate for pure CLI and configuration invariants where
 input families are broad. Schemathesis is outside the CLI-only lane because
 Nyxloom does not expose an owned HTTP/OpenAPI contract there.
+
+## The cli-extended wheel ownership boundary
+
+Nyxloom 0.10.0 included `cli_extended/` files in its wheel while the separately
+installed `cli-extended` distribution installed those same paths. Pip records
+each wheel's file list independently; it does not track shared-file ownership.
+On upgrade, pip removed Nyxloom 0.10.0's files and kept the `cli-extended`
+distribution metadata because its version still satisfied the dependency. The
+metadata then described a package whose import files had been deleted.
+
+Nyxloom 0.10.1 removed the duplicate files from its wheel, which is the correct
+steady-state ownership model. An environment that already has 0.10.0 must
+reinstall the trusted `cli-extended` wheel after upgrading Nyxloom once. Later
+upgrades from a clean 0.10.1 install do not need this repair. The
+[consumer guide](CONSUMERS.md#upgrade-from-nyxloom-0100) gives the ordered
+commands.
+
 ## CLI identity, help, and bootstrap
 
 Each human command has one cli-extended registry that owns its parser, help,
