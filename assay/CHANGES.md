@@ -13,10 +13,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [9.0.0] - 2026-10-10
 <!-- cmru: generated -->
-<!-- cmru: source-end=4dbe27605cc9892b9a2bc35bc83ec51d8c8bb5ba -->
+<!-- cmru: source-end=14365c139de307d928cd51c91f3b0d1e53ca0ea5 -->
 
 ### BREAKING CHANGE
-- Verdict schema v15 is a hard cut from v14. `assay verify` rejects v14 and
+- verdict schema v15 is a hard cut from v14. `assay verify` rejects v14 and
   older verdicts; v12–v14 verdicts are cold starts for `--reuse-from`, and
   mutation state with an older judge identity is re-executed. Consumers must
   repin Assay before relying on v15 verdict fields.
@@ -102,6 +102,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs(assay): reconcile B114 for verdict v15 (549f9a283)
 
 ### Testing
+- test(assay): scope schema note check to current release (14365c139)
 - test(assay): accept versioned schema migration notes (4dbe27605)
 - test(assay): fix B131 pilot launcher oracle tuple (b8713d567)
 - test(assay): pin deferred B110 ledger refusal (8c4b9c84a)
