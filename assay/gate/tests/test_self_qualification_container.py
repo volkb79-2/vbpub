@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 
 from gate.tests.support import PROJECT_ROOT
+from gate.tests.test_analysis_r2_pilot import _run_checker_cli_with_valid_evidence
+from gate.tests.test_self_lane import _run_analysis_r2_pilot_inner_harness
 
 REPO_ROOT = PROJECT_ROOT.parent
 SCRIPT = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
@@ -354,6 +356,14 @@ if args and args[0] == "logs":
     elif lane == "analysis-r2-pilot":
         if mode == "analysis-pilot-incomplete":
             print("ANALYSIS_R2_PILOT_EXIT=4")
+        elif mode == "analysis-pilot-inner-log":
+            sys.stdout.write(
+                Path(os.environ["ANALYSIS_PILOT_INNER_LOG"]).read_text(encoding="utf-8")
+            )
+        elif mode == "analysis-pilot-duplicate-marker":
+            print("ANALYSIS_R2_PILOT_EXIT=6")
+            print("ANALYSIS_R2_PILOT_VERIFIED=1")
+            print("ANALYSIS_R2_PILOT_VERIFIED=1")
         else:
             print("ANALYSIS_R2_PILOT_EXIT=6")
             if mode == "analysis-pilot-b110-marker":
@@ -550,6 +560,7 @@ def run_launcher(
     tamper_host_checker_after_final_status: bool = False,
     status_delay_at: int | None = None,
     status_delay_seconds: float = 0,
+    inner_pilot_log: Path | None = None,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -666,6 +677,8 @@ if '--archive-prior-snapshot' in sys.argv:
         "TIMEOUT_TRACE": str(tmp_path / "timeout.jsonl"),
         "FAST_DOCKER_TIMEOUT": "1" if fast_docker_timeout else "0",
     }
+    if inner_pilot_log is not None:
+        env["ANALYSIS_PILOT_INNER_LOG"] = str(inner_pilot_log)
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
     if host_workspace_root is not None:
@@ -863,6 +876,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         ("analysis-r2-pilot", "analysis-pilot-incomplete", "complete exit status (6)"),
         ("analysis-r2-pilot", "analysis-pilot-b110-marker", "B110-mode marker"),
         ("analysis-r2-pilot", "analysis-pilot-unverified", "evidence verification marker"),
+        ("analysis-r2-pilot", "analysis-pilot-duplicate-marker", "evidence verification marker"),
     ],
 )
 def test_b110_child_evidence_is_required_before_outer_completion(
@@ -889,6 +903,48 @@ def test_analysis_r2_pilot_emits_lane_specific_launch_markers(
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER=run-gate-assay-analysis-r2-pilot-" in proc.stdout
     assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" in proc.stdout
     assert "ASSAY_B105_GATE_WAIT_TIMEOUT=" not in proc.stdout
+
+
+def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker(
+    tmp_path: Path, committed_worktree: Path
+):
+    checker_dir = tmp_path / "checker"
+    checker_dir.mkdir()
+    checker_status, checker_output = _run_checker_cli_with_valid_evidence(checker_dir)
+    assert checker_status == 0
+    assert checker_output == "ANALYSIS_R2_PILOT_VERIFIED=1\n"
+
+    inner_dir = tmp_path / "inner"
+    inner_dir.mkdir()
+    checker_output_path = inner_dir / "checker-output.txt"
+    checker_output_path.write_text(checker_output, encoding="ascii")
+    inner_proc = _run_analysis_r2_pilot_inner_harness(
+        inner_dir, checker_output=checker_output_path
+    )
+    assert inner_proc.returncode == 0, inner_proc.stderr
+    assert "STATUS=0" in inner_proc.stdout
+    assert inner_proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 1
+
+    inner_log = tmp_path / "container-inner.log"
+    inner_log.write_text(inner_proc.stdout, encoding="utf-8")
+    outer_tmp = tmp_path / "outer"
+    outer_tmp.mkdir()
+    outer_proc, _calls, _elapsed = run_launcher(
+        outer_tmp,
+        committed_worktree,
+        lane="analysis-r2-pilot",
+        mode="analysis-pilot-inner-log",
+        inner_pilot_log=inner_log,
+    )
+    assert outer_proc.returncode == 0, outer_proc.stderr
+    assert outer_proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 2
+    container_exit_position = outer_proc.stdout.index(
+        "ASSAY_ANALYSIS_R2_PILOT_GATE_CONTAINER_EXIT=0"
+    )
+    first_marker_position = outer_proc.stdout.index("ANALYSIS_R2_PILOT_VERIFIED=1")
+    final_marker_position = outer_proc.stdout.rindex("ANALYSIS_R2_PILOT_VERIFIED=1")
+    assert first_marker_position < final_marker_position < container_exit_position
+    assert "ASSAY_ANALYSIS_R2_PILOT_GATE_COMPLETE=analysis-r2-pilot" in outer_proc.stdout
 
 
 def test_pilot_host_publishes_snapshot_and_returns_its_digest(

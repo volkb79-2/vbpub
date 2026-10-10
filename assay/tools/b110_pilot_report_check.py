@@ -135,44 +135,20 @@ def _require_sha(value: Any, label: str) -> str:
     return value
 
 
-def _verify_plan(
-    document: Any,
-    *,
-    expected_commit: str,
-    expected_tree: str,
-    repo_root: Path,
-    plan_raw: bytes,
-    selection: Any,
-    candidates_raw: bytes,
-) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
-    if not isinstance(document, dict):
-        raise ValueError("plan is not an object")
-    if (
-        document.get("status") != "ok"
-        or document.get("lane") != "self-qualification"
-        or document.get("commit") != expected_commit
-        or document.get("tree") != expected_tree
-        or document.get("shard") is not None
-    ):
-        raise ValueError("plan is not the complete self-qualification inventory at the expected source")
-    rows = document.get("candidates")
-    if (
-        not isinstance(rows, list)
-        or type(document.get("candidate_count")) is not int
-        or document["candidate_count"] != len(rows)
-    ):
-        raise ValueError("plan candidate_count does not match its candidate rows")
-    plan_commit, plan_tree, parsed_rows = selector._parse_plan(plan_raw)
-    if plan_commit != expected_commit or plan_tree != expected_tree or parsed_rows != rows:
-        raise ValueError("plan rows or identity do not match the parsed source-bound plan")
+def derive_b105_inventory(
+    *, repo_root: Path, expected_commit: str, expected_tree: str
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, bytes]]:
+    """Rebuild the complete ordered B105 candidate inventory from committed source.
 
+    The bounded B110 screen and pilot both use this same derivation so neither
+    can treat a producer-supplied plan as the authority for what was judged.
+    """
+    if not _HEX40.fullmatch(expected_commit) or not _HEX40.fullmatch(expected_tree):
+        raise ValueError("expected commit and tree must be full lowercase Git IDs")
     current_commit, current_tree = selector._repository_identity(repo_root)
     if (current_commit, current_tree) != (expected_commit, expected_tree):
         raise ValueError("current Git identity differs from the expected source")
-    # The plan is not allowed to choose the target inventory it asks this
-    # checker to verify. Read the lane config from the committed tree, load
-    # that exact on-disk config with Assay's shipped loader, then derive jobs
-    # from every declared whole-target source path.
+
     config_relative = "assay/assay.toml"
     try:
         config_raw = selector._read_tree_files(
@@ -234,16 +210,55 @@ def _verify_plan(
     if jobs == UNSUPPORTED or len(jobs) > lane.judge.mutation.max_mutants:
         raise ValueError("committed B105 targets exceed the supported complete mutation inventory")
     expected_rows = _plan_rows_from_jobs(jobs)
-    if rows != expected_rows:
-        raise ValueError(
-            "plan candidate inventory differs from the complete committed whole-target lane"
-        )
     replacement_sha256_by_id: dict[str, str] = {}
     for job in jobs:
         identity = candidate_id(job)
         if identity in replacement_sha256_by_id:
             raise ValueError(f"rederived mutation inventory repeats candidate {identity}")
         replacement_sha256_by_id[identity] = job.site.replacement_sha256
+    return expected_rows, replacement_sha256_by_id, sources
+
+
+def _verify_plan(
+    document: Any,
+    *,
+    expected_commit: str,
+    expected_tree: str,
+    repo_root: Path,
+    plan_raw: bytes,
+    selection: Any,
+    candidates_raw: bytes,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
+    if not isinstance(document, dict):
+        raise ValueError("plan is not an object")
+    if (
+        document.get("status") != "ok"
+        or document.get("lane") != "self-qualification"
+        or document.get("commit") != expected_commit
+        or document.get("tree") != expected_tree
+        or document.get("shard") is not None
+    ):
+        raise ValueError("plan is not the complete self-qualification inventory at the expected source")
+    rows = document.get("candidates")
+    if (
+        not isinstance(rows, list)
+        or type(document.get("candidate_count")) is not int
+        or document["candidate_count"] != len(rows)
+    ):
+        raise ValueError("plan candidate_count does not match its candidate rows")
+    plan_commit, plan_tree, parsed_rows = selector._parse_plan(plan_raw)
+    if plan_commit != expected_commit or plan_tree != expected_tree or parsed_rows != rows:
+        raise ValueError("plan rows or identity do not match the parsed source-bound plan")
+
+    expected_rows, replacement_sha256_by_id, sources = derive_b105_inventory(
+        repo_root=repo_root,
+        expected_commit=expected_commit,
+        expected_tree=expected_tree,
+    )
+    if rows != expected_rows:
+        raise ValueError(
+            "plan candidate inventory differs from the complete committed whole-target lane"
+        )
 
     if not isinstance(selection, dict):
         raise ValueError("selection report is not an object")

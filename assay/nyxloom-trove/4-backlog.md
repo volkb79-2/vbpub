@@ -9493,7 +9493,7 @@ names.
 
 ## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
 
-**Status: IMPLEMENTED and registered on `assay-b087-js-canary` (2026-10-07), rebased onto main `6086d4c9` (2026-10-08). Local real-Vitest oracles and both current dstdns R3 canaries pass; the registered Assay gate remains pending controller release. The branch is not merged or released.**
+**Status: IMPLEMENTED and integrated in local Assay `main` at `a5659aff` (2026-10-10). Both retained current dstdns R3 canaries passed, and registered `tester-unified` passed on that exact integration commit. The current B131 remediation diff requires its own exact-tip review and registered gate before release; B087 itself is not yet released.**
 
 **Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
 **Cheap, scoped, NOT design-first — the harder design work is already done.**
@@ -10893,7 +10893,7 @@ campaign must remain explicitly incomplete.
 
 ## B107 — candidate `hung` outcomes lack time-aligned resource evidence, so an actual deadlock cannot be distinguished from a resource stall
 
-**Status: OPEN (filed 2026-09-26 from the RG-55 P6 exact-tree R2 campaign).**
+**Status: DONE — shipped in `assay-v8.0.0`. The accepted pressure-aware implementation and review are in the release ancestry; `CHANGES.md` records the B107 fixes.**
 
 **Observed:** the same P6 mutation candidate
 `0a38e7d8ab99ea0483119223cf9b8e38184e85124ca37f631ee264fed7a135d1`

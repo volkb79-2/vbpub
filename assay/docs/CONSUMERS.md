@@ -1888,10 +1888,9 @@ inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
 by the existing cause-sensitive canary runner. Assay still ships no JS/TS
 mutation engine, so a *native* R2 lane is still refused. B087 registers R3
-and local real-Vitest tests exercise both mechanisms. Requalification of the
-current uncovered-line transform against dstdns is pending; the earlier
-operator-reported dstdns attempt used different code and did not retain its
-verdicts or verifier transcripts. See the
+and local real-Vitest tests exercise both mechanisms. Both current dstdns
+canaries passed with retained schema-v15 verdicts and verifier transcripts;
+the integrated Assay release gate is separate. See the
 [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
@@ -2142,8 +2141,10 @@ from a cold `node_modules`. This triples the cost of that lane. The lane's
 `mechanism` is exactly one of `import-break` or `uncovered-line`; declare
 separate lanes if you want to exercise both, and budget each lane for its own
 baseline and two canary commands. R3 is registered and has local real-Vitest
-oracles. Qualification of the current transform against dstdns remains open;
-see the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
+oracles. Both current dstdns canaries passed with retained v15 verdicts and
+verifier transcripts; the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md)
+records the evidence and scope. This is distinct from Assay's integrated
+release gate.
 
 Gitignore what the run writes — the coverage directory, and anything your
 runner drops beside it — in the same change that adds the lane:

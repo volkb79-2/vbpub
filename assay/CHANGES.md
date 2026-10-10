@@ -149,6 +149,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   after verifying that it names the pinned state inode; require non-kills to
   use full execution without a witness, require witness-cold kills to include
   an R2 failed-call prefix, and reject witness-prefix reuse in the B131 pilot.
+- Require the B131 analysis-pilot checker to emit exactly its success marker;
+  the gate validates that output and emits one marker only after its final
+  source and deadline checks, so a valid measurement can reach the outer gate.
+- Rebuild the complete ordered B105 target inventory from committed source
+  when checking a B110 survivor screen; a truncated producer plan and matching
+  verdict can no longer certify an incomplete screen.
+- Correct B087's public qualification status: the two retained dstdns canaries
+  passed, while Assay release evidence remains a separate claim.
 
 ## [8.0.0] - 2026-10-07
 <!-- cmru: generated -->

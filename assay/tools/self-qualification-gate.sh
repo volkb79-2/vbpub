@@ -263,7 +263,7 @@ run_analysis_r2_pilot() {
   local pilot_started_s=$SECONDS pilot_cap_s=$((90 * 60))
   local pilot_step_budget_s campaign_budget_s remaining_s pilot_status
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
-  local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
+  local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s pilot_checker_output
   local state_dir=.assay/analysis-r2-pilot-state
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
@@ -384,7 +384,7 @@ run_analysis_r2_pilot() {
     return 124
   fi
   set +e
-  timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
+  pilot_checker_output="$(timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
     "$scratch/run-venv/bin/python" \
     "$scratch/source/assay/tools/analysis_r2_pilot_check.py" \
       --plan "$plan_path" --selection "$selection_path" \
@@ -393,12 +393,16 @@ run_analysis_r2_pilot() {
       --state-dir "$state_dir" --verdict "$verdict_path" \
       --repo-root "$worktree" --expected-commit "$source_commit" \
       --expected-tree "$source_tree" --expected-wheel-sha256 "$wheel_digest" \
-      --expected-exit-code "$pilot_status"
+      --expected-exit-code "$pilot_status")"
   checker_status=$?
   set -e
   if (( checker_status != 0 )); then
     echo "ANALYSIS_R2_PILOT_CHECKER_EXIT=$checker_status" >&2
     return "$checker_status"
+  fi
+  if [[ "$pilot_checker_output" != "ANALYSIS_R2_PILOT_VERIFIED=1" ]]; then
+    echo "ANALYSIS_R2_PILOT_CHECKER_MARKER_INVALID=1" >&2
+    return 1
   fi
   ensure_source_unchanged
   campaign_budget_s="$(pilot_campaign_remaining_s "$scratch/run-venv/bin/python" "$pilot_deadline")"
@@ -455,6 +459,7 @@ run_b110_screen() {
   screen_checker_output="$("$scratch/run-venv/bin/python" "$scratch/source/assay/tools/b110_screen_report_check.py" \
     --plan "$assay_state_root/b110-screen-plan.json" \
     --verdict "$assay_state_root/verdict-b110-screen.json" \
+    --repo-root "$worktree" \
     --expected-commit "$source_commit" --expected-tree "$source_tree" \
     --expected-exit-code "$screen_status")" \
     || { echo "B110_SCREEN_VERIFICATION_FAILED=1" >&2; return 1; }

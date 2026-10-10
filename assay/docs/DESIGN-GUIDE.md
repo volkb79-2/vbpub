@@ -2840,7 +2840,7 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; qualification of the current transform against dstdns is pending |
+| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; both current dstdns canaries passed with retained schema-v15 verdicts and verifier transcripts |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
 
 **B087 registers both adapter transforms through the shared isolated canary
@@ -2852,10 +2852,11 @@ the function body's lines remain uncovered. The runner accepts only the
 matching `COMMAND_FAILED` or `UNCOVERED_LINES` result after a passing control,
 respectively. The live R3 oracles cover ESM and CommonJS; a separate Vitest
 fixture replay confirms the body lines remain missing under both Istanbul
-and V8 artifacts. The original dstdns attempt used a different uncovered-line
-transform; current real-consumer qualification remains open. The report at
-`nyxloom-trove/reports/B087-js-r3-qualification.md` records that evidence gap.
-No verdict or schema rule changed.
+and V8 artifacts. Both current dstdns canaries passed with retained schema-v15
+verdicts and verifier transcripts; the report at
+`nyxloom-trove/reports/B087-js-r3-qualification.md` records their scope and
+evidence. That consumer evidence is distinct from the integrated Assay release
+gate. No verdict or schema rule changed.
 
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own

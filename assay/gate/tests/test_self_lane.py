@@ -942,10 +942,32 @@ def _shell_function_body(script: str, name: str) -> str:
     return "\n".join(lines[start : end + 1]) + "\n"
 
 
-@pytest.mark.parametrize("expired_bound", ["invocation", "campaign"])
+@pytest.mark.parametrize("expired_bound", ["invocation", "campaign", "none"])
 def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     tmp_path: Path, expired_bound: str
 ):
+    marker_file = tmp_path / "checker-output.txt"
+    marker_file.write_text("ANALYSIS_R2_PILOT_VERIFIED=1\n", encoding="ascii")
+    proc = _run_analysis_r2_pilot_inner_harness(
+        tmp_path, checker_output=marker_file, expired_bound=expired_bound
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    if expired_bound == "none":
+        assert "STATUS=0" in proc.stdout
+        assert proc.stdout.count("ANALYSIS_R2_PILOT_VERIFIED=1") == 1
+    else:
+        assert "STATUS=124" in proc.stdout
+        assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
+        assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
+
+
+def _run_analysis_r2_pilot_inner_harness(
+    tmp_path: Path,
+    *,
+    checker_output: Path,
+    expired_bound: str = "none",
+) -> subprocess.CompletedProcess[str]:
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     pilot = _shell_function_body(script, "run_analysis_r2_pilot")
     function_path = tmp_path / "analysis-pilot-function.sh"
@@ -959,7 +981,14 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     scratch = tmp_path / "scratch"
     python = scratch / "run-venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$*\" in\n"
+        "  *analysis_r2_pilot_check.py*) cat \"$PILOT_CHECKER_OUTPUT\" ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
     python.chmod(0o755)
 
     bin_dir = tmp_path / "bin"
@@ -1017,15 +1046,11 @@ def test_b131_pilot_rechecks_deadlines_after_final_source_integrity_check(
     )
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env["PILOT_CHECKER_OUTPUT"] = str(checker_output)
 
-    proc = subprocess.run(
+    return subprocess.run(
         ["bash", str(harness)], capture_output=True, text=True, env=env, timeout=30
     )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "STATUS=124" in proc.stdout
-    assert "ANALYSIS_R2_PILOT_TIMEOUT_FAILSAFE=1" in proc.stderr
-    assert "ANALYSIS_R2_PILOT_VERIFIED=1" not in proc.stdout
 
 
 def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
@@ -1071,6 +1096,7 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     assert '"$assay_bin" verify "$assay_state_root/verdict-b110-screen.json"' in screen
     assert "b110_screen_report_check.py" in screen
     assert "B110_SCREEN_VERIFIED=1" in screen
+    assert '--repo-root "$worktree"' in screen
     assert "--expected-exit-code \"$screen_status\"" in screen
     assert "--output b110-screen-run.log --stderr-to-stdout" in screen
     assert "--campaign-deadline" not in screen

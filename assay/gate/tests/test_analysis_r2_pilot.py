@@ -580,6 +580,47 @@ def test_analysis_pilot_accepts_consistent_complete_evidence(tmp_path: Path):
     checker.verify_pilot(**_valid_pilot(tmp_path))
 
 
+def _run_checker_cli_with_valid_evidence(tmp_path: Path) -> tuple[int, str]:
+    evidence = _valid_pilot(tmp_path)
+    inputs = {
+        "--plan": ("plan.json", evidence["plan_raw"]),
+        "--selection": ("selection.json", evidence["selection_raw"]),
+        "--candidates": ("candidates.txt", evidence["candidates_raw"]),
+        "--summary": ("summary.json", evidence["summary_raw"]),
+        "--progress": ("progress.jsonl", evidence["progress_raw"]),
+        "--deadline": ("deadline.json", evidence["deadline_raw"]),
+    }
+    argv: list[str] = []
+    for option, (name, payload) in inputs.items():
+        path = tmp_path / name
+        path.write_bytes(payload)
+        argv.extend((option, str(path)))
+    verdict = tmp_path / "verdict.json"
+    argv.extend((
+        "--state-dir", str(evidence["state_dir"]),
+        "--verdict", str(verdict),
+        "--repo-root", str(evidence["repo_root"]),
+        "--expected-commit", evidence["expected_commit"],
+        "--expected-tree", evidence["expected_tree"],
+        "--expected-wheel-sha256", evidence["expected_wheel_sha256"],
+        "--expected-exit-code", str(evidence["expected_exit_code"]),
+    ))
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = checker.main(argv)
+    return status, output.getvalue()
+
+
+def test_analysis_pilot_checker_cli_emits_one_completion_marker_after_complete_evidence(
+    tmp_path: Path,
+):
+    status, output = _run_checker_cli_with_valid_evidence(tmp_path)
+
+    assert status == 0
+    assert output == "ANALYSIS_R2_PILOT_VERIFIED=1\n"
+
+
 @pytest.mark.parametrize(
     ("case", "message"),
     [

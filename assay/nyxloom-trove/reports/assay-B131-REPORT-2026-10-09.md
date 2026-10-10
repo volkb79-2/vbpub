@@ -70,3 +70,30 @@ B115/P4, and B117/P6 acceptance must close on the final integrated gates;
 B118/P7c is the active prerequisite. B112/P1 requires fresh B105 timing,
 while P5/B116, P9/B119, P10/B120, and P11/B121 remain deferred or decision
 gated as described in that plan. B148 remains separate hardening.
+
+## Controller update — integration repairs (2026-10-10)
+
+The current remediation closes two review findings in the integrated B131/B110
+surface. The analysis-pilot shell now accepts only the checker's exact success
+marker and emits the completion marker once, after the final source and
+deadline checks. The B110 survivor-screen checker now rebuilds the full
+ordered B105 inventory from the committed lane declaration before accepting a
+plan and verifier-valid verdict. Regression coverage includes the real
+checker-to-inner-shell-to-outer-launcher marker path and a truncated plan with
+a matching survivor verdict. The focused B131/B110 regression set passes
+**163 tests in 83.41 seconds**; Python compilation, shell syntax, and
+`git diff --check` pass. The public documentation contract passes **56 tests**.
+
+The B087 public status is corrected from the retained dstdns evidence: both
+current canaries passed, and the registered integration gate passed on
+`a5659aff`; neither fact is a release claim for the current remediation tip.
+B107 is already shipped in `assay-v8.0.0`. B135 and B148 are folded into B114
+under A-484; the previous paragraph's separate-hardening note is superseded.
+
+This worktree's `assay/.assay` directory was absent before the new gates, so no
+prior Assay state was present to replace. The unrelated `assay-r1` run from
+`rg89-p1-r2-20261009` completed R0/R1 PASS at commit `8b8d1480`; it did not run
+R2 and provides no evidence for this worktree. The current remediation still
+needs an exact-tip Sol xhigh review and registered `tester-unified`,
+`self-qualification-preflight`, and MDT `smoke` acceptance before the B131
+analysis-pilot gate can start.

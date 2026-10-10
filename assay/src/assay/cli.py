@@ -1554,11 +1554,11 @@ def _built_in_registry() -> registry.Registry:
        capability, never a PASS.
 
     **B087 registers JavaScript at R3 through the existing producer path.**
-    Real-Vitest fixture oracles exercise both canary mechanisms. The current
-    uncovered-line transform's dstdns qualification is pending; the report in
-    ``nyxloom-trove/reports/B087-js-r3-qualification.md`` archives an earlier
-    attempt that used a different transform and did not retain its verdicts.
-    No verdict or schema change was needed for the registration.
+    Real-Vitest fixture oracles exercise both canary mechanisms. Both current
+    dstdns canaries passed with retained schema-v15 verdicts and verifier
+    transcripts; see ``nyxloom-trove/reports/B087-js-r3-qualification.md`` for
+    scope and limits. This consumer evidence is separate from the integrated
+    Assay release gate. No verdict or schema change was needed for registration.
     """
     return registry.new_registry(
         registry.RegistryEntry(

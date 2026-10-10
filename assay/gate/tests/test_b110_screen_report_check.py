@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -19,7 +21,15 @@ def _checker():
     spec = importlib.util.spec_from_file_location("b110_screen_report_check_tests", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    tools_path = str(PROJECT_ROOT / "tools")
+    added_tools_path = tools_path not in sys.path
+    if added_tools_path:
+        sys.path.insert(0, tools_path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if added_tools_path:
+            sys.path.remove(tools_path)
     return module
 
 
@@ -55,12 +65,15 @@ def _documents():
 
 
 def _verify(plan, verdict, *, expected_exit_code=None):
-    _checker().verify_screen(
+    checker = _checker()
+    checker.derive_b105_inventory = lambda **_kwargs: (plan["candidates"], {}, {})
+    checker.verify_screen(
         plan,
         verdict,
         expected_commit=COMMIT,
         expected_tree=TREE,
         expected_exit_code=verdict["exit_code"] if expected_exit_code is None else expected_exit_code,
+        repo_root=PROJECT_ROOT.parent,
     )
 
 
@@ -224,9 +237,12 @@ def test_verifier_valid_r2_error_cannot_certify_a_complete_screen(tmp_path: Path
     verdict_path = tmp_path / "verdict.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
     verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
-    code = _checker().main([
+    checker = _checker()
+    checker.derive_b105_inventory = lambda **_kwargs: (plan["candidates"], {}, {})
+    code = checker.main([
         "--plan", str(plan_path),
         "--verdict", str(verdict_path),
+        "--repo-root", str(PROJECT_ROOT.parent),
         "--expected-commit", COMMIT,
         "--expected-tree", TREE,
         "--expected-exit-code", str(verdict["exit_code"]),
@@ -256,6 +272,7 @@ def test_reader_rejects_symlink_and_duplicate_json_keys(tmp_path: Path):
 def test_cli_emits_completion_marker_only_after_check(tmp_path: Path, capsys):
     checker = _checker()
     plan, verdict = _documents()
+    checker.derive_b105_inventory = lambda **_kwargs: (plan["candidates"], {}, {})
     plan_path = tmp_path / "plan.json"
     verdict_path = tmp_path / "verdict.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
@@ -264,6 +281,7 @@ def test_cli_emits_completion_marker_only_after_check(tmp_path: Path, capsys):
     code = checker.main([
         "--plan", str(plan_path),
         "--verdict", str(verdict_path),
+        "--repo-root", str(PROJECT_ROOT.parent),
         "--expected-commit", COMMIT,
         "--expected-tree", TREE,
         "--expected-exit-code", str(verdict["exit_code"]),
@@ -271,3 +289,78 @@ def test_cli_emits_completion_marker_only_after_check(tmp_path: Path, capsys):
 
     assert code == 0
     assert capsys.readouterr().out.strip() == "B110_SCREEN_VERIFIED=1"
+
+
+def test_cli_rejects_coherently_truncated_plan_and_matching_verdict(tmp_path: Path, capsys):
+    checker = _checker()
+    repo_root = tmp_path / "source-repo"
+    subprocess.run(
+        ["git", "clone", "--no-local", "--quiet", str(PROJECT_ROOT.parent), str(repo_root)],
+        check=True, capture_output=True, text=True,
+    )
+    commit = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD^{tree}"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    full_rows, replacement_sha256_by_id, _sources = checker.derive_b105_inventory(
+        repo_root=repo_root,
+        expected_commit=commit,
+        expected_tree=tree,
+    )
+    assert len(full_rows) > 2
+    plan, verdict = _documents()
+    declared_operators = set(verdict["judgment"]["r2"]["operators"])
+    truncated_rows = [
+        row for row in full_rows if row["operator"] in declared_operators
+    ][:2]
+    assert len(truncated_rows) == 2
+    truncated_ids = [row["id"] for row in truncated_rows]
+    plan.update({
+        "commit": commit,
+        "tree": tree,
+        "candidate_count": len(truncated_rows),
+        "candidates": truncated_rows,
+    })
+    verdict["commit"] = commit
+    mutation = verdict["claims"][2]["mutation"]
+    mutation["candidate_ids"] = truncated_ids
+    for bucket, row in zip(("killed", "survived"), truncated_rows, strict=True):
+        record = mutation[bucket][0]
+        record.update({
+            "candidate_id": row["id"],
+            "path": row["path"],
+            "lineno": row["lineno"],
+            "start_byte": row["start_byte"],
+            "end_byte": row["end_byte"],
+            "operator": row["operator"],
+            "description": row["description"],
+            "source_sha256": row["source_sha256"],
+            "mutated_file_sha256": row["mutated_file_sha256"],
+            "replacement_sha256": replacement_sha256_by_id[row["id"]],
+        })
+
+    assert [row["id"] for row in plan["candidates"]] == mutation["candidate_ids"]
+    assert verify_document(verdict) == []
+    verify_complete_mutation_inventory(mutation, truncated_ids, context="truncated fixture")
+    plan_path = tmp_path / "truncated-plan.json"
+    verdict_path = tmp_path / "matching-verdict.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    code = checker.main([
+        "--plan", str(plan_path),
+        "--verdict", str(verdict_path),
+        "--repo-root", str(repo_root),
+        "--expected-commit", commit,
+        "--expected-tree", tree,
+        "--expected-exit-code", str(verdict["exit_code"]),
+    ])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "plan candidate inventory differs from the complete committed B105" in captured.err
