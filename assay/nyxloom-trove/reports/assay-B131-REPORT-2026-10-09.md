@@ -1,12 +1,19 @@
 # B131 — analysis-package R2 pilot report
 
 **Date:** 2026-10-09  
-**Status:** Stage 1 implementation is provisionally integrated on
-`assay-b131-r2`. The round-nine exact-tree Sol xhigh review accepted the
-current diff with no findings after rounds seven and eight identified and
-closed three additional evidence/resume gaps. Registered gates and both
-bounded pilot measurements remain pending. This package does not claim full
-analysis R2 qualification or make it a release requirement.
+**Status:** Stage 1 implementation is provisionally merged to local `main` as
+`2cad53d9`, from reviewed branch tip `b8713d56`. The full since-8.0.0 Sol
+xhigh review found no code defect; its sole P1 (a missing registered gate)
+was resolved by the pass below. The follow-up repair review accepted its
+exact diff. The
+registered `tester-unified` lane and MDT `smoke` passed on `b8713d56`.
+The preflight on that commit refused before launching its child at
+1,280,720,896 bytes of headroom. A fresh retry on the documentation-only
+descendant `595b4069` also refused before launch at 1,375,588,352 bytes of
+headroom, below the 2 GiB requirement (log
+`/tmp/run-gate/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`).
+The B110 and B131 bounded R2 pilots have not run. This package does not claim
+full analysis R2 qualification or make it a release requirement.
 
 ## Claim and boundary
 
@@ -52,25 +59,32 @@ checker suites pass **117 tests in 43.65 seconds**; safe-I/O, campaign and
 pilot-path core suites pass **124 tests in 20.96 seconds**; documentation
 contract and shipped-source pyflakes checks pass **57 tests in 10.57 seconds**.
 Python compilation and `git diff --check` pass. The final remediation review
-accepted the exact delta with no findings. Registered gates and the measured
-analysis pilot remain pending. The analysis pilot's inventory, sample
-outcome, time projection, worker envelope and GO decision are outstanding.
+accepted the exact delta with no findings. The integrated `tester-unified`
+gate passed on `b8713d56`; MDT `smoke` passed with 119 tests, 6 skips, and 6
+subtests. The B105 preflight refused before child launch on `b8713d56` at
+1,280,720,896 bytes of gates-slice headroom; a retry on `595b4069` again
+refused at 1,375,588,352 bytes (2 GiB required). Both bounded R2 pilots remain
+pending; the shared launcher applies the same headroom check to the B110 and
+B131 pilots. The analysis pilot's inventory, sample outcome, time projection,
+worker envelope and GO decision are outstanding.
 
-After integrating the reviewed B118 fix, run the final registered acceptance
-serially on the same tip: `tester-unified`,
-`self-qualification-preflight`, the B114 MDT `smoke` lane, then
-`analysis-r2-pilot`. Record actual gate/container identities and exit markers
-here. A full analysis R2 run may start asynchronously only if the completed
-pilot supports the B131-specific GO policy recorded from its measurements.
+Retry the preflight after host capacity recovers. Then run `b110-pilot` and
+`analysis-r2-pilot` serially, record their reports and decide from their
+measurements whether either full R2 campaign is justified. A full analysis R2
+run may start asynchronously only if its completed pilot supports the
+B131-specific GO policy recorded from those measurements.
 
 ## B110 dependency decisions
 
 The current dependency disposition is recorded in the
-[B131 implementation plan](assay-B131-PLAN-2026-10-09.md). In brief, B114/P3,
-B115/P4, and B117/P6 acceptance must close on the final integrated gates;
-B118/P7c is the active prerequisite. B112/P1 requires fresh B105 timing,
+[B131 implementation plan](assay-B131-PLAN-2026-10-09.md). B114/P3,
+B115/P4, B117/P6, and B118/P7c implementation are integrated; the final
+`tester-unified` and MDT `smoke` gates passed. The remaining B110 and B131
+pilot measurements depend on the 2 GiB admission preflight, which currently
+refuses before launch for insufficient host headroom. B112/P1 requires fresh B105 timing,
 while P5/B116, P9/B119, P10/B120, and P11/B121 remain deferred or decision
-gated as described in that plan. B148 remains separate hardening.
+gated as described in that plan. B148 was folded into B114 under A-484; its
+tests and documentation checks passed in the integrated gate.
 
 ## Controller update — integration repairs (2026-10-10)
 
