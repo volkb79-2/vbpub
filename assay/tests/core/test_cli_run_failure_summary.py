@@ -122,6 +122,44 @@ def test_a_failing_suite_that_dirties_the_tree_still_reports_r0_fail(
     assert verify_document(document) == []
 
 
+def test_dirty_tree_r0_detail_accounts_for_both_diagnostic_parts(
+    git_repo: GitRepo, tmp_path
+):
+    create_files = "; ".join(
+        f": > dirty-{index:02d}-{'x' * 120}.txt" for index in range(24)
+    )
+    path = _lane(
+        git_repo,
+        f"echo 'FAILED {FIRST} - boom'; echo 'FAILED {SECOND} - bang'; "
+        f"{create_files}; exit 1",
+    )
+
+    verdict_path = tmp_path / "verdict.json"
+    code, out, err = _run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(verdict_path)]
+    )
+
+    assert code == 3
+    assert "package: NO_MEASUREMENT/DIRTY_TREE (exit 3)" in out
+    refusal_line = next(line for line in err.splitlines() if "DIRTY_TREE:" in line)
+    refusal_message = refusal_line.split(": ", maxsplit=2)[2]
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r0 = next(claim for claim in document["claims"] if claim["rigor"] == "R0")
+    full_detail = (
+        f"R0 command failed; first failing test: {FIRST}; run refusal: "
+        f"{refusal_message}"
+    )
+
+    assert len(full_detail.encode("utf-8")) > 2048
+    assert r0["detail"].startswith(
+        f"R0 command failed; first failing test: {FIRST}; run refusal:"
+    )
+    assert r0["detail_dropped_bytes"] == len(full_detail.encode("utf-8")) - len(
+        r0["detail"].encode("utf-8")
+    )
+    assert verify_document(document) == []
+
+
 def test_a_no_measurement_without_a_failing_test_is_not_recast(git_repo: GitRepo):
     path = _lane(git_repo, "exit 0")
     git_repo.write("uncommitted.txt", "dirty\n")

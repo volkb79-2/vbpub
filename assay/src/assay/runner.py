@@ -7296,14 +7296,15 @@ def _finish_direct_r0_lane(
         if post_observed_head != pre_run_head:
             post_run_reason = ReasonCode.HEAD_CHANGED
     if post_run_reason is not None:
+        post_error = post_command_refusal(
+            post_run_reason,
+            where=repo,
+            recorded_commit=pre_run_head,
+            dirty=post_dirty,
+            observed_head=post_observed_head,
+        )
         direct_post_detail = announce_refusal(
-            post_command_refusal(
-                post_run_reason,
-                where=repo,
-                recorded_commit=pre_run_head,
-                dirty=post_dirty,
-                observed_head=post_observed_head,
-            ),
+            post_error,
             diagnostics=diagnostics,
         )
         # Keep the measured R0 failure in its claim even though this later
@@ -7311,9 +7312,7 @@ def _finish_direct_r0_lane(
         # this one case both diagnostics share the existing unstructured
         # bounded detail field; the stderr refusal line remains unchanged.
         if r0_claim.detail is not None:
-            combined = r0_claim.detail
-            if direct_post_detail is not None:
-                combined = f"{combined}; run refusal: {direct_post_detail.text}"
+            combined = f"{r0_claim.detail}; run refusal: {post_error}"
             direct_post_detail = refusal_detail(combined)
         return assemble_verdict(
             lane=lane,
