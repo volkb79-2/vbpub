@@ -8839,3 +8839,9 @@ socket carrier. A per-test `/tmp` socket root is length-asserted below the
 Unix `sun_path` bound. The complete `TestProfilerClient` class, the selftest
 lane static oracle, and the bind-mounted scratch-root oracle now pass locally
 (61 passed). This is test isolation, not a product behavior change.
+
+### RW-548 — 2026-10-10 17:27:08 UTC — exercise P5's missing profiler-watch branches
+
+The full tester-unified selftest on exact tree `0cef72e26a77c057b6eee6d4c0eab0f29d2395f4` passed pytest (1,841 passed, 2 skipped) but failed the changed-line coverage judge at 744/759 lines and 341/344 branches. The uncovered changed paths are the terminate-timeout → kill → reap escalation for daemon and in-process exec watches, the bare-host deadline-clamped wait and expired-budget termination, and the bare-host continuation after the daemon watch is disabled. These are required behaviors; do not lower the coverage threshold or mark them excluded.
+
+Extend the existing exec watcher oracles to prove the child is terminated, force-killed after the grace timeout, and reaped. Extend the bare-host ended-watch test through a further timeout after watch disablement, and add an already-expired deadline oracle that verifies a zero-duration wait, process-group termination, and `GateBudgetExceeded`. The four focused tests pass locally; a branch-aware focused coverage run confirms every target line and arc is now executed. Re-run the registered selftest on the exact committed tree; only proceed when both changed-line dimensions are 100% and the lane is GREEN. No production code change was indicated by this coverage gap. Other containers remain outside this ruling's scope and must not be disturbed.

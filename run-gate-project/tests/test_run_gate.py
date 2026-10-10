@@ -21582,7 +21582,7 @@ class TestBareHostProfilingWiring:
 
             def wait(self, timeout=None):
                 self.wait_calls += 1
-                if timeout is not None and self.wait_calls <= 2:
+                if timeout is not None and self.wait_calls <= 3:
                     raise subprocess.TimeoutExpired("bare lane", timeout)
                 self.returncode = 0
                 return 0
@@ -21593,6 +21593,7 @@ class TestBareHostProfilingWiring:
         repo = make_repo(tmp_path)
         fake_docker(tmp_path, monkeypatch)
         client = Client()
+        process = Process()
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
@@ -21600,7 +21601,7 @@ class TestBareHostProfilingWiring:
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
         monkeypatch.setattr(run_gate.subprocess, "Popen",
-                            lambda *args, **kwargs: Process())
+                            lambda *args, **kwargs: process)
         monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
                             lambda *args, **kwargs: {"resources": None,
                                                      "profile_error": None,
@@ -21614,9 +21615,84 @@ class TestBareHostProfilingWiring:
              "argv": ["true"], "clean_tree": False},
             "suite", repo, repo, repo, run_record={}, profile_plan=plan) == 0
         assert client.watch_calls == 2
+        # The second ended watch disables daemon liveness. A further timeout
+        # must continue without consulting the now-absent daemon watch, then
+        # still reap the lane when it exits.
+        assert process.wait_calls == 4
         err = capsys.readouterr().err
         assert "went idle" in err
         assert "continuing without daemon liveness" in err
+
+    def test_bare_host_daemon_watch_budget_deadline_terminates_lane(
+            self, tmp_path, monkeypatch):
+        class Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            def watch(self, session):
+                return Watch()
+
+        class Process:
+            def __init__(self):
+                self.returncode = None
+                self.wait_timeouts = []
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                raise subprocess.TimeoutExpired("bare lane", timeout)
+
+            def terminate(self):
+                self.returncode = 124
+
+            def poll(self):
+                return self.returncode
+
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        process = Process()
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": Client(),
+                                "daemon": "d", "session": "s-budget",
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None})
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: process)
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda *args, **kwargs: {"resources": None,
+                                                     "profile_error": None,
+                                                     "profile_ref": None})
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *args, **kwargs: None)
+        terminated = []
+
+        def terminate(proc):
+            terminated.append(proc)
+            proc.terminate()
+            return proc.returncode
+
+        monkeypatch.setattr(run_gate, "terminate_process_group", terminate)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        with pytest.raises(run_gate.GateBudgetExceeded):
+            run_gate.run_bare_host_lane(
+                {"kind": "command", "environment": "bare-host",
+                 "argv": ["true"], "clean_tree": False},
+                "suite", repo, repo, repo, run_record={}, profile_plan=plan,
+                budget_deadline=run_gate.time.monotonic() - 1)
+        assert terminated == [process]
+        assert len(process.wait_timeouts) == 1
+        assert process.wait_timeouts[0] == 0
 
     def test_bare_host_live_daemon_watch_does_not_trigger_fallback(
             self, tmp_path, monkeypatch):
@@ -22821,18 +22897,23 @@ class TestExecLaneProfilingWiring:
             def __init__(self):
                 self.wait_calls = 0
                 self.terminated = False
+                self.killed = False
+                self.reaped = False
 
             def wait(self, timeout=None):
                 self.wait_calls += 1
-                if timeout is not None and self.wait_calls <= 2:
+                if timeout is not None and self.wait_calls <= 3:
                     raise subprocess.TimeoutExpired("docker exec", timeout)
+                if timeout is None:
+                    assert self.killed, "child must be killed before unbounded reap"
+                self.reaped = True
                 return 0
 
             def terminate(self):
                 self.terminated = True
 
             def kill(self):
-                self.terminated = True
+                self.killed = True
 
         client = Client()
         fallback = Fallback()
@@ -22850,11 +22931,15 @@ class TestExecLaneProfilingWiring:
                                            "profile_error": None,
                                            "profile_ref": None})
         with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            process = Process()
             self._exec_lane_call(
                 tmp_path, monkeypatch, ["true"], {},
-                popen_factory=lambda *args, **kwargs: Process())
+                popen_factory=lambda *args, **kwargs: process)
         assert client.watch_calls == 2
         assert fallback.poll_calls == 1
+        assert process.terminated is True
+        assert process.killed is True
+        assert process.reaped is True
 
     def test_exec_daemon_watch_retries_without_fallback_discloses_warning(
             self, tmp_path, monkeypatch, capsys):
@@ -23061,19 +23146,25 @@ class TestExecLaneProfilingWiring:
         class Process:
             def __init__(self):
                 self.terminated = False
+                self.killed = False
                 self.returncode = None
+                self.wait_calls = 0
+                self.reaped = False
 
             def wait(self, timeout=None):
-                if timeout is not None and not self.terminated:
+                self.wait_calls += 1
+                if timeout is not None:
                     raise subprocess.TimeoutExpired("docker exec", timeout)
+                assert self.killed, "child must be killed before unbounded reap"
                 self.returncode = 0
+                self.reaped = True
                 return 0
 
             def terminate(self):
                 self.terminated = True
 
             def kill(self):
-                pass
+                self.killed = True
 
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
@@ -23088,10 +23179,14 @@ class TestExecLaneProfilingWiring:
                             lambda state: {"resources": None,
                                            "profile_error": None,
                                            "profile_ref": None})
+        process = Process()
         with pytest.raises(run_gate.GateInfraError, match="STALLED"):
             self._exec_lane_call(
                 tmp_path, monkeypatch, ["true"], {},
-                popen_factory=lambda *args, **kwargs: Process())
+                popen_factory=lambda *args, **kwargs: process)
+        assert process.terminated is True
+        assert process.killed is True
+        assert process.reaped is True
 
     # -- B1d (round-1 review): the SAME never-raises call-site wraps proven
     # end-to-end for the ephemeral path (TestProfilingNeverRaisesEndToEnd)
