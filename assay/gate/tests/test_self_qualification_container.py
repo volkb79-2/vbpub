@@ -230,7 +230,12 @@ if args and args[0] == "wait":
         while not read_state().get("stopped"):
             time.sleep(0.05)
     if mode == "analysis-pilot-inner-log":
-        time.sleep(0.05)
+        log_follow_done = Path(os.environ["DOCKER_LOG_FOLLOW_DONE"])
+        deadline = time.monotonic() + 10
+        while not log_follow_done.is_file():
+            if time.monotonic() >= deadline:
+                raise SystemExit(97)
+            time.sleep(0.01)
     print(os.environ.get("DOCKER_WAIT_STATUS", "0"))
     raise SystemExit(0)
 if args and args[0] == "logs":
@@ -388,6 +393,8 @@ if args and args[0] == "logs":
             if mode != "analysis-pilot-unverified":
                 print("ANALYSIS_R2_PILOT_CHECKER_VERIFIED=" + "f" * 64)
     sys.stdout.flush()
+    if mode == "analysis-pilot-inner-log" and "--follow" in args:
+        Path(os.environ["DOCKER_LOG_FOLLOW_DONE"]).write_text("done\n", encoding="ascii")
     raise SystemExit(0)
 if args and args[0] == "stop":
     if mode in {"stop-fails", "force-remove-fails"}:
@@ -726,6 +733,7 @@ if '--archive-prior-snapshot' in sys.argv:
         ),
         "HOST_CHECKER_TAMPER_COUNT": str(tmp_path / "host-checker-tamper-count"),
         "ANALYSIS_HOST_CHECK_CALL_COUNT": str(tmp_path / "analysis-host-check-call-count"),
+        "DOCKER_LOG_FOLLOW_DONE": str(tmp_path / "docker-log-follow-done"),
         "TIMEOUT_TRACE": str(tmp_path / "timeout.jsonl"),
         "FAST_DOCKER_TIMEOUT": "1" if fast_docker_timeout else "0",
     }
@@ -1028,11 +1036,19 @@ def test_analysis_pilot_checker_inner_shell_and_outer_launcher_accept_one_marker
 def test_analysis_r2_pilot_outer_marker_waits_for_final_source_check(
     tmp_path: Path, committed_worktree: Path
 ):
+    inner_log = tmp_path / "analysis-pilot-container.log"
+    inner_log.write_text(
+        "ANALYSIS_R2_PILOT_EXIT=6\n"
+        f"ANALYSIS_R2_PILOT_CHECKER_VERIFIED={ANALYSIS_PILOT_ATTESTATION}\n",
+        encoding="ascii",
+    )
     proc, _calls, _elapsed = run_launcher(
         tmp_path,
         committed_worktree,
         lane="analysis-r2-pilot",
+        mode="analysis-pilot-inner-log",
         status_dirty_at=2,
+        inner_pilot_log=inner_log,
     )
 
     assert proc.returncode != 0
