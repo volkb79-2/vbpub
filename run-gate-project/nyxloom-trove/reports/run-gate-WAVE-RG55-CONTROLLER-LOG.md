@@ -9073,3 +9073,19 @@ deselected (6.05s). The live receipts and full details are in
 `run-gate-WAVE-RG55-P5-REPORT.md`. No gate, merge, release, or daemon change
 is claimed by this ruling; freeze the final candidate and run its registered
 gates plus fresh Sol review next.
+
+### RW-556 — 2026-10-11 01:47:31 UTC — fix the rev-63 stdlib import oracle
+
+The registered Run-Gate `selftest` on frozen tree `adcfc4958c5be92ec026b6e05624f5a32970aea6`
+ran in exact container `run-gate-vbpub-selftest-962190-1791682978`, placed
+under `dev-gates.slice` and read back at `NanoCpus=3000000000`. It exited 1
+after 153.0 seconds: 1,873 passed, 2 skipped, and one failure in
+`test_no_stdlib_violations`. The sole failure was the test's own stdlib
+allowlist omitting `select`, which rev 63 imports for the ready/continue
+placement barrier. The package code and behavioral tests were not implicated.
+
+Added `select` to that closed test allowlist with a comment tying it to the
+readiness pipe; the focused stdlib/placement/exec/bare-host selection then
+passed 72 tests with 1,645 deselected. The subsequent complete selftest and
+remaining Run-Gate short gates must run on the refreshed frozen revision;
+the failed `adcfc` result remains part of the record, not a passing receipt.

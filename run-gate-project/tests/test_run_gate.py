@@ -2670,8 +2670,10 @@ def test_no_stdlib_violations():
     # collections: RG-84 (ff5786d66) imports `collections.abc.Callable` for
     # type annotations only; stdlib, no runtime dependency.
     allowed.add("collections")
-    allowed.update({"copy", "contextlib", "dataclasses", "io", "signal", "stat",
-                   "run_gate_admission"})
+    # select: RG-55's placement ready/continue barrier waits on the wrapper's
+    # private readiness pipe without timing out a slow command's lane body.
+    allowed.update({"copy", "contextlib", "dataclasses", "io", "select",
+                   "signal", "stat", "run_gate_admission"})
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
