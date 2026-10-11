@@ -9342,3 +9342,32 @@ mutation or gate container, because shared-ancestor events can invalidate
 candidate measurements under Assay B145. P5 R2 remains parked until this run
 ends. After the startup check, observe no more frequently than every 25
 minutes unless an error or likely completion warrants an earlier check.
+
+### RW-567 — 2026-10-11 18:38:04 UTC — second serial cgprofile R2 retry
+
+The RW-566 cgprofile retry ended at 10:52:09Z with R0 PASS and R2
+`ERROR/EXEC_FAILED`, not a mutation verdict. Exact tree remained
+`06e7804eaf0126c8d8611ff28e61f92657a57d49`; run id
+`9cfc937dcd1b487f5459a80386e30778`, container
+`run-gate-vbpub-r2-1274146-1791714842`. The same B145 shared-ancestor
+resource-event refusal withheld all R2 outcomes. It had resumed 100 prior
+records and completed candidate indices 13–19 (seven additional killed
+mutants) before the error, for 107/1,593 accounted candidates overall. Preserve
+these records as partial state; do not convert the error to a verdict.
+
+This retry started after a fresh preflight found no active Run-Gate/Assay
+container and memory PSI `full avg10=0.01`; the exact worktree was clean. The
+history reports 0.88 average CPU cores, 953 MB candidate-container peak, and
+1.624 GB peak for `dev-gates.slice`; the failed candidate receipts show no
+leaf pids/memory-max/OOM event. Host memory-full stall was 2.5 seconds. These
+observations do not identify which shared-ancestor counter changed. A Docker
+events query for the run window returned no events, so concurrent-container
+causation remains unknown; do not claim the run was isolated for its full
+duration or infer memory exhaustion.
+
+Resumed again at 18:36:17Z from the same judged tree/state in
+`run-gate-vbpub-r2-1453530-1791743776`, with `NanoCpus=3000000000` under
+`dev-gates.slice`. At the 18:38:04Z startup check it was running the R0
+baseline pytest command; memory PSI `full avg10=0.00`. Keep the tree quiet and
+do not overlap another mutation campaign. Continue at the operator's
+25-minute observation interval absent an error or likely completion.
