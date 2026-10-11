@@ -9115,3 +9115,24 @@ but these edits are not yet covered by a registered test result. Commit the
 repair, freeze a fresh review packet against that repair commit, then require
 a new exact-tree selftest before proceeding. No merge or release is authorized
 by this ruling.
+
+### RW-558 — 2026-10-11 02:12:54 UTC — make the forwarder-stop oracle deterministic
+
+The registered `selftest` on frozen tree
+`0ca078342d5f9c2bb933c93cd05f895b75a790d2` ran in exact container
+`run-gate-vbpub-selftest-984455-1791684549`, with `NanoCpus=3000000000`,
+`Memory=1073741824`, and parent `dev-gates.slice`. Pytest completed with
+1,908 passed and 2 skipped in 151.49 seconds; the separately read Run-Gate
+history records FAIL/exit 1 and 156.4 seconds. The changed-area judge reached
+1,063/1,064 executable lines and 469/470 branches. Its sole miss is the
+false/stop exit of the new `StdinForwarder` loop at `run-gate.py:6124`.
+
+The test intended to stop the forwarder from its fake destination's first
+write, but the helper thread could reach that write before the test assigned
+the forwarder reference. The resulting `AttributeError` is a test-fixture
+race, not a production failure; the warning was preserved in the gate log.
+Resolution: gate the fake source read with explicit `started`/`release`
+events, connect the destination after observing `started`, then release the
+chunk. This deterministically proves that a destination close stops another
+read iteration. Re-freeze the packet after this test-only repair and rerun
+the registered selftest; no other gate should start until it is green.

@@ -22895,11 +22895,18 @@ class TestPlacementBarrier:
 
     def test_stdin_forwarder_stops_after_destination_closes(self):
         class Source:
-            reads = 0
+            def __init__(self):
+                self.reads = 0
+                self.started = threading.Event()
+                self.release = threading.Event()
 
             def read(self, _size):
                 self.reads += 1
-                return b"first" if self.reads == 1 else b"must-not-forward"
+                if self.reads == 1:
+                    self.started.set()
+                    return (b"first" if self.release.wait(timeout=2)
+                            else b"")
+                return b"must-not-forward"
 
         class Destination:
             def __init__(self):
@@ -22921,7 +22928,9 @@ class TestPlacementBarrier:
         source = Source()
         destination = Destination()
         forwarder = run_gate.StdinForwarder(source, destination)
+        assert source.started.wait(timeout=2)
         destination.forwarder = forwarder
+        source.release.set()
         forwarder.thread.join(timeout=2)
         assert not forwarder.thread.is_alive()
         assert source.reads == 1
