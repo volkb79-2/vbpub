@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -270,6 +271,72 @@ def test_socket_client_sends_one_request_and_parses_one_response(tmp_path):
     assert received["args"] == {"thread_id": threading.get_native_id()}
     assert received["contract"] == 1
     assert counters.path_event_counters[0][0] == LEAF
+
+
+def test_socket_client_deadline_bounds_a_slowly_streaming_peer(tmp_path, monkeypatch):
+    socket_path = tmp_path / "observer.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS", 0.05
+    )
+
+    def serve_slowly():
+        conn, _ = listener.accept()
+        with conn:
+            request_bytes = bytearray()
+            while b"\n" not in request_bytes:
+                request_bytes.extend(conn.recv(4096))
+            request = json.loads(bytes(request_bytes).split(b"\n", 1)[0])
+            response = json.dumps(
+                _document(request["args"]["thread_id"])
+            ).encode("utf-8") + b"\n"
+            for offset in range(0, len(response), 16):
+                try:
+                    conn.sendall(response[offset : offset + 16])
+                except OSError:
+                    return
+                time.sleep(0.01)
+
+    server = threading.Thread(target=serve_slowly, daemon=True)
+    server.start()
+    try:
+        with pytest.raises(ResourceLimitObservationError, match="timed out"):
+            resource_limits.read_resource_observer_counters(str(socket_path))
+    finally:
+        server.join(timeout=2)
+        listener.close()
+    assert not server.is_alive()
+
+
+def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS", 0.05
+    )
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS", 0.05
+    )
+
+    def wait_for_release(**_kwargs):
+        started.set()
+        release.wait(timeout=1)
+        finished.set()
+        zero = (0, 0, 0, 0, 0)
+        return _path_counters(zero, zero, zero, zero)
+
+    monkeypatch.setattr(
+        resource_limits, "read_candidate_resource_counters", wait_for_release
+    )
+    capability = resource_limits.probe_resource_observation()
+    assert started.wait(timeout=0.5)
+    assert not capability.available
+    assert "did not complete before its deadline" in capability.reason
+    release.set()
+    assert finished.wait(timeout=1)
 
 
 @pytest.mark.parametrize("contents", ["not-json\n", "{}\n\n"])

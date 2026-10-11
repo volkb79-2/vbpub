@@ -24,6 +24,7 @@ import re
 import socket
 import stat
 import threading
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -40,6 +41,9 @@ LimitSignatureEntry = tuple[
     bool,
     bool,
 ]
+
+_RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS = 5.0
+_RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS = 1.0
 
 
 class ResourceLimitObservationError(RuntimeError):
@@ -896,11 +900,23 @@ def read_resource_observer_counters(socket_path: str) -> ResourceLimitCounters:
     ).encode("utf-8") + b"\n"
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     response = bytearray()
+    deadline = time.monotonic() + _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS
+
+    def set_remaining_timeout() -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ResourceLimitObservationError(
+                "resource observer socket request timed out"
+            )
+        client.settimeout(remaining)
+
     try:
-        client.settimeout(5.0)
+        set_remaining_timeout()
         client.connect(socket_path)
+        set_remaining_timeout()
         client.sendall(request)
         while True:
+            set_remaining_timeout()
             chunk = client.recv(65536)
             if not chunk:
                 break
@@ -1110,7 +1126,17 @@ def inspect_current_cgroup_observation(
             available=False,
             reason=f"cannot start cgroup observation probe thread: {exc}",
         )
-    worker.join()
+    worker.join(
+        timeout=(
+            _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS
+            + _RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS
+        )
+    )
+    if worker.is_alive():
+        return ResourceObservationCapability(
+            available=False,
+            reason="resource observation preflight did not complete before its deadline",
+        )
     if isinstance(error, ResourceLimitObservationError):
         return ResourceObservationCapability(available=False, reason=str(error))
     if error is not None:

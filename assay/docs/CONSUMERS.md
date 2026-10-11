@@ -340,15 +340,17 @@ per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`, so consumers must not
 rely on it to distinguish failures caused by those limits. A change to the visible
 cgroup path, controller availability, or configured limits during a candidate
 also makes the run an infrastructure error. A counter increase at a shared
-finite ancestor can conservatively refuse a healthy candidate if sibling work
-hit that limit during the same window. If any sampled counter increases during
-a full candidate command, that candidate is recorded as `crashed` and the R2
-result is an infrastructure error, even if a test command also failed. A
-positive delta during a saved-witness replay instead stops the lane with a
-payload-free `ERROR/EXEC_FAILED` before Assay can retry the candidate; it does
-not produce a per-candidate outcome. Fix the runner's cgroup visibility or
-process/memory limit pressure, then rerun. If the lane budget expires before a
-candidate's full command starts, it stays `budget_exceeded`. Replacement
+ancestor can conservatively refuse a healthy candidate if sibling work hit
+that limit during the same window. A positive candidate-leaf delta, with every
+positive visible-ancestor delta matching it, records that candidate as
+`crashed`; the R2 result is an infrastructure error, never a mutation kill or
+survivor. If an ancestor delta is unmatched or differs from the candidate
+leaf, Assay cannot attribute the event and withholds mutation outcomes with
+`ERROR/EXEC_FAILED`. A positive delta during a saved-witness replay likewise
+stops the lane with a payload-free `ERROR/EXEC_FAILED` before Assay can retry
+the candidate; it does not produce a per-candidate outcome. Fix the runner's
+cgroup visibility or process/memory limit pressure, then rerun. If the lane
+budget expires before a candidate's full command starts, it stays `budget_exceeded`. Replacement
 materialization or a saved-witness replay may already have run. The zero-duration
 sample shared by `budget_exceeded` entries is taken after already-submitted work
 finishes; it does not bracket or describe that earlier work and does not prove
