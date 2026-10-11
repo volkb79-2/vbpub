@@ -3,21 +3,25 @@
 **State: in progress; this report does not authorize merge, release, or
 shipment.** The rev-63 pre-body placement barrier repairs P5 review-round-1
 blocker B3 and has now passed four real-daemon acceptance probes (exec and
-bare-host success/refusal pairs) plus 71 focused tests. The B3 repair,
-documentation, probe fixture, and RW-555 evidence are committed as
-`aee194b7e` on branch `rg55-p5-transport-port-20261010`. Final short-gate
-evidence and the fresh Sol review are still pending. Earlier
+bare-host success/refusal pairs) plus 72 focused tests, including the
+stdlib-import oracle. The B3 repair, documentation, probe fixture, and RW-555
+evidence are committed as `aee194b7e`; the stdlib allowlist correction and
+RW-556 are committed as `80a8cf90d` on branch
+`rg55-p5-transport-port-20261010`. cgroup-profiler unit/coverage/canary and
+its local Nyxloom lint now pass. Run-Gate selftest failed on the preceding
+`adcfc4958` tree only because its stdlib allowlist omitted `select`; RW-556
+records the failure and fix. The refreshed-tree Run-Gate short matrix and
+fresh Sol review remain pending. Earlier
 `db6d` selftest and cgroup-profiler coverage receipts remain historical, not
-exact-current-tree evidence. Fresh cgroup-profiler gates, Run-Gate
-`selftest`/`assay-r1`/`assay-r3`/`doctor`, Nyxloom lint, fresh Sol review, and
-exact-tree mutation/full gates remain outstanding.
+exact-current-tree evidence. Exact-tree mutation/full gates remain release
+blockers.
 
 ## Candidate identity and release boundary
 
 - Current resumed source checkpoint: rev 63, commit
-  `aee194b7e` (`fix(run-gate): block lane body until requested placement is
-  verified`); the B3 repair and its live probe evidence are described below.
-  The next metadata-freeze commit will pin the Sol packet to this code commit.
+  `80a8cf90d` (`test(run-gate): allow the placement barrier selector
+  import`), following B3 implementation commit `aee194b7e`. The next
+  metadata-freeze commit pins the Sol packet to this code-fix commit.
 - Main/origin base at this checkpoint: `efaf112945233e3a8f6d53f2fef136439d18d089`.
 - Candidate: worktree `.worktrees/rg55-p5-transport-port-20261010`, branch
   `rg55-p5-transport-port-20261010`, HEAD
@@ -327,10 +331,11 @@ final gates below.
 
 ## Still required
 
-1. Freeze the Sol packet and final report, then rerun cgroup-profiler unit,
-   whole-package coverage, canary, Nyxloom lint, Run-Gate `selftest`,
-   `assay-r1`, `assay-r3`, and `doctor` on that quiet tree. The `db6d`
-   receipts above are useful history but are not exact-current-tree evidence.
+1. Freeze the Sol packet and final report. On that quiet tree, run Run-Gate
+   `selftest`, `assay-r1`, `assay-r3`, and `doctor`; read each verdict
+   separately. cgroup-profiler unit/coverage/canary and project-local Nyxloom
+   lint passed on `adcfc4958`; no Assay or cgroup-profiler files changed in
+   the subsequent Run-Gate test-oracle repair commits.
 2. Obtain a fresh Sol xhigh P5 review of the complete integrated diff. Any
    review repair requires same-reviewer verification and rerunning affected
    gates. Provisional merge is authorized after review and short-gate

@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "aee194b7e"
+input_revision: "80a8cf90d"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-555
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-556
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -280,10 +280,11 @@ P5 review round 1 is REJECT on B3; preserve its initial blind-review artifact
 `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REVIEW-round1.md`.
 RW-554 resolved the handoff/SPEC contradiction in favor of a pre-body
 ready/continue barrier and fail-closed explicit placement refusal. The rev-63
-candidate repairs B3 and has four real-daemon Run-Gate live probes (exec and
-bare-host success/refusal pairs) plus 71 focused tests; see RW-555 and the P5
-report. These are committed working-tree receipts on code checkpoint
-`aee194b7e`, not the final registered gate matrix. The next fresh Sol round must
+candidate repairs B3 in `aee194b7e` and has four real-daemon Run-Gate live
+probes (exec and bare-host success/refusal pairs) plus 72 focused tests; see
+RW-555/RW-556 and the P5 report. The first registered selftest on
+`adcfc4958` failed only because the test's stdlib allowlist omitted `select`;
+the fix is committed in `80a8cf90d`. The next fresh Sol round must
 independently review the exact HEAD supplied by the controller and the full
 integrated diff; round 1 does not authorize acceptance.
 
@@ -311,11 +312,14 @@ Cgroup-profiler unit, whole-package coverage, and canary receipts are recorded
 for exact code tree `465f67d0`; Run-Gate `selftest` and cgroup-profiler's
 registered `r0-r1` coverage passed on evidence tree `db6d5b73`. The controller
 report records both. The rev-63 B3 repair, report, ruling, and probe fixture
-are committed at `aee194b7e`; this packet's `input_revision` follows the
-two-step freeze and pins that code checkpoint. The final tree still needs
-cgroup-profiler unit/coverage/canary and its local Nyxloom scope check,
-Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor`. The P5 footprint
-manifest must remain tracked. Candidate-image live acceptance—
+are committed at `aee194b7e`; the stdlib allowlist correction and RW-556 are
+committed at `80a8cf90d`. This packet's `input_revision` follows the
+two-step freeze and pins the code-fix commit. Cgroup-profiler unit/coverage/
+canary and local Nyxloom lint passed at `adcfc4958`; no Assay or
+cgroup-profiler files changed in the subsequent Run-Gate test-oracle repair.
+Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor` must pass on the
+refreshed quiet tree before review. The P5 footprint manifest must remain
+tracked. Candidate-image live acceptance—
 socket/exec parity, CP-19 refusal, anchored placement/restore, on-stall kill,
 matched DAMON pair, and rev-63 placement-barrier success/refusal pairs—is
 recorded in the report and RW-553/RW-555. The main-managed daemon is up; do
