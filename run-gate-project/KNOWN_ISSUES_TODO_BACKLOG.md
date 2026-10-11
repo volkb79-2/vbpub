@@ -5114,8 +5114,13 @@ Author the daemon policy from the lane's progress stream and stall settings;
 consume one streaming `ctl watch` per session, falling back to the existing
 in-process watch without changing a verdict because profiling is unavailable.
 For exec and bare-host lanes, request a derived or declared memory placement,
-record the daemon's applied result, and warn-and-run unplaced if placement is
-refused. Before starting a daemon-backed lane, read `ctl host` and wait,
+record the daemon's applied result, and hold a token-bearing wrapper outside
+the lane body until the daemon confirms the leaf and read-back limits. An
+explicit placement refusal or absent/malformed/looser read-back aborts and
+reaps the wrapper and returns an infrastructure refusal before any lane body
+or mutation candidate executes; it is not a candidate verdict. If the profiler
+or transport is unavailable before returning a placement result, retain the
+disclosed R-36h fallback. Before starting a daemon-backed lane, read `ctl host` and wait,
 bounded by `admission_wait`, while the gates slice lacks 10% headroom for the
 lane request; after the bound, proceed with one warning. Never turn host load,
 daemon reachability, transport failure, or profiling data into a lane verdict
@@ -5141,8 +5146,9 @@ an ended stream without a verdict is never itself a lane verdict.
   `killed` follows the existing stall exit path, `reported` warns once, and
   an idle stream reattaches once before the in-process fallback.
 - Assert declared and manifest-derived placement requests, host-cap ceiling,
-  placement read-back, refusal warning, and throttling warning for exec and
-  bare-host lanes; ephemeral Docker argv uses the gates slice variable.
+  placement read-back, and throttling warning for exec and bare-host lanes.
+  A refusal or invalid read-back must abort/reap the wrapper before the body
+  and produce no candidate verdict; ephemeral Docker argv uses the gates slice.
 - With a fake host registry/clock, assert immediate admission, wait-then-
   proceed after pressure clears, bounded proceed with one warning, and that
   dry-run never waits. At CLI level, cover all three lane modes: report

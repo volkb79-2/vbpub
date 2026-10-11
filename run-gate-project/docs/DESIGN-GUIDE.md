@@ -107,6 +107,46 @@ before any lane process or container exists, then bind that reservation to
 the eventual target. R-45 must not be described as delivering RG-56: its
 non-reserving behavior and its non-effect on the verdict are intentional.
 
+## Explicit placement is a pre-body launch gate
+
+A placement request cannot safely be sent before the lane process exists:
+cgprofile identifies the target from the per-invocation token in that
+process's environment. Sending `ctl start --place` first can therefore create
+a session with `place-refused:no-target-pids`, after which an ordinary
+warn-and-run client would execute the workload outside the requested leaf.
+That is not acceptable for an explicit placement request: the workload would
+be an unaccounted shared-scope lane, and the record could imply controls that
+were never applied.
+
+Run-Gate instead starts a non-body wrapper carrying the unique token. The
+wrapper emits a private ready marker and blocks. The client then asks the
+daemon to start the session and placement, validates the returned leaf and
+read-back limits against the request, and only then sends the release signal.
+For exec lanes, `docker exec -i` carries that one-shot signal; after release,
+a small input-forwarding thread preserves the caller's original stdin for the
+lane. For bare-host lanes, a separate inherited control pipe leaves the
+lane's stdin untouched, and the Python wrapper `exec`s the command in place.
+The barrier's process identity is therefore the same one the daemon discovers,
+and no candidate instruction can run before placement read-back succeeds.
+
+An explicit placement error, absent leaf, malformed limit, or read-back that
+is weaker than requested closes the launch gate: Run-Gate aborts/reaps the
+wrapper, stops the profiling session, and returns an infrastructure refusal
+before lane-body entry. It produces no assay candidate verdict. If the daemon
+or transport is unavailable before returning a placement result, R-36h still
+allows its disclosed measurement fallback; the wrapper is released without
+the profile token. This distinguishes an unavailable optional measurement
+from a daemon that affirmatively refused a requested control. The bounded
+wrapper-ready timeout is likewise a pre-body infrastructure refusal, never a
+candidate timeout or verdict.
+
+R-45's headroom wait remains observational and does not reserve capacity. If
+the separate Run-Gate lane-admission ticket is enabled, the existing runner
+finally releases that ticket on refusal; no new atomic placement reservation
+is implied (RG-56 remains separate). This ordering honors explicit placement
+without turning host contention, profiler availability, or measurement data
+into a functional or mutation result.
+
 ## Private-namespace R2 uses a read-only cgroup observer
 
 Assay B145 must see every enforcing ancestor of a mutation worker. A private

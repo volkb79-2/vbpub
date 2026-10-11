@@ -246,7 +246,7 @@ gains optional `liveness` and `placement`; new error codes `place-refused:*`.
 | P7 | assay B091: D-23 (auto budget, per-test events + cadence hint, `os._exit` runner, `hung`, `--rejudge`) | `assay-liveness` / `.worktrees/assay-liveness` | now (parallel) | assay 6.2.0 (+ `.assay-inbox/release.json` to dstdns) |
 | P8 | mdt host-setup: `dev-infra.slice`, `dev-gates.slice`, env keys, install/check/sweep, env export to devcontainers | `mdt-dev-slices` / `.worktrees/mdt-dev-slices` | now (parallel) | mdt host-setup (operator installs on the host) |
 | P6 | cgprofile CP-4..CP-7, then CP-8 liveness (D-18) + CP-9 placement (D-20/D-25) + `dev-infra` compose fallback (D-24) after the v1.1 amendment | `rg55-followups-cgprofile` from the P1 tip | when P1's r2 container exits | cgprofile 1.1.0 |
-| P5 | run-gate RG-56 admission + RG-62 (D-21 detached owner/attach, D-22 progress judge, gates-slice default, placement requests) | from main after P4 + P6 merge | after P4 and P6 | run-gate 23.9.0 |
+| P5 | run-gate transport/watch/placement, R-45 bounded observational headroom wait, and RG-62 policy consumer; RG-56 atomic registry admission remains OPEN (RW-283/RW-545) | from main after P4 + P6 merge | after P4 and P6 | run-gate 23.9.0 |
 | — | ciu SPEC-V8 Appendix D.7 (D-26) | main | now (controller) | docs |
 
 Base packages (P1 → cgprofile 1.0.0, P2 → run-gate 23.7.0, P4 → 23.8.0) ship
@@ -331,9 +331,11 @@ GATES`, install/check/sweep/docs); **P6** adds `infra/cgprofile.slice`, the
 authored `cgroup_parent`, the `ctl host` slice report, and CP-8 becomes the
 WATCH role (`start --progress-stream/--idle-bound/--ceiling/--on-stall`,
 `watch` block in `status`/`stop`, `cgroup.kill` enforcement, D-25 whitelist
-gains `cgroup.kill` on `rg-*` leaves only); **P5** shrinks to RG-56 admission
-+ RG-62 as policy author/consumer/reconciler with the in-process fallback
-watch; SPEC-V8 D.7 item (5) reads "its own `cgprofile.slice`".
+gains `cgroup.kill` on `rg-*` leaves only); **P5** consumes the v1.1
+transport, watch, placement requests, and R-45 bounded observational headroom
+wait, with the in-process fallback watch; RG-56's targetless atomic registry
+admission is a separate open follow-up (RW-283/RW-545), not part of P5.
+SPEC-V8 D.7 item (5) reads "its own `cgprofile.slice`".
 
 ## A2 — Transport (RW-31, operator ~14:50Z): `docker exec` and the socket are interchangeable carriers of one protocol
 

@@ -255,7 +255,11 @@ with sqlfluff in a command lane if the project wants it.
   `resources.memory_max` is an optional daemon placement ceiling for exec and
   bare-host lanes; it is not a second Docker limit and is ignored for
   ephemeral lanes. The client derives a ceiling from the verified gates slice
-  when the lane does not declare one.
+  when the lane does not declare one. For exec/bare-host lanes with a placement
+  request, an explicit daemon refusal or invalid read-back prevents the lane
+  body from running and returns an infrastructure refusal, not a candidate
+  verdict; daemon/transport unavailability before a placement result retains
+  the disclosed R-36h fallback.
 - From 23.4.0 a mutation lane gets `stall_timeout`: it stops the lane only
   when the container is still running AND the progress file has been silent
   that long, never on elapsed time. That plus a generous `budget` plus

@@ -3463,7 +3463,8 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
 
     # The tagged release remains source rev 55. RG-90's telemetry change is
-    # historical at rev 60; the reviewed P5 transport is the current rev 62.
+    # historical at rev 60; the P5 transport and placement launch gate are
+    # current at rev 63.
     # RG-89 stays at the revision that introduced its observer contract.
     assert "This section describes released source rev 55." in changes
     assert "RG-90, rev 60" in changes
@@ -22644,6 +22645,328 @@ class TestProfilerClientDegradesOnMalformedResponses:
 
 
 PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
+
+
+class TestPlacementBarrier:
+    def test_exec_shell_barrier_waits_and_unprofiled_release_drops_token(
+            self, tmp_path):
+        marker = tmp_path / "shell-entered"
+        command = [
+            "bash", "-c",
+            "if printenv RUN_GATE_PROFILE_SESSION; then :; else printf unset; fi > \"$1\"",
+            "rg55-probe", str(marker)]
+        nonce = "ab" * 16
+        env = dict(os.environ, RUN_GATE_PROFILE_SESSION="profile-token")
+        proc = run_gate.spawn_placement_barrier(
+            run_gate.placement_barrier_shell_argv(command, nonce), nonce,
+            env=env)
+        assert not marker.exists()
+        run_gate.signal_placement_barrier(
+            proc, nonce, release=True, profile_active=False)
+        assert proc.wait(timeout=5) == 0
+        assert marker.read_text() == "unset"
+
+    @pytest.mark.parametrize(("source", "expected"), [
+        (io.BytesIO(b"stdin-bytes"), b"stdin-bytes"),
+        (io.StringIO("stdin-text"), b"stdin-text"),
+        (SimpleNamespace(buffer=io.BytesIO(b"stdin-buffer")),
+         b"stdin-buffer"),
+    ])
+    def test_exec_barrier_forwards_caller_stdin_after_release(
+            self, tmp_path, source, expected):
+        marker = tmp_path / "forwarded-stdin"
+        nonce = "23" * 16
+        proc = run_gate.spawn_placement_barrier(
+            run_gate.placement_barrier_shell_argv(
+                ["bash", "-c", "cat > \"$1\"", "rg55-probe", str(marker)],
+                nonce), nonce)
+        run_gate.signal_placement_barrier(proc, nonce, release=True)
+        forwarder = run_gate.StdinForwarder(source, proc.stdin)
+        assert proc.wait(timeout=5) == 0
+        forwarder.thread.join(timeout=5)
+        forwarder.close()
+        assert marker.read_bytes() == expected
+
+    def test_invalid_ready_marker_aborts_exec_wrapper(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="invalid readiness marker"):
+            run_gate.spawn_placement_barrier(
+                [sys.executable, "-c", "print('not-ready', flush=True)"],
+                "34" * 16)
+
+    def test_readiness_requires_a_stdout_channel(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="no readiness stream"):
+            run_gate.wait_for_placement_barrier(
+                SimpleNamespace(stdout=None), "45" * 16)
+
+    def test_bare_host_barrier_keeps_pid_and_profile_token_on_release(
+            self, tmp_path):
+        marker = tmp_path / "bare-host-entered"
+        command = [
+            "bash", "-c",
+            "printf '%s|%s' \"$$\" \"$RUN_GATE_PROFILE_SESSION\" > \"$1\"",
+            "rg55-probe", str(marker)]
+        nonce = "cd" * 16
+        env = dict(os.environ, RUN_GATE_PROFILE_SESSION="profile-token")
+        proc = run_gate.spawn_bare_host_placement_barrier(
+            command, nonce,
+            cwd=str(tmp_path), env=env, start_new_session=True)
+        assert proc.stdin is None
+        assert not marker.exists()
+        pid = proc.pid
+        run_gate.signal_placement_barrier(
+            proc, nonce, release=True, profile_active=True)
+        assert proc.wait(timeout=5) == 0
+        assert marker.read_text() == f"{pid}|profile-token"
+
+    def test_abort_never_enters_body(self, tmp_path):
+        marker = tmp_path / "aborted-body"
+        nonce = "ef" * 16
+        proc = run_gate.spawn_bare_host_placement_barrier(
+            ["bash", "-c", "touch \"$1\"", "rg55-probe", str(marker)],
+            nonce, cwd=str(tmp_path), start_new_session=True)
+        run_gate.abort_placement_barrier(proc, nonce)
+        assert proc.returncode == 125
+        assert not marker.exists()
+
+    @pytest.mark.parametrize("placement", [
+        {"requested": True, "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+         "applied": {"memory.high": 1024, "memory.max": 2048},
+         "error": None},
+        {"requested": True, "leaf": None, "applied": None,
+         "error": "place-refused:no-target-pids"},
+    ])
+    def test_exec_lane_waits_for_placement_result_before_body(
+            self, tmp_path, monkeypatch, placement):
+        marker = tmp_path / "exec-body"
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        docker_shim = shim_dir_of(monkeypatch) / "docker"
+        body = docker_shim.read_text().replace(
+            'case "$1" in',
+            'case "$1" in\n  ps) printf "probe-runner" ;;')
+        docker_shim.write_text(body)
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *_args, **_kwargs: {"id": RG55_CONTAINER_ID})
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: {
+                "client": object(), "version": {"ok": True}, "host": {},
+                "placement": {"place": True, "memory_high": 1024,
+                              "memory_max": 2048, "cpu_weight": None},
+                "admission": {"state": "admitted"}})
+        launched = []
+        real_spawn = run_gate.spawn_placement_barrier
+
+        def spawn_exec_barrier(docker_argv, nonce, **kwargs):
+            container_index = docker_argv.index("probe-runner")
+            proc = real_spawn(docker_argv[container_index + 1:], nonce, **kwargs)
+            launched.append(proc)
+            return proc
+
+        monkeypatch.setattr(run_gate, "spawn_placement_barrier",
+                            spawn_exec_barrier)
+        client = type("Client", (), {
+            "carrier": "exec",
+            "socket_path": "/run/cgprofile/ctl.sock",
+            "watch": lambda *_args: None})()
+        state = {
+            "mode": "daemon", "client": client,
+            "daemon": "cgprofile-host-daemon", "session": "s-test",
+            "session_line": None, "warning": None, "sampler": None,
+            "profiler_status": None, "placement": placement,
+            "admission": {"state": "admitted"}}
+
+        def start_profile(*_args, **_kwargs):
+            assert launched and launched[0].poll() is None
+            assert not marker.exists()
+            return state
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling", start_profile)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            run_gate, "finish_lane_profiling",
+            lambda _state: {"resources": None, "profile_error": None,
+                            "profile_ref": None})
+        lane = {"kind": "command", "argv": ["bash", "-c",
+                                             f"touch {shlex.quote(str(marker))}"],
+                "clean_tree": False}
+        args = (lane, "suite", project, repo, repo, {"forward_env": []},
+                "test-env", "probe-runner", "test-src", "test-remedy",
+                None, "no-slice")
+        profile_plan = {
+            "enabled": True, "daemon": "cgprofile-host-daemon",
+            "interval": "1s", "damon": False, "source": "test",
+            "token": "profile-token", "disabled_reason": "disabled"}
+        if placement["error"] is None:
+            code = run_gate.run_exec_lane(
+                *args, run_record={}, profile_plan=profile_plan)
+            assert code == 0
+            assert marker.exists()
+        else:
+            with pytest.raises(run_gate.GateInfraError, match="placement refused"):
+                run_gate.run_exec_lane(
+                    *args, run_record={}, profile_plan=profile_plan)
+            assert not marker.exists()
+            assert launched[0].returncode == 125
+
+    @pytest.mark.parametrize("refused", [False, True])
+    def test_bare_host_lane_waits_for_placement_result_before_body(
+            self, tmp_path, monkeypatch, refused):
+        marker = tmp_path / "bare-host-body"
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: {
+                "client": object(), "version": {"ok": True}, "host": {},
+                "placement": {"place": True, "memory_high": 1024,
+                              "memory_max": 2048, "cpu_weight": None},
+                "admission": {"state": "admitted"}})
+        placement = ({"requested": True, "leaf": None, "applied": None,
+                      "error": "place-refused:no-target-pids"} if refused else
+                     {"requested": True,
+                      "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+                      "applied": {"memory.high": 1024, "memory.max": 2048},
+                      "error": None})
+        client = type("Client", (), {
+            "watch": lambda *_args: None})()
+        state = {
+            "mode": "daemon", "client": client,
+            "daemon": "cgprofile-host-daemon", "session": "s-bare",
+            "session_line": None, "warning": None, "sampler": None,
+            "profiler_status": None, "placement": placement,
+            "admission": {"state": "admitted"}}
+        launched = []
+        real_spawn = run_gate.spawn_bare_host_placement_barrier
+
+        def capture_barrier(*args, **kwargs):
+            proc = real_spawn(*args, **kwargs)
+            launched.append(proc)
+            return proc
+
+        monkeypatch.setattr(run_gate, "spawn_bare_host_placement_barrier",
+                            capture_barrier)
+
+        def start_profile(*_args, **_kwargs):
+            assert launched and launched[0].poll() is None
+            assert not marker.exists()
+            return state
+
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling", start_profile)
+        monkeypatch.setattr(
+            run_gate, "finish_lane_profiling",
+            lambda _state: {"resources": None, "profile_error": None,
+                            "profile_ref": None})
+        monkeypatch.setattr(
+            run_gate, "finish_bare_host_profiling",
+            lambda *_args: {"resources": None, "profile_error": None,
+                            "profile_ref": None})
+        lane = {"kind": "command", "environment": "bare-host",
+                "argv": ["bash", "-c",
+                         f"touch {shlex.quote(str(marker))}"],
+                "clean_tree": False}
+        profile_plan = {
+            "enabled": True, "daemon": "cgprofile-host-daemon",
+            "interval": "1s", "damon": False, "source": "test",
+            "token": "profile-token", "disabled_reason": "disabled"}
+        if refused:
+            with pytest.raises(run_gate.GateInfraError, match="placement refused"):
+                run_gate.run_bare_host_lane(
+                    lane, "suite", project, repo, repo, run_record={},
+                    profile_plan=profile_plan)
+            assert not marker.exists()
+            assert launched[0].returncode == 125
+        else:
+            assert run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record={},
+                profile_plan=profile_plan) == 0
+            assert marker.exists()
+
+    @pytest.mark.parametrize(("state", "requested", "expected"), [
+        ({}, False, None),
+        ({}, True, "daemon omitted the requested placement result"),
+        ({"placement": {"requested": False}}, True,
+         "daemon did not confirm the requested placement"),
+        ({"placement": {"requested": True, "error": "place-refused:no-target-pids"}},
+         True, "daemon refused requested placement: place-refused:no-target-pids"),
+        ({"placement": {"requested": True, "error": None, "leaf": None,
+                        "applied": {}}}, True,
+         "daemon omitted the verified placement leaf"),
+        ({"placement": {"requested": True, "error": None, "leaf": "relative",
+                        "applied": {}}}, True,
+         "daemon omitted the verified placement leaf"),
+        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+                        "applied": None}}, True,
+         "daemon omitted the applied placement limits"),
+        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+                        "applied": {"memory.high": True, "memory.max": 20}}},
+         True, "daemon did not read back a valid memory.high value"),
+        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+                        "applied": {"memory.high": 10, "memory.max": "max"}}},
+         True, "daemon did not read back a valid memory.max value"),
+        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+                        "applied": {"memory.high": 10, "memory.max": 20}}},
+         True, None),
+    ])
+    def test_placement_readback_is_required_before_body_release(
+            self, state, requested, expected):
+        assert run_gate.placement_refusal_reason(state, requested) == expected
+
+    @pytest.mark.parametrize(("placement", "requested_limits", "expected"), [
+        ({"requested": True, "leaf": "/lane",
+          "applied": {"memory.high": 20, "memory.max": 10},
+          "error": None},
+         {"memory_high": 10, "memory_max": 20, "cpu_weight": None},
+         "daemon read back memory.max below memory.high"),
+        ({"requested": True, "leaf": "/lane",
+          "applied": {"memory.high": 11, "memory.max": 20},
+          "error": None},
+         {"memory_high": 10, "memory_max": 20, "cpu_weight": None},
+         "daemon read back memory.high above the requested limit"),
+        ({"requested": True, "leaf": "/lane",
+          "applied": {"memory.high": 10, "memory.max": 21},
+          "error": None},
+         {"memory_high": 10, "memory_max": 20, "cpu_weight": None},
+         "daemon read back memory.max above the requested limit"),
+        ({"requested": True, "leaf": "/lane",
+          "applied": {"memory.high": 10, "memory.max": 20},
+          "error": None},
+         {"memory_high": 10, "memory_max": 20, "cpu_weight": 100},
+         "daemon did not read back a valid cpu.weight value"),
+        ({"requested": True, "leaf": "/lane",
+          "applied": {"memory.high": 10, "memory.max": 20,
+                      "cpu.weight": 200},
+          "error": None},
+         {"memory_high": 10, "memory_max": 20, "cpu_weight": 100},
+         "daemon read back a different cpu.weight than requested"),
+        ({"requested": True, "leaf": "/lane",
+          "applied": {"memory.high": 10, "memory.max": 20,
+                      "cpu.weight": 100},
+          "error": None},
+         {"memory_high": 10, "memory_max": 20, "cpu_weight": 100},
+         None),
+    ])
+    def test_applied_limits_must_be_at_least_as_strict_as_request(
+            self, placement, requested_limits, expected):
+        assert run_gate.placement_refusal_reason(
+            {"placement": placement}, True, requested_limits) == expected
 
 
 class TestExecLaneProfilingWiring:

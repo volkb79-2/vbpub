@@ -2250,8 +2250,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   The request uses the declaration when present, otherwise `ceil(median ×
   1.5)`; `resources.memory_max` is the explicit ceiling, otherwise the client
   derives a ceiling from the request and verified gates-slice cap. Applied
-  placement is recorded as nullable history/inflight data. Refusal or lack of
-  a placement fact warns and runs unplaced. Ephemeral lanes retain their
+  placement is recorded as nullable history/inflight data. Before ctl start,
+  exec and bare-host runners launch a token-bearing wrapper that waits outside
+  the lane body. The runner releases it only after the daemon confirms the
+  requested placement and reads back its leaf and memory limits. An explicit
+  refusal or missing/malformed applied-placement fact aborts and reaps the
+  wrapper, stops the session, and returns an infrastructure refusal before
+  any lane body or mutation candidate executes; it is not a candidate verdict.
+  If the profiler or transport is unavailable before returning a placement
+  result, R-36h's disclosed non-verdict fallback remains in force. With no
+  placement request, the lane starts normally. Ephemeral lanes retain their
   Docker memory/CPU controls and resolve their parent from the environment's
   `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
   The selected source is required; absence is a hard configuration error,

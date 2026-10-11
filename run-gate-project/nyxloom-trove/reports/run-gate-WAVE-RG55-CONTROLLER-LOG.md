@@ -8996,3 +8996,80 @@ R2/full-gate checks remain release blockers. Assay's separate registered
 cgroup-profiler's first combined P1/P6 release is `1.0.0`, with no speculative
 `1.1.0` absent material changes. No merge, release, install, or daemon
 replacement was performed.
+
+### RW-554 — 2026-10-11 00:58:02 UTC — placement refusal must not launch an unplaced child
+
+P5 review round 1 found that the exec and bare-host runners issue `ctl start`
+before the token-bearing child exists. The daemon consequently sees no target
+PID and can return a successful profiling session whose placement block says
+`place-refused:no-target-pids`; the existing consumer then runs the lane body
+unplaced. The P5 handoff C6 already settles the intended behavior: keep the
+wrapper blocked until the daemon has resolved and read back placement, and
+terminate that wrapper before the lane body on an explicit placement refusal.
+
+This ruling binds the consumer contract to that C6 decision and supersedes
+the contradictory warning-and-run wording in Run-Gate SPEC R-43l and its RG-55
+backlog proposal. For exec or bare-host lanes that send `--place`, the runner
+must establish a token-bearing, non-body wrapper first; release the body only
+after the daemon reports an applied placement with the verified leaf and
+limits. If the daemon returns a session with `placement.error`, or without the
+required applied placement facts, close the launch gate, terminate and reap
+the wrapper, stop/finalize that session, and return a disclosed infrastructure
+refusal before any candidate or lane body executes. Release any admission
+reservation on that path. This is not a candidate test failure and must not be
+counted as a mutation result. The body may never be silently run unplaced
+after an explicit refusal.
+
+R-36h remains in force for ordinary optional profiling failures: when no
+placement request was made, or the profiler/transport is unavailable before
+it can return a placement result, the existing disclosed non-verdict fallback
+remains unchanged. This narrow distinction is about honoring an explicit
+placement refusal, not allowing measurement or host load to alter a test
+verdict. Synchronize SPEC, README, DESIGN-GUIDE, CONSUMERS, LANE-AUTHORING,
+and the RG-55 backlog with this ruling; retain contract v1.1's daemon-level
+semantics that an ordinary refused placement may still create a session.
+Required acceptance oracle: for both exec and bare-host, observe the child
+blocked before body entry, prove successful placement/read-back precedes the
+release signal, and prove a refusal exits before a body marker is written,
+cleans the wrapper/session/reservation, and records no candidate verdict.
+
+### RW-555 — 2026-10-11 01:25:21 UTC — validate the rev-63 placement barrier live
+
+Rev 63 adds a token-bearing ready/continue wrapper for explicit exec and
+bare-host placement requests. The child body remains blocked until
+`ctl start` returns and Run-Gate validates the placement leaf and applied
+limits. A daemon placement refusal or incomplete/loose readback aborts the
+wrapper, stops/finalizes any returned session, and infra-refuses before the
+body; R-36h fallback remains for profiler/transport unavailability before a
+placement result. R-45 remains a bounded wait-then-proceed observation, not
+an atomic reservation; RG-56 remains OPEN under RW-283/RW-545.
+
+The real `cgprofile-host-daemon` was already healthy and idle; it was neither
+restarted nor replaced. Four command-lane probes used the rev-63 working tree
+and the fixture `tests/fixtures/rg55-p5-placement-live/run-gate.toml` over the
+Docker-exec carrier. Exec success (`s-20261011T012235Z-ad35`) and bare-host
+success (`s-20261011T012309Z-9bbe`) each moved one target PID to a verified
+`dev-gates.slice/rg-*` leaf with `memory.high=64 MiB` and `memory.max=128
+MiB`; both bodies printed their success marker only after Run-Gate disclosed
+the profiling session. A live status read during bare-host execution showed
+the exact leaf, one PID moved, and one live session. Both lanes passed.
+
+Exec refusal (`s-20261011T012255Z-d3f7`) and bare-host refusal
+(`s-20261011T012326Z-e719`) requested 64 GiB above the 3-GiB gates-slice
+limit. The daemon returned `place-refused:over-slice`, zero PIDs moved, and no
+leaf. Both Run-Gate invocations returned infrastructure `ERROR` (CLI exit 2)
+before their unique body markers; the returned sessions were stopped, no
+Assay candidate verdict was created, and a separate status query showed zero
+sessions and leaves. The bounded one-second R-45 wait expired and proceeded
+with a warning in each refusal case, as specified. The probe runner
+`rg55-p5-placement-probe-runner` (exact ID
+`e923da32bc2eae8f514808c724445a6b4f05c0225ccf0a3900271d1049993556`) was
+verified in `dev-gates.slice` at 3 CPUs / 512 MiB and removed by its exact
+name. Memory PSI `full avg10` was 0.00% at the launch/completion checks.
+
+On the same source checkpoint, `py_compile`, `git diff --check`, and the
+targeted placement/exec/bare-host pytest selection passed: 71 passed, 1,646
+deselected (6.05s). The live receipts and full details are in
+`run-gate-WAVE-RG55-P5-REPORT.md`. No gate, merge, release, or daemon change
+is claimed by this ruling; freeze the final candidate and run its registered
+gates plus fresh Sol review next.

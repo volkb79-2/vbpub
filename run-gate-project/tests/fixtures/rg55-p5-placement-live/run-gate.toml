@@ -1,0 +1,54 @@
+schema_version = 1
+
+[profile]
+enabled = true
+daemon = "cgprofile-host-daemon"
+interval = "1s"
+damon = false
+transport = "exec"
+admission_wait = "1s"
+
+[environments.probe-runner]
+mode = "exec"
+image = "tester-unified:local"
+container_name = "rg55-p5-placement-probe-runner"
+
+[lanes.exec-success]
+kind = "command"
+environment = "probe-runner"
+argv = ["bash", "-c", "printf 'RG55_P5_EXEC_SUCCESS_BODY\\n'; sleep 8"]
+clean_tree = false
+
+[lanes.exec-success.resources]
+memory = "64m"
+memory_max = "128m"
+
+[lanes.exec-refusal]
+kind = "command"
+environment = "probe-runner"
+argv = ["bash", "-c", "printf 'RG55_P5_EXEC_REFUSAL_BODY\\n'; sleep 8"]
+clean_tree = false
+
+[lanes.exec-refusal.resources]
+memory = "64g"
+memory_max = "64g"
+
+[lanes.bare-success]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "-c", "printf 'RG55_P5_BARE_SUCCESS_BODY\\n'; sleep 8"]
+clean_tree = false
+
+[lanes.bare-success.resources]
+memory = "64m"
+memory_max = "128m"
+
+[lanes.bare-refusal]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "-c", "printf 'RG55_P5_BARE_REFUSAL_BODY\\n'; sleep 8"]
+clean_tree = false
+
+[lanes.bare-refusal.resources]
+memory = "64g"
+memory_max = "64g"

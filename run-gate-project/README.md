@@ -554,6 +554,15 @@ the tool's reason to exist and MUST be implemented + tested:
   admission waits for headroom and then proceeds at the configured bound; it
   does not refuse a lane merely because the host was busy.
 
+  When an exec or bare-host lane requests daemon placement, Run-Gate holds a
+  token-bearing wrapper outside the lane body until the daemon confirms the
+  leaf and reads back the requested limits. An explicit refusal or incomplete
+  read-back aborts the wrapper and returns an infrastructure refusal before
+  the body runs; no mutation candidate or candidate verdict is produced. If
+  the profiler is unavailable before it returns a placement result, the
+  documented R-36h non-verdict fallback still applies. See the
+  [placement launch rationale](docs/DESIGN-GUIDE.md#explicit-placement-is-a-pre-body-launch-gate).
+
 ### Distribution — symlink inside vbpub, copy outside
 
 The tool is a **mini-project of the vbpub monorepo** (this directory): its own

@@ -14,7 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 62  # rev 62: reconcile daemon watch authority and safe stall policy
+__revision__ = 63  # rev 63: gate explicit daemon placement before lane-body entry
+# Rev 63 holds requested exec/bare-host children behind a ready/continue
+# handshake until daemon placement is read back; explicit refusal is an
+# infrastructure refusal before the body, not an unplaced candidate run.
 # Rev 62 keeps local silence from racing a healthy daemon watch, uses a
 # terminal kill in the stopped session summary, and refuses shared-scope
 # daemon kill policy without an explicit placement request.
@@ -144,6 +147,7 @@ import os
 import queue
 import re
 import secrets
+import select
 import shlex
 import shutil
 import signal
@@ -3232,7 +3236,8 @@ def finish_lane_profiling(state: dict) -> dict:
 
 def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
                               worktree: Path, docker: str | None,
-                              plan: dict) -> dict:
+                              plan: dict,
+                              preflight: dict | None = None) -> dict:
     """RG-57/RW-27b — the bare-host counterpart to `start_lane_profiling`.
     A bare-host lane has no container/runner of run-gate's own to hand a
     caller-supplied id: the TARGET is run-gate's own process
@@ -3268,19 +3273,26 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     if container_id is None:
         state["warning"] = skip_reason
         return state
-    client = ProfilerClient(docker, plan["daemon"],
-                            transport=plan.get("transport",
-                                               PROFILE_TRANSPORT_DEFAULT),
-                            socket_path=plan.get("socket_path",
-                                                 PROFILE_SOCKET_PATH_DEFAULT))
+    client = (preflight.get("client") if preflight is not None else
+              ProfilerClient(docker, plan["daemon"],
+                             transport=plan.get("transport",
+                                                PROFILE_TRANSPORT_DEFAULT),
+                             socket_path=plan.get("socket_path",
+                                                  PROFILE_SOCKET_PATH_DEFAULT)))
     state["client"] = client
-    try:
-        version_doc, reason = client.version()
-    except Exception as exc:
-        # R-36h: an unexpected optional probe failure degrades to the
-        # daemon-unavailable state; it must not escape into the lane.
-        state["warning"] = f"profiling version probe failed unexpectedly: {exc}"
-        return state
+    if preflight is not None:
+        version_doc = preflight.get("version")
+        reason = preflight.get("reason")
+        if preflight.get("fatal_reason"):
+            state["warning"] = preflight["fatal_reason"]
+    else:
+        try:
+            version_doc, reason = client.version()
+        except Exception as exc:
+            # R-36h: an unexpected optional probe failure degrades to the
+            # daemon-unavailable state; it must not escape into the lane.
+            state["warning"] = f"profiling version probe failed unexpectedly: {exc}"
+            return state
     if version_doc is None:
         state["warning"] = reason
         return state
@@ -3290,22 +3302,30 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
                                 f"{cgprofile_ver}, damon {daemon_damon})")
     meta = profile_meta(lane, lane_name, project_dir, worktree)
     interval = float(budget_seconds(plan["interval"]))
-    try:
-        host_doc, host_reason = client.host()
-    except Exception as exc:
-        host_doc, host_reason = None, (
-            f"profiling host probe failed unexpectedly: {exc}")
-    placement = profile_placement_plan(
-        lane, lane_name, project_dir, host_doc) if host_doc is not None \
-        else {"place": False, "memory_high": None,
-              "memory_max": None, "cpu_weight": None}
+    if preflight is not None:
+        host_doc = preflight.get("host")
+        host_reason = preflight.get("reason")
+        placement = preflight.get("placement") or {
+            "place": False, "memory_high": None,
+            "memory_max": None, "cpu_weight": None}
+        state["admission"] = preflight.get("admission")
+    else:
+        try:
+            host_doc, host_reason = client.host()
+        except Exception as exc:
+            host_doc, host_reason = None, (
+                f"profiling host probe failed unexpectedly: {exc}")
+        placement = profile_placement_plan(
+            lane, lane_name, project_dir, host_doc) if host_doc is not None \
+            else {"place": False, "memory_high": None,
+                  "memory_max": None, "cpu_weight": None}
+        if host_doc is not None:
+            state["admission"] = profile_admission(
+                client, lane_name, placement,
+                plan.get("admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
+                host_doc)
     if host_doc is None:
         state["warning"] = host_reason
-    else:
-        state["admission"] = profile_admission(
-            client, lane_name, placement,
-            plan.get("admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
-            host_doc)
     policy = profile_start_policy(lane, project_dir, "container-shared",
                                   bool(placement["place"]))
     start_doc, start_reason = client.start(
@@ -6087,6 +6107,296 @@ class OutputTee:
         if self.error is not None:
             print(f"{PROG}: WARNING: output log capture stopped: {self.error}",
                   file=sys.stderr, flush=True)
+
+
+class StdinForwarder:
+    """Preserve the caller's input after an exec placement handshake."""
+
+    def __init__(self, source, destination):
+        self.source = getattr(source, "buffer", source)
+        self.destination = destination
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._copy, daemon=True)
+        self.thread.start()
+
+    def _copy(self) -> None:
+        try:
+            while not self.stopped.is_set():
+                chunk = self.source.read(65536)
+                if not chunk or self.stopped.is_set():
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8")
+                self.destination.write(chunk)
+                self.destination.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            # The lane can finish without consuming all caller input. That is
+            # ordinary EOF/early-exit behavior, not a profiler verdict.
+            pass
+        finally:
+            try:
+                self.destination.close()
+            except (OSError, ValueError):
+                pass
+
+    def close(self) -> None:
+        self.stopped.set()
+        try:
+            self.destination.close()
+        except (OSError, ValueError):
+            pass
+
+
+PLACEMENT_BARRIER_TIMEOUT_SECONDS = 300.0
+
+
+def placement_barrier_shell_argv(command: list[str], nonce: str) -> list[str]:
+    """Wrap an in-container command without entering its body yet.
+
+    `docker exec -i` supplies the one-shot release channel. The wrapper's PID
+    already carries RUN_GATE_PROFILE_SESSION and remains stable across exec,
+    so cgprofile can discover and place this process before the lane starts.
+    """
+    release = f"RUN_GATE_PLACEMENT_GO:{nonce}"
+    unprofiled = f"RUN_GATE_PLACEMENT_GO_UNPROFILED:{nonce}"
+    script = f"""printf '\\036RUN_GATE_PLACEMENT_READY:%s\\n' "$1"
+IFS= read -r __rg55_release || exit 125
+if [ "$__rg55_release" = "$2" ]; then
+  :
+elif [ "$__rg55_release" = "$3" ]; then
+  unset {PROFILE_TOKEN_ENV}
+else
+  exit 125
+fi
+shift 3
+exec "$@"
+"""
+    return ["bash", "-c", script, "run-gate-placement", nonce, release,
+            unprofiled, *command]
+
+
+def placement_barrier_python_argv(command: list[str], nonce: str,
+                                  control_fd: int) -> list[str]:
+    """Host-side exec-preserving barrier for bare-host lane children."""
+    release = f"RUN_GATE_PLACEMENT_GO:{nonce}"
+    unprofiled = f"RUN_GATE_PLACEMENT_GO_UNPROFILED:{nonce}"
+    script = f"""import os, sys
+nonce, release, unprofiled = sys.argv[1:4]
+control_fd = int(sys.argv[4])
+os.write(1, b'\\x1eRUN_GATE_PLACEMENT_READY:' + nonce.encode() + b'\\n')
+line = os.read(control_fd, 256)
+if line == (unprofiled + '\\n').encode():
+    os.environ.pop({PROFILE_TOKEN_ENV!r}, None)
+elif line != (release + '\\n').encode():
+    raise SystemExit(125)
+os.execvpe(sys.argv[5], sys.argv[5:], os.environ)
+"""
+    return [sys.executable, "-c", script, nonce, release, unprofiled,
+            str(control_fd),
+            *command]
+
+
+def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
+                               timeout: float =
+                               PLACEMENT_BARRIER_TIMEOUT_SECONDS) -> None:
+    """Consume the wrapper's private ready line before starting cgprofile."""
+    stream = getattr(proc, "stdout", None)
+    if stream is None:
+        raise GateInfraError("placement wrapper has no readiness stream")
+    expected = b"\x1eRUN_GATE_PLACEMENT_READY:" + nonce.encode() + b"\n"
+    deadline = time.monotonic() + timeout
+    line = bytearray()
+    fd = stream.fileno()
+    while len(line) <= 256:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GateInfraError(
+                f"placement wrapper did not become ready within {timeout:g}s")
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            raise GateInfraError(
+                f"placement wrapper did not become ready within {timeout:g}s")
+        chunk = os.read(fd, 1)
+        if not chunk:
+            detail = line.decode("utf-8", errors="replace").strip()
+            raise GateInfraError(
+                "placement wrapper exited before readiness" +
+                (f": {detail[:200]}" if detail else ""))
+        line.extend(chunk)
+        if chunk == b"\n":
+            if bytes(line) != expected:
+                detail = line.decode("utf-8", errors="replace").strip()
+                raise GateInfraError(
+                    "placement wrapper emitted an invalid readiness marker" +
+                    (f": {detail[:200]}" if detail else ""))
+            return
+    raise GateInfraError("placement wrapper readiness marker exceeded 256 bytes")
+
+
+def spawn_placement_barrier(argv: list[str], nonce: str, **popen_kwargs
+                            ) -> subprocess.Popen:
+    """Start a blocked wrapper and prove its target-side ready handshake."""
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, bufsize=0, **popen_kwargs)
+    try:
+        wait_for_placement_barrier(proc, nonce)
+    except BaseException:
+        abort_placement_barrier(proc, nonce)
+        raise
+    return proc
+
+
+def spawn_bare_host_placement_barrier(command: list[str], nonce: str,
+                                      **popen_kwargs) -> subprocess.Popen:
+    """Use a private control pipe so the lane still inherits the caller stdin."""
+    read_fd, write_fd = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            placement_barrier_python_argv(command, nonce, read_fd),
+            stdin=None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            bufsize=0, pass_fds=(read_fd,), **popen_kwargs)
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
+    os.close(read_fd)
+    proc._run_gate_placement_control_fd = write_fd
+    try:
+        wait_for_placement_barrier(proc, nonce)
+    except BaseException:
+        abort_placement_barrier(proc, nonce)
+        raise
+    return proc
+
+
+def signal_placement_barrier(proc: subprocess.Popen, nonce: str, *,
+                             release: bool, profile_active: bool = True
+                             ) -> None:
+    """Release the body only on approval; every other signal exits wrapper."""
+    if not release:
+        signal_value = f"RUN_GATE_PLACEMENT_ABORT:{nonce}"
+    elif profile_active:
+        signal_value = f"RUN_GATE_PLACEMENT_GO:{nonce}"
+    else:
+        signal_value = f"RUN_GATE_PLACEMENT_GO_UNPROFILED:{nonce}"
+    control_fd = getattr(proc, "_run_gate_placement_control_fd", None)
+    stream = getattr(proc, "stdin", None)
+    if control_fd is None and stream is None:
+        raise GateInfraError("placement wrapper has no control channel")
+    try:
+        if control_fd is not None:
+            os.write(control_fd, (signal_value + "\n").encode())
+            os.close(control_fd)
+            proc._run_gate_placement_control_fd = None
+        else:
+            stream.write((signal_value + "\n").encode())
+            stream.flush()
+    finally:
+        if stream is not None and not release:
+            stream.close()
+
+
+def abort_placement_barrier(proc: subprocess.Popen, nonce: str) -> None:
+    """Ask a not-yet-released wrapper to exit, then reap its exact client PID."""
+    try:
+        signal_placement_barrier(proc, nonce, release=False)
+    except Exception:
+        stream = getattr(proc, "stdin", None)
+        if stream is not None and not stream.closed:
+            try:
+                stream.close()
+            except OSError:
+                pass
+        control_fd = getattr(proc, "_run_gate_placement_control_fd", None)
+        if control_fd is not None:
+            try:
+                os.close(control_fd)
+            except OSError:
+                pass
+            proc._run_gate_placement_control_fd = None
+    try:
+        proc.wait(timeout=LANE_KILL_GRACE_SECONDS + 2)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            proc.wait()
+
+
+def abandon_placement_launch(proc: subprocess.Popen | None, nonce: str | None,
+                            profiler_state: dict | None = None) -> dict | None:
+    """Close a blocked launch and stop its session on pre-body failures."""
+    if proc is not None and nonce is not None:
+        try:
+            abort_placement_barrier(proc, nonce)
+        except Exception as exc:
+            print(f"run-gate: WARNING placement wrapper cleanup failed: {exc}",
+                  file=sys.stderr, flush=True)
+    if not isinstance(profiler_state, dict) \
+            or profiler_state.get("mode") != "daemon":
+        return None
+    try:
+        return finish_lane_profiling(profiler_state)
+    except Exception as exc:
+        print(f"run-gate: WARNING profiling: refused-placement cleanup "
+              f"failed: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def placement_refusal_reason(state: dict, requested: bool,
+                             requested_limits: dict | None = None
+                             ) -> str | None:
+    """Validate a daemon's applied placement before releasing a requested lane."""
+    if not requested:
+        return None
+    placement = state.get("placement")
+    if not isinstance(placement, dict):
+        return "daemon omitted the requested placement result"
+    if placement.get("requested") is not True:
+        return "daemon did not confirm the requested placement"
+    error = placement.get("error")
+    if error is not None:
+        return f"daemon refused requested placement: {error}"
+    leaf = placement.get("leaf")
+    applied = placement.get("applied")
+    if not isinstance(leaf, str) or not leaf.startswith("/"):
+        return "daemon omitted the verified placement leaf"
+    if not isinstance(applied, dict):
+        return "daemon omitted the applied placement limits"
+    readback = {}
+    for key in ("memory.high", "memory.max"):
+        value = applied.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return f"daemon did not read back a valid {key} value"
+        readback[key] = value
+    if readback["memory.max"] < readback["memory.high"]:
+        return "daemon read back memory.max below memory.high"
+    if isinstance(requested_limits, dict):
+        for key in ("memory.high", "memory.max"):
+            requested_value = requested_limits.get(key.replace(".", "_"))
+            if (isinstance(requested_value, int)
+                    and not isinstance(requested_value, bool)
+                    and readback[key] > requested_value):
+                return f"daemon read back {key} above the requested limit"
+        cpu_weight = requested_limits.get("cpu_weight")
+        if cpu_weight is not None:
+            applied_weight = applied.get("cpu.weight")
+            if (not isinstance(applied_weight, int)
+                    or isinstance(applied_weight, bool)
+                    or not 1 <= applied_weight <= 10000):
+                return "daemon did not read back a valid cpu.weight value"
+            if applied_weight != cpu_weight:
+                return "daemon read back a different cpu.weight than requested"
+    return None
 
 
 def save_container_logs(docker: str, name: str,
@@ -11719,6 +12029,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                  f"{budget_seconds(lane['budget'])}s", "bash", "-c", inner]
     else:
         argv += [name, "bash", "-c", inner]
+    exec_command_index = len(argv) - (8 if lane.get("budget") else 3)
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
           f"container {name} ({name_src}) | "
           f"slice {slice_name or '(none)'} ({slice_src})",
@@ -11759,6 +12070,39 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         print(f"run-gate: DRY RUN — the argv above is what a live run would "
               f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
+    profile_preflight = None
+    if profiling:
+        try:
+            profile_preflight = prepare_profile_start(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                "container-shared")
+        except Exception as exc:
+            # R-36h: an unexpected optional preflight failure is disclosed by
+            # the normal fallback and never prevents the lane from running.
+            profile_preflight = {
+                "client": None, "version": None, "host": None,
+                "placement": {"place": False, "memory_high": None,
+                              "memory_max": None, "cpu_weight": None},
+                "admission": None,
+                "fatal_reason": f"profiling preflight failed unexpectedly: {exc}",
+                "reason": f"profiling preflight failed unexpectedly: {exc}"}
+    # Resolve the persistent runner before creating a blocked exec child. A
+    # Docker inspect refusal is a pre-launch infrastructure error; it must
+    # not strand a wrapper waiting for a placement decision that cannot be
+    # made.
+    if profiling:
+        inspected = container_state(docker, name)
+        container_id = inspected["id"] if inspected else ""
+    else:
+        container_id = ""
+    proc = None
+    barrier_nonce = None
+    placement_requested = bool(
+        (profile_preflight or {}).get("placement", {}).get("place"))
+    if placement_requested and not profile_plan.get("token"):
+        fail_infra(
+            f"lane {lane_name!r} requests placement but has no profile token; "
+            "lane body was not started")
     # RG-55: disabled means no daemon call and no sampler — built directly,
     # without the extra profiling attempt a real one needs. Unchanged from
     # before RG-60: `container_state()` (a real `docker inspect`) is still
@@ -11768,7 +12112,6 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # record is a recovery AID, never a reason to fail a lane that was
     # never going to be profiled in the first place).
     if not profiling:
-        container_id = ""
         profiler_state = {"mode": "disabled", "client": None, "daemon": None,
                           "session": None, "session_line": None,
                           "warning": None, "sampler": None,
@@ -11776,17 +12119,22 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                           "disabled_reason": profile_plan.get(
                               "disabled_reason", "disabled")}
     else:
-        # Contract Sec 4 obligation 2: the container id is the PERSISTENT
-        # runner's — this exec never creates a container of its own.
-        inspected = container_state(docker, name)
-        container_id = inspected["id"] if inspected else ""
         # RW-23e (round-1 review, S4) -- see the matching comment in
         # run_container_lane: never fabricate a guessed cgroup path.
         cgroup = None
+        if placement_requested:
+            barrier_nonce = secrets.token_hex(16)
+            barrier_argv = (
+                argv[:exec_command_index] +
+                placement_barrier_shell_argv(
+                    argv[exec_command_index:], barrier_nonce))
+            barrier_argv.insert(2, "-i")
+            proc = spawn_placement_barrier(barrier_argv, barrier_nonce)
         try:
             profiler_state = start_lane_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
-                name, container_id, cgroup, "container-shared")
+                name, container_id, cgroup, "container-shared",
+                preflight=profile_preflight)
         except Exception as exc:
             # B1d: call-site defense in depth, matching run_container_lane.
             msg = f"profiling crashed unexpectedly: {exc}"
@@ -11795,6 +12143,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                               "session_line": None, "warning": msg,
                               "sampler": None, "profiler_status": None,
                               "disabled_reason": msg}
+        except BaseException:
+            abandon_placement_launch(proc, barrier_nonce)
+            raise
         print_profile_warning(profiler_state)
         print_host_pressure_line(profiler_state.get("profiler_status"))
         print_profile_session_line(profiler_state)
@@ -11862,7 +12213,29 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
         run_record["placement"] = profiler_state.get("placement")
-    write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
+    try:
+        write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
+    except BaseException:
+        if barrier_nonce is not None:
+            abandon_placement_launch(proc, barrier_nonce, profiler_state)
+        clear_inflight_record(project_dir, lane_name)
+        raise
+    if barrier_nonce is not None and profiler_state.get("mode") == "daemon":
+        refusal = placement_refusal_reason(profiler_state,
+                                           placement_requested,
+                                           (profile_preflight or {}).get(
+                                               "placement"))
+        if refusal is not None:
+            profile_result = abandon_placement_launch(
+                proc, barrier_nonce, profiler_state)
+            if run_record is not None and profile_result is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+            if barrier_nonce is not None:
+                clear_inflight_record(project_dir, lane_name)
+            fail_infra(f"lane {lane_name!r} placement refused: {refusal}; "
+                       "lane body was not started")
     # RG-55: use Popen + OutputTee so basic sampling and daemon/in-process
     # liveness can be serviced while the persistent-container exec runs,
     # without changing the merged stdout/stderr presented to the operator.
@@ -11893,16 +12266,22 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         fallback_announced = True
         print(f"run-gate: in-process watch — daemon unavailable for lane "
               f"{lane_name!r}", flush=True)
-    proc = None
     output_tee = None
+    stdin_forwarder = None
     budget_expired = False
     try:
         basic_active = profiler_state["mode"] == "basic"
         tick = (PROFILE_SAMPLE_SECONDS if basic_active else
                 PROGRESS_POLL_SECONDS if daemon_watch is not None or
                 fallback_watch is not None else None)
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, bufsize=0)
+        if proc is None:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, bufsize=0)
+        elif barrier_nonce is not None:
+            signal_placement_barrier(
+                proc, barrier_nonce, release=True,
+                profile_active=profiler_state.get("mode") == "daemon")
+            stdin_forwarder = StdinForwarder(sys.stdin, proc.stdin)
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
             if run_record is not None and run_record.get("log_path") else None)
@@ -11990,6 +12369,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                         f"profiling tick failed unexpectedly: {exc}"
         output_tee.join()
     finally:
+        if stdin_forwarder is not None:
+            stdin_forwarder.close()
         if daemon_watch is not None:
             consume_profiler_watch(daemon_watch, profiler_state, lane_name,
                                    project_dir, worktree, run_record)
@@ -12123,6 +12504,29 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # attributable to just this lane's own child).
     profiling = bool(profile_plan and profile_plan["enabled"])
     docker = shutil.which("docker") if profiling else None
+    profile_preflight = None
+    if profiling and docker:
+        try:
+            profile_preflight = prepare_profile_start(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                "container-shared")
+        except Exception as exc:
+            profile_preflight = {
+                "client": None, "version": None, "host": None,
+                "placement": {"place": False, "memory_high": None,
+                              "memory_max": None, "cpu_weight": None},
+                "admission": None,
+                "fatal_reason": f"profiling preflight failed unexpectedly: {exc}",
+                "reason": f"profiling preflight failed unexpectedly: {exc}"}
+    placement_requested = bool(
+        (profile_preflight or {}).get("placement", {}).get("place"))
+    if placement_requested and not profile_plan.get("token"):
+        fail_infra(
+            f"lane {lane_name!r} requests placement but has no profile token; "
+            "lane body was not started")
+    proc = None
+    barrier_nonce = None
+    run_env = None
     if not profiling:
         # RG-55/contract Sec 4 obligation 8: disabled means NO token, NO
         # daemon call and NO sampler -- same shape run_container_lane/
@@ -12134,9 +12538,17 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                           "disabled_reason": profile_plan.get(
                               "disabled_reason", "disabled")}
     else:
+        if placement_requested:
+            run_env = dict(os.environ)
+            run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+            barrier_nonce = secrets.token_hex(16)
+            proc = spawn_bare_host_placement_barrier(
+                argv, barrier_nonce, cwd=str(project_dir), env=run_env,
+                start_new_session=True)
         try:
             profiler_state = start_bare_host_profiling(
-                lane, lane_name, project_dir, worktree, docker, profile_plan)
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                preflight=profile_preflight)
         except Exception as exc:
             # B1d (round-1 review precedent, same call-site defense in
             # depth as run_container_lane/run_exec_lane): the whole point
@@ -12149,6 +12561,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               "warning": msg, "sampler": None,
                               "profiler_status": None,
                               "disabled_reason": msg}
+        except BaseException:
+            abandon_placement_launch(proc, barrier_nonce)
+            raise
         # Gated on `profiling` (matching run_container_lane/run_exec_lane:
         # a DISABLED lane prints none of this) -- only reached inside this
         # `else:` branch.
@@ -12165,15 +12580,31 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                   f"{lane_name!r} exclusively", flush=True)
     if run_record is not None:
         run_record["placement"] = profiler_state.get("placement")
+    if barrier_nonce is not None and profiler_state.get("mode") == "daemon":
+        refusal = placement_refusal_reason(profiler_state,
+                                           placement_requested,
+                                           (profile_preflight or {}).get(
+                                               "placement"))
+        if refusal is not None:
+            profile_result = abandon_placement_launch(
+                proc, barrier_nonce, profiler_state)
+            if run_record is not None and profile_result is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+            fail_infra(f"lane {lane_name!r} placement refused: {refusal}; "
+                       "lane body was not started")
+    if run_record is not None:
+        run_record["placement"] = profiler_state.get("placement")
     # RG-57/contract Sec 4.1: the SAME per-invocation token the container/
     # exec paths inject via `-e RUN_GATE_PROFILE_SESSION=...` -- here it is
     # the bare-host CHILD's own environment, and ONLY on the daemon path:
     # the rusage path starts no session for the token to identify, and
     # nothing would ever read it there.
-    run_env = None
     if profiler_state["mode"] == "daemon":
-        run_env = dict(os.environ)
-        run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+        if run_env is None:
+            run_env = dict(os.environ)
+            run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
     # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
     # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
     # historical rejected `getrusage(RUSAGE_CHILDREN)` snapshot around a
@@ -12207,7 +12638,6 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # `ru_maxrss`, not an approximation.
     floor_bytes = (_self_rss_bytes()
                   if profiler_state["mode"] == "rusage" else None)
-    proc = None
     output_tee = None
     budget_expired = False
     daemon_watch = None
@@ -12221,10 +12651,15 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             profiler_state["warning"] = profiler_state.get("warning") or \
                 f"daemon watch could not start: {exc}"
     try:
-        proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, bufsize=0,
-                                start_new_session=True)
+        if proc is None:
+            proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, bufsize=0,
+                                    start_new_session=True)
+        elif barrier_nonce is not None:
+            signal_placement_barrier(
+                proc, barrier_nonce, release=True,
+                profile_active=profiler_state.get("mode") == "daemon")
         output_tee = OutputTee(
             proc, Path(run_record["log_path"])
             if run_record is not None and run_record.get("log_path") else None)

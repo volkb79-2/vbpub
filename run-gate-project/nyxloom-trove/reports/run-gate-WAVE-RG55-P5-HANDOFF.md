@@ -4,6 +4,34 @@
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
 `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-{LOG,REPORT,BRIEF-n}.md`.
 
+## Controller continuation — 2026-10-11
+
+The active candidate is `.worktrees/rg55-p5-transport-port-20261010`, branch
+`rg55-p5-transport-port-20261010`, based on main
+`efaf112945233e3a8f6d53f2fef136439d18d089`. Its review-artifact HEAD before
+the current uncommitted repair is `e771985e0778538f209ce30d7893cfef977599f7`.
+Run-Gate is now revision 63; the original rev-43 / 23.9.0 implementation
+dispatch below is historical.
+
+P5 review round 1 rejected on B3: exec and bare-host started profiling before
+the token-bearing lane child existed, so an explicit daemon placement refusal
+could be followed by unplaced body execution. RW-554 binds the settled C6
+behavior: a ready/continue wrapper must hold the body until the daemon returns
+and Run-Gate verifies the applied leaf and limits; refusal aborts before body
+entry and finalizes the returned session. R-36h fallback remains only when no
+placement result is available. RW-555 records the rev-63 repair, four real
+daemon success/refusal probes, and 71 focused tests. Detailed session and
+Run-Gate run IDs are in `run-gate-WAVE-RG55-P5-REPORT.md`.
+
+The next controller actions are to commit the implementation/docs/fixture and
+refresh this review packet; then run final quiet-tree cgroup-profiler
+unit/coverage/canary, Nyxloom scope check, Run-Gate selftest/assay-r1/assay-r3/
+doctor, and obtain a fresh Sol P5 review. Provisional merge is authorized
+after those short checks and ACCEPT. Exact-tree `assay-r2` and `gate-full`
+remain release blockers and should run asynchronously after merge without
+mutating their judged tree. Do not restart or replace the CIU-managed main
+daemon. RG-56 remains OPEN and outside P5.
+
 ## Controller continuation — 2026-10-01
 
 The P5 implementation is integrated with current main in
@@ -132,9 +160,16 @@ else the footprint manifest's `memory_peak_bytes.median × 1.5` (disclosed
 "derived") else no placement (disclosed "no request"); ceiling =
 `resources.memory_max` else `min(2 × request, host.gates_slice.
 memory_max_bytes)`. `placement.applied` (read back by the daemon) lands in
-the record. A placement refusal is a warning, but the blocked wrapper is
-terminated before the lane body runs and any admission reservation is
-released; the lane is never allowed to run as an unaccounted workload.
+the record. Run-Gate holds a token-bearing wrapper outside the lane body until
+the daemon confirms placement and reads back the leaf and requested limits.
+An explicit refusal or absent/malformed/looser read-back aborts and reaps the
+wrapper, stops the session, and returns an infrastructure refusal before the
+body or any mutation candidate executes; no candidate verdict is produced.
+The normal Run-Gate admission-ticket `finally` releases its ticket on this
+path. R-45 itself is a wait, not a reservation; RG-56 remains separate. If the
+profiler or transport is unavailable before a placement result, the disclosed
+R-36h fallback remains in force. The lane is never allowed to run unplaced
+after an explicit refusal.
 `throttled` readings → ONE WARNING ("lane throttled at memory.high —
 raise resources.memory or the gates slice"). R-43 gains sub-rules;
 LANE-AUTHORING documents `resources.memory`/`memory_max`; `--dry-run`

@@ -236,6 +236,11 @@ lane itself, and the target `assay.toml` owns the mutation budget.
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
 run-gate derives the ceiling from the verified gates-slice cap and request.
+When placement is requested, Run-Gate holds the lane body until the daemon
+returns a verified leaf and read-back limits. An explicit refusal or
+incomplete/looser read-back exits as an infrastructure refusal before the
+body runs; it is not a candidate verdict. A profiler/transport failure before
+any placement result follows the disclosed R-36h fallback instead.
 
 ### Native R2 resource observer
 

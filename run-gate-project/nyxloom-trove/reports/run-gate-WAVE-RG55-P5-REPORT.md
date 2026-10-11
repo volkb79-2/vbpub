@@ -1,29 +1,38 @@
 # RG-55 P5 — Run-Gate v1.1 integration report
 
 **State: in progress; this report does not authorize merge, release, or
-shipment.** Candidate branch `rg55-p5-transport-port-20261010` was at
-`db6d5b73693ec1a42b0a4f5a254df145a2a6946a` before this evidence refresh. The
-candidate code is unchanged from `465f67d060dcbdb7a47e92e95ee082405f14ca67`;
-the intervening commits record probes and review metadata. The exact `db6d`
-tree passed Run-Gate `selftest` and cgroup-profiler's registered `r0-r1`
-coverage lane. Final-tree cgroup-profiler unit/canary gates, Run-Gate
-`assay-r1`/`assay-r3`/`doctor`, Nyxloom lint, fresh Sol review, and exact-tree
-mutation/full gates remain outstanding.
+shipment.** The rev-63 pre-body placement barrier repairs P5 review-round-1
+blocker B3 and has now passed four real-daemon acceptance probes (exec and
+bare-host success/refusal pairs) plus 71 focused tests. The current source
+changes are uncommitted on branch `rg55-p5-transport-port-20261010`, based on
+review-artifact commit `e771985e0778538f209ce30d7893cfef977599f7`; a frozen
+candidate commit and final short-gate evidence are still pending. Earlier
+`db6d` selftest and cgroup-profiler coverage receipts remain historical, not
+exact-current-tree evidence. Fresh cgroup-profiler gates, Run-Gate
+`selftest`/`assay-r1`/`assay-r3`/`doctor`, Nyxloom lint, fresh Sol review, and
+exact-tree mutation/full gates remain outstanding.
 
 ## Candidate identity and release boundary
 
+- Current resumed source checkpoint: rev 63, working tree based on
+  `e771985e0778538f209ce30d7893cfef977599f7`; the B3 repair and its live
+  probe evidence are described below. The exact commit ID will be recorded
+  after these changes are committed.
 - Main/origin base at this checkpoint: `efaf112945233e3a8f6d53f2fef136439d18d089`.
 - Candidate: worktree `.worktrees/rg55-p5-transport-port-20261010`, branch
   `rg55-p5-transport-port-20261010`, HEAD
-  `465f67d060dcbdb7a47e92e95ee082405f14ca67` at the time of these receipts.
-  This includes the prior integrated code checkpoint `3ccb7528` plus the
-  committed CP-19 guard, tests, and docs.
-- Run-Gate revision: 61. CMRU reports the next Run-Gate version as
-  `23.11.0`; the P5 handoff's original `23.9.0` / revision 43 is historical.
-- CMRU reports Assay's next version as `9.1.0`; cgroup-profiler has no
-  release tag, and its first release remains explicitly `1.0.0`.
-- This is an **integrated, not P5-only, diff**: the code checkpoint has 67
-  paths across Run-Gate, Assay, and cgroup-profiler relative to current main. It includes the RG-89
+  `465f67d060dcbdb7a47e92e95ee082405f14ca67` at the time of the earlier
+  package receipts. That checkpoint includes the prior integrated code
+  `3ccb7528` plus the committed CP-19 guard, tests, and docs.
+- Run-Gate revision: 63. Read-only `cmru status` from the candidate resolves
+  Run-Gate `23.11.0`, Assay `9.1.0`, and
+  cgroup-profiler `0.1.0` by default (no existing cgprofile tag). The wave's
+  authorized cgprofile release target remains explicitly `1.0.0`, subject to
+  cgprofile's own final gates; the P5 handoff's original `23.9.0` / revision
+  43 is historical.
+- This is an **integrated, not P5-only, diff**: the original code checkpoint
+  had 67 paths across Run-Gate, Assay, and cgroup-profiler relative to main.
+  It includes the RG-89
   observer work needed to make native R2 possible. A P5-only review verdict
   must not be used to claim the other included package work is released or
   complete; final review and release records must identify the complete
@@ -280,13 +289,49 @@ pair estimated about 0.41% of one CPU, so these remain noisy sequential
 aggregate observations—not a calibrated or universal overhead guarantee.
 Neither host load nor profile data changed a functional verdict.
 
+### Rev-63 placement-barrier acceptance on the current daemon
+
+The four-lane fixture at
+`run-gate-project/tests/fixtures/rg55-p5-placement-live/run-gate.toml`
+exercised the candidate Run-Gate client against the CIU-managed
+`cgprofile-host-daemon` over its Docker-exec carrier. The daemon was already
+up and idle; it was not restarted or replaced. Host `dev-gates.slice` was
+loaded at a 5-CPU quota and 3-GiB memory limit. The disposable runner was
+`rg55-p5-placement-probe-runner`, ID
+`e923da32bc2eae8f514808c724445a6b4f05c0225ccf0a3900271d1049993556`,
+verified under `dev-gates.slice` at 3 CPUs and 512 MiB. It was removed by its
+exact name after the probes. Host memory PSI `full avg10` stayed at 0.00% in
+the launch and completion checks.
+
+| Lane | Session / Run-Gate run ID | Outcome and placement | Body / cleanup oracle |
+|---|---|---|---|
+| `exec-success` | `s-20261011T012235Z-ad35` / `8b0827acabd32b626c7bd476a8bb2b12` | PASS, exit 0; one PID moved; leaf `/dev.slice/dev-gates.slice/rg-profile-aeb85c20f1c2f466e7fe4a369097fbc1.scope/rg-aeb85c20f1c2f466e7fe4a369097fbc1`; readback `memory.high=67108864`, `memory.max=134217728` | `profile session` and verified placement were recorded before `RG55_P5_EXEC_SUCCESS_BODY`; session stopped and daemon returned to zero sessions/leaves. |
+| `exec-refusal` | `s-20261011T012255Z-d3f7` / `17e1312cfe9d37bb1d90a39d68b423e4` | Run-Gate infrastructure `ERROR`, CLI exit 2; `place-refused:over-slice`, zero PIDs moved, no leaf | `RG55_P5_EXEC_REFUSAL_BODY` absent; the session was stopped/finalized, no assay verdict was written, and daemon status returned to zero sessions/leaves. |
+| `bare-success` | `s-20261011T012309Z-9bbe` / `35f0ab4946bcd35ffcf68139bb978af0` | PASS, exit 0; one PID moved; leaf `/dev.slice/dev-gates.slice/rg-profile-42fd7ae080c9377b2fda9c402e83f6dd.scope/rg-42fd7ae080c9377b2fda9c402e83f6dd`; readback `memory.high=67108864`, `memory.max=134217728` | Live `ctl status` showed the leaf and one live session while the lane slept; then `RG55_P5_BARE_SUCCESS_BODY` ran. Run-Gate disclosed its shared devcontainer baseline (5,028 MiB); after the process exited, daemon status had zero sessions/leaves. |
+| `bare-refusal` | `s-20261011T012326Z-e719` / `14b6f762106bf470e7cbcf0503fd09c7` | Run-Gate infrastructure `ERROR`, CLI exit 2; `place-refused:over-slice`, zero PIDs moved, no leaf | `RG55_P5_BARE_REFUSAL_BODY` absent; the session was stopped/finalized, no assay verdict was written, and daemon status returned to zero sessions/leaves. |
+
+Both refusal lanes disclosed the bounded one-second R-45 wait and proceeded
+to the daemon placement request; they did not turn the over-cap refusal into
+a candidate failure or silently execute unplaced. All four lanes used
+`kind = "command"`, so none produced an Assay candidate verdict. The
+fixture's ignored `.run-gate/history.json` records the four structured
+outcomes; the probe logs are under `/tmp/run-gate/lanes/{exec-success,
+exec-refusal,bare-success,bare-refusal}/` for this host session.
+
+The focused local iteration command
+`pytest -q tests/test_run_gate.py -k 'TestPlacementBarrier or
+TestExecLaneProfilingWiring or TestBareHostProfilingWiring'` passed 71 tests
+with 1,646 deselected (6.05s), after `py_compile` and `git diff --check`.
+This is targeted iteration evidence, not a substitute for the registered
+final gates below.
+
 ## Still required
 
-1. Commit this report and RW-553, then refresh the Sol packet's
-   `input_revision`. Rerun cgroup-profiler unit, whole-package coverage,
-   canary, Nyxloom lint, Run-Gate `selftest`, `assay-r1`, `assay-r3`, and
-   `doctor` on the final quiet review tree. The `db6d` receipts above are
-   useful history but are not exact-HEAD final evidence after this refresh.
+1. Commit the rev-63 implementation, docs, fixture, report, and RW-555; refresh
+   the Sol packet and freeze the final tree. Rerun cgroup-profiler unit,
+   whole-package coverage, canary, Nyxloom lint, Run-Gate `selftest`,
+   `assay-r1`, `assay-r3`, and `doctor` on that quiet tree. The `db6d`
+   receipts above are useful history but are not exact-current-tree evidence.
 2. Obtain a fresh Sol xhigh P5 review of the complete integrated diff. Any
    review repair requires same-reviewer verification and rerunning affected
    gates. Provisional merge is authorized after review and short-gate
