@@ -9287,3 +9287,38 @@ latest published release and is installed, but it does not accept the current
 RG-55 `resource_observer` configuration; 23.11.0 is not yet released. The
 wave's cgroup-profiler target remains 1.0.0. No package release was started:
 the two R2 campaigns are active, and release gates must not overlap them.
+
+### RW-565 — 2026-10-11 10:20:03 UTC — record shared-ancestor R2 failures; serialize mutation retries
+
+Both resumed mutation jobs terminated with `ERROR/EXEC_FAILED`, not mutation
+verdicts. P5 (`05e7b6cd`, run id `4add4b358bc62526e1f2896165f416c4`) resumed
+13/500 prior records, completed four new candidates, then errored at
+10:15:50Z. cgprofile (`06e7804e`, run id
+`f641e54d94823f505d7a3fdae293153a`) resumed 89/1,593, completed eleven new
+candidates, then errored at 10:15:04Z. Both R0 claims are PASS; neither R2
+claim is usable. Their failure text is identical: an ancestor resource event
+could not be attributed to the candidate cgroup. Candidate leaf records that
+completed show no pids/memory-max/OOM event; the failed-candidate receipts do
+not identify the ancestor path, counter, or delta, so the exact trigger is
+unknown.
+
+The two R2 containers overlapped. A third, Assay `tester-unified` container
+started at 10:14:36Z, during the final candidate windows, and was still running
+at this ruling. Thus the three-container overlap is temporally consistent
+with the shared-ancestor refusal, but does not prove which sibling/event
+triggered it. Host inspection reports `dev-gates.slice` MemoryHigh/MemoryMax
+of 4 GiB and unlimited `pids.max`; current `pids.events max` is 1,538 but no
+pre-run counter sample was retained, so that cumulative count cannot identify
+the event. Do not call this a memory-max event: recorded slice peaks were below
+4 GiB and `memory.events max/oom` were zero at inspection.
+
+Assay B145 explicitly permits a shared-ancestor event to conservatively
+invalidate a candidate. Keep these partial records and resume them; do not
+convert the errors to kills or survivors. To preserve interpretable R2
+evidence, do not overlap the next mutation campaign with another test
+container: wait for the Assay gate to end, then run one mutation campaign at
+a time. The operator's three-container cap is an upper bound, not a reason to
+overlap candidate sampling windows. A diagnostic follow-up is warranted:
+include the payload-safe ancestor path, counter name, and before/after deltas
+in the error receipt so future shared-event failures can be attributed without
+guessing.
