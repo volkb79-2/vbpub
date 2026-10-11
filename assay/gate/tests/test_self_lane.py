@@ -265,13 +265,25 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     tester_follower = re.search(
         r'wait_for_container_log_follower "\$_assay_gate_logs_pid" ([0-9]+)', tester_body
     )
+    cpu_update_timeout = re.search(
+        r"timeout --signal=TERM --kill-after=([0-9]+)s ([0-9]+)s \\\s*"
+        r"docker update --cpus=3",
+        script,
+    )
     assert "remove_owned_gate_container" in tester_body
     tester_rm_body = script.split("remove_owned_gate_container() {", 1)[1].split("\n}\n", 1)[0]
     tester_rm = re.search(r"timeout --kill-after=([0-9]+)s ([0-9]+)s docker rm -f", tester_rm_body)
     ordinary_cleanup = script.split("cleanup_assay_gate_container() {", 1)[1].split("\n}\n", 1)[0]
     assert "remove_owned_gate_container" in ordinary_cleanup
     tester_exit_rm = tester_rm
-    assert inventory_timeout and sql_rm and tester_follower and tester_rm and tester_exit_rm
+    assert (
+        inventory_timeout
+        and sql_rm
+        and tester_follower
+        and tester_rm
+        and tester_exit_rm
+        and cpu_update_timeout
+    )
 
     follower = script.split("wait_for_container_log_follower() {", 1)[1].split("\n}\n", 1)[0]
     stop_grace = re.search(r'stop_grace_seconds="\$\{3:-([0-9]+)\}"', follower)
@@ -299,6 +311,7 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     sql_seconds += 4 * sql_cleanup_call
     # Normal removal and its EXIT retry each re-verify the exact ID/name/label.
     tester_seconds = follower_cap(tester_follower) + 2 * (cap(inventory_timeout) + cap(tester_rm))
+    cpu_update_seconds = 4 * sum(int(value) for value in cpu_update_timeout.groups())
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     inner_seconds = sum(
         assay_lanes.lane(lane_id).budget_seconds for lane_id in (GATE_ID, "analysis")
@@ -308,11 +321,27 @@ def test_registered_tester_gate_timeout_covers_the_sql_witness_phase():
     run_gate_seconds = seconds(lane["budget"])
     controller_seconds = gate["timeout_seconds"]
     assert run_gate_seconds >= (
-        inner_seconds + b145_seconds + sql_seconds + tester_seconds
+        inner_seconds + b145_seconds + sql_seconds + tester_seconds + cpu_update_seconds
         + setup_reserve + failure_cleanup_reserve
     )
     admission_reserve = 60 * 60
     assert controller_seconds >= run_gate_seconds + admission_reserve
+
+
+def test_every_postlaunch_docker_cpu_update_has_a_finite_bound():
+    script = (PROJECT_ROOT / "tools" / "tester-unified-gate.sh").read_text(
+        encoding="utf-8"
+    )
+    assert script.count("bounded_docker_update_cpu_cap ") == 4
+    helper = script.split("bounded_docker_update_cpu_cap() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert re.search(
+        r"timeout --signal=TERM --kill-after=5s 30s \\\s*"
+        r"docker update --cpus=3",
+        helper,
+    )
+    assert script.count("docker update --cpus=3") == 1
 
 
 def test_assay_lanes_lists_assays_own_lane(monkeypatch):

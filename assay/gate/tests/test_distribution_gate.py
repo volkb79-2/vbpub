@@ -322,6 +322,40 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     foreign_cidfile_path = Path(foreign_run[3])
     assert foreign_cidfile_path.parent.exists(), "preserve a planted foreign ID for recovery"
 
+    calls_path.unlink()
+    env.pop("DOCKER_RUN_STATUS", None)
+    env.pop("DOCKER_CID_ON_FAILED_LAUNCH", None)
+    env.pop("DOCKER_INSPECT_OWNER_OVERRIDE", None)
+    timeout_calls = tmp_path / "timeout-calls.txt"
+    timeout_shim = fake_bin / "timeout"
+    timeout_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$TIMEOUT_CALLS"\n'
+        'while [[ "$1" == --* || "$1" =~ ^[0-9]+s$ ]]; do shift; done\n'
+        'if [[ "$1" == docker && "$2" == update ]]; then exit 124; fi\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    timeout_shim.chmod(0o755)
+    env["TIMEOUT_CALLS"] = str(timeout_calls)
+    update_timeout = run_bash(
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice" "994"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+    assert update_timeout.returncode != 0
+    assert "bounded docker update exit 124" in update_timeout.stderr
+    timeout_argv = timeout_calls.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "--signal=TERM --kill-after=5s 30s docker update --cpus=3 " in call
+        for call in timeout_argv
+    )
+    timeout_calls_docker = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert timeout_calls_docker[-1] == ["rm", "-f", container_id]
+
 
 @pytest.mark.parametrize("ps_mode", ["error", "uninterruptible"])
 def test_registered_tester_log_follower_has_a_bound(

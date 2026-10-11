@@ -777,6 +777,7 @@ def collect_mutation_sites(
     operators: tuple[str, ...],
     limit: int,
     context_sources: Iterable[str | tuple[str, str]] | None = None,
+    deadline_check: Callable[[], float] | None = None,
 ) -> tuple[MutantJob, ...] | Literal["UNSUPPORTED"]:
     """Aggregate bounded candidate sites across possibly many changed files
     into ONE deterministic job list, or report adapter-wide capability
@@ -820,7 +821,11 @@ def collect_mutation_sites(
     ordered_targets = sorted(targets, key=lambda item: item.path)
     if not ordered_targets:
         return ()
-    context_source_items = tuple(context_sources or ())
+    context_source_items = []
+    for item in context_sources or ():
+        if deadline_check is not None:
+            deadline_check()
+        context_source_items.append(item)
     source_context_preparer = getattr(
         adapter, "prepare_mutation_context_with_sources", None
     )
@@ -847,7 +852,19 @@ def collect_mutation_sites(
         identified_sources.extend(
             (target.path, target.text) for target in ordered_targets
         )
-        mutation_context = source_context_preparer(identified_sources)
+        bounded_source_context_preparer = getattr(
+            adapter, "prepare_mutation_context_with_sources_bounded", None
+        )
+        if callable(bounded_source_context_preparer) and deadline_check is not None:
+            mutation_context = bounded_source_context_preparer(
+                identified_sources, remaining=deadline_check
+            )
+        else:
+            if deadline_check is not None:
+                deadline_check()
+            mutation_context = source_context_preparer(identified_sources)
+            if deadline_check is not None:
+                deadline_check()
     else:
         context_preparer = getattr(adapter, "prepare_mutation_context", None)
 
@@ -856,11 +873,14 @@ def collect_mutation_sites(
                 yield item[1] if isinstance(item, tuple) else item
             yield from (target.text for target in ordered_targets)
 
-        mutation_context = (
-            context_preparer(context_texts())
-            if callable(context_preparer)
-            else None
-        )
+        if callable(context_preparer):
+            if deadline_check is not None:
+                deadline_check()
+            mutation_context = context_preparer(context_texts())
+            if deadline_check is not None:
+                deadline_check()
+        else:
+            mutation_context = None
     contextual_generator = getattr(adapter, "generate_mutation_sites_with_context", None)
 
     jobs: list[MutantJob] = []
@@ -3543,6 +3563,7 @@ def run_mutation(
             operators=operators,
             limit=max_mutants + 1,
             context_sources=context_sources,
+            deadline_check=deadline.remaining,
         )
         if expected_plan_sha256 is not None:
             if (

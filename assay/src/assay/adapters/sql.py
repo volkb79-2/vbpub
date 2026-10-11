@@ -1297,18 +1297,23 @@ def _collect_dropped_tables(
     return frozenset(dropped)
 
 
-def _collect_temporary_relation_names(
+def _collect_temporary_relation_facts(
     source: bytes,
     masked: bytes,
-    known_temporary_names: Iterable[bytes] = (),
-) -> frozenset[bytes]:
-    """Names that may shadow permanent relations or types in DDL.
+) -> tuple[
+    frozenset[bytes],
+    tuple[tuple[bytes, bytes], ...],
+    tuple[tuple[bytes | None, bytes, bytes], ...],
+]:
+    """Collect temporary relation seeds and source-independent graph edges.
 
-    The connection and search-path context are not part of SQL mutation
-    discovery. Any temporary relation name therefore makes an unqualified
-    type lookup ambiguous, even if its declaration is in another source.
+    Names may propagate through ALTER renames and views that read a temporary
+    relation. Returning those edges separately lets context preparation
+    resolve cross-file chains without rescanning every source per name.
     """
-    names: set[bytes] = set(known_temporary_names)
+    names: set[bytes] = set()
+    renames: set[tuple[bytes, bytes]] = set()
+    view_dependencies: set[tuple[bytes | None, bytes, bytes]] = set()
     temporary_schema_events = _search_path_temporary_creation_events(source, masked)
     for statement in _CREATE_TEMP_TABLE_RE.finditer(masked):
         table = _read_create_table_identity(source, masked, statement.end())
@@ -1341,34 +1346,29 @@ def _collect_temporary_relation_names(
         relation = _read_qualified_sql_identifier_details(source, statement.end())
         if relation is None:
             continue
+        schema, view_name, relation_end = relation
         if _is_temporary_schema(relation[0]) or (
             relation[0] is None
             and _search_path_may_be_temporary_at(
                 temporary_schema_events, statement.start()
             )
         ):
-            names.add(relation[1])
-        view_end = masked.find(b";", relation[2])
+            names.add(view_name)
+        view_end = masked.find(b";", relation_end)
         if view_end < 0:
             view_end = len(masked)
-        if _view_references_temporary_relation(
-            source, masked, relation[2], view_end, names
-        ):
-            names.add(relation[1])
-    # Renaming a temporary relation also renames its implicit composite row
-    # type. Source ordering across files is not known, so context collection
-    # passes all known temporary names here and repeatedly expands this set to
-    # a fixed point. Within one source, the same ordered scan also handles
-    # rename chains.
+        view_dependencies.update(
+            (referenced_schema, referenced_name, view_name)
+            for referenced_schema, referenced_name in _view_relation_references(
+                source, masked, relation_end, view_end
+            )
+        )
     for alter in _ALTER_RELATION_RE.finditer(masked):
         table = _read_alter_table_identity(source, masked, alter.end())
         if table is None:
             continue
         old_key, table_end = table
-        if (
-            old_key[1] not in names
-            or (old_key[0] is not None and not _is_temporary_schema(old_key[0]))
-        ):
+        if old_key[0] is not None and not _is_temporary_schema(old_key[0]):
             continue
         statement_end = masked.find(b";", table_end)
         if statement_end < 0:
@@ -1388,7 +1388,40 @@ def _collect_temporary_relation_names(
                 continue
             new_name = _read_sql_identifier(source, next_keyword[1])
             if new_name is not None:
-                names.add(_normalize_sql_identifier(new_name[0]))
+                renames.add(
+                    (old_key[1], _normalize_sql_identifier(new_name[0]))
+                )
+    return (
+        frozenset(names),
+        tuple(sorted(renames)),
+        tuple(sorted(view_dependencies, key=lambda edge: (edge[0] or b"", edge[1], edge[2]))),
+    )
+
+
+def _collect_temporary_relation_names(
+    source: bytes,
+    masked: bytes,
+    known_temporary_names: Iterable[bytes] = (),
+) -> frozenset[bytes]:
+    """Return temporary names reachable within this source and its context."""
+    seeds, renames, view_dependencies = _collect_temporary_relation_facts(
+        source, masked
+    )
+    names = set(seeds)
+    names.update(known_temporary_names)
+    edges: dict[bytes, set[bytes]] = {}
+    for old_name, new_name in renames:
+        edges.setdefault(old_name, set()).add(new_name)
+    for schema, referenced_name, view_name in view_dependencies:
+        if schema is None or _is_temporary_schema(schema):
+            edges.setdefault(referenced_name, set()).add(view_name)
+    pending = list(names)
+    while pending:
+        old_name = pending.pop()
+        for new_name in edges.get(old_name, ()):
+            if new_name not in names:
+                names.add(new_name)
+                pending.append(new_name)
     return frozenset(names)
 
 
@@ -1399,14 +1432,13 @@ def _is_temporary_schema(schema: bytes | None) -> bool:
     )
 
 
-def _view_references_temporary_relation(
+def _view_relation_references(
     source: bytes,
     masked: bytes,
     query_start: int,
     statement_end: int,
-    temporary_names: set[bytes],
-) -> bool:
-    """Whether a view query may read one of the known temporary relations."""
+) -> frozenset[tuple[bytes | None, bytes]]:
+    """Return relation identities found in FROM/JOIN relation positions."""
 
     def relation_after(start: int) -> tuple[
         tuple[bytes | None, bytes, int] | None, int | None
@@ -1425,16 +1457,14 @@ def _view_references_temporary_relation(
         parsed = _read_qualified_sql_identifier_details(source, cursor)
         return (None, None) if parsed is None else (parsed, parsed[2])
 
+    references: set[tuple[bytes | None, bytes]] = set()
     for clause in _FROM_OR_JOIN_RE.finditer(masked, query_start, statement_end):
         relation, cursor = relation_after(clause.end())
         if cursor is None:
             continue
         if relation is not None:
             schema, name, _ = relation
-            if name in temporary_names and (
-                schema is None or _is_temporary_schema(schema)
-            ):
-                return True
+            references.add((schema, name))
 
         # Also inspect comma-separated relation lists at this FROM level.
         # Parenthesized subqueries and function arguments are skipped, and
@@ -1467,15 +1497,11 @@ def _view_references_temporary_relation(
                             cursor = next_end
                             continue
                         next_schema, next_name, _ = following
-                        if next_name in temporary_names and (
-                            next_schema is None
-                            or _is_temporary_schema(next_schema)
-                        ):
-                            return True
+                        references.add((next_schema, next_name))
                         cursor = next_end
                         continue
             cursor += 1
-    return False
+    return frozenset(references)
 
 
 def _collect_relocated_tables(
@@ -1713,7 +1739,44 @@ def _collect_declared_type_names(
     masked: bytes,
     known_temporary_types: Iterable[tuple[bytes, bytes]] = (),
 ) -> frozenset[tuple[bytes | None, bytes]]:
-    """Collect source-visible named and relation-generated composite types."""
+    """Collect source-visible types plus renames reachable from temporary types."""
+    names, renames = _collect_declared_type_facts(source, masked)
+    result = set(names)
+    temporary_types = {
+        (schema, name)
+        for schema, name in names
+        if schema is not None and _is_temporary_schema(schema)
+    }
+    temporary_types.update(known_temporary_types)
+    explicit_edges: dict[tuple[bytes, bytes], set[bytes]] = {}
+    unqualified_edges: dict[bytes, set[bytes]] = {}
+    for schema, old_name, new_name in renames:
+        if schema is None:
+            unqualified_edges.setdefault(old_name, set()).add(new_name)
+        else:
+            explicit_edges.setdefault((schema, old_name), set()).add(new_name)
+    pending = list(temporary_types)
+    while pending:
+        schema, old_name = pending.pop()
+        new_names = set(explicit_edges.get((schema, old_name), ()))
+        new_names.update(unqualified_edges.get(old_name, ()))
+        for new_name in new_names:
+            renamed = (schema, new_name)
+            if renamed not in result:
+                result.add(renamed)
+                temporary_types.add(renamed)
+                pending.append(renamed)
+    return frozenset(result)
+
+
+def _collect_declared_type_facts(
+    source: bytes,
+    masked: bytes,
+) -> tuple[
+    frozenset[tuple[bytes | None, bytes]],
+    tuple[tuple[bytes | None, bytes, bytes], ...],
+]:
+    """Collect declared types and possible temporary-type rename edges."""
     names: set[tuple[bytes | None, bytes]] = set()
     for pattern in (_CREATE_TYPE_STMT_RE, _CREATE_DOMAIN_STMT_RE):
         for statement in pattern.finditer(masked):
@@ -1734,29 +1797,16 @@ def _collect_declared_type_names(
         relation = _read_qualified_sql_identifier_details(source, statement.end())
         if relation is not None:
             names.add((relation[0], relation[1]))
-    temporary_types = {
-        (schema, name)
-        for schema, name in names
-        if schema is not None and _is_temporary_schema(schema)
-    }
-    temporary_types.update(known_temporary_types)
+    renames: set[tuple[bytes | None, bytes, bytes]] = set()
     for alter in _ALTER_TYPE_RE.finditer(masked):
         relation = _read_qualified_sql_identifier_details(source, alter.end())
         if relation is None:
             continue
         schema, name, relation_end = relation
-        if _is_temporary_schema(schema):
-            old_types = {(schema, name)}
-        elif schema is None:
-            old_types = {
-                (temp_schema, name)
-                for temp_schema, temp_name in temporary_types
-                if temp_name == name
-            }
-        else:
+        if schema is not None and not _is_temporary_schema(schema):
             old_types = set()
-        if not old_types:
-            continue
+        else:
+            old_types = {(schema, name)}
         rename = _next_sql_keyword(source, masked, relation_end)
         if rename is None or rename[0] != b"RENAME":
             continue
@@ -1766,11 +1816,17 @@ def _collect_declared_type_names(
         new_type = _read_sql_identifier(source, to[1])
         if new_type is None:
             continue
-        for temp_schema, _ in old_types:
-            renamed = (temp_schema, _normalize_sql_identifier(new_type[0]))
-            temporary_types.add(renamed)
-            names.add(renamed)
-    return frozenset(names)
+        normalized_new_name = _normalize_sql_identifier(new_type[0])
+        for temp_schema, old_name in old_types:
+            renames.add(
+                (temp_schema, old_name, normalized_new_name)
+            )
+            # An explicit pg_temp-qualified ALTER is itself evidence that the
+            # resulting type is temporary, even when its CREATE lives outside
+            # this source inventory.
+            if temp_schema is not None:
+                names.add((temp_schema, normalized_new_name))
+    return frozenset(names), tuple(sorted(renames, key=lambda edge: (edge[0] or b"", edge[1], edge[2])))
 
 
 def _unqualified_type_names_created_in_temp_schema(
@@ -2730,6 +2786,8 @@ def _is_unshadowed_builtin_type(
 
 def _collect_sql_mutation_context(
     sources: Iterable[tuple[str | None, str]],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> _SqlMutationContext:
     """Find linked indexes, type changes and explicit collations in context."""
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
@@ -2748,15 +2806,21 @@ def _collect_sql_mutation_context(
     dropped_tables: set[tuple[bytes | None, bytes]] = set()
     temporary_relation_names: set[bytes] = set()
     relocated_tables: set[tuple[bytes | None, bytes]] = set()
-    source_items = [
-        (
-            source_identity,
-            text.encode("utf-8"),
-            lex_sql(text.encode("utf-8")).mask,
-        )
-        for source_identity, text in sources
-    ]
+    relation_edges: dict[bytes, set[bytes]] = {}
+    type_rename_edges: dict[tuple[bytes | None, bytes], set[bytes]] = {}
+    temporary_type_names: set[tuple[bytes, bytes]] = set()
+    source_items: list[tuple[str | None, bytes, bytes]] = []
+    for source_identity, text in sources:
+        if check_deadline is not None:
+            check_deadline()
+        source = text.encode("utf-8")
+        masked = lex_sql(source).mask
+        if check_deadline is not None:
+            check_deadline()
+        source_items.append((source_identity, source, masked))
     for source_identity, source, masked in source_items:
+        if check_deadline is not None:
+            check_deadline()
         for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
             reference = _attachment_index_reference(source, masked, attachment)
             if reference is None:
@@ -2765,45 +2829,65 @@ def _collect_sql_mutation_context(
                 attached_indexes.add(reference)
         altered_columns.update(_collect_altered_columns(source, masked))
         dropped_tables.update(_collect_dropped_tables(source, masked))
-        temporary_relation_names.update(
-            _collect_temporary_relation_names(source, masked)
+        relation_seeds, relation_renames, view_dependencies = (
+            _collect_temporary_relation_facts(source, masked)
         )
+        temporary_relation_names.update(relation_seeds)
+        for old_name, new_name in relation_renames:
+            relation_edges.setdefault(old_name, set()).add(new_name)
+        for schema, referenced_name, view_name in view_dependencies:
+            if schema is None or _is_temporary_schema(schema):
+                relation_edges.setdefault(referenced_name, set()).add(view_name)
         relocated_tables.update(_collect_relocated_tables(source, masked))
         declared, collated = _collect_table_column_metadata(source, masked)
         declared_column_types.update(declared)
         declared_column_type_sources.append((source_identity, declared))
         collated_columns.update(collated)
-        declared_type_names.update(_collect_declared_type_names(source, masked))
+        declared, type_renames = _collect_declared_type_facts(source, masked)
+        declared_type_names.update(declared)
+        temporary_type_names.update(
+            (schema, name)
+            for schema, name in declared
+            if schema is not None and _is_temporary_schema(schema)
+        )
+        for schema, old_name, new_name in type_renames:
+            type_rename_edges.setdefault((schema, old_name), set()).add(new_name)
         source_path_may_shadow = _search_path_may_shadow_catalog(source, masked)
         if source_path_may_shadow:
             search_path_may_shadow_sources.append(source_identity)
-    # Temporary table/view declarations and ALTERs may live in separate SQL
-    # files. Propagate renamed row-type names until no source can add another.
-    while True:
-        expanded = set(temporary_relation_names)
-        for _, source, masked in source_items:
-            expanded.update(
-                _collect_temporary_relation_names(
-                    source, masked, temporary_relation_names
-                )
-            )
-        if expanded == temporary_relation_names:
-            break
-        temporary_relation_names = expanded
-    while True:
-        temporary_types = {
-            (schema, name)
-            for schema, name in declared_type_names
-            if schema is not None and _is_temporary_schema(schema)
-        }
-        expanded = set(declared_type_names)
-        for _, source, masked in source_items:
-            expanded.update(
-                _collect_declared_type_names(source, masked, temporary_types)
-            )
-        if expanded == declared_type_names:
-            break
-        declared_type_names = expanded
+    if check_deadline is not None:
+        check_deadline()
+    # Resolve cross-file relation and implicit row-type dependencies in
+    # source-independent graph walks. Each source is parsed once; a reversed
+    # chain of renames therefore costs O(files + edges), not one full source
+    # rescan per discovered name.
+    pending_relations = list(temporary_relation_names)
+    while pending_relations:
+        if check_deadline is not None:
+            check_deadline()
+        old_name = pending_relations.pop()
+        for new_name in relation_edges.get(old_name, ()):
+            if check_deadline is not None:
+                check_deadline()
+            if new_name not in temporary_relation_names:
+                temporary_relation_names.add(new_name)
+                pending_relations.append(new_name)
+
+    pending_types = list(temporary_type_names)
+    while pending_types:
+        if check_deadline is not None:
+            check_deadline()
+        schema, old_name = pending_types.pop()
+        renamed_names = set(type_rename_edges.get((schema, old_name), ()))
+        renamed_names.update(type_rename_edges.get((None, old_name), ()))
+        for new_name in renamed_names:
+            if check_deadline is not None:
+                check_deadline()
+            renamed = (schema, new_name)
+            if renamed not in declared_type_names:
+                declared_type_names.add(renamed)
+                temporary_type_names.add(renamed)
+                pending_types.append(renamed)
     return _SqlMutationContext(
         frozenset(attached_indexes),
         unresolved_index_attachment,
@@ -3908,6 +3992,15 @@ class SqlAdapter:
     ) -> _SqlMutationContext:
         """Pre-scan context with path identities for same-file exclusions."""
         return _collect_sql_mutation_context(sources)
+
+    def prepare_mutation_context_with_sources_bounded(
+        self,
+        sources: Iterable[tuple[str, str]],
+        *,
+        remaining: Remaining,
+    ) -> _SqlMutationContext:
+        """Pre-scan SQL context while honoring the lane's one deadline."""
+        return _collect_sql_mutation_context(sources, check_deadline=remaining)
 
     def generate_mutation_sites(
         self,

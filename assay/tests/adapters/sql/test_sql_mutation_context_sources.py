@@ -3,10 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from pathlib import PurePosixPath
 
+import pytest
+
 from conftest import GitRepo, prepared_snapshot
 
 from assay import mutation, runner
+from assay.adapters import sql as sql_adapter_module
 from assay.adapters.sql import SqlAdapter
+from assay.errors import AssayError, ReasonCode
 
 
 def test_sql_context_reads_unchanged_sources_from_prepared_manifest(
@@ -108,6 +112,97 @@ def test_sql_context_invalidates_type_after_cross_file_column_drop_and_readd():
     )
 
     assert sites == ()
+
+
+def test_sql_context_resolves_reverse_ordered_temp_relation_rename_graph_once(
+    monkeypatch,
+):
+    relation_count = 48
+    sources = [
+        (
+            f"rename-{index:03}.sql",
+            "ALTER TABLE chain_{old} RENAME TO {new};\n".format(
+                old=index,
+                new=(f"chain_{index + 1}" if index < relation_count - 1 else "text"),
+            ),
+        )
+        for index in reversed(range(relation_count))
+    ]
+    sources.append(("seed.sql", "CREATE TEMP TABLE chain_0 (value text);\n"))
+    original = sql_adapter_module._collect_temporary_relation_facts
+    scanned: list[bytes] = []
+
+    def counted(source: bytes, masked: bytes):
+        scanned.append(source)
+        return original(source, masked)
+
+    monkeypatch.setattr(sql_adapter_module, "_collect_temporary_relation_facts", counted)
+    context = SqlAdapter().prepare_mutation_context_with_sources_bounded(
+        sources, remaining=lambda: 60.0
+    )
+
+    assert len(scanned) == len(sources)
+    assert b"text" in context.temporary_relation_names
+
+    check_source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    assert SqlAdapter().generate_mutation_sites_with_context(
+        check_source,
+        frozenset({3}),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    ) == ()
+
+
+def test_sql_context_checks_lane_deadline_while_resolving_dependencies():
+    moments = iter((0.0, 0.0, 0.0, 0.0, 2.0))
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=lambda: next(moments))
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("seed.sql", "CREATE TEMP TABLE seed (value text);\n"),),
+            remaining=deadline.remaining,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
+def test_sql_context_resolves_reverse_ordered_temp_type_rename_graph_once(
+    monkeypatch,
+):
+    type_count = 48
+    sources = [
+        (
+            f"rename-{index:03}.sql",
+            "ALTER TYPE pg_temp.kind_{old} RENAME TO {new};\n".format(
+                old=index,
+                new=(f"kind_{index + 1}" if index < type_count - 1 else "text"),
+            ),
+        )
+        for index in reversed(range(type_count))
+    ]
+    sources.append(
+        ("seed.sql", "CREATE TYPE pg_temp.kind_0 AS ENUM ('open', 'closed');\n")
+    )
+    original = sql_adapter_module._collect_declared_type_facts
+    scanned: list[bytes] = []
+
+    def counted(source: bytes, masked: bytes):
+        scanned.append(source)
+        return original(source, masked)
+
+    monkeypatch.setattr(sql_adapter_module, "_collect_declared_type_facts", counted)
+    context = SqlAdapter().prepare_mutation_context_with_sources_bounded(
+        sources, remaining=lambda: 60.0
+    )
+
+    assert len(scanned) == len(sources)
+    assert (b"pg_temp", b"text") in context.declared_type_names
 
 
 def test_sql_context_invalidates_column_types_after_cross_file_table_drop():
