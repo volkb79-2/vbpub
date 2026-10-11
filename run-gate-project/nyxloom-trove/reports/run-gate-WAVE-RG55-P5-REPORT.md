@@ -10,18 +10,25 @@ RW-556 are committed as `80a8cf90d` on branch
 `rg55-p5-transport-port-20261010`. cgroup-profiler unit/coverage/canary and
 its local Nyxloom lint now pass. Run-Gate selftest failed on the preceding
 `adcfc4958` tree only because its stdlib allowlist omitted `select`; RW-556
-records the failure and fix. The refreshed-tree Run-Gate short matrix and
-fresh Sol review remain pending. Earlier
+records that failure and fix. The next selftest on `992cce229` passed all
+1,874 tests (2 skipped) but failed the changed-area coverage judge at 980/1,067
+executable lines and 452/476 branches; RW-557 records the uncovered barrier
+cleanup/fallback paths. Commit `f1beb8e2a` adds behavioral oracles for those
+paths and removes three unreachable nonce rechecks. That repair has only
+passed `py_compile` and `git diff --check` so far; its registered selftest is
+still required. The refreshed-tree Run-Gate short matrix and fresh Sol review
+remain pending. Earlier
 `db6d` selftest and cgroup-profiler coverage receipts remain historical, not
 exact-current-tree evidence. Exact-tree mutation/full gates remain release
 blockers.
 
 ## Candidate identity and release boundary
 
-- Current resumed source checkpoint: rev 63, commit
-  `80a8cf90d` (`test(run-gate): allow the placement barrier selector
-  import`), following B3 implementation commit `aee194b7e`. The next
-  metadata-freeze commit pins the Sol packet to this code-fix commit.
+- Current code-repair checkpoint: rev 63, commit
+  `f1beb8e2a` (`test(run-gate): cover placement barrier failure paths`),
+  following the B3 implementation `aee194b7e` and stdlib-oracle fix
+  `80a8cf90d`. The metadata-freeze commit pins the Sol packet to `f1beb8e2a`;
+  the controller must then gate the exact frozen review tree.
 - Main/origin base at this checkpoint: `efaf112945233e3a8f6d53f2fef136439d18d089`.
 - Candidate: worktree `.worktrees/rg55-p5-transport-port-20261010`, branch
   `rg55-p5-transport-port-20261010`, HEAD
@@ -329,13 +336,35 @@ with 1,646 deselected (6.05s), after `py_compile` and `git diff --check`.
 This is targeted iteration evidence, not a substitute for the registered
 final gates below.
 
+## Changed-area coverage failure and repair checkpoint
+
+The registered `selftest` on commit `992cce2291097ed2eac8bec42913d978aa9267bb`
+ran in exact container `run-gate-vbpub-selftest-967434-1791683330`, under
+`dev-gates.slice` at 3 CPUs. Pytest itself passed: 1,874 passed, 2 skipped,
+and 1 warning in 147.02s. The separate changed-area judge failed at
+980/1,067 executable lines (91.8%) and 452/476 branches. Its misses were
+limited to the new placement-barrier helper's timeout/EOF/pipe-close/abort
+branches, Run-Gate exec and bare-host preflight/refusal cleanup, and avoiding
+local fallback polling while a daemon watch is healthy. The separately read
+history record names commit `992cce229109` and exit 1; the coverage JSON is
+ignored under the candidate's `run-gate-project/coverage.json`.
+
+RW-557 binds the repair to behavioral oracles, not coverage exclusions. Commit
+`f1beb8e2a` adds those tests, including deterministic injected clocks and fake
+pipe/process outcomes, and removes redundant nonce conditions whose false
+arms cannot occur after the wrapper process is created. `py_compile` and
+`git diff --check` pass on that repair checkpoint. No registered test has yet
+validated it; the next selftest must meet 100% changed executable lines and
+branches before other Run-Gate short gates or Sol review proceed.
+
 ## Still required
 
-1. Freeze the Sol packet and final report. On that quiet tree, run Run-Gate
-   `selftest`, `assay-r1`, `assay-r3`, and `doctor`; read each verdict
-   separately. cgroup-profiler unit/coverage/canary and project-local Nyxloom
-   lint passed on `adcfc4958`; no Assay or cgroup-profiler files changed in
-   the subsequent Run-Gate test-oracle repair commits.
+1. The committed metadata freeze pins the fresh Sol packet to code repair
+   `f1beb8e2a`; run Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor`
+   on that quiet frozen tree, and read each verdict separately.
+   cgroup-profiler unit/coverage/canary and project-local Nyxloom lint passed
+   on `adcfc4958`; no Assay or cgroup-profiler files changed in the subsequent
+   Run-Gate test-oracle repair commits.
 2. Obtain a fresh Sol xhigh P5 review of the complete integrated diff. Any
    review repair requires same-reviewer verification and rerunning affected
    gates. Provisional merge is authorized after review and short-gate
