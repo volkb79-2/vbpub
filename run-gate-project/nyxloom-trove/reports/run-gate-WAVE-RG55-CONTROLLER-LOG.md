@@ -9202,3 +9202,36 @@ before any release decision. At this ruling, `main` is clean and ahead of
 `origin/main`; memory PSI full avg10 is 1.04 (below the launch limit 5), and
 the only running workload visible in Docker is the existing cgprofile host
 daemon plus unrelated application services. No new gate has yet been launched.
+
+### RW-562 — 2026-10-11 04:05:57 UTC — provisionally integrate the cgprofile R2 cap correction
+
+The cap-fix branch `rg55-cgprofile-cap-20261011` was reviewed by a fresh
+GPT-6-Sol xhigh session (ACCEPT; review record committed in the branch) and
+passed exact-tree R0/R1 and R3 before provisional integration. Assay planning
+on the reviewed tree resolved 1,593 candidates against the prior 1,500 cap;
+the configured cap is now 2,000. Its exact-tree R2 is still running in the
+CIU worktree `.worktrees/rg55-cgprofile-cap-20261011` at `06e7804e`, container
+`run-gate-vbpub-r2-1100789-1791691250`, capped at 3 CPUs under
+`dev-gates.slice`. At the last progress read (04:05:28Z), 14/1,593 candidates
+had completed, all killed. The early sample is not a reliable completion-rate
+estimate. Main had advanced independently with Assay B132-B134; the cap
+branch's two changed paths did not overlap that work. The reviewed change was
+merged `--no-ff` to main as `da511e7bf`; this is provisional, not release
+approval. The judged worktree remains clean and must stay unchanged until R2
+ends.
+
+The separate P5 R2 attempt on exact tree `05e7b6cd` terminated at 04:02:14Z
+with `ERROR/EXEC_FAILED` after 12 candidates, not a mutation verdict. Assay
+reported an unmatched cgroup resource-limit event on a shared ancestor and
+withheld candidate outcomes. This overlapped the cgprofile R2 launch by about
+80 seconds; temporal correlation does not identify which event/counter caused
+the refusal. Keep the partial records. Resume P5 from the exact judged tree
+after the active cgprofile R2 ends, so no second mutation campaign can create
+another ambiguous shared-ancestor event. Before resuming, confirm the Assay
+version/current-tree compatibility and retain the explicit P5 base
+`efaf112945233e3a8f6d53f2fef136439d18d089`.
+
+The live daemon remains on the pre-release `0.0.0-dev` build. Release holds
+remain: current-tree R2 and gate-full evidence, survivor disposition,
+publication/release authorization against the now-advanced remote, and the
+P3 report/adoption-brief closeout.
