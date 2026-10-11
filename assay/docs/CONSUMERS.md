@@ -291,7 +291,56 @@ mutation begins.
 ### Native R2 resource-limit observation (B145)
 
 Native R2 requires visible cgroup v2 event counters and limit configuration
-through the hierarchy. Assay resolves the cgroup of the thread running the
+through the hierarchy. These checks are separate from the mutation score:
+R2 measures whether tests detect changed code, while B145 guards against
+mistaking a resource-limited test failure for a kill. B145 is not a CPU or
+memory usage profile. It samples these counters at the candidate and visible
+active ancestors immediately before and after each started full candidate
+command:
+
+| Counter | What it detects |
+|---|---|
+| `pids.events:max` | A process or thread creation was refused at a `pids.max` boundary. |
+| `memory.events:max` | Memory use was about to exceed a `memory.max` boundary, even if reclaim prevented an OOM. |
+| `memory.events:oom` | A memory allocation reached the cgroup OOM condition. |
+| `memory.events:oom_kill` | An OOM killer killed a process belonging to the cgroup, including a global OOM kill. |
+| `memory.events:oom_group_kill` | A cgroup group-OOM kill occurred. |
+
+Assay also reads `pids.max` and `memory.max` along the visible path, checks
+that required counters exist for finite limits, and confirms the cgroup path,
+controller availability, mount identity, and configured limits stay stable
+across the command. It requires read-only cgroup mounts and checks that the
+candidate cannot write `cgroup.procs` on itself or an ancestor. These checks
+are needed because an ancestor may impose a stricter effective limit than the
+container's own cgroup reports. A leaf showing `pids.max = max`, for example,
+can still have a fork refused by a finite parent `pids.max`.
+
+These are event checks, not measurements of current or peak usage. B145 does
+not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
+`memory.events:high` to decide whether a mutant was killed. Those measurements
+can help explain runtime or pressure, but they do not by themselves establish
+that a test failure came from resource enforcement.
+
+The current reader samples `pids.events` and `memory.events` at the candidate
+and each visible active ancestor. Their hierarchical counters can include
+events from descendants. A sibling that hits its own process or memory limit
+can therefore change a shared ancestor's counter even when the parent's own
+limit has headroom. Assay currently fails closed if that positive ancestor
+delta cannot be matched to the candidate's delta; the lane result is
+inconclusive, not a kill or survivor. B155 tracks using candidate-subtree
+counters plus local counters at relevant ancestors to avoid treating a
+sibling-only limit event as a candidate event, while still preserving an
+inconclusive result when a shared ancestor's own limit event cannot be
+attributed. See the [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+for the hierarchy and event-counter semantics.
+
+Do not move a tester container outside `$CGROUP_PARENT_DEV_GATES` to avoid
+ancestor checks. A higher placement does not remove all host limits, can put
+the gate outside its governed resource tier, and violates the host's gate
+placement policy. Assay should support containers within a slice hierarchy;
+the event attribution, not host placement, needs refinement.
+
+Assay resolves the cgroup of the thread running the
 candidate sampler from `/proc/thread-self/cgroup`, so threaded cgroup v2
 placements do not inherit the process leader's identity. It checks the mount ID
 of the opened hierarchy and every opened counter/limit file against the
@@ -299,20 +348,9 @@ selected cgroup2 mount in `/proc/self/mountinfo`; it reads each file through
 the descriptor whose mount ID it checked. An ancestor overmount that redirects
 those paths therefore refuses the lane. It also checks capabilities from
 `/proc/thread-self/status`, since a worker's capabilities can differ from the
-process leader's. Assay samples the candidate's
-`pids.events.max` when
-exposed, even if its own `pids.max` is unlimited, and every visible ancestor's
-event counter when available. A finite `pids.max` requires its event counter.
-Sampling unlimited active ancestors covers `pids_localevents`, where a
-rejected fork can increment the nearest active ancestor's local counter while
-a higher ancestor enforces the finite limit. Assay samples
-`memory.events.max`, `oom`, `oom_kill`, and `oom_group_kill` at the candidate
-and every visible ancestor with those interfaces. A finite `memory.max`
-requires its event file. If the candidate's memory controller is inactive,
-visible active ancestor counters are sampled too. `max` catches a memory limit boundary even when
-the OOM path does not run; `oom_kill` also catches a global OOM kill when the
-candidate's `memory.max` is unlimited. Keep Docker lanes in a private cgroup
-namespace; do not use `--cgroupns=host` as a workaround. Assay first reads
+process leader's. The counter inventory and shared-ancestor behavior are
+described above. Keep Docker lanes in a private cgroup namespace; do not use
+`--cgroupns=host` as a workaround. Assay first reads
 its local cgroup view. If that view specifically proves ancestors are hidden,
 a caller may explicitly provide `ASSAY_RESOURCE_OBSERVER_SOCKET` for a
 trusted observer-only Unix socket. The endpoint must bind the request to the
@@ -321,7 +359,8 @@ return a complete verified ancestry, and expose no control verbs. Run-Gate's
 `resource_observer = "cgprofile"` option mounts the separate cgprofile
 observer socket read-only, supplies its observed GID, and sets this variable.
 Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
-protocol read-only. Without the explicit endpoint, or on any endpoint,
+protocol read-only. This socket supplies verified ancestry and event-counter
+evidence; it is not a performance-profile stream. Without the explicit endpoint, or on any endpoint,
 identity, mount, or counter failure, Assay returns `ERROR/EXEC_FAILED`.
 Before R0, B148 applies the same local-first observation rule to the exact
 selected native candidate set: a configured observer can satisfy the preflight

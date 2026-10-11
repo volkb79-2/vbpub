@@ -12280,3 +12280,86 @@ gitfile paths from either namespace.
 **Oracle:** the distribution-gate regression asserts both bind destinations;
 the registered exact-tip `tester-unified` run accepts the Docker argv and
 continues through the self-hosted and SQL phases.
+
+## B155 — distinguish candidate resource events from sibling events in native R2
+
+**Status: OPEN (filed 2026-10-11 after reviewing B145 behavior with parallel containers).**
+
+R2's mutation score and resource-usage profiling answer different questions.
+R2 asks whether the test suite detects a code mutation. B145 samples resource
+limit events only to prevent a process or memory failure from being scored as
+a mutant kill. It does not profile CPU or memory usage.
+
+**Observed:** B145 samples `pids.events` and `memory.events` at the candidate
+and visible ancestors, then requires every positive ancestor delta to match
+the candidate delta. In cgroup v2, these event files can report subtree events.
+A sibling can hit its own `pids.max` or `memory.max`, changing a shared
+ancestor counter even when the parent slice's aggregate limit has headroom and
+the R2 candidate was unaffected. B145 then fails closed with
+`ERROR/EXEC_FAILED`. The refusal avoids a false mutation result, but it can
+stop an otherwise valid campaign because an unrelated sibling event is
+unattributable. Keeping the sum of child limits below a parent limit prevents
+some parent-limit contention; it does not prevent a child from reaching its
+own limit or an ancestor's hierarchical counter from reflecting that event.
+
+**Expected:** native R2 continues to identify candidate failures caused by
+limits at the candidate or any ancestor, while a sibling-only event at a
+sibling's own limit does not invalidate an unaffected candidate when no
+shared enforcing ancestor limit event occurred. An event at a shared ancestor
+whose own limit could affect the candidate remains infrastructure evidence;
+if counters cannot attribute it, Assay withholds the mutation outcome rather
+than guessing `killed` or `survived`.
+
+**Chosen direction:** design a scope-aware evidence model. Keep subtree
+counters for the candidate's execution subtree so its worker descendants are
+covered, and use local event counters at visible ancestors to identify events
+enforced at those ancestors without importing unrelated sibling-leaf events.
+Continue reading the effective `pids.max` and `memory.max` chain and require
+all event counters needed to detect finite ancestor limits. Validate the
+contract against `pids.events.local`, `memory.events.local`, the
+`pids_localevents` and `memory_localevents` modes, inactive child controllers,
+and OOM events. Do not drop ancestor checks, infer safety only from the sum of
+sibling limits, turn ambiguous outcomes into mutation results, or move gate
+containers above `$CGROUP_PARENT_DEV_GATES`. Root-level placement does not
+remove all host limits and bypasses the governed gate tier. Keep R2 event
+classification separate from usage profiling such as CPU time, peak memory,
+and pressure.
+
+**Parent counters to preserve:**
+
+- `pids.events:max` (or the validated local equivalent): process/thread
+  creation refused at a `pids.max` boundary;
+- `memory.events:max`: memory reached `memory.max`, including a boundary
+  event where reclaim avoids OOM;
+- `memory.events:oom`: allocation reached the cgroup OOM condition;
+- `memory.events:oom_kill`: an OOM killer killed a process in the measured
+  cgroup, including a global OOM kill;
+- `memory.events:oom_group_kill`: group OOM kill evidence.
+
+The path's `pids.max` and `memory.max`, controller activation, counter
+availability, cgroup identity, and checked mount identity remain part of the
+evidence contract. CPU time, current/peak usage, `memory.events:high`, and
+pressure metrics are runtime or liveness measurements, not replacements for
+these event counters in R2 mutation classification.
+
+**Oracles:**
+
+- A sibling reaches its own `pids.max` while the parent has headroom and a
+  concurrent candidate has no process-limit event; the candidate is not
+  rejected because of the sibling's event.
+- A sibling reaches its own `memory.max` while the parent has headroom and a
+  concurrent candidate is unaffected; the candidate remains classifiable.
+- A candidate hits its own pids or memory limit; its outcome is infrastructure
+  failure and is never recorded as `killed` or `survived`.
+- A finite ancestor pids limit refuses candidate process creation even when
+  the candidate's own `pids.max` is unlimited; the event is detected.
+- A finite ancestor memory limit causes a max/OOM/OOM-kill event; the event is
+  detected through the applicable event counter even when the candidate's own
+  `memory.max` is unlimited.
+- An event at a shared ancestor cannot be tied to one child; the lane remains
+  inconclusive and never certifies a mutation outcome.
+- The local/hierarchical counter behavior is proven for supported kernels and
+  both localevents modes; missing or unstable required evidence refuses.
+- The registered `tester-unified` gate passes, and README, DESIGN-GUIDE, and
+  CONSUMERS describe the score/guard distinction, monitored events, sibling
+  limitation, and governed cgroup placement.

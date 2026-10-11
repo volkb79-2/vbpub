@@ -632,6 +632,13 @@ control bytes from the same checked file descriptor. This catches a later
 overmount on a parent path as well as one directly covering a sampled cgroup
 path.
 
+Keep three questions distinct. R2's mutation result asks whether the tests
+detect the changed behavior. B145's event samples ask whether process or memory
+limit enforcement could have disrupted that test command, so an infrastructure
+failure is not scored as a mutant kill. They are not a resource-usage profile;
+CPU time, peak memory, and pressure measurements belong to separate runtime
+and liveness evidence.
+
 Assay samples the candidate's
 `pids.events.max` whenever available and the event file at every visible
 ancestor where the pids controller is active; a finite `pids.max` requires its
@@ -645,8 +652,26 @@ is inactive, visible active ancestor event files are sampled too. `max` counts a
 exceed the memory boundary even when the OOM path does not run; `oom_kill` also
 captures a global OOM kill in the candidate when its own `memory.max` is
 unlimited. Unlimited active ancestors are sampled too, so local event counters
-can report a refusal at an intermediate ancestor. A shared ancestor can still
-conservatively attribute sibling activity. Every visible cgroup2 mount
+can report a refusal at an intermediate ancestor. Assay must inspect ancestors
+because an ancestor can impose a stricter effective limit than the candidate's
+own cgroup reports. For example, a leaf with `pids.max = max` can still have a
+fork refused when an ancestor's finite `pids.max` is reached; the limit event
+may be recorded at the enforcing ancestor, not the leaf.
+
+The current reader samples `pids.events` and `memory.events` at the candidate
+and its visible ancestors. These interfaces can report hierarchical events:
+an ancestor's counter may include an event from a descendant. In that case a
+sibling can hit its own `pids.max` or `memory.max` while the shared parent's
+limit still has headroom, yet the parent counter can change during the R2
+candidate window. The event is measurable but its source is ambiguous to the
+candidate reader. Current B145 behavior conservatively withholds the R2
+outcome when an ancestor delta cannot be matched to the candidate leaf. This
+preserves result integrity at the cost of availability under some concurrent
+workloads. B155 tracks a scope-aware design using candidate-subtree counters
+and local event counters at enforcing ancestors, while retaining an
+inconclusive result when a shared ancestor's own limit event cannot be
+attributed. See the [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+for the hierarchical limit and event-counter semantics. Every visible cgroup2 mount
 exposing the sampled hierarchy must be read-only. Assay also checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and every
 ancestor. A read-only mount alone cannot stop `CLONE_INTO_CGROUP` from moving a

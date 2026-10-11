@@ -260,6 +260,13 @@ assay exists to close that gap mechanically, not by policy:
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
   and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  These counters are an execution-validity guard, not a CPU or memory usage
+  profile: R2 still measures whether tests detect code mutations. Assay checks
+  ancestors because their limits can affect a container whose own limits say
+  `max`. Hierarchical ancestor counters can also include sibling events, so an
+  unmatched delta currently makes the lane fail closed; the B155 follow-up in
+  the [Assay backlog](nyxloom-trove/4-backlog.md) tracks improving that
+  attribution without dropping ancestor-limit protection.
   When native candidates are selected, Assay checks the same complete
   hierarchy before R0 starts. If its private cgroup view hides ancestors, it
   may use the explicitly configured observer-only socket; without a usable
