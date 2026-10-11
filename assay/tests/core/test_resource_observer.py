@@ -311,36 +311,43 @@ def test_socket_client_deadline_bounds_a_slowly_streaming_peer(tmp_path, monkeyp
 
 
 def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-    finished = threading.Event()
+    workers = []
+
+    class StuckWorker:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+            self.join_timeout = None
+            workers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout=None):
+            self.join_timeout = timeout
+
+        def is_alive(self):
+            return self.started
+
     monkeypatch.setattr(
         resource_limits, "_RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS", 0.05
     )
     monkeypatch.setattr(
         resource_limits, "_RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS", 0.05
     )
-
-    def wait_for_release(**_kwargs):
-        started.set()
-        release.wait(timeout=1)
-        finished.set()
-        zero = (0, 0, 0, 0, 0)
-        return _path_counters(zero, zero, zero, zero)
-
-    monkeypatch.setattr(
-        resource_limits, "read_candidate_resource_counters", wait_for_release
-    )
+    monkeypatch.setattr(resource_limits.threading, "Thread", StuckWorker)
     capability = resource_limits.inspect_current_cgroup_observation()
-    try:
-        # The preflight must return before this worker is released. Give the
-        # scheduler room to start the daemon thread under a loaded gate host.
-        assert started.wait(timeout=2)
-        assert not capability.available
-        assert "did not complete before its deadline" in capability.reason
-    finally:
-        release.set()
-    assert finished.wait(timeout=1)
+
+    assert not capability.available
+    assert "did not complete before its deadline" in capability.reason
+    assert len(workers) == 1
+    assert workers[0].started
+    assert workers[0].name == "assay-cgroup-observation-preflight"
+    assert workers[0].daemon is True
+    assert callable(workers[0].target)
+    assert workers[0].join_timeout == pytest.approx(0.1)
 
 
 @pytest.mark.parametrize("contents", ["not-json\n", "{}\n\n"])
