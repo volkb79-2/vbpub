@@ -838,6 +838,9 @@ def collect_mutation_sites(
         adapter, "generate_mutation_sites_with_context_for_source_bounded", None
     )
     if callable(source_context_preparer) and callable(source_contextual_generator):
+        target_source_identities = frozenset(
+            target.path for target in ordered_targets
+        )
         identified_sources: list[tuple[str, str]] = []
         for index, item in enumerate(context_source_items):
             if (
@@ -846,6 +849,12 @@ def collect_mutation_sites(
                 and isinstance(item[0], str)
                 and isinstance(item[1], str)
             ):
+                if item[0] in target_source_identities:
+                    # The selected target carries the current candidate text.
+                    # A context snapshot for the same path can be stale (for
+                    # example, a changed-lines target at a later HEAD), so it
+                    # is replaced below instead of being parsed alongside it.
+                    continue
                 identified_sources.append(item)
             elif isinstance(item, str):
                 # Legacy context callers do not identify a path. Preserve each
@@ -858,13 +867,10 @@ def collect_mutation_sites(
             (target.path, target.text) for target in ordered_targets
         )
         # The selected target is often already present in the source-root
-        # inventory. Its path and exact text identify the same source; scan
-        # that pair once during context preparation, then let SQL reuse its
-        # mask and dollar-body ranges during candidate generation.
+        # inventory. Its current path and text are authoritative; context
+        # preparation scans that pair once, then SQL reuses its mask and
+        # dollar-body ranges during candidate generation.
         identified_sources = list(dict.fromkeys(identified_sources))
-        target_source_identities = frozenset(
-            target.path for target in ordered_targets
-        )
         bounded_target_context_preparer = getattr(
             adapter,
             "prepare_mutation_context_with_sources_for_targets_bounded",

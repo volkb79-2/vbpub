@@ -262,8 +262,9 @@ def test_unsharded_plan_selection_skips_candidate_identity_hashing(
     assert cli._select_plan_jobs(discovered.jobs, None) == discovered.jobs
 
 
+@pytest.mark.parametrize("expiration_phase", ("context", "generation"))
 def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
-    git_repo: GitRepo, monkeypatch
+    git_repo: GitRepo, monkeypatch, expiration_phase
 ):
     large_check = "CREATE TABLE item (value integer CHECK (" + (
         "value > 0 AND " * 1000
@@ -277,15 +278,16 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
     original_generate = (
         SqlAdapter.generate_mutation_sites_with_context_for_source_bounded
     )
-    matcher_started = False
+    original_lex = sql_adapter_module.lex_sql
+    expired = False
+    generation_started = False
     deadlines = []
     seen_deadlines = []
-    original_matcher = sql_adapter_module._find_matching_close_paren
 
     def start(cls, *, budget_seconds, monotonic):
         deadline = runner.LaneDeadline(
             expires_at=1.0,
-            monotonic=lambda: 2.0 if matcher_started else 0.0,
+            monotonic=lambda: 2.0 if expired else 0.0,
             honors_termination=False,
         )
         deadlines.append(deadline)
@@ -300,6 +302,13 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
             target_source_identities=target_source_identities,
         )
 
+    def observe_lex(source, *, check_deadline=None):
+        nonlocal expired
+        if expiration_phase == "context":
+            assert check_deadline is not None
+            expired = True
+        return original_lex(source, check_deadline=check_deadline)
+
     def observe_generate(
         self,
         text,
@@ -311,7 +320,13 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
         source_identity,
         remaining,
     ):
+        nonlocal expired, generation_started
         seen_deadlines.append(remaining)
+        if expiration_phase == "generation":
+            # Context discovery completed; expire when target generation
+            # begins to prove the same deadline reaches both phases.
+            expired = True
+        generation_started = True
         return original_generate(
             self,
             text,
@@ -321,14 +336,6 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
             context=context,
             source_identity=source_identity,
             remaining=remaining,
-        )
-
-    def observe_matcher(masked, open_index, *, check_deadline=None):
-        nonlocal matcher_started
-        if check_deadline is not None:
-            matcher_started = True
-        return original_matcher(
-            masked, open_index, check_deadline=check_deadline
         )
 
     monkeypatch.setattr(
@@ -341,21 +348,23 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
         "generate_mutation_sites_with_context_for_source_bounded",
         observe_generate,
     )
+    monkeypatch.setattr(sql_adapter_module, "lex_sql", observe_lex)
     monkeypatch.setattr(
         runner.LaneDeadline, "start", classmethod(start)
-    )
-    monkeypatch.setattr(
-        sql_adapter_module, "_find_matching_close_paren", observe_matcher
     )
 
     with pytest.raises(AssayError) as caught:
         plan_jobs(lane_file, lane)
 
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
-    assert matcher_started
     assert len(deadlines) == 1
-    assert len(seen_deadlines) == 2
-    assert seen_deadlines[0] == seen_deadlines[1]
+    if expiration_phase == "context":
+        assert not generation_started
+        assert len(seen_deadlines) == 1
+    else:
+        assert generation_started
+        assert len(seen_deadlines) == 2
+        assert seen_deadlines[0] == seen_deadlines[1]
     assert all(callback.__self__ is deadlines[0] for callback in seen_deadlines)
     assert all(
         callback.__func__ is runner.LaneDeadline.remaining

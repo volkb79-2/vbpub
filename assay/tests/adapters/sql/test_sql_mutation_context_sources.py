@@ -132,9 +132,20 @@ def test_sql_context_resolves_reverse_ordered_temp_relation_rename_graph_once(
     original = sql_adapter_module._collect_temporary_relation_facts
     scanned: list[bytes] = []
 
-    def counted(source: bytes, masked: bytes, *, check_deadline=None):
+    def counted(
+        source: bytes,
+        masked: bytes,
+        *,
+        check_deadline=None,
+        dollar_body_ranges=None,
+    ):
         scanned.append(source)
-        return original(source, masked, check_deadline=check_deadline)
+        return original(
+            source,
+            masked,
+            check_deadline=check_deadline,
+            dollar_body_ranges=dollar_body_ranges,
+        )
 
     monkeypatch.setattr(sql_adapter_module, "_collect_temporary_relation_facts", counted)
     context = SqlAdapter().prepare_mutation_context_with_sources_bounded(
@@ -399,7 +410,7 @@ def test_sql_target_does_not_reuse_context_lex_for_conflicting_same_path(monkeyp
     )
 
     assert len(jobs) == 1
-    assert lexed_sources.count(context_source.encode("utf-8")) == 1
+    assert lexed_sources.count(context_source.encode("utf-8")) == 0
     assert lexed_sources.count(target_source.encode("utf-8")) == 1
 
 
@@ -532,10 +543,10 @@ def test_not_null_target_action_split_honors_lane_deadline(monkeypatch):
 
     def observe_split(region, *, check_deadline=None):
         nonlocal split_started, split_returned
-        if region.startswith(b"DROP COLUMN old, "):
+        if region.lstrip().startswith(b"DROP COLUMN old, "):
             split_started = True
         result = original_split(region, check_deadline=check_deadline)
-        if region.startswith(b"DROP COLUMN old, "):
+        if region.lstrip().startswith(b"DROP COLUMN old, "):
             split_returned = True
         return result
 
@@ -815,9 +826,20 @@ def test_sql_context_resolves_reverse_ordered_temp_type_rename_graph_once(
     original = sql_adapter_module._collect_declared_type_facts
     scanned: list[bytes] = []
 
-    def counted(source: bytes, masked: bytes):
+    def counted(
+        source: bytes,
+        masked: bytes,
+        *,
+        dollar_body_ranges=None,
+        check_deadline=None,
+    ):
         scanned.append(source)
-        return original(source, masked)
+        return original(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
 
     monkeypatch.setattr(sql_adapter_module, "_collect_declared_type_facts", counted)
     context = SqlAdapter().prepare_mutation_context_with_sources_bounded(

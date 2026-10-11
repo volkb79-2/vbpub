@@ -332,10 +332,14 @@ def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
         resource_limits, "read_candidate_resource_counters", wait_for_release
     )
     capability = resource_limits.inspect_current_cgroup_observation()
-    assert started.wait(timeout=0.5)
-    assert not capability.available
-    assert "did not complete before its deadline" in capability.reason
-    release.set()
+    try:
+        # The preflight must return before this worker is released. Give the
+        # scheduler room to start the daemon thread under a loaded gate host.
+        assert started.wait(timeout=2)
+        assert not capability.available
+        assert "did not complete before its deadline" in capability.reason
+    finally:
+        release.set()
     assert finished.wait(timeout=1)
 
 
