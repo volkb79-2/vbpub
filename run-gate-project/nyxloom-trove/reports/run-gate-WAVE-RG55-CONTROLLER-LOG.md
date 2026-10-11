@@ -9371,3 +9371,26 @@ Resumed again at 18:36:17Z from the same judged tree/state in
 baseline pytest command; memory PSI `full avg10=0.00`. Keep the tree quiet and
 do not overlap another mutation campaign. Continue at the operator's
 25-minute observation interval absent an error or likely completion.
+
+### RW-568 — 2026-10-11 23:58:28 UTC — progress update and RW-567 count correction
+
+Correction to RW-567: that entry counted only the seven records visible in a
+tail view. The complete progress stream for the 10:34Z retry contains 20
+candidate records at `candidate_total=1493` (19 killed, 1 survived), not seven.
+Thus 120/1,593 candidates were accounted for before the current run, not
+107/1,593. The partial records remain valid; the R2 lane remains incomplete.
+
+The active run is container `run-gate-vbpub-r2-1453530-1791743776` on the
+unchanged judged tree `06e7804eaf0126c8d8611ff28e61f92657a57d49`, started
+18:36:17Z, with a 3-CPU cap under `dev-gates.slice`. At 23:58:28Z the progress
+stream contained 396/1,473 candidates for this resumed segment (390 killed,
+6 survived), latest candidate at 23:57:28Z. Across saved records, 516/1,593
+are accounted for: 509 killed, 7 survived, and 1,077 remain. No final R2
+verdict exists. Memory PSI `full avg10=0.01`; the exact container is running
+and no other Run-Gate/Assay test container was active at the observation.
+
+From the first to latest candidate event in this segment, observed throughput
+is about 48.3 seconds/candidate. Linear projection for 1,077 remaining is
+about 14h 27m, around 2026-10-12 14:26Z, with roughly 4h 10m before the 24h
+lane budget. This is an estimate, not a completion promise; candidate cost
+and host activity vary.
