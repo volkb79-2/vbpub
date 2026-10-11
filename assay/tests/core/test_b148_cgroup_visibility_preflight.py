@@ -70,10 +70,25 @@ def _unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
         resource_limits,
         "inspect_current_cgroup_observation",
-        lambda: resource_limits.ResourceObservationCapability(
+        lambda **_kwargs: resource_limits.ResourceObservationCapability(
             available=False, reason="fixture hides the cgroup ancestor"
         ),
     )
+
+
+def test_preflight_passes_explicit_observer_setting(monkeypatch):
+    observer_path = "/run/cgprofile/resource-observer.sock"
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", observer_path)
+    calls = []
+    capability = resource_limits.ResourceObservationCapability(available=True)
+    monkeypatch.setattr(
+        resource_limits,
+        "inspect_current_cgroup_observation",
+        lambda **kwargs: calls.append(kwargs) or capability,
+    )
+
+    assert cli._current_cgroup_observation_capability() is capability
+    assert calls == [{"observer_socket_path": observer_path}]
 
 
 def _run(argv: list[str]) -> tuple[int, str, str]:

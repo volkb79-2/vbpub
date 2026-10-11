@@ -88,6 +88,37 @@ def test_assays_own_lane_file_loads():
     ]
 
 
+def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
+    lanes = tomllib.loads(RUN_GATE_TOML.read_text(encoding="utf-8"))["lanes"]
+    wrapper = (PROJECT_ROOT / "tools" / "self-qualification-container.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
+        lane = lanes[lane_id]
+        assert lane["kind"] == "command"
+        assert lane["environment"] == "bare-host"
+        assert lane["argv"][:2] == ["bash", "{worktree}/assay/tools/self-qualification-container.sh"]
+        assert lane["resources"] == {"shared": ["assay-self-qualification"]}
+        assert lane["exit_map"] == {"3": "ERROR"}
+
+    assert 'resource_observer_gid() {' in wrapper
+    assert "--cgroupns=private" in wrapper
+    assert "--cgroupns=host" not in wrapper
+    assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"' in wrapper
+    assert 'dst=$RESOURCE_OBSERVER_TARGET,readonly' in wrapper
+    assay_lanes = load_lane_file(SELF_LANE_FILE)
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
+        assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
+
+
+def test_analysis_lane_forwards_observer_to_real_nested_r2_tests():
+    lane = load_lane_file(SELF_LANE_FILE).lane("analysis")
+
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in lane.env_passthrough
+
+
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
     # A-046/A-133 still govern the ordinary release gate. B105's new lane is
     # the explicit place where self-qualification policy is declared.
@@ -1802,6 +1833,8 @@ def test_preflight_measures_the_same_complete_source_inventory_before_r2():
     }
     assert b105_coverage_env.isdisjoint(qualification.env_passthrough)
     assert b105_coverage_env.issubset(preflight.env_passthrough)
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in qualification.env_passthrough
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in preflight.env_passthrough
 
 
 def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(

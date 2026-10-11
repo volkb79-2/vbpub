@@ -1,12 +1,55 @@
-# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-63 transport/watch/placement, RG-56 admission)
+# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-55 transport/watch/placement, R-45 headroom wait)
 
-**Implementer:** FRESH Sonnet session, checkpoint clause on (HARD).
+**Historical implementer contract:** FRESH Sonnet session, checkpoint clause on (HARD).
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
 `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-{LOG,REPORT,BRIEF-n}.md`.
-Release after review: run-gate **23.9.0**, `__revision__ = 43` (the
-controller runs `cmru release` and installs the wheel).
 
-## Where you work
+## Controller continuation — 2026-10-11
+
+The active candidate is `.worktrees/rg55-p5-transport-port-20261010`, branch
+`rg55-p5-transport-port-20261010`, based on main
+`efaf112945233e3a8f6d53f2fef136439d18d089`. Its review-artifact HEAD before
+the current uncommitted repair is `e771985e0778538f209ce30d7893cfef977599f7`.
+Run-Gate is now revision 63; the original rev-43 / 23.9.0 implementation
+dispatch below is historical.
+
+P5 review round 1 rejected on B3: exec and bare-host started profiling before
+the token-bearing lane child existed, so an explicit daemon placement refusal
+could be followed by unplaced body execution. RW-554 binds the settled C6
+behavior: a ready/continue wrapper must hold the body until the daemon returns
+and Run-Gate verifies the applied leaf and limits; refusal aborts before body
+entry and finalizes the returned session. R-36h fallback remains only when no
+placement result is available. RW-555 records the rev-63 repair, four real
+daemon success/refusal probes, and 71 focused tests. Detailed session and
+Run-Gate run IDs are in `run-gate-WAVE-RG55-P5-REPORT.md`.
+
+The next controller actions are to commit the implementation/docs/fixture and
+refresh this review packet; then run final quiet-tree cgroup-profiler
+unit/coverage/canary, Nyxloom scope check, Run-Gate selftest/assay-r1/assay-r3/
+doctor, and obtain a fresh Sol P5 review. Provisional merge is authorized
+after those short checks and ACCEPT. Exact-tree `assay-r2` and `gate-full`
+remain release blockers and should run asynchronously after merge without
+mutating their judged tree. Do not restart or replace the CIU-managed main
+daemon. RG-56 remains OPEN and outside P5.
+
+## Controller continuation — 2026-10-01
+
+The P5 implementation is integrated with current main in
+`.worktrees/rg55-p5-assay63-reconcile`, branch
+`rg55-p5-assay63-reconcile`. The mainline integration commit is `bb7e21b7`;
+candidate source identity is `__revision__ = 47`, targeting run-gate 23.10.0
+(23.9.1 is already released). The controller supplies the exact final HEAD to
+the fresh Sol reviewer after the target documentation and gates are final.
+
+Mainline rev 44 supersedes the older optional gates-parent wording in C3
+below: gate/lane containers resolve their required parent through
+`cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+Absence of the selected source is a hard error. A lane that deliberately
+starts a long-running application stack receives
+`$CGROUP_PARENT_DEV_BACKGROUND` separately through declared `forward_env`.
+Do not restore the former silent/default-parent behavior.
+
+## Original implementation dispatch (historical; current checkout above)
 
 ```
 git -C /workspaces/vbpub worktree add .worktrees/rg55-client-v11 -b rg55-client-v11 <base>
@@ -39,14 +82,17 @@ brief (controller's).
    shapes per verb), `cgprofile-P6-FOLLOWUPS-REPORT.md` (probe evidence).
 5. `SPEC.md` R-04, R-09, R-29, R-30, R-36, R-39, R-40, R-41, R-43 a–i,
    R-44; `CONSUMERS.md` §6; `LANE-AUTHORING.md`; `CHANGES.md`;
-   backlog RG-56 (exists) — RG-63 you file (C1).
+   current RG-55/P5, RG-56, and RG-72 backlog entries (C1 is scoped to
+   RG-55/P5; RW-283 keeps RG-56 OPEN and RG-72 belongs to a separate issue).
 
 ## Deliverables (commit each separately, in this order)
 
-**C1 — backlog rows.** File **RG-63** (policy author / watch consumer /
-transport seam / placement requests — mechanism, proposed contract, oracle
-sketch per row convention, provenance RW-29..RW-35) and update RG-56's
-"next wave" wording to "this package (P5)". No code.
+**C1 — backlog record (current integration correction).** Keep the P5
+transport/watch/placement and R-45 bounded headroom wait under the existing
+**RG-55/P5** row. Do not create or overwrite RG-72: current main assigns RG-72
+to the separate failed-Assay-evidence issue (fixed at rev 49). RG-56 remains
+the distinct atomic reservation gap and stays OPEN under controller ruling
+RW-283. No code.
 
 **C2 — transport seam (D-30, §8.1).** `[profile] transport = "auto" |
 "exec" | "socket"` (default `auto`; env `RUN_GATE_PROFILE_TRANSPORT`
@@ -66,14 +112,15 @@ absent / permission denied / no answer / docker exec failed). `--dry-run`
 discloses the carrier. Goldens `fixtures/rg55/socket/*-request.json` are
 asserted byte-for-byte against what your builder emits for each verb.
 
-**C3 — gates slice default (D-19, D-24).** Ephemeral lane containers get
-`--cgroup-parent "$CGROUP_PARENT_DEV_GATES"` when that variable is set and
-non-empty (unset → today's behaviour, disclosed once by `doctor` as "gates
-slice: not configured — lanes run under the default parent"); a docker
-`run` failure whose stderr names the cgroup parent is reported with a
-WARNING naming mdt host-setup (`dev-gates.slice` not installed) and the
-lane FAILS as any other docker failure (never silently re-run elsewhere).
-SPEC R-30 amended; CONSUMERS names the variable; `doctor` shows it.
+**C3 — gates parent (D-19, D-24; updated for mainline rev 44).** Ephemeral
+lane containers use the parent resolved from the environment's declared
+`cgroup_slice`, then its `cgroup_slice_env`, then the required
+`$CGROUP_PARENT_DEV_GATES`. A missing selected source is a hard error, never
+an unconfined Docker launch. The same resolved parent is forwarded to the
+child as `CGROUP_PARENT_DEV_GATES`; `$CGROUP_PARENT_DEV_BACKGROUND` is a
+separate declared `forward_env` fact for a deliberately started long-running
+application stack. A Docker `run` failure naming the cgroup parent remains a
+failure; never retry silently under another parent.
 
 **C4 — policy author (D-27, §8.4).** At `ctl start` run-gate passes:
 `--progress-stream <path as the lane sees it>` for lanes that have one
@@ -113,48 +160,42 @@ else the footprint manifest's `memory_peak_bytes.median × 1.5` (disclosed
 "derived") else no placement (disclosed "no request"); ceiling =
 `resources.memory_max` else `min(2 × request, host.gates_slice.
 memory_max_bytes)`. `placement.applied` (read back by the daemon) lands in
-the record. A placement refusal is a warning, but the blocked wrapper is
-terminated before the lane body runs and any admission reservation is
-released; the lane is never allowed to run as an unaccounted workload.
+the record. Run-Gate holds a token-bearing wrapper outside the lane body until
+the daemon confirms placement and reads back the leaf and requested limits.
+An explicit refusal or absent/malformed/looser read-back aborts and reaps the
+wrapper, stops the session, and returns an infrastructure refusal before the
+body or any mutation candidate executes; no candidate verdict is produced.
+The normal Run-Gate admission-ticket `finally` releases its ticket on this
+path. R-45 itself is a wait, not a reservation; RG-56 remains separate. If the
+profiler or transport is unavailable before a placement result, the disclosed
+R-36h fallback remains in force. The lane is never allowed to run unplaced
+after an explicit refusal.
 `throttled` readings → ONE WARNING ("lane throttled at memory.high —
 raise resources.memory or the gates slice"). R-43 gains sub-rules;
 LANE-AUTHORING documents `resources.memory`/`memory_max`; `--dry-run`
 prints the placement plan.
 
-**C7 — RG-56 admission (D-6; corrected contract, dependency-gated).** The
-earlier "wait-then-proceed, never refuse" sketch is superseded by the
-corrected RG-56 design at
-`run-gate-RG56-ADMISSION-DESIGN-REPAIR-HANDOFF.md` (checkpoint
-`92a2c097`). P5 must implement that contract, not the old status-then-start
-approximation: a targetless, atomic daemon `admit` reserves the normalized
-positive `reservation_bytes` before any ephemeral container, exec/bare-host
-child, profiler session, or mutation worker starts; a later target-bound
-`start --reservation-token` binds the existing target and performs the
-placement/read-back barrier. The daemon is authoritative for the loaded
-`CGROUP_PARENT_DEV_GATES` unit, both memory-PSI readings, finite memory
-limits, complete pending/live registry, generation, and checked aggregate
-capacity. Missing or stale facts, unknown live demand, invalid demand, a
-conflict, or projected demand over either limit is an admission refusal,
-never an empty-set/zero fallback and never a product or mutation result.
-`--allow-pressure` can bypass only a valid PSI block; it cannot bypass
-capacity, provenance, registry, generation, placement, or identity errors.
-`admission_wait` is an explicit configuration value with no code fallback;
-expiry is infrastructure refusal and resumable. `--dry-run` is
-side-effect-free. The current two-container RG-55 cap remains binding until
-the producer/consumer acceptance gates pass; `additional_slots` is a
-capacity reading, never a literal slot authorization. The implementing
-packet must use the corrected handoff's exact request/response fields,
-reason codes, lifecycle, and focused acceptance oracles.
+**C7 — R-45 bounded headroom wait; RG-56 remains OPEN.** P5 implements only
+the current `SPEC.md` R-45 contract: a read-only `ctl host` snapshot, a
+bounded wait while measured gates-slice headroom is below threshold, then
+proceed with one warning. It does not reserve demand or atomically account
+for concurrent callers. The corrected targetless RG-56 reservation design at
+`run-gate-RG56-ADMISSION-DESIGN-REPAIR-HANDOFF.md` (checkpoint `92a2c097`)
+is a separate dependency-gated future wave; RW-283 records that it remains
+OPEN. Do not mark RG-56 fixed or implement its protocol as part of P5. Keep
+R-45's no-verdict-change and dry-run-without-wait semantics intact.
 
 **C8 — records.** Inflight and history entries gain `watch` and
 `placement` (nullable); history schema STAYS 2 (additive — re-prove RG-27's
 two traps on the new keys); `history --json` prints them; `stats` and
 `footprint` unchanged in v1.1.
 
-**C9 — close-out.** SPEC R-40a/b, R-43 j–l, R-45 (admission), Rev bump;
-README; CONSUMERS §6 (transport, gates slice, admission); LANE-AUTHORING;
-CHANGES `[Unreleased]` per RG id; RG-56 + RG-63 → FIXED with evidence;
-`__revision__ = 43`; `usage()`; the `doctor` output in the REPORT.
+**C9 — close-out.** SPEC R-40a/b, R-43 j–l, R-45 (bounded headroom wait),
+revision bump; README; DESIGN-GUIDE rationale; CONSUMERS §6 (transport,
+gates slice, R-45); LANE-AUTHORING; CHANGES `[Unreleased]` under RG-55/P5;
+RG-55/P5 status closes only with its exact gates and review evidence. RG-56
+remains OPEN (RW-283); RG-72 is a separate already-fixed issue. Record the
+`doctor` output in the REPORT.
 
 ## Live probes (yours; daemon state is announced in the dispatch message)
 
@@ -174,11 +215,19 @@ every probe container in a `finally`.
 ## Gates (verdict in a SEPARATE step, never a pipe tail)
 
 Targeted files while iterating (`nice -n 19 ionice -c 3 python3 -m pytest
-tests/<file> -q`, SERIAL). Final tip, each once, in order: `./run-gate.py
-selftest` (RG-53: 100% line AND branch on every changed line vs `--base
-<base>`), `assay-r1`, `assay-r3`, LAST `assay-r2` (`budget_per_candidate =
-"900s"` is set; keep it), `gate-full` if present. Survivors: a killing test
-or a written equivalent-mutant justification (RW-20/RW-22). One resume.
+tests/<file> -q`, SERIAL). On the final pre-merge tip, run `./run-gate.py
+selftest` (RG-53: 100% line AND branch on every changed line),
+`./run-gate.py --base <base> assay-r1`, `./run-gate.py assay-r3`, and
+`./run-gate.py doctor`, plus the live probes above. This worktree has no
+upstream, and assay-r1/assay-r2 delegate their comparison base, so pass the
+exact base named in the dispatch (currently `main`) explicitly or run-gate
+refuses before starting the lane. After fresh Sol ACCEPT and provisional
+merge, the controller runs `./run-gate.py --base <base> assay-r2` and
+`./run-gate.py --base <base> gate-full` asynchronously in attached CIU
+worktrees; both remain release blockers. Keep the R2 tree quiet, resume only
+on the same judged tree, and retain `budget_per_candidate = "900s"`. Survivors
+must be killed by a behavioral oracle or justified as equivalent
+(RW-20/RW-22).
 
 ## Records
 

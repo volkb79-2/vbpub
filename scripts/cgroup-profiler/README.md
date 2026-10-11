@@ -45,7 +45,10 @@ expose the same top-level compatibility option.
 
 P1's registered mutation lane takes its changed-lines base from the gate
 request. Supply the recorded comparison commit with `--base` for `r2` and the
-full `gate`, and inspect the Assay plan before a long run. See the
+full `gate`, and inspect the Assay plan before a long run. Native R2 runs one
+mutant at a time because its resource event counters belong to the shared
+tester cgroup; an incomplete 24-hour window resumes on the same exact tree.
+See the
 [`design rationale`](docs/DESIGN-GUIDE.md#mutation-comparison-base) and
 [`exact commands`](docs/CONSUMERS.md#run-the-p1-review-gates).
 
@@ -154,7 +157,18 @@ else) talks to over a Unix socket instead of spawning a collector per lane.
 The daemon alone uses the host PID namespace, allowing DAMON sysfs to resolve
 host `pid_target` values; it keeps a private cgroup namespace, has no network,
 and receives no Docker socket. Workload, helper, gate, and test containers
-remain private. It also receives a read-only host `/proc` bind and an
+remain private. The daemon exposes its existing control protocol on
+`/run/cgprofile/ctl.sock` and a distinct, observer-only
+`/run/cgprofile/resource-observer.sock` for explicitly opted-in native R2
+lanes. That second listener accepts only a peer-bound resource-counter query;
+it is not a broker and provides no control or placement operation. Run-Gate
+mounts only that socket into the selected tester container, never `ctl.sock`.
+It verifies that all peer threads share capability state and cannot bypass
+cgroup control permissions. It accepts one newline-terminated JSON request
+of at most 4096 bytes including the newline, with a five-second absolute deadline.
+See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)
+and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
+It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
 make systemd RPCs read-only. The daemon uses systemd's `AttachProcessesToUnit`
@@ -212,6 +226,17 @@ analysis library loaded and its admin sysfs interface is visible. It does not
 mean the kernel accepted a configured monitoring context. Check each session's
 `start` result and persisted series; details are in the
 [design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
+One possible host-level refusal is an active, mutually exclusive kernel DAMON
+consumer such as `DAMON_STAT`; see the
+[consumer troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
+`DAMON_STAT` is a simplified, system-wide physical-memory statistics module;
+cgprofile instead uses the generic DAMON sysfs interface to target the
+profiled process(es) and collect per-session access regions. Linux makes
+these DAMON consumers exclusive, so an enabled `DAMON_STAT` can leave ordinary
+cgprofile sampling healthy while its DAMON series is unavailable. Debian does
+not define one invariant runtime default: the installed kernel build controls
+it. The RG-55 host's kernel config sets `CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`;
+see the consumer note for the live probe and safe host procedure.
 
 - **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
   (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
@@ -221,7 +246,7 @@ mean the kernel accepted a configured monitoring context. Check each session's
   observes host proc/cgroup state through explicit mounts, which cannot be
   meaningfully duplicated. The daemon joins the host PID namespace, while its
   cgroup namespace remains private.
-- **`--network none`, no docker socket inside the container.** The only
+- **`--network none`, no docker socket inside the container.** The control
   surface is `/run/cgprofile/ctl.sock`, reached with `docker exec
   cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
   docker access to that container. `ctl`'s own client-side timeout is 25 s;
@@ -251,7 +276,9 @@ mean the kernel accepted a configured monitoring context. Check each session's
   without dispatch. `watch` has no timeout after its initial request line.
   - **Host prerequisite:** the directory `/run/cgprofile` on the host is
     created by mdt host-setup's tmpfiles.d entry `mdt-cgprofile.conf`
-    (`d /run/cgprofile 0770 root docker -`). **That entry decides who may
+    (`d /run/cgprofile 0770 root docker -`). The daemon Compose service
+    refuses a missing bind source rather than creating an empty directory.
+    **That entry decides who may
     use the socket carrier: members of the `docker` group** — the same
     principals who can already `docker exec` into the daemon, which is why
     the two carriers have the same trust boundary. The daemon re-asserts
@@ -351,7 +378,11 @@ mean the kernel accepted a configured monitoring context. Check each session's
   creating a session because there is no verified kill boundary. Run-gate
   requests that policy only when its existing resource plan already requested
   placement; otherwise its local watchdog remains verdict authority. A
-  malformed cap value is `bad-argument` (exit 2, no session) — the client
+  one-process origin unit may be refused as
+  `place-refused:origin-scope-would-empty`: systemd retires an empty source
+  scope, leaving no exact unit for stop-time restoration. Membership that
+  cannot be established is refused as `place-refused:identity-unavailable`.
+  A malformed cap value is `bad-argument` (exit 2, no session) — the client
   typed it wrong, not the host.
 - **Placement memory is charge-based, not total RSS.** After successful
   placement, cgroup memory counters and the leaf's `memory.high`/`memory.max`

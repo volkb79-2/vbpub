@@ -5,22 +5,25 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "477a8e7a8cf71370a3c89ca37189a4e838b69f1e"
+input_revision: "b1293e902"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-267
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-559
 scope:
   touch:
     - run-gate-project/run-gate.py
     - run-gate-project/tests/
     - run-gate-project/README.md
+    - run-gate-project/docs/DESIGN-GUIDE.md
     - run-gate-project/CONSUMERS.md
     - run-gate-project/LANE-AUTHORING.md
     - run-gate-project/SPEC.md
     - run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
     - run-gate-project/CHANGES.md
+    - run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md
+    - run-gate-project/nyxloom-trove/RG55-INTERFACE-CONTRACT.md
     - scripts/cgroup-profiler/
     - cmru/
     - run-gate-project/nyxloom-trove/reports/
@@ -72,12 +75,14 @@ review_focus:
 ## Invocation contract
 
 The operator may hand this packet to the reviewer by path instead of pasting
-its body. The first message to the fresh Sol xhigh session should therefore
-contain these literal instructions (change only the target when appropriate):
+its body. The first message to the fresh Sol xhigh session must name exactly
+one target and the absolute packet path inside that target's selected
+worktree. The P5 example below is current for this candidate; for another
+target, substitute both the target and that worktree's packet path:
 
 ```
 REVIEW_TARGET=P5
-Read /workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
+Read /workspaces/vbpub/.worktrees/rg55-p5-transport-port-20261010/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
 Follow that packet as the review contract. Review exactly the selected target, make scoped repairs when needed, and return the required verdict and artifact. Do not merge or release.
 ```
 
@@ -85,9 +90,9 @@ Follow that packet as the review contract. Review exactly the selected target, m
 the reviewer is expected to discover. If the line is absent or names anything
 outside `P1`, `P4`, `P5`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
 
-Before pasting this packet, select the actual model route in the client and
-put one literal target line at the top of your prompt. For the currently ready
-P5 package, use:
+Before assigning this packet, the caller selects the actual GPT-6-Sol route at
+xhigh and retains the invocation/session metadata as route evidence. Put one
+literal target line at the top of the prompt. For P5, use:
 
 ```
 REVIEW_TARGET=P5
@@ -113,13 +118,14 @@ ACCEPT for that package and all post-review gates have passed.
 ## Role and authority
 
 You are the final independent adversarial reviewer and, when necessary, the
-repair implementer for `REVIEW_TARGET`. The caller must configure and verify
-the actual Sol xhigh route before dispatch (currently model id `gpt-6-sol`,
-effort `xhigh`, or the platform's exact equivalent). This is a caller
-responsibility, not a reviewer oracle. Do not self-identify, infer a model
-from this prompt, or block the review because runtime identity/effort metadata
-is unavailable to you. Proceed with the technical review and report the
-target, base, final HEAD, and worktree state.
+repair implementer for `REVIEW_TARGET`. The caller is responsible for
+launching this fresh session on the requested GPT-6-Sol xhigh route and
+preserving authoritative invocation/session metadata. Do not attempt to verify
+or attest your own model or reasoning effort: your self-report is not route
+evidence, and lack of runtime introspection is not a reason to return
+`BLOCKED`. The caller must resolve a known invocation mismatch before
+assigning repository work; if the caller explicitly tells you the route was
+wrong, stop before repository work and report that mismatch.
 
 The operator explicitly authorizes you to make fixes and improvements yourself
 within the scope below. You may edit production code, tests, user-facing docs,
@@ -151,12 +157,15 @@ topos/*
 ciu/docs/CIU-V8-*ROUND4*
 ```
 
-The shared main checkout currently has two intentional operator changes:
-`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` and
-`modern-debian-tools-python-debug/host-setup/Preventing another misplaced
-BuildKit.md`. Do not stage, reset, clean, or commit either. Do not use a broad
-Docker removal or prune command. Never use `--cgroupns=host`, `--pid=host`, or
-`--net=host`.
+The shared main checkout was clean when this packet was refreshed, but its
+status is live and may change. Always inspect it before any merge and preserve
+all unrelated or operator-owned changes; never stage, reset, or clean them.
+Do not use a broad Docker removal or prune command. Never use
+`--cgroupns=host` or `--net=host`. Host PID namespace is prohibited for
+workload, gate, helper, and test containers. The sole explicit exception is
+the CIU-managed cgprofile host daemon's `pid: host`, authorized by RW-467 so
+DAMON sysfs `pid_target` resolves host PIDs; deploy that daemon only through
+its declared CIU singleton workflow, never an ad-hoc Docker command.
 
 Host contention is an allowed operating condition, not a defect to eliminate.
 The requirement is that functional outcomes and mutation classifications are
@@ -194,8 +203,9 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-267). The log, current git state, assay JSON, process state, and
-   Docker state outrank prose in an old brief.
+   through the latest ruling (RW-555 at this checkpoint; refresh from the
+   selected tree before review). The log, current git state, assay JSON,
+   process state, and Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
 4. `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`,
@@ -207,7 +217,10 @@ Read the controller materials in this order:
    current branch diff. Also read `run-gate-project/SPEC.md`,
    `run-gate-project/CONSUMERS.md`, `run-gate-project/LANE-AUTHORING.md`,
    the relevant package `README`, `docs/DESIGN-GUIDE.md`, and
-   `docs/CONSUMERS.md`.
+   `docs/CONSUMERS.md`. For P5 also read
+   `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REPORT.md`,
+   `scripts/cgroup-profiler/nyxloom-trove/nyxloom.toml`, and
+   `scripts/cgroup-profiler/tests/test_serve_placement.py`.
 
 The settled decisions are not product questions to reopen. Private helper
 names and equivalent decomposition remain free; public names, serialized
@@ -215,11 +228,15 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ## Target packets and current state
 
-### `P5`: run-gate v1.1 client, revision 43
+The P5 state below was refreshed for this candidate. The P1/P4/P6/CMRU
+sections that follow are planning snapshots, not current branch, gate, or
+process truth; refresh them before selecting any of those targets.
 
-Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
-implementation tip `8823dca820cf6ffc6520da57663f8b7424f1ce35` (the packet is a
-tracked report in the same worktree). Read:
+### `P5`: run-gate v1.1 client, revision 63
+
+Worktree: `.worktrees/rg55-p5-transport-port-20261010`, branch
+`rg55-p5-transport-port-20261010`; the controller supplies the exact final
+HEAD when dispatching review. Read:
 
 ```
 run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-HANDOFF.md
@@ -234,33 +251,113 @@ run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
 run-gate-project/CHANGES.md
 ```
 
-This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
-transport seam, one-reader daemon watch with ended/failed retry and fallback,
-policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
-admission, schema-2 nullable watch/placement history, and synchronized
-adopter-facing documentation. The ended-reader repair and its behavioral
-regressions are committed through `8823dca8` (including the bare-host path and
-the live/fallback branch matrix). The full selftest from that quiet tree passed
-1,287 tests with 3 skips, with 642/642 changed executable lines and 276/276
-changed branches covered. This is valid P5 evidence, but the packet remains
-provisional until the operator's assay 6.3 source-backed integration is
-reconciled into the final review tree; that reconciliation must rerun any
-affected gates. The same quiet tree's R1 rerun with `--base main` passed, R3
-passed with both canaries rejected and zero survivors, and doctor exited 0
-with zero failures. The package `gate-full --base main` wrapper also passed on
- this tip, serially repeating selftest, R1, and R3. A fresh R2 mutation run was
- launched asynchronously on this exact quiet tree at RW-248; its terminal
- verdict is intentionally not claimed here until the explicit job marker and
- assay verdict are read separately. Any source-backed assay integration commit
- will invalidate this run and require a fresh run on the final tree.
-Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
-`assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
-running in their separate worktrees; do not edit, switch, or invalidate them.
-The P5 branch itself must be quiet while its mutation evidence is collected.
-Check the new request shape against both contract mirrors, run live acceptance
-probes for socket and Docker-exec carriers where the installed daemon permits,
-and disclose the cockpit's known `place-refused:no-gates-slice` condition if
-the unrebuilt devcontainer cannot expose the host gates slice. Do not merge,
+This target implements the RG-55/P5 v1.1 socket/exec transport seam,
+one-reader daemon watch with ended/failed retry and fallback, policy authoring,
+gates-slice parent and placement, R-45's bounded observational headroom wait,
+schema-2 nullable watch/placement history, and synchronized adopter-facing
+documentation. It does not implement RG-56's atomic registry reservation;
+RG-56 remains OPEN under RW-283. RG-72 is a separate, already-fixed failed-
+Assay-evidence issue and is not P5's backlog identifier.
+
+The current candidate is an **integrated diff, not a P5-only branch**. Its
+code checkpoint contains 67 changed paths across Run-Gate, Assay, and
+cgroup-profiler relative to main
+`efaf112945233e3a8f6d53f2fef136439d18d089`; merge commit
+`83c7d4a21a30ba1180a16c50e3092c326a91e4f7` brings in the RG-89 observer
+candidate, and `ae0ff0979` restores the P5 branch on that integration. Review
+the complete diff that a provisional merge would land, including the
+Assay/cgroup-profiler observer path; do not certify those package changes from
+P5 gates alone. Record any distinct package/release holds separately. The
+controller's exact gate, host-probe, and unresolved-evidence record is
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REPORT.md`.
+The integrated cgroup-profiler helper refactor has a prior fresh Sol ACCEPT
+for provisional integration under RW-437, not for release; its final-source
+R2 and DAMON-start fix validation remain separate requirements. Current live
+DAMON measurements and candidate runtime probes are in the refreshed P5
+report and RW-553/RW-555.
+
+P5 review round 1 is REJECT on B3; preserve its initial blind-review artifact
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REVIEW-round1.md`.
+RW-554 resolved the handoff/SPEC contradiction in favor of a pre-body
+ready/continue barrier and fail-closed explicit placement refusal. The rev-63
+candidate repairs B3 in `aee194b7e` and has four real-daemon Run-Gate live
+probes (exec and bare-host success/refusal pairs) plus the original 72 focused
+tests; see RW-555/RW-556 and the P5 report. The first registered selftest on
+`adcfc4958` failed because the test's stdlib allowlist omitted `select`; that
+fix is committed in `80a8cf90d`. A subsequent selftest on `992cce229` passed
+pytest (1,874 passed, 2 skipped) but failed the changed-area judge at 980/1,067
+lines and 452/476 branches. RW-557 records the repair; commit `f1beb8e2a` adds
+behavioral tests for the uncovered timeout, EOF, abort, fallback, and
+inflight-cleanup paths. The next selftest on `0ca078342` ran pytest to 1,908
+passed, 2 skipped, but failed changed-area coverage on one stop-loop branch;
+the first fake-input fixture raced its helper thread. RW-558 records the
+deterministic event handshake committed at `b1293e902`. Selftest then passed
+on packet-freeze tree `4ba9bd80a`: 1,908 passed, 2 skipped, 1,064/1,064
+changed lines, and 470/470 branches; RW-559 records the exact receipt. The
+controller will refresh the report/ledger and rerun the remaining short gates
+on that resulting clean review tree before this fresh Sol round. The reviewer
+independently reviews the exact HEAD supplied by the controller and the full
+integrated diff; round 1 does not authorize acceptance.
+
+The committed CP-19 addition provides origin-unit lifetime protection: inventory the
+full source cgroup subtree before initial and later moves; refuse a known
+last-member move as `place-refused:origin-scope-would-empty`; refuse unknown
+membership as `place-refused:identity-unavailable`; never guess a restoration
+parent. Its tests, interface mirrors, README, DESIGN-GUIDE, CONSUMERS, and
+program design rationale are in the diff. The design explicitly discloses
+that this observation is not an atomic lease against an unrelated source
+process exiting between check and move; review that residual race against the
+settled exact-restore contract. Candidate-image live probes now establish the
+CP-19 last-member refusal, clean anchored restore, and on-stall kill cleanup;
+see the exact session evidence in the P5 report. The earlier
+`place-refused:write-failed` warning remains historical evidence and must be
+considered alongside the successful candidate probes, not erased.
+
+The candidate is Run-Gate revision 63. Read-only `cmru status` from this
+candidate resolves Run-Gate `23.11.0`, Assay `9.1.0`, and cgroup-profiler
+`0.1.0` by default (no existing cgprofile tag); the original `23.9.0`/rev-43
+handoff is historical. The wave's explicit cgprofile release target remains
+`1.0.0`, subject to that package's own release gates. Do not publish from this
+review task.
+Cgroup-profiler unit, whole-package coverage, and canary receipts are recorded
+for exact code tree `465f67d0`; Run-Gate `selftest` and cgroup-profiler's
+registered `r0-r1` coverage passed on evidence tree `db6d5b73`. The controller
+report records both. The rev-63 B3 repair, report, ruling, and probe fixture
+are committed at `aee194b7e`; the stdlib allowlist correction and RW-556 are
+committed at `80a8cf90d`; changed-area coverage tests and RW-557 are committed
+at `f1beb8e2a`; the deterministic stop-loop oracle and RW-558 are committed
+at `b1293e902`. This packet's `input_revision` follows the two-step freeze
+and pins the latest code-fix commit. Cgroup-profiler unit/coverage/
+canary and local Nyxloom lint passed at `adcfc4958`; no Assay or
+cgroup-profiler files changed in the subsequent Run-Gate test-oracle repair.
+Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor` must pass on the
+refreshed quiet tree before review. The P5 footprint manifest must remain
+tracked. Candidate-image live acceptance—
+socket/exec parity, CP-19 refusal, anchored placement/restore, on-stall kill,
+matched DAMON pair, and rev-63 placement-barrier success/refusal pairs—is
+recorded in the report and RW-553/RW-555. The main-managed daemon is up; do
+not launch a sibling or use raw Docker to bypass the singleton.
+
+Assay source changes are part of the integrated diff and CMRU resolves the
+next Assay version to `9.1.0`. Run-Gate's source-backed Assay R1/R2 lanes do
+not certify Assay's own release suite: its registered `tester-unified` gate
+must be run on the final Assay source tree before releasing that package.
+Track this as a separate package/release hold, not as a P5 gate failure.
+
+The Run-Gate subdirectory is not a registered Nyxloom project and has no
+local `nyxloom-trove/nyxloom.toml`; local `nyxloom lint` returns L0 there.
+The controller records this scope limit in the P5 report. Do not run
+`nyxloomctl lint` for this task because its host-wide registry includes the
+forbidden `/workspaces/dstdns` checkout.
+
+The operator authorizes provisional merge only after those checks and a fresh
+Sol ACCEPT. Run exact-tree `assay-r2` and `gate-full` asynchronously in
+attached CIU worktrees after that merge, without mutating the judged tree.
+Those long-run results remain release blockers. Any repair changes the judged
+tree and requires fresh exact-tree short gates/review plus resumed or
+restarted long-run evidence before release. P1/P6 mutation jobs may be running
+in their separate worktrees; inspect process/container state and do not edit,
+switch, or invalidate them. Check both contract mirrors. Do not merge,
 release, install, start the final daemon, or touch dstdns.
 
 ### `P1`: cgprofile 1.0.0 daemon
@@ -395,12 +492,13 @@ review.
 
 ## Review and repair procedure
 
-1. Verify the selected target, worktree path, branch, HEAD, status, merge
-   base, and current processes/containers. The caller is responsible for the
-   Sol xhigh invocation; do not attempt runtime self-verification. Save the
-   initial status and diff before editing. If the selected P1/P6 mutation job is alive, stop at
-   inspection of evidence and wait for its mechanical completion marker; do
-   not minute-poll or change its tree.
+1. Treat the caller-provided Sol xhigh invocation/session metadata as the
+   route evidence; do not self-verify or attest the route. Verify the selected
+   target worktree path, branch, HEAD, status, merge base, and current
+   processes/containers. Save the initial status and diff before editing. If
+   the selected P1/P6 mutation job is alive, stop at inspection of evidence
+   and wait for its mechanical completion marker; do not minute-poll or change
+   its tree.
 2. Read the named contract and settled decisions blind. Build a requirement →
    code path → observable → negative case → gate table. Enumerate every status
    the code can report and the real-world conditions that collapse into it.
@@ -418,13 +516,15 @@ review.
    smallest correct repair yourself, add a contract-level regression oracle,
    update all three user-facing documents when the capability/config/vocabulary
    changed, and commit in the isolated worktree.
-5. After any commit, treat prior mutation evidence for that tree as void. Run
-   the affected mutation lane again from the new exact tree with resume state
-   that belongs to that tree, plus the package's selftest, assay-r1, assay-r3,
-   and required live probes. Use the real `tester-unified` gate where the
-   package declares it; run run-gate-project's own bare-host selftest/r1/r2/r3
-   lanes exactly as declared. Read each verdict separately and record exit
-   markers, tree hashes, container names, PSI, and CPU caps.
+5. After any commit, treat prior mutation evidence for that tree as void.
+   Before provisional merge, require the affected package's selftest, assay-r1,
+   assay-r3, changed-line line+branch coverage, and required live probes on the
+   exact quiet tree. The controller may then run exact-tree assay-r2 and
+   gate-full asynchronously in attached CIU worktrees while integration
+   continues; their results are mandatory before release. Use the real
+   `tester-unified` gate where the package declares it; run run-gate-project's
+   own bare-host lanes exactly as declared. Read each verdict separately and
+   record exit markers, tree hashes, container names, PSI, and CPU caps.
 6. Review the final changed tree again. Return `ACCEPT` only when the reviewed
    code's 100% line+branch changed-line coverage and short package gates,
    docs, live probes, R-36h, and D-15 safety all support the claim. Use
@@ -481,9 +581,9 @@ BLOCKED
 
 The artifact must include:
 
-- caller-provided review route if supplied (not reviewer self-attestation),
-  target, base, final HEAD, worktree status, and whether the initial diff was
-  captured before edits;
+- the controller-provided Sol/xhigh invocation evidence reference (not a
+  reviewer self-attestation), target, base, final HEAD, worktree status, and
+  whether the initial diff was captured before edits;
 - a requirement-to-oracle traceability table and pairwise/combined-axis attack
   fixtures;
 - every blocker as `B<n>` with severity, file:line, observable failure,
@@ -524,9 +624,10 @@ perform those operations after your ACCEPT and the required post-review gates.
    with no shadowing or empty-default path? RW-319 already authorizes up to
    three current RG-55 mutation lanes under the verified five-CPU
    `dev-gates.slice`; that operational ruling does not approve RG56 changes.
-6. Which exact post-review release order is still valid: run-gate 23.8.0,
-   cgprofile 1.0.0, cgprofile 1.1.0, then run-gate 23.9.0 after P4/P6? Identify
-   any dependency that makes a sequence unsafe, but do not release it yourself.
+6. Do not rely on the historical release sequence or version/revision numbers
+   printed in older P1/P6/P5 reports. The controller owns release order and
+   must derive it from current CMRU state plus the operator's current release
+   authorization. Do not release, tag, publish, or install from this review.
 7. Can the final P3 probes use both the docker-exec and host socket carriers
    against the real daemon after it is installed from main? If the cockpit is
    not rebuilt, record the socket absence and `place-refused:no-gates-slice`
@@ -538,13 +639,12 @@ perform those operations after your ACCEPT and the required post-review gates.
    run against a 600-second budget. It is evidence for a future measurement /
    infrastructure follow-up only. Do not touch dstdns or rewrite RG-55's
    contention-agnostic principle from that observation.
-10. Assay 6.3 is being prepared in the operator-owned
-    `.worktrees/assay-source-backed-20260916` worktree to remove internal
-    hard pins before release. Do not edit that worktree or create another
-    re-vendoring cycle. If a P5 gate is refused solely because this checkout's
-    assay pin is stale, report the exact dependency and let the controller
-    rerun it after the source-backed 6.3 release; do not misclassify that
-    sequencing issue as a P5 product failure.
+10. In-repository consumers must use the candidate worktree's source-backed
+    Assay, not a cockpit-installed wheel or a historical version pin. Verify
+    the actual gate invocation and its preflight on this exact tree. If a gate
+    refuses, classify the concrete dependency/configuration mismatch; do not
+    silently fall back to an older released Assay or call an infrastructure
+    refusal a P5 product failure.
 
 ## Mechanical BLOCKED rule
 

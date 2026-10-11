@@ -54,7 +54,12 @@ amended (the "assay lanes ONLY"
 `stall_timeout` text was stale since RG-41 (rev 36) made it legal on
 `command` lanes too — a NEW `R-40f`, backfilled, gives RG-41's own
 log-stream liveness mechanism the rule id it shipped without).
-Rev 11: internal vbpub assay lanes may omit `assay_command` and `pins`; the
+Rev 11: RG-55 P5 (interface contract v1.1 transport and streaming watch,
+daemon policy authoring, verified gates-slice placement, and bounded
+wait-then-proceed admission) — `R-43j`..`R-43l` and `R-45`; the in-process
+progress fallback is calibrated from the producer's plan and pauses its idle
+clock during high host memory PSI (`R-40h`).
+Internal vbpub assay lanes may omit `assay_command` and `pins`; the
 launcher installs Assay from the selected worktree and records the runtime
 judge identity, while explicit command-plus-pin mode remains for external
 consumers. The tester-unified image supplies the declared build backend and a
@@ -90,6 +95,14 @@ Rev 18 (run-gate rev 55): RG-84 refuses to run as container PID 1 and compares
 the run-gate cgroup's `pids.events:max` and `memory.events:oom_kill` around
 each real lane; any resource event or unreadable comparison returns
 infrastructure ERROR with the raw lane status retained.
+Rev 19 (run-gate rev 57): RG-89 adds the opt-in
+`resource_observer = "cgprofile"` lane contract for native Assay R2 in a
+private cgroup namespace; only cgprofile's observer-only socket is mounted
+read-only and its observed GID is granted to the tester container.
+Rev 20 (run-gate rev 58): RG-89 also permits that explicit read-only observer
+mount on `tester-unified` command lanes, so nested qualification drivers can
+receive the endpoint without hand-rolling mounts. The lane declaration is
+the opt-in; Run-Gate does not infer command semantics from argv.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -295,7 +308,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   table — `memory`, `memory_swap`, `cpu_weight`, `io_weight`, `shared`,
   `cpus` (RG-48, rev 10)), `profile` (RG-55, rev 10: `false` to disable
   profiling for this lane outright, or a table `{enabled, damon}`
-  overriding `[profile]`'s own defaults — `R-43h`), `description` (optional
+  overriding `[profile]`'s own defaults — `R-43h`),
+  `resource_observer` (RG-89: only `"cgprofile"`, only on an Assay or command
+  lane explicitly using `environment = "tester-unified"`; command wrappers
+  that launch Assay preserve the endpoint variable for that process; it mounts a separate
+  observer-only Unix socket read-only, grants its observed GID, and fails
+  closed if that host socket or its ownership/mode is not safe), `description` (optional
   non-empty string, one line, shown by `--help`), `required_env` (optional
   unique list of valid environment-variable names this lane's tests
   REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
@@ -1913,12 +1931,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       that names no path there — absent, or `null` — falls back to the
       config, so neither a pre-rev-34 record nor a lane that has just become
       an assay lane loses its watch in silence.
-  - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
-    timestamp today, so the rate is measured against run-gate's OWN clock
-    from the first event it observed and advancement is the file's mtime.
-    Where an event already carries `elapsed_s` (assay B065) it is PREFERRED,
-    so the same implementation becomes exact when B065 lands — no rewrite,
-    and no second reading of the same fact.
+  - **`R-40d` Run-relative timing.** Assay's progress records carry
+    `emitted_at` and `elapsed_s` (B065), so Run-Gate prefers the record's
+    elapsed time when estimating rate; older streams fall back to Run-Gate's
+    own clock and the file mtime. Rate counts candidate events in the active
+    run segment, not the campaign-wide index, and ETA uses Assay's
+    `pending_total` when available. With a `run` header, a missing, invalid,
+    or inconsistent `pending_total` suppresses the ETA; campaign-index
+    fallback is retained only for legacy streams with no `run` header. These
+    estimates are diagnostic only and do not alter the verdict. The run
+    boundary and reset behavior are
+    specified by `R-40g`.
   - **`R-40e` The documented shape.** For a mutation lane: a generous assay
     `budget` + `judge.mutation.budget_per_candidate` + run-gate
     `stall_timeout`. For R0/R1: `budget` is the command's own bound and
@@ -1941,7 +1964,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     judging the lane — "its progress file" or "its own log output" — so an
     operator never has to guess which of the two mechanisms a given
     `stall_timeout` bounds.
-
+  - **`R-40g` Assay progress is scoped to the latest run header (RG-90,
+    rev 59).** Assay appends a `run` event at the start of each invocation;
+    Run-Gate considers candidate events only after the latest valid `run`
+    event in that append-only file. A watcher that sees a newer run header
+    resets its prior candidate, rate, and silence baselines before observing
+    the new run. Candidates from a previous invocation are history, not
+    current progress, and cannot arm or satisfy the current run's stall
+    timer. Candidate rate counts events in the active segment, because a
+    resumed candidate's campaign-wide index is paired with a run-relative
+    elapsed clock. When Assay provides `pending_total`, ETA uses that remaining
+    work count minus candidates completed in the active segment. A legacy
+    stream with no `run` header retains whole-file behavior. Run-Gate does not
+    truncate the stream, which Assay uses for resume history.
+  - **`R-40h` Calibrated no-daemon fallback (RG-55/P5).** When the daemon or
+    its watch transport is unavailable, an assay lane's in-process fallback
+    may apply an automatic idle bound only after it has read the judge's
+    `plan` event. The bound is `max(300s, 3 ×
+    expect_next_event_within_s)`; the plan arms it even before candidate 0, so
+    a wedged collection phase is bounded, while a file with no plan and no
+    candidate events remains the `R-40b` disclosure-only case. During this
+    automatic bound, host memory PSI `full avg10 > 5` pauses the idle clock;
+    the measured high-load interval is not converted into a false stall. An
+    explicit `stall_timeout` remains the author's policy and retains its
+    existing semantics. This fallback is advisory to profiling only: it never
+    changes a lane verdict except through the lane's already-declared stall
+    path.
 - `R-41` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
   no longer depends on every CALLER wrapping its own `flock` around the
   `docker exec` (dstdns `GUIDE.md` §1) to keep two lanes racing the SAME
@@ -2078,11 +2126,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
     `R-09`'s rule): `enabled` (bool, default true), `daemon` (container
     name, default `cgprofile-host-daemon`), `interval` (the `budget`
-    grammar, default `"1s"`), `damon` (bool, default true). Per lane:
-    `profile = false` (opt out entirely — `profile = true` is REFUSED by
-    name, a no-op typo for "delete this key") or a table
-    `[lanes.<n>.profile] { enabled, damon }` overriding those two only.
-    Unknown keys refuse at load like every other table.
+    grammar, default `"1s"`), `damon` (bool, default true), `transport`
+    (`"auto"`, `"exec"`, or `"socket"`, default `"auto"`),
+    `socket_path` (absolute Unix-socket path), and `admission_wait` (the
+    `budget` grammar, default `"10m"`). Per lane: `profile = false` (opt out
+    entirely — `profile = true` is REFUSED by name, a no-op typo for "delete
+    this key") or a table `[lanes.<n>.profile] { enabled, damon }` overriding
+    those two only. Unknown keys refuse at load like every other table.
   - **`R-43i` Bare-host lanes (RG-57/RW-27b).** A bare-host lane IS
     profiled once `[profile]` is enabled — it is NOT categorically
     unprofiled (superseded RG-55 v1 text). Daemon path: the target is
@@ -2147,7 +2197,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     "(peak <= floor)" next to such a lane's numbers, alongside the
     existing `[source: rusage-maxrss]` caveat; the footprint manifest's
     per-lane entry carries `"peak_at_floor"` from its most-recently-
-    profiled run (`R-44a`). A future RG-56 admission-control consumer
+    profiled run (`R-44a`). `R-45` is the admission-control consumer. It
     should treat a `peak_at_floor: true` lane as small (its true peak is
     bounded above by nothing this measurement can express, but bounded
     BELOW by nothing useful either — the honest reading is "small or
@@ -2171,6 +2221,61 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     out entirely (no token, no daemon call, no `wait4()` bracket);
     `--dry-run` rehearses the plan (`container-shared`) and attempts
     nothing for real.
+
+- **`R-43j` Transport and request parity (RG-55/P5 C2).** The project-level
+  `[profile]` table's `transport` is `"auto"`, `"exec"`, or `"socket"`.
+  `"socket"` uses `socket_path`; `"exec"` uses the daemon container's
+  `docker exec` carrier; `"auto"` probes the configured socket with
+  `ctl version` and selects it only on a valid v1.1 response, otherwise
+  retaining the exec carrier with a disclosure. Both carriers serialize the
+  same v1.1 request object and pass through the same response parser. A
+  carrier, daemon, or parser failure is profiling state unknown and follows
+  `R-36h`; it never changes the lane's verdict.
+- **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
+  `start`, run-gate creates one `ctl watch` reader for that session. `reading`
+  and `verdict` events update the inflight/history watch field. A daemon
+  `killed` verdict is the declared stall path; `reported` emits one warning
+  and does not fail the lane. A closed or failed watch is disclosed and the
+  client reattaches once before using the in-process fallback. A healthy
+  daemon watch is the sole liveness verdict authority: local log/progress
+  silence cannot declare a stall until the daemon watch fails. If a daemon
+  kill ends the lane before the stream delivers its terminal event, the
+  stopped session summary supplies that verified `killed` verdict. A watch
+  that ends without a verdict is not itself a verdict. Shared-scope lanes
+  without an explicit placement request author `on-stall report`, never a
+  shared-cgroup kill; their existing local stall watch remains authoritative.
+- **`R-43l` Placement and parent (RG-55/P5 C3/C6).** A daemon-backed exec or
+  bare-host lane with a declared `resources.memory`, or with a committed
+  manifest median from which one can be derived, sends a placement request.
+  The request uses the declaration when present, otherwise `ceil(median ×
+  1.5)`; `resources.memory_max` is the explicit ceiling, otherwise the client
+  derives a ceiling from the request and verified gates-slice cap. Applied
+  placement is recorded as nullable history/inflight data. Before ctl start,
+  exec and bare-host runners launch a token-bearing wrapper that waits outside
+  the lane body. The runner releases it only after the daemon confirms the
+  requested placement and reads back its leaf and memory limits. An explicit
+  refusal or missing/malformed applied-placement fact aborts and reaps the
+  wrapper, stops the session, and returns an infrastructure refusal before
+  any lane body or mutation candidate executes; it is not a candidate verdict.
+  If the profiler or transport is unavailable before returning a placement
+  result, R-36h's disclosed non-verdict fallback remains in force. With no
+  placement request, the lane starts normally. Ephemeral lanes retain their
+  Docker memory/CPU controls and resolve their parent from the environment's
+  `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+  The selected source is required; absence is a hard configuration error,
+  never an unconfined Docker launch. The inherited tester environment binds
+  `cgroup_slice_env` to the host-provided gates value.
+- **`R-45` Bounded admission (RG-55/P5 C7).** Before a daemon-backed lane starts,
+  run-gate reads the profiler's host document. If the verified gates slice's
+  current memory plus the lane request exceeds 90% of its maximum, the client
+  checks again every 30 seconds, prints a waiting notice at most once per
+  minute, and honors `[profile] admission_wait` (default `"10m"`). It admits
+  immediately when headroom appears; at the bound it proceeds with exactly
+  one warning. Missing or indeterminate capacity is disclosed as skipped.
+  Neither host PSI, registry contention, a timeout of this wait, nor a
+  transport failure refuses a lane or changes its verdict. `--dry-run`
+  reports `would-wait` without sleeping or starting a lane. Admission is
+  performed before an ephemeral Docker start.
 
 - `R-44` **The footprint manifest (RG-55/C5), `run-gate.footprint.json`
   (schema 1, TRACKED — committed, unlike `.run-gate/`).** `footprint [LANE]
@@ -2330,6 +2435,49 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     --no-local` and is unaffected. A sibling `config.worktree` that exists
     gets the `R-45b` sanitized read-only overlay; module plus sibling
     config files are capped at 256 (infrastructure error beyond).
+
+- `R-46` **Private-namespace Assay R2 resource observer (RG-89).**
+  `resource_observer = "cgprofile"` is an optional, closed lane key. It is
+  legal only when `kind = "assay"` or `kind = "command"` and the lane
+  explicitly names `environment = "tester-unified"`. The lane declaration
+  is the opt-in; command wrappers that launch Assay R2 must preserve the
+  inherited endpoint variable for that process. The endpoint remains a
+  read-only query bound to the command's own peer. Before building Docker argv, Run-Gate
+  lstat-checks the fixed source
+  `/run/cgprofile/resource-observer.sock`: it must be a Unix socket, root
+  owned, in the root-owned socket directory with matching GID, group
+  connectable, and not accessible to other users. Missing or unsafe state is
+  infrastructure ERROR; Docker must not invent a bind source. The container
+  receives only that socket file at
+  `/tmp/cgprofile-resource-observer.sock`, via a read-only bind; Run-Gate
+  supplies the observed socket GID as a supplementary group and sets
+  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container target. It does not
+  mount `ctl.sock`, grant the Docker socket, or change the container's
+  private PID/cgroup/network namespaces.
+  - The observer listener belongs to the existing cgprofile daemon and accepts
+    exactly one `resource-limits` request with a positive native thread ID.
+    It has no `start`, `stop`, `place`, or other control verbs. The daemon
+    binds the request to `SO_PEERCRED`, proves the requested native TID maps
+    to a live thread of that peer, proves all peer threads share cgroup and
+    credentials, and refuses capability/DAC states that could migrate the
+    peer into an unsampled cgroup. The request cannot name a PID, path, or
+    slice. The service maps the private-namespace cgroup path through its
+    mountinfo-verified full-root cgroup2 mount and returns only that peer
+    cgroup's ancestry beneath the configured gates slice—never PIDs,
+    processes, or sibling cgroup data.
+  - Assay first uses its already-validated local cgroup view. It calls the
+    configured observer only for the specific hidden-ancestor refusal; other
+    local errors do not trigger fallback. It validates the response schema,
+    thread identity, full leaf-to-root ancestry, mount IDs, limits, and event
+    counters before using the sample. Per-path deltas remain internal to
+    Assay: an event at a shared ancestor without a matching candidate-leaf
+    delta is an infrastructure error with no candidate bucket. Only a
+    candidate-attributable resource event may classify a started candidate as
+    `crashed`; a resource event never certifies `killed` or `survived`.
+  - This is a read-only observation seam in the existing daemon, not a host
+    broker, placement authority, or namespace-sharing shortcut. The separate
+    socket is required because a read-only filesystem bind does not restrict
+    the verbs accepted by a Unix socket protocol.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

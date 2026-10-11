@@ -16,6 +16,50 @@ die() {
   exit "$exit_status"
 }
 
+RESOURCE_OBSERVER_SOURCE=/run/cgprofile/resource-observer.sock
+# This override names Docker's host-side bind source, not a translated target
+# path. Production uses the canonical host socket; the registered gate tests
+# inject the already-mounted observer source while substituting Docker.
+if [[ -v ASSAY_GATE_RESOURCE_OBSERVER_SOURCE ]]; then
+  RESOURCE_OBSERVER_SOURCE="$ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"
+fi
+RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
+
+resource_observer_gid() {
+  local parent
+  local parent_uid parent_gid parent_mode socket_uid socket_gid socket_mode
+  case "$RESOURCE_OBSERVER_SOURCE" in
+    /run/cgprofile/resource-observer.sock) parent=/run/cgprofile ;;
+    /tmp/cgprofile-resource-observer.sock) parent=/tmp ;;
+    *) die "unsupported cgprofile observer source path: $RESOURCE_OBSERVER_SOURCE" ;;
+  esac
+  [[ -d "$parent" && ! -L "$parent" ]] \
+    || die "cgprofile observer directory is absent, not a directory, or a symlink: $parent"
+  read -r parent_uid parent_gid parent_mode < <(stat -Lc '%u %g %a' "$parent") \
+    || die 'could not inspect the cgprofile observer directory'
+  [[ "$parent_uid" == 0 ]] \
+    || die 'cgprofile observer directory is not root-owned'
+  if [[ "$parent" == /tmp ]]; then
+    (( (8#$parent_mode & 01000) != 0 )) \
+      || die 'the mounted cgprofile observer socket in /tmp is not protected by the sticky bit'
+  else
+    (( (8#$parent_mode & 0002) == 0 )) \
+      || die 'cgprofile observer directory is world-writable'
+  fi
+  [[ -S "$RESOURCE_OBSERVER_SOURCE" && ! -L "$RESOURCE_OBSERVER_SOURCE" ]] \
+    || die "cgprofile observer endpoint is not a Unix socket: $RESOURCE_OBSERVER_SOURCE"
+  read -r socket_uid socket_gid socket_mode < <(stat -Lc '%u %g %a' "$RESOURCE_OBSERVER_SOURCE") \
+    || die 'could not inspect the cgprofile observer socket'
+  [[ "$socket_uid" == 0 ]] \
+    || die 'cgprofile observer socket is not root-owned'
+  if [[ "$parent" == /run/cgprofile && "$socket_gid" != "$parent_gid" ]]; then
+    die 'cgprofile observer socket group does not match its root-owned directory'
+  fi
+  (( (8#$socket_mode & 0007) == 0 && (8#$socket_mode & 0020) != 0 )) \
+    || die 'cgprofile observer socket must be group-connectable and not accessible to other users'
+  printf '%s\n' "$socket_gid"
+}
+
 assay_git() {
   command git \
     -c maintenance.auto=false \
@@ -289,6 +333,7 @@ docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
 
 b105_memory_limit=2g
 b105_memory_reserve_bytes=2147483648
+observer_gid="$(resource_observer_gid)"
 cgroup_parent="$("$project/tools/cgroup-parent.sh" \
   --memory-reserve-bytes "$b105_memory_reserve_bytes")" \
   || die 'the host gates cgroup tier or its 2 GiB RAM headroom is absent or unverified'
@@ -432,6 +477,7 @@ mount_args=(--mount "type=bind,src=$host_workspace_root,dst=$host_workspace_root
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   mount_args+=(--mount "type=bind,src=$host_workspace_root,dst=/workspaces/vbpub")
 fi
+mount_args+=(--mount "type=bind,src=$RESOURCE_OBSERVER_SOURCE,dst=$RESOURCE_OBSERVER_TARGET,readonly")
 
 case "$lane" in
   self-qualification)
@@ -484,13 +530,15 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   --label "assay.b105-gate.owner=$ownership_token" \
   --name "$container_name" \
   --init \
-  --cgroupns=host \
+  --cgroupns=private \
   --cgroup-parent="$cgroup_parent" \
   --cpus=3 \
   --memory="$b105_memory_limit" \
   --memory-swap=8g \
+  --group-add "$observer_gid" \
   --network=none \
   -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+  -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
   -e "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
   -e "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree" \
   "${b110_state_env[@]}" \
@@ -537,7 +585,7 @@ fi
 identity="$(docker_bounded inspect "$container_id" \
   --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.b105-gate.owner"}}|{{.Config.User}}|{{.HostConfig.CgroupParent}}|{{.HostConfig.CgroupnsMode}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.NetworkMode}}')" \
   || die 'could not inspect the launched B105 container'
-expected_identity="$container_id|/$container_name|$ownership_token|1003|$cgroup_parent|host|3000000000|2147483648|8589934592|none"
+expected_identity="$container_id|/$container_name|$ownership_token|1003|$cgroup_parent|private|3000000000|2147483648|8589934592|none"
 if [[ "$identity" != "$expected_identity" ]]; then
   die "B105 container launch verification mismatch: $identity"
 fi
@@ -549,6 +597,7 @@ expected_mounts="$host_workspace_root"$'\t'"$host_workspace_root"
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   expected_mounts+=$'\n'"$host_workspace_root"$'\t'"/workspaces/vbpub"
 fi
+expected_mounts+=$'\n'"$RESOURCE_OBSERVER_SOURCE"$'\t'"$RESOURCE_OBSERVER_TARGET"
 if [[ "$(printf '%s\n' "$mounts" | sed '/^$/d' | sort)" != \
       "$(printf '%s\n' "$expected_mounts" | sort)" ]] \
   || printf '%s\n' "$mounts" | grep -Fq '/var/run/docker.sock'; then
@@ -560,6 +609,7 @@ container_env="$(docker_bounded inspect "$container_id" \
   || die 'could not inspect B105 container environment'
 for expected in \
   "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+  "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
   "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
   "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree"; do
   if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
@@ -580,6 +630,11 @@ if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]] \
     "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND"; then
   die 'B105 container is missing the declared background cgroup tier'
 fi
+container_groups="$(docker_bounded inspect "$container_id" \
+  --format '{{join .HostConfig.GroupAdd \",\"}}')" \
+  || die 'could not inspect B105 supplementary groups'
+[[ "$container_groups" == "$observer_gid" ]] \
+  || die "B105 container supplementary groups differ from the observer socket group (groups=$container_groups expected=$observer_gid)"
 log_timeout_seconds=$((wait_timeout_seconds + 90))
 setsid timeout --signal=TERM --kill-after=5s "${log_timeout_seconds}s" \
   docker logs --follow "$container_id" &

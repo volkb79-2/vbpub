@@ -7593,3 +7593,1597 @@ Resolution: add tests for those actual behavioral states; do not weaken the
 floor or add coverage exclusions. No product code is changing in this repair.
 The exact-tree selftest must be rerun after these oracles are committed before
 any other gate or merge. No merge or release was made.
+
+### RW-484 — 2026-10-07 17:01:17 UTC — resolve R2 visibility without a host broker
+
+The corrected Run-Gate source is rev 56 on provisional main. Its exact-tree
+selftest passed at `976433ea4378b8f2bd859ff405a7bbcfdca80f30`: 1,721 passed,
+2 skipped; changed executable lines 66/66 and branches 36/36. The 3-CPU
+container completed in 152.44 seconds. Host memory PSI `full avg10` was 0.02%
+at launch. DAMON remained unavailable with `EBUSY`; this is profiling
+disclosure, not a test verdict change.
+
+Assay 8.0.0 B145 refuses native R2 when a private cgroup namespace hides
+enforcing ancestors. Preserve D-32: do not add a separate host broker or give
+the gate/test container a host PID or cgroup namespace. Instead, extend the
+already-managed cgprofile daemon's existing AF_UNIX control protocol with one
+read-only resource-counter query. It accepts no caller-selected PID or cgroup
+path: SO_PEERCRED identifies the client process, the requested native TID must
+be proven to belong to that process, and the daemon derives the cgroup from
+host state, restricted to the configured gates slice. It returns only that
+lane cgroup's ancestry counters/limits/signature, no host PID list or sibling
+cgroup data, and performs no write or placement operation.
+
+Run-Gate R2 lanes opt into the observer explicitly. Container lanes receive
+only the existing socket directory as a read-only bind plus the socket's
+observed GID; namespaces remain private and no Docker socket is added. Assay
+uses its existing local observer when ancestors are visible; otherwise the
+explicit socket endpoint is required and any endpoint/identity failure stays
+fail-closed. A resource event visible only at a shared ancestor is
+unattributable: abort the mutation lane without recording a candidate bucket.
+Only evidence in the candidate cgroup's own hierarchical counters may mark
+that candidate resource-limited. Thus sibling events cannot fabricate a kill
+or survivor. Keep this as a read-only data seam in the existing daemon, not a
+host placement broker; document the trust boundary and mirror the protocol
+contract byte-for-byte.
+
+This ruling authorizes the implementation and its necessary Run-Gate, Assay,
+cgprofile, contract, adoption-document, and regression-test changes. Exact
+short gates, R2, full gates, fresh review, release, and live observer probes
+remain required; this ruling is not release evidence.
+
+### RW-485 — 2026-10-07 17:07:49 UTC — keep the observer transport read-only
+
+RW-484's proposed read-only bind of the existing `/run/cgprofile/ctl.sock`
+would still expose its full read/write command protocol: filesystem
+read-only does not make an AF_UNIX service protocol read-only. Do not mount
+the control socket into an R2 container.
+
+Implement a second, observer-only AF_UNIX listener in the existing
+cgprofile daemon, under the existing `/run/cgprofile` directory. Its only
+accepted operation is the resource-counter observation query; all control
+verbs are unavailable on that listener. Run-Gate mounts only that socket
+file read-only into explicitly opted-in R2 containers and grants its
+observed group ID. The existing `ctl.sock`, its protocol, and its callers
+remain unchanged. This is not a separate process, service, host broker, or
+placement authority: it is a read-only endpoint in the already-authorized
+daemon. Keep peer-credential and host-cgroup-scope checks on this endpoint,
+and fail closed if the observer socket is absent, replaced, or unreadable.
+
+This narrows RW-484's transport detail without changing its no-broker
+decision or the candidate/ancestor attribution rule. Amend both protocol
+contract mirrors and the Run-Gate/Assay/cgprofile user docs and tests to name
+the separate observer-only socket and prove that `start`, `stop`, `place`,
+and other control verbs cannot be sent through it. No merge or release is
+authorized by this ruling.
+
+### RW-486 — 2026-10-07 17:45:01 UTC — translate the daemon's private cgroup view by verified mount root
+
+Live inspection of `cgprofile-host-daemon` confirmed the production shape:
+the daemon has `pid=host`, retains a private cgroup namespace, and mounts
+the host cgroup2 hierarchy at `/sys/fs/cgroup`. Its mountinfo root is
+`/../..`; a peer in the devcontainer appears in host procfs as
+`0::/../../dev.slice/dev-interactive.slice/docker-<id>.scope`. This is the
+kernel's documented cgroup-namespace representation for a task outside the
+namespace root, not a canonical host path. Rejecting every `..` path would
+therefore make the observer unusable; normalizing it without a proven mount
+mapping would be unsafe.
+
+The observer must bind these two facts: accept a cgroup2 mount root consisting
+only of N leading parent components, then accept a peer cgroup path only when
+it begins with exactly the same N parent components. Strip that exact prefix
+to derive the hierarchy-root-relative host path. A root mount (`/`) accepts
+only canonical paths with no parent components. Any mismatch, path inside the
+daemon's private subtree, non-root mount, nested mount/overmount, or path that
+does not resolve beneath the configured gates slice is refused. Keep the
+derived canonical path for all filesystem reads and return no namespace-
+relative path to Assay.
+
+The host's `/sys/fs/cgroup` bind is read-write because cgprofile's existing
+placement role needs it; this observer operation itself remains read-only.
+It must never add a cgroup write, placement verb, or mount of `ctl.sock` to
+the tester container. This ruling is supported by the live mount/proc
+observations and Linux's documented `/../..` cgroup-namespace form; tests
+must exercise both the ordinary full-root view and this exact private-
+namespace translation, plus mismatched-prefix refusals.
+
+### RW-487 — 2026-10-07 18:00:35 UTC — freeze the native-R2 observer wire contract
+
+The observer is a second AF_UNIX listener at
+`/run/cgprofile/resource-observer.sock`, separate from `ctl.sock`, served by
+the existing daemon. Its only operation is `resource-limits`; the request
+contains exactly `verb`, `args.thread_id`, and `contract`, where the native
+TID is a positive integer. The daemon binds it to SO_PEERCRED PID/UID, proves
+the TID is a live thread of that peer and that all peer threads share one
+cgroup and credentials, then returns a complete leaf-to-root cgroup-v2
+ancestry with limits, event counters, and mount identity. It returns no PID,
+task list, caller-selected path, sibling data, or control operation. The
+existing ctl protocol and access policy are unchanged.
+
+Run-Gate's closed `resource_observer = "cgprofile"` option is legal only on
+Assay lanes using `tester-unified`. It checks the fixed host socket's type,
+owner, group, and mode, then mounts only that socket read-only, adds its
+observed GID, and sets Assay's endpoint variable. Missing or unsafe socket
+state is an infrastructure refusal. Assay first uses its local B145 reader;
+remote fallback occurs only when that reader specifically proves ancestor
+hiding. Other local errors and all remote identity, ancestry, mount, or
+counter errors remain fail-closed. Shared-ancestor event deltas without the
+same leaf delta abort the lane before candidate classification.
+
+The design, response fields, bounds, refusal shape, and private-namespace
+mount-root mapping are normative in §9 of both byte-identical
+`RG55-INTERFACE-CONTRACT.md` copies. This is a read-only data endpoint in the
+existing no-broker daemon, not a placement capability or a new host service.
+
+### RW-488 — 2026-10-07 18:41:19 UTC — correct whole-suite observer integration failures
+
+The first registered cgprofile `unit` gate on the uncommitted RG-89 candidate
+completed in 135.01 seconds: 2,458 passed, 2 failed. The failures were a
+broken README anchor to the observer protocol heading and an existing socket
+permissions test that asserted only the control socket's group ownership,
+omitting the newly added observer socket. After correcting those, the second
+unit gate completed in 131.83 seconds: 2,459 passed, 1 failed; the remaining
+failure found the same stale protocol anchor in DESIGN-GUIDE (and the consumer
+guide's anchor was also found by searching all references). All three adopter
+documents now link to the generated `8-native-r2-resource-observer-rg-89`
+anchor. No gate is accepted yet; rerun the complete unit gate on the corrected
+candidate, followed by whole-project coverage and canaries.
+
+### RW-489 — 2026-10-07 18:44:28 UTC — pass the corrected cgprofile unit gate
+
+The registered whole-package `unit` gate passed on the corrected RG-89
+candidate: 2,460 passed, four existing Python fork/deprecation warnings, in
+128.83 seconds. The gate's host placement probe verified `dev-gates.slice`
+loaded and the test container's 3-CPU cap. Host memory PSI `full avg10` was
+0.01 at the 90-second health check and 0.00 after completion. This is unit
+evidence only; whole-project line/branch coverage and canary gates remain.
+
+### RW-490 — 2026-10-07 18:49:44 UTC — pass cgprofile whole-project coverage
+
+The registered `coverage` gate passed on the same candidate: 2,460 passed,
+four existing Python fork/deprecation warnings, in 131.80 seconds. The
+whole-package report is 100% line and 100% branch coverage (8,307 statements,
+3,070 branches; zero missing lines or branches). The gate's host placement
+probe passed and its test container was capped at 3 CPUs in `dev-gates.slice`.
+The registered canary gate, exact committed-tree reruns, live observer
+acceptance, Assay R2, review, release, and daemon rollout remain outstanding.
+
+### RW-491 — 2026-10-07 18:50:48 UTC — pass cgprofile canaries; DAMON remains unavailable
+
+The registered cgprofile `r3` lane passed using Run-Gate source rev57: all
+seven canaries rejected their adverse mutation and none survived. The
+tester-unified container was planned under `dev-gates.slice` at 3 CPUs; the
+lane exited 0. Run-Gate's profile record identified the existing daemon as
+`cgprofile 0.0.0-dev`, but DAMON start returned `EBUSY`; this is not measured
+DAMON-overhead evidence. No daemon state was changed. The three cgprofile
+registered lanes are green on the dirty candidate; they must be rerun on the
+committed exact tree before release review.
+
+### RW-492 — 2026-10-07 18:58:06 UTC — update Run-Gate's active changelog oracle
+
+The first exact-tree Run-Gate `selftest` on commit `219997c93` exited 1 after
+159.70 seconds: 1,736 passed, 2 skipped, and one changelog test failed. The
+test still named RG-88 as the active unreleased revision after this candidate
+advanced the release entry to RG-89/rev57; the historical RG-88 entry itself
+is correct and remains unchanged. Updated only the active-entry comment and
+assertion to RG-89. The correction is committed separately and requires a
+fresh exact-tree selftest; no other Run-Gate gate is accepted from this run.
+
+### RW-493 — 2026-10-07 19:02:10 UTC — pass Run-Gate exact-tree selftest
+
+The corrected selftest passed on commit `3a9553f64` in 153.17 seconds:
+1,737 passed, 2 skipped, one existing pytest deprecation warning. Changed-line
+coverage was 33/33 executable lines and 22/22 branches. The lane used the
+declared tester-unified container with 1 GiB memory, 16 GiB swap, and 3 CPUs
+under `dev-gates.slice`; the daemon's optional DAMON start still returned
+`EBUSY`. Exact-tree Assay R1/R3, R2 after observer deployment, Run-Gate
+full-gate, and review remain pending.
+
+### RW-494 — 2026-10-08 00:31:25 UTC — reconcile RG-89 with B114/B148
+
+Assay R1 passed on exact pre-reconciliation tree
+`ac8bac78e039cb8251a05bf9a4e2e64a8c7edfe7`: 53/53 changed executable
+lines and 22/22 changed branches, with no exclusions. Current local `main`
+had advanced to `363a0412d14864fb9c35f86c3843cab6e8614603` with B114
+cold-witness identity `/8` and B148's selection-specific pre-R0 visibility
+check. The RG-89 branch is being integrated with that tree.
+
+Binding reconciliation: preserve B148's refusal semantics, but have its
+preflight call the same local-first reader and explicit observer fallback as
+candidate sampling. The observer is consulted only when the local reader
+specifically proves ancestors hidden; test containers remain in private
+cgroup namespaces and do not receive `ctl.sock` or host cgroup namespaces.
+Keep B148 as A-484 and assign the RG-89 observer decision A-485. Because B114
+already advanced the judge identity to `/8`, the combined observer policy
+advances it to `/9`; the mutation-state schema remains unchanged. The merged
+tree requires fresh exact-tip gates and review; the R1 result above is evidence
+only for `ac8bac78e`.
+
+### RW-495 — 2026-10-08 00:40:40 UTC — make current main the first parent for changed-line evidence
+
+Local `main` advanced from `363a0412d14864fb9c35f86c3843cab6e8614603` to
+`b1c17a2a99e12b1880521bdc3b6ddbb04930f8f4` with two additional Assay B114
+commits, including the SQL witness fixture. The first RG-89 reconciliation
+merge had the feature branch as first parent. Assay B008 therefore correctly
+selected that feature parent as its R1 base; the gate passed while considering
+zero changed lines and branches. That zero-change PASS is not RG-89 coverage
+evidence.
+
+For the current exact-tree gate, integrate the RG-89 branch into a candidate
+whose first parent is current `main`. This preserves Assay's first-parent
+baseline semantics and makes R1 cover the actual feature delta. Verify the
+candidate's first parent, tree, nonzero changed-line/branch totals, and full
+coverage in the saved verdict. Keep the candidate HEAD unchanged for every
+gate and review; any follow-up commit requires fresh exact-tree evidence.
+
+### RW-497 — 2026-10-08 00:51:47 UTC — allow the read-only observer on wrapped Assay qualification
+
+RG-89's first Run-Gate contract limited `resource_observer = "cgprofile"`
+to `kind = "assay"`. The exact Assay B105 `self-qualification` lane is
+intentionally a `kind = "command"` wrapper: it builds a deterministic
+same-commit wheel, creates isolated build/run environments, and verifies the
+registered same-commit gate receipt. Replacing that script with a direct
+Assay lane would discard those qualification guarantees. With the original
+restriction, Assay R2 inside the wrapper inherited no observer socket and
+could not see the host gates ancestry in tester-unified's private cgroup
+namespace.
+
+Extend the closed opt-in to `kind = "command"` only when it explicitly uses
+`environment = "tester-unified"`; keep native Assay lanes supported. Run-Gate
+still validates the fixed socket and mounts only the separate observer-only
+socket read-only, grants only its observed GID, and supplies the endpoint
+variable. The daemon still binds each query to the peer's native thread and
+returns only that peer's gates-slice ancestry, with no caller-selected path,
+sibling query, control verb, Docker socket, or host namespace. The wrapper
+must preserve `ASSAY_RESOURCE_OBSERVER_SOCKET` for its Assay process.
+
+This revises only the runner-kind restriction in RW-487/R-46, not the wire
+contract or trust boundary. Bump Run-Gate to rev58; update its loader/argv
+tests, SPEC/README/DESIGN-GUIDE/CONSUMERS, the byte-identical contract mirrors,
+and Assay's B105 lane declaration. Exact tests and fresh review remain
+required. This ruling authorizes implementation, not merge or release.
+
+### RW-496 — 2026-10-08 00:47:05 UTC — expose cgprofile's observer to its own R2 lane
+
+The cgroup-profiler `r2` lane was still declared as `kind = "command"`. Run-
+Gate rev57 deliberately accepts `resource_observer = "cgprofile"` only on a
+native Assay lane; consequently, the cgprofile mutation container would not
+receive the observer-only socket. Under tester-unified's private cgroup
+namespace, Assay B145 cannot verify the host gates ancestry locally and would
+refuse before classifying candidates. This is a lane wiring gap, not a daemon
+protocol or product-code failure.
+
+Convert cgprofile's `r2` to `kind = "assay"` with `assay_lane = "r2"` and
+`resource_observer = "cgprofile"`, retaining tester-unified, the 24-hour
+campaign bound, 3-CPU cap, and verdict/progress artifacts. The standard lane
+driver now supplies worktree Assay, request-base, resume/progress/state
+handling, and the read-only observer mount consistently. `./run-gate.py
+--list` recognizes the lane as an Assay lane. This is configuration
+validation only: do not launch cgprofile R2 until the updated daemon has
+created `/run/cgprofile/resource-observer.sock` and its live protocol probe
+passes.
+
+### RW-498 — 2026-10-08 00:52:53 UTC — define command-lane observer opt-in honestly
+
+RW-497's B105 motivation is narrow, but Run-Gate's implementation can only
+reliably validate the declared command lane kind and environment. It cannot
+prove that arbitrary argv or a script will launch Assay R2 without brittle
+command-string inspection. The observer endpoint itself accepts only a
+read-only resource query bound to the connecting command's peer and returns
+that peer's own ancestry; it grants no placement or control authority.
+
+Therefore `resource_observer = "cgprofile"` is legal on any explicitly
+opted-in `kind = "command", environment = "tester-unified"` lane, as well
+as native Assay lanes in that environment. This broadens the opt-in surface,
+not the observer's query authority. The intended command use remains wrappers
+that run Assay R2 (including B105 self-qualification); they must preserve
+`ASSAY_RESOURCE_OBSERVER_SOCKET` for Assay. README, SPEC, DESIGN-GUIDE,
+CONSUMERS, CHANGES, and both byte-identical contract mirrors must state the
+actual scope and trust boundary. This ruling authorizes implementation and
+review; it does not authorize merge or release.
+
+### RW-499 — 2026-10-08 01:10:50 UTC — reconcile the design guide with RW-467
+
+The overall RG-55 design guide still listed host PID and cgroup namespaces
+together as rejected for the daemon, contradicting the operator's binding
+RW-467 authorization and the current daemon deployment contract. Correct the
+alternatives table and add an A5 clarification: only the managed daemon uses
+host PID mode so DAMON `pid_target` values are interpreted in the host PID
+namespace; its cgroup and network namespaces remain private, and workload,
+helper, gate, and test containers remain private. Keep the security disclosure
+that host-PID visibility expands process-table/PID-operation authority, does
+not contain daemon compromise, and does not authorize numeric-PID signaling.
+RW-467/RW-468 remain the source decisions; D-32's no-broker choice is
+unchanged. The corrected design is on commit `58ded267`; the current
+main-first candidate is `e66f9367`. No gate evidence is claimed for either
+candidate, and all exact-tree gates must use the final reconciled candidate.
+
+### RW-500 — 2026-10-08 01:14:15 UTC — reconcile RG-89 with the B105 main update
+
+Local `main` advanced from `b1c17a2a` to `6086d4c9` (2026-10-08
+01:11:44 UTC), merging Assay B105's exclusion-inventory correction. Rebuild
+the RG-89 evidence candidate with current `main` as its first parent; do not
+reuse the prior candidate based on `b1c17a2a`. The external Assay
+`self-qualification-preflight` recorded by the previous controller started
+from the older tree and is useful only as a slot/status event, not as evidence
+for the reconciled candidate. Current candidate: `cc902637`, first parent
+`6086d4c9`, clean; contract mirrors compare byte-identically; AST/TOML parse
+and `git diff --check` pass. No registered gate or live probe has run on
+`cc902637`; this ruling does not claim acceptance.
+
+### RW-501 — 2026-10-08 01:17:33 UTC — record the final current-main evidence candidate
+
+The main-first candidate was rebuilt after RW-500 and is now
+`8ff8af93ff7945be5775f684f48f36a2ab4b594f` (`rg89-resource-observer-mainfirst-20261008-rw500a`),
+with first parent `6086d4c9dfd394a90f553e9f23516361e8183a1b`. This supersedes
+the candidate SHA recorded in RW-500; RW-500 remains the accurate record of
+the decision and checks performed at that earlier checkpoint. The new
+candidate is clean, its contract mirrors are byte-identical, Python AST and
+TOML parsing pass, `git diff --check HEAD^1...HEAD` passes, and Run-Gate lists
+the expected Assay R1/R2/R3, selftest, and full-gate lanes. None of those
+checks is registered gate evidence. No registered gate or live acceptance
+probe has yet run on `8ff8af93`; exact-tree gates, live observer/DAMON
+acceptance, and independent review remain outstanding.
+
+### RW-502 — 2026-10-08 01:29:08 UTC — reconcile the preserved P1/P6 mutation artifacts
+
+The preserved P1 isolated artifacts refine the earlier handover. The
+`450fe53d` result remains a historical FAIL (109/121 killed, 12 survivors).
+A later rejudge at `dcdcc5d3` accounted for 125 candidates, killed 124, and
+left one `Lt->LtE` survivor at the `/proc/<pid>/stat` closing-delimiter
+boundary. It is a real behavioral distinction for a valid empty `comm`
+field, not an accepted equivalent. The follow-up test
+`test_start_time_accepts_an_empty_process_command_name` is present in the
+preserved P1 branch; current `main` independently contains the corresponding
+direct regression `test_proc_start_time_ticks_accepts_empty_comm_name`
+(commit `38e38349`) and the shared `proc_stat` parser. This closes that
+specific oracle gap in current source, but no R2 receipt on the current
+integrated source is claimed.
+
+The newest preserved P6 verdict is for tree `324eac95`: FAIL, 1,251
+candidates accounted for, 1,210 killed, 41 survived, zero budget-exceeded.
+The CIU checkout now points at `f516d7e5`, not the judged commit; the two are
+not in an ancestor relationship, and the profiler subtree has substantial
+source/test changes between them. Therefore neither its 41-survivor set nor
+any older P6 R2 receipt qualifies the current integrated tree. Run current
+exact-tree mutation evidence, then disposition each survivor; selective
+rejudge may be used only where Assay validates the reused candidate identity.
+These historical artifacts do not change the current candidate's status:
+its registered gates, live probes, mutation gate, and independent review
+remain outstanding.
+
+### RW-503 — 2026-10-08 01:41:04 UTC — make the required daemon socket bind fail closed
+
+Static review found that `ciu.compose.yml.j2` still used Compose short syntax
+for the required `/run/cgprofile` host directory bind. Unlike the explicit
+long-form host binds beside it, short syntax can create a missing host source
+as an empty directory, hiding a missing host-setup prerequisite and leaving
+the daemon's sockets in the wrong mount. Change it to long-form bind syntax
+with `create_host_path: false`; pin both the required long form and absence of
+the short form in `test_deployment_contract.py`. README, DESIGN-GUIDE,
+CONSUMERS, and CHANGES now describe the failure behavior. This is within the
+current daemon deployment scope, not a live-host mutation.
+
+The same audit checked the observer's `cgroup.procs` DAC proof against
+thread-only movement. The kernel requires `cgroup.procs` write access at the
+source/destination common ancestor for a `cgroup.threads` move; because the
+observer checks the peer's full ancestor chain through `/`, this existing
+proof also blocks movement to an unsampled sibling. Document that rationale
+with the primary kernel reference in both byte-identical contract mirrors
+and the profiler DESIGN-GUIDE. No change to the observer's wire or policy is
+needed for this point.
+
+The implementation is committed on the feature branch as `930f0bba`, with
+the rationale and this ruling in its next commit. The interim main-first
+candidate `rg89-resource-observer-evidence-20261008-rw503` was created before
+this ruling and does not yet contain its log/contract clarification; it is
+superseded. Rebuild a fresh candidate from current `main` as first parent
+before any exact-tree gate. No registered gate or live acceptance probe has
+run on either candidate.
+
+### RW-504 — 2026-10-08 02:43:50 UTC — triage candidate preflight failures
+
+The exact-tree `self-qualification-preflight` on `09084078` failed R0; its
+derived R1 coverage is not acceptance evidence. The retained pytest output
+shows three failures, not a resource-pressure or scheduler effect:
+
+1. Both parameterizations of
+   `test_sigterm_leaves_r2_candidate_unclassified_and_dead` launch nested
+   native R2. The preflight lane did not opt into the read-only cgprofile
+   observer, so Assay correctly refused because the tester container's
+   private cgroup namespace hides host ancestors. Keep namespaces private;
+   give `self-qualification-preflight` the same `resource_observer =
+   "cgprofile"` lane setting as the full qualification. Pin that dependency
+   in Assay's gate tests.
+2. `read_resource_observer_counters` parsed daemon response JSON without
+   catching `RecursionError`. The source-derived untrusted-JSON sweep found
+   the uncaught site. Convert it to `ResourceLimitObservationError` and add a
+   socket-level deeply nested JSON regression test.
+
+No fix is yet qualified by a registered gate; do not reuse the failed
+preflight as a PASS or infer an R2 result. After the targeted fixes, rerun the
+preflight on the new exact tree, then continue the remaining short gates and
+review only after all required results are green.
+
+### RW-505 — 2026-10-08 03:00:32 UTC — repair Assay preflight and remove host cgroup namespaces
+
+Clarify RW-504: the `RecursionError` guard in
+`read_resource_observer_counters` was already added on candidate
+`b7a32f14949e000051cddfa38a5b45a26019a5d0`; the preflight's third failure was
+that its 2,000-level JSON fixture was accepted by Python 3.14 and then rejected
+by the intended object-shape check. Increase the bounded fixture enough to
+exercise the real parser recursion path.
+
+On `b7a32f1`, Assay `self-qualification-preflight` failed R0 after 7,352 tests,
+with three failures; derived R1 is not acceptance evidence. Two failures are
+the same cause: the observer socket was mounted in the Run-Gate container, but
+`ASSAY_RESOURCE_OBSERVER_SOCKET` was absent from both B105 `env_passthrough`
+lists, so the nested Assay command launched native R2 without the observer.
+Add the variable to both lanes and pin the contract in `test_self_lane.py`.
+
+The profiler `r0-r1` gate on `b7a32f1` passed: 2,460 tests, 8,307 statements
+and 3,070 branches at 100% line and branch coverage; saved Run-Gate verdict is
+PASS, exit 0, clean tree, 152.698 seconds. Its profile did not obtain DAMON
+samples (`no pids to monitor yet`, zero samples), so it is not DAMON-overhead
+evidence.
+
+The Assay registered tester gate also still launched its main suite, B145
+probes, and SQL witness with `--cgroupns=host`; the cgroup-parent helper used
+the same flag to inspect host cgroups. This conflicts with the wave's
+private-namespace policy. Replace those launches with private cgroup namespaces
+and the separately authorized, read-only resource-observer socket wherever
+Assay needs host ancestry. Replace the helper's host namespace view with
+read-only host cgroupfs and systemd-bus mounts, while verifying a loaded,
+non-transient slice and its instantiated cgroup path. Its short probe must
+itself use the declared interactive parent and a CPU cap. Preserve the
+bounded-wait probe's absence of observer and Docker-socket access. All results
+from `b7a32f1` become diagnostic-only after these repairs; final evidence must
+be rerun on the final quiet tree.
+
+### RW-506 — 2026-10-08 03:16:45 UTC — invoke the matching Run-Gate source
+
+The installed `/home/vscode/.venv` Run-Gate is 23.10.0 / rev 55; it rejects
+Assay's current `resource_observer = "cgprofile"` lane setting as an unknown
+key before launching a gate. The current candidate source is rev 58 and
+contains the RG-89 lane contract. Do not treat the installed wheel's refusal
+as an Assay failure or update the shared venv merely to bypass it. For this
+candidate's registered gate, invoke the installed entrypoint with
+`PYTHONPATH` set to this worktree's `run-gate-project/`, so the exact rev-58
+source validates and drives the lane. Its dry-run passed for
+`assay/tester-unified`; no gate was launched at this ruling. Preserve this
+distinction in the gate record and decide separately whether a later Run-Gate
+release/install is in scope.
+
+### RW-507 — 2026-10-08 03:26:16 UTC — query the host slice without systemctl's private transport
+
+The first registered `tester-unified` attempt on `80254340` exited FAIL after
+2.403 seconds, before any suite or B145 probe ran. Its exact error was
+`Failed to connect to system scope bus via local transport: No such file or
+directory`. The mounted `/run/dbus/system_bus_socket` is present and serves
+systemd queries, but `systemctl` selected its local private transport, which
+the probe deliberately does not mount. Keep the private cgroup namespace and
+do not expose `/run/systemd/private`. Replace the helper with a UID-1003,
+capability-free `busctl` probe explicitly addressed to the system bus; it calls
+only `Manager.GetUnit` and property getters for `LoadState`, `FragmentPath`,
+and the slice's `ControlGroup`, while reading cgroup limits through the
+read-only cgroupfs bind. The same four queries succeeded as UID 1003 through
+the live daemon's system-bus bind. The direct helper probe
+`assay-cgroup-parent-1148949-1791429965748703225-25438` then returned
+`dev-gates.slice` and was removed; the exact-name inventory is empty. This is
+not registered gate evidence. Rerun `tester-unified` on the committed repair
+tree before claiming suite coverage.
+
+### RW-508 — 2026-10-08 03:27:44 UTC — commit the bus-query repair before requalification
+
+Reviewed the unprivileged busctl repair and synchronized its behavior, test,
+and adoption/rationale docs. Static shell syntax and `git diff --check` pass;
+the exact helper had already passed one live bounded probe, but the registered
+`tester-unified` gate has not yet passed on this tree. Keep the worktree quiet
+after committing this patch and rerun that registered gate using the matching
+Run-Gate rev58 source overlay; do not interpret the earlier fast failure or
+the bounded helper probe as suite evidence.
+
+### RW-509 — 2026-10-08 03:30:19 UTC — keep probe diagnostics off the cgroup value channel
+
+The registered `tester-unified` run on `8655daf710608f8f2b4578be5f05449dd788a8d4`
+exited FAIL after 4.491 seconds, before the B145 bounded-wait container could
+start. The captured `cgroup_parent` value contained the helper's
+`ASSAY_CGROUP_PARENT_PROBE_CONTAINER=...` diagnostic followed by
+`dev-gates.slice`; Docker rejected that as an invalid slice unit. The helper
+is invoked through command substitution, so stdout is the machine-readable
+slice channel and must contain only the verified unit name. Move the
+container-name diagnostic to stderr (the existing helper test asserts it is
+there), then commit and rerun the registered gate on a quiet exact tree.
+
+### RW-510 — 2026-10-08 12:07:37 UTC — repair the tester-unified suite after rev58 observer integration
+
+The registered `tester-unified` run on clean tree `c94388ab2c421637a25a8f2889c3f8ea110daace`
+failed after 510.715 seconds: 7,865 passed, 17 failed, 11 skipped, and 1
+collection/test error. The separate `selftest` on the same tree passed in
+185.704 seconds (1,740 passed, 2 skipped; 33/33 changed lines and 22/22
+branches). Its profile had no DAMON samples because the host DAMON interface
+returned `EBUSY`; it is not DAMON-overhead evidence.
+
+The tester failures were traced to: (a) a generated fake-Docker script in
+`test_cgroup_parent.py` with a broken newline escape, whose syntax error was
+masked by the helper's intentional stderr suppression; (b) Docker fakes and
+call-order expectations that did not account for the immediate CPU-cap update;
+(c) one B145 probe test missing its observer GID argument; (d) a stale SQL
+failure-message assertion and a synchronous mock that logs in-container cleanup
+before the host-side cap update; (e) a cgroup-counter test calling the local
+reader despite the tester's private cgroup namespace; (f) a stale mutation
+reader monkeypatch; (g) missing `ASSAY_RESOURCE_OBSERVER_SOCKET` passthrough in
+the full self-qualification Assay lane and a corresponding stale Run-Gate
+config assertion; and (h) an unused `Path` import tripping the source-tree
+pyflakes gate.
+
+These are repair hypotheses supported by the failure traces, not yet qualified
+fixes. The candidate has been patched but not committed or rerun. Recheck
+`git diff --check`, static syntax/config parsing, and the exact committed tree,
+then rerun the registered `tester-unified` gate using this worktree's Run-Gate
+rev58 source overlay. Installed cockpit Run-Gate remains rev55 and cannot parse
+the candidate's `resource_observer` lane key; installed Assay is
+`8.0.1.dev76+g70bf4493e.d20261007`, while the gate-built candidate wheel is
+`8.0.1.dev143+gc94388ab2`. Do not conflate those source/wheel versions.
+
+### RW-511 — 2026-10-08 17:05:07 UTC — align B105's lane policy and cgroup fixture with the observer-enabled gate
+
+The registered `tester-unified` rerun on `9a89b568552f40be89d90da58f69401f585fdf91`
+ended FAIL. Run-Gate history records 585.9 seconds; the inner suite ran for
+540.82 seconds and reported 7,859 passed, 24 failed, and 11 skipped. The
+previously identified fixture/mock repairs no longer appear in the failing
+set. Twenty-one failures share one remaining cause: B105's full qualification
+report checker still required `env_passthrough == ["PATH"]`, while the
+committed full lane now correctly adds only
+`ASSAY_RESOURCE_OBSERVER_SOCKET` for nested R2 ancestry observation. Update
+that exact policy and derive the report fixture's value from the committed
+lane. The other three failures are the cgroup-parent fake Docker parser still
+expecting split `--cgroup-parent VALUE`, while the production argv correctly
+uses `--cgroup-parent=VALUE`; make the fixture parse the actual form.
+
+No R0/R1/R2/R3 gate result passed on this tree. Commit these two focused fixes,
+then rerun the registered `tester-unified` gate with the rev58 source overlay
+and keep the committed tree quiet through completion.
+
+### RW-512 — 2026-10-08 17:20:05 UTC — expose bounded diagnostics for malformed probe IDs
+
+The registered `tester-unified` rerun on `1266057b31dc04300a513d100980cbade8929897`
+failed R0 after 559.8 seconds: 7,880 passed, 3 failed, and 11 were skipped.
+All three failures are in `test_cgroup_parent.py`; the helper reports that the
+captured `docker run -d` output is not a 64-character lowercase hex ID. The
+B105 observer-lane policy failures from the previous run are gone. The failure
+trace does not reveal the captured ID, so the immediate repair is limited to a
+bounded shell-escaped prefix and character count in that refusal message, plus
+a regression using malformed output. Cleanup remains guarded by the separate
+cidfile ID and exact ownership inspection; the test asserts it never uses the
+malformed stdout value for cleanup. This is diagnostic instrumentation, not a
+qualified fix: rerun the registered gate from a clean committed tree with the
+candidate Run-Gate rev58 overlay and keep HEAD quiet until completion.
+
+### RW-513 — 2026-10-08 19:05:00 UTC — isolate fake Docker IDs from helper state
+
+The registered `tester-unified` run on `fe3ab85d9d82db7effbb8cd81abd200672880a93`
+failed R0 after 629.503 seconds: 7,880 passed, 4 failed, and 11 were skipped.
+Three cgroup-parent cases reached the cidfile-consistency refusal; the new
+malformed-output regression reached cleanup but observed no ownership inspect.
+Inspection found a test-fixture environment collision: the fake Docker used
+`PROBE_ID` for its synthetic container ID, while the helper initializes its
+own exported `PROBE_ID` to empty before invoking Docker. Thus the fake wrote an
+empty cidfile/state record even though its stdout came from a separate value.
+Rename the fixture-only variable to `FAKE_DOCKER_ID`, preserving the helper's
+ownership checks and malformed-output diagnostic. This is a fixture repair,
+not a production behavior change. Rerun the registered gate on the committed
+tip with the candidate Run-Gate rev58 overlay; no gate on this exact tree has
+passed yet.
+
+### RW-514 — 2026-10-08 19:40:44 UTC — classify explicit slice refusals before probe exit status
+
+The registered `tester-unified` run on `456540b53c6fd17fbfda2a919a3b3660d189642e`
+failed R0 after 572.307 seconds: 7,882 passed, 2 failed, and 11 were skipped.
+The fake Docker ID collision is fixed: valid-path and malformed-ID cleanup
+cases now pass. The only failures are the MISSING and UNCONFIGURED refusal
+assertions. The probe correctly emits those specific messages and exits 1, but
+the helper checked the nonzero `docker wait` result first and replaced the
+specific refusal with a generic message. Preserve fail-closed behavior while
+classifying those explicit refusal records before checking status; conversely,
+an `OK` record paired with nonzero status must still fail. A regression asserts
+that inconsistent `OK`/nonzero output is rejected and the owned probe is
+removed. Rerun the registered gate on the committed repair with Run-Gate rev58;
+no R0/R1/R2/R3 result has passed on this candidate yet.
+
+### RW-515 — 2026-10-08 20:37:28 UTC — pass the observer endpoint into Assay's analysis lane
+
+The registered `tester-unified` phase passed on
+`dc1ffcd59f424fd7c6a09e34a459d22aac4e2e40`, but the overall gate then failed
+in the separate `analysis` lane after 584.037 seconds. Its suite reported
+513 passed and 2 failed; changed-target coverage was 2,052/2,053 lines and
+996/998 branches because those two real-R2 integration tests refused before
+judging candidates. The refusal was correct: the tester container's private
+cgroup namespace hid ancestors, and `[lanes.analysis].env_passthrough` allowed
+only `PATH`, dropping the already-mounted read-only
+`ASSAY_RESOURCE_OBSERVER_SOCKET` before pytest. The accompanying
+`judge_provenance` diagnostic is expected for an in-process source-tree test;
+the fatal status was `CGROUP_OBSERVATION_UNAVAILABLE`, not provenance.
+
+Forward the observer socket path through the analysis lane and pin that
+configuration with a lane-contract test. This preserves private namespaces and
+uses the observer only for the documented hidden-ancestor case. Rerun the
+registered `tester-unified` gate on the committed tree; no overall gate has
+passed on the candidate yet.
+
+### RW-516 — 2026-10-08 22:07:03 UTC — backport first RG-89 mutation-survivor oracles
+
+The exact-tree R2 campaign remains on `5c43550b116203db0037c30d150d079b14b77bd4`
+in its isolated worktree; do not edit or switch that tree. At the last allowed
+progress check (21:58:32 UTC), 34/120 candidates were judged. The next status
+check is not due until at least 22:23:32 UTC.
+
+In the separate current-main integration worktree, the first observed
+resource-observer survivors motivated commit `75d9c4f0e`: independent
+CapEff/CapPrm bypass-capability cases, a malformed stat record with the
+closing delimiter at offset zero, the exact 19-field boundary, and empty
+NSpid coverage. The parser now rejects the offset-zero delimiter. The focused
+resource-observer suite passed 53 tests; branch-aware coverage for
+`lib/resource_observer.py` was 100% (275 statements, 124 branches). These are
+local targeted results, not registered-gate or R2 evidence. A fourth observed
+type-guard mutant appears equivalent because `_read_status` returns only a
+non-empty tuple or raises; retain that as a provisional proof until final R2
+triage confirms the exact candidate and operator. No release or merge is
+authorized by this progress entry.
+
+### RW-517 — 2026-10-08 22:07:42 UTC — keep survivor test cleanup lint-clean
+
+The focused Ruff check exposed an unused `leaf_procs` local in the existing
+`test_observation_rejects_writable_cgroup_procs` fixture. Remove that dead
+assignment; no test behavior changes. On the resulting worktree diff, Ruff
+(`E4,E7,E9,F`), Python compilation, and `git diff --check` pass. The focused
+resource-observer suite still passes 53 tests, with 100% line and branch
+coverage for `lib/resource_observer.py` (275 statements, 124 branches). These
+remain bounded cockpit checks, not registered gate evidence.
+
+### RW-518 — 2026-10-09 01:02:13 UTC — preserve failed R2 accounting and repair procfs snapshot races
+
+The R2 run on exact tree `5c43550b116203db0037c30d150d079b14b77bd4` ended
+at 2026-10-08 22:05:39 UTC with `ERROR/EXEC_FAILED`, not a mutation verdict:
+46/120 candidates completed (38 killed, 8 survived); candidate 47 never
+received a bucket. The observer error was `cannot read peer thread status`.
+That run's error serialization dropped the underlying OSError type and errno,
+so the original cause is not proven. Source inspection found that `_read_status`
+wrapped `FileNotFoundError` as a generic `ResourceObserverError` before the
+caller could apply its intended disappearing-thread handling. A transient
+procfs task-file race is therefore a supported hypothesis, not a confirmed
+errno diagnosis.
+
+The separate integration worktree now commits `fa5e348a8`: retry the complete
+peer identity scan up to three times only when a procfs identity file vanishes;
+persistent disappearance still refuses, and other status-read failures remain
+immediate refusals with exception/errno detail. Focused observer plus socket
+endpoint tests pass (89); `resource_observer.py` has 100% line and branch
+coverage (290 statements, 126 branches). Ruff, compilation, and
+`git diff --check` pass. These are bounded cockpit tests only. The failed R2
+records remain bound to the old tree and are not evidence for this repair; a
+fresh exact-tree qualification is required before resuming mutation. No
+registered gate, live daemon probe, review, merge, or release has passed on
+this fix.
+
+### RW-519 — 2026-10-09 01:09:05 UTC — triage remaining observed input-boundary survivors
+
+The first registered `r0-r1` after the procfs-race repair passed on tree
+`ab8d7cbc0b197dbef5d7375ac4e72ca29895f171`: 2,470 tests, 100% line and branch
+coverage across all modules, exit 0 in 125.01 seconds. It predates the new
+survivor tests below, so it is not the final short-gate result. The test
+container was `cgprofile-gate-2081306-1791507949`, placed in `dev-gates.slice`
+and capped at 3 CPUs.
+
+Further triage of the incomplete old-tree R2 result found four actionable
+oracles: positive non-integer peer PID and UID values bypass the respective
+`type(...) is int` guard if its first `or` is changed to `and`; the explicit
+nonnegative UID policy admits UID 0, so `< 0` versus `<= 0` must be tested at
+that boundary; and a valid nonempty NSpid with a three-field UID tuple must be
+rejected independently. Add these cases. The line-156 type/empty-tuple
+`Or->And` remains equivalent because `_read_status` returns only a non-empty
+tuple or raises; this proof remains provisional pending a completed R2 run.
+
+The updated focused observer plus socket-endpoint suite passes 92 tests with
+100% line and branch coverage for `resource_observer.py` (290 statements,
+126 branches); Ruff, compilation, and whitespace checks pass. These tests and
+the new oracles are not yet registered-gate or mutation evidence. Rerun both
+short lanes on the committed report-bearing tree before starting fresh R2.
+
+### RW-520 — 2026-10-09 01:11:57 UTC — current-tree R0–R1 passes after survivor-oracle additions
+
+The registered `r0-r1` lane passed on exact tree
+`42a76af89de5b599d757e2debe13f401c15c133d`: 2,473 tests, 100% line and
+branch coverage across all package modules, exit 0 in 126.58 seconds. Run-Gate
+recorded footprint peak 5,095 MiB, p90 4,860 MiB, 0.33 average cores, and
+0.1 seconds full memory stall; the container was
+`cgprofile-gate-2083683-1791508166` under `dev-gates.slice` with a 3-CPU cap.
+The profile has no DAMON samples (`no pids to monitor yet`), so this is not
+overhead evidence. Because this controller-log commit changes HEAD and Assay
+resumes by tree identity, rerun the short lanes on the final report-bearing
+tree before invoking R2; this result remains a precise prior-tree PASS, not
+that final receipt.
+
+### RW-521 — 2026-10-09 01:16:30 UTC — R0–R1 and R3 pass on the integrated fix
+
+On report tree `76b200dfd10e8aeba81e40f1ff5b148db89ea648`, the registered
+`r0-r1` lane passed: 2,473 tests, 100% line and branch coverage across all
+modules, exit 0 in 124.16 seconds (log
+`/tmp/run-gate/lanes/r0-r1/2d15804c50d4f5b6d043719df35babef.log`). The
+registered `r3` lane also passed on that same tree: all seven canaries were
+rejected, zero survived, exit 0 (log
+`/tmp/run-gate/lanes/r3/6001b010c73517f15c27edc3c8c0c573.log`). Its profile
+reported DAMON unavailable because the host interface returned `EBUSY`; no
+overhead evidence is claimed. Both results precede this log-only commit, so
+rerun the short lanes on the new report-bearing HEAD before fresh R2.
+
+### RW-522 — 2026-10-09 01:22:16 UTC — final short-gate receipts on report-bearing tree
+
+The registered `r0-r1` lane passed on exact tree
+`9787211a9df2550e1a7c0ddeac3cf27386f28abe`: 2,473 tests, 100% line and
+branch coverage across all modules, exit 0 in 134.73 seconds. The registered
+`r3` lane passed on the same tree: all seven canaries rejected, zero survived,
+exit 0 in 10.99 seconds. Run-Gate's history records both exact-tree receipts.
+The R0-R1 profile reports peak memory 5,086 MiB and DAMON unavailable because
+there were no pids to monitor; R3 reports DAMON unavailable (`EBUSY`). Neither
+run supplies DAMON-overhead evidence. This ruling is a log-only commit. Start a
+fresh R2 against its resulting exact tree and keep that tree quiet until the
+campaign has a terminal verdict.
+
+### RW-523 — 2026-10-09 03:26:38 UTC — distinguish daemon reachability from DAMON availability
+
+No run-gate or assay process was active at the check. Container
+`cgprofile-host-daemon` (`69b646913546`, restart count 0, started
+2026-10-08 02:16:57 UTC) is healthy at the control-plane level: its `version`,
+`status`, and `host` verbs returned valid contract-1 JSON both via `docker exec`
+and the cockpit's direct Unix-socket client. The cockpit user is UID 1003 in
+GID 994 (`docker`), which matches `/run/cgprofile`'s `root:994` group access;
+the socket mount and permissions work. The source-tree `cgprofile.py ctl`
+client also works. The bare `cgprofile` command is not installed in this
+cockpit's PATH, a separate convenience/install issue.
+
+DAMON itself is unavailable on this host. The completed exact-tree R2 and a
+short live probe both recorded `OSError: [Errno 16] Device or resource busy`
+when starting DAMON; the live session still collected ordinary samples and
+stopped cleanly. Read-only inspection inside the daemon showed kernel
+`7.1.13+deb13-amd64`, `/sys/module/damon_stat/parameters/enabled=Y`, and
+`nr_kdamonds=0`. Linux documents special-purpose DAMON consumers as mutually
+exclusive, with competing starts returning `-EBUSY`; this host state and the
+reproduction make active `DAMON_STAT` the best-supported cause. It is not
+proved by toggling the host module, and no toggle was made because that would
+pause host-wide monitoring. `ctl version` reports `damon: available` as a
+capability/interface fact, not successful session readiness; check each
+session's start status and persisted DAMON series.
+
+The running local image is labeled revision `09084078f124bf97efcfa3da4f74afb4499778ff`.
+The current candidate `e04a58837717eb9568962012ac4ac392b71d0f64` adds
+`fa5e348a8` and `75d9c4f0e`, both changing the resource-observer endpoint.
+Thus the control daemon is reachable but that endpoint is not yet running the
+latest candidate implementation; refresh it only through the normal reviewed
+integration/deployment path. The three operator-facing docs now record the
+DAMON_STAT limitation and the read-only diagnosis. No kernel state, host
+monitor, unrelated container, or `/workspaces/dstdns` path was changed.
+
+### RW-524 — 2026-10-09 03:27:34 UTC — record terminal R2 survivors without treating them as equivalent
+
+The registered R2 on exact tree
+`e04a58837717eb9568962012ac4ac392b71d0f64` ended at 02:44:11 UTC with exit
+1, `FAIL/MUTANTS_SURVIVED`: all 120 candidates accounted, 109 killed, 11
+survived, and zero equivalent, budget-exceeded, crashed, or hung. The verdict
+is preserved byte-for-byte at
+`scripts/cgroup-profiler/.assay/verdict-r2-e04a5883.json` (SHA-256
+`4c6fbc08b616fa180378efd577dcba3f078f6da93126803ab157f76b979bd8e2`). The
+campaign container `run-gate-vbpub-r2-2095052-1791509195` is gone; no run-gate
+or assay job is active now.
+
+The 11 survivors remain unresolved findings, not accepted equivalents: three
+are in `lib/resource_observer.py` (lines 177, 250, 270) and eight are in
+`lib/serve.py` (lines 2440, 2466, 2591, 2841, 2901, 2909, 2911, 2919). Their
+candidate IDs and operators are in the preserved verdict/progress stream.
+Next: map each survivor to a distinct contract behavior, add a discriminating
+oracle or document an evidence-backed equivalence proof, then re-run short
+gates and selectively reuse only the prior R2 kill witnesses on a quiet new
+tree. This R2 is a substantive failure and does not authorize merge or
+release.
+
+### RW-525 — 2026-10-09 03:34:50 UTC — disposition R2 survivors and repair observer boundaries
+
+Triaged all 11 survivors from RW-524. `_read_status` constructs `NSpid` as a
+tuple and rejects an empty tuple before returning; `_task_facts` receives it
+only through that helper. The line-177 `Or->And` survivor is therefore
+equivalent on the production call path; a parser test now pins the tuple
+invariant and the existing empty-NSpid refusal. The line-250 `Or->And` survivor
+exposed a missing independent negative-`CapEff` oracle, now added. The
+line-270 `Lt->LtE` mutation accepted a mountinfo record with five left-side
+fields, although Linux's format requires the sixth mount-options field; the
+parser now requires six, with a five-field refusal case.
+
+For `lib/serve.py`, the two socket-permission survivors could produce duplicate
+or false root-only diagnostics; the root-owned-directory oracle now requires
+exactly one warning. The observer cleanup survivor could unlink a path without
+owning its socket; a regression case proves it preserves that path. The
+observer accept thread's daemon/name properties are now asserted. A missing
+`SO_PEERCRED` record must reach the structured `peer-refused` response, not a
+generic handler error. The observer parser previously dispatched a complete
+4097-byte line when one `recv` returned the whole payload; it now checks the
+newline-inclusive 4096-byte maximum explicitly. Added exact-limit/one-byte-over,
+deadline-equality, and newline-at-offset-zero cases. Also removed one
+pre-existing unused local found by Ruff.
+
+README, DESIGN-GUIDE, CONSUMERS, PROTOCOL, and both byte-identical RG55
+contract mirrors now state that the maximum includes the newline and that an
+oversized line is never dispatched. DAMON_STAT host troubleshooting remains
+recorded by RW-523. `git diff --check`, contract-mirror comparison, and focused
+Ruff passed; no test lane or mutation was run on this new diff yet. Next run
+the registered `r0-r1` and `r3` lanes on the committed tree, then R2 with
+`--reuse-from .assay/verdict-r2-e04a5883.json` after
+verifying the exact selective request plan. Keep the prior failed verdict
+immutable; the new tree needs its own terminal evidence.
+
+### RW-526 — 2026-10-09 03:37:45 UTC — repeat daemon acceptance probe with DAMON on/off
+
+Repeated the live session check against the running `cgprofile-host-daemon`
+using only the exact disposable container
+`rg55-damon-on-probe-20261009-0340` (ID
+`046188c8152397ca784f83d030314004097a94d8699f7b0c549cb2a787f9921b`),
+under `dev-gates.slice`, network disabled, CPU capped at three, with host
+memory PSI `full avg10=0.00`. The DAMON-on start at 03:36:56Z returned
+`ok:true` and a live session, but `damon` was
+`unavailable:OSError: [Errno 16] Device or resource busy`; stop at 03:37:00Z
+was clean and recorded four ordinary samples, zero DAMON samples, and the same
+reason. A second session with `--damon off` started and stopped cleanly with
+four ordinary samples. The exact probe container was stopped and removed;
+no other container or host DAMON setting was changed.
+
+This confirms the daemon socket/session/control path and ordinary resource
+sampling work; the failing capability is specifically DAMON acquisition, not
+daemon reachability or cgroup targeting. At the time of the probe,
+`/sys/module/damon_stat/parameters/enabled` remained `Y` and
+`nr_kdamonds` remained `0`. Linux's DAMON documentation says active
+special-purpose modules are mutually exclusive and competing starts can
+return `-EBUSY` ([design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html),
+[DAMON_STAT](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html)).
+That makes DAMON_STAT the strongest supported explanation, though not a
+toggle-and-retest proof. Do not disable or reconfigure host-wide DAMON_STAT
+without an explicit operator decision; it is not required for the daemon's
+ordinary sampling path.
+
+### RW-527 — 2026-10-09 03:41:38 UTC — repair two R0-R1 failures on the new observer diff
+
+The registered `r0-r1` lane on exact tree `75d286dab79ef3236ab4ec5acc00e94083fcff18`
+finished in 135.62 seconds with exit 1: 2,475 passed and two failed. The docs
+link checker found that DESIGN-GUIDE linked to the planned
+`CONSUMERS.md#host-damonstat-exclusivity` anchor before that section existed;
+the README and CONSUMERS now explain the observable DAMON_STAT/`EBUSY`
+limitation and give read-only host checks plus the operator boundary. The
+observer boundary behavior itself passed; its test incorrectly expected the
+newline delimiter to reach `_observer_dispatch`, although the server correctly
+strips it after counting it toward the 4096-byte wire limit. The oracle now
+expects the exact newline-free dispatch payload and still asserts the 4097-byte
+request is refused without dispatch. Run-Gate history and the preserved log
+record the failed run; no container remains active. Re-run `r0-r1` on a new
+quiet commit, then `r3`; do not reuse this failed receipt as a pass.
+
+### RW-528 — 2026-10-09 03:45:17 UTC — correct the generated DAMON_STAT anchor
+
+The registered `r0-r1` lane on exact tree `178552d0b14cd45dfe62425f0f5633ff8d099113`
+finished in 130.89 seconds with exit 1: 2,476 passed and one failed. The
+remaining failure was only the docs-link checker: its anchor generator keeps
+the underscore from the exact heading `Host DAMON_STAT exclusivity`, yielding
+`host-damon_stat-exclusivity`. README and DESIGN-GUIDE now target that exact
+anchor. The observer tests and all other suite tests passed. The gate container
+has exited; rerun `r0-r1` on the next quiet commit before treating the short
+gate as green.
+
+### RW-529 — 2026-10-09 03:49:56 UTC — consolidate DAMON_STAT docs and close the R2 NSpid survivor
+
+The registered `r0-r1` lane on exact tree `868ff7c6457ead88d3c443aadeda0acbd612f01d`
+finished in 135.03 seconds with exit 1: 2,476 passed and one failed. The
+remaining stale link was a README reference at a second location; the earlier
+edit had corrected only the newly added link. Inspection also found that
+RW-523 had already added the `Host DAMON_STAT exclusivity` section, so the
+additional section from RW-527 duplicated it. The duplicate is removed; the
+existing consumer section now carries the capability-versus-readiness
+explanation and robust read-only check, and every README/DESIGN-GUIDE
+reference uses the actual `host-damon_stat-exclusivity` anchor.
+
+RW-525's line-177 equivalence disposition is also superseded. Although
+`_read_status` currently guarantees a nonempty tuple, the declared R2 policy
+has no equivalence ledger; accepting this survivor would leave the campaign
+red. The consumer-side type check is retained as an internal contract with
+`_read_status`, and a regression test now feeds `_task_facts` a nonempty list
+to prove the consumer rejects malformed producer output. Under the `Or->And`
+mutant that value would pass the check and be returned as a native ID, so the
+mutant must be killed by an assertion rather than waved away as equivalent.
+Verify this in the next selective R2 run. The failed gate log is preserved;
+no gate remains active.
+
+### RW-530 — 2026-10-09 03:52:49 UTC — add coverage for unterminated observer overflow
+
+The registered `r0-r1` lane on exact tree
+`aa5edcde6c5e5c812541cb06a9f78d5dd47e1495` ran all 2,477 tests successfully
+in 131.39 seconds but exited 2 because the whole-project branch threshold was
+99%: the only partial branch was `lib/serve.py:2936->2909`. That is the
+oversized-request check after a read with no newline; existing tests covered a
+complete oversized line, which returns through the earlier newline branch.
+A 4097-byte unterminated request pins the distinct response and no-dispatch
+behavior. That covered the over-limit branch but not its false edge (a
+non-empty, under-limit partial request followed by EOF); RW-532 records the
+remaining coverage gap and its focused regression test.
+
+### RW-531 — 2026-10-09 03:59:41 UTC — prove DAMON_STAT is the host conflict
+
+The operator approved one temporary host-global toggle, one short live
+acceptance session, restoration, and verification. The exact probe container
+`rg55-damon-stat-probe-20261009-0358` (ID
+`0a2b0f99db9adbb574010c08cea35fed3ecd923f4f99d2e7c1ba27ac28d9789c`) ran under
+the loaded `dev-gates.slice` with `--network none`, three CPUs, and a 256-MiB
+memory ceiling. With `/sys/module/damon_stat/parameters/enabled=N`, the
+existing `cgprofile-host-daemon` started session
+`s-20261009T035732Z-20f9` with `damon: "on"`; it recorded 36 ordinary samples
+and 36 DAMON samples for one target, including nonzero hot/warm classifications
+(peak hot bytes 68,788,224). Stop completed normally. The exact probe container
+was removed. `DAMON_STAT` was restored and read back as `Y`,
+`nr_kdamonds=0`, the daemon remained running with zero sessions, and the socket
+remained responsive. This confirms the earlier `EBUSY` is due to the active
+special-purpose `DAMON_STAT` consumer, not daemon/socket failure.
+
+The host kernel is `7.1.13+deb13-amd64`; its `/boot/config` sets
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`. This is the running kernel build's
+default, not a universal Debian guarantee. `DAMON_STAT` exposes global
+whole-physical-memory idle percentiles and estimated bandwidth; cgprofile uses
+the generic sysfs interface for per-process virtual-address targets and
+statistics-only samples. The modes are mutually exclusive. cgprofile must not
+change this host-wide policy on its own. `host-escape` also ran its documented
+`mdt doctor` post-check, which restored missing cgroup2 mount options
+`nsdelegate,memory_recursiveprot,memory_hugetlb_accounting`; the resulting
+host mount reports all three present.
+
+### RW-532 — 2026-10-09 03:59:41 UTC — cover the observer request-size false edge
+
+The registered `r0-r1` lane on exact tree
+`cedfc4598d05270c535d28165e68246eac838d43` finished at 03:55:20Z with all
+2,477 tests passing, but exited 2 because total branch coverage was 99%; the
+only partial edge remained `lib/serve.py:2936->2909`. RW-530's 4097-byte
+unterminated request exercised the true (oversized) edge only. Add a request
+of exactly 4096 bytes without a newline followed by EOF: the handler should
+ignore the incomplete request, send no response, and close the peer. Re-run
+the registered lane on a committed quiet tree and require 100% line and branch
+coverage before R3 or R2.
+
+### RW-533 — 2026-10-09 04:04:31 UTC — request-size edge and short gates pass
+
+On exact committed tree `b5804ee6dbb654d0f9745a0f15d4def8c831e57e`, the
+registered `r0-r1` lane passed in 127.06 seconds: 2,478 tests, 100% line
+coverage and 100% branch coverage, including the under-limit partial-request
+EOF edge added for RW-532. The separately read `run-gate history` records
+PASS, exit 0, and the lane log is
+`/tmp/run-gate/lanes/r0-r1/6b81680676ce2a557829c9148d2d0c6d.log`.
+
+The registered `r3` lane also passed on that exact tree in 10.9 seconds; all
+seven real canaries were rejected, none survived. Its separately read history
+records PASS, exit 0. The `r3` profile's DAMON attempt was unavailable with
+`EBUSY` because the restored host-wide `DAMON_STAT` policy is `Y`; the
+operator-approved isolated live probe in RW-531 independently demonstrated
+successful DAMON collection when that conflict was temporarily removed.
+`docker ps` showed no remaining `cgprofile-gate-*` containers. These receipts
+are for `b5804ee6`; any later commit requires fresh exact-tree gates.
+
+### RW-534 — 2026-10-09 23:04:52 UTC — bound peer-task ESRCH retries and preserve incomplete R2
+
+The exact RG-89/P1 R2 tree `8e09b6369d744374ebaa1104b2b513417e5d615e` did
+not finish. Its progress stream accounts for candidate 579 of 1,059; Assay
+wrote `ERROR/EXEC_FAILED` because the required cgprofile observer could not
+read a peer task's `/proc/.../status` after a `ProcessLookupError` (errno 3).
+This is executor/infrastructure failure, not a mutation outcome. The earlier
+`FileNotFoundError` retry does not catch `ESRCH`; change the status reader to
+retry `ProcessLookupError` within the existing bounded peer-snapshot loop, and
+keep the final refusal fail-closed. Add one-shot-success and persistent-race
+regressions.
+
+A subsequent R2 attempt on the same tree stopped at R0 with
+`COMMAND_FAILED`: `test_each_watch_line_shape_is_frozen_on_its_own` indexed a
+fourth stream line that was absent. The registered `r0-r1` coverage gate then
+passed on that pre-reconcile tree: 2,478 tests, 8,326/8,326 statements and
+3,074/3,074 branches, duration 146.129 seconds. This is a non-reproduction,
+not proof the watch-stream symptom is fixed; keep its synchronization/EOF edge
+under review.
+
+Current main `5bf6db82b` (Assay B118/B110/B114 integration) was reconciled into
+the isolated RG-89 tree as merge commit `a4d68181b`; the old R2 attempt remains
+incomplete and is not evidence for this new tree. The peer-task retry repair
+and tests are now in progress on that branch. No R2 campaign is running.
+
+### RW-535 — 2026-10-10 02:26:53 UTC — isolate progress telemetry by Assay invocation
+
+The interrupted relaunch on `ace790e94` printed the previous run's
+`candidate 579/1059` because Run-Gate selected the last indexed event from the
+whole append-only JSONL file. Assay's progress contract confirms that every
+invocation writes a `run` header and that `candidate_index` is campaign-wide
+while `elapsed_s` restarts at that header. A raw campaign index divided by a
+resumed run's elapsed time therefore produces a false rate as well as stale
+status.
+
+Ruling: preserve Assay's append-only history; scope progress and silence to
+events after the latest valid `run` header. Reset an attached watch when a new
+header appears. Calculate rate from candidate-event counts in that segment;
+use `pending_total` for remaining-work ETA when declared, and suppress ETA if
+that declaration is invalid or inconsistent rather than fall back to a
+campaign-index guess. Keep legacy whole-file behavior only for streams with no
+run header. This is diagnostic telemetry only and cannot alter the Assay
+verdict. RG-90 records the fix and its regression oracles. No test gate or new
+R2 campaign has been launched for this change yet.
+
+### RW-536 — 2026-10-10 02:30:38 UTC — first RG-90 selftest found documentation-oracle drift
+
+Registered `selftest` ran in the exact `run-gate-vbpub-selftest-3802679-1791599243`
+container, capped at 3 CPUs. The separately read history record is run
+`5c000aba729d071cad280859c9347ec3`, FAIL/exit 1 after 164.442 seconds:
+1,747 passed, 2 skipped, 3 failed. The new progress regressions passed. The
+failures were two cross-document anchor checks for a link to a non-heading
+anchor in `SPEC.md`, and the changelog oracle still requiring RG-89 to equal
+the current revision after RG-90 advanced it to 59. No product-code failure
+was reported. Fix the link to the actual SPEC §5 heading, update the current
+revision oracle to RG-90 while preserving RG-89's rev-58 assertion, then rerun
+the registered gate. The gate's profile recorded host memory-full PSI at
+1.337 seconds during its 163-second lifetime; current PSI is low and no gate
+container remains. DAMON profile sampling was unavailable with `EBUSY` under
+the restored host `DAMON_STAT` policy; this is profile disclosure, not the
+selftest cause or verdict.
+
+### RW-537 — 2026-10-10 02:33:51 UTC — RG-90 tests pass; changed-line coverage needs the legacy zero-span edge
+
+After the documentation-oracle corrections, registered `selftest` run
+`41d042ccce9b1eb7739243567bc29791` completed with 1,750 passed, 2 skipped,
+and no test failures. Its separate diff-coverage phase failed at 96/98 changed
+executable lines and 55/56 branches. The only uncovered source was the
+legacy-stream `span > 0` branch in `ProgressWatch._rate_per_min` (line 9441)
+and its zero-span `return None` (line 9443): existing clock-driven tests
+covered positive elapsed time but not two candidate events observed at the
+same clock instant. Add that regression, then rerun the registered selftest;
+the last gate container is gone and current memory PSI is below the launch
+threshold. The P1 mutation campaign is still not running.
+
+### RW-538 — 2026-10-10 02:37:18 UTC — RG-90 registered selftest and diff coverage pass
+
+After adding the zero-span legacy-stream regression, registered `selftest`
+run `7168c7737769a94977df8a01e218b0a7` passed: 1,751 passed, 2 skipped,
+one existing pytest deprecation warning; the separate diff-coverage phase
+reported 98/98 changed executable lines and 56/56 branches (100%). The
+separately read Run-Gate history records PASS/exit 0, 155.7 seconds. The exact
+tree remains dirty pending the controller's commit; no mutation campaign or
+gate container is active. DAMON remained unavailable with `EBUSY` under host
+`DAMON_STAT`, a profiling limitation that does not affect the selftest.
+
+### RW-539 — 2026-10-10 02:47:09 UTC — reconcile current main; prior short-gate receipts are stale
+
+The private P1/RG-89 candidate was based on main `5bf6db82`; current main had
+advanced to `a5659aff` (Assay B114/B118/B131 integration), 23 commits beyond
+the candidate's merge base. Reconciled with `git merge --no-ff main` in the
+private worktree. The only conflict was `assay/CHANGES.md`; both the RG-89
+observer entry and current main's `analysis-r2` pilot entry are retained. The
+merge commit is `2631d898`. Main itself was clean and unchanged.
+
+Before reconciliation, Run-Gate `assay-r1` on exact commit `bfa975ad` had
+PASS/exit 0 in 184.937 seconds (history run
+`076595a12cf920ad9a95e33a0a03f746`). Its profiling summary recorded ordinary
+resource samples but DAMON unavailable with `EBUSY`, consistent with RW-531's
+restored host `DAMON_STAT=Y`; this is verdict-neutral. Run-Gate `assay-r3` on
+the same commit passed/exit 0 in 1.461 seconds (run
+`fc86f41e1ef99104e003b4e304d4e81f`): both canaries were rejected. The target
+had exited before cgprofile could resolve its cgroup, so this run used basic
+sampling and produced no daemon/DAMON profile evidence. These are historical
+receipts for `bfa975ad`, not evidence for the reconciled candidate.
+
+At the R3 launch check, an independent Assay B131 `tester-unified` gate was
+active in container `run-gate-assay-selfhosted-3822695-9959-1791600138`.
+The operator had authorized parallel tests; the short R3 lane completed
+without affecting that gate. No P1 R2 or full gate was active. The exact
+reconciled tree still needs Run-Gate selftest/R1/R3 and cgprofile r0-r1/r3,
+then exact-candidate P1 R2 and the registered full gates. No prior-tree
+mutation result is transferred.
+
+### RW-540 — 2026-10-10 03:20:36 UTC — RG-90 refuses an ETA without a current-run remainder
+
+Sol's P1 round-9 review accepted the P1/RG-89 product conditionally and
+reported S1 in the adjacent RG-90 progress telemetry: when the latest Assay
+`run` header exists but its `candidates` event omits `pending_total`,
+`ProgressWatch._report()` used the legacy `candidate_total - candidate_index`
+fallback and could invent an ETA from a campaign-wide index. This contradicted
+RW-535, which reserves that fallback for streams with no `run` header.
+
+Ruling: current-run streams may emit an ETA only from a valid, consistent
+`pending_total`; if it is absent, invalid, or inconsistent, disclose the
+candidate without a rate/ETA. Preserve the campaign-index fallback only for
+legacy streams without a `run` header. This is diagnostic telemetry and does
+not alter Assay outcomes. The controller is applying the correction as
+Run-Gate revision 60, with a regression for a current header and missing
+remainder plus consumer/spec/design/backlog updates. Re-run the registered
+Run-Gate selftest with exact changed-line/branch coverage and obtain a fresh
+Sol review before integrating this additional change. No mutation or full
+gate is running.
+
+### RW-541 — 2026-10-10 03:40:05 UTC — refresh the tracked resource footprint
+
+On exact candidate `6d7e3ef15e26fee96e41a2e6702604d349773207`, Run-Gate
+selftest, R1, and R3 passed; cgprofile R0/R1 and R3 passed; doctor reported
+zero failures but warned that the tracked footprint was distilled 27 days
+earlier and substantially understated current daemon-backed R1/selftest
+container peaks. `footprint --write` now records the current history:
+assay-r1 median/max 788/807 MiB, selftest 445/777 MiB. The short assay-r3
+canaries exited before the daemon resolved the target, so their peak is
+unknown (null), not zero. The CONSUMERS transcript now records this source
+change from old `rusage-maxrss` to container `memory.peak` and the DAMON
+unavailable disclosure. These documentation/manifest edits are a new tree;
+all exact-tree gates and the fresh Sol review must be repeated after commit.
+No R2/full gate is running, and no merge or release was made.
+
+### RW-542 — 2026-10-10 03:48:17 UTC — distill after the exact-tree measurement refresh
+
+The first RW-541 refresh was generated from the `6d7e3ef15e26` histories.
+The subsequent exact-tree selftest on `8b8d1480f0b0` added a daemon-backed
+measurement and moved the selftest history median from 445 MiB to 761 MiB;
+leaving the manifest unchanged would immediately retain a false drift warning.
+After the exact-tree R1/R3 passes, regenerate once more from the `8b8d1480f0b0`
+history and update the consumer transcript: assay-r1 708/807 MiB,
+selftest 761/777 MiB, assay-r3 peak unknown. This is a measured-data refresh,
+not a product-code change. The manifest/docs/log commit is the final candidate
+tree; rerun the short gates and doctor on that committed tip, then obtain the
+fresh Sol review. No R2/full gate is running, and no merge or release was made.
+
+### RW-543 — 2026-10-10 03:56:14 UTC — settle footprint drift from the latest exact-tree history
+
+Run-Gate doctor on `5b2d169ca36e96b2c5d2273cd68564ef13f11f18` reported zero
+failures but a selftest peak drift just over the configured 25% tolerance:
+the latest measured cgroup peak was lower than the earlier manifest median.
+Regenerate the manifest from the current history rather than suppressing the
+warning or widening tolerance. The latest `footprint --write` records
+assay-r1 708/807 MiB, selftest 568/777 MiB, and unknown assay-r3 peak; the
+consumer transcript is updated. This data-only commit is the final candidate
+tree; rerun the exact short gates and doctor after commit. No R2/full gate,
+merge, or release is in progress.
+
+### RW-544 — 2026-10-10 16:14:25 UTC — restore P5 test portability after first integrated selftest
+
+On exact P5 candidate `baee9f92e9d4c978f8048952f75dbc1d533001ea` (based on
+the Assay B114 / RG-89 integration `83c7d4a21a30ba1180a16c50e3092c326a91e4f7`),
+Run-Gate `selftest` completed after its 10-minute headroom wait. The separate
+history record `06e7ce35a84b4035e3e6f54a103eb5d0` is FAIL/exit 1: 1,823 passed,
+14 failed, 2 skipped; pytest took 164 seconds. No mutation campaign ran.
+
+The 14 failures group into four test/harness causes, not yet evidence of a
+production behavior failure: eight AF_UNIX client tests failed before their
+protocol assertions because `.run-gate/selftest-tmp` plus the linked-worktree
+path exceeded Linux's socket-path limit; four bare-host tests used `Popen`
+fakes missing `poll()` and (for the kill case) process-group behavior; the
+container placement test's Docker-only `subprocess.run` fake also intercepted
+Git config sanitization; and the changelog oracle treated RG-90 rev 60 as the
+current revision after P5 restored rev 61. The repair moves pytest's per-run
+scratch root to a short `/tmp` path with the same Git ceiling, completes those
+test doubles, isolates the config seam, and records the revision boundary.
+Fifteen focused regressions pass after this repair; full selftest, changed-line
+coverage, and all final gates remain pending.
+
+The profile history records container memory peak 672,120,832 bytes, gates
+slice peak 1,048,674,304 bytes, zero OOM kills and zero memory-limit drift,
+with memory PSI `full avg10` 0.12% at the end. The profiler used the socket
+carrier and correctly disclosed DAMON unavailable with `EBUSY` under the
+restored host `DAMON_STAT=Y`; this did not affect the gate result. The lane
+declared a 3-CPU cap; the temporary post-launch `docker update` watcher left no
+receipt before the exact container was removed, so this log does not claim a
+separate update confirmation. The next selftest must capture its exact
+container cap at launch.
+
+### RW-545 — 2026-10-10 16:33:39 UTC — diagnose integrated P5 selftest failure and keep RG-56 separate
+
+The corrected selftest ran on exact tree `3cc1ef2ded762e087397e45923eeacc365bbc296`
+and finished FAIL/exit 1: 1,726 passed, 111 failed, 2 skipped, and one teardown
+error. The separate `.run-gate/history.json` record is FAIL, revision 61,
+duration 874.898 seconds; the profile records a 609,009,664-byte container
+peak, 1,048,551,424-byte gates-slice peak, zero OOM kills and zero memory-limit
+drift. The container argv included `--cpus 3`; the profiler disclosed DAMON
+unavailable with `EBUSY`, which did not alter the test verdict.
+
+The failures are a harness regression from the prior repair, not 111 product
+failures: pytest put fixture repositories under unmounted `/tmp/rgt.*`, so
+doctor/mountinfo could not map them to a host path. One stale-lock test also
+intentionally left a directory that its new autouse teardown guard correctly
+flagged. Repair the temp root as a short `/tmp` lexical path symlinked into
+the bind-mounted worktree, keep Git's ceiling on the resolved mounted target,
+and remove the deliberate lock directory only after its non-removal oracle.
+
+The same review pass found that R-45's helper supports dry-run `would-wait`,
+but all three CLI lane runners return before the read-only profiler/host
+preflight; the contract therefore is not met at CLI level. Repair all three
+lane kinds with read-only dry-run probes only: never sleep, reserve, start a
+profiler session, or start the lane. Reconcile stale P5 handoff/backlog text
+with RW-283: P5 delivers R-45's bounded observational wait-then-proceed;
+RG-56's separate atomic registry admission remains OPEN and out of this wave.
+
+### RW-546 — 2026-10-10 17:07:31 UTC — separate short socket fixtures from mounted pytest scratch
+
+The next exact-tree selftest on `df380f235d2ad77d1c86768f8bc8508b327edc62`
+ran in container `run-gate-vbpub-selftest-479775-1791651043` and finished
+FAIL/exit 1: 1,832 passed, 9 failed, 2 skipped. The structured history record
+`1275570284c35ac88efc5f3e7bda2986` reports 763.287 seconds total and 163
+seconds in pytest; no mutation campaign ran. At launch, memory PSI `full
+avg10` was 0.04; the container was started after the 10-minute R-45 wait and
+received the exact-name `docker update --cpus=3`.
+
+Eight failures are the AF_UNIX client tests: pytest resolves the symlinked
+`--basetemp`, so the actual `tmp_path` remains under the long mounted
+worktree path and exceeds `sun_path`. Keep pytest basetemp under the mounted
+worktree for real mountinfo/host-path tests, but give only socket protocol
+tests a per-test short `/tmp` fixture and assert its encoded path fits the
+Unix-socket limit. The remaining failure is a static estate oracle expecting
+the established `mkdir -p .run-gate/` command prefix; retain that prefix in
+the lane command. Do not weaken or skip any failing oracle. DAMON was
+unavailable with `EBUSY` under host `DAMON_STAT=Y`; this remains telemetry,
+not a selftest verdict. Changed-line coverage and all later gates remain
+pending on the repaired committed tree.
+
+### RW-547 — 2026-10-10 17:09:27 UTC — isolate cockpit socket from fake-client tests
+
+After the host socket mount became available in the cockpit, a focused local
+run of `TestProfilerClient` showed that its default `auto` clients could
+select the real `/run/cgprofile/ctl.sock` instead of the fake Docker seam.
+The attempted fixture start was refused for an invalid token/argument and the
+fixture stop returned `unknown-session`; no session was started or stopped.
+This did not affect the registered tester-unified selftest, whose socket
+tests were failing only on path length, but it made cockpit iteration
+environment-dependent and risked accidental host-daemon traffic.
+
+Add an autouse test isolation seam that treats only the default host socket
+path as absent; explicit per-test socket fixtures continue to exercise the
+socket carrier. A per-test `/tmp` socket root is length-asserted below the
+Unix `sun_path` bound. The complete `TestProfilerClient` class, the selftest
+lane static oracle, and the bind-mounted scratch-root oracle now pass locally
+(61 passed). This is test isolation, not a product behavior change.
+
+### RW-548 — 2026-10-10 17:27:08 UTC — exercise P5's missing profiler-watch branches
+
+The full tester-unified selftest on exact tree `0cef72e26a77c057b6eee6d4c0eab0f29d2395f4` passed pytest (1,841 passed, 2 skipped) but failed the changed-line coverage judge at 744/759 lines and 341/344 branches. The uncovered changed paths are the terminate-timeout → kill → reap escalation for daemon and in-process exec watches, the bare-host deadline-clamped wait and expired-budget termination, and the bare-host continuation after the daemon watch is disabled. These are required behaviors; do not lower the coverage threshold or mark them excluded.
+
+Extend the existing exec watcher oracles to prove the child is terminated, force-killed after the grace timeout, and reaped. Extend the bare-host ended-watch test through a further timeout after watch disablement, and add an already-expired deadline oracle that verifies a zero-duration wait, process-group termination, and `GateBudgetExceeded`. The four focused tests pass locally; a branch-aware focused coverage run confirms every target line and arc is now executed. Re-run the registered selftest on the exact committed tree; only proceed when both changed-line dimensions are 100% and the lane is GREEN. No production code change was indicated by this coverage gap. Other containers remain outside this ruling's scope and must not be disturbed.
+
+### RW-549 — 2026-10-10 18:08:32 UTC — record P5 short-gate results and default tester CPU cap
+
+Run-Gate `selftest` on exact candidate `e11ef15de20102dc6ff9f125894ecb73a05a1617` is PASS: run `9f9b24d9383cccf6152b65c802887a1a`, 1,842 passed, 2 skipped, 759/759 changed executable lines and 344/344 branches. Its exact container was `run-gate-vbpub-selftest-527004-1791653397`; the separate wrapper output records `DOCKER_UPDATE_EXIT=0` for the 3-CPU update. The daemon watch stayed `ok`; DAMON was unavailable with `EBUSY` under host `DAMON_STAT=Y`, which did not affect the verdict.
+
+Run-Gate `assay-r1` on the same exact tree is PASS: run `1c771281e522b76e4b05753f3436f2ba`, Assay R0/R1 exit 0, 1,146/1,146 changed lines and 344/344 branches. The wrapper's final log did not preserve its exact-container CPU-update receipt because the watcher appended to the same file the live gate was writing; therefore this run is not final host-cap evidence. Its history records a 625.762-second invocation including R-45 admission, 814,899,200-byte lane peak, no OOM/limit drift, and 4.89% memory PSI `full avg10` at the gate start. No verdict failure or mutation campaign occurred.
+
+Ruling: give the shared `tester-unified` environment an explicit default `resources.cpus = "3"`, with a config regression, so R1/R3 and other lanes receive the cap in `docker run` rather than relying only on an after-launch watcher. The focused config regression passes (1 passed). The watcher must write its cap receipt to a separate file; rerun all final P5 short gates and doctor on the resulting committed tree. Do not transfer the `e11ef15d` receipts to that new tree. The other agent's gate and all unrelated containers were left untouched.
+
+### RW-550 — 2026-10-10 20:23:51 UTC — reconcile the P5 log checkpoint and pass cgprofile gates
+
+The candidate's committed controller log already contains RW-549; only the
+main checkout's older log stops at RW-483. An initial read used main's tail
+for both trees and created an uncommitted, misplaced RW-484 note in the
+candidate. That block was removed before commit. No candidate history was
+rewritten or lost; RW-550 is appended after the candidate's existing RW-549.
+
+On the current candidate working tree, including the uncommitted CP-19
+origin-unit guard and its tests/docs, cgroup-profiler `unit` passed 2,499
+tests (4 warnings) in 129.60s. Whole-package `coverage` passed 2,499 tests in
+125.64s and reported 8,389 statements, 3,110 branches, 100% line coverage,
+and 100% branch coverage. Exact containers were
+`cgprofile-gate-697833-1791663112` and
+`cgprofile-gate-700570-1791663449`, each in `dev-gates.slice`, verified at
+3 CPUs and 1-GiB memory; both scripts removed their own containers.
+
+The canary suite passed all seven canaries (7 rejected, 0 survived) in exact
+container `rg55-p3-origin-canary-20261010-r2`, exit 0, under the same slice,
+3-CPU cap, and 1-GiB memory limit. Its first launch exited 255 before product
+tests because the read-only container root prevented writing Git's global
+safe-directory config; that exact container was removed, and the successful
+retry redirected `GIT_CONFIG_GLOBAL` to writable `/tmp`. No product gate
+failed. These are interim working-tree results; final committed-tree gates,
+Run-Gate short lanes, P5 Sol review, candidate-daemon live probes, R2/full
+gate, and release remain. No merge or release was made.
+
+### RW-551 — 2026-10-10 20:25:52 UTC — retain the host daemon singleton during candidate acceptance
+
+`host-escape cat /sys/module/damon_stat/parameters/enabled` returned `Y`,
+confirming the DAMON-off/on probe restored the host setting. The supported
+`host-escape` path also reported and restored the cgroup2 mount's missing
+`nsdelegate`, `memory_recursiveprot`, and `memory_hugetlb_accounting` options.
+The candidate's CIU identity is `ready`, registered, on branch
+`rg55-p5-transport-port-20261010`, currently dirty at base commit `3ccb7528`.
+
+The cgroup-profiler CIU template and README explicitly define one daemon per
+host: a second worktree must collide on the fixed `cgprofile-host-daemon`
+name, not create a sibling. Therefore candidate-daemon live acceptance will
+use CIU's stop/deploy lifecycle on that exact singleton only after checking
+zero sessions, preserving the named session volume; after the probe, restore
+the daemon from main with `ciu up`. Do not start a sidecar or use raw Docker
+to bypass the declared singleton. No daemon change or candidate deployment
+was made by this ruling.
+
+### RW-552 — 2026-10-10 21:03:13 UTC — complete candidate probes and restore main daemon
+
+Candidate P5 tree `465f67d060dcbdb7a47e92e95ee082405f14ca67` now has committed
+CP-19 origin-scope protection. On that exact tree, cgroup-profiler unit
+passed (2,499 tests, 4 warnings, 126.08s); whole-package coverage passed
+(2,499 tests, 8,389 statements, 3,110 branches, 100% lines and branches,
+125.35s); and all seven canaries were rejected. Their exact containers and
+limits are recorded in the P5 report. Nyxloom lint passed, the two contract
+mirrors were byte-identical, and `git diff --check` passed. These results
+precede this ruling/report refresh and must be repeated on the final review
+tree.
+
+CIU-104 correctly refused candidate-worktree takeover of the fixed
+`cgprofile-host-daemon` singleton. Candidate `ciu up --dry-run` rendered; for
+runtime probes, the main checkout's CIU lifecycle replaced the idle singleton
+with the locally built image whose OCI revision label was `465f67d0`, while
+preserving its session volume. This exercised candidate daemon code without
+creating a sidecar or bypassing CIU ownership. The image was then rebuilt
+from main and redeployed via main CIU; current daemon image label is
+`efaf112945233e3a8f6d53f2fef136439d18d089`, socket listening, no live
+sessions, and host `DAMON_STAT=Y` verified. No unrelated container or volume
+was removed.
+
+Candidate live receipts: socket/exec parity sessions
+`s-20261010T204614Z-7e44` and `s-20261010T204636Z-71e6` measured peaks
+29,134,848 and 29,188,096 bytes (53,248-byte difference). CP-19 session
+`s-20261010T204712Z-6ecd` refused the one-process origin scope as
+`place-refused:origin-scope-would-empty`, with zero PIDs moved and no leaf.
+Anchored placement session `s-20261010T204739Z-8f82` moved one PID, then
+restored it to its original Docker scope; the transient unit disappeared and
+`placement.error=null`. Successful on-stall session
+`s-20261010T204842Z-fe02` killed the exact leaf after the 3-second idle
+bound, finalized with `verdict=killed`, exited the target PID, restored the
+anchor scope cleanly, and left no session or leaf. A preceding harness
+attempt had a Python syntax error before testing; its exact container was
+removed and is not counted as product evidence.
+
+The newly approved DAMON pair ran after the main daemon was restored, using
+identical synthetic workloads in separate `dev-gates.slice` containers
+(96-MiB allocation, 8-MiB hot set, 256-MiB memory, 3 CPUs). Off session
+`s-20261010T205743Z-446c`: 100s, 99 samples, daemon-slice CPU +2.045920s,
+no DAMON series. On session `s-20261010T205934Z-123e`: 102s, 97 samples,
+DAMON `on`, hot median/p90 8,433,664 bytes, daemon-slice CPU +2.138164s.
+Duration-normalized CPU rates differ by 0.000503 cores (about 0.0503% of one
+CPU); this is one sequential aggregate-counter observation, not per-session
+attribution or a universal overhead guarantee. Three `docker stats` samples,
+host load, and PSI are recorded in the P5 report. `DAMON_STAT` transitioned
+Y→N→Y and was verified Y afterward. An initial orchestration syntax error
+before any target launch was corrected and did not create a container.
+
+No Run-Gate release, P5 review, provisional merge, or package release occurred
+under this ruling. Final committed-tree short gates and fresh Sol review
+remain prerequisites for provisional merge; exact-tree R2/full gate remain
+release blockers.
+
+### RW-553 — 2026-10-10 21:39:07 UTC — resume controller work and refresh P5 evidence
+
+Controller work resumed from the clean P5 integration branch at
+`db6d5b73693ec1a42b0a4f5a254df145a2a6946a`, based on main
+`efaf112945233e3a8f6d53f2fef136439d18d089`. The candidate code is unchanged
+from `465f67d0`; `db6d` records probe and Sol-packet metadata.
+
+On exact tree `db6d5b73693ec1a42b0a4f5a254df145a2a6946a`, Run-Gate
+`selftest` passed at 21:18:48Z: 1,843 passed, 2 skipped, 1 warning;
+759/759 changed executable lines and 344/344 branches were covered. The exact
+container was `run-gate-vbpub-selftest-753342-1791666979`, placed in
+`dev-gates.slice`, configured for 3 CPUs and 1-GiB memory. Its profiler
+recorded DAMON unavailable (`EBUSY`) while host `DAMON_STAT=Y`; this was not a
+test verdict input.
+
+The same tree's cgroup-profiler registered `r0-r1` coverage lane passed:
+2,499 passed, 4 warnings, 132.07s; 8,389/8,389 statements and 3,110/3,110
+branches (100%/100%). Exact test container
+`cgprofile-gate-757826-1791667475` was verified under `dev-gates.slice` at 3
+CPUs and then removed by the runner. It emitted a temporary-socket ownership
+diagnostic in an unprivileged fixture, but the test suite passed. This is
+coverage evidence only, not the separate package `unit` or canary gate.
+
+Run-Gate `assay-r1` was started after a dry run and did not create a test
+container. Admission observed 937 MiB of 1,536 MiB used, with 1,063 MiB
+required; the run waited up to 300 seconds and was canceled before launch so
+the report/packet could be committed before the final gates. It exited 2 from
+the cancellation and produced no assay verdict. It must be rerun on the final
+quiet tree after capacity is available. A separate agent's container was
+left untouched.
+
+The final report and this ruling are being committed before refreshing the
+Sol packet's `input_revision`; the packet commit will then precede all final
+short gates. Therefore neither the `db6d` selftest nor coverage receipt is
+claimed as exact final-HEAD evidence after that commit. Outstanding gates are
+cgroup-profiler unit/coverage/canary and Nyxloom lint; Run-Gate selftest,
+assay-r1, assay-r3, and doctor; then a fresh Sol P5 review. Long exact-tree
+R2/full-gate checks remain release blockers. Assay's separate registered
+`tester-unified` gate remains a release hold for its next version `9.1.0`;
+cgroup-profiler's first combined P1/P6 release is `1.0.0`, with no speculative
+`1.1.0` absent material changes. No merge, release, install, or daemon
+replacement was performed.
+
+### RW-554 — 2026-10-11 00:58:02 UTC — placement refusal must not launch an unplaced child
+
+P5 review round 1 found that the exec and bare-host runners issue `ctl start`
+before the token-bearing child exists. The daemon consequently sees no target
+PID and can return a successful profiling session whose placement block says
+`place-refused:no-target-pids`; the existing consumer then runs the lane body
+unplaced. The P5 handoff C6 already settles the intended behavior: keep the
+wrapper blocked until the daemon has resolved and read back placement, and
+terminate that wrapper before the lane body on an explicit placement refusal.
+
+This ruling binds the consumer contract to that C6 decision and supersedes
+the contradictory warning-and-run wording in Run-Gate SPEC R-43l and its RG-55
+backlog proposal. For exec or bare-host lanes that send `--place`, the runner
+must establish a token-bearing, non-body wrapper first; release the body only
+after the daemon reports an applied placement with the verified leaf and
+limits. If the daemon returns a session with `placement.error`, or without the
+required applied placement facts, close the launch gate, terminate and reap
+the wrapper, stop/finalize that session, and return a disclosed infrastructure
+refusal before any candidate or lane body executes. Release any admission
+reservation on that path. This is not a candidate test failure and must not be
+counted as a mutation result. The body may never be silently run unplaced
+after an explicit refusal.
+
+R-36h remains in force for ordinary optional profiling failures: when no
+placement request was made, or the profiler/transport is unavailable before
+it can return a placement result, the existing disclosed non-verdict fallback
+remains unchanged. This narrow distinction is about honoring an explicit
+placement refusal, not allowing measurement or host load to alter a test
+verdict. Synchronize SPEC, README, DESIGN-GUIDE, CONSUMERS, LANE-AUTHORING,
+and the RG-55 backlog with this ruling; retain contract v1.1's daemon-level
+semantics that an ordinary refused placement may still create a session.
+Required acceptance oracle: for both exec and bare-host, observe the child
+blocked before body entry, prove successful placement/read-back precedes the
+release signal, and prove a refusal exits before a body marker is written,
+cleans the wrapper/session/reservation, and records no candidate verdict.
+
+### RW-555 — 2026-10-11 01:25:21 UTC — validate the rev-63 placement barrier live
+
+Rev 63 adds a token-bearing ready/continue wrapper for explicit exec and
+bare-host placement requests. The child body remains blocked until
+`ctl start` returns and Run-Gate validates the placement leaf and applied
+limits. A daemon placement refusal or incomplete/loose readback aborts the
+wrapper, stops/finalizes any returned session, and infra-refuses before the
+body; R-36h fallback remains for profiler/transport unavailability before a
+placement result. R-45 remains a bounded wait-then-proceed observation, not
+an atomic reservation; RG-56 remains OPEN under RW-283/RW-545.
+
+The real `cgprofile-host-daemon` was already healthy and idle; it was neither
+restarted nor replaced. Four command-lane probes used the rev-63 working tree
+and the fixture `tests/fixtures/rg55-p5-placement-live/run-gate.toml` over the
+Docker-exec carrier. Exec success (`s-20261011T012235Z-ad35`) and bare-host
+success (`s-20261011T012309Z-9bbe`) each moved one target PID to a verified
+`dev-gates.slice/rg-*` leaf with `memory.high=64 MiB` and `memory.max=128
+MiB`; both bodies printed their success marker only after Run-Gate disclosed
+the profiling session. A live status read during bare-host execution showed
+the exact leaf, one PID moved, and one live session. Both lanes passed.
+
+Exec refusal (`s-20261011T012255Z-d3f7`) and bare-host refusal
+(`s-20261011T012326Z-e719`) requested 64 GiB above the 3-GiB gates-slice
+limit. The daemon returned `place-refused:over-slice`, zero PIDs moved, and no
+leaf. Both Run-Gate invocations returned infrastructure `ERROR` (CLI exit 2)
+before their unique body markers; the returned sessions were stopped, no
+Assay candidate verdict was created, and a separate status query showed zero
+sessions and leaves. The bounded one-second R-45 wait expired and proceeded
+with a warning in each refusal case, as specified. The probe runner
+`rg55-p5-placement-probe-runner` (exact ID
+`e923da32bc2eae8f514808c724445a6b4f05c0225ccf0a3900271d1049993556`) was
+verified in `dev-gates.slice` at 3 CPUs / 512 MiB and removed by its exact
+name. Memory PSI `full avg10` was 0.00% at the launch/completion checks.
+
+On the same source checkpoint, `py_compile`, `git diff --check`, and the
+targeted placement/exec/bare-host pytest selection passed: 71 passed, 1,646
+deselected (6.05s). The live receipts and full details are in
+`run-gate-WAVE-RG55-P5-REPORT.md`. No gate, merge, release, or daemon change
+is claimed by this ruling; freeze the final candidate and run its registered
+gates plus fresh Sol review next.
+
+### RW-556 — 2026-10-11 01:47:31 UTC — fix the rev-63 stdlib import oracle
+
+The registered Run-Gate `selftest` on frozen tree `adcfc4958c5be92ec026b6e05624f5a32970aea6`
+ran in exact container `run-gate-vbpub-selftest-962190-1791682978`, placed
+under `dev-gates.slice` and read back at `NanoCpus=3000000000`. It exited 1
+after 153.0 seconds: 1,873 passed, 2 skipped, and one failure in
+`test_no_stdlib_violations`. The sole failure was the test's own stdlib
+allowlist omitting `select`, which rev 63 imports for the ready/continue
+placement barrier. The package code and behavioral tests were not implicated.
+
+Added `select` to that closed test allowlist with a comment tying it to the
+readiness pipe; the focused stdlib/placement/exec/bare-host selection then
+passed 72 tests with 1,645 deselected. The subsequent complete selftest and
+remaining Run-Gate short gates must run on the refreshed frozen revision;
+the failed `adcfc` result remains part of the record, not a passing receipt.
+
+### RW-557 — 2026-10-11 02:03:19 UTC — repair changed-area coverage on the P5 barrier
+
+The registered Run-Gate `selftest` on frozen tree
+`992cce2291097ed2eac8bec42913d978aa9267bb` completed its pytest suite
+successfully (1,874 passed, 2 skipped), but the branch-aware changed-area
+judge failed: 980/1,067 changed executable lines (91.8%) and 452/476 changed
+branches. The misses were concentrated in the newly added placement-barrier
+EOF/timeout/pipe-cleanup/abort paths, the exec and bare-host preflight and
+refusal cleanup paths, and daemon-watch fallback suppression. This is a real
+coverage failure; passing pytest does not waive the 100% line-and-branch bar.
+
+Binding resolution: add behavioral tests for those real paths, including
+zero-timeout and unreadable readiness, empty/partial EOF, overlong marker,
+Popen/readiness failure cleanup, missing control channel, abort escalation,
+non-daemon and failing daemon finalization, missing placement token,
+preflight fallback, BaseException cleanup, and inflight-write cleanup with
+and without a barrier. Exercise the healthy daemon-watch path with an
+advancing injected clock so the local fallback is demonstrably not polled.
+Remove the redundant nonce checks whose false branches are impossible under
+the proc-assignment invariant; do not introduce coverage exclusions or lower
+the gate. `py_compile` and `git diff --check` passed after the repair edits,
+but these edits are not yet covered by a registered test result. Commit the
+repair, freeze a fresh review packet against that repair commit, then require
+a new exact-tree selftest before proceeding. No merge or release is authorized
+by this ruling.
+
+### RW-558 — 2026-10-11 02:12:54 UTC — make the forwarder-stop oracle deterministic
+
+The registered `selftest` on frozen tree
+`0ca078342d5f9c2bb933c93cd05f895b75a790d2` ran in exact container
+`run-gate-vbpub-selftest-984455-1791684549`, with `NanoCpus=3000000000`,
+`Memory=1073741824`, and parent `dev-gates.slice`. Pytest completed with
+1,908 passed and 2 skipped in 151.49 seconds; the separately read Run-Gate
+history records FAIL/exit 1 and 156.4 seconds. The changed-area judge reached
+1,063/1,064 executable lines and 469/470 branches. Its sole miss is the
+false/stop exit of the new `StdinForwarder` loop at `run-gate.py:6124`.
+
+The test intended to stop the forwarder from its fake destination's first
+write, but the helper thread could reach that write before the test assigned
+the forwarder reference. The resulting `AttributeError` is a test-fixture
+race, not a production failure; the warning was preserved in the gate log.
+Resolution: gate the fake source read with explicit `started`/`release`
+events, connect the destination after observing `started`, then release the
+chunk. This deterministically proves that a destination close stops another
+read iteration. Re-freeze the packet after this test-only repair and rerun
+the registered selftest; no other gate should start until it is green.
+
+### RW-559 — 2026-10-11 02:20:18 UTC — pass P5 changed-area selftest on the frozen tree
+
+The registered Run-Gate `selftest` on frozen tree
+`4ba9bd80a1ab21442d0dea69c35be6fe40626fd5` passed in exact container
+`run-gate-vbpub-selftest-989050-1791684917`. The container was created with
+`--cpus=3` and immediately updated/read back at `NanoCpus=3000000000`,
+`Memory=1073741824`, parent `dev-gates.slice`. Pytest completed with 1,908
+passed, 2 skipped, 1 existing fixture-deprecation warning in 153.26s; the
+changed-area judge passed at 1,064/1,064 executable lines and 470/470
+branches. Run-Gate's separately read history records PASS/exit 0, 158.1s,
+started `2026-10-11T02:15:17Z`. Host memory PSI full avg10 remained 0.00% at
+the 90-second health check and completion. DAMON was unavailable with `EBUSY`
+because host `DAMON_STAT=Y`; the selftest verdict was still PASS and no
+functional judgment depended on profiling.
+
+Binding resolution: the RW-558 synchronization is accepted as a deterministic
+oracle; the branch-aware coverage bar remains unchanged. Continue with the
+remaining Run-Gate short gates (`assay-r1`, `assay-r3`, `doctor`) and a fresh
+Sol P5 review on the next report/packet freeze. No merge or release is
+authorized by this ruling.
+
+### RW-560 — 2026-10-11 03:31:28 UTC — accept P5 repairs for provisional integration
+
+Fresh GPT-6-Sol xhigh review session `01a128d2-601a-7331-b2f2-78672733648d`
+returned **ACCEPT** for P5. Its report is
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REVIEW-round2.md`.
+The initial reviewed tree was `4bb006a9f06108dd9b1513f8fe900387be9d4297`;
+the review repaired three blockers: strict profiler response status/type
+validation, rejection of malformed or wrong-session watch events, and binding
+successful placement readback to the exact token-derived gates-slice leaf.
+The repaired code checkpoint is `3b6a4ab4146d51f7f56547411db3c3d60e019763`;
+the review artifact-only commit is `f05464eb9e6fc3b271c184ae80a25fc52c615bb1`.
+
+On the repaired code checkpoint, the separately read Run-Gate histories are
+PASS for selftest (1,917 passed, 2 skipped; 1,094/1,094 changed executable
+lines and 492/492 branches), assay-r1 (R0/R1 PASS; 1,624/1,624 lines and
+492/492 branches), and assay-r3 (both canaries rejected, zero survivors).
+Doctor reported 21 OK, zero failures, one known linked-worktree warning, and
+one informational stale-lock notice. The review also recorded live exec and
+bare-host success/refusal placement probes against the real daemon; the body
+was blocked on refusal and no session/leaf remained. The tracked footprint
+manifest and byte-identical contract mirrors were verified. `main` and
+`origin/main` remain at `efaf112945233e3a8f6d53f2fef136439d18d089`, and the
+candidate is clean at the review artifact commit before this log update.
+
+This ACCEPT authorizes provisional integration under the operator's standing
+rule; it is not release approval. Exact-current-tree assay-r2 and gate-full,
+all P1/P6 survivor dispositions, and Assay's own package release gate remain
+release holds. No package release, installation, or final daemon transition is
+recorded here.

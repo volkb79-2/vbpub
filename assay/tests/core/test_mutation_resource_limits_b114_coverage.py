@@ -89,9 +89,13 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
             (str(cgroup_tree[2]), 31, True, 16, True, 4096, True, True),
             (str(cgroup_tree[1]), 31, True, 16, True, 4096, True, True),
         ),
+        path_event_counters=(
+            (str(cgroup_tree[2]), 2, 3, 4, 5, 6),
+            (str(cgroup_tree[1]), 2, 3, 4, 5, 6),
+        ),
     )
     (cgroup_tree[2] / "pids.events").write_text("max 3\n", encoding="ascii")
-    (cgroup_tree[1] / "memory.events").write_text(
+    (cgroup_tree[2] / "memory.events").write_text(
         "max 4\noom 4\noom_kill 5\noom_group_kill 7\n", encoding="ascii"
     )
     evidence = ResourceLimitEvidence.between(before, _read(cgroup_tree))

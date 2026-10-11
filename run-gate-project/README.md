@@ -44,7 +44,8 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    OFF its hardcoded `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
-   table — `memory`, `memory_swap`, `cpu_weight`/`io_weight` advisory,
+   table — `memory`, optional `memory_max` placement ceiling for daemon-backed
+   exec/bare-host lanes, `memory_swap`, `cpu_weight`/`io_weight` advisory,
    `shared`, and — RG-48, `R-29` amended — `cpus`, a decimal string →
    `docker run --cpus`, with an environment-level fallback
    `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
@@ -58,10 +59,43 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `assay` and `command` lanes since RG-41; meaningless, but accepted, on
    host/exec lanes, which start nothing to watch. The documented shape for
    a mutation lane is a generous assay `budget` +
-   `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
+   `judge.mutation.budget_per_candidate` + this key; progress output is
+   scoped to the latest Assay run header, with rates and ETAs based on that
+   run's candidate events ([design rationale](docs/DESIGN-GUIDE.md#progress-is-scoped-to-the-current-assay-run)),
+   `profile` (RG-55:
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
-   `R-43h`).
+   `R-43h`); and `resource_observer = "cgprofile"` for an Assay or command
+   lane in `tester-unified`, which exposes only the read-only observer socket
+   to recover hidden cgroup ancestors for native R2. A command wrapper that
+   invokes Assay must preserve the inherited observer-path variable for its
+   Assay process. It does not expose
+   `ctl.sock` or change the lane's private cgroup namespace. See the
+   [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
+   and [consumer setup](CONSUMERS.md#native-r2-resource-observer).
+   The project-level `[profile]` table also accepts
+   `transport = "auto" | "exec" | "socket"`, `socket_path`, and bounded
+   `admission_wait`; `auto` uses the mounted Unix socket only after a
+   successful version probe and otherwise uses the Docker-exec carrier.
+   Daemon-backed exec and bare-host lanes may request measured memory
+   placement; ephemeral lanes use the selected, verified gate cgroup parent.
+   The inherited tester environment resolves it from `cgroup_slice`, then
+   `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`; a missing selected
+   value is a hard error, never an unconfined Docker launch. Long-running
+   application stacks receive `$CGROUP_PARENT_DEV_BACKGROUND` separately
+   through the environment's declared `forward_env`.
+   A daemon watch is one reader per session and records readings/verdicts;
+   `killed` follows the declared stall path and `reported` is one warning,
+   never a profiling verdict. When the daemon/watch is unavailable, the
+   in-process assay watch uses the plan's calibrated cadence and pauses its
+   idle clock while host memory PSI `full avg10` is above 5. Before a
+   daemon-backed lane starts, R-45 admission checks the verified gates slice;
+   any wait is bounded by `admission_wait` (10m default), then the lane
+   proceeds with one warning rather than being refused or changing its
+   verdict. `--dry-run` reports `would-wait` without waiting, reserving
+   capacity, starting a profiler session, or starting the lane. This is an
+   observational headroom check, not an atomic reservation; see the
+   [admission design rationale](docs/DESIGN-GUIDE.md#bounded-headroom-admission-is-observational-not-atomic).
 
 ## Gate and evidence
 
@@ -230,12 +264,17 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    excluded, as it is on every assay lane. The comparison base is
    delegated to the invoking gate request (`judge.base_source =
    "request"`), never hardcoded.
-3. **`assay-r2`** — mutation testing (R2) over the same scope, bare-host
-   and serial (`jobs = 1`, HOST LOAD §6), budget 4h. Bare-host lanes do not
-   have a live stall watcher, so this lane declares no `stall_timeout`. Run separately,
+3. **`assay-r2`** — mutation testing (R2) over the same scope in a private
+   `tester-unified` container, capped at 3 CPUs with one mutant worker.
+   The worker count is one because concurrent candidates would share the
+   tester cgroup's resource-event counters. Its `resource_observer = "cgprofile"` opt-in mounts only the
+   daemon's read-only resource-observer socket; the control socket is not
+   exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
+   the complete host cgroup ancestry required by B145 while keeping the
+   mutation campaign inside its own container. The 4h budget is a lane-level
+   outer bound, not a per-candidate performance verdict. Run separately,
    pre-merge — never a member of `gate-full` (below), so a routine "does
-   this gate clean" check never has to pay for a lane that can take
-   hours.
+   this gate clean" check never has to pay for a lane that can take hours.
 4. **`assay-r3`** — the canary: `tools/canary-run.sh` breaks one
    provably-covered invariant (today: `duration_stats`'s median, flipped
    to a mean) in a disposable copy and asserts the exact test that
@@ -501,6 +540,28 @@ the tool's reason to exist and MUST be implemented + tested:
   distills that history into a COMMITTED `run-gate.footprint.json` —
   budgets other projects and `doctor` can compare against, not just this
   invocation's own number (SPEC `R-44`).
+
+  The v1.1 client opens one daemon watch per session. A daemon `killed`
+  liveness verdict follows the existing stall exit path; `reported` is one
+  warning and never changes the test verdict. The stopped session summary
+  preserves a verified kill if the lane exits before its stream event is
+  read. Shared-scope lanes without placement request reporting rather than
+  authorizing a shared-cgroup kill. If the daemon or its watch is
+  unavailable, the in-process progress fallback uses the assay stream's
+  calibrated cadence and pauses its idle clock while host memory PSI is above
+  the threshold. Host contention is therefore disclosed scheduling state,
+  never a test result. Before a daemon-backed lane starts, gates-slice
+  admission waits for headroom and then proceeds at the configured bound; it
+  does not refuse a lane merely because the host was busy.
+
+  When an exec or bare-host lane requests daemon placement, Run-Gate holds a
+  token-bearing wrapper outside the lane body until the daemon confirms the
+  leaf and reads back the requested limits. An explicit refusal or incomplete
+  read-back aborts the wrapper and returns an infrastructure refusal before
+  the body runs; no mutation candidate or candidate verdict is produced. If
+  the profiler is unavailable before it returns a placement result, the
+  documented R-36h non-verdict fallback still applies. See the
+  [placement launch rationale](docs/DESIGN-GUIDE.md#explicit-placement-is-a-pre-body-launch-gate).
 
 ### Distribution — symlink inside vbpub, copy outside
 

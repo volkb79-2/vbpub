@@ -1615,6 +1615,10 @@ def _sql_env(
         "        if os.environ['FAKE_RC'] == '0' and os.environ['FAKE_OUT'] == 'ASSAY_SQL_QUALIFIED=1\\n':\n"
         "            pathlib.Path(scratch, 'qualified.marker').write_text('ASSAY_SQL_QUALIFIED=1\\n', encoding='utf-8')\n"
         "    print(os.environ['FAKE_RUNNER_CID'])\n"
+        "elif args[:2] == ['update', '--cpus=3']:\n"
+        "    expected = pathlib.Path(os.environ['FAKE_RUNNER_NAME_FILE']).read_text(encoding='ascii')\n"
+        "    if len(args) != 3 or args[2] != expected:\n"
+        "        raise SystemExit(92)\n"
         "elif args[:2] == ['logs', '--follow']:\n"
         "    if os.environ.get('FAKE_HANG_LOGS') == '1':\n"
         "        import time; time.sleep(60)\n"
@@ -1783,16 +1787,32 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     calls = _docker_calls(docker_log)
     assert calls[0] == ["ps", "--no-trunc", "--format", "{{.Names}}"]
     launch = next(call for call in calls if call[:2] == ["run", "-d"])
-    assert "--init" in launch and "--cgroupns=host" in launch
+    launch_index = calls.index(launch)
+    update = ["update", "--cpus=3", args["--runner-name"]]
+    update_index = calls.index(update)
+    # The mock executes the detached runner synchronously, so its in-container
+    # PostgreSQL cleanup may be logged before docker run returns to this update.
+    # Still require the cap update before the host begins following runner logs.
+    assert update_index > launch_index
+    assert update_index < calls.index(["logs", "--follow", _FAKE_RUNNER_ID])
+    assert "--init" in launch and "--cgroupns=host" not in launch
     assert launch[launch.index("--label") + 1] == f"assay.sql-gate.owner={args['--ownership-token']}"
     assert "--cgroup-parent=dev-gates.slice" in launch and "--network=none" in launch
-    assert "--group-add" in launch and launch[launch.index("--group-add") + 1].isdigit()
+    group_ids = [
+        launch[index + 1]
+        for index, value in enumerate(launch[:-1])
+        if value == "--group-add"
+    ]
+    assert group_ids and all(group_id.isdigit() for group_id in group_ids)
+    assert "994" in group_ids
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in mounts
     socket_source = gate_functions.read_text(encoding="utf-8").split("docker_socket=", 1)[1].split()[0]
     assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
+    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in mounts
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in launch
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls
@@ -1888,7 +1908,7 @@ def test_an_ambiguous_runner_conflict_preserves_the_sql_recovery_scratch(
     )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert "could not start the cgroup-visible SQL qualification container" in proc.stderr
+    assert "could not start the observer-enabled SQL qualification container" in proc.stderr
     calls = _docker_calls(docker_log)
     assert not any(call[:2] == ["rm", "-f"] for call in calls)
     runner_cidfile = next(call[call.index("--cidfile") + 1] for call in calls if "--cidfile" in call)
@@ -2323,7 +2343,7 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
     worktree, _commit, _tree = _sql_worktree(tmp_path)
     env, docker_log, harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
     proc = run_bash(
-        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{HEX40}" "dev-gates.slice"',
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{HEX40}" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
         timeout=120,
@@ -2341,7 +2361,7 @@ def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
     if allow is not None:
         env["ASSAY_GATE_ALLOW_SHARED_HOST"] = allow
     proc = run_bash(
-        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice"',
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994"',
         gate_functions=gate_functions,
         env=env,
         timeout=120,

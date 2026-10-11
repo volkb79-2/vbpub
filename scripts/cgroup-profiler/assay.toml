@@ -51,7 +51,12 @@ source_roots = ["lib"]
 base_source = "request"
 
 [lanes.r2.judge.mutation]
-jobs = 2
+# Resource-event counters belong to the shared tester cgroup, not to a
+# candidate process. Concurrent before/after windows could attribute one
+# worker's limit event to another mutant. Keep one candidate active until
+# per-worker cgroups and counter bindings are available; --resume handles
+# the longer campaign without weakening its 24h safety window.
+jobs = 1
 max_mutants = 1500
 operators = [
   "python:compare-swap",

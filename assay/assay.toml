@@ -55,7 +55,7 @@ argv = ["python", "-m", "pytest", "tests", "gate/tests", "-q", "--ignore=gate/te
 # process through the WHEEL nyxloom-trove/nyxloom.toml's gate script builds
 # and installs, never a bind-mounted source copy.
 env = {}
-env_passthrough = ["PATH"]
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 
 # This is the ordinary inner tester phase's budget. The host registered gate
 # has a separate 5h budget for both sequential assay lanes, B145 probes, the
@@ -94,7 +94,7 @@ argv = [
   "--cov-report=json:.assay/coverage-self-qualification.json",
 ]
 env = {}
-env_passthrough = ["PATH"]
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 # Interim B110 guard: this per-invocation cap is failure-only, not a candidate
 # classification rule. A timeout is incomplete; B110 must persist one deadline
 # across retries before another full qualification attempt.
@@ -206,6 +206,7 @@ argv = [
 env = {}
 env_passthrough = [
   "PATH",
+  "ASSAY_RESOURCE_OBSERVER_SOCKET",
   "ASSAY_B105_COVERAGE_SOURCE",
   "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
   "ASSAY_B105_SOURCE_COMMIT",
@@ -308,7 +309,10 @@ argv = [
   "--cov-report=json:.assay/coverage-analysis.json",
 ]
 env = {}
-env_passthrough = ["PATH"]
+# O15/O5 analysis tests invoke real native R2 runs in-process. The outer
+# tester-unified container provides this read-only endpoint; forward its path
+# into the analysis test process so the private cgroup namespace stays intact.
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 budget = "60m"
 allow_argv_append = false
 

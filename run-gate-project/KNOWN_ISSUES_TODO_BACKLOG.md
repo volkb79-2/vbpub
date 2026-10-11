@@ -61,7 +61,7 @@ SPEC §9.
 | RG-40 | `tools/coverage_gate.py` takes its changed-line numbers from `git diff base..HEAD` (committed) but its coverage from the file ON DISK, so running the `selftest` lane with `--allow-dirty` over an uncommitted change reports lines as uncovered that are covered — the two are offset by whatever the working tree added above them | Medium | FIXED 2026-09-08 (rev 37, run-gate-P05) — `_git_added_lines` now diffs `base_rev` alone (working tree, not `HEAD`): byte-identical to the old result on a clean tree, correct on a dirty one, no dirty/clean branch to keep in sync. Red-first proven with a real temp-git-repo regression test |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | FIXED 2026-09-08 (rev 37, run-gate-P05) — assay B066 (`--state-dir`) shipped in assay-v5.2.0, unblocking this; every assay-kind lane on all three runners (container, exec, bare-host) now passes `--state-dir <repo>/.run-gate/assay-state/<project>/`, `repo` (the checkout owning the shared `.git`) being durable by construction even when the judged worktree is not; an older pin refuses by name (R-38's own floor extended to 5.2.0). Verified via the real, executed judge argv (fake-assay end-to-end test); the resume mechanics themselves are assay's own, already covered by assay's suite |
 | RG-44 | `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized | Major | FIXED 2026-09-08 (rev 37, run-gate-P05) — case-folded the match (`signal.lower() in stderr.lower()`); a genuinely gone container on this host's docker no longer wedges the lane with a stale inflight record. Red-first proven with a regression test reproducing the exact reported wording |
-| RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | OPEN 2026-09-08 — reproduced 5/5 identical (dstdns P176, `frontend-unit`+`ui_unit`, all real tests green every time); NOT run-gate's to fix — traced to assay's own R0 exit-code-only evaluation, moved to assay as B078 (design: `assay/nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md`), see disposition in prose section below |
+| RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | CLOSED 2026-09-30 — resolved in Assay B078 (released in assay-v7.1.1); no run-gate fix required, detailed disposition below |
 | RG-46 | a FOLLOWER (a client re-attaching to a lane whose inflight record names a still-alive owner) performs no independent stall detection of its own — `follow_container` arms neither `ProgressWatch` nor `LogStreamWatch`, by design (RW-14: "does NOT remove the container... all three belong to the client that started the run"), so if the OWNER is killed before its own `stall_timeout` fires, the follower just blocks on `docker wait`/`docker logs -f` forever, with nothing left to notice the container is silent | Minor | OPEN 2026-09-08 — found during RG-41's round-2 adversarial review; pre-existing (the same gap already applied to any assay lane declaring `stall_timeout` — `follow_container` has never armed a watch), RG-41 only widens exposure by lane COUNT (5 command lanes vs 3 assay lanes, RG-41's own backlog count). Not fixed as part of RG-41: a follower deciding to act on a stall it detects independently is a real design question (does it save evidence and `rm -f` a container it does not own? at minimum it would need the SAME owner-liveness re-check `promote_follower` already does before acting) that deserves its own scoped decision, not a silent addition to an unrelated item |
 | RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
 | RG-47 | `--worktree` selected the judged files but not `run-gate.toml`, so main's lanes could judge a worktree and hide lanes that existed only there | Major | FIXED 2026-10-04 (rev 47): project and inherited config resolve from the selected worktree, including monorepo-relative projects; missing project config refuses; path and SHA-256 are printed/recorded. Merged duplicate RG-65 here |
@@ -73,7 +73,7 @@ SPEC §9.
 | RG-53 | `coverage_gate.py` ignored `missing_branches` while claiming branch coverage | Minor | FIXED 2026-09-12 (RG-55 wave) |
 | RG-54 | Assay's merge-commit base behavior contradicted the apparent resolved base | Major | CLOSED 2026-09-30 — first-parent behavior is deliberate and false PASS is blocked |
 | RG-55 | no per-lane resource profile was measured or persisted | Major | FIXED 2026-09-12 |
-| RG-56 | profiler-registry admission has no capacity control | Minor | OPEN |
+| RG-56 | profiler-registry admission has no atomic capacity reservation | Minor | OPEN |
 | RG-57 | bare-host lanes did not record resource profiles | Minor | FIXED 2026-09-12 |
 | RG-58 | bare-host `stall_timeout` declarations had no config-load warning | Minor | FIXED 2026-09-12 |
 | RG-59 | daemon-absent profiling warning named the wrong cause | Minor | FIXED 2026-09-12 |
@@ -107,6 +107,7 @@ SPEC §9.
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test are in the candidate; final package acceptance and release pending) |
 | RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
+| RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -4449,67 +4450,59 @@ this entry originally left open:
   MiB / ≥ 70 MiB respectively) — full transcripts in
   `nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`.
 
-Admission control on top of this data (the PSI-gated "wait/refuse before
-starting lane N" mechanism this entry's own bullets sketched) is
-DELIBERATELY not part of this fix — filed forward as **RG-56**, the next
-wave, once real footprint data exists to set a threshold against instead
-of a guessed one (the same "measure first, decide later" posture RG-27
-itself was filed under). This entry's dstdns cross-reference
+Atomic admission control on top of this data was deliberately deferred from
+the measurement-only P1/P2 implementation and remains **RG-56 OPEN**. P5
+consumes measured data only for R-45's bounded, observational headroom
+wait-then-proceed behavior; it does not reserve capacity or close the race
+between concurrent callers. The historical acceptance evidence in this RG-55
+row remains measurement-only. This entry's dstdns cross-reference
 (`docs/testing/RIGOR-COVERAGE-POLICY.md` "Resource-profiling and
-scheduling") is RG-56's to apply, not this package's.
+scheduling") is RG-56's to apply.
 
-## RG-56 — admission control on the profiler registry (next wave after RG-55)
+## RG-56 — atomic admission reservation on the profiler registry (future wave)
 
 **Provenance:** RG-55 plan D-6 (`run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`),
 operator interview 2026-09-12 ("swap usage is never the gate; PSI is").
 
 ### Mechanism
 
-Inputs: the committed `run-gate.footprint.json` (expected footprint per
-lane, RG-55's own D-9), `cgprofile ctl status` (the live daemon's session
-registry — sessions across ALL projects/worktrees, the cross-project
-registry RG-45's direction 2 already asked for — plus host and per-slice
-PSI), and the lane's own `resources` declaration (RG-48). None of these
-exist as an admission SIGNAL today; RG-55 only measures and records them.
+Run-Gate R-45 currently reads a snapshot of the gates slice's memory usage and
+may wait briefly before proceeding. That read does not reserve capacity: two
+callers can observe the same headroom and both start. There is no accepted
+daemon operation that accounts atomically for pending and live demand across
+projects and worktrees. R-45 improves visibility but is not cross-worktree
+capacity control.
 
-### Proposed contract
+### Proposed contract (design-only; not delivered by P5)
 
-Before starting a lane, run-gate WAITS (bounded, with a periodic notice)
-while host memory PSI `full avg10` is above a configured threshold, or
-while the sum of live sessions' expected peaks (from each session's stored
-`meta.expected`) plus this lane's own expected peak exceeds a declared
-headroom for the slice; on the bound expiring, REFUSES (exit 2) naming the
-readings that caused it (the PSI value, or the sessions and their expected
-peaks that summed over headroom). `--allow-pressure` bypasses the wait/
-refusal for one invocation (disclosed). `--dry-run` reports the admission
-decision it WOULD make without ever waiting.
+The future implementation must obtain authoritative host-unit, memory-PSI,
+finite-limit, complete-registry, generation, and checked aggregate-demand
+facts from the daemon. It must reserve a normalized positive
+`reservation_bytes` atomically before an ephemeral container, exec/bare-host
+child, profiler session, or mutation worker starts; a later target-bound start
+binds that reservation to the actual target and verifies placement. Missing,
+stale, incomplete, or unexplained state and unknown demand refuse as
+infrastructure coordination, never as a functional or mutation result.
+Pressure override, wait bounds, lifecycle, provenance, reason codes, and
+dry-run semantics follow the separate corrected RG-56 design-only handoff and
+its dependency/acceptance gates. No slot count is inferred from CPU limits or
+telemetry.
 
-Explicitly NOT built as part of RG-55: run-gate decides no policy until
-real footprint data exists (the estate's R-36-style "measure first, decide
-later" posture) and any threshold set before real data is a guess dressed
-as a decision — the same trap RG-27's own filing named. RG-55 wires the
-registry and the footprint manifest; RG-56 is the wave that spends them on
-an actual go/wait/refuse decision.
+### Oracles (future implementation)
 
-**Cross-reference:** SPEC-V8 S16.6 (ciu gate's admission ledger, keyed on
-the slice cgroup directory) should consume the SAME registry once it
-exists, rather than growing an independent one — see SPEC-V8.md Appendix
-D.6.
+- Prove atomic reservation under concurrent callers; one caller cannot spend
+  the same observed headroom twice.
+- Prove complete live/pending registry reconciliation, owner/generation
+  binding, checked aggregate arithmetic, and refusal on missing or stale facts.
+- Prove exact gates-slice provenance, memory/PSI policy, target-binding and
+  placement read-back, wait/override lifecycle, and dry-run without waiting or
+  reserving.
+- Keep all capacity refusals distinct from lane and mutation verdicts.
 
-### Oracles (sketch, not yet written — needs the real registry first)
+### Status — OPEN (RW-283; future dependency-gated admission wave)
 
-- A fake daemon registry with two live sessions (each carrying a stored
-  `expected.memory_peak_median_bytes`) and a footprint manifest for the
-  candidate lane → assert the three outcomes (admitted immediately, waited
-  then admitted once a live session's PSI notice clears, refused after the
-  bound naming the specific readings).
-- The PSI-threshold path alone, against a fake `/proc/pressure/memory` that
-  starts above threshold and later drops.
-- `--dry-run` never blocks regardless of the fake registry's contents.
-- `--allow-pressure` bypasses a refusal that would otherwise fire, and the
-  bypass is disclosed in the lane's stdout.
-
-### Status — OPEN
+P5 delivers only the non-reserving R-45 behavior specified in `SPEC.md`.
+Do not mark RG-56 fixed based on that wait or its tests.
 
 ## RG-57 — bare-host lanes record no resource profile (RG-55 v1 gap)
 
@@ -4527,7 +4520,7 @@ pid for that child to hand the daemon, so `--target containerid:<lane
 pid>` has nothing correct to name; the daemon cannot be pointed at "this
 bare-host child" by pid the way it is pointed at a container by cgroup.
 
-### Proposed contract
+### Delivered contract
 
 The same env token run-gate already generates for exec/ephemeral lanes
 (`RUN_GATE_PROFILE_SESSION`, contract §4.1) is exported into the bare-host
@@ -5092,6 +5085,80 @@ Both are genuine, reproducible, PRE-EXISTING defects — neither is new,
 neither touches code this package's diff modified, and both were
 confirmed non-deterministic (pass on a retry) before being recorded here
 rather than "fixed" by silently retrying past them without a trace.
+
+## RG-55/P5 — run-gate v1.1 transport, watch, placement, and admission seams
+
+**Provenance:** RG-55 plan D-6 and D-17..D-30; controller rulings RW-29..
+RW-35; interface contract v1.1 §8. This row is the implementation record for
+the policy author, daemon-watch consumer, transport seam, placement requests,
+and R-45 bounded headroom wait delivered by P5. It does not close RG-56.
+
+### Mechanism
+
+The run-gate client currently reaches the optional cgprofile daemon only by
+`docker exec`, samples progress in-process, leaves placement to the ambient
+Docker/systemd parent, and applies its older slice-memory check before a
+lane starts. Those separate paths cannot consume the v1.1 daemon's socket
+carrier, streaming watch, or read-back placement. The old slice-memory check
+also lacked the bounded R-45 disclosure behavior. Cross-worktree atomic
+reservation remains a separate RG-56 problem; P5 does not implement that
+registry protocol.
+
+### Proposed contract
+
+Add one validated `[profile]` transport choice (`auto`, `exec`, or `socket`)
+and socket path, with `auto` selecting the socket only after a successful
+version probe and otherwise using the existing exec carrier. Build one
+contract request and parse one contract response behind both carriers.
+Author the daemon policy from the lane's progress stream and stall settings;
+consume one streaming `ctl watch` per session, falling back to the existing
+in-process watch without changing a verdict because profiling is unavailable.
+For exec and bare-host lanes, request a derived or declared memory placement,
+record the daemon's applied result, and hold a token-bearing wrapper outside
+the lane body until the daemon confirms the leaf and read-back limits. An
+explicit placement refusal or absent/malformed/looser read-back aborts and
+reaps the wrapper and returns an infrastructure refusal before any lane body
+or mutation candidate executes; it is not a candidate verdict. If the profiler
+or transport is unavailable before returning a placement result, retain the
+disclosed R-36h fallback. Before starting a daemon-backed lane, read `ctl host` and wait,
+bounded by `admission_wait`, while the gates slice lacks 10% headroom for the
+lane request; after the bound, proceed with one warning. Never turn host load,
+daemon reachability, transport failure, or profiling data into a lane verdict
+(R-36h); only the declared stall policy may take the existing stall exit path.
+Ephemeral containers resolve their gates parent from the environment's
+`cgroup_slice`, then `cgroup_slice_env`, then the required
+`CGROUP_PARENT_DEV_GATES`; an absent selected source refuses before launch.
+History schema remains 2 and gains nullable `watch` and `placement` fields.
+
+The no-daemon fallback is cadence-aware: a `plan` event arms
+`max(300s, 3 * expect_next_event_within_s)` even before the first candidate,
+and the automatic idle clock pauses while host memory PSI `full avg10` is
+above 5. An explicit `stall_timeout` retains its existing semantics. A watch
+reader that exits is retried once; a second failure falls back in-process, and
+an ended stream without a verdict is never itself a lane verdict.
+
+### Oracles (sketch)
+
+- Assert every socket request against the v1.1 request goldens byte-for-byte;
+  exercise auto fallback, explicit carrier failures, and doctor/dry-run
+  disclosures.
+- With a fake daemon stream, assert readings update the inflight record,
+  `killed` follows the existing stall exit path, `reported` warns once, and
+  an idle stream reattaches once before the in-process fallback.
+- Assert declared and manifest-derived placement requests, host-cap ceiling,
+  placement read-back, and throttling warning for exec and bare-host lanes.
+  A refusal or invalid read-back must abort/reap the wrapper before the body
+  and produce no candidate verdict; ephemeral Docker argv uses the gates slice.
+- With a fake host registry/clock, assert immediate admission, wait-then-
+  proceed after pressure clears, bounded proceed with one warning, and that
+  dry-run never waits. At CLI level, cover all three lane modes: report
+  `would-wait` from read-only probes without sleeping, reserving, starting a
+  profiler session, or starting the lane. Re-prove schema-2 history
+  round-trips with both new nullable fields and run the complete R1/R2/R3
+  gates before release.
+
+### Status — FIXED in P5 implementation; final status closes with the P5
+R1/R2/R3 evidence and release.
 
 ### Update 2026-09-18 (same wave, sixth package) — a fifth data point corroborating the ORIGINAL queue-wait-inside-the-budget-clock hypothesis, with a nuance: partial real progress before the aggregate clock still tripped
 
@@ -5877,3 +5944,44 @@ counters still refuse before mutation. A real candidate resource-limit event
 is classified as infrastructure, never `killed`; unrelated sibling activity
 cannot produce a candidate kill or survivor. No gate/test container joins the
 host cgroup namespace or receives an unbounded host-process view.
+
+## RG-90 — append-only Assay progress leaks the previous run's candidate into the current status
+
+**Status:** FIXED (rev 60; the original stale-candidate report and the
+follow-up malformed-current-run ETA finding are both closed).
+
+**Observed.** Assay appends a `{"event":"run"}` header for every invocation
+to the same progress JSONL path so `--resume` can preserve its history. Run-
+Gate's `ProgressWatch._newest()` previously selected the last
+`candidate_index` anywhere in the file and ignored those run boundaries. A
+new R2 invocation therefore displayed the previous invocation's last
+candidate as current progress. Its fresh file mtime could also make the old
+candidate look newly active; a stale file on re-attach could seed the stall
+clock from an event that did not belong to the current run. Separately,
+Assay preserves campaign-wide `candidate_index` values but restarts `elapsed_s`
+at each run header; dividing those fields directly exaggerates the rate after
+a resume.
+
+**Fix direction.** Treat the latest valid Assay `event = "run"` record as the
+start of the active progress segment. Ignore candidate events before it, and
+when a live watcher sees a newer run header, reset its candidate, ETA, and
+silence baselines. Compute rate from candidate events in that segment and use
+Assay's `pending_total` for the remaining-work estimate when available. Keep
+the file append-only so Assay's own resume history is preserved. Streams
+predating run headers retain their legacy behavior.
+
+The final review also found a related declaration boundary: when a current
+`run` header exists but its `candidates` event omits or invalidates
+`pending_total`, do not fall back to `candidate_total - candidate_index`.
+That index is campaign-wide and its remainder is not authoritative for this
+invocation. The legacy index fallback is limited to streams with no `run`
+header.
+
+**Oracles.** A fresh watcher over old candidates plus a current run header
+reports no candidate progress and cannot stall on the old event. An already
+attached watcher observes the new header, clears prior state, and reports only
+the new run's candidates. A resumed campaign with a high campaign index and
+low run-relative elapsed time reports rate and ETA from current-run candidate
+events and pending work. Same-run movement, re-attach silence, torn-line
+handling, malformed/missing current-run `pending_total`, and legacy streams
+without headers continue to pass.

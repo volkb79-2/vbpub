@@ -35,7 +35,9 @@ def _cgroup_reads_are_isolated_from_the_devcontainer(monkeypatch):
         memory_oom_kill=0,
         memory_oom_group_kill=0,
     )
-    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
+    monkeypatch.setattr(
+        mutation, "read_candidate_resource_counters", lambda **_kwargs: counters
+    )
 
 
 def _checker():

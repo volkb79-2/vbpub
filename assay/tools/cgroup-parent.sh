@@ -9,6 +9,11 @@ PROBE_IMAGE="${ASSAY_CGROUP_PROBE_IMAGE:-tester-unified:local}"
 
 die() { printf 'cgroup-parent: %s\n' "$*" >&2; exit 1; }
 
+# Bash arithmetic is signed and can wrap on an oversized external value.
+fits_memory_arithmetic() {
+  [[ "$1" =~ ^[0-9]{1,18}$ ]]
+}
+
 memory_reserve_bytes=0
 if (($#)); then
   [[ $# -eq 2 && "$1" == --memory-reserve-bytes ]] \
@@ -16,6 +21,9 @@ if (($#)); then
   memory_reserve_bytes="$2"
   [[ "$memory_reserve_bytes" =~ ^[0-9]+$ ]] \
     || die 'memory reservation must be a non-negative byte count'
+  fits_memory_arithmetic "$memory_reserve_bytes" \
+    || die 'memory reservation exceeds the safe RAM-admission arithmetic range'
+  memory_reserve_bytes=$((10#$memory_reserve_bytes))
 fi
 
 slice="${CGROUP_PARENT_DEV_GATES:-}"
@@ -165,16 +173,76 @@ if unit_probe_id="$(
     --memory-swap=128m --pids-limit=64 --read-only --cap-drop=ALL \
     --security-opt=no-new-privileges --user=1003:1003 \
     --tmpfs=/tmp:rw,noexec,nosuid,size=16m \
-    --mount=type=bind,source=/run/systemd/system,target=/run/systemd/system,readonly \
     --mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
-    -e DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus \
-    "$PROBE_IMAGE" sh -c \
-    'set -eu
-     for unit do
-       printf "ASSAY_UNIT_BEGIN=%s\\n" "$unit"
-       systemctl show "$unit" --property=Id,LoadState,FragmentPath --no-pager
-       printf "ASSAY_UNIT_END=%s\\n" "$unit"
-     done' \
+    "$PROBE_IMAGE" sh -c '
+set -eu
+bus_address=unix:path=/tmp/host-system-bus
+busctl_json() {
+  timeout --kill-after=2s 5s /usr/bin/busctl \
+    --address="$bus_address" --no-pager --json=short "$@"
+}
+json_value() {
+  /usr/bin/python3 -I -c '\''
+import json, sys
+payload = json.load(sys.stdin)
+value = payload["data"]
+if isinstance(value, list):
+    if len(value) != 1:
+        raise SystemExit("expected one D-Bus value")
+    value = value[0]
+if isinstance(value, str):
+    if "\n" in value or "\r" in value:
+        raise SystemExit("D-Bus string contains a line break")
+elif type(value) is not int or value < 0:
+    raise SystemExit("D-Bus value is not a string or unsigned integer")
+print(value)
+'\''
+}
+get_unit_path() {
+  local unit="$1" result
+  result="$(busctl_json call org.freedesktop.systemd1 \
+    /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s "$unit")"
+  printf "%s\n" "$result" | json_value
+}
+get_property() {
+  local object_path="$1" interface="$2" property="$3" result
+  result="$(busctl_json get-property org.freedesktop.systemd1 \
+    "$object_path" "$interface" "$property")"
+  printf "%s\n" "$result" | json_value
+}
+emit_unit() {
+  local unit="$1" object_path unit_id load_state fragment_path
+  local control_group memory_max memory_high memory_swap_max memory_current
+  local cpu_quota cpu_weight io_weight
+  object_path="$(get_unit_path "$unit")"
+  case "$object_path" in
+    /org/freedesktop/systemd1/unit/*) ;;
+    *) printf "MISSING unit=%s unsafe-object-path=%s\n" "$unit" "$object_path" >&2; exit 1 ;;
+  esac
+  unit_id="$(get_property "$object_path" org.freedesktop.systemd1.Unit Id)"
+  load_state="$(get_property "$object_path" org.freedesktop.systemd1.Unit LoadState)"
+  fragment_path="$(get_property "$object_path" org.freedesktop.systemd1.Unit FragmentPath)"
+  printf "ASSAY_UNIT_BEGIN=%s\nId=%s\nLoadState=%s\nFragmentPath=%s\n" \
+    "$unit" "$unit_id" "$load_state" "$fragment_path"
+  if [ "$unit" = "$gates_slice" ]; then
+    control_group="$(get_property "$object_path" org.freedesktop.systemd1.Slice ControlGroup)"
+    memory_max="$(get_property "$object_path" org.freedesktop.systemd1.Slice MemoryMax)"
+    memory_high="$(get_property "$object_path" org.freedesktop.systemd1.Slice MemoryHigh)"
+    memory_swap_max="$(get_property "$object_path" org.freedesktop.systemd1.Slice MemorySwapMax)"
+    memory_current="$(get_property "$object_path" org.freedesktop.systemd1.Slice MemoryCurrent)"
+    cpu_quota="$(get_property "$object_path" org.freedesktop.systemd1.Slice CPUQuotaPerSecUSec)"
+    cpu_weight="$(get_property "$object_path" org.freedesktop.systemd1.Slice CPUWeight)"
+    io_weight="$(get_property "$object_path" org.freedesktop.systemd1.Slice IOWeight)"
+    printf "ControlGroup=%s\nMemoryMax=%s\nMemoryHigh=%s\nMemorySwapMax=%s\nMemoryCurrent=%s\nCPUQuotaPerSecUSec=%s\nCPUWeight=%s\nIOWeight=%s\n" \
+      "$control_group" "$memory_max" "$memory_high" "$memory_swap_max" \
+      "$memory_current" "$cpu_quota" "$cpu_weight" "$io_weight"
+  fi
+  printf "ASSAY_UNIT_END=%s\n" "$unit"
+}
+gates_slice="$1"
+interactive_slice="$2"
+for unit in "$gates_slice" "$interactive_slice"; do emit_unit "$unit"; done
+' \
     assay-cgroup-unit-probe "$slice" "$probe_parent"
 )"; then
   :
@@ -265,120 +333,68 @@ verify_installed_slice() {
   esac
 }
 
-# The cockpit has no host system bus or host cgroup namespace, so a bounded,
-# read-only query container is needed to inspect the Docker host's systemd
-# manager. The MDT host-side initialize command verifies the interactive unit
-# before it permits Docker to create the cockpit. At runtime, the kernel
-# hostname identifies the inspected container, and mount/PID namespace checks
-# bind that lookup to this cockpit before its explicit parent is trusted. The
-# bootstrap container also has independent CPU, memory, and PID caps. Verify
-# both units from the host manager before launching any container under the
-# gates tier.
+# The cockpit has no host system bus. Query the Docker host's systemd manager
+# through its read-only system-bus socket, keeping the probe's cgroup namespace
+# private and exposing no host cgroup filesystem. The MDT host-side initialize
+# command verifies the interactive unit before it permits Docker to create the
+# cockpit. At runtime, kernel-hostname plus mount/PID namespace checks bind the
+# Docker lookup to this cockpit before its explicit parent is trusted. The
+# bootstrap container also has independent CPU, memory, and PID caps.
 verify_installed_slice "$probe_parent"
 verify_installed_slice "$slice"
 
-# Only after the host's installed unit is proven do we place a small probe in
-# it. That creates the slice cgroup when it is inactive and lets us read the
-# kernel's effective resource controls and point-in-time RAM headroom.
-if verdict="$(
-  timeout --signal=TERM --kill-after=5s 30s docker run --rm -i \
-    --cgroupns=host --cgroup-parent="$slice" --network=none \
-    --cpus=0.25 --memory=128m --memory-swap=128m --pids-limit=64 \
-    --read-only --cap-drop=ALL --security-opt=no-new-privileges \
-    --user=1003:1003 --tmpfs=/tmp:rw,noexec,nosuid,size=16m \
-    -e "CG_REL=$rel" \
-    -e "CG_MEMORY_RESERVE_BYTES=$memory_reserve_bytes" \
-    -e CGROUP_PARENT_DEV_GATES="$slice" \
-    "$PROBE_IMAGE" sh -s <<'PROBE'
-set -eu
-d="/sys/fs/cgroup${CG_REL}"
-if [ ! -d "$d" ]; then
-  printf 'MISSING %s\n' "$d" >&2
-  exit 1
-fi
-
-read_required() {
-  file="$d/$1"
-  if [ ! -r "$file" ]; then
-    printf 'READ_ERROR %s is absent or unreadable\n' "$file" >&2
-    exit 1
-  fi
-  if value="$(cat "$file" 2>/dev/null)"; then :; else
-    printf 'READ_ERROR could not read %s\n' "$file" >&2
-    exit 1
-  fi
-  if [ -z "$value" ]; then
-    printf 'READ_ERROR %s is empty\n' "$file" >&2
-    exit 1
-  fi
-  printf '%s' "$value"
-}
-
-is_uint() {
+# The same private systemd query provides configured controls and current usage;
+# never switch the probe to the host cgroup namespace or mount host cgroupfs.
+control_group="$(unit_property "$slice" ControlGroup)"
+memory_max="$(unit_property "$slice" MemoryMax)"
+memory_high="$(unit_property "$slice" MemoryHigh)"
+memory_swap_max="$(unit_property "$slice" MemorySwapMax)"
+memory_current="$(unit_property "$slice" MemoryCurrent)"
+cpu_quota="$(unit_property "$slice" CPUQuotaPerSecUSec)"
+cpu_weight="$(unit_property "$slice" CPUWeight)"
+io_weight="$(unit_property "$slice" IOWeight)"
+[[ "$control_group" == "$rel" ]] \
+  || die "Docker-host systemd query returned an unexpected ControlGroup for \"$slice\" (ControlGroup=$control_group expected=$rel)"
+for property_value in "$memory_max" "$memory_high" "$memory_swap_max" "$cpu_quota"; do
+  [[ "$property_value" =~ ^[0-9]+$ ]] \
+    || die "Docker-host systemd query returned a malformed memory or CPU quota property for \"$slice\""
+done
+[[ "$memory_current" =~ ^[0-9]+$ && "$cpu_weight" =~ ^[0-9]+$ \
+  && "$io_weight" =~ ^[0-9]+$ ]] \
+  || die "Docker-host systemd query returned a malformed current-usage or weight property for \"$slice\""
+[[ "$cpu_weight" =~ ^[1-9][0-9]*$ && "$io_weight" =~ ^[1-9][0-9]*$ ]] \
+  || die "Docker-host systemd query returned a non-positive CPU/I/O weight for \"$slice\""
+valid_weight() {
   case "$1" in
-    ''|*[!0-9]*) return 1 ;;
-    *) return 0 ;;
+    [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|10000) return 0 ;;
+    *) return 1 ;;
   esac
 }
+valid_weight "$cpu_weight" && valid_weight "$io_weight" \
+  || die "Docker-host systemd query returned a CPU/I/O weight outside the supported range for \"$slice\""
 
-is_limit() {
-  [ "$1" = max ] || is_uint "$1"
-}
-
-memory_max="$(read_required memory.max)"
-memory_high="$(read_required memory.high)"
-memory_swap_max="$(read_required memory.swap.max)"
-memory_current="$(read_required memory.current)"
-cpu_weight="$(read_required cpu.weight)"
-io_weight="$(read_required io.weight)"
-
-is_limit "$memory_max" || { printf 'INVALID memory.max\n' >&2; exit 1; }
-is_limit "$memory_high" || { printf 'INVALID memory.high\n' >&2; exit 1; }
-is_limit "$memory_swap_max" || { printf 'INVALID memory.swap.max\n' >&2; exit 1; }
-is_uint "$memory_current" || { printf 'INVALID memory.current\n' >&2; exit 1; }
-is_uint "$cpu_weight" || { printf 'INVALID cpu.weight\n' >&2; exit 1; }
-if ! printf '%s\n' "$io_weight" | awk '
-  NF == 2 && ($1 == "default" || $1 ~ /^[0-9]+:[0-9]+$/) \
-      && $2 ~ /^[0-9]+$/ && $2 >= 1 && $2 <= 10000 { next }
-  { invalid = 1 }
-  END { if (NR == 0 || invalid) exit 1 }
-'; then
-  printf 'INVALID io.weight\n' >&2
-  exit 1
-fi
+uint64_max=18446744073709551615
+[[ "$memory_max" != "$uint64_max" ]] || memory_max=max
+[[ "$memory_high" != "$uint64_max" ]] || memory_high=max
+[[ "$memory_swap_max" != "$uint64_max" ]] || memory_swap_max=max
+[[ "$cpu_quota" != "$uint64_max" ]] || cpu_quota=max
 
 configured=0
-[ "$memory_max" = max ] || configured=1
-[ "$memory_high" = max ] || configured=1
-[ "$memory_swap_max" = max ] || configured=1
-[ "$cpu_weight" = 100 ] || configured=1
-[ "$io_weight" = 'default 100' ] || configured=1
-if [ "$configured" != 1 ]; then
-  printf 'UNCONFIGURED %s\n' "$d" >&2
-  exit 1
-fi
-
-printf 'ASSAY_CGROUP_MEMORY_MAX=%s\n' "$memory_max"
-printf 'ASSAY_CGROUP_MEMORY_CURRENT=%s\n' "$memory_current"
-printf 'ASSAY_CGROUP_PARENT_PROBE=OK\n'
-PROBE
-)"; then
-  :
-else
-  probe_status=$?
-  die "could not verify host cgroup slice \"$slice\" and its resource controls (probe exit $probe_status; output: ${verdict:-<empty>})"
-fi
-
-probe_marker="$(printf '%s\n' "$verdict" | sed -n 's/^ASSAY_CGROUP_PARENT_PROBE=//p')"
-memory_max="$(printf '%s\n' "$verdict" | sed -n 's/^ASSAY_CGROUP_MEMORY_MAX=//p')"
-memory_current="$(printf '%s\n' "$verdict" | sed -n 's/^ASSAY_CGROUP_MEMORY_CURRENT=//p')"
-[[ "$probe_marker" == OK && "$memory_max" != *$'\n'* \
-  && "$memory_current" =~ ^[0-9]+$ ]] \
-  || die "cgroup probe returned an incomplete or malformed report for \"$slice\""
+[[ "$memory_max" == max ]] || configured=1
+[[ "$memory_high" == max ]] || configured=1
+[[ "$memory_swap_max" == max ]] || configured=1
+[[ "$cpu_quota" == max ]] || configured=1
+[[ "$cpu_weight" == 100 ]] || configured=1
+[[ "$io_weight" == 100 ]] || configured=1
+[[ "$configured" == 1 ]] \
+  || die "host slice \"$slice\" has only systemd-default resource controls"
 
 if ((memory_reserve_bytes > 0)); then
   [[ "$memory_max" =~ ^[0-9]+$ ]] \
     || die "cannot establish finite RAM headroom for \"$slice\" (memory.max=$memory_max)"
+  fits_memory_arithmetic "$memory_max" && fits_memory_arithmetic "$memory_current" \
+    && fits_memory_arithmetic "$memory_reserve_bytes" \
+    || die "Docker-host systemd query or reserve exceeds the safe RAM-admission arithmetic range for \"$slice\""
   ((10#$memory_current <= 10#$memory_max)) \
     || die "slice \"$slice\" reports memory.current above memory.max"
   available_bytes=$((10#$memory_max - 10#$memory_current))
