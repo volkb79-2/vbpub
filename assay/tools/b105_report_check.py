@@ -706,7 +706,10 @@ def _check_v15_r2(
             if not isinstance(value, str) or _CANDIDATE_ID.fullmatch(value) is None:
                 raise ValueError(f"{name} {field} must be a SHA-256 digest")
 
-    if source_lane.get("env") != {} or source_lane.get("env_passthrough") != ["PATH"]:
+    if source_lane.get("env") != {} or source_lane.get("env_passthrough") != [
+        "PATH",
+        "ASSAY_RESOURCE_OBSERVER_SOCKET",
+    ]:
         raise ValueError("committed qualification lane environment policy differs")
     effective_env = document.get("env_effective")
     if not isinstance(effective_env, dict) or _B105_ARCHIVE_ENV & set(effective_env):

@@ -22,6 +22,10 @@ every new field is optional and every new option is opt-in.
 **RW-43 (2026-09-12, §4.3a):** bare-host lanes — `method: "rusage"`,
 `scope: null`, `source: "rusage-maxrss"`, manifest/`meta.expected`
 `source` provenance.
+**RW-484–RW-487 (2026-10-07, §9):** additive contract-1 native-R2 resource
+observer on a second, observer-only Unix socket. Run-Gate opts in per Assay
+lane; Assay uses it only when its local cgroup namespace specifically hides
+ancestors. The control socket and its verbs are unchanged.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
@@ -524,9 +528,19 @@ New `start` options (all optional, all ignored without `--place`):
 At start, the daemon journals the initial token PID identities and their
 original units, asks systemd to create the transient scope with those PIDs,
 and reads the resulting scope path and delegation properties back from the
-manager. It creates the leaf only below that verified scope, moves each
-validated PID into it through systemd, and enables controllers only after the
-scope root is empty. Later descendants follow the same identity-checked path.
+manager. Before the initial transfer it inventories the complete cgroup
+subtree of each recorded origin systemd unit. If moving the selected PIDs
+would leave a source unit with no live process, placement is refused before
+the transfer as `place-refused:origin-scope-would-empty`; it repeats this
+check immediately before each later move from an origin unit. Unknown or
+inconsistent membership refuses as `place-refused:identity-unavailable`.
+This is a pre-move observation, not a lease: an unrelated process can exit
+between the check and systemd's transfer. If the source unit disappears in
+that race, the daemon never guesses a broader restoration destination; it
+retains the incomplete journal and reports the placement error. It creates
+the leaf only below the verified scope, moves each validated PID into it
+through systemd, and enables controllers only after the scope root is empty.
+Later descendants follow the same identity-checked path.
 The gates slice and scope remain systemd-owned; cgprofile creates/removes only
 its exact leaf. On stop, surviving processes are restored to their recorded
 origins before the leaf is removed and the empty scope is stopped. Failed or
@@ -649,6 +663,8 @@ ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 (systemd refused or could not verify the delegated scope),
 `place-refused:no-target-pids`, `place-refused:no-host-proc-view`,
 `place-refused:identity-unavailable`, `place-refused:recovery-state-unavailable`,
+`place-refused:origin-scope-would-empty` (the requested transfer would empty
+an original systemd unit and make exact restoration unavailable),
 `place-refused:parent-not-gates-slice` (scope path or ownership failed
 verification), `bad-policy` (an unparsable policy
 option, or a requested kill that cannot be safely enforced — exit 2, the
@@ -675,3 +691,106 @@ for completeness).
    containers stay docker-capped; requested numbers are disclosed as
    `resources.memory`/manifest-derived (`× 1.5`, "derived").
 4. History/inflight records gain `watch` and `placement` (nullable).
+
+## 9. Native-R2 resource observer (RW-484–RW-487)
+
+The daemon exposes a second AF_UNIX listener at
+`/run/cgprofile/resource-observer.sock`. It is distinct from
+`/run/cgprofile/ctl.sock`; a read-only bind of the control socket would still
+expose its control verbs. The observer listener belongs to the existing
+cgprofile daemon and performs no placement or cgroup write.
+
+### 9.1 Request and response
+
+One newline-delimited JSON request per connection:
+
+```json
+{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
+```
+
+The request has exactly the three wire keys shown, exactly one argument
+(`thread_id`), and a positive integer native TID. The listener accepts only
+`resource-limits`; it refuses `start`, `stop`, `place`, and every other verb.
+The complete request line, including its terminating newline, is bounded to
+4096 bytes. A larger complete line or an unterminated request that grows past
+that limit receives `bad-argument` and is never dispatched. The server
+enforces one absolute five-second deadline; a request arriving at the deadline
+is not dispatched. The daemon requires `SO_PEERCRED`; the existing daemon UID
+allowlist, when configured, also applies to this listener.
+
+Success has this shape (values abbreviated):
+
+```json
+{"ok":true,"contract":1,"cgroup_version":2,"thread_id":1234,
+ "gates_slice":"/dev.slice/dev-gates.slice","cgroups":[
+  {"path":"/dev.slice/dev-gates.slice/rg-abc","mount_id":42,
+   "pids_max_present":true,"pids_max":null,
+   "memory_max_present":true,"memory_max":1073741824,
+   "pids_events":{"max":0},
+   "memory_events":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0}}
+ ]}
+```
+
+`cgroups` is ordered from the peer's leaf through every ancestor to `/`.
+Each entry carries the canonical hierarchy path, selected mount ID, limit
+presence/value pairs, and event maps (or `null` when the controller exposes
+no such event file). An absent limit is `present:false,value:null`; an
+unlimited limit is `present:true,value:null`. A finite limit requires its
+matching event file. The response contains no PID/TID list, process listing,
+caller-selected path, or sibling cgroup data. A refusal uses the ordinary
+contract-1 error object, with `bad-argument`, `peer-refused`,
+`observer-refused`, or `daemon-error` as applicable.
+
+### 9.2 Peer binding and path derivation
+
+The daemon takes PID and UID only from `SO_PEERCRED`. It proves the requested
+TID is uniquely present in that peer's live task set, checks the host-to-
+namespace `NSpid` mapping, and requires all peer threads to share one cgroup,
+effective UID, filesystem credentials, and capability state. It rechecks
+process start time and cgroup membership after sampling. The daemon derives
+the cgroup path from procfs; requests cannot name another PID or path. It
+verifies `cgroup.procs` DAC permissions for the peer at every sampled
+ancestor, the hierarchy's mount identity, and the path's membership beneath
+the configured gates slice before returning counters.
+
+Checking every ancestor's `cgroup.procs` also closes thread-only migration:
+Linux's [cgroup-v2 migration rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#core-interface-files)
+require a writer moving a TID through `cgroup.threads` to have write access to
+`cgroup.procs` at the source/destination common ancestor. Since the observer
+walks the peer's ancestry through `/`, a peer that passes the check cannot
+move a process or thread to an unsampled sibling cgroup. The observer does not
+need to enumerate or trust sibling destinations.
+
+The daemon's cgroup namespace is private. For an outside peer, procfs can
+therefore report a path with leading `..` components. The daemon accepts such
+a path only when the full-root cgroup2 mount's `mountinfo` root consists of
+exactly the same number of leading parent components. It strips only that
+verified prefix. A `/` mount root permits no parent components. A mismatched
+prefix, non-root mount, nested mount/overmount, noncanonical path, or path
+outside the gates slice refuses the query.
+
+### 9.3 Consumer rules
+
+Run-Gate's closed `resource_observer = "cgprofile"` lane key is legal only
+for an Assay lane or command lane in `tester-unified`. The explicit lane
+declaration is the opt-in; command wrappers that launch Assay R2 preserve the
+inherited endpoint variable for that process. The observer remains a
+read-only query bound to the command's own peer. Before launch Run-Gate verifies the fixed host
+socket's type and ownership/mode relationship to its root-owned parent;
+missing or unsafe state is an infrastructure refusal. It mounts only the
+observer socket read-only into the test container, adds the observed socket
+GID, and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. It
+does not mount `ctl.sock`, change PID/cgroup/network namespaces, or add a
+Docker socket.
+
+Assay first attempts its existing local B145 reader. It uses the configured
+observer only when the local reader specifically proves that the private
+cgroup namespace hides ancestors. Other local failures do not fall through.
+The daemon accepts only a peer whose derived leaf is a descendant of the
+configured gates slice. It returns that peer's complete canonical ancestry
+through `/`, with per-path resource limits and event counters; it exposes no
+descendant or sibling cgroups. Per-path samples are compared around each candidate;
+a shared-ancestor delta without the same candidate-leaf delta aborts the lane
+before assigning a candidate bucket. Any endpoint, identity, path, mount,
+counter, or attribution uncertainty remains `ERROR/EXEC_FAILED`, never a
+kill or survivor.

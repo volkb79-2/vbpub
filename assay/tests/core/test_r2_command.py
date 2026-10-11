@@ -82,7 +82,7 @@ def test_r2_transform_refuses_non_string_tokens_without_guessing():
 def test_collection_digest_is_ordered_duplicate_preserving_utf8_byte_netstrings():
     ids = ("tests/test_a.py::test_é", "tests/test_a.py::test_é", "z")
     expected_payload = b"".join(
-        str(len(encoded)).encode("ascii") + b":" + encoded + b"," 
+        str(len(encoded)).encode("ascii") + b":" + encoded + b","
         for encoded in (node_id.encode("utf-8") for node_id in ids)
     )
     digest = hashlib.sha256(expected_payload).hexdigest()

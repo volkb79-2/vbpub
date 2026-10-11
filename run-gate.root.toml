@@ -21,6 +21,10 @@ cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 # the gate container. This is a forwarded fact only; the gate container itself
 # remains placed in the sibling gates tier above.
 forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
+# Gate containers inherit an explicit CPU limit; lane-level resources may
+# tighten it for workloads with a smaller declared budget.
+[environments.tester-unified.resources]
+cpus = "3"
 
 # These names are ordinary declared environments. Their mode, not their
 # spelling, selects execution: `host` remains the former default container;

@@ -9,6 +9,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from gate.tests.support import PROJECT_ROOT
 
 SCRIPT = PROJECT_ROOT / "tools" / "cgroup-parent.sh"
@@ -84,10 +86,10 @@ if args and args[0] == "exec":
     )))
     raise SystemExit(int(os.environ["HOST_EXEC_EXIT"]))
 if args and args[0] == "wait":
-    # docker wait succeeds as a transport while returning the container's own
-    # nonzero exit status on stdout.
+    # docker wait returns the container's own status on stdout, independently
+    # of whether the Docker CLI transport itself succeeded.
     print(os.environ["SYSTEMCTL_EXIT"])
-    raise SystemExit(0)
+    raise SystemExit(int(os.environ.get("CGROUP_TRANSPORT_EXIT", "0")))
 if args and args[0] == "logs":
     print(os.environ["SYSTEMD_OUTPUT"])
     raise SystemExit(0)
@@ -109,58 +111,66 @@ if is_unit_probe:
         raise SystemExit(125)
     print(probe["id"])
     raise SystemExit(0)
-with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
-    stream.write("cgroup\n")
-
-script = sys.stdin.read().replace("/sys/fs/cgroup", os.environ["FAKE_CGROUP_ROOT"])
-docker_env = os.environ.copy()
-for index, arg in enumerate(args[:-1]):
-    if arg == "-e" and args[index + 1].startswith("CG_REL="):
-        docker_env["CG_REL"] = args[index + 1].split("=", 1)[1]
-    if arg == "-e" and args[index + 1].startswith("CG_MEMORY_RESERVE_BYTES="):
-        docker_env["CG_MEMORY_RESERVE_BYTES"] = args[index + 1].split("=", 1)[1]
-proc = subprocess.run(["sh", "-s"], input=script, capture_output=True,
-                      text=True, env=docker_env, check=False)
-sys.stdout.write(proc.stdout)
-sys.stderr.write(proc.stderr)
-if os.environ.get("CGROUP_TRANSPORT_EXIT") is not None:
-    raise SystemExit(int(os.environ["CGROUP_TRANSPORT_EXIT"]))
-raise SystemExit(proc.returncode)
+raise SystemExit(2)
 ''',
         encoding="utf-8",
     )
     docker.chmod(0o755)
-    cgroot = tmp_path / "cgroupfs"
-    cgdir = cgroot / "dev.slice" / "dev-gates.slice"
-    if not verdict.startswith("MISSING"):
-        cgdir.mkdir(parents=True)
-        defaults = {
-            "memory.max": "8589934592\n",
-            "memory.high": "max\n",
-            "memory.swap.max": "8589934592\n",
-            "memory.current": "1073741824\n",
-            "cpu.weight": "100\n",
-            "io.weight": "default 100\n",
-        }
-        if verdict.startswith("UNCONFIGURED"):
-            defaults.update({
-                "memory.max": "max\n",
-                "memory.swap.max": "max\n",
-            })
-        defaults.update(cgroup_values or {})
-        for filename, value in defaults.items():
-            path = cgdir / filename
-            if value is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_text(value, encoding="ascii")
+    resource_values = {
+        "ControlGroup": "/dev.slice/dev-gates.slice",
+        "MemoryMax": "8589934592",
+        "MemoryHigh": "18446744073709551615",
+        "MemorySwapMax": "8589934592",
+        "MemoryCurrent": "1073741824",
+        "CPUQuotaPerSecUSec": "18446744073709551615",
+        "CPUWeight": "100",
+        "IOWeight": "100",
+    }
+    if verdict.startswith("UNCONFIGURED"):
+        resource_values.update({
+            "MemoryMax": "18446744073709551615",
+            "MemorySwapMax": "18446744073709551615",
+        })
+    legacy_names = {
+        "memory.max": "MemoryMax",
+        "memory.high": "MemoryHigh",
+        "memory.swap.max": "MemorySwapMax",
+        "memory.current": "MemoryCurrent",
+        "cpu.weight": "CPUWeight",
+        "io.weight": "IOWeight",
+    }
+    for key, value in (cgroup_values or {}).items():
+        name = legacy_names[key]
+        if value is None:
+            resource_values.pop(name, None)
+            continue
+        value = value.strip()
+        if value == "max":
+            value = "18446744073709551615"
+        if key == "io.weight":
+            value = value.split()[-1] if value else ""
+        resource_values[name] = value
+
+    if systemd_output is None:
+        if verdict.startswith("MISSING"):
+            systemd_output = (
+                "Id=dev-gates.slice\nLoadState=not-found\nFragmentPath="
+            )
+        else:
+            systemd_output = "\n".join(
+                [
+                    "Id=dev-gates.slice",
+                    "LoadState=loaded",
+                    "FragmentPath=/etc/systemd/system/dev-gates.slice",
+                    *(f"{key}={value}" for key, value in resource_values.items()),
+                ]
+            )
     env = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOCKER_ARGV_LOG": str(argv_log),
         "CALL_ORDER": str(call_order),
         "UNIT_PROBE_STATE": str(tmp_path / "unit-probe-state.json"),
         "UNIT_PROBE_RUN_MODE": unit_probe_run_mode,
-        "FAKE_CGROUP_ROOT": str(cgroot),
         "HOSTNAME": "assay-probe-test",
         "HOST_CONFIGURED_HOSTNAME": KERNEL_HOSTNAME,
         "HOST_CGROUP_PARENT": container_parent,
@@ -186,6 +196,7 @@ raise SystemExit(proc.returncode)
             ),
         )),
         "SYSTEMCTL_EXIT": str(systemctl_exit),
+        "CGROUP_TRANSPORT_EXIT": str(cgroup_transport_exit or 0),
     }
     if slice_name is not None:
         env["CGROUP_PARENT_DEV_GATES"] = slice_name
@@ -222,8 +233,8 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 9
-    parent_call, identity_call, unit_call, owner_check_call, wait_call, logs_call, remove_check_call, rm_call, cgroup_call = calls
+    assert len(calls) == 8
+    parent_call, identity_call, unit_call, owner_check_call, wait_call, logs_call, remove_check_call, rm_call = calls
     assert parent_call[:2] == ["inspect", KERNEL_HOSTNAME]
     assert (
         "{{.Id}}|{{.Config.Hostname}}|{{.HostConfig.CgroupParent}}|{{.State.Running}}"
@@ -238,16 +249,15 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert "dev-gates.slice" in unit_call
     assert "dev-interactive.slice" in unit_call
     assert "source=/run/dbus/system_bus_socket" in " ".join(unit_call)
-    assert "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/host-system-bus" in " ".join(unit_call)
+    assert "--cgroupns=private" in unit_call
+    assert "--cgroupns=host" not in unit_call
+    assert "source=/sys/fs/cgroup" not in " ".join(unit_call)
     assert owner_check_call[0:2] == ["inspect", "f" * 64]
     assert remove_check_call[0:2] == ["inspect", "f" * 64]
     assert wait_call == ["wait", "f" * 64]
     assert logs_call == ["logs", "f" * 64]
     assert rm_call == ["rm", "f" * 64]
-    assert "--cgroupns=host" in cgroup_call
-    assert "--cgroup-parent=dev-gates.slice" in cgroup_call
-    assert "--network=none" in cgroup_call
-    assert "CG_REL=/dev.slice/dev-gates.slice" in " ".join(cgroup_call)
+    assert all(call[0] != "run" for call in calls[3:])
 
 
 def test_unit_probe_name_collision_never_removes_the_existing_container(
@@ -292,10 +302,6 @@ def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
         tmp_path,
         "OK",
         slice_name="dev-gates.slice",
-        systemd_output=(
-            "Id=dev-gates.slice\nLoadState=loaded\n"
-            "FragmentPath=/etc/systemd/system/dev-gates.slice"
-        ),
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -306,7 +312,6 @@ def test_installed_systemd_slice_is_checked_before_docker_probe(tmp_path: Path):
         "unit",
         "unit-owner",
         "unit-owner",
-        "cgroup",
     ]
 
 
@@ -376,15 +381,22 @@ def test_truncated_systemd_output_with_zero_container_exit_is_refused(
 
 
 def test_missing_or_unconfigured_slice_is_refused(tmp_path: Path):
-    for verdict in (
-        "MISSING /sys/fs/cgroup/dev.slice/typo.slice",
-        "UNCONFIGURED /sys/fs/cgroup/dev.slice/dev-gates.slice",
-    ):
-        proc, _ = run_probe(
-            tmp_path, verdict, slice_name="dev-gates.slice"
-        )
+    cases = (
+        (
+            "MISSING",
+            "not a loaded installed slice",
+        ),
+        (
+            "UNCONFIGURED",
+            "has only systemd-default resource controls",
+        ),
+    )
+    for verdict, expected_message in cases:
+        case = tmp_path / verdict.lower()
+        case.mkdir()
+        proc, _ = run_probe(case, verdict, slice_name="dev-gates.slice")
         assert proc.returncode != 0
-        assert "could not verify host cgroup slice" in proc.stderr
+        assert expected_message in proc.stderr
 
 
 def test_non_slice_name_is_refused_before_docker(tmp_path: Path):
@@ -538,12 +550,14 @@ def test_docker_probe_nonzero_is_not_certified_by_success_output(tmp_path: Path)
     )
 
     assert proc.returncode != 0
-    assert "probe exit 7" in proc.stderr
-    assert "ASSAY_CGROUP_PARENT_PROBE=OK" in proc.stderr
+    assert "docker wait exit 7" in proc.stderr
 
 
-def test_cgroup_control_read_must_succeed_and_be_nonempty(tmp_path: Path):
-    for value, expected in ((None, "absent or unreadable"), ("", "is empty")):
+def test_systemd_resource_property_must_be_present_and_numeric(tmp_path: Path):
+    for value, expected in (
+        (None, "incomplete MemoryCurrent"),
+        ("", "malformed current-usage or weight property"),
+    ):
         case = tmp_path / str(len(list(tmp_path.iterdir())))
         case.mkdir()
         proc, _argv_log = run_probe(
@@ -554,6 +568,35 @@ def test_cgroup_control_read_must_succeed_and_be_nonempty(tmp_path: Path):
         )
         assert proc.returncode != 0
         assert expected in proc.stderr
+
+
+@pytest.mark.parametrize("property_name", ["memory.max", "memory.current"])
+def test_ram_admission_refuses_values_outside_safe_shell_arithmetic(
+    tmp_path: Path, property_name: str
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={property_name: "1000000000000000000"},
+        memory_reserve_bytes=1,
+    )
+
+    assert proc.returncode != 0
+    assert "exceeds the safe RAM-admission arithmetic range" in proc.stderr
+
+
+def test_oversized_ram_reservation_is_rejected_before_docker(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        memory_reserve_bytes=10**18,
+    )
+
+    assert proc.returncode != 0
+    assert "memory reservation exceeds the safe RAM-admission arithmetic range" in proc.stderr
+    assert not argv_log.exists()
 
 
 def test_b105_requires_finite_point_in_time_ram_headroom(tmp_path: Path):
@@ -630,7 +673,7 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"
     assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
     assert '--cgroup-parent="$cgroup_parent"' in driver
-    assert "--cgroupns=host" in driver
+    assert "--cgroupns=host" not in driver
     assert 'run_b145_bounded_wait_acceptance_probe "$host_repo_root" "$cgroup_parent"' in driver
     assert "run_b145_low_pids_probe \"$worktree\" \"$host_repo_root\" \"$cgroup_parent\"" in driver
     assert "nyxloom-gates.slice" not in driver

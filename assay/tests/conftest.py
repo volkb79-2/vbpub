@@ -83,11 +83,15 @@ def isolate_mutation_tests_from_the_host_cgroup(monkeypatch: pytest.MonkeyPatch)
         memory_oom_kill=0,
         memory_oom_group_kill=0,
     )
-    monkeypatch.setattr(mutation, "read_current_cgroup_counters", lambda: counters)
+    monkeypatch.setattr(
+        mutation,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: counters,
+    )
     monkeypatch.setattr(
         resource_limits,
         "inspect_current_cgroup_observation",
-        lambda: ResourceObservationCapability(available=True),
+        lambda **_kwargs: ResourceObservationCapability(available=True),
     )
 
 

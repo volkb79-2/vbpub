@@ -1,10 +1,18 @@
 """Structural checks for the daemon's security-sensitive Compose contract."""
 
 from pathlib import Path
+import tomllib
 
 
 COMPOSE_TEMPLATE = Path(__file__).resolve().parents[1] / "ciu.compose.yml.j2"
 PROJECT_ROOT = COMPOSE_TEMPLATE.parent
+
+
+def test_observer_r2_serializes_mutants_that_share_one_tester_cgroup():
+    gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assay = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["r2"]["resource_observer"] == "cgprofile"
+    assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
 
 
 def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
@@ -37,6 +45,16 @@ def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
         "        bind:\n"
         "          create_host_path: false"
     ) in compose
+    assert (
+        "source: {{ cgprofile.daemon.socket_dir }}\n"
+        "        target: {{ cgprofile.daemon.socket_dir }}\n"
+        "        bind:\n"
+        "          create_host_path: false"
+    ) in compose
+    assert (
+        "- {{ cgprofile.daemon.socket_dir }}:"
+        "{{ cgprofile.daemon.socket_dir }}"
+    ) not in compose
     assert "AttachProcessesToUnit" in compose
     assert "lib.placement.CgroupWriteGuard" in compose
     assert "--cgroupns=host" not in gate_script
@@ -63,6 +81,8 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "## Daemon safety and placement" in design
     assert "host PID namespace" in design
     assert "not an independent attestation" in design
+    assert "create_host_path: false" in design
+    assert "refuses a missing source" in consumers
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
     assert "not an independent proof" in consumers_normalized

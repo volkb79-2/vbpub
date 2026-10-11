@@ -244,15 +244,24 @@ assay exists to close that gap mechanically, not by policy:
   stops the lane with payload-free `ERROR/EXEC_FAILED`. Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
   `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
-  controls refuse the run.
+  controls refuse the run. If a private cgroup namespace hides ancestors,
+  Assay may use the explicitly configured
+  `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
+  ancestor condition; all identity, ancestry, and attribution checks remain
+  fail-closed. Run-Gate's `resource_observer = "cgprofile"` mounts a
+  separate observer-only socket, never the daemon control socket. See the
+  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   This does not observe per-process limits such as `RLIMIT_NPROC` or
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
   and [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   When native candidates are selected, Assay checks the same complete
-  hierarchy before R0 starts. A hidden ancestor yields
-  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; `assay plan` and
-  `assay lanes --json` report the current visibility. See the
+  hierarchy before R0 starts. If its private cgroup view hides ancestors, it
+  may use the explicitly configured observer-only socket; without a usable
+  local view or observer it returns
+  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. `assay plan` and
+  `assay lanes --json` report current availability. See the
   [preflight design](docs/DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148)
   and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-visibility-preflight-b148).
 - **Assay's own Git children cannot launch detached automatic maintenance (B147).**
@@ -762,10 +771,10 @@ a worked, pasteable lane.
 The adapter is qualified against a **real PostgreSQL 18.6** by assay's own gate
 (A-480), with no consumer checkout: after the ordinary registered
 `tester-unified` suite passes, a dedicated `tester-unified` qualification
-container runs `gate/python/qualify_sql.py` from an exact-OID clone with
-`--cgroupns=host`. Only this qualification container receives the Docker socket,
-so its real `assay run` witness can observe the cgroup ancestors required by
-B145 while driving assay's own schema
+container runs `gate/python/qualify_sql.py` from an exact-OID clone in a private
+cgroup namespace. It receives the read-only resource-observer socket for B145
+ancestor counters and is the only phase that receives the Docker socket, which
+it uses to drive assay's own schema
 (`tests/fixtures/mutation/sql/qualification/01-schema.sql`), a 24-row probe
 matrix and a witnessed `assay run` against one digest-pinned, never-pulled
 PostgreSQL container named `run-gate-assay-sql-<pid>-<epoch>`. A busy host,
@@ -1326,7 +1335,11 @@ you're changing assay itself:
   test trees (`tests/` and `gate/tests/`), and after a green run at a commit it writes
   the same-commit receipt `.assay/registered-gate/tester-unified.json`
   (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
-  separately invoked `./run-gate.py self-qualification` requires that receipt for
+  host-slice preflight's privilege boundary is described in the
+  [design guide](docs/DESIGN-GUIDE.md#unprivileged-host-slice-preflight-for-tester-unified),
+  with the operator-facing gate sequence in the
+  [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  The separately invoked `./run-gate.py self-qualification` requires that receipt for
   its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
   R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the

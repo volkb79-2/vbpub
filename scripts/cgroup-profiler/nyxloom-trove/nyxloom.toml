@@ -72,11 +72,14 @@ environment = "tester-unified"
 # This package is new: there is no legacy tail to amortise, so the stricter and
 # simpler measure is also the affordable one. The floor lives in
 # pyproject.toml's [tool.coverage.report] fail_under so `coverage report`
-# enforces it identically here, in the devcontainer, and in the gate.
+# enforces it identically here, in the devcontainer, and in the gate. Nyxloom's
+# closed gate-assertion vocabulary has no whole-project-coverage token, so this
+# gate declares `tests-pass`; its command itself fails when the coverage floor
+# is not met.
 [gates.coverage]
 argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/scripts/cgroup-profiler && exec tools/gate.sh {worktree} coverage"]
 phase = "review"
-asserts = ["tests-pass", "coverage-floor"]
+asserts = ["tests-pass"]
 timeout_seconds = 1200
 environment = "tester-unified"
 

@@ -9,6 +9,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ## [Unreleased]
 
 ### Changed
+- fix(cgprofile): serialize P1 native R2 mutants while they share one tester
+  cgroup, so overlapping workers cannot attribute a peer's resource-limit
+  event to the wrong candidate; resume the longer exact-tree campaign
 - deploy(cgprofile): run only the managed daemon in the host PID namespace so
   DAMON sysfs can resolve host `pid_target` values; keep cgroup/network modes
   private, require explicit mode verification at startup, and document the
@@ -18,6 +21,14 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   public summary values and schema are unchanged (RG-55 P1 survivor disposition)
 
 ### Fixed
+- fix(cgprofile): refuse a resource-observer query when authenticated peer threads disagree on capability state
+- fix(cgprofile): treat `ProcessLookupError` while reading a peer task's
+  procfs identity as a transient snapshot race at status, stat, task
+  enumeration, and cgroup reads; retry the bounded identity scan
+  and still refuse when the peer cannot be proven (RG-89)
+- fix(cgprofile): refuse a missing host socket-directory bind source instead
+  of letting Compose create an empty directory that hides the host-setup
+  prerequisite
 - fix(cgprofile): accept an already-correct daemon-created shared DAMON lock
   without caller-side chown/chmod, and continue helper-mode profiling without
   optional DAMON when lock preparation is unavailable; close one-shot identity
@@ -36,6 +47,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   profiling finishes normally and preserves the wrapped command's verdict
   (RG-55 P1)
 - fix(cgprofile): D-31 placement ownership — create a systemd-delegated transient scope under the verified gates slice, keep the leaf below it, journal PID identity/origins for safe stop and restart recovery, and document that leaf memory limits/counters are cgroup charges rather than total RSS
+- fix(cgprofile): refuse initial or later placement moves that would empty an origin systemd unit, and fail closed when its complete process membership cannot be proved; document the residual concurrent-exit race and exact-restore behavior
 - fix(cgprofile): CP-11 — retry identity-checked placement recovery for journal-only startup crashes and finished manifests with incomplete cleanup; retain unknown scopes/leaves for operator attention
 - fix(cgprofile): fail closed on non-ESRCH lane-PID migration write errors; refuse placement and remove an empty leaf instead of reporting successful placement
 - fix(cgprofile): restore P6 survivors through the verified host-proc/systemd bridge; record successful moves and retain/report a leaf when survivor enumeration or restoration is indeterminate
@@ -44,6 +56,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - fix(cgprofile): CP-10 -- decouple the daemon's host-PSI liveness pause check (`host_proc_root`) from the real `/proc` used for subtree/pid resolution, ending a real-host-memory-pressure-driven test flake session 6 misattributed to test order (b50163e9)
 
 ### Added
+- feat(cgprofile): add a separate observer-only Unix socket for native Assay
+  R2; bind each query to SO_PEERCRED and a native TID, derive only the peer's
+  complete gates-slice ancestry, and keep the control socket and placement
+  protocol out of tester containers (RG-89)
 - feat(cgprofile): CP-5 -- daemon sessions write real `events.jsonl` rows via `lib.events.Detector` on the sampler's own cadence (16b01c1c)
 - feat(cgprofile): CP-7 -- the session manifest's `limits` table resolves real effective cgroup limits at `start` (907ddd50)
 - feat(cgprofile): CP-6 -- DAMON hot/warm/cold/idle series read into `ctl report`'s HTML render (e053276b)

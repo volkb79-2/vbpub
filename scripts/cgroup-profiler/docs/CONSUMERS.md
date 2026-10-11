@@ -139,6 +139,18 @@ If that happens, keep the sessions volume and inspect the returned
 restoration. `ctl gc` preserves an incomplete journal, including when the
 normal count or age limit has been reached. Do not delete that session record
 to make the retention count look clean.
+
+Placement can also be refused before moving any PID when moving the selected
+set would empty its original systemd unit. The session may still start for
+ordinary observation with `placement.leaf: null` and
+`placement.error: "place-refused:origin-scope-would-empty"`; a one-process
+container scope is the common example. Unknown source membership is refused
+as `place-refused:identity-unavailable`. Do not rely on an unrelated process
+as a permanent source-unit lease: it can exit between the daemon's check and
+the systemd move. If exact restoration cannot be proved, retain the session
+directory and recovery journal; the daemon will not fall back to a parent
+cgroup.
+
 On startup `serve` requires the daemon-only host-PID mode and verifies that
 PID 1 in the configured proc view belongs to the daemon's PID namespace; a
 missing or mismatched view is refused. This is a consistency check, not an
@@ -184,6 +196,64 @@ client, set `CGPROFILE_PLACEMENT_PROBE_IMAGE` to its image name. The verifier
 also needs the injected `CGROUP_PARENT_DEV_INTERACTIVE` value to match the
 cockpit's actual Docker parent. Missing systemd or cgroup evidence is a hard
 refusal, not permission to rely on Docker's default parent.
+
+## Native R2 resource observer
+
+Assay B145 refuses to classify native R2 candidates when private cgroup
+namespaces hide an enforcing ancestor. With a cgprofile daemon that implements
+contract §9 and a Run-Gate build that supports RG-89, opt the lane in:
+
+```toml
+[lanes.assay-r2]
+kind = "assay"
+assay_lane = "r2"
+environment = "tester-unified"
+resource_observer = "cgprofile"
+```
+
+For native R2 in a tester container shared by Assay workers, serialize
+candidate windows in that lane's `assay.toml`:
+
+```toml
+[lanes.r2.judge.mutation]
+jobs = 1
+```
+
+The observer samples the tester cgroup, so overlapping workers could count
+one worker's limit event against another mutant. A 24-hour budget is a
+resumable safety window; rerun the exact `r2` command in
+[Run the P1 review gates](#run-the-p1-review-gates) from the same committed
+tree after an incomplete window. See the
+[resource-observation rationale](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
+If the observer refuses because the peer threads have different capability
+states, resolve that peer configuration; the counter query will not guess
+which thread state applies.
+
+The existing host `/run/cgprofile` directory bind is sufficient for the
+devcontainer to see the daemon-created socket; no second host mount or new
+host-setup unit is needed. Host-setup must create this directory first;
+Compose refuses a missing source rather than silently creating an empty host
+directory. The upgraded daemon creates
+`/run/cgprofile/resource-observer.sock` beside `ctl.sock`. At gate launch,
+Run-Gate validates that fixed host path and mounts only the observer socket
+read-only into `tester-unified`, adds its observed GID, and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` inside the container. A missing daemon/socket
+or unsafe ownership/mode is an infrastructure refusal, never a silent
+fallback. The selected container retains private PID, cgroup, and network
+namespaces; do not mount `ctl.sock` or the Docker socket for this feature.
+The observer accepts one newline-terminated JSON request of at most 4096 bytes
+including the newline and applies a five-second absolute deadline. Consumers
+must send one complete line; oversized or incomplete requests are not
+dispatched.
+
+Assay uses its local B145 reader first and contacts the observer only when the
+local view specifically proves that ancestors are hidden. The daemon derives
+the peer's cgroup from `SO_PEERCRED` plus the supplied native TID, limits
+queries to the configured gates slice, and returns only that peer's ancestry
+counters. Any incomplete identity or ambiguous shared-ancestor event remains
+`ERROR/EXEC_FAILED`, not a candidate kill/survivor. See the
+[`observer protocol`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and
+[`design rationale`](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
 
 ## Resolve a target from a cockpit
 
@@ -247,6 +317,78 @@ privileged DAMON configurator concurrently. Ordinary profiling continues with
 DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a persisted
 `damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
 alone.
+
+### Host DAMON_STAT exclusivity
+
+`DAMON_STAT` and the generic DAMON sysfs interface serve different consumers.
+`DAMON_STAT` is a special-purpose kernel module that monitors the whole
+physical-memory space and exposes simplified system-wide idle-time percentiles
+and estimated memory bandwidth, with auto-tuned monitoring intervals. It does
+not select the PIDs belonging to a particular lane. The sysfs interface is a
+privileged, programmable control ABI: user space configures kdamonds,
+contexts, operations, and targets. cgprofile uses it for per-session virtual
+address (`vaddr`) targets bound to the profiled process PIDs, with a
+statistics-only scheme, so its output can be attributed to a lane. These are
+not two ways to read the same result; Linux makes DAMON special-purpose
+consumers exclusive, and starting the sysfs monitor while `DAMON_STAT` is
+active can return `EBUSY`. See the kernel's [DAMON sysfs usage
+guide](https://docs.kernel.org/7.1/admin-guide/mm/damon/usage.html) for the
+programmable interface and its [DAMON_STAT
+guide](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html) for the
+global summary interface.
+
+The DAMON sysfs registry is not a complete inventory of kernel DAMON users.
+In particular, Linux's special-purpose `DAMON_STAT` module can be enabled
+while `nr_kdamonds` is `0`; the kernel documents special-purpose DAMON
+modules as exclusive, so another start request can fail with `EBUSY`. This
+does not make the cgprofile daemon's control socket or ordinary resource
+sampling unusable. `ctl version`'s `damon: available` is only a capability
+probe; it does not mean the kernel accepted a session. The start response may
+record DAMON as `unavailable:OSError: [Errno 16] ...`, and the session should
+continue without DAMON under R-36h. Confirm the actual `ctl start` result and
+persisted `damon.jsonl` series before claiming DAMON samples or overhead. See
+the [kernel DAMON design](https://www.kernel.org/doc/html/v7.1/mm/damon/design.html)
+and [DAMON_STAT documentation](https://docs.kernel.org/7.1/admin-guide/mm/damon/stat.html).
+
+Check the host-visible state through the daemon's existing read-only sysfs
+bind, without changing it:
+
+```bash
+docker exec cgprofile-host-daemon sh -c '
+  if [ -r /sys/module/damon_stat/parameters/enabled ]; then
+    printf "damon_stat.enabled="
+    cat /sys/module/damon_stat/parameters/enabled
+  else
+    echo "damon_stat.enabled=not-exposed"
+  fi
+  printf "nr_kdamonds="
+  cat /sys/kernel/mm/damon/admin/kdamonds/nr_kdamonds
+'
+```
+
+On the RG-55 host the observed values were `Y` and `0`, respectively, while
+the control socket answered `version`, `status`, and `host`, and a live
+session's ordinary samples were collected. The `Y` plus a reproduced `EBUSY`
+is consistent with DAMON_STAT exclusivity, not a failed daemon launch. Do not
+disable a host-wide monitor as an automatic diagnostic or from cgprofile;
+coordinate any temporary change with the host operator, then verify an actual
+session start and persisted `damon.jsonl` series before claiming DAMON data.
+
+The running RG-55 host uses Debian 13's `7.1.13+deb13-amd64` kernel. Its
+`/boot/config-7.1.13+deb13-amd64` reports
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`, and the live module parameter was `Y`.
+This describes that installed kernel build, not a universal Debian default;
+the parameter's build-time default is controlled by
+`CONFIG_DAMON_STAT_ENABLED_DEFAULT`. In an operator-approved 2026-10-09
+acceptance probe, `DAMON_STAT` was temporarily set to `N`: a real session
+started with `damon: "on"`, collected 36 DAMON records for one synthetic
+64-MiB process, and stopped cleanly. The host setting was restored to `Y`,
+`nr_kdamonds` was `0`, and the daemon remained up with no sessions. This
+confirms the exclusivity diagnosis; it does not authorize cgprofile or an
+automated gate to change the host-wide setting. To make DAMON available
+persistently, the host operator must choose a kernel policy that does not run
+`DAMON_STAT` concurrently, then verify the session's status and persisted
+series. Ordinary resource profiling remains usable either way under R-36h.
 
 ## Attach a run-gate lane
 

@@ -101,12 +101,18 @@ services:
       # the SAME path on the host, so run-gate/`ciu gate` can speak the
       # protocol without a docker socket. The DIRECTORY is mounted, never
       # the socket file — `_bind()` unlinks and re-creates `ctl.sock` at
-      # every start, and a file bind-mount would pin the old inode. The
-      # host side is owned by mdt host-setup's `mdt-cgprofile.conf`
+      # every start, and a file bind-mount would pin the old inode. Refuse
+      # a missing host directory instead of letting Compose create a phantom
+      # source; host-setup owns this prerequisite. The host side is owned by
+      # mdt host-setup's `mdt-cgprofile.conf`
       # (`d /run/cgprofile 0770 root docker -`); without it the directory
       # is root:root and the socket ends up root-only — the daemon logs one
       # INFO line and keeps serving over exec (RW-35(b), RW-37).
-      - {{ cgprofile.daemon.socket_dir }}:{{ cgprofile.daemon.socket_dir }}
+      - type: bind
+        source: {{ cgprofile.daemon.socket_dir }}
+        target: {{ cgprofile.daemon.socket_dir }}
+        bind:
+          create_host_path: false
       - type: bind
         source: /proc
         target: /hostproc

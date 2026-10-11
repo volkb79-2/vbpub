@@ -39,6 +39,7 @@ from lib import access, liveness, placement, serve
 from tests.conftest import cgroup_files, write_cgroup
 
 CONTAINER_ID = "d" * 64
+ORIGIN_ANCHOR_PID = 999998
 SESSION_ID = "s-20260912T101500Z-9f01"
 TOKEN = "rg55-place-token-01"
 LEAF_NAME = f"rg-{TOKEN}"
@@ -149,13 +150,17 @@ def _placement(
     scope_created = kw.pop("scope_created", None)
     attach_filter = kw.pop("attach_filter", None)
     attach_calls = kw.pop("attach_calls", None)
+    origin_cgroup = kw.pop("origin_cgroup", "/" + SCOPE_CGROUP)
+    origin_anchor = kw.pop("origin_anchor", True)
     kw.setdefault("slice_unit_verifier", lambda _unit, _cgroup: True)
-    locations: Dict[int, str] = {}
+    locations: Dict[int, str] = kw.pop("locations", {})
     unit_cgroups: Dict[str, str] = {f"docker-{CONTAINER_ID}.scope": "/" + SCOPE_CGROUP}
     scope_paths: Dict[str, str] = {}
 
     def process_cgroup(pid: int) -> Optional[str]:
-        return locations.setdefault(pid, "/" + SCOPE_CGROUP)
+        current = locations.setdefault(pid, origin_cgroup)
+        sync_membership()
+        return current
 
     def sync_membership() -> None:
         for procs_path in root.rglob("cgroup.procs"):
@@ -184,6 +189,22 @@ def _placement(
         if scope_created is not None:
             scope_created(unit)
         return "/" + relative
+
+    # Keep the fake cgroup.procs files and the resolver's in-memory view
+    # consistent, including fixtures that pre-seed processes before creating
+    # the placement object. Normal placement needs an unprofiled origin-unit
+    # member just as the live systemd scope does.
+    for procs_path in root.rglob("cgroup.procs"):
+        relative = "/" + procs_path.parent.relative_to(root).as_posix()
+        try:
+            seeded = [int(line) for line in procs_path.read_text().splitlines() if line.strip()]
+        except (OSError, ValueError):
+            continue
+        for pid in seeded:
+            locations.setdefault(pid, relative)
+    if origin_anchor and origin_cgroup == "/" + SCOPE_CGROUP:
+        locations.setdefault(ORIGIN_ANCHOR_PID, origin_cgroup)
+    sync_membership()
 
     def fake_scope_stop(unit: str) -> bool:
         scope_path = root / scope_paths.get(
@@ -396,7 +417,7 @@ def test_failed_start_restores_placed_pid_before_discarding_record(
 
     assert not _leaf(root).exists()
     assert not _leaf(root).parent.exists()
-    assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+    assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
     assert not (tmp_path / "sessions" / SESSION_ID).exists()
     assert server._sessions == {}
 
@@ -1298,7 +1319,7 @@ class TestApply:
         assert plc.error == placement.REFUSED_PARENT_NOT_GATES_SLICE
         assert plc.leaf_cgroup is None
         assert not (elsewhere / "memory.high").exists()
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
 
     def test_an_existing_leaf_is_refused_without_changing_its_caps(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -1689,7 +1710,7 @@ class TestDelegatedScopeMigration:
         assert scope.is_dir() and _leaf(root).is_dir()
         assert (scope / "cgroup.procs").read_text() == ""
         assert (_leaf(root) / "cgroup.procs").read_text() == "101\n102\n"
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == ""
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"{ORIGIN_ANCHOR_PID}\n"
         prepared = next(item for item in journal_updates if item["state"] == "creating-scope")
         assert set(prepared["pids"]) == {"101", "102"}
         assert prepared["leaf_created"] is False
@@ -1705,6 +1726,143 @@ class TestDelegatedScopeMigration:
         assert [path for path, _ in writes].count(
             f"{SCOPE_UNIT_CGROUP}/cgroup.subtree_control"
         ) == 1
+
+    def test_scope_creation_refuses_before_moving_the_only_origin_process(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        scope_calls = []
+        journal_updates = []
+
+        def forbidden_scope_create(*_args):
+            scope_calls.append(True)
+            return None
+
+        plc = _placement(
+            root, origin_anchor=False, scope_create=forbidden_scope_create,
+            state_write=journal_updates.append,
+        )
+
+        plc.apply([101])
+
+        assert plc.error == placement.REFUSED_ORIGIN_SCOPE_WOULD_EMPTY
+        assert scope_calls == [] and journal_updates == []
+        assert plc.scope_cgroup is None and not _leaf(root).exists()
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+
+    def test_scope_creation_counts_processes_in_origin_child_cgroups(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        keeper = SCOPE_CGROUP + "/unprofiled-keeper"
+        write_cgroup(root, keeper, cgroup_files())
+        locations = {ORIGIN_ANCHOR_PID: "/" + keeper}
+        plc = _placement(root, origin_anchor=False, locations=locations)
+
+        plc.apply([101])
+
+        assert plc.error is None and plc.placed
+        assert (root / keeper / "cgroup.procs").read_text() == f"{ORIGIN_ANCHOR_PID}\n"
+
+    def test_origin_unit_process_scan_refuses_noncanonical_and_missing_roots(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        alias = root / "source-alias"
+        alias.symlink_to(root / SCOPE_CGROUP, target_is_directory=True)
+
+        assert plc._origin_unit_pids("relative.scope") is None
+        assert plc._origin_unit_pids("/") is None
+        assert plc._origin_unit_pids("/missing.scope") is None
+        assert plc._origin_unit_pids("/source-alias") is None
+
+    def test_origin_unit_process_scan_refuses_unknown_duplicate_and_symlinked_membership(
+        self, tmp_path,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        plc._owned_cgroup_pids = lambda _cgroup: None
+        assert plc._origin_unit_pids("/" + SCOPE_CGROUP) is None
+
+        child_root = _fake_cgroup_root(tmp_path / "duplicate")
+        duplicate = _placement(child_root)
+        write_cgroup(child_root, SCOPE_CGROUP + "/child", cgroup_files())
+        duplicate._owned_cgroup_pids = lambda _cgroup: [123]
+        assert duplicate._origin_unit_pids("/" + SCOPE_CGROUP) is None
+
+        symlink_root = _fake_cgroup_root(tmp_path / "symlink")
+        symlinked = _placement(symlink_root)
+        elsewhere = symlink_root / "elsewhere"
+        elsewhere.mkdir()
+        (symlink_root / SCOPE_CGROUP / "alias").symlink_to(
+            elsewhere, target_is_directory=True,
+        )
+        assert symlinked._origin_unit_pids("/" + SCOPE_CGROUP) is None
+
+    def test_origin_unit_process_scan_refuses_when_a_child_cannot_be_enumerated(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        real_scandir = placement.os.scandir
+
+        def unreadable(path):
+            if isinstance(path, (str, bytes, os.PathLike)) and os.fspath(path) == str(
+                root / SCOPE_CGROUP
+            ):
+                raise PermissionError("membership tree unavailable")
+            return real_scandir(path)
+
+        monkeypatch.setattr(placement.os, "scandir", unreadable)
+        assert plc._origin_unit_pids("/" + SCOPE_CGROUP) is None
+
+    def test_origin_scope_check_refuses_missing_records_and_unknown_membership(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        plc = _placement(root)
+        assert not plc._origin_scope_retains_unmoved_process([101])
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+        plc.error = None
+        plc.pid_records[101] = {
+            "origin_unit": SCOPE_UNIT, "origin_unit_cgroup": "/" + SCOPE_CGROUP,
+        }
+        plc._origin_unit_pids = lambda _cgroup: None
+        assert not plc._origin_scope_retains_unmoved_process([101])
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_origin_scope_check_refuses_malformed_origin_identity(self, tmp_path):
+        plc = _placement(_fake_cgroup_root(tmp_path))
+        plc.pid_records[101] = {
+            "origin_unit": "", "origin_unit_cgroup": "/" + SCOPE_CGROUP,
+        }
+
+        assert not plc._origin_scope_retains_unmoved_process([101])
+        assert plc.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    def test_later_migration_refuses_to_empty_the_origin_scope(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        locations = {}
+        attach_calls = []
+        plc = _placement(root, locations=locations, attach_calls=attach_calls)
+        plc.apply([101])
+        assert plc.error is None and plc.placed
+
+        locations.pop(ORIGIN_ANCHOR_PID)
+        locations[202] = "/" + SCOPE_CGROUP
+        plc._pid_cgroup(202)  # refresh the fake cgroup.procs snapshot
+        calls_before = len(attach_calls)
+
+        assert plc.migrate([202]) == 0
+        assert plc.error == placement.REFUSED_ORIGIN_SCOPE_WOULD_EMPTY
+        assert len(attach_calls) == calls_before
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "202\n"
+
+    def test_origin_scope_check_allows_candidates_not_currently_in_the_unit(
+        self, tmp_path,
+    ):
+        plc = _placement(_fake_cgroup_root(tmp_path))
+        plc.pid_records[101] = {
+            "origin_unit": f"docker-{CONTAINER_ID}.scope",
+            "origin_unit_cgroup": "/" + SCOPE_CGROUP,
+        }
+
+        assert plc._origin_scope_retains_unmoved_process([101])
+        assert plc.error is None
 
     def test_later_descendants_are_moved_once_and_inherit_verified_ancestry(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -1782,7 +1940,7 @@ class TestDelegatedScopeMigration:
             (SCOPE_UNIT, LEAF_NAME, 101),
             (f"docker-{CONTAINER_ID}.scope", "", 101),
         ]
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
 
     def test_empty_target_and_missing_recovery_writer_refuse_before_scope_creation(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -1818,7 +1976,7 @@ class TestDelegatedScopeMigration:
         )
         assert not _leaf(root).exists()
         assert not (root / SCOPE_UNIT_CGROUP).exists()
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
         assert plc.block()["leaf"] is None
 
     def test_failed_restore_keeps_owned_leaf_and_journal_for_recovery(self, tmp_path):
@@ -1876,7 +2034,7 @@ class TestDelegatedScopeMigration:
         assert plc.error is None and plc.released
         assert not _leaf(root).exists()
         assert not (root / SCOPE_UNIT_CGROUP).exists()
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n999\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n999\n{ORIGIN_ANCHOR_PID}\n"
 
 
 class TestPlacementTransactionRefusals:
@@ -2076,7 +2234,9 @@ class TestPlacementTransactionRefusals:
     def test_controller_delegation_requires_proven_empty_scope(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
 
-        def unreadable_membership(_cgroup, _root, _proc_root):
+        def unreadable_membership(cgroup, _root, _proc_root):
+            if cgroup == "/" + SCOPE_CGROUP:
+                return [101, ORIGIN_ANCHOR_PID]
             raise PermissionError("host process view unavailable")
 
         plc = _placement(root, pids_in_cgroup=unreadable_membership)
@@ -2146,9 +2306,14 @@ class TestPlacementTransactionRefusals:
         def scope_created(_unit):
             (root / SCOPE_UNIT_CGROUP / "cgroup.procs").write_text("")
 
+        def membership(cgroup, _root, _proc_root):
+            if cgroup == "/" + SCOPE_CGROUP:
+                return [101, ORIGIN_ANCHOR_PID]
+            return []
+
         plc = _placement(
             root, pid_exists=exists, scope_created=scope_created,
-            pids_in_cgroup=lambda *_args: [],
+            pids_in_cgroup=membership,
         )
         plc.apply([101])
         assert plc.pid_records[101]["state"] == "exited"
@@ -2157,7 +2322,7 @@ class TestPlacementTransactionRefusals:
     def test_cgroup_membership_reader_distinguishes_empty_unknown_and_nonempty(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
         write_cgroup(root, SCOPE_UNIT_CGROUP, cgroup_files())
-        plc = _placement(root)
+        plc = _placement(root, origin_anchor=False)
         scope_procs = root / SCOPE_UNIT_CGROUP / "cgroup.procs"
         assert plc._cgroup_has_processes("/missing/scope") is None
         assert plc._cgroup_has_processes("/" + SCOPE_CGROUP) is False
@@ -2339,6 +2504,20 @@ class TestPlacementMigrationEdges:
             lane.scope_unit = None
         else:
             lane.scope_cgroup = None
+        assert lane.migrate([202]) == 0
+        assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
+
+    @pytest.mark.parametrize("unit_cgroup", [None, "relative.scope"])
+    def test_migration_refuses_without_a_verified_origin_unit_path(
+        self, tmp_path, unit_cgroup,
+    ):
+        _root, lane = self._ready_lane(tmp_path)
+        record, _locations = self._record_new_pid(lane)
+        record["origin_unit_cgroup"] = unit_cgroup
+        lane._systemd_attach = lambda *_args: pytest.fail(
+            "a migration with unknown origin identity reached systemd"
+        )
+
         assert lane.migrate([202]) == 0
         assert lane.error == placement.REFUSED_IDENTITY_UNAVAILABLE
 
@@ -2881,7 +3060,7 @@ class TestPlacementCleanupEdges:
         assert lane._journal["state"] == "complete"
         assert lane.pid_records[101]["state"] == "restored"
         assert not (root / SCOPE_UNIT_CGROUP).exists()
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
 
     def test_release_accepts_scope_auto_retirement_during_last_restore(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -3242,7 +3421,7 @@ class TestPlacementJournalRecovery:
         )
 
         assert result is None
-        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == "101\n"
+        assert (root / SCOPE_CGROUP / "cgroup.procs").read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
         assert updates[-1]["state"] == "complete"
         assert updates[-1]["leaf_created"] is False
 
@@ -3393,7 +3572,7 @@ class TestPlacementJournalRecovery:
         assert result is None
         assert updates[-1]["state"] == "complete"
         assert updates[-1]["pids"]["101"]["state"] == "restored"
-        assert origin_procs.read_text() == "101\n"
+        assert origin_procs.read_text() == f"101\n{ORIGIN_ANCHOR_PID}\n"
 
     def test_recovery_refuses_a_non_directory_at_the_owned_leaf_path(
         self, tmp_path, monkeypatch,

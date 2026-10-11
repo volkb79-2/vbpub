@@ -509,6 +509,7 @@ REFUSED_PARENT_NOT_GATES_SLICE = "place-refused:parent-not-gates-slice"
 REFUSED_NO_HOST_PROC = "place-refused:no-host-proc-view"
 REFUSED_IDENTITY_UNAVAILABLE = "place-refused:identity-unavailable"
 REFUSED_STATE_UNAVAILABLE = "place-refused:recovery-state-unavailable"
+REFUSED_ORIGIN_SCOPE_WOULD_EMPTY = "place-refused:origin-scope-would-empty"
 
 #: `stop`'s `rmdir` retry budget: 3 attempts over 3 s (§8.3).
 RMDIR_ATTEMPTS = 3
@@ -1219,6 +1220,14 @@ class LanePlacement:
             self.error = "place-refused:no-target-pids"
             return
 
+        # StartTransientUnit(PIDs=...) moves these processes out of their
+        # existing systemd units. If that would empty an origin .scope,
+        # systemd retires it immediately and there is no exact unit to which
+        # stop-time restoration can attach the lane again. Keep at least one
+        # process in every source unit before creating the delegated scope.
+        if not self._origin_scope_retains_unmoved_process(tuple(self.pid_records)):
+            return
+
         self._journal = {
             "schema": 1,
             "token": self.token,
@@ -1536,6 +1545,13 @@ class LanePlacement:
             if self.scope_unit is None or self.scope_cgroup is None:
                 self.error = REFUSED_IDENTITY_UNAVAILABLE
                 break
+            origin_unit_cgroup = record.get("origin_unit_cgroup")
+            if not isinstance(origin_unit_cgroup, str) or not origin_unit_cgroup.startswith("/"):
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                break
+            if _within_cgroup(current, origin_unit_cgroup):
+                if not self._origin_scope_retains_unmoved_process((pid,)):
+                    break
             try:
                 self.guard.check_write(procs, str(pid))
             except HostWriteError:
@@ -1655,6 +1671,74 @@ class LanePlacement:
         if any(pid <= 0 for pid in resolved):
             return None
         return resolved
+
+    def _origin_unit_pids(self, unit_cgroup: str) -> Optional[List[int]]:
+        """Read every process in an origin systemd unit's cgroup subtree.
+
+        The source may contain child cgroups, so checking only the unit root's
+        ``cgroup.procs`` can mistake a populated subtree for an empty unit.
+        Unknown, unreadable, symlinked, or inconsistent membership is not a
+        proof that the source can be safely emptied.
+        """
+        normalized = posixpath.normpath(unit_cgroup)
+        if not normalized.startswith("/") or normalized == "/":
+            return None
+        root_abs = abs_path(self.cgroup_root, normalized)
+        if (
+            not os.path.isdir(root_abs)
+            or os.path.realpath(root_abs) != os.path.abspath(root_abs)
+        ):
+            return None
+        pending = [normalized]
+        members: Set[int] = set()
+        while pending:
+            current = pending.pop()
+            current_abs = abs_path(self.cgroup_root, current)
+            direct = self._owned_cgroup_pids(current)
+            if direct is None or members.intersection(direct):
+                return None
+            members.update(direct)
+            try:
+                with os.scandir(current_abs) as entries:
+                    for entry in entries:
+                        if entry.is_symlink():
+                            return None
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        pending.append(posixpath.join(current, entry.name))
+            except OSError:
+                return None
+        return sorted(members)
+
+    def _origin_scope_retains_unmoved_process(self, pids: Sequence[int]) -> bool:
+        """Prove each source unit will retain a process after these PIDs move."""
+        by_origin: Dict[tuple[str, str], Set[int]] = {}
+        for pid in pids:
+            record = self.pid_records.get(pid)
+            if record is None:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            unit = record.get("origin_unit")
+            unit_cgroup = record.get("origin_unit_cgroup")
+            if (
+                not isinstance(unit, str) or not unit
+                or not isinstance(unit_cgroup, str)
+                or not unit_cgroup.startswith("/")
+            ):
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            by_origin.setdefault((unit, posixpath.normpath(unit_cgroup)), set()).add(pid)
+
+        for (_unit, unit_cgroup), candidates in by_origin.items():
+            members = self._origin_unit_pids(unit_cgroup)
+            if members is None:
+                self.error = REFUSED_IDENTITY_UNAVAILABLE
+                return False
+            moving = set(members).intersection(candidates)
+            if moving and not (set(members) - moving):
+                self.error = REFUSED_ORIGIN_SCOPE_WOULD_EMPTY
+                return False
+        return True
 
     def _cleanup_failure(self, cgroup: Optional[str]) -> None:
         target = os.path.join(

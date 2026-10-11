@@ -162,7 +162,7 @@ from .resource_limits import (
     ResourceLimitCounters,
     ResourceLimitEvidence,
     ResourceLimitObservationError,
-    read_current_cgroup_counters,
+    read_candidate_resource_counters,
 )
 from .verdict import (
     DISCARD_REASONS,
@@ -2758,12 +2758,13 @@ class _MutantRun:
 def _read_candidate_resource_counters() -> ResourceLimitCounters:
     """Fail closed when the lane cannot expose exact cgroup v2 counters."""
     try:
-        return read_current_cgroup_counters()
+        return read_candidate_resource_counters(
+            observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+        )
     except ResourceLimitObservationError as exc:
         raise AssayError(
-            "cannot observe cgroup v2 process and memory limit events across "
-            "the candidate cgroup's visible ancestors for native "
-            f"R2 candidate execution: {exc}",
+            "cannot observe the required cgroup v2 process and memory limit "
+            f"events for native R2 candidate execution: {exc}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
         ) from exc

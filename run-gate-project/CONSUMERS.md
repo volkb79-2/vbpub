@@ -94,6 +94,20 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    lane override, so it always wins). Any other value refuses at load, by
    name — a mistyped override is a refusal, never a silent no-op.
 
+   The daemon watch is one stream per profiling session. Readings and the
+   final verdict are recorded in the run's history/inflight record; a daemon
+   `killed` verdict follows the declared stall path, while `reported` is one
+   warning and never a lane verdict. A terminal kill remains available from
+   the stopped session summary if its stream event arrives too late. An exec
+   or bare-host lane without a placement request asks the daemon to report
+   stalls and keeps its declared local watch as the verdict authority; it
+   cannot authorize a shared-cgroup kill. If the daemon or its watch transport is
+   unavailable, run-gate uses its in-process assay progress watch. That
+   fallback uses the assay plan's calibrated cadence (`max(300s, 3x the
+   advertised next-event bound)`) and pauses its idle clock while host memory
+   PSI `full avg10` is above 5, so host contention cannot become a false
+   liveness verdict.
+
    <!-- run-gate-config -->
    ```toml
    schema_version = 1
@@ -112,6 +126,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
+   transport = "auto"             # auto | exec | socket
+   socket_path = "/run/cgprofile/ctl.sock"  # socket carrier path
+   admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
    # shadowing rule; consumed
@@ -166,7 +183,7 @@ schema_version = 1
 mode = "ephemeral"
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
-forward_env = ["SCHEMA_GATE_PW"]
+forward_env = ["SCHEMA_GATE_PW", "CGROUP_PARENT_DEV_BACKGROUND"]
 
 [lanes.suite]
 kind = "command"
@@ -199,13 +216,81 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
                                     # FALLBACK for lanes that declare none of their own
                                     # (this lane's own value wins when both are set) --
                                     # the only resources key an environment accepts.
+
+[lanes.native-r2]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r2"
+resource_observer = "cgprofile"
+clean_tree = true
 ```
 
-For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
-`assay_lane = "<name declared in assay.toml>"`. Internal source mode omits
-`assay_command` and pins. External immutable mode supplies both, plus the
-`[lanes.<name>.pins.assay]` version and SHA-256 table; the target assay lane,
-not the pin table, owns its mutation budget.
+The `native-r2` lane demonstrates the opt-in observer-only socket integration:
+it exposes only the read-only resource-observer socket to the Assay process in
+the private tester namespace; it does not expose the daemon control socket.
+Internal Assay lanes omit `assay_command` and `pins`, so run-gate installs the
+selected worktree's `assay/` source. Explicit command plus immutable pin
+sidecars remain available for external consumers. Lane options belong on the
+lane itself, and the target `assay.toml` owns the mutation budget.
+
+For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
+optional placement ceiling, not a second Docker memory limit. Without it,
+run-gate derives the ceiling from the verified gates-slice cap and request.
+When placement is requested, Run-Gate holds the lane body until the daemon
+returns a verified leaf and read-back limits. An explicit refusal or
+incomplete/looser read-back exits as an infrastructure refusal before the
+body runs; it is not a candidate verdict. A profiler/transport failure before
+any placement result follows the disclosed R-36h fallback instead.
+
+### Native R2 resource observer
+
+Native Assay R2 must inspect the candidate cgroup and every enforcing
+ancestor; a private cgroup namespace hides that ancestry, and Assay refuses
+instead of guessing. When the existing cgprofile daemon is available, an
+Assay or command lane in `tester-unified` may explicitly opt in with
+`resource_observer = "cgprofile"` as shown above. This value is closed and
+legal only for `kind = "assay"` or `kind = "command"` with the explicit
+`tester-unified` environment. It exposes a read-only query about that lane's
+own cgroup ancestry; it is intended for native Assay R2 or a command wrapper
+that launches it. Such a wrapper must preserve the inherited
+`ASSAY_RESOURCE_OBSERVER_SOCKET` variable for the Assay process. Opting in
+does not grant placement or daemon-control authority.
+
+For a command-wrapped qualification such as Assay's B105 self-qualification,
+the declaration is:
+
+```toml
+[lanes.self-qualification]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
+resource_observer = "cgprofile"
+clean_tree = true
+```
+
+Run-Gate checks the fixed
+`/run/cgprofile/resource-observer.sock` source and mounts only that socket
+read-only at `/tmp/cgprofile-resource-observer.sock`. It grants the socket's
+observed GID to the tester container and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to that target. It does not mount
+`/run/cgprofile/ctl.sock`, the Docker socket, or any host namespace. The
+existing daemon's separate observer listener accepts only a resource-limit
+query bound to the caller's peer credentials and native thread ID; it returns
+the caller cgroup's ancestry under the configured gates slice, without PIDs or
+sibling cgroups.
+
+Assay uses local counters when its own hierarchy view is complete. Remote
+observation is used only when the local error specifically indicates hidden
+ancestors; a missing socket, malformed identity, incomplete ancestry, or
+uncertain shared-ancestor event remains an infrastructure ERROR with no
+candidate bucket. Do not mount the control socket as a fallback: a read-only
+bind does not restrict the verbs accepted by its protocol. See the
+[design rationale](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer).
+
+For this project's native R2 lane, keep `[lanes.r2.judge.mutation] jobs = 1`
+in `assay.toml`: workers in the same tester container share cgroup event
+counters even with separate scratch trees. After a budget stop, rerun the
+registered lane on the same exact tree so Assay resumes its saved campaign.
 
 ## Closed results and runner mode migration
 
@@ -562,6 +647,19 @@ with `--state-dir` (the other two flags require only 2.4.1). The run header
 names the resolved state directory. See the
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 for why Run-Gate does not create a configured root inside an exec runner.
+
+The progress JSONL is append-only: Assay writes a `run` header for each
+invocation. Run-Gate attributes candidate status and silence only to records
+after the newest header, so old candidates retained for resume are not
+presented as work completed by the current invocation. Rates count the
+current run's candidate events, while remaining-work ETAs use Assay's
+`pending_total` when available. If a `run` header exists but its current-run
+`pending_total` is absent, invalid, or inconsistent, Run-Gate suppresses the
+ETA; campaign-index fallback is reserved for legacy streams without a `run`
+header. The campaign-wide candidate index is never divided by the new run's
+elapsed clock. Do not truncate the progress file to reset monitoring;
+`--resume` owns that history. See the
+[progress design](docs/DESIGN-GUIDE.md#progress-is-scoped-to-the-current-assay-run).
 
 ### Shared assay lane imports
 
@@ -1443,41 +1541,35 @@ into `run-gate.footprint.json`, next to `run-gate.toml`, and that file is
 answers to "does this belong in git" for a reason: one is this checkout's
 raw log, the other is the distilled number everyone downstream should see).
 
-Captured from a real, clean-tree, profiled `selftest` PASS on this project
-itself (RG-55's own "consequence to exploit": run-gate-project's own lanes
-are all bare-host, so RG-57 makes this project self-hosting for RG-61's
-own transcript) — a `rusage`-sourced entry, since no `cgprofile-host-daemon`
-was reachable in this environment. Verbatim (including the `.run-gate/`
-store path, which is checkout-relative — this capture ran from the RG-55
-wave's own `rg55-followups-run-gate` worktree, not `run-gate-project/`
-directly; the table's own shape is the part that generalizes):
+Captured from clean-tree, profiled PASSes on candidate `5b2d169ca36e`
+(2026-10-10), with `cgprofile-host-daemon` reachable. `assay-r1` and
+`selftest` use daemon-backed container `memory.peak`; host `DAMON_STAT` made
+the optional DAMON series unavailable with `EBUSY`, without affecting either
+verdict. The short `assay-r3` canaries completed before the daemon could
+resolve their container, so their peak remains unknown, not zero. This
+supersedes the September `rusage-maxrss` sample, which measured the lane
+child's RSS rather than the whole container cgroup: the values from those two
+sources are not directly comparable as a workload change. Verbatim output
+(the `.run-gate/` path is checkout-relative; the table shape generalizes):
 
 ```console
 $ ./run-gate.py footprint --write
-run-gate rev 42 — lane resource footprint
-store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
-manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
+run-gate rev 60 — lane resource footprint
+store: /workspaces/vbpub/.worktrees/rg89-p1-r2-20261009/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/.worktrees/rg89-p1-r2-20261009/run-gate-project/run-gate.footprint.json
   LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
-  assay-r1                4    266 MiB/289 MiB            -          -    0.61        -     179.5s [source: rusage-maxrss]
-  assay-r3                5    198 MiB/201 MiB            -          -    0.74        -      15.9s [source: rusage-maxrss]
-  selftest                5    285 MiB/286 MiB            -          -    0.56        -     172.3s [source: rusage-maxrss]
+  assay-r1                5    708 MiB/807 MiB            -          -    0.79     0.7s     184.9s
+  assay-r3                5          -/-                  -          -       -     0.0s       1.5s
+  selftest                4    568 MiB/777 MiB            -          -    0.75     0.5s     162.6s
 ```
 
-(Recaptured RW-51/session 6, round-2 review's own S6 finding: the PRIOR
-capture above was one generation stale — its `assay-r1`/`assay-r3` rows
-were distilled partly from PRE-repair, pre-`wait4` runs, so they carried
-`"peak_at_floor": null` (unknown, because those older records predate the
-`floor_bytes` field entirely) even though the surrounding prose claimed
-every row was known not to be floor-bound. This capture's `--write` ran
-after a fresh, clean-tree `selftest` PASS on the CURRENT tip, so every
-contributing entry for all three lanes is `wait4`-era (RW-43/B1) with a
-REAL, non-null `peak_at_floor`: all three medians above are honest
-`os.wait4()` numbers and none of the three is floor-bound
-(`"peak_at_floor": false` for `assay-r1`, `assay-r3`, and `selftest`
-alike — `LANE-AUTHORING.md`'s own footprint-budgeting section shows what
-a floor-bound entry looks like instead). The manifest's `meta.expected`
-consumers get from this also now carries `"source": "rusage-maxrss"`
-alongside the medians, per contract Sec 3a (B5, round-2 review).)
+(This refresh uses the daemon's cgroup `memory.peak` for `assay-r1` and
+`selftest`; `peak_at_floor` is unknown for those daemon measurements, not
+false. `assay-r3` has no peak because its ephemeral target disappeared before
+the daemon attached, so its expected memory value remains null. The manifest
+records the source and method per lane. DAMON sample count was zero because
+`DAMON_STAT` was enabled; this is optional evidence and does not invalidate
+the ordinary cgroup footprint or lane verdict.)
 
 A lane with no profiled PASS run yet is simply OMITTED (absent means
 unknown, never zero) — `--write` REFUSES outright (exit 2, naming why) when
@@ -1500,10 +1592,20 @@ would silently drop every other lane's committed data).
   tail next to the run's own peak and the standing history median — three
   numbers, one line: what just happened, what has been typical, and what
   was budgeted.
-- **RG-56 (a later wave, not this one)** is where a footprint becomes an
-  ADMISSION signal — scheduling concurrent lanes against a slice's real
-  remaining budget instead of a guess. This package only measures and
-  commits the number; nothing here decides policy on it yet.
+- **RG-55/P5 bounded headroom wait (R-45).** Before a daemon-backed lane starts, run-gate reads
+  the gates slice through the profiler registry. When the lane's declared or
+  derived request would exceed the 90% headroom threshold, it waits in 30-second
+  checks, prints a notice at most once per minute, and then proceeds after the
+  bounded `admission_wait` (10 minutes by default) with one warning. It never
+  refuses a lane or changes its verdict because of host load; `--dry-run`
+  reports `would-wait` without waiting or starting a profiler session. This
+  check does not reserve capacity and is not the open atomic RG-56 protocol.
+  Ephemeral lanes perform the check before Docker starts and use the parent
+  resolved by their declared cgroup policy:
+  `cgroup_slice`, then `cgroup_slice_env`, then `$CGROUP_PARENT_DEV_GATES`.
+  The selected source is required; absence fails closed instead of launching
+  under Docker's unconfined default. Long-running application stacks receive
+  `$CGROUP_PARENT_DEV_BACKGROUND` separately through declared `forward_env`.
 
 ### Failure evidence and selective footprint updates
 

@@ -246,7 +246,7 @@ gains optional `liveness` and `placement`; new error codes `place-refused:*`.
 | P7 | assay B091: D-23 (auto budget, per-test events + cadence hint, `os._exit` runner, `hung`, `--rejudge`) | `assay-liveness` / `.worktrees/assay-liveness` | now (parallel) | assay 6.2.0 (+ `.assay-inbox/release.json` to dstdns) |
 | P8 | mdt host-setup: `dev-infra.slice`, `dev-gates.slice`, env keys, install/check/sweep, env export to devcontainers | `mdt-dev-slices` / `.worktrees/mdt-dev-slices` | now (parallel) | mdt host-setup (operator installs on the host) |
 | P6 | cgprofile CP-4..CP-7, then CP-8 liveness (D-18) + CP-9 placement (D-20/D-25) + `dev-infra` compose fallback (D-24) after the v1.1 amendment | `rg55-followups-cgprofile` from the P1 tip | when P1's r2 container exits | cgprofile 1.1.0 |
-| P5 | run-gate RG-56 admission + RG-62 (D-21 detached owner/attach, D-22 progress judge, gates-slice default, placement requests) | from main after P4 + P6 merge | after P4 and P6 | run-gate 23.9.0 |
+| P5 | run-gate transport/watch/placement, R-45 bounded observational headroom wait, and RG-62 policy consumer; RG-56 atomic registry admission remains OPEN (RW-283/RW-545) | from main after P4 + P6 merge | after P4 and P6 | run-gate 23.9.0 |
 | — | ciu SPEC-V8 Appendix D.7 (D-26) | main | now (controller) | docs |
 
 Base packages (P1 → cgprofile 1.0.0, P2 → run-gate 23.7.0, P4 → 23.8.0) ship
@@ -331,9 +331,11 @@ GATES`, install/check/sweep/docs); **P6** adds `infra/cgprofile.slice`, the
 authored `cgroup_parent`, the `ctl host` slice report, and CP-8 becomes the
 WATCH role (`start --progress-stream/--idle-bound/--ceiling/--on-stall`,
 `watch` block in `status`/`stop`, `cgroup.kill` enforcement, D-25 whitelist
-gains `cgroup.kill` on `rg-*` leaves only); **P5** shrinks to RG-56 admission
-+ RG-62 as policy author/consumer/reconciler with the in-process fallback
-watch; SPEC-V8 D.7 item (5) reads "its own `cgprofile.slice`".
+gains `cgroup.kill` on `rg-*` leaves only); **P5** consumes the v1.1
+transport, watch, placement requests, and R-45 bounded observational headroom
+wait, with the in-process fallback watch; RG-56's targetless atomic registry
+admission is a separate open follow-up (RW-283/RW-545), not part of P5.
+SPEC-V8 D.7 item (5) reads "its own `cgprofile.slice`".
 
 ## A2 — Transport (RW-31, operator ~14:50Z): `docker exec` and the socket are interchangeable carriers of one protocol
 
@@ -505,6 +507,31 @@ a non-delegated slice a valid destination or transfer ownership of its tree.
    failure, and do not claim a clean stop. A requested kill targets only the
    exact profiler-owned leaf and is verified against the lane and a sibling.
 
+The restore destination has a lifecycle of its own. A Docker-created source
+`.scope` can be unloaded by systemd when its last process moves away; a
+journaled unit name and cgroup path do not keep that unit alive. Therefore,
+before the initial `StartTransientUnit(PIDs=...)`, placement inventories the
+entire recorded origin unit subtree (not only the root's `cgroup.procs`) and
+requires at least one current process that is not among the PIDs being moved.
+If the requested move would empty the source, it refuses before creating the
+destination scope or changing the journal. Later descendant migration repeats
+the same test immediately before attaching a process from its origin. A known
+last-member move is reported as `place-refused:origin-scope-would-empty`;
+unreadable, malformed, or inconsistent membership is
+`place-refused:identity-unavailable`. Neither state permits a guessed parent
+or other substitute destination. This guard preserves the exact-unit restore
+contract for the observed lifecycle, including processes in source child
+cgroups.
+
+This is deliberately an observation guard, not a source-unit lease: another
+source process can exit after inventory and before systemd completes the
+move. The manager API does not condition the move on the source still having
+another member. Eliminating that race would require an explicit source
+lifetime mechanism or a different launch/placement architecture; neither is
+part of this change. If the race occurs, recovery remains fail-closed and
+preserves evidence rather than inventing a restore target. CP-19 tracks the
+remaining lifecycle edge for future design work.
+
 The API transition and controller-enable ordering are implementation gates,
 not assumptions: prove them on the deployed systemd/kernel combination,
 including process arrival during placement, process exit during restore,
@@ -561,7 +588,7 @@ inspection rather than stopping or deleting them.
 | Create `dev-gates.slice/rg-<token>` directly | Rejected. It bypasses systemd's unit ownership model; the live manager refused attachment because the slice is not delegated. Direct root writes do not repair that refusal or establish safe lifecycle ownership. |
 | Set `Delegate=yes` on `dev-gates.slice` | Rejected. systemd does not support delegation on slice units; it would also make both systemd and cgprofile writers below the slice. |
 | Put the lane leaf under the Docker/tester's existing scope | Rejected. Enabling controllers there can require the scope to become an empty internal node; that conflicts with container/runtime management and later `docker exec`. The independent delegated scope keeps the lane leaf outside that ownership domain while preserving the process's PID/mount namespaces. |
-| Give the daemon host PID/cgroup namespaces | Rejected. It violates D-15 and expands ambient authority; host PID migration is instead mediated by systemd over its bus. The current P6 Compose's broad writable cgroupfs bind is separately a security gap, not an approved substitute for delegation; see the security gate below. |
+| Give the daemon host PID/cgroup namespaces | Split decision: the initial D-1 proposal for host PID and cgroup namespaces was narrowed by D-15; RW-467 later authorizes host PID for the managed daemon alone, because DAMON sysfs resolves `pid_target` in the writer's active PID namespace and a read-only host `/proc` bind does not change that namespace. Host cgroup namespace remains private, as do daemon networking and all workload/helper/gate/test namespaces. The original all-host-namespace combination remains rejected. Host-PID visibility adds process-table and PID-operation authority; it is not a containment boundary, and no stall path may signal a numeric PID. |
 | Mount the host system bus into the devcontainer | Rejected. The cockpit only needs the ctl protocol. Giving every cockpit process systemd RPC access is unnecessary authority; the bus stays daemon-only. |
 | Give the privileged daemon the raw host system-bus socket | This is the current P6 bridge, not a security sandbox. A read-only socket mount does not restrict RPC methods, and daemon-side allowlists only constrain normal requests; they do not contain a compromised daemon. The scope layout does not by itself prove D-15 against daemon compromise. |
 | Add a narrow host helper/broker instead of exposing the system bus to cgprofile | Deferred by D-32 for the current single-operator, rootful-Docker deployment. Keep it as a future option if the trust boundary changes or daemon-compromise containment becomes a requirement; see A4. |
@@ -766,3 +793,45 @@ replayed leases, live start/restore/kill/failure probes, and proof that
 profiling failure still cannot change a test verdict under R-36h. Until then,
 retain the no-broker implementation and document the accepted trust boundary
 without calling it least privilege.
+
+## A5 — daemon-only host-PID namespace exception (RW-467, 2026-10-07)
+
+RW-467 records the operator's explicit deployment authorization: the managed
+`cgprofile-host-daemon` uses the host PID namespace so DAMON sysfs can resolve
+host `pid_target` values. This replaces only the host-PID portion of the
+earlier all-private daemon proposal. Historically D-1 proposed both host PID
+and host cgroup namespaces; D-15 narrowed that broad mode. RW-467 authorizes
+only the daemon's PID-namespace exception, not a return to the original
+pair. The daemon keeps a private cgroup
+namespace and disabled networking, has no Docker socket, and receives the
+host `/proc` view through the managed read-only bind. The one-shot helper,
+workload, gate, and test containers remain private in every namespace; in
+particular, no test container uses `--pid=host` or `--cgroupns=host`.
+
+D-15's initial absolute no-host-mutation wording was later qualified by
+D-25's explicit allowlist for DAMON and opt-in, identity-checked placement
+writes. The safety invariant is no hidden or general-purpose host mutation:
+the daemon may write only its enumerated DAMON/session paths and the exact
+delegated placement scope/leaf through the specified request flow. Host-PID
+visibility does not widen that write allowlist, add numeric-PID signaling, or
+make the in-process guard a sandbox against daemon compromise.
+
+The reason is specific to DAMON's PID interpretation: `/hostproc` lets the
+daemon read host process facts, but DAMON interprets `pid_target` against the
+PID namespace of the process writing its sysfs configuration. Host-PID mode
+therefore makes the identifiers addressable; it does not guarantee a valid
+DAMON context. The earlier probe using both host PID and host cgroup
+namespaces still failed with `EINVAL` at `kdamond_commit`, so acceptance must
+exercise the narrower host-PID/private-cgroup deployment and record either a
+real context start/stop or the exact kernel refusal. See RW-468 and the P1
+acceptance report; do not infer DAMON availability from namespace selection.
+
+This exception increases the daemon's visibility of host process identities
+and its PID-operation authority. It does not authorize numeric-PID signaling,
+relax the identity-checked systemd placement/restore path, or make
+application-level guards a sandbox against daemon compromise. The no-broker
+trust choice in D-32 remains unchanged: under the current rootful-Docker,
+single-operator model, cgprofile is trusted host infrastructure, while a
+future broker is valuable only if it actually removes equivalent direct
+authority from cgprofile. This is a deployment exception for the daemon, not
+a general permission to give host namespaces to test or workload containers.

@@ -162,11 +162,14 @@ if args[:2] == ["run", "--rm"]:
 if args and args[0] == "run" and "-d" in args:
     mounts = []
     env = []
+    groups = []
     for index, item in enumerate(args[:-1]):
         if item == "--mount":
             mounts.append(args[index + 1])
         if item == "-e":
             env.append(args[index + 1])
+        if item == "--group-add":
+            groups.append(args[index + 1])
     image_index = args.index("tester-unified:local")
     state = {
         "id": "''' + CONTAINER_ID + r'''",
@@ -180,6 +183,7 @@ if args and args[0] == "run" and "-d" in args:
         "network": next(item.split("=", 1)[1] for item in args if item.startswith("--network=")),
         "mounts": mounts,
         "env": env,
+        "groups": groups,
         "inner": args[image_index + 1 :],
     }
     cidfile = Path(one_after("--cidfile"))
@@ -210,14 +214,19 @@ if args and args[0] == "inspect":
     elif ".State.Running" in fmt:
         print("true" if mode in {"blocked-wait", "blocked-launch", "create-then-nonzero", "stop-fails", "force-remove-fails"} and not state.get("stopped") else "false")
     elif ".Config.User" in fmt:
-        cgroupns = "private" if mode == "bad-config" else state["cgroupns"]
+        cgroupns = "host" if mode == "bad-config" else state["cgroupns"]
         print("|".join((state["id"], "/" + state["name"], state["token"], "1003", state["cgroup_parent"], cgroupns, "3000000000", "2147483648", "8589934592", state["network"])))
     elif ".Mounts" in fmt:
         for mount in state["mounts"]:
-            fields = dict(part.split("=", 1) for part in mount.split(","))
+            fields = {}
+            for part in mount.split(","):
+                key, separator, value = part.partition("=")
+                fields[key] = value if separator else "true"
             print(fields["src"] + "\t" + fields["dst"])
     elif ".Config.Env" in fmt:
         print("\n".join(state["env"]))
+    elif ".HostConfig.GroupAdd" in fmt:
+        print(",".join(state["groups"]))
     elif ".Name" in fmt and "Labels" in fmt:
         token = state["token"] + "-other" if mode == "bad-owner" else state["token"]
         print("|".join((state["id"], "/" + state["name"], token)))
@@ -245,6 +254,15 @@ if args and args[0] == "logs":
             print(f"Id={unit}")
             print("LoadState=loaded")
             print(f"FragmentPath=/etc/systemd/system/{unit}")
+            if unit == "dev-gates.slice":
+                print("ControlGroup=/dev.slice/dev-gates.slice")
+                print("MemoryMax=8589934592")
+                print("MemoryHigh=18446744073709551615")
+                print("MemorySwapMax=8589934592")
+                print("MemoryCurrent=1073741824")
+                print("CPUQuotaPerSecUSec=18446744073709551615")
+                print("CPUWeight=100")
+                print("IOWeight=100")
             print(f"ASSAY_UNIT_END={unit}")
         raise SystemExit(0)
     if mode == "hang-logs" and "--follow" not in args:
@@ -771,6 +789,13 @@ if '--archive-prior-snapshot' in sys.argv:
         "TIMEOUT_TRACE": str(tmp_path / "timeout.jsonl"),
         "FAST_DOCKER_TIMEOUT": "1" if fast_docker_timeout else "0",
     }
+    env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = os.environ.get(
+        "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
+        os.environ.get(
+            "ASSAY_RESOURCE_OBSERVER_SOCKET",
+            "/run/cgprofile/resource-observer.sock",
+        ),
+    )
     if inner_pilot_log is not None:
         env["ANALYSIS_PILOT_INNER_LOG"] = str(inner_pilot_log)
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
@@ -826,6 +851,13 @@ def launch_env(tmp_path: Path, *, mode: str):
         "DOCKER_MODE": mode,
         "TMPDIR": str(tmp_path),
     }
+    env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = os.environ.get(
+        "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
+        os.environ.get(
+            "ASSAY_RESOURCE_OBSERVER_SOCKET",
+            "/run/cgprofile/resource-observer.sock",
+        ),
+    )
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
@@ -908,14 +940,15 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         assert f"ASSAY_B105_GATE_COMPLETE={lane}" in proc.stdout
     launch = launch_call(calls)
     assert "--init" in launch
-    assert "--cgroupns=host" in launch
+    assert "--cgroupns=private" in launch
+    assert "--cgroupns=host" not in launch
     assert "--cgroup-parent=dev-gates.slice" in launch
     assert "--cpus=3" in launch
     assert "--memory=2g" in launch
     assert "--memory-swap=8g" in launch
+    assert "--group-add" in launch
     assert "--network=none" in launch
-    cgroup_probe = next(call for call in calls if "--cgroupns=host" in call)
-    assert "--cgroup-parent=dev-gates.slice" in cgroup_probe
+    assert all("--cgroupns=host" not in call for call in calls if call and call[0] == "run")
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in launch
     if background is None:
         assert "CGROUP_PARENT_DEV_BACKGROUND" not in " ".join(launch)
@@ -926,6 +959,16 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     expected_mounts = [f"type=bind,src={host_workspace},dst={host_workspace}"]
     if host_workspace != "/workspaces/vbpub":
         expected_mounts.append(f"type=bind,src={host_workspace},dst=/workspaces/vbpub")
+    observer_source = os.environ.get(
+        "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
+        os.environ.get(
+            "ASSAY_RESOURCE_OBSERVER_SOCKET",
+            "/run/cgprofile/resource-observer.sock",
+        ),
+    )
+    expected_mounts.append(
+        f"type=bind,src={observer_source},dst=/tmp/cgprofile-resource-observer.sock,readonly"
+    )
     assert mounts == expected_mounts
     assert all("docker.sock" not in mount for mount in mounts)
     if inner_budget is not None:
@@ -950,6 +993,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     ).stdout.strip()
     assert f"ASSAY_B105_GATE_EXPECTED_COMMIT={source_commit}" in env
     assert f"ASSAY_B105_GATE_EXPECTED_TREE={source_tree}" in env
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in env
 
 
 @pytest.mark.parametrize(

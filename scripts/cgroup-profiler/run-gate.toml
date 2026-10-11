@@ -53,20 +53,17 @@ budget = "20m"
 # Mutation testing via a live worktree assay (never a pinned zipapp for an
 # in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md), executed inside
 # tester-unified since this project's report-tier modules need
-# pandas/plotly/matplotlib/scipy/ruptures. The judge policy (source roots,
-# operators, budget) lives in this project's own assay.toml [lanes.r2].
+# pandas/plotly/matplotlib/scipy/ruptures. Keep this as a native Assay lane:
+# it needs Run-Gate's source-backed Assay invocation, resume/progress/state
+# handling, and the RG-89 observer-only socket mount because the tester has a
+# private cgroup namespace. The judge policy (source roots, operators, budget)
+# lives in this project's own assay.toml [lanes.r2].
 [lanes.r2]
-kind = "command"
+kind = "assay"
+assay_lane = "r2"
 environment = "tester-unified"
-# `assay.toml` delegates the changed-lines base to this request. Invoke with
-# `./run-gate.py --base <exact-ref> r2`, and inspect the exact Assay plan before
-# the campaign. run-gate can derive a base if the flag is omitted, so the
-# acceptance command must supply the recorded ref explicitly.
-argv = [
-    "bash", "-c",
-    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --request-base {base} --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
-]
-clean_tree = false
+resource_observer = "cgprofile"
+clean_tree = true
 # The prior P6 counts/rate in RW-438 are historical, not an estimate for this
 # P1 request-base campaign. Inspect and record the exact plan for the supplied
 # base before launch, then set a safety window with measured headroom. Expiry
