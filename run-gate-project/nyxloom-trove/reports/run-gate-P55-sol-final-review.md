@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "43168068ab9250d8c96cffce0ae8d14150868c28"
+input_revision: "aee194b7e"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-553
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-555
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -203,7 +203,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (RW-553 at this checkpoint; refresh from the
+   through the latest ruling (RW-555 at this checkpoint; refresh from the
    selected tree before review). The log, current git state, assay JSON,
    process state, and Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
@@ -232,7 +232,7 @@ The P5 state below was refreshed for this candidate. The P1/P4/P6/CMRU
 sections that follow are planning snapshots, not current branch, gate, or
 process truth; refresh them before selecting any of those targets.
 
-### `P5`: run-gate v1.1 client, revision 61
+### `P5`: run-gate v1.1 client, revision 63
 
 Worktree: `.worktrees/rg55-p5-transport-port-20261010`, branch
 `rg55-p5-transport-port-20261010`; the controller supplies the exact final
@@ -274,7 +274,18 @@ The integrated cgroup-profiler helper refactor has a prior fresh Sol ACCEPT
 for provisional integration under RW-437, not for release; its final-source
 R2 and DAMON-start fix validation remain separate requirements. Current live
 DAMON measurements and candidate runtime probes are in the refreshed P5
-report and RW-553.
+report and RW-553/RW-555.
+
+P5 review round 1 is REJECT on B3; preserve its initial blind-review artifact
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REVIEW-round1.md`.
+RW-554 resolved the handoff/SPEC contradiction in favor of a pre-body
+ready/continue barrier and fail-closed explicit placement refusal. The rev-63
+candidate repairs B3 and has four real-daemon Run-Gate live probes (exec and
+bare-host success/refusal pairs) plus 71 focused tests; see RW-555 and the P5
+report. These are committed working-tree receipts on code checkpoint
+`aee194b7e`, not the final registered gate matrix. The next fresh Sol round must
+independently review the exact HEAD supplied by the controller and the full
+integrated diff; round 1 does not authorize acceptance.
 
 The committed CP-19 addition provides origin-unit lifetime protection: inventory the
 full source cgroup subtree before initial and later moves; refuse a known
@@ -290,22 +301,25 @@ see the exact session evidence in the P5 report. The earlier
 `place-refused:write-failed` warning remains historical evidence and must be
 considered alongside the successful candidate probes, not erased.
 
-The candidate is Run-Gate revision 61. CMRU currently resolves its next
-release to `23.11.0`; the original `23.9.0`/rev-43 handoff is historical.
+The candidate is Run-Gate revision 63. Read-only `cmru status` from this
+candidate resolves Run-Gate `23.11.0`, Assay `9.1.0`, and cgroup-profiler
+`0.1.0` by default (no existing cgprofile tag); the original `23.9.0`/rev-43
+handoff is historical. The wave's explicit cgprofile release target remains
+`1.0.0`, subject to that package's own release gates. Do not publish from this
+review task.
 Cgroup-profiler unit, whole-package coverage, and canary receipts are recorded
 for exact code tree `465f67d0`; Run-Gate `selftest` and cgroup-profiler's
 registered `r0-r1` coverage passed on evidence tree `db6d5b73`. The controller
-report records both. The evidence/report commit is `43168068`; this packet
-refresh follows it, so all listed short gates must be rerun on the final quiet
-review tree. Run-Gate `assay-r1` has not yet started because admission waited
-for gates-slice capacity and was canceled before container creation. Required
-short checks are cgroup-profiler unit/coverage/canary and its local Nyxloom
-lint, Run-Gate
-`selftest`, `assay-r1`, `assay-r3`, and `doctor`. The P5 footprint manifest
-must remain tracked. Candidate-image live acceptance—socket/exec parity,
-CP-19 refusal, anchored placement/restore, on-stall kill, and a matched DAMON
-pair—is recorded in the report and RW-553. The main-managed daemon has been
-restored; do not launch a sibling or use raw Docker to bypass the singleton.
+report records both. The rev-63 B3 repair, report, ruling, and probe fixture
+are committed at `aee194b7e`; this packet's `input_revision` follows the
+two-step freeze and pins that code checkpoint. The final tree still needs
+cgroup-profiler unit/coverage/canary and its local Nyxloom scope check,
+Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor`. The P5 footprint
+manifest must remain tracked. Candidate-image live acceptance—
+socket/exec parity, CP-19 refusal, anchored placement/restore, on-stall kill,
+matched DAMON pair, and rev-63 placement-barrier success/refusal pairs—is
+recorded in the report and RW-553/RW-555. The main-managed daemon is up; do
+not launch a sibling or use raw Docker to bypass the singleton.
 
 Assay source changes are part of the integrated diff and CMRU resolves the
 next Assay version to `9.1.0`. Run-Gate's source-backed Assay R1/R2 lanes do
