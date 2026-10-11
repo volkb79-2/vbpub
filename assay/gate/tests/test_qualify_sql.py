@@ -98,7 +98,7 @@ def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
     assert q.PROBES_SHA256.startswith("36249c03") and q.PROBES_SHA256.endswith("488c")
-    assert q.HAZARD_CASES_SHA256 == "f7978d797c1dc2da8bfc1528be2e4dcf652eee6c0b30dba9a3ef6d124643379d"
+    assert q.HAZARD_CASES_SHA256 == "7c1f009ce78b973a4cbf74d9489b7e4a4476ccf04e50db0f63324ded4cfdfa4f"
 
 
 def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
@@ -134,6 +134,47 @@ def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
         "create-table-as-does-not-borrow-later-type",
         "if-not-exists-does-not-supply-type",
         "unqualified-type-does-not-apply-to-qualified-table",
+        "unnamed-index-with-attachment-context",
+        "unqualified-alter-does-not-borrow-cross-schema-type",
+        "search-path-shadowed-string-builtin",
+        "search-path-shadowed-integer-builtin",
+        "explicit-catalog-string-builtin-control",
+        "pg-catalog-first-builtin-with-shadow",
+        "later-catalog-first-does-not-prove-earlier-type",
+        "later-catalog-first-does-not-prove-alter-column-type",
+        "later-set-config-does-not-invalidate-earlier-check",
+        "set-schema-implicit-catalog-first-proof",
+        "set-schema-escape-temp-type-shadow",
+        "known-first-search-path-schema-prevents-temp-fallthrough",
+        "missing-search-path-entry-falls-through-to-pg-temp-type",
+        "set-schema-temp-unqualified-row-type-shadow",
+        "alter-routine-reset-keeps-session-path",
+        "dynamic-execute-search-path-shadow",
+        "unnamed-index-attached-generated-name",
+        "set-config-search-path-shadow",
+        "temporary-row-type-precedes-pg-catalog",
+        "temporary-view-type-precedes-pg-catalog",
+        "implicit-temp-quoted-view-type-precedes-pg-catalog",
+        "recursive-temp-view-type-precedes-pg-catalog",
+        "renamed-temporary-row-type-precedes-pg-catalog",
+        "renamed-temporary-view-type-precedes-pg-catalog",
+        "renamed-implicit-temporary-view-type-precedes-pg-catalog",
+        "renamed-implicit-temp-view-derived-first-precedes-pg-catalog",
+        "renamed-temporary-enum-type-precedes-pg-catalog",
+        "explicit-pg-temp-after-catalog-preserves-builtin-widening",
+        "set-local-search-path-expires-before-temp-shadow-check",
+        "routine-search-path-setting-does-not-change-session-type",
+        "rolled-back-session-path-does-not-prove-temp-order",
+        "unlogged-row-type-does-not-shadow-catalog-first",
+        "quoted-set-search-path-shadow",
+        "set-schema-missing-falls-through-to-temp-type",
+        "rollback-rename-can-fall-through-to-temp-type",
+        "rollback-drop-restores-known-first-schema",
+        "revoked-schema-usage-can-fall-through-to-temp-type",
+        "revoking-other-role-usage-preserves-owner-path",
+        "set-local-role-commit-restores-session-owner",
+        "revoke-public-preserves-creator-usage",
+        "revoke-usage-grant-option-preserves-owner-path",
     }
     assert all(case["assertion"] for case in cases if case["expected_site_count"] == 1)
     assert all(case["assertion"] for case in cases if case["probe"] is not None)

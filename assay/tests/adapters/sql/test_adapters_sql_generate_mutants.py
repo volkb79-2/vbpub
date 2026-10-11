@@ -178,6 +178,58 @@ def test_mutation_collector_context_includes_unchanged_sql_sources():
     assert jobs == ()
 
 
+def test_mutation_collector_uses_source_identity_for_sql_path_timeline():
+    from assay.mutation import MutationTarget, collect_mutation_sites
+
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "RESET search_path;\n"
+    )
+    target = MutationTarget(
+        path="target.sql",
+        text=source,
+        lines=frozenset(_all_lines(source)),
+    )
+    jobs = collect_mutation_sites(
+        (target,),
+        adapter=ADAPTER,
+        operators=("sql:widen-check-in",),
+        limit=100,
+        context_sources=(("target.sql", source),),
+    )
+    assert len(jobs) == 1
+
+
+def test_mutation_collector_keeps_identical_other_sql_source_as_context():
+    from assay.mutation import MutationTarget, collect_mutation_sites
+
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "RESET search_path;\n"
+    )
+    target = MutationTarget(
+        path="target.sql",
+        text=source,
+        lines=frozenset(_all_lines(source)),
+    )
+    jobs = collect_mutation_sites(
+        (target,),
+        adapter=ADAPTER,
+        operators=("sql:widen-check-in",),
+        limit=100,
+        context_sources=(("target.sql", source), ("other.sql", source)),
+    )
+    assert jobs == ()
+
+
 # =============================================================================
 # The seven operators -- span, replacement (carve §3.2's table)
 # =============================================================================
@@ -331,6 +383,55 @@ def test_drop_unique_using_index_parses_create_index_modifiers():
         "CREATE TABLE t (a INT);\n"
         "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS attached ON t (a);\n"
         "ALTER TABLE t ADD CONSTRAINT uq UNIQUE USING INDEX attached;\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_drop_unique_unnamed_index_can_still_be_mutated_without_attachments():
+    source = "CREATE UNIQUE INDEX ON t (a);\n"
+    site = _one_site(source, "sql:drop-unique")
+    assert _span_text(source, site) == b"CREATE UNIQUE INDEX"
+
+
+def test_drop_unique_unnamed_index_is_conservatively_suppressed_with_attachments():
+    source = (
+        "CREATE TABLE t (a INT, b INT);\n"
+        "CREATE UNIQUE INDEX ON t (a);\n"
+        "CREATE UNIQUE INDEX attached ON t (b);\n"
+        "ALTER TABLE t ADD CONSTRAINT attached_uq UNIQUE USING INDEX attached;\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_drop_unique_unnamed_index_attachment_context_works_across_files():
+    index_source = (
+        "CREATE UNIQUE INDEX ON t (a);\n"
+        "CREATE UNIQUE INDEX attached ON t (b);\n"
+    )
+    attachment_source = (
+        "ALTER TABLE t ADD CONSTRAINT attached_uq UNIQUE USING INDEX attached;\n"
+    )
+    context = ADAPTER.prepare_mutation_context((index_source, attachment_source))
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        index_source,
+        _all_lines(index_source),
+        operators=("sql:drop-unique",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+def test_drop_unique_quoted_on_is_an_index_name_not_an_omitted_name():
+    source = (
+        'CREATE UNIQUE INDEX "ON" ON t (a);\n'
+        'ALTER TABLE t ADD CONSTRAINT on_uq UNIQUE USING INDEX "ON";\n'
     )
     sites = ADAPTER.generate_mutation_sites(
         source, _all_lines(source), operators=("sql:drop-unique",), limit=1000
@@ -881,9 +982,9 @@ def test_rule3_type_change_in_another_file_refuses_string_widening():
 
 
 def test_rule3_column_type_from_another_file_enables_safe_widening():
-    table_source = "CREATE TABLE task (status text);\n"
+    table_source = "CREATE TABLE public.task (status text);\n"
     check_source = (
-        "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+        "ALTER TABLE public.task ADD CHECK (status IN ('open', 'closed'));\n"
     )
     context = ADAPTER.prepare_mutation_context((table_source,))
     sites = ADAPTER.generate_mutation_sites_with_context(
@@ -895,6 +996,1312 @@ def test_rule3_column_type_from_another_file_enables_safe_widening():
     )
     assert len(sites) == 1
     assert sites[0].replacement == b", '__assay_widened__')"
+
+
+def test_rule3_unqualified_alter_refuses_cross_file_type_inference():
+    table_source = "CREATE TABLE archive.task (status text);\n"
+    check_source = "ALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n"
+    context = ADAPTER.prepare_mutation_context((table_source,))
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+def test_rule3_unqualified_builtin_string_type_is_refused_when_shadowed():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO tenant, pg_catalog;\n"
+        "CREATE TABLE task (status text CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_relation_generated_type_name_is_treated_as_user_defined():
+    source = (
+        "CREATE TABLE tenant.text (value integer);\n"
+        "CREATE TABLE task (status text CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_inline_check_uses_only_its_own_create_table_declarations():
+    source = (
+        "CREATE TABLE task (status text);\n"
+        "CREATE TABLE IF NOT EXISTS task (status text, "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_unqualified_builtin_string_type_is_refused_for_shadowing_path():
+    source = (
+        "SET search_path TO tenant, pg_catalog;\n"
+        "CREATE TABLE task (status text CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_explicit_pg_catalog_string_type_remains_safe_when_shadowed():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO tenant, pg_catalog;\n"
+        "CREATE TABLE task (status pg_catalog.text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+@pytest.mark.parametrize("predicate", ["IN", "NOT IN"])
+def test_rule3_unqualified_integer_type_is_refused_when_shadowed(predicate: str):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.int4 AS pg_catalog.int4;\n"
+        "SET search_path TO tenant, pg_catalog;\n"
+        f"CREATE TABLE task (value int4 CHECK (value {predicate} (1, 2)));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize("predicate", ["IN", "NOT IN"])
+def test_rule3_explicit_pg_catalog_integer_type_remains_safe_when_shadowed(
+    predicate: str,
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.int4 AS pg_catalog.int4;\n"
+        "SET search_path TO tenant, pg_catalog;\n"
+        f"CREATE TABLE task (value pg_catalog.int4 "
+        f"CHECK (value {predicate} (1, 2)));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert len(sites) == 1
+    if predicate == "IN":
+        assert sites[0].replacement == b", 3)"
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "SET search_path TO pg_catalog, tenant;",
+        'SET "search_path" TO pg_catalog, tenant;',
+    ],
+)
+def test_rule3_catalog_first_search_path_proves_builtin_over_later_user_type(
+    setting: str,
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        f"{setting}\n"
+        "CREATE TABLE task (status text CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_later_catalog_first_search_path_does_not_prove_earlier_type():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "CREATE TABLE tenant.task (status text CHECK (status IN ('open', 'closed')));\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_later_catalog_first_path_does_not_rebind_alter_column_type():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO tenant, pg_catalog;\n"
+        "CREATE TABLE tenant.task (status text);\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "ALTER TABLE tenant.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_catalog_first_path_before_column_declaration_proves_alter_type():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text);\n"
+        "ALTER TABLE tenant.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_later_safe_path_does_not_erase_declaration_shadow_risk():
+    source = (
+        "SET search_path TO tenant, pg_catalog;\n"
+        "CREATE TABLE tenant.task (status text);\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "ALTER TABLE tenant.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_context_keeps_candidate_source_path_order_for_alter_check():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text);\n"
+        "ALTER TABLE tenant.task ADD CHECK (status IN ('open', 'closed'));\n"
+        "RESET search_path;\n"
+    )
+    context = ADAPTER.prepare_mutation_context_with_sources(
+        (("target.sql", source),)
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context_for_source(
+        source,
+        _all_lines(source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+        source_identity="target.sql",
+    )
+    assert len(sites) == 1
+    assert sites[0].replacement == b", '__assay_widened__')"
+
+
+def test_rule3_context_does_not_erase_candidate_declaration_path_evidence():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text);\n"
+        "ALTER TABLE tenant.task ADD CHECK (status IN ('open', 'closed'));\n"
+    )
+    context = ADAPTER.prepare_mutation_context_with_sources(
+        (("target.sql", source),)
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context_for_source(
+        source,
+        _all_lines(source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+        source_identity="target.sql",
+    )
+    assert len(sites) == 1
+    assert sites[0].replacement == b", '__assay_widened__')"
+
+
+def test_rule3_unsafe_search_path_in_other_context_source_still_blocks_site():
+    target = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    other_source = "SET search_path TO tenant, pg_catalog;\n"
+    context = ADAPTER.prepare_mutation_context_with_sources(
+        (("other.sql", other_source),)
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context_for_source(
+        target,
+        _all_lines(target),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+        source_identity="target.sql",
+    )
+    assert sites == ()
+
+
+def test_rule3_context_excludes_all_entries_for_same_source_identity():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "RESET search_path;\n"
+    )
+    context = ADAPTER.prepare_mutation_context_with_sources(
+        (("target.sql", source), ("target.sql", source))
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context_for_source(
+        source,
+        _all_lines(source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+        source_identity="target.sql",
+    )
+    assert len(sites) == 1
+
+
+def test_rule3_identical_external_source_keeps_cross_file_path_veto():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "RESET search_path;\n"
+    )
+    context = ADAPTER.prepare_mutation_context_with_sources(
+        (("target.sql", source), ("other.sql", source))
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context_for_source(
+        source,
+        _all_lines(source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+        source_identity="target.sql",
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "CREATE TEMP VIEW text AS SELECT 'open'::pg_catalog.text AS value;",
+        "CREATE TEMPORARY VIEW text AS SELECT 'open'::pg_catalog.text AS value;",
+        'CREATE TEMP VIEW "text" AS SELECT \'open\'::pg_catalog.text AS value;',
+        'CREATE TEMP TABLE seed (value pg_catalog.text); CREATE VIEW "text" AS SELECT value FROM seed;',
+        'CREATE TEMP RECURSIVE VIEW "text"(value) AS SELECT \'open\'::pg_catalog.text;',
+    ],
+)
+def test_rule3_temporary_view_type_precedes_pg_catalog(declaration: str):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        f"{declaration}\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_catalog_first_path_resolves_unlogged_row_type_name_to_builtin():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        'CREATE UNLOGGED TABLE tenant."text" (value pg_catalog.text);\n'
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_pg_catalog_first_does_not_override_temporary_type_shadow():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_renamed_temporary_row_type_precedes_pg_catalog():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "ALTER TABLE seed RENAME TO text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize(
+    ("create_relation", "rename_relation"),
+    [
+        (
+            "CREATE TEMP TABLE seed (value pg_catalog.text);",
+            "ALTER TABLE pg_temp.seed RENAME TO text;",
+        ),
+        (
+            "CREATE TEMP VIEW seed AS SELECT 'open'::pg_catalog.text AS value;",
+            "ALTER VIEW seed RENAME TO text;",
+        ),
+    ],
+)
+def test_rule3_renamed_temporary_relation_type_precedes_pg_catalog(
+    create_relation: str, rename_relation: str
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        f"{create_relation}\n"
+        f"{rename_relation}\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_renamed_implicitly_temporary_view_type_precedes_pg_catalog():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "CREATE VIEW view_seed AS SELECT value FROM seed;\n"
+        "ALTER VIEW view_seed RENAME TO text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_implicit_temp_view_after_derived_table_comma_is_tracked():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "CREATE VIEW view_seed AS "
+        "SELECT seed.value FROM (SELECT 1) AS x, seed;\n"
+        "ALTER VIEW view_seed RENAME TO text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_renamed_temporary_named_type_precedes_pg_catalog():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "CREATE TYPE pg_temp.enum_seed AS ENUM ('open', 'closed');\n"
+        "ALTER TYPE pg_temp.enum_seed RENAME TO text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_renamed_temporary_type_is_collected_across_sql_files():
+    type_source = (
+        "CREATE TEMP TABLE seed_table (value pg_catalog.text);\n"
+        "CREATE TYPE pg_temp.enum_seed AS ENUM ('open', 'closed');\n"
+    )
+    rename_source = "ALTER TYPE pg_temp.enum_seed RENAME TO text;\n"
+    context = ADAPTER.prepare_mutation_context((type_source, rename_source))
+    check_source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+def test_rule3_explicit_pg_temp_after_catalog_preserves_builtin_widening():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_catalog_first_temp_path_set_after_declaration_does_not_prove_type():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_set_local_search_path_does_not_prove_type_after_commit():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "BEGIN;\n"
+        "SET LOCAL search_path TO pg_catalog, pg_temp;\n"
+        "COMMIT;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_rolled_back_session_search_path_does_not_prove_type():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "BEGIN;\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "ROLLBACK;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_rollback_work_to_savepoint_keeps_path_setting_transactional():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "BEGIN;\n"
+        "SAVEPOINT s;\n"
+        "ROLLBACK WORK TO SAVEPOINT s;\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "ROLLBACK;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_commit_work_and_chain_keeps_next_transactional_path_setting():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "BEGIN;\n"
+        "COMMIT WORK AND CHAIN;\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "ROLLBACK;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_executable_routine_path_setting_invalidates_catalog_proof():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE FUNCTION public.f() RETURNS void LANGUAGE plpgsql AS $$\n"
+        "BEGIN\n"
+        "  SET search_path TO pg_catalog;\n"
+        "END $$;\n"
+        "SELECT public.f();\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_executable_routine_reset_invalidates_catalog_proof():
+    source = (
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE FUNCTION public.f() RETURNS void LANGUAGE plpgsql AS $$\n"
+        "BEGIN\n"
+        "  RESET search_path;\n"
+        "END $$;\n"
+        "SELECT public.f();\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_reset_search_path_does_not_certify_builtin_lookup():
+    source = (
+        "RESET search_path;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_quoted_reset_search_path_invalidates_catalog_and_temp_proof():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "RESET \"search_path\";\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_function_search_path_setting_does_not_change_session_path():
+    source = (
+        "CREATE FUNCTION tenant_only() RETURNS integer AS $$ SELECT 1 $$ "
+        "LANGUAGE sql SET search_path TO tenant, pg_catalog;\n"
+        "ALTER FUNCTION tenant_only() SET search_path TO tenant, pg_catalog;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_alter_routine_reset_does_not_change_session_path():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "ALTER ROUTINE tenant.f() RESET search_path;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_function_search_path_setting_does_not_order_temp_schema():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "CREATE FUNCTION tenant_only() RETURNS integer AS $$ SELECT 1 $$ "
+        "LANGUAGE sql SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_alter_role_search_path_does_not_change_current_session():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "ALTER ROLE CURRENT_USER SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_reset_search_path_restores_implicit_temporary_precedence():
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "RESET search_path;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_later_reset_does_not_invalidate_earlier_alter_check():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text);\n"
+        "ALTER TABLE tenant.task ADD CHECK (status IN ('open', 'closed'));\n"
+        "RESET search_path;\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_renamed_temporary_row_type_propagates_across_sql_files():
+    temporary_table = "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+    rename_chain = (
+        "ALTER TABLE seed RENAME TO staged;\n"
+        "ALTER TABLE staged RENAME TO text;\n"
+    )
+    search_path = "SET search_path TO pg_catalog, tenant;\n"
+    check_source = (
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    context = ADAPTER.prepare_mutation_context(
+        (temporary_table, rename_chain, search_path)
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+def test_rule3_implicit_temp_view_rename_propagates_across_sql_files():
+    temporary_table = "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+    view_source = (
+        "CREATE VIEW view_seed AS "
+        "SELECT seed.value FROM (SELECT 1) AS x, seed;\n"
+    )
+    rename_source = "ALTER VIEW view_seed RENAME TO text;\n"
+    context = ADAPTER.prepare_mutation_context(
+        (temporary_table, view_source, rename_source)
+    )
+    check_source = (
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites_with_context(
+        check_source,
+        _all_lines(check_source),
+        operators=("sql:widen-check-in",),
+        limit=1000,
+        context=context,
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        'SET "search_path" TO tenant, pg_catalog;',
+        'SET "SEARCH_PATH" TO tenant, pg_catalog;',
+        "SET search_path FROM CURRENT;",
+    ],
+)
+def test_rule3_unresolved_search_path_setting_invalidates_catalog_first_proof(
+    setting: str,
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        f"{setting}\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize(
+    "function_name", ["pg_catalog.set_config", 'pg_catalog."set_config"']
+)
+def test_rule3_set_config_search_path_invalidates_catalog_first_proof(
+    function_name: str,
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        f"SELECT {function_name}(\n"
+        "    'search_path', 'tenant, pg_catalog', false);\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_computed_set_config_name_invalidates_catalog_first_proof():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "SELECT pg_catalog.set_config('search_' || 'path', "
+        "'tenant, pg_catalog', false);\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_dynamic_execute_invalidates_later_catalog_first_proof():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "DO $$ BEGIN EXECUTE 'SET search_path TO tenant, pg_catalog'; END $$;\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_unrelated_set_config_does_not_invalidate_catalog_first_proof():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "SELECT pg_catalog.set_config('work_mem', '4MB', false);\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_later_set_config_does_not_invalidate_earlier_candidate():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.before_task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "SELECT pg_catalog.set_config('search_path', 'tenant, pg_catalog', false);\n"
+        "CREATE TABLE tenant.after_task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].replacement == b", '__assay_widened__')"
+
+
+def test_rule3_later_dynamic_execute_does_not_invalidate_earlier_candidate():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE tenant.before_task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+        "DO $$ BEGIN EXECUTE 'SET search_path TO tenant, pg_catalog'; END $$;\n"
+        "CREATE TABLE tenant.after_task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert len(sites) == 1
+    assert sites[0].replacement == b", '__assay_widened__')"
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        (
+            "UPDATE pg_catalog.pg_settings SET setting = 'tenant, pg_catalog' "
+            "WHERE name = 'search_path';"
+        ),
+        (
+            "UPDATE pg_catalog.pg_settings SET (setting) = ROW('tenant, pg_catalog') "
+            "WHERE name = 'search_path';"
+        ),
+    ],
+)
+def test_rule3_alternate_search_path_writer_invalidates_catalog_first_proof(
+    writer: str,
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        f"{writer}\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_set_schema_implicitly_searches_catalog_before_user_schema():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "SET SCHEMA 'tenant';\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+@pytest.mark.parametrize(
+    "schema_setting", ["SET SCHEMA 'pg_temp';", "SET SCHEMA E'pg_temp';"]
+)
+def test_rule3_set_schema_pg_temp_does_not_prove_builtin_type_resolution(
+    schema_setting: str,
+):
+    source = (
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        f"{schema_setting}\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_catalog_first_explicitly_orders_temp_type_after_catalog():
+    source = (
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "SET SCHEMA 'pg_temp';\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_missing_search_path_entry_can_fall_through_to_pg_temp_type():
+    source = (
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "SET search_path TO assay_b132_missing_schema, pg_temp;\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_set_schema_does_not_prove_a_missing_schema_is_usable():
+    source = (
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "SET SCHEMA 'assay_b132_missing_schema';\n"
+        "SET search_path TO assay_b132_missing_schema, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_unknown_initial_schema_keeps_unqualified_row_type_ambiguous():
+    source = (
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_unqualified_temp_table_row_type_can_shadow_builtin():
+    source = (
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "SET SCHEMA 'pg_temp';\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_unqualified_permanent_table_row_type_is_not_temporary():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET SCHEMA 'tenant';\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_existing_first_search_path_schema_prevents_temp_fallthrough():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_rollback_restores_schema_existence_for_later_path():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE TABLE tenant.receipt (verified boolean NOT NULL);\n"
+        "BEGIN;\n"
+        "DROP SCHEMA tenant CASCADE;\n"
+        "ROLLBACK;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_rollback_does_not_keep_a_renamed_schema_path_entry():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "BEGIN;\n"
+        "ALTER SCHEMA tenant RENAME TO moved;\n"
+        "ROLLBACK;\n"
+        "SET search_path TO moved, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_committed_schema_rename_transfers_the_known_path_entry():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "BEGIN;\n"
+        "ALTER SCHEMA tenant RENAME TO moved;\n"
+        "COMMIT;\n"
+        "SET search_path TO moved, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+@pytest.mark.parametrize(
+    "schema_change",
+    [
+        "REVOKE USAGE ON SCHEMA tenant FROM CURRENT_USER;",
+        "ALTER SCHEMA tenant OWNER TO assay_b132_other_role;",
+        "SET ROLE assay_b132_other_role;",
+        "BEGIN;\nSET LOCAL ROLE assay_b132_other_role;\nCOMMIT;",
+        "SET SESSION ROLE assay_b132_other_role;",
+        "SET SESSION AUTHORIZATION assay_b132_other_role;",
+        "RESET ROLE;",
+        "RESET SESSION AUTHORIZATION;",
+        "REVOKE assay_b132_role FROM CURRENT_USER;",
+        "REVOKE USAGE ON SCHEMA tenant FROM CURRENT_USER;\n"
+        "CREATE SCHEMA IF NOT EXISTS tenant;",
+    ],
+)
+def test_rule3_possible_usage_loss_allows_temp_fallthrough(schema_change: str):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        f"{schema_change}\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_revoking_usage_from_an_unrelated_schema_keeps_known_path():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE SCHEMA unrelated;\n"
+        "REVOKE USAGE ON SCHEMA unrelated FROM CURRENT_USER;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_revoking_usage_from_another_role_keeps_the_owner_path():
+    source = (
+        "SET ROLE assay_b132_owner;\n"
+        "CREATE SCHEMA tenant;\n"
+        "GRANT USAGE ON SCHEMA tenant TO assay_b132_reader;\n"
+        "REVOKE USAGE ON SCHEMA tenant FROM assay_b132_reader;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_revoking_usage_from_the_known_owner_keeps_temp_fallthrough():
+    source = (
+        "SET ROLE assay_b132_owner;\n"
+        "CREATE SCHEMA tenant;\n"
+        "REVOKE USAGE ON SCHEMA tenant FROM assay_b132_owner;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TABLE text (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_set_local_role_expires_before_later_schema_owner_facts():
+    source = (
+        "SET ROLE assay_b132_owner;\n"
+        "CREATE TEMP TABLE seed (value pg_catalog.text);\n"
+        "BEGIN;\n"
+        "SET LOCAL ROLE assay_b132_reader;\n"
+        "COMMIT;\n"
+        "CREATE SCHEMA tenant;\n"
+        "REVOKE USAGE ON SCHEMA tenant FROM assay_b132_owner;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+def test_rule3_set_local_role_outside_transaction_has_no_effect_on_path_proof():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET LOCAL ROLE assay_b132_other_role;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_revoking_public_usage_preserves_the_schema_owner_path():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "REVOKE USAGE ON SCHEMA tenant FROM PUBLIC;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_revoking_only_usage_grant_option_preserves_owner_path():
+    source = (
+        "SET ROLE assay_b132_owner;\n"
+        "CREATE SCHEMA tenant;\n"
+        "REVOKE GRANT OPTION FOR USAGE ON SCHEMA tenant "
+        "FROM assay_b132_owner;\n"
+        "SET search_path TO tenant, pg_temp;\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, public;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_known_current_schema_keeps_unqualified_type_non_temporary():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "SET SCHEMA 'tenant';\n"
+        "CREATE TYPE text AS (value pg_catalog.text);\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('(open)', '(closed)')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_update_to_other_pg_setting_does_not_invalidate_path():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "UPDATE pg_catalog.pg_settings SET setting = '4MB' "
+        "WHERE name = 'work_mem';\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_update_set_on_ordinary_table_is_not_path_configuration():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "UPDATE settings SET search_path = 'tenant, pg_catalog';\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+def test_rule3_quoted_pg_settings_update_invalidates_catalog_first_proof():
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.text AS pg_catalog.text;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        "UPDATE pg_catalog.\"pg_settings\" SET \"setting\" = 'tenant, pg_catalog' "
+        "WHERE \"name\" = 'search_path';\n"
+        "CREATE TABLE tenant.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    sites = ADAPTER.generate_mutation_sites(
+        source, _all_lines(source), operators=("sql:widen-check-in",), limit=1000
+    )
+    assert sites == ()
+
+
+@pytest.mark.parametrize("terminator", ["ABORT;", "PREPARE TRANSACTION 'assay_gid';"])
+def test_rule3_transaction_terminator_allows_later_session_path(
+    terminator: str,
+):
+    source = (
+        "CREATE TEMP TABLE text (value pg_catalog.text);\n"
+        "BEGIN;\n"
+        f"{terminator}\n"
+        "SET search_path TO pg_catalog, pg_temp;\n"
+        "CREATE TABLE public.task (status text "
+        "CHECK (status IN ('open', 'closed')));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    assert site.replacement == b", '__assay_widened__')"
+
+
+@pytest.mark.parametrize("predicate", ["IN", "NOT IN"])
+def test_rule3_catalog_first_search_path_resolves_integer_builtin_before_user_type(
+    predicate: str,
+):
+    source = (
+        "CREATE SCHEMA tenant;\n"
+        "CREATE DOMAIN tenant.int4 AS pg_catalog.int4;\n"
+        "SET search_path TO pg_catalog, tenant;\n"
+        f"CREATE TABLE task (value int4 CHECK (value {predicate} (1, 2)));\n"
+    )
+    site = _one_site(source, "sql:widen-check-in")
+    if predicate == "IN":
+        assert site.replacement == b", 3)"
+    else:
+        assert site.description == "NOT IN (...) widened by removing one unique member"
 
 
 def test_rule3_unknown_cross_file_column_type_still_refuses_widening():
@@ -1359,7 +2766,15 @@ def test_replacement_invariant_is_actually_wired_into_generate_mutation_sites(mo
 
     real_candidates = sql_module._all_candidate_sites
 
-    def _poisoned_candidates(source, masked, dollar_bodies, declare_spans, *, context=None):
+    def _poisoned_candidates(
+        source,
+        masked,
+        dollar_bodies,
+        declare_spans,
+        *,
+        context=None,
+        source_identity=None,
+    ):
         sites = list(
             real_candidates(
                 source,
@@ -1367,6 +2782,7 @@ def test_replacement_invariant_is_actually_wired_into_generate_mutation_sites(mo
                 dollar_bodies,
                 declare_spans,
                 context=context,
+                source_identity=source_identity,
             )
         )
         sites.append(

@@ -99,7 +99,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "sql"
 #: sha256 pins of the two fixture texts the matrix is written against (T0).
 SCHEMA_SHA256 = "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1"
 PROBES_SHA256 = "36249c03a558784ea0d1a5e1f45c83ede6f189827f239721a488739a6e1a488c"
-HAZARD_CASES_SHA256 = "f7978d797c1dc2da8bfc1528be2e4dcf652eee6c0b30dba9a3ef6d124643379d"
+HAZARD_CASES_SHA256 = "7c1f009ce78b973a4cbf74d9489b7e4a4476ccf04e50db0f63324ded4cfdfa4f"
 
 ALL_OPERATORS: tuple[str, ...] = (
     "sql:drop-check",

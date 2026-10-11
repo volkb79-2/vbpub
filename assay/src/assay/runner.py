@@ -3492,7 +3492,7 @@ def _mutation_context_sources(
     source_root_paths: Sequence[Path],
     adapter: LanguageAdapter,
     deadline: LaneDeadline,
-) -> Iterator[str] | None:
+) -> Iterator[tuple[str, str]] | None:
     """Read every adapter source under the declared roots for cross-file rules.
 
     Candidate selection controls which files may produce mutants. It cannot
@@ -3500,7 +3500,10 @@ def _mutation_context_sources(
     an unchanged migration may attach a unique index declared in a changed
     file. Context bytes come only from the prepared commit manifest.
     """
-    if not callable(getattr(adapter, "prepare_mutation_context", None)):
+    if not (
+        callable(getattr(adapter, "prepare_mutation_context", None))
+        or callable(getattr(adapter, "prepare_mutation_context_with_sources", None))
+    ):
         return None
 
     roots: set[PurePosixPath] = set()
@@ -3530,10 +3533,14 @@ def _mutation_context_sources(
         )
     }
 
-    def read_context() -> Iterator[str]:
+    def read_context() -> Iterator[tuple[str, str]]:
         for path in sorted(paths):
-            yield _read_prepared_source_text(
-                prepared, path.as_posix(), deadline=deadline
+            source_path = path.as_posix()
+            yield (
+                source_path,
+                _read_prepared_source_text(
+                    prepared, source_path, deadline=deadline
+                ),
             )
 
     return read_context()

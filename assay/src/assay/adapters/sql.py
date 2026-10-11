@@ -102,10 +102,10 @@ from __future__ import annotations
 import hashlib
 import heapq
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from ..records import positional_record, record
 from pathlib import Path
-from typing import Iterable, Literal, NamedTuple, Sequence
+from typing import Iterable, Iterator, Literal, NamedTuple, Sequence
 
 from ..mutation import MutationSite, line_for_offset
 from .base import Remaining, StatementBlockReport, StatementSpan
@@ -294,9 +294,18 @@ class _SqlMutationContext(NamedTuple):
     declared_column_types: frozenset[
         tuple[tuple[bytes | None, bytes], bytes, bytes]
     ]
+    declared_type_names: frozenset[tuple[bytes | None, bytes]]
+    search_path_may_shadow_catalog_sources: tuple[str | None, ...]
+    declared_column_type_sources: tuple[
+        tuple[
+            str | None,
+            frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
+        ],
+        ...,
+    ]
     collated_columns: frozenset[tuple[tuple[bytes | None, bytes], bytes]]
     dropped_tables: frozenset[tuple[bytes | None, bytes]]
-    temporary_table_names: frozenset[bytes]
+    temporary_relation_names: frozenset[bytes]
     relocated_tables: frozenset[tuple[bytes | None, bytes]]
 
 
@@ -350,6 +359,25 @@ _CREATE_TRIGGER_RE = re.compile(
     rb"\bCREATE\b(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\b", re.IGNORECASE
 )
 _CREATE_TABLE_RE = re.compile(rb"\bCREATE\s+TABLE\b", re.IGNORECASE)
+_CREATE_SCHEMA_RE = re.compile(rb"\bCREATE\s+SCHEMA\b", re.IGNORECASE)
+_DROP_SCHEMA_RE = re.compile(rb"\bDROP\s+SCHEMA\b", re.IGNORECASE)
+_ALTER_SCHEMA_RE = re.compile(rb"\bALTER\s+SCHEMA\b", re.IGNORECASE)
+_CREATE_VIEW_RE = re.compile(
+    rb"\bCREATE\s+(?:(?:OR\s+REPLACE)\s+)?"
+    rb"(?:(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+)?"
+    rb"(?:RECURSIVE\s+)?(?:MATERIALIZED\s+)?VIEW\b",
+    re.IGNORECASE,
+)
+_CREATE_TEMP_VIEW_RE = re.compile(
+    rb"\bCREATE\s+(?:(?:OR\s+REPLACE)\s+)?"
+    rb"(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+"
+    rb"(?:RECURSIVE\s+)?VIEW\b",
+    re.IGNORECASE,
+)
+_FROM_OR_JOIN_RE = re.compile(rb"\b(?:FROM|JOIN)\b", re.IGNORECASE)
+_FROM_CLAUSE_END_KEYWORDS = frozenset(
+    {b"where", b"group", b"order", b"having", b"limit", b"offset", b"fetch", b"union", b"intersect", b"except", b"window"}
+)
 _CREATE_TABLE_DEFINITION_RE = re.compile(
     rb"\bCREATE\s+(?:(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+|UNLOGGED\s+)?TABLE\b",
     re.IGNORECASE,
@@ -363,7 +391,11 @@ _SELECT_INTO_TEMP_RE = re.compile(
 )
 _INTO_RE = re.compile(rb"\bINTO\b", re.IGNORECASE)
 _ALTER_TABLE_RE = re.compile(rb"\bALTER\s+TABLE\b", re.IGNORECASE)
+_ALTER_RELATION_RE = re.compile(rb"\bALTER\s+(?:TABLE|VIEW)\b", re.IGNORECASE)
+_ALTER_TYPE_RE = re.compile(rb"\bALTER\s+TYPE\b", re.IGNORECASE)
 _DROP_TABLE_RE = re.compile(rb"\bDROP\s+TABLE\b", re.IGNORECASE)
+_RESET_WORD_RE = re.compile(rb"\bRESET\b", re.IGNORECASE)
+_DISCARD_WORD_RE = re.compile(rb"\bDISCARD\b", re.IGNORECASE)
 _TABLE_NAME_AFTER_CREATE_RE = re.compile(
     rb"\s*(?:IF\s+NOT\s+EXISTS\s+)?"
     rb"(?:(?P<schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
@@ -375,6 +407,26 @@ _ENUM_TYPE_RE = re.compile(
     rb"(?P<type>" + _SQL_IDENTIFIER + rb")\s+AS\s+ENUM\b",
     re.IGNORECASE,
 )
+_CREATE_TYPE_STMT_RE = re.compile(
+    rb"\bCREATE\s+(?:OR\s+REPLACE\s+)?TYPE\b", re.IGNORECASE
+)
+_CREATE_DOMAIN_STMT_RE = re.compile(rb"\bCREATE\s+DOMAIN\b", re.IGNORECASE)
+_SET_WORD_RE = re.compile(rb"\bSET\b", re.IGNORECASE)
+_EXECUTE_WORD_RE = re.compile(rb"\bEXECUTE\b", re.IGNORECASE)
+_ROUTINE_DDL_RE = re.compile(
+    rb"\b(?P<operation>CREATE|ALTER)\s+"
+    rb"(?:(?:OR\s+REPLACE)\s+)?"
+    rb"(?P<object>FUNCTION|PROCEDURE|ROUTINE)\b",
+    re.IGNORECASE,
+)
+_ALTER_GUC_DDL_RE = re.compile(
+    rb"\bALTER\s+(?:ROLE|USER|DATABASE|SYSTEM)\b", re.IGNORECASE
+)
+_SET_CONFIG_NAME_RE = re.compile(
+    rb"(?<![A-Za-z0-9_$])(?:set_config|\"set_config\")(?![A-Za-z0-9_$])",
+    re.IGNORECASE,
+)
+_UPDATE_WORD_RE = re.compile(rb"\bUPDATE\b", re.IGNORECASE)
 _ENUM_COLUMN_DECL_RE = re.compile(
     rb"\s*(?P<column>" + _SQL_IDENTIFIER + rb")\s+"
     rb"(?:(?P<type_schema>" + _SQL_IDENTIFIER + rb")\s*\.\s*)?"
@@ -400,8 +452,19 @@ _INTEGER_TYPE_BOUNDS = {
     b"int8": (-(2**63), 2**63 - 1),
     b"bigserial": (-(2**63), 2**63 - 1),
 }
-_SAFE_STRING_COLUMN_TYPES = frozenset(
-    {b"text", b"varchar", b"name"}
+_INTEGER_TYPE_BOUNDS.update(
+    {
+        b"pg_catalog.int2": _INTEGER_TYPE_BOUNDS[b"int2"],
+        b"pg_catalog.int4": _INTEGER_TYPE_BOUNDS[b"int4"],
+        b"pg_catalog.int8": _INTEGER_TYPE_BOUNDS[b"int8"],
+    }
+)
+_SAFE_STRING_COLUMN_BASE_TYPES = frozenset({b"text", b"varchar", b"name"})
+_SAFE_STRING_COLUMN_TYPES = _SAFE_STRING_COLUMN_BASE_TYPES | frozenset(
+    b"pg_catalog." + type_name for type_name in _SAFE_STRING_COLUMN_BASE_TYPES
+)
+_BUILTIN_COLUMN_TYPE_NAMES = _SAFE_STRING_COLUMN_BASE_TYPES | frozenset(
+    name for name in _INTEGER_TYPE_BOUNDS if b"." not in name
 )
 _CREATE_UNIQUE_INDEX_RE = re.compile(rb"\bCREATE\s+UNIQUE\s+INDEX\b", re.IGNORECASE)
 _UNIQUE_RE = re.compile(rb"\bUNIQUE\b", re.IGNORECASE)
@@ -583,6 +646,380 @@ def _read_sql_identifier(source: bytes, pos: int) -> tuple[bytes, int] | None:
     return match.group(0), pos + match.end()
 
 
+def _read_sql_single_quoted_string(source: bytes, pos: int) -> tuple[bytes, int] | None:
+    """Read a standard SQL single-quoted string, decoding doubled quotes."""
+    pos = _skip_sql_trivia(source, pos)
+    if pos is None or pos >= len(source) or source[pos] != ord("'"):
+        return None
+    value = bytearray()
+    cursor = pos + 1
+    while cursor < len(source):
+        byte = source[cursor]
+        if byte == ord("'"):
+            if cursor + 1 < len(source) and source[cursor + 1] == ord("'"):
+                value.append(byte)
+                cursor += 2
+                continue
+            return bytes(value), cursor + 1
+        value.append(byte)
+        cursor += 1
+    return None
+
+
+def _set_schema_value(
+    source: bytes, masked: bytes, value_start: int | None
+) -> tuple[bool, bytes | None]:
+    """Return whether an offset is a SET SCHEMA value and its static name."""
+    if value_start is None or re.search(
+        rb"\bSCHEMA\s*$", masked[:value_start], re.IGNORECASE
+    ) is None:
+        return False, None
+    string_value = _read_sql_single_quoted_string(source, value_start)
+    if string_value is None:
+        # PostgreSQL's SET SCHEMA grammar takes a string literal. A bare
+        # identifier is not a schema name; leave malformed or unsupported
+        # forms unresolved instead of treating them as valid evidence.
+        return True, None
+    name, value_end = string_value
+    statement_end = masked.find(b";", value_end)
+    if statement_end < 0:
+        statement_end = len(masked)
+    trailing = _skip_sql_trivia(source, value_end)
+    if trailing is None or trailing < statement_end:
+        return True, None
+    return True, name
+
+
+def _read_search_path_schemas(
+    source: bytes, masked: bytes, value_start: int | None
+) -> tuple[bytes, ...] | None:
+    """Read a static comma-separated search_path value.
+
+    Values involving expressions or string-form GUC syntax are deliberately
+    unresolved. Callers must treat those as unknown instead of guessing what
+    schema PostgreSQL will use.
+    """
+    if value_start is None:
+        return None
+    statement_end = masked.find(b";", value_start)
+    if statement_end < 0:
+        statement_end = len(masked)
+    cursor = value_start
+    schemas: list[bytes] = []
+    while True:
+        cursor = _skip_sql_trivia(source, cursor)
+        if cursor is None or cursor >= statement_end:
+            break
+        if source[cursor : cursor + 5].lower() == b"$user":
+            item = (b"$user", cursor + 5)
+        else:
+            item = _read_sql_identifier(source, cursor)
+        if item is None:
+            return None
+        schemas.append(_normalize_sql_identifier(item[0]))
+        cursor = _skip_sql_trivia(source, item[1])
+        if cursor is None or cursor >= statement_end:
+            break
+        if masked[cursor : cursor + 1] != b",":
+            return None
+        cursor += 1
+    return tuple(schemas) if schemas else None
+
+
+def _search_path_schemas_may_create_in_temp_schema(
+    schemas: tuple[bytes, ...] | None, known_schemas: frozenset[bytes]
+) -> bool:
+    """Resolve a path's possible creation schema from source-proven schemas."""
+    if schemas is None:
+        return True
+    for schema in schemas:
+        if _is_temporary_schema(schema):
+            return True
+        if schema in known_schemas:
+            return False
+    return False
+
+
+def _schema_name_created_by_statement(
+    source: bytes, masked: bytes, statement: re.Match[bytes]
+) -> bytes | None:
+    cursor = statement.end()
+    keyword = _next_sql_keyword(source, masked, cursor)
+    if_not_exists = False
+    if keyword is not None and keyword[0] == b"IF":
+        not_keyword = _next_sql_keyword(source, masked, keyword[1])
+        exists_keyword = (
+            None
+            if not_keyword is None or not_keyword[0] != b"NOT"
+            else _next_sql_keyword(source, masked, not_keyword[1])
+        )
+        if exists_keyword is None or exists_keyword[0] != b"EXISTS":
+            return None
+        if_not_exists = True
+        cursor = exists_keyword[1]
+    token = _read_sql_identifier(source, cursor)
+    if token is None:
+        return None
+    if if_not_exists:
+        # IF NOT EXISTS can leave a pre-existing schema and its privileges
+        # untouched. It does not prove this session has USAGE on the schema.
+        return None
+    if not token[0].startswith(b'"') and _normalize_sql_identifier(
+        token[0]
+    ).lower() == b"authorization":
+        return None
+    trailing = _next_sql_keyword(source, masked, token[1])
+    if trailing is not None and trailing[0] == b"AUTHORIZATION":
+        return None
+    return _normalize_sql_identifier(token[0])
+
+
+def _schema_names_dropped_by_statement(
+    source: bytes, masked: bytes, statement: re.Match[bytes]
+) -> tuple[bytes, ...] | None:
+    cursor = statement.end()
+    keyword = _next_sql_keyword(source, masked, cursor)
+    if keyword is not None and keyword[0] == b"IF":
+        exists_keyword = _next_sql_keyword(source, masked, keyword[1])
+        if exists_keyword is None or exists_keyword[0] != b"EXISTS":
+            return None
+        cursor = exists_keyword[1]
+    names: list[bytes] = []
+    while True:
+        token = _read_sql_identifier(source, cursor)
+        if token is None:
+            return None
+        raw_name, cursor = token
+        names.append(_normalize_sql_identifier(raw_name))
+        cursor = _skip_sql_trivia(source, cursor)
+        if cursor is None or masked[cursor : cursor + 1] != b",":
+            break
+        cursor += 1
+    return tuple(names)
+
+
+def _schema_renamed_by_statement(
+    source: bytes, masked: bytes, statement: re.Match[bytes]
+) -> tuple[bytes, bytes] | None:
+    old = _read_sql_identifier(source, statement.end())
+    if old is None:
+        return None
+    rename = _next_sql_keyword(source, masked, old[1])
+    if rename is None or rename[0] != b"RENAME":
+        return None
+    to = _next_sql_keyword(source, masked, rename[1])
+    if to is None or to[0] != b"TO":
+        return None
+    new = _read_sql_identifier(source, to[1])
+    if new is None:
+        return None
+    return _normalize_sql_identifier(old[0]), _normalize_sql_identifier(new[0])
+
+
+def _schema_altered_by_statement(
+    source: bytes, masked: bytes, statement: re.Match[bytes]
+) -> bytes | None:
+    schema = _read_sql_identifier(source, statement.end())
+    return None if schema is None else _normalize_sql_identifier(schema[0])
+
+
+def _schemas_with_revoked_usage_by_statement(
+    source: bytes, masked: bytes, statement_start: int, statement_end: int
+) -> tuple[tuple[bytes, ...], tuple[bytes, ...]] | None:
+    """Read schema targets where REVOKE may remove the session's USAGE."""
+    first = _next_sql_keyword(source, masked, statement_start)
+    if first is None or first[0] != b"REVOKE":
+        return ((), ())
+    cursor = first[1]
+    grant = _next_sql_keyword(source, masked, cursor)
+    if grant is not None and grant[0] == b"GRANT":
+        option = _next_sql_keyword(source, masked, grant[1])
+        for_keyword = None
+        if option is not None and option[0] == b"OPTION":
+            for_keyword = _next_sql_keyword(source, masked, option[1])
+        if for_keyword is not None and for_keyword[0] == b"FOR":
+            # Revoking a grant option can cascade to downstream grantees, but
+            # it does not remove the ordinary USAGE privilege from this role.
+            return ((), ())
+    privileges: set[bytes] = set()
+    while True:
+        keyword = _next_sql_keyword(source, masked, cursor)
+        if keyword is None or keyword[1] > statement_end:
+            return ((), ())
+        if keyword[0] == b"ON":
+            if not privileges.intersection({b"USAGE", b"ALL"}):
+                return ((), ())
+            object_kind = _next_sql_keyword(source, masked, keyword[1])
+            if object_kind is None or object_kind[1] > statement_end:
+                return None
+            if object_kind[0] != b"SCHEMA":
+                return ((), ())
+            cursor = object_kind[1]
+            schemas: list[bytes] = []
+            while True:
+                token = _read_sql_identifier(source, cursor)
+                if token is None:
+                    return None
+                schemas.append(_normalize_sql_identifier(token[0]))
+                after_name = _skip_sql_trivia(source, token[1])
+                if after_name is None or after_name >= statement_end:
+                    return None
+                if masked[after_name : after_name + 1] != b",":
+                    from_keyword = _next_sql_keyword(source, masked, after_name)
+                    if from_keyword is None or from_keyword[0] != b"FROM":
+                        return None
+                    cursor = from_keyword[1]
+                    grantees: list[bytes] = []
+                    while True:
+                        grantee_keyword = _next_sql_keyword(source, masked, cursor)
+                        if grantee_keyword is not None and grantee_keyword[0] == b"GROUP":
+                            cursor = grantee_keyword[1]
+                        grantee = _read_sql_identifier(source, cursor)
+                        if grantee is None:
+                            return None
+                        grantees.append(_normalize_sql_identifier(grantee[0]))
+                        after_grantee = _skip_sql_trivia(source, grantee[1])
+                        if (
+                            after_grantee is None
+                            or after_grantee >= statement_end
+                            or masked[after_grantee : after_grantee + 1] != b","
+                        ):
+                            return tuple(schemas), tuple(grantees)
+                        cursor = after_grantee + 1
+                cursor = after_name + 1
+        privileges.add(keyword[0])
+        cursor = keyword[1]
+
+
+def _role_context_change_events(
+    source: bytes, masked: bytes
+) -> tuple[tuple[int, str, bytes | None], ...]:
+    """Find session-scoped and transaction-local role identity changes."""
+    events: list[tuple[int, str, bytes | None]] = []
+    for start, end in _sql_statement_ranges(source, masked):
+        first = _next_sql_keyword(source, masked, start)
+        if first is None or first[1] > end:
+            continue
+        if first[0] == b"RESET":
+            words = tuple(_iter_sql_keywords(source, masked, first[1], end))
+            if words and (
+                words[0][0] == b"ROLE"
+                or (
+                    words[0][0] == b"SESSION"
+                    and len(words) > 1
+                    and words[1][0] == b"AUTHORIZATION"
+                )
+            ):
+                events.append((start, "session", None))
+            continue
+        if first[0] != b"SET":
+            continue
+        words = tuple(_iter_sql_keywords(source, masked, first[1], end))
+        if not words:
+            continue
+        scope = "session"
+        command = words
+        if words[0][0] == b"LOCAL":
+            scope = "local"
+            command = words[1:]
+        elif (
+            words[0][0] == b"SESSION"
+            and len(words) > 1
+            and words[1][0] == b"ROLE"
+        ):
+            command = words[1:]
+        if command and command[0][0] == b"ROLE":
+            role_keyword = command[0]
+        elif (
+            len(command) > 1
+            and command[0][0] == b"SESSION"
+            and command[1][0] == b"AUTHORIZATION"
+        ):
+            role_keyword = command[1]
+        else:
+            continue
+        role = _read_sql_identifier(source, role_keyword[1])
+        role_name = None if role is None else _normalize_sql_identifier(role[0])
+        if role_name in {b"none", b"default", b"current_user", b"current_role", b"session_user"}:
+            role_name = None
+        events.append((start, scope, role_name))
+    return tuple(events)
+
+
+def _role_membership_change_offsets(source: bytes, masked: bytes) -> tuple[int, ...]:
+    """Find role membership changes that can alter inherited schema USAGE."""
+    offsets: list[int] = []
+    for start, end in _sql_statement_ranges(source, masked):
+        first = _next_sql_keyword(source, masked, start)
+        if first is None or first[1] > end:
+            continue
+        keyword = first[0]
+        if keyword in {b"GRANT", b"REVOKE"}:
+            # Role-membership GRANT/REVOKE has no ON clause. Object grants are
+            # handled separately; either can change inherited schema USAGE.
+            if not any(
+                candidate[0] == b"ON"
+                for candidate in _iter_sql_keywords(source, masked, first[1], end)
+            ):
+                offsets.append(start)
+    return tuple(offsets)
+
+
+def _iter_sql_keywords(
+    source: bytes, masked: bytes, start: int, end: int
+) -> Iterator[tuple[bytes, int]]:
+    cursor = start
+    while True:
+        keyword = _next_sql_keyword(source, masked, cursor)
+        if keyword is None or keyword[1] > end:
+            return
+        yield keyword
+        cursor = keyword[1]
+
+
+def _transaction_control_events(
+    source: bytes, masked: bytes
+) -> tuple[tuple[int, str], ...]:
+    """Return transaction boundaries relevant to source-known schema facts."""
+    events: list[tuple[int, str]] = []
+    for start, end in _sql_statement_ranges(source, masked):
+        first = _next_sql_keyword(source, masked, start)
+        if first is None or first[1] > end:
+            continue
+        keyword = first[0]
+        second = _next_sql_keyword(source, masked, first[1])
+        if keyword == b"BEGIN" or (
+            keyword == b"START" and second is not None and second[0] == b"TRANSACTION"
+        ):
+            events.append((start, "begin"))
+            continue
+        if keyword == b"SAVEPOINT" or keyword == b"RELEASE":
+            events.append((start, "uncertain-transaction"))
+            continue
+        if keyword == b"PREPARE" and second is not None and second[0] == b"TRANSACTION":
+            events.append((start, "prepared"))
+            continue
+        if keyword not in {b"COMMIT", b"END", b"ABORT", b"ROLLBACK"}:
+            continue
+        suffix = second
+        if suffix is not None and suffix[0] in {b"WORK", b"TRANSACTION"}:
+            suffix = _next_sql_keyword(source, masked, suffix[1])
+        if keyword == b"ROLLBACK" and suffix is not None and suffix[0] == b"TO":
+            events.append((start, "uncertain-transaction"))
+            continue
+        chained = False
+        if suffix is not None and suffix[0] == b"AND":
+            chain = _next_sql_keyword(source, masked, suffix[1])
+            no_chain = False
+            if chain is not None and chain[0] == b"NO":
+                no_chain = True
+                chain = _next_sql_keyword(source, masked, chain[1])
+            chained = chain is not None and chain[0] == b"CHAIN" and not no_chain
+        prefix = "rollback" if keyword in {b"ABORT", b"ROLLBACK"} else "commit"
+        events.append((start, f"{prefix}-chain" if chained else prefix))
+    return tuple(events)
+
+
 def _read_qualified_sql_identifier_details(
     source: bytes, pos: int
 ) -> tuple[bytes | None, bytes, int] | None:
@@ -608,7 +1045,7 @@ def _read_qualified_sql_identifier_details(
 
 def _read_create_index_name_details(
     source: bytes, pos: int
-) -> tuple[bytes | None, bytes, int] | None:
+) -> tuple[bytes | None, bytes | None, int] | None:
     """Read a CREATE INDEX name and its end, including optional modifiers."""
     name_pos = pos
     word = _read_sql_identifier(source, pos)
@@ -630,12 +1067,18 @@ def _read_create_index_name_details(
             return None
         cursor = exists_word[1]
         name_pos = cursor
+    name = _read_sql_identifier(source, name_pos)
+    if name is not None and not name[0].startswith(b'"') and name[0].upper() == b"ON":
+        # PostgreSQL permits omitting the index name. The next token is the
+        # ON clause, and PostgreSQL generates an identity that cannot be
+        # derived safely from this local syntax alone.
+        return None, None, name_pos
     return _read_qualified_sql_identifier_details(source, name_pos)
 
 
 def _read_created_index_identity(
     source: bytes, masked: bytes, pos: int
-) -> tuple[bytes | None, bytes] | None:
+) -> tuple[bytes | None, bytes | None] | None:
     parsed = _read_create_index_name_details(source, pos)
     if parsed is None:
         return None
@@ -709,7 +1152,7 @@ def _create_table_column_list(
 def _type_name_from_match(match: re.Match[bytes]) -> bytes:
     name = _normalize_sql_identifier(match.group("type"))
     schema = match.group("type_schema")
-    if schema is not None and _normalize_sql_identifier(schema) != b"pg_catalog":
+    if schema is not None:
         name = _normalize_sql_identifier(schema) + b"." + name
     modifier = match.group("type_modifier")
     if modifier is not None:
@@ -854,20 +1297,27 @@ def _collect_dropped_tables(
     return frozenset(dropped)
 
 
-def _collect_temporary_table_names(
-    source: bytes, masked: bytes
+def _collect_temporary_relation_names(
+    source: bytes,
+    masked: bytes,
+    known_temporary_names: Iterable[bytes] = (),
 ) -> frozenset[bytes]:
-    """Names that may shadow permanent relations in unqualified DDL.
+    """Names that may shadow permanent relations or types in DDL.
 
     The connection and search-path context are not part of SQL mutation
     discovery. Any temporary relation name therefore makes an unqualified
     type lookup ambiguous, even if its declaration is in another source.
     """
-    names: set[bytes] = set()
+    names: set[bytes] = set(known_temporary_names)
+    temporary_schema_events = _search_path_temporary_creation_events(source, masked)
     for statement in _CREATE_TEMP_TABLE_RE.finditer(masked):
         table = _read_create_table_identity(source, masked, statement.end())
         if table is not None:
             names.add(table[1])
+    for statement in _CREATE_TEMP_VIEW_RE.finditer(masked):
+        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        if relation is not None:
+            names.add(relation[1])
     for statement in _SELECT_INTO_TEMP_RE.finditer(masked):
         table = _read_qualified_sql_identifier_details(source, statement.end())
         if table is not None:
@@ -878,8 +1328,67 @@ def _collect_temporary_table_names(
             names.add(table[1])
     for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
         table = _read_create_table_identity(source, masked, statement.end())
-        if table is not None and _is_temporary_schema(table[0]):
+        if table is None:
+            continue
+        if _is_temporary_schema(table[0]) or (
+            table[0] is None
+            and _search_path_may_be_temporary_at(
+                temporary_schema_events, statement.start()
+            )
+        ):
             names.add(table[1])
+    for statement in _CREATE_VIEW_RE.finditer(masked):
+        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        if relation is None:
+            continue
+        if _is_temporary_schema(relation[0]) or (
+            relation[0] is None
+            and _search_path_may_be_temporary_at(
+                temporary_schema_events, statement.start()
+            )
+        ):
+            names.add(relation[1])
+        view_end = masked.find(b";", relation[2])
+        if view_end < 0:
+            view_end = len(masked)
+        if _view_references_temporary_relation(
+            source, masked, relation[2], view_end, names
+        ):
+            names.add(relation[1])
+    # Renaming a temporary relation also renames its implicit composite row
+    # type. Source ordering across files is not known, so context collection
+    # passes all known temporary names here and repeatedly expands this set to
+    # a fixed point. Within one source, the same ordered scan also handles
+    # rename chains.
+    for alter in _ALTER_RELATION_RE.finditer(masked):
+        table = _read_alter_table_identity(source, masked, alter.end())
+        if table is None:
+            continue
+        old_key, table_end = table
+        if (
+            old_key[1] not in names
+            or (old_key[0] is not None and not _is_temporary_schema(old_key[0]))
+        ):
+            continue
+        statement_end = masked.find(b";", table_end)
+        if statement_end < 0:
+            statement_end = len(masked)
+        for start, end in _split_top_level(masked[table_end:statement_end]):
+            action_start = table_end + start
+            action_end = table_end + end
+            change = re.match(
+                rb"\s*RENAME\b", masked[action_start:action_end], re.I
+            )
+            if change is None:
+                continue
+            next_keyword = _next_sql_keyword(
+                source, masked, action_start + change.end()
+            )
+            if next_keyword is None or next_keyword[0] != b"TO":
+                continue
+            new_name = _read_sql_identifier(source, next_keyword[1])
+            if new_name is not None:
+                names.add(_normalize_sql_identifier(new_name[0]))
     return frozenset(names)
 
 
@@ -888,6 +1397,85 @@ def _is_temporary_schema(schema: bytes | None) -> bool:
         schema is not None
         and re.fullmatch(rb"pg_temp_[0-9]+", schema) is not None
     )
+
+
+def _view_references_temporary_relation(
+    source: bytes,
+    masked: bytes,
+    query_start: int,
+    statement_end: int,
+    temporary_names: set[bytes],
+) -> bool:
+    """Whether a view query may read one of the known temporary relations."""
+
+    def relation_after(start: int) -> tuple[
+        tuple[bytes | None, bytes, int] | None, int | None
+    ]:
+        cursor = start
+        keyword = _next_sql_keyword(source, masked, cursor)
+        while keyword is not None and keyword[0] in {b"ONLY", b"LATERAL"}:
+            cursor = keyword[1]
+            keyword = _next_sql_keyword(source, masked, cursor)
+        cursor = _skip_sql_trivia(source, cursor)
+        if cursor is None:
+            return None, None
+        if masked[cursor : cursor + 1] == b"(":
+            close = _find_matching_close_paren(masked, cursor)
+            return None, None if close is None else close + 1
+        parsed = _read_qualified_sql_identifier_details(source, cursor)
+        return (None, None) if parsed is None else (parsed, parsed[2])
+
+    for clause in _FROM_OR_JOIN_RE.finditer(masked, query_start, statement_end):
+        relation, cursor = relation_after(clause.end())
+        if cursor is None:
+            continue
+        if relation is not None:
+            schema, name, _ = relation
+            if name in temporary_names and (
+                schema is None or _is_temporary_schema(schema)
+            ):
+                return True
+
+        # Also inspect comma-separated relation lists at this FROM level.
+        # Parenthesized subqueries and function arguments are skipped, and
+        # clause keywords end the list so their expression commas are ignored.
+        depth = 0
+        while cursor < statement_end:
+            byte = masked[cursor]
+            if source[cursor : cursor + 1] == b'"':
+                identifier = _read_sql_identifier(source, cursor)
+                if identifier is not None:
+                    cursor = identifier[1]
+                    continue
+            if byte == _OPEN_PAREN:
+                depth += 1
+            elif byte == _CLOSE_PAREN:
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                token = _read_sql_identifier(source, cursor)
+                if (
+                    token is not None
+                    and not token[0].startswith(b'"')
+                    and _normalize_sql_identifier(token[0]).lower()
+                    in _FROM_CLAUSE_END_KEYWORDS
+                ):
+                    break
+                if byte == _COMMA:
+                    following, next_end = relation_after(cursor + 1)
+                    if next_end is not None:
+                        if following is None:
+                            cursor = next_end
+                            continue
+                        next_schema, next_name, _ = following
+                        if next_name in temporary_names and (
+                            next_schema is None
+                            or _is_temporary_schema(next_schema)
+                        ):
+                            return True
+                        cursor = next_end
+                        continue
+            cursor += 1
+    return False
 
 
 def _collect_relocated_tables(
@@ -1058,6 +1646,44 @@ def _collect_altered_columns(
     return frozenset(altered_columns)
 
 
+def _table_column_declarations(
+    source: bytes,
+    masked: bytes,
+    table_key: tuple[bytes | None, bytes],
+    table_open: int,
+    table_close: int,
+) -> tuple[
+    frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
+    frozenset[tuple[tuple[bytes | None, bytes], bytes]],
+]:
+    declared_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
+    collated: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
+    table_body = masked[table_open + 1 : table_close]
+    for start, end in _split_top_level(table_body):
+        clause = table_body[start:end]
+        column = _ENUM_COLUMN_DECL_RE.match(clause)
+        if column is None:
+            continue
+        if (
+            not column.group("column").startswith(b'"')
+            and _normalize_sql_identifier(column.group("column")).upper()
+            in {
+                b"CONSTRAINT",
+                b"PRIMARY",
+                b"UNIQUE",
+                b"CHECK",
+                b"FOREIGN",
+                b"EXCLUDE",
+            }
+        ):
+            continue
+        column_name = _normalize_sql_identifier(column.group("column"))
+        declared_types.add((table_key, column_name, _type_name_from_match(column)))
+        if _EXPLICIT_COLLATE_RE.search(clause) is not None:
+            collated.add((table_key, column_name))
+    return frozenset(declared_types), frozenset(collated)
+
+
 def _collect_table_column_metadata(
     source: bytes, masked: bytes
 ) -> tuple[
@@ -1074,45 +1700,1063 @@ def _collect_table_column_metadata(
             continue
         table_name, table_open, table_close = column_list
         table_key = _table_key_from_match(table_name)
-        table_body = masked[table_open + 1 : table_close]
-        for start, end in _split_top_level(table_body):
-            clause = table_body[start:end]
-            column = _ENUM_COLUMN_DECL_RE.match(clause)
-            if column is None:
-                continue
-            if (
-                not column.group("column").startswith(b'"')
-                and _normalize_sql_identifier(column.group("column")).upper()
-                in {
-                    b"CONSTRAINT",
-                    b"PRIMARY",
-                    b"UNIQUE",
-                    b"CHECK",
-                    b"FOREIGN",
-                    b"EXCLUDE",
-                }
-            ):
-                continue
-            column_name = _normalize_sql_identifier(column.group("column"))
-            declared_types.add((table_key, column_name, _type_name_from_match(column)))
-            if _EXPLICIT_COLLATE_RE.search(clause) is not None:
-                collated.add((table_key, column_name))
+        table_types, table_collations = _table_column_declarations(
+            source, masked, table_key, table_open, table_close
+        )
+        declared_types.update(table_types)
+        collated.update(table_collations)
     return frozenset(declared_types), frozenset(collated)
 
 
-def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext:
+def _collect_declared_type_names(
+    source: bytes,
+    masked: bytes,
+    known_temporary_types: Iterable[tuple[bytes, bytes]] = (),
+) -> frozenset[tuple[bytes | None, bytes]]:
+    """Collect source-visible named and relation-generated composite types."""
+    names: set[tuple[bytes | None, bytes]] = set()
+    for pattern in (_CREATE_TYPE_STMT_RE, _CREATE_DOMAIN_STMT_RE):
+        for statement in pattern.finditer(masked):
+            parsed = _read_qualified_sql_identifier_details(source, statement.end())
+            if parsed is None:
+                continue
+            schema, name, _ = parsed
+            names.add((schema, name))
+    names.update(
+        (b"pg_temp", name)
+        for name in _unqualified_type_names_created_in_temp_schema(source, masked)
+    )
+    for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
+        relation = _read_create_table_identity(source, masked, statement.end())
+        if relation is not None:
+            names.add((relation[0], relation[1]))
+    for statement in _CREATE_VIEW_RE.finditer(masked):
+        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        if relation is not None:
+            names.add((relation[0], relation[1]))
+    temporary_types = {
+        (schema, name)
+        for schema, name in names
+        if schema is not None and _is_temporary_schema(schema)
+    }
+    temporary_types.update(known_temporary_types)
+    for alter in _ALTER_TYPE_RE.finditer(masked):
+        relation = _read_qualified_sql_identifier_details(source, alter.end())
+        if relation is None:
+            continue
+        schema, name, relation_end = relation
+        if _is_temporary_schema(schema):
+            old_types = {(schema, name)}
+        elif schema is None:
+            old_types = {
+                (temp_schema, name)
+                for temp_schema, temp_name in temporary_types
+                if temp_name == name
+            }
+        else:
+            old_types = set()
+        if not old_types:
+            continue
+        rename = _next_sql_keyword(source, masked, relation_end)
+        if rename is None or rename[0] != b"RENAME":
+            continue
+        to = _next_sql_keyword(source, masked, rename[1])
+        if to is None or to[0] != b"TO":
+            continue
+        new_type = _read_sql_identifier(source, to[1])
+        if new_type is None:
+            continue
+        for temp_schema, _ in old_types:
+            renamed = (temp_schema, _normalize_sql_identifier(new_type[0]))
+            temporary_types.add(renamed)
+            names.add(renamed)
+    return frozenset(names)
+
+
+def _unqualified_type_names_created_in_temp_schema(
+    source: bytes, masked: bytes
+) -> frozenset[bytes]:
+    """Find unqualified named types whose source-visible current schema may be temporary.
+
+    An unknown connection default is not proof of a permanent current schema.
+    Explicit path settings narrow that state; an unresolved writer restores the
+    conservative possibility until a later static setting resolves it.
+    """
+    path_events = _search_path_temporary_creation_events(source, masked)
+    statements = sorted(
+        (
+            statement.start(),
+            statement,
+        )
+        for pattern in (_CREATE_TYPE_STMT_RE, _CREATE_DOMAIN_STMT_RE)
+        for statement in pattern.finditer(masked)
+    )
+    names: set[bytes] = set()
+    for statement_offset, statement in statements:
+        if not _search_path_may_be_temporary_at(path_events, statement_offset):
+            continue
+        parsed = _read_qualified_sql_identifier_details(source, statement.end())
+        if parsed is not None and parsed[0] is None:
+            names.add(parsed[1])
+    return frozenset(names)
+
+
+def _search_path_temporary_creation_events(
+    source: bytes, masked: bytes
+) -> tuple[tuple[int, bool], ...]:
+    """Track temporary creation possibility as path/schema facts change."""
+    events: list[tuple[int, str, object]] = []
+    dollar_body_ranges = lex_sql(source).dollar_bodies
+    events.extend(
+        (offset, "transaction", kind)
+        for offset, kind in _transaction_control_events(source, masked)
+    )
+    events.extend(
+        (offset, "role-change", (scope, role_name))
+        for offset, scope, role_name in _role_context_change_events(source, masked)
+    )
+    for offset, value_start, untrusted_scope in _search_path_value_starts(
+        source, masked
+    ):
+        is_schema, schema_name = _set_schema_value(source, masked, value_start)
+        if untrusted_scope:
+            path_schemas = None
+        elif is_schema:
+            path_schemas = None if schema_name is None else (schema_name,)
+        else:
+            path_schemas = _read_search_path_schemas(source, masked, value_start)
+        events.append((offset, "path", path_schemas))
+    events.extend(
+        (offset, "unknown", None)
+        for offset in (
+            *_set_config_search_path_writes(source, masked),
+            *_dynamic_sql_execute_offsets(masked, dollar_body_ranges),
+            *_search_path_reset_offsets(source, masked),
+        )
+    )
+    events.extend(
+        (offset, "clear-schemas", None)
+        for offset in (
+            *_dynamic_sql_execute_offsets(masked, dollar_body_ranges),
+            *_role_membership_change_offsets(source, masked),
+        )
+    )
+    for statement in _CREATE_SCHEMA_RE.finditer(masked):
+        if _inside_any(dollar_body_ranges, statement.start()):
+            events.append((statement.start(), "clear-schemas", None))
+            continue
+        schema = _schema_name_created_by_statement(source, masked, statement)
+        if schema is not None:
+            events.append((statement.start(), "add-schema", schema))
+    for statement in _DROP_SCHEMA_RE.finditer(masked):
+        if _inside_any(dollar_body_ranges, statement.start()):
+            events.append((statement.start(), "clear-schemas", None))
+            continue
+        schemas = _schema_names_dropped_by_statement(source, masked, statement)
+        events.append((statement.start(), "forget-schemas", schemas))
+    for statement in _ALTER_SCHEMA_RE.finditer(masked):
+        if _inside_any(dollar_body_ranges, statement.start()):
+            events.append((statement.start(), "clear-schemas", None))
+            continue
+        rename = _schema_renamed_by_statement(source, masked, statement)
+        if rename is not None:
+            events.append((statement.start(), "rename-schema", rename))
+        else:
+            altered = _schema_altered_by_statement(source, masked, statement)
+            events.append((statement.start(), "forget-schemas", None if altered is None else (altered,)))
+    for statement_start, statement_end in _sql_statement_ranges(source, masked):
+        first = _next_sql_keyword(source, masked, statement_start)
+        if first is None or first[0] != b"REVOKE":
+            continue
+        revocation = _schemas_with_revoked_usage_by_statement(
+            source, masked, statement_start, statement_end
+        )
+        if revocation is None:
+            events.append((statement_start, "clear-schemas", None))
+        elif revocation[0]:
+            events.append((statement_start, "revoke-schema-usage", revocation))
+    events.sort(key=lambda event: event[0])
+
+    known_schemas = {b"pg_catalog"}
+    schema_owners: dict[bytes, bytes | None] = {}
+    session_role_name: bytes | None = None
+    current_role_name: bytes | None = None
+    local_role_active = False
+    current_path: tuple[bytes, ...] | None = None
+    transaction_baseline: set[bytes] | None = None
+    transaction_owner_baseline: dict[bytes, bytes | None] | None = None
+    transaction_role_baseline: bytes | None = None
+    transaction_path_baseline: tuple[bytes, ...] | None = None
+    transaction_uncertain = False
+    path_events: list[tuple[int, bool]] = []
+    for offset, kind, value in events:
+        if kind == "path":
+            current_path = value  # type: ignore[assignment]
+            # SET SCHEMA is an alias for SET search_path. Missing or
+            # inaccessible schemas are silently ignored, so the setting does
+            # not prove that its name is a usable path entry.
+        elif kind == "unknown":
+            current_path = None
+        elif kind == "add-schema":
+            schema_name = value  # type: ignore[assignment]
+            known_schemas.add(schema_name)
+            schema_owners[schema_name] = current_role_name
+        elif kind == "forget-schemas":
+            if value is None:
+                known_schemas = {b"pg_catalog"}
+                schema_owners.clear()
+            else:
+                forgotten = value  # type: ignore[assignment]
+                known_schemas.difference_update(forgotten)
+                for schema_name in forgotten:
+                    schema_owners.pop(schema_name, None)
+        elif kind == "rename-schema":
+            old_name, new_name = value  # type: ignore[misc]
+            if old_name in known_schemas:
+                known_schemas.remove(old_name)
+                known_schemas.add(new_name)
+                schema_owners[new_name] = schema_owners.pop(old_name, None)
+        elif kind == "revoke-schema-usage":
+            schemas, grantees = value  # type: ignore[misc]
+            sensitive_grantees = {
+                b"current_user",
+                b"current_role",
+                b"session_user",
+            }
+            for schema_name in schemas:
+                if schema_name == b"pg_catalog" or schema_name not in known_schemas:
+                    continue
+                owner = schema_owners.get(schema_name)
+                if owner is None:
+                    # PUBLIC is a separate grant target and cannot remove the
+                    # creator's direct owner privilege. A named role may be
+                    # the unknown creator, so keep that case conservative.
+                    affects_owner = any(grantee != b"public" for grantee in grantees)
+                else:
+                    affects_owner = any(
+                        grantee in sensitive_grantees or grantee == owner
+                        for grantee in grantees
+                    )
+                if affects_owner:
+                    known_schemas.discard(schema_name)
+                    schema_owners.pop(schema_name, None)
+        elif kind == "clear-schemas":
+            known_schemas = {b"pg_catalog"}
+            schema_owners.clear()
+        elif kind == "role-change":
+            scope, role_name = value  # type: ignore[misc]
+            if scope == "local":
+                # SET LOCAL has no effect outside an explicit transaction.
+                if transaction_baseline is not None:
+                    current_role_name = role_name
+                    local_role_active = True
+                    known_schemas = {b"pg_catalog"}
+                    schema_owners.clear()
+            else:
+                session_role_name = role_name
+                current_role_name = role_name
+                local_role_active = False
+                known_schemas = {b"pg_catalog"}
+                schema_owners.clear()
+        elif kind == "transaction":
+            if value == "begin":
+                if transaction_baseline is None:
+                    transaction_baseline = set(known_schemas)
+                    transaction_owner_baseline = dict(schema_owners)
+                    transaction_role_baseline = session_role_name
+                    transaction_path_baseline = current_path
+                    transaction_uncertain = False
+            elif value in {"rollback", "rollback-chain"}:
+                if transaction_baseline is not None:
+                    known_schemas = set(transaction_baseline)
+                    schema_owners = dict(transaction_owner_baseline or {})
+                    session_role_name = transaction_role_baseline
+                    current_role_name = session_role_name
+                    local_role_active = False
+                    current_path = transaction_path_baseline
+                transaction_baseline = (
+                    set(known_schemas) if value == "rollback-chain" else None
+                )
+                transaction_owner_baseline = (
+                    dict(schema_owners) if value == "rollback-chain" else None
+                )
+                transaction_role_baseline = (
+                    session_role_name if value == "rollback-chain" else None
+                )
+                transaction_path_baseline = (
+                    current_path if value == "rollback-chain" else None
+                )
+                transaction_uncertain = False
+            elif value in {"commit", "commit-chain"}:
+                if transaction_uncertain:
+                    known_schemas = {b"pg_catalog"}
+                    schema_owners.clear()
+                if local_role_active:
+                    # Transaction-local role changes expire at COMMIT. Schema
+                    # facts accumulated under that role cannot certify the
+                    # restored session role's access.
+                    known_schemas = {b"pg_catalog"}
+                    schema_owners.clear()
+                current_role_name = session_role_name
+                local_role_active = False
+                transaction_baseline = (
+                    set(known_schemas) if value == "commit-chain" else None
+                )
+                transaction_owner_baseline = (
+                    dict(schema_owners) if value == "commit-chain" else None
+                )
+                transaction_role_baseline = (
+                    session_role_name if value == "commit-chain" else None
+                )
+                transaction_path_baseline = (
+                    current_path if value == "commit-chain" else None
+                )
+                transaction_uncertain = False
+            elif value in {"uncertain-transaction", "prepared"}:
+                known_schemas = {b"pg_catalog"}
+                schema_owners.clear()
+                current_path = None
+                session_role_name = None
+                current_role_name = None
+                local_role_active = False
+                if value == "uncertain-transaction":
+                    transaction_uncertain = True
+                else:
+                    transaction_baseline = None
+                    transaction_owner_baseline = None
+                    transaction_role_baseline = None
+                    transaction_path_baseline = None
+                    transaction_uncertain = False
+        path_events.append(
+            (
+                offset,
+                _search_path_schemas_may_create_in_temp_schema(
+                    current_path, frozenset(known_schemas)
+                ),
+            )
+        )
+    return tuple(path_events)
+
+
+def _search_path_may_be_temporary_at(
+    path_events: tuple[tuple[int, bool], ...], offset: int
+) -> bool:
+    """Return the latest source-known current-schema state before an offset."""
+    may_be_temporary = True
+    for event_offset, event_state in path_events:
+        if event_offset >= offset:
+            break
+        may_be_temporary = event_state
+    return may_be_temporary
+
+
+def _search_path_value_starts(
+    source: bytes,
+    masked: bytes,
+    *,
+    configuration_ranges: tuple[tuple[int, int], ...] | None = None,
+    transaction_ranges: tuple[tuple[int, int], ...] | None = None,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+) -> tuple[tuple[int, int | None, bool], ...]:
+    """Locate explicit search_path values, including quoted GUC names.
+
+    ``None`` records ``SET search_path FROM CURRENT``: it changes the path,
+    but its value comes from connection configuration and cannot be resolved
+    from this source. The third field marks a setting that cannot establish
+    session-path evidence: SET LOCAL, a SET inside an explicit transaction, or
+    a SET found inside a dollar-quoted body.
+    """
+    if configuration_ranges is None:
+        configuration_ranges = _non_session_configuration_ranges(source, masked)
+    if transaction_ranges is None:
+        transaction_ranges = _explicit_transaction_ranges(source, masked)
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(source).dollar_bodies
+    statement_ranges = _sql_statement_ranges(source, masked)
+    statement_starts = tuple(start for start, _ in statement_ranges)
+    dollar_body_starts = tuple(start for start, _ in dollar_body_ranges)
+    starts: list[tuple[int, int | None, bool]] = []
+    for statement in _SET_WORD_RE.finditer(masked):
+        body_index = bisect_right(dollar_body_starts, statement.start()) - 1
+        inside_dollar_body = (
+            body_index >= 0
+            and dollar_body_ranges[body_index][0] <= statement.start()
+            < dollar_body_ranges[body_index][1]
+        )
+        inside_configuration = any(
+            start <= statement.start() < end for start, end in configuration_ranges
+        )
+        if inside_configuration and not inside_dollar_body:
+            # Routine and role/database/system SET clauses change routine or
+            # future-session configuration, not the migration session.
+            continue
+        if not inside_dollar_body:
+            statement_index = bisect_right(statement_starts, statement.start()) - 1
+            if statement_index < 0:
+                continue
+            first = _next_sql_keyword(
+                source, masked, statement_ranges[statement_index][0]
+            )
+            if first is None or first[0] != b"SET":
+                # UPDATE ... SET column=... and other SET clauses are not
+                # session configuration statements.
+                continue
+        else:
+            body_start = dollar_body_ranges[body_index][0]
+            previous_semicolon = masked.rfind(b";", body_start, statement.start())
+            statement_prefix = masked[previous_semicolon + 1 : statement.start()]
+            if re.search(rb"\bUPDATE\b", statement_prefix, re.IGNORECASE):
+                # A SET target inside UPDATE (including a PL/pgSQL body) is a
+                # column assignment, not a session GUC statement.
+                continue
+        cursor = _skip_sql_trivia(source, statement.end())
+        if cursor is None:
+            continue
+        parameter = _read_sql_identifier(source, cursor)
+        if parameter is None:
+            continue
+        untrusted_scope = False
+        if (
+            not parameter[0].startswith(b'"')
+            and _normalize_sql_identifier(parameter[0]) in {b"local", b"session"}
+        ):
+            untrusted_scope = _normalize_sql_identifier(parameter[0]) == b"local"
+            parameter = _read_sql_identifier(source, parameter[1])
+            if parameter is None:
+                continue
+        parameter_name = _normalize_sql_identifier(parameter[0]).lower()
+        cursor = _skip_sql_trivia(source, parameter[1])
+        if cursor is None:
+            continue
+        untrusted_scope = untrusted_scope or any(
+            start <= statement.start() < end for start, end in transaction_ranges
+        ) or inside_dollar_body
+        if parameter_name == b"schema":
+            # SET SCHEMA is equivalent to a one-schema search_path. Preserve
+            # the value so implicit pg_catalog-first semantics can be proved.
+            starts.append(
+                (statement.start(), _skip_sql_trivia(source, cursor), untrusted_scope)
+            )
+            continue
+        if parameter_name != b"search_path":
+            continue
+        if masked[cursor : cursor + 1] == b"=":
+            starts.append((statement.start(), cursor + 1, untrusted_scope))
+            continue
+        assignment = _read_sql_identifier(source, cursor)
+        if assignment is None or assignment[0].startswith(b'"'):
+            continue
+        assignment_name = _normalize_sql_identifier(assignment[0])
+        if assignment_name == b"to":
+            starts.append((statement.start(), assignment[1], untrusted_scope))
+        elif assignment_name == b"from":
+            current = _read_sql_identifier(source, assignment[1])
+            if (
+                current is not None
+                and not current[0].startswith(b'"')
+                and _normalize_sql_identifier(current[0]) == b"current"
+            ):
+                starts.append((statement.start(), None, untrusted_scope))
+    starts.extend(
+        (offset, None, untrusted_scope)
+        for offset, untrusted_scope in _pg_settings_search_path_updates(
+            source,
+            masked,
+            transaction_ranges=transaction_ranges,
+            dollar_body_ranges=dollar_body_ranges,
+        )
+    )
+    return tuple(starts)
+
+
+def _pg_settings_search_path_updates(
+    source: bytes,
+    masked: bytes,
+    *,
+    transaction_ranges: tuple[tuple[int, int], ...] | None = None,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+) -> tuple[tuple[int, bool], ...]:
+    """Find UPDATEs that can change pg_settings.search_path.
+
+    A simple exact equality to a different setting name is harmless. More
+    complex predicates are treated as unknown and invalidate path evidence.
+    """
+    if transaction_ranges is None:
+        transaction_ranges = _explicit_transaction_ranges(source, masked)
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(source).dollar_bodies
+    body_starts = tuple(start for start, _ in dollar_body_ranges)
+    updates: list[tuple[int, bool]] = []
+    for update in _UPDATE_WORD_RE.finditer(masked):
+        cursor = _skip_sql_trivia(source, update.end())
+        target = _read_sql_identifier(source, cursor or update.end())
+        if (
+            target is not None
+            and not target[0].startswith(b'"')
+            and _normalize_sql_identifier(target[0]) == b"only"
+        ):
+            cursor = target[1]
+        target_relation = (
+            None
+            if cursor is None
+            else _read_qualified_sql_identifier_details(source, cursor)
+        )
+        if (
+            target_relation is None
+            or target_relation[0] not in {None, b"pg_catalog"}
+            or target_relation[1] != b"pg_settings"
+        ):
+            continue
+        target_end = target_relation[2]
+        statement_end = masked.find(b";", update.start())
+        if statement_end < 0:
+            statement_end = len(masked)
+        where = re.search(rb"\bWHERE\b", masked[target_end:statement_end], re.I)
+        set_clause_end = (
+            target_end + where.start()
+            if where is not None
+            else statement_end
+        )
+        set_clause = masked[target_end:set_clause_end]
+        set_keyword = re.search(rb"\bSET\b", set_clause, re.I)
+        if set_keyword is None:
+            continue
+        assignments_start = target_end + set_keyword.end()
+        assignments = masked[assignments_start:set_clause_end]
+        writes_setting = False
+        for start, end in _split_top_level(assignments):
+            assignment_start = assignments_start + start
+            assignment_end = assignments_start + end
+            left_start = _skip_sql_trivia(source, assignment_start)
+            if left_start is None:
+                continue
+            if masked[left_start : left_start + 1] == b"(":
+                left_close = _find_matching_close_paren(masked, left_start)
+                if left_close is None or left_close >= assignment_end:
+                    continue
+                fields = _split_top_level(masked[left_start + 1 : left_close])
+                has_setting = False
+                for field_start, field_end in fields:
+                    field_start += left_start + 1
+                    field_end += left_start + 1
+                    field = _read_qualified_sql_identifier_details(
+                        source, field_start
+                    )
+                    field_tail = (
+                        None
+                        if field is None
+                        else _skip_sql_trivia(source, field[2])
+                    )
+                    if (
+                        field is not None
+                        and field[1] == b"setting"
+                        and field_tail == field_end
+                    ):
+                        has_setting = True
+                        break
+                equals = _skip_sql_trivia(source, left_close + 1)
+            else:
+                left_hand = _read_qualified_sql_identifier_details(
+                    source, left_start
+                )
+                has_setting = (
+                    left_hand is not None and left_hand[1] == b"setting"
+                )
+                equals = (
+                    None
+                    if left_hand is None
+                    else _skip_sql_trivia(source, left_hand[2])
+                )
+            if (
+                has_setting
+                and equals is not None
+                and masked[equals : equals + 1] == b"="
+            ):
+                writes_setting = True
+                break
+        if not writes_setting:
+            continue
+        if where is not None:
+            where_start = target_end + where.end()
+            where_source = source[where_start : statement_end].strip().rstrip(b";").strip()
+            exact_name = re.fullmatch(
+                rb"(?:(?:[A-Za-z_][A-Za-z0-9_$]*|\"[^\"]+\")\s*\.\s*)?"
+                rb"(?:name|\"name\")\s*=\s*'((?:[^']|'')*)'",
+                where_source,
+                re.I,
+            )
+            if exact_name is not None and exact_name.group(1).lower() != b"search_path":
+                continue
+        body_index = bisect_right(body_starts, update.start()) - 1
+        in_body = (
+            body_index >= 0
+            and dollar_body_ranges[body_index][0] <= update.start()
+            < dollar_body_ranges[body_index][1]
+        )
+        in_transaction = any(
+            start <= update.start() < end for start, end in transaction_ranges
+        )
+        updates.append((update.start(), in_body or in_transaction))
+    return tuple(updates)
+
+
+def _set_config_search_path_writes(source: bytes, masked: bytes) -> tuple[int, ...]:
+    """Return calls that can change search_path or whose setting is unknown."""
+    writes: list[int] = []
+    for call in _SET_CONFIG_NAME_RE.finditer(source):
+        opening = _skip_sql_trivia(source, call.end())
+        if opening is None or masked[opening : opening + 1] != b"(":
+            # The spelling occurred in a comment, literal or non-call name.
+            # A quoted identifier is blanked in `masked`, but its following
+            # code parenthesis remains visible.
+            continue
+        argument = _skip_sql_trivia(source, opening + 1)
+        if argument is None or source[argument : argument + 1] != b"'":
+            # Dynamic, escaped, or otherwise unfamiliar setting names cannot
+            # prove that set_config leaves search_path alone.
+            writes.append(call.start())
+            continue
+        cursor = argument + 1
+        value = bytearray()
+        while cursor < len(source):
+            if source[cursor] == ord("'"):
+                if cursor + 1 < len(source) and source[cursor + 1] == ord("'"):
+                    value.append(ord("'"))
+                    cursor += 2
+                    continue
+                break
+            value.append(source[cursor])
+            cursor += 1
+        else:
+            writes.append(call.start())
+            continue
+        after_name = _skip_sql_trivia(source, cursor + 1)
+        if (
+            after_name is None
+            or after_name >= len(masked)
+            or masked[after_name] != _COMMA
+            or b"\\" in value
+        ):
+            # Concatenation, operators, and escape-sensitive literals do not
+            # establish the complete setting name from this first fragment.
+            writes.append(call.start())
+        elif bytes(value).lower() == b"search_path":
+            writes.append(call.start())
+    return tuple(writes)
+
+
+def _dynamic_sql_execute_offsets(
+    masked: bytes,
+    dollar_body_ranges: tuple[tuple[int, int], ...],
+) -> tuple[int, ...]:
+    """Find executable dynamic SQL whose command string cannot be resolved."""
+    return tuple(
+        execute.start()
+        for body_start, body_end in dollar_body_ranges
+        for execute in _EXECUTE_WORD_RE.finditer(masked, body_start, body_end)
+    )
+
+
+def _sql_statement_ranges(source: bytes, masked: bytes) -> tuple[tuple[int, int], ...]:
+    """Statement spans split only at semicolons outside dollar-quoted bodies."""
+    dollar_bodies = lex_sql(source).dollar_bodies
+    body_index = 0
+    statement_start = 0
+    ranges: list[tuple[int, int]] = []
+    for semicolon in re.finditer(rb";", masked):
+        while (
+            body_index < len(dollar_bodies)
+            and dollar_bodies[body_index][1] <= semicolon.start()
+        ):
+            body_index += 1
+        if (
+            body_index < len(dollar_bodies)
+            and dollar_bodies[body_index][0] <= semicolon.start()
+            < dollar_bodies[body_index][1]
+        ):
+            continue
+        end = semicolon.end()
+        ranges.append((statement_start, end))
+        statement_start = end
+    if statement_start < len(masked):
+        ranges.append((statement_start, len(masked)))
+    return tuple(ranges)
+
+
+def _explicit_transaction_ranges(
+    source: bytes, masked: bytes
+) -> tuple[tuple[int, int], ...]:
+    """Find explicit transaction spans for path-setting conservatism."""
+    ranges: list[tuple[int, int]] = []
+    active_start: int | None = None
+    for statement_start, statement_end in _sql_statement_ranges(source, masked):
+        first = _next_sql_keyword(source, masked, statement_start)
+        if first is None or first[1] > statement_end:
+            continue
+        keyword = first[0].upper()
+        second = _next_sql_keyword(source, masked, first[1])
+        if keyword == b"BEGIN" or (
+            keyword == b"START" and second is not None and second[0] == b"TRANSACTION"
+        ):
+            if active_start is None:
+                active_start = statement_start
+            continue
+        if active_start is None:
+            continue
+        if keyword == b"PREPARE" and second is not None and second[0] == b"TRANSACTION":
+            ranges.append((active_start, statement_start))
+            active_start = None
+            continue
+        if keyword not in {b"ABORT", b"COMMIT", b"END", b"ROLLBACK"}:
+            continue
+        suffix = second
+        if suffix is not None and suffix[0] in {b"WORK", b"TRANSACTION"}:
+            suffix = _next_sql_keyword(source, masked, suffix[1])
+        if keyword == b"ROLLBACK" and suffix is not None and suffix[0] == b"TO":
+            continue
+        if suffix is not None and suffix[0] == b"AND":
+            chain = _next_sql_keyword(source, masked, suffix[1])
+            no_chain = chain is not None and chain[0] == b"NO"
+            if no_chain:
+                chain = _next_sql_keyword(source, masked, chain[1])
+            if chain is not None and chain[0] == b"CHAIN" and not no_chain:
+                # AND CHAIN finishes this transaction and immediately opens
+                # another one. Path changes in the new transaction remain
+                # transaction-local until its own end.
+                continue
+        ranges.append((active_start, statement_start))
+        active_start = None
+    if active_start is not None:
+        ranges.append((active_start, len(masked)))
+    return tuple(ranges)
+
+
+def _search_path_reset_offsets(
+    source: bytes,
+    masked: bytes,
+    *,
+    configuration_ranges: tuple[tuple[int, int], ...] | None = None,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+) -> tuple[int, ...]:
+    """Locate RESET/DISCARD path resets, including quoted GUC identifiers."""
+    if configuration_ranges is None:
+        configuration_ranges = _non_session_configuration_ranges(source, masked)
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(source).dollar_bodies
+    offsets: list[int] = []
+    for reset in _RESET_WORD_RE.finditer(masked):
+        target = _read_sql_identifier(source, reset.end())
+        if target is None:
+            continue
+        if (
+            not target[0].startswith(b'"')
+            and _normalize_sql_identifier(target[0]) in {b"session", b"local"}
+        ):
+            target = _read_sql_identifier(source, target[1])
+            if target is None:
+                continue
+        target_name = _normalize_sql_identifier(target[0]).lower()
+        is_path_reset = target_name == b"search_path"
+        is_all_reset = not target[0].startswith(b'"') and target_name == b"all"
+        if not (is_path_reset or is_all_reset):
+            continue
+        in_configuration = any(
+            start <= reset.start() < end for start, end in configuration_ranges
+        )
+        in_executable_body = any(
+            start <= reset.start() < end for start, end in dollar_body_ranges
+        )
+        if not in_configuration or in_executable_body:
+            offsets.append(reset.start())
+    for discard in _DISCARD_WORD_RE.finditer(masked):
+        target = _read_sql_identifier(source, discard.end())
+        if (
+            target is None
+            or target[0].startswith(b'"')
+            or _normalize_sql_identifier(target[0]) != b"all"
+        ):
+            continue
+        in_configuration = any(
+            start <= discard.start() < end for start, end in configuration_ranges
+        )
+        in_executable_body = any(
+            start <= discard.start() < end for start, end in dollar_body_ranges
+        )
+        if not in_configuration or in_executable_body:
+            offsets.append(discard.start())
+    return tuple(offsets)
+
+
+def _search_path_may_shadow_catalog(
+    source: bytes,
+    masked: bytes,
+    path_settings: tuple[tuple[int, int | None, bool], ...] | None = None,
+) -> bool:
+    """Whether source can put a non-catalog schema before pg_catalog.
+
+    PostgreSQL searches pg_catalog first only when it is first in the explicit
+    path. If a user schema comes first, an unqualified built-in spelling can
+    resolve to a same-named user type. Across source files, execution order is
+    not known, so any such SET is enough to make the path unsafe. A
+    ``set_config('search_path', ...)`` call has the same effect and is unsafe
+    unless its setting name is a different, statically known literal.
+    """
+    if _set_config_search_path_writes(source, masked):
+        return True
+    dollar_body_ranges = lex_sql(source).dollar_bodies
+    if _dynamic_sql_execute_offsets(masked, dollar_body_ranges):
+        return True
+    if path_settings is None:
+        path_settings = _search_path_value_starts(source, masked)
+    for _, value_start, untrusted_scope in path_settings:
+        if untrusted_scope:
+            # Its effective state depends on a transaction or a procedural
+            # body. Refuse the source rather than let a rolled-back or
+            # transaction-local path certify a later declaration.
+            return True
+        is_schema, schema_name = _set_schema_value(source, masked, value_start)
+        if is_schema:
+            # SET SCHEMA creates a one-schema path. PostgreSQL implicitly
+            # searches pg_catalog first unless the schema is pg_temp.
+            if schema_name is None or _is_temporary_schema(schema_name):
+                return True
+            continue
+        if value_start is None:
+            return True
+        first = _read_sql_identifier(source, value_start)
+        if first is None or _normalize_sql_identifier(first[0]) != b"pg_catalog":
+            return True
+    if _search_path_reset_offsets(source, masked):
+        # RESET and DISCARD ALL return to connection-specific defaults;
+        # source cannot prove those schemas are harmless. A reset inside
+        # executable routine text can also persist when that routine runs.
+        return True
+    return False
+
+
+def _search_path_explicitly_orders_temp_after_catalog(
+    source: bytes, masked: bytes, value_start: int | None
+) -> bool:
+    if value_start is None:
+        return False
+    statement_end = masked.find(b";", value_start)
+    if statement_end < 0:
+        statement_end = len(masked)
+    cursor = value_start
+    schemas: list[bytes] = []
+    while True:
+        cursor = _skip_sql_trivia(source, cursor)
+        if cursor is None or cursor >= statement_end:
+            break
+        item = _read_sql_identifier(source, cursor)
+        if item is None:
+            return False
+        schemas.append(_normalize_sql_identifier(item[0]))
+        cursor = _skip_sql_trivia(source, item[1])
+        if cursor is None or cursor >= statement_end:
+            break
+        if masked[cursor : cursor + 1] != b",":
+            return False
+        cursor += 1
+    try:
+        return schemas.index(b"pg_catalog") < schemas.index(b"pg_temp")
+    except ValueError:
+        # Without an explicit pg_temp position PostgreSQL searches the temp
+        # schema first for types, even when pg_catalog is listed first.
+        return False
+
+
+def _search_path_explicitly_starts_with_catalog(
+    source: bytes, masked: bytes, value_start: int | None
+) -> bool:
+    if value_start is None:
+        return False
+    is_schema, schema_name = _set_schema_value(source, masked, value_start)
+    if is_schema:
+        return schema_name is not None and not _is_temporary_schema(schema_name)
+    first = _read_sql_identifier(source, value_start)
+    return first is not None and _normalize_sql_identifier(first[0]) == b"pg_catalog"
+
+
+def _non_session_configuration_ranges(
+    source: bytes, masked: bytes
+) -> tuple[tuple[int, int], ...]:
+    """Spans whose SET/RESET clauses do not change the current session."""
+    statements = _sql_statement_ranges(source, masked)
+    ranges: list[tuple[int, int]] = []
+    for pattern in (_ROUTINE_DDL_RE, _ALTER_GUC_DDL_RE):
+        for ddl in pattern.finditer(masked):
+            for start, end in statements:
+                if start <= ddl.start() < end:
+                    ranges.append((start, end))
+                    break
+    return tuple(ranges)
+
+
+_SearchPathTimeline = tuple[
+    tuple[int, ...], tuple[bool, ...], tuple[bool, ...], tuple[bool, ...]
+]
+
+
+def _build_search_path_timeline(
+    source: bytes,
+    masked: bytes,
+    *,
+    path_settings: tuple[tuple[int, int | None, bool], ...] | None = None,
+    configuration_ranges: tuple[tuple[int, int], ...] | None = None,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+) -> _SearchPathTimeline:
+    """Build search-path facts once for constant-time candidate lookups.
+
+    The three final fields at each event are, respectively, whether the temp
+    schema may shadow pg_catalog, whether pg_catalog-first has been proven,
+    and whether a path change may put a user schema ahead of pg_catalog.
+    A source scan can contain thousands of CHECK candidates; rebuilding and
+    sorting these events for every candidate made path analysis quadratic.
+    """
+    if path_settings is None:
+        path_settings = _search_path_value_starts(source, masked)
+    if configuration_ranges is None:
+        configuration_ranges = _non_session_configuration_ranges(source, masked)
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(source).dollar_bodies
+    events: list[tuple[int, bool, bool, bool]] = [
+        (
+            statement_start,
+            untrusted_scope
+            or not _search_path_explicitly_orders_temp_after_catalog(
+                source, masked, value_start
+            ),
+            not untrusted_scope
+            and _search_path_explicitly_starts_with_catalog(
+                source, masked, value_start
+            ),
+            untrusted_scope
+            or value_start is None
+            or not _search_path_explicitly_starts_with_catalog(
+                source, masked, value_start
+            ),
+        )
+        for statement_start, value_start, untrusted_scope in path_settings
+    ]
+    events.extend(
+        (offset, True, False, True)
+        for offset in _set_config_search_path_writes(source, masked)
+    )
+    events.extend(
+        (offset, True, False, True)
+        for offset in _dynamic_sql_execute_offsets(masked, dollar_body_ranges)
+    )
+    events.extend(
+        (offset, True, False, True)
+        for offset in _search_path_reset_offsets(
+            source,
+            masked,
+            configuration_ranges=configuration_ranges,
+            dollar_body_ranges=dollar_body_ranges,
+        )
+    )
+    events.sort(key=lambda event: event[0])
+    offsets: list[int] = []
+    temporary_may_shadow: list[bool] = []
+    catalog_first_proven: list[bool] = []
+    catalog_may_shadow: list[bool] = []
+    for offset, may_shadow, proven, path_may_shadow in events:
+        offsets.append(offset)
+        temporary_may_shadow.append(may_shadow)
+        catalog_first_proven.append(proven)
+        catalog_may_shadow.append(path_may_shadow)
+    return (
+        tuple(offsets),
+        tuple(temporary_may_shadow),
+        tuple(catalog_first_proven),
+        tuple(catalog_may_shadow),
+    )
+
+
+def _search_path_facts_at(
+    timeline: _SearchPathTimeline, before_offset: int
+) -> tuple[bool, bool, bool]:
+    """Return temp shadow, catalog-first proof and path shadow at an offset."""
+    (
+        offsets,
+        temporary_may_shadow,
+        catalog_first_proven,
+        catalog_may_shadow,
+    ) = timeline
+    event_index = bisect_left(offsets, before_offset) - 1
+    if event_index < 0:
+        return True, False, False
+    return (
+        temporary_may_shadow[event_index],
+        catalog_first_proven[event_index],
+        catalog_may_shadow[event_index],
+    )
+
+
+def _is_unshadowed_builtin_type(
+    type_name: bytes,
+    declared_type_names: frozenset[tuple[bytes | None, bytes]],
+    search_path_may_shadow_catalog: bool,
+    temporary_relation_names: set[bytes],
+    temporary_schema_may_shadow_catalog: bool,
+    catalog_first_path_proven: bool,
+) -> bool:
+    """Resolve a builtin spelling only when source facts support that claim."""
+    if type_name.startswith(b"pg_catalog."):
+        return type_name in _SAFE_STRING_COLUMN_TYPES or type_name in _INTEGER_TYPE_BOUNDS
+    if type_name not in _BUILTIN_COLUMN_TYPE_NAMES or search_path_may_shadow_catalog:
+        return False
+    # PostgreSQL searches the temporary schema first for data type names,
+    # except when pg_temp is explicitly placed after pg_catalog.
+    if temporary_schema_may_shadow_catalog and type_name in temporary_relation_names:
+        return False
+    # A same-named user type in a later schema cannot shadow pg_catalog when
+    # an earlier session SET explicitly puts pg_catalog first at this
+    # declaration. Without that position-specific proof, preserve the
+    # conservative refusal.
+    for schema, name in declared_type_names:
+        if name != type_name or schema == b"pg_catalog":
+            continue
+        if _is_temporary_schema(schema):
+            if temporary_schema_may_shadow_catalog:
+                return False
+            continue
+        if catalog_first_path_proven:
+            continue
+        return False
+    return True
+
+
+def _collect_sql_mutation_context(
+    sources: Iterable[tuple[str | None, str]],
+) -> _SqlMutationContext:
     """Find linked indexes, type changes and explicit collations in context."""
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
     unresolved_index_attachment = False
     altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     declared_column_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
+    declared_type_names: set[tuple[bytes | None, bytes]] = set()
+    search_path_may_shadow_sources: list[str | None] = []
+    declared_column_type_sources: list[
+        tuple[
+            str | None,
+            frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
+        ]
+    ] = []
     collated_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     dropped_tables: set[tuple[bytes | None, bytes]] = set()
-    temporary_table_names: set[bytes] = set()
+    temporary_relation_names: set[bytes] = set()
     relocated_tables: set[tuple[bytes | None, bytes]] = set()
-    for text in sources:
-        source = text.encode("utf-8")
-        masked = lex_sql(source).mask
+    source_items = [
+        (
+            source_identity,
+            text.encode("utf-8"),
+            lex_sql(text.encode("utf-8")).mask,
+        )
+        for source_identity, text in sources
+    ]
+    for source_identity, source, masked in source_items:
         for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
             reference = _attachment_index_reference(source, masked, attachment)
             if reference is None:
@@ -1121,19 +2765,56 @@ def _collect_sql_mutation_context(sources: Iterable[str]) -> _SqlMutationContext
                 attached_indexes.add(reference)
         altered_columns.update(_collect_altered_columns(source, masked))
         dropped_tables.update(_collect_dropped_tables(source, masked))
-        temporary_table_names.update(_collect_temporary_table_names(source, masked))
+        temporary_relation_names.update(
+            _collect_temporary_relation_names(source, masked)
+        )
         relocated_tables.update(_collect_relocated_tables(source, masked))
         declared, collated = _collect_table_column_metadata(source, masked)
         declared_column_types.update(declared)
+        declared_column_type_sources.append((source_identity, declared))
         collated_columns.update(collated)
+        declared_type_names.update(_collect_declared_type_names(source, masked))
+        source_path_may_shadow = _search_path_may_shadow_catalog(source, masked)
+        if source_path_may_shadow:
+            search_path_may_shadow_sources.append(source_identity)
+    # Temporary table/view declarations and ALTERs may live in separate SQL
+    # files. Propagate renamed row-type names until no source can add another.
+    while True:
+        expanded = set(temporary_relation_names)
+        for _, source, masked in source_items:
+            expanded.update(
+                _collect_temporary_relation_names(
+                    source, masked, temporary_relation_names
+                )
+            )
+        if expanded == temporary_relation_names:
+            break
+        temporary_relation_names = expanded
+    while True:
+        temporary_types = {
+            (schema, name)
+            for schema, name in declared_type_names
+            if schema is not None and _is_temporary_schema(schema)
+        }
+        expanded = set(declared_type_names)
+        for _, source, masked in source_items:
+            expanded.update(
+                _collect_declared_type_names(source, masked, temporary_types)
+            )
+        if expanded == declared_type_names:
+            break
+        declared_type_names = expanded
     return _SqlMutationContext(
         frozenset(attached_indexes),
         unresolved_index_attachment,
         frozenset(altered_columns),
         frozenset(declared_column_types),
+        frozenset(declared_type_names),
+        tuple(search_path_may_shadow_sources),
+        tuple(declared_column_type_sources),
         frozenset(collated_columns),
         frozenset(dropped_tables),
-        frozenset(temporary_table_names),
+        frozenset(temporary_relation_names),
         frozenset(relocated_tables),
     )
 
@@ -1590,6 +3271,7 @@ def _scan_widen_check_in(
     masked: bytes,
     *,
     context: _SqlMutationContext | None = None,
+    source_identity: str | None = None,
 ) -> "list[_Site]":
     sites = []
     enum_types = {
@@ -1602,54 +3284,121 @@ def _scan_widen_check_in(
         )
         for match in _ENUM_TYPE_RE.finditer(masked)
     }
-    table_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
+    table_spans: list[
+        tuple[
+            int,
+            int,
+            tuple[bytes | None, bytes],
+            dict[bytes, set[bytes]],
+            frozenset[bytes],
+            dict[bytes, frozenset[int]],
+        ]
+    ] = []
     declared_column_types, local_collated_columns = _collect_table_column_metadata(
         source, masked
     )
+    declared_type_names = set(_collect_declared_type_names(source, masked))
+    path_configuration_ranges = _non_session_configuration_ranges(source, masked)
+    path_transaction_ranges = _explicit_transaction_ranges(source, masked)
+    path_dollar_body_ranges = lex_sql(source).dollar_bodies
+    search_path_settings = _search_path_value_starts(
+        source,
+        masked,
+        configuration_ranges=path_configuration_ranges,
+        transaction_ranges=path_transaction_ranges,
+        dollar_body_ranges=path_dollar_body_ranges,
+    )
+    search_path_timeline = _build_search_path_timeline(
+        source,
+        masked,
+        path_settings=search_path_settings,
+        configuration_ranges=path_configuration_ranges,
+        dollar_body_ranges=path_dollar_body_ranges,
+    )
+    context_search_path_may_shadow_catalog = False
     all_declared_column_types = set(declared_column_types)
+    context_column_keys: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     collated_columns = set(local_collated_columns)
     altered_columns = set(_collect_altered_columns(source, masked))
     dropped_tables = set(_collect_dropped_tables(source, masked))
-    temporary_table_names = set(_collect_temporary_table_names(source, masked))
+    temporary_relation_names = set(_collect_temporary_relation_names(source, masked))
     relocated_tables = set(_collect_relocated_tables(source, masked))
     if context is not None:
         all_declared_column_types.update(context.declared_column_types)
+        context_column_keys.update(
+            (table_key, column_name)
+            for context_identity, source_facts in context.declared_column_type_sources
+            if source_identity is None or context_identity != source_identity
+            for table_key, column_name, _ in source_facts
+        )
+        declared_type_names.update(context.declared_type_names)
+        context_search_path_may_shadow_catalog = any(
+            source_identity is None or context_identity != source_identity
+            for context_identity in context.search_path_may_shadow_catalog_sources
+        )
         altered_columns.update(context.altered_columns)
         collated_columns.update(context.collated_columns)
         dropped_tables.update(context.dropped_tables)
-        temporary_table_names.update(context.temporary_table_names)
+        temporary_relation_names.update(context.temporary_relation_names)
         relocated_tables.update(context.relocated_tables)
+    type_declaration_offsets_by_table: dict[
+        tuple[bytes | None, bytes], dict[bytes, set[int]]
+    ] = {}
     for table_match in _CREATE_TABLE_RE.finditer(masked):
         column_list = _create_table_column_list(masked, table_match)
         if column_list is None:
             continue
         table_name, table_open, table_close = column_list
         table_key = _table_key_from_match(table_name)
-        table_spans.append((table_open, table_close, table_key))
+        table_types: dict[bytes, set[bytes]] = {}
+        table_collations: frozenset[bytes] = frozenset()
+        column_type_offsets: dict[bytes, set[int]] = {}
+        if not _create_table_is_if_not_exists(source, masked, table_match):
+            declarations, collations = _table_column_declarations(
+                source, masked, table_key, table_open, table_close
+            )
+            offsets_by_column = type_declaration_offsets_by_table.setdefault(
+                table_key, {}
+            )
+            for _, column_name, type_name in declarations:
+                table_types.setdefault(column_name, set()).add(type_name)
+                column_type_offsets.setdefault(column_name, set()).add(
+                    table_match.start()
+                )
+                offsets_by_column.setdefault(column_name, set()).add(
+                    table_match.start()
+                )
+            table_collations = frozenset(column_name for _, column_name in collations)
+        table_spans.append(
+            (
+                table_open,
+                table_close,
+                table_key,
+                table_types,
+                table_collations,
+                {
+                    name: frozenset(offsets)
+                    for name, offsets in column_type_offsets.items()
+                },
+            )
+        )
     table_spans.sort(key=lambda item: item[0])
     table_starts = [span[0] for span in table_spans]
 
     types_by_table: dict[
         tuple[bytes | None, bytes], dict[bytes, set[bytes]]
     ] = {}
-    types_by_name: dict[bytes, dict[bytes, set[bytes]]] = {}
     for table_key, column_name, type_name in all_declared_column_types:
         by_column = types_by_table.setdefault(table_key, {})
         by_column.setdefault(column_name, set()).add(type_name)
-        by_name_column = types_by_name.setdefault(table_key[1], {})
-        by_name_column.setdefault(column_name, set()).add(type_name)
 
     collated_by_table: dict[tuple[bytes | None, bytes], set[bytes]] = {}
-    collated_by_name: dict[bytes, set[bytes]] = {}
     for table_key, column_name in collated_columns:
         collated_by_table.setdefault(table_key, set()).add(column_name)
-        collated_by_name.setdefault(table_key[1], set()).add(column_name)
 
     altered_by_table: dict[tuple[bytes | None, bytes], set[bytes]] = {}
-    altered_by_name: dict[bytes, set[bytes]] = {}
     for table_key, column_name in altered_columns:
         altered_by_table.setdefault(table_key, set()).add(column_name)
-        altered_by_name.setdefault(table_key[1], set()).add(column_name)
 
     semicolons = [match.start() for match in re.finditer(rb";", masked)]
     alter_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
@@ -1668,34 +3417,71 @@ def _scan_widen_check_in(
         )
     alter_spans.sort(key=lambda item: item[0])
     alter_starts = [span[0] for span in alter_spans]
+    known_type_names = frozenset(declared_type_names)
 
-    def table_for_check(check_start: int) -> tuple[bytes | None, bytes] | None:
+    def table_for_check(
+        check_start: int,
+    ) -> tuple[
+        tuple[bytes | None, bytes],
+        bool,
+        dict[bytes, set[bytes]],
+        frozenset[bytes],
+        dict[bytes, frozenset[int]],
+    ] | None:
         table_index = bisect_right(table_starts, check_start) - 1
         if table_index >= 0:
-            start, end, table_key = table_spans[table_index]
+            (
+                start,
+                end,
+                table_key,
+                table_types,
+                table_collations,
+                column_type_offsets,
+            ) = table_spans[table_index]
             if start < check_start < end:
-                return table_key
+                return (
+                    table_key,
+                    True,
+                    table_types,
+                    table_collations,
+                    column_type_offsets,
+                )
         alter_index = bisect_right(alter_starts, check_start) - 1
         if alter_index >= 0:
             start, end, table_key = alter_spans[alter_index]
             if start < check_start < end:
-                return table_key
+                return table_key, False, {}, frozenset(), {}
         return None
 
     def columns_for_check(
         check_start: int,
-    ) -> tuple[dict[bytes, bytes], frozenset[bytes]]:
-        table_key = table_for_check(check_start)
-        if table_key is None:
-            return {}, frozenset()
+    ) -> tuple[
+        dict[bytes, bytes],
+        frozenset[bytes],
+        dict[bytes, tuple[bool, bool, bool]],
+    ]:
+        table_info = table_for_check(check_start)
+        if table_info is None:
+            return {}, frozenset(), {}
+        (
+            table_key,
+            inline_create_table_check,
+            inline_types,
+            inline_collations,
+            inline_column_type_offsets,
+        ) = table_info
         if _is_temporary_schema(table_key[0]):
             # Explicit pg_temp references never denote an ordinary table in
             # the scanned source roots, even if no temp declaration was found.
-            return {}, frozenset()
-        if table_key[0] is None and table_key[1] in temporary_table_names:
+            return {}, frozenset(), {}
+        if (
+            table_key[0] is None
+            and table_key[1] in temporary_relation_names
+            and not inline_create_table_check
+        ):
             # A temp relation with this name can win unqualified resolution,
             # while the permanent relation's type is the one in source context.
-            return {}, frozenset()
+            return {}, frozenset(), {}
         # An unqualified table reference has an unknown search_path, so any
         # dropped table with that name invalidates its type facts. A qualified
         # reference is invalidated only by the exact drop or an unqualified
@@ -1717,11 +3503,19 @@ def _scan_widen_check_in(
             )
         )
         if table_was_dropped or table_was_relocated:
-            return {}, frozenset()
-        if table_key[0] is None:
-            raw_types = types_by_name.get(table_key[1], {})
-            collated = collated_by_name.get(table_key[1], set())
-            altered = altered_by_name.get(table_key[1], set())
+            return {}, frozenset(), {}
+        if not inline_create_table_check and table_key[0] is None:
+            # Unqualified ALTER TABLE names depend on session search_path.
+            # Cross-file source order cannot prove which same-named table is
+            # altered, so no declared type facts are safe for this check.
+            return {}, frozenset(), {}
+        if inline_create_table_check:
+            # An inline CHECK is bound by its own CREATE TABLE statement.
+            # Use only that source's declaration facts; another file's
+            # same-named table cannot establish its type.
+            raw_types = inline_types
+            collated = inline_collations
+            altered = altered_by_table.get(table_key, set())
         else:
             # An unqualified CREATE TABLE's schema depends on search_path.
             # It cannot establish the type of a qualified relation with the
@@ -1739,7 +3533,49 @@ def _scan_widen_check_in(
         }
         for column_name in altered:
             result[column_name] = b"<altered>"
-        return result, frozenset(collated)
+        column_path_facts: dict[bytes, tuple[bool, bool, bool]] = {}
+        if inline_create_table_check:
+            for column_name in result:
+                offsets = inline_column_type_offsets.get(column_name, frozenset())
+                declaration_facts = [
+                    _search_path_facts_at(search_path_timeline, offset)
+                    for offset in offsets
+                ]
+                if declaration_facts:
+                    column_path_facts[column_name] = (
+                        any(facts[0] for facts in declaration_facts),
+                        all(facts[1] for facts in declaration_facts),
+                        any(facts[2] for facts in declaration_facts),
+                    )
+                else:
+                    column_path_facts[column_name] = (True, False, True)
+        else:
+            offsets_by_column = type_declaration_offsets_by_table.get(
+                table_key, {}
+            )
+            for column_name in result:
+                offsets = offsets_by_column.get(column_name, set())
+                if (table_key, column_name) in context_column_keys or not offsets:
+                    # Cross-file declarations have no comparable source
+                    # offset. A known context path writer or same-named type
+                    # still blocks the claim; otherwise leave the path-risk
+                    # bit to the source and candidate timelines.
+                    column_path_facts[column_name] = (True, False, False)
+                    continue
+                declaration_facts = [
+                    _search_path_facts_at(search_path_timeline, offset)
+                    for offset in offsets
+                ]
+                column_path_facts[column_name] = (
+                    any(facts[0] for facts in declaration_facts),
+                    all(facts[1] for facts in declaration_facts),
+                    any(facts[2] for facts in declaration_facts),
+                )
+        return (
+            result,
+            frozenset(collated),
+            column_path_facts,
+        )
 
     for check_m in _CHECK_OPEN_RE.finditer(masked):
         open_paren = check_m.end() - 1
@@ -1779,11 +3615,28 @@ def _scan_widen_check_in(
             if is_not_in:
                 lhs = re.sub(rb"\bNOT\s*$", b"", lhs, flags=re.IGNORECASE)
             column_match = _SIMPLE_IDENT_RE.fullmatch(lhs)
-            column_types, explicitly_collated = columns_for_check(check_m.start())
+            (
+                column_types,
+                explicitly_collated,
+                column_path_facts,
+            ) = columns_for_check(check_m.start())
             column_name = (
                 None
                 if column_match is None
                 else _normalize_sql_identifier(column_match.group(1))
+            )
+            (
+                temp_schema_may_shadow_catalog,
+                catalog_first_path_proven,
+                declaration_path_may_shadow_catalog,
+            ) = column_path_facts.get(column_name, (True, False, True))
+            _, _, candidate_path_may_shadow = _search_path_facts_at(
+                search_path_timeline, check_m.start()
+            )
+            search_path_may_shadow_catalog = (
+                declaration_path_may_shadow_catalog
+                or candidate_path_may_shadow
+                or context_search_path_may_shadow_catalog
             )
             if all_strings and not is_not_in:
                 column_type = (
@@ -1793,6 +3646,14 @@ def _scan_widen_check_in(
                 )
                 if (
                     column_type not in _SAFE_STRING_COLUMN_TYPES
+                    or not _is_unshadowed_builtin_type(
+                        column_type,
+                        known_type_names,
+                        search_path_may_shadow_catalog,
+                        temporary_relation_names,
+                        temp_schema_may_shadow_catalog,
+                        catalog_first_path_proven,
+                    )
                     or column_type in enum_types
                     or column_name in explicitly_collated
                 ):
@@ -1814,6 +3675,15 @@ def _scan_widen_check_in(
                 if len(members) < 2 or not all_unsigned_integers or column_name is None:
                     continue
                 column_type = column_types.get(column_name)
+                if column_type is None or not _is_unshadowed_builtin_type(
+                    column_type,
+                    known_type_names,
+                    search_path_may_shadow_catalog,
+                    temporary_relation_names,
+                    temp_schema_may_shadow_catalog,
+                    catalog_first_path_proven,
+                ):
+                    continue
                 bounds = _INTEGER_TYPE_BOUNDS.get(column_type)
                 if bounds is None:
                     continue
@@ -1869,6 +3739,15 @@ def _scan_widen_check_in(
                 column_type = column_types.get(
                     _normalize_sql_identifier(column_match.group(1))
                 )
+                if column_type is None or not _is_unshadowed_builtin_type(
+                    column_type,
+                    known_type_names,
+                    search_path_may_shadow_catalog,
+                    temporary_relation_names,
+                    temp_schema_may_shadow_catalog,
+                    catalog_first_path_proven,
+                ):
+                    continue
                 bounds = _INTEGER_TYPE_BOUNDS.get(column_type)
                 if bounds is None:
                     continue
@@ -1905,6 +3784,7 @@ def _all_candidate_sites(
     dollar_bodies: tuple[tuple[int, int], ...],
     declare_spans: list[tuple[int, int]],
     context: _SqlMutationContext | None = None,
+    source_identity: str | None = None,
 ) -> "list[_Site]":
     """Every candidate from every scanner, in the operator table's own
     order (§3.2) -- never itself filtered by *lines*/*operators*/*limit*;
@@ -1918,7 +3798,14 @@ def _all_candidate_sites(
     sites.extend(_scan_drop_foreign_key(source, masked))
     sites.extend(_scan_weaken_delete_action(source, masked))
     sites.extend(_scan_drop_trigger(source, masked, dollar_bodies))
-    sites.extend(_scan_widen_check_in(source, masked, context=context))
+    sites.extend(
+        _scan_widen_check_in(
+            source,
+            masked,
+            context=context,
+            source_identity=source_identity,
+        )
+    )
     return sites
 
 
@@ -2014,6 +3901,12 @@ class SqlAdapter:
 
     def prepare_mutation_context(self, sources: Iterable[str]) -> _SqlMutationContext:
         """Pre-scan declared SQL context for cross-file DDL dependencies."""
+        return _collect_sql_mutation_context((None, source) for source in sources)
+
+    def prepare_mutation_context_with_sources(
+        self, sources: Iterable[tuple[str, str]]
+    ) -> _SqlMutationContext:
+        """Pre-scan context with path identities for same-file exclusions."""
         return _collect_sql_mutation_context(sources)
 
     def generate_mutation_sites(
@@ -2040,6 +3933,7 @@ class SqlAdapter:
         operators: tuple[str, ...],
         limit: int,
         context: _SqlMutationContext | None,
+        source_identity: str | None = None,
     ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
         """Generate bounded sites using cross-file DDL facts when available.
 
@@ -2056,7 +3950,12 @@ class SqlAdapter:
         heap: list[tuple[_Worst, int, _Site]] = []
         seen = 0
         for site in _all_candidate_sites(
-            source, lex.mask, lex.dollar_bodies, declare_spans, context=context
+            source,
+            lex.mask,
+            lex.dollar_bodies,
+            declare_spans,
+            context=context,
+            source_identity=source_identity,
         ):
             if site.lineno not in lines or site.operator not in selected:
                 continue
@@ -2086,4 +3985,24 @@ class SqlAdapter:
                 description=site.description,
             )
             for _, _, site in retained
+        )
+
+    def generate_mutation_sites_with_context_for_source(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+        context: _SqlMutationContext | None,
+        source_identity: str,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """Generate sites while excluding this path's own context facts."""
+        return self.generate_mutation_sites_with_context(
+            text,
+            lines,
+            operators=operators,
+            limit=limit,
+            context=context,
+            source_identity=source_identity,
         )

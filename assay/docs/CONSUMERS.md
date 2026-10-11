@@ -1929,10 +1929,70 @@ bounded integer columns. Fixed-length
   commit, including unchanged files, to resolve cross-file index attachments,
   column declarations, type changes and collations. Both `UNIQUE USING INDEX`
   and `PRIMARY KEY USING INDEX` link an index to its constraint; neither half
-  is safe to mutate alone. A declaration in another included file can establish
-  the type for a literal-widening candidate, while unknown or conflicting
+  is safe to mutate alone. An unnamed index has no source-derived identity; if
+  the scan finds attachments, Assay skips it rather than guessing the name
+  PostgreSQL generates. A declaration in another included file can establish
+  the type for a schema-qualified `ALTER TABLE` check. An unqualified
+  `ALTER TABLE` check gets no type-based widening site because its table
+  depends on session `search_path`; inline checks use only their own
+  `CREATE TABLE` declaration. Unknown or conflicting
   types are refused. `CREATE TABLE AS` query results are not type-inferred; Assay reads type facts only from an explicit parenthesized column list in that statement, so a later table cannot supply its column type. `CREATE TABLE IF NOT EXISTS` declarations do not establish types because PostgreSQL may skip them when the table already exists. Unqualified declarations are not used to infer types for schema-qualified references because their schema depends on session `search_path`. Declare roots that cover the complete DDL corpus the lane
   command applies; a dependency outside those roots cannot inform the scan.
+  Unqualified `CREATE TYPE` and `CREATE DOMAIN` names retain possible
+  temporary-schema provenance across later path changes. A catalog-first path
+  is not enough unless it explicitly places `pg_temp` after `pg_catalog`.
+  The connection's initial creation schema is unknown to a source scan, so
+  unqualified tables remain possible temporary row types until source proves a
+  non-temporary schema is first and usable. The full static path list is considered
+  because PostgreSQL skips missing schemas; a later `pg_temp` can therefore be
+  the creation schema unless an earlier schema is known to exist.
+  Only a plain `CREATE SCHEMA name` proves the schema exists and is usable by
+  the current role. `SET SCHEMA 'name'` does not prove that: PostgreSQL silently
+  skips missing or inaccessible path entries. `CREATE SCHEMA IF NOT EXISTS`
+  may leave existing access unchanged, so it also cannot prove usability.
+  Revoking schema `USAGE`, changing its owner, or changing the effective role
+  can invalidate that proof. Revoking `USAGE` from `PUBLIC` leaves the
+  creator's direct privilege intact, and `REVOKE GRANT OPTION FOR USAGE` leaves
+  ordinary `USAGE` intact. `SET LOCAL ROLE` expires at transaction end: commit
+  restores the session role and rollback restores the prior role and schema
+  facts. If source cannot establish whether a named grantee is the current
+  schema owner, Assay treats the revocation as potentially removing access.
+  The scan follows schema changes inside a transaction for later statements;
+  commit keeps them and rollback restores the earlier source-known state.
+  Bare built-in spellings such as `text` and `integer` are refused if a
+  same-named source type exists. An earlier session-level `SET search_path`
+  in the same source proves `pg_catalog` first only when it precedes the
+  column's `CREATE TABLE` declaration. For an `ALTER TABLE` check, Assay uses
+  the path at the original column declaration as type evidence and checks for
+  unsafe path changes before the candidate. A later catalog-first setting
+  cannot prove an earlier declaration; a later `RESET` or `set_config` does not
+  retroactively invalidate an earlier candidate. A static `SET SCHEMA` to a
+  non-temporary schema preserves PostgreSQL's implicit `pg_catalog`-first
+  type lookup but does not prove the named schema exists or is usable for
+  object creation; `SET SCHEMA 'pg_temp'` remains unsafe because temporary types
+  can shadow built-ins. Unresolved schema values, updates to `pg_settings.search_path`,
+  and unknown or computed `set_config` setting names are path changes. Dynamic
+  `EXECUTE` in dollar-quoted executable text is an unknown path writer. An
+  ordinary `UPDATE ... SET` is not path configuration,
+  but a targeted `pg_settings` update is.
+  A path setting inside an explicit transaction, including `SET LOCAL`, cannot
+  prove resolution because rollback or transaction end can restore another
+  path. Function, procedure, or routine `SET` clauses, `ALTER ROUTINE ... RESET`,
+  and `ALTER ROLE`, `ALTER USER`, `ALTER DATABASE`, or `ALTER SYSTEM` settings
+  do not change the current
+  migration session. A `SET` or `RESET` in executable dollar-quoted routine
+  text is treated as unsafe because calling that routine can change the session
+  path. `RESET search_path`, `RESET ALL`, and `DISCARD ALL` also make path
+  resolution unsafe because the connection-specific default is unknown. A
+  `set_config` call that changes or may change `search_path` also makes
+  unqualified lookup unsafe. PostgreSQL searches the temporary schema first
+  for type names unless the path explicitly lists `pg_temp` after
+  `pg_catalog`. A matching temporary table or view name is refused unless
+  that ordering is set before the declaration; a transaction-local or later
+  `SET` does not prove it. Renaming a temporary table, view or named type
+  carries the same ambiguity, even across SQL files. A plain view that reads a
+  temporary table is temporary too. Use `pg_catalog.text` or `pg_catalog.int4`
+  when the catalog type is intended.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 

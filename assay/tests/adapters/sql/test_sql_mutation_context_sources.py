@@ -288,7 +288,7 @@ def test_sql_context_refuses_type_facts_shadowed_by_select_into_temp():
         context=context,
     )
 
-    assert len(baseline_sites) == 1
+    assert baseline_sites == ()
     assert sites == ()
 
 
@@ -319,7 +319,7 @@ def test_sql_context_refuses_type_facts_shadowed_by_select_into_pg_temp():
         context=context,
     )
 
-    assert len(baseline_sites) == 1
+    assert baseline_sites == ()
     assert sites == ()
 
 
@@ -347,7 +347,7 @@ def test_sql_context_refuses_permanent_type_for_pg_temp_qualified_reference():
         context=baseline,
     )
 
-    assert len(baseline_sites) == 1
+    assert baseline_sites == ()
     assert temp_schema_sites == ()
 
 
@@ -378,7 +378,7 @@ def test_sql_context_recognizes_tables_created_in_pg_temp_schema():
         context=context,
     )
 
-    assert len(baseline_sites) == 1
+    assert baseline_sites == ()
     assert sites == ()
 
 

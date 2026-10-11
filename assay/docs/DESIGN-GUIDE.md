@@ -3803,6 +3803,70 @@ that statement supplies type facts, so a later table cannot donate its type.
 be a no-op. An unqualified declaration is also not attributed to a
 schema-qualified target because Assay does not resolve the session's
 `search_path`.
+Cross-file type facts are used for `ALTER TABLE` checks only when the table
+reference is schema-qualified; an unqualified ALTER target may bind to a
+different same-named table depending on the session path. An inline check is
+bound to the column declarations in its own `CREATE TABLE` statement. Bare
+built-in type spellings are refused when source declares a same-named user
+type. Unqualified `CREATE TYPE` and `CREATE DOMAIN` names retain possible
+temporary-schema provenance across later path changes; a catalog-first path
+is not enough unless it explicitly places `pg_temp` after `pg_catalog`. An
+unknown initial creation schema keeps unqualified table row types possibly
+temporary until source proves a non-temporary schema is first. A missing path
+entry does not make a later `pg_temp` unreachable unless an earlier schema is
+known to exist. An earlier schema counts as known only when the source proves
+the current role can use it: a plain `CREATE SCHEMA name` does, while
+`SET SCHEMA 'name'` may silently skip a missing or inaccessible name, and
+`CREATE SCHEMA IF NOT EXISTS` may leave existing access unchanged. Revoking
+schema `USAGE`, changing its owner, or changing the effective role can
+invalidate the proof. Revoking `USAGE` from `PUBLIC` leaves the creator's
+direct privilege intact; `REVOKE GRANT OPTION FOR USAGE` leaves ordinary
+`USAGE` intact. A transaction-local role expires at transaction end, with
+commit restoring the session role and rollback restoring prior role and
+schema facts. If source cannot establish whether a named grantee is the current
+schema owner, Assay treats the revocation as potentially removing access. The
+scan follows schema mutations inside a transaction for later statements;
+commit keeps them and rollback restores the prior facts. This prevents `tenant, pg_temp`
+from being certified as permanent when PostgreSQL skips `tenant` and creates
+a temporary row type. Such unqualified table row type names join the shadow
+set. An
+earlier session-level `SET search_path` proves `pg_catalog` first
+only when it precedes the column's `CREATE TABLE` declaration. For an
+`ALTER TABLE` check, type resolution evidence comes from that original column
+declaration, while unsafe path changes before the candidate are also
+conservatively refused. A later catalog-first setting cannot prove how an
+earlier declaration resolved; a later `RESET` or `set_config` does not
+retroactively invalidate an earlier candidate. A static `SET SCHEMA` to a
+non-temporary schema preserves PostgreSQL's implicit `pg_catalog`-first type
+lookup but does not establish that the named schema exists or is usable for
+object creation; `SET SCHEMA 'pg_temp'` remains unsafe because temporary types
+can shadow built-ins.
+Unresolved schema values, updates to `pg_settings.search_path`, and unknown or
+computed `set_config` setting names are treated as path changes. Dynamic
+`EXECUTE` in dollar-quoted executable text is an unknown path writer. Ordinary
+`UPDATE ... SET` assignments are not
+path configuration, but a targeted `pg_settings` update is. Path settings
+inside an explicit transaction, including `SET LOCAL`, do not establish a
+resolution fact because rollback or transaction end can restore another path.
+`SET` clauses on functions, procedures, or routines and `ALTER ROUTINE ... RESET`
+configure those routines rather than the migration session. `ALTER ROLE`,
+`ALTER USER`, `ALTER DATABASE`, and
+`ALTER SYSTEM` settings also do not change the current session. A `set_config`
+call that changes or may change `search_path` also makes unqualified lookup
+unsafe. A `SET` or `RESET` in executable dollar-quoted routine text is
+conservatively unsafe because calling that routine can change the session
+path. `RESET search_path`, `RESET ALL`, and `DISCARD ALL` make path resolution
+unsafe because the connection-specific default is unknown. PostgreSQL gives
+the temporary schema
+precedence over `pg_catalog` for type lookup unless the path explicitly lists
+`pg_temp` after `pg_catalog`. A matching temporary table or view name is
+refused unless that ordering is set before the declaration; a local or later
+setting cannot prove it. Renaming a temporary table, view or
+named type carries the same ambiguity, including across source files. A plain
+view that reads a temporary table is temporary too. Explicit `pg_catalog`
+qualification is an unambiguous control. An unnamed unique index has no source-derived name, so when index
+attachments are present the adapter skips it rather than guessing PostgreSQL's
+generated identity.
 Array suffixes stay in the resolved type, so arrays are not treated as scalar
 text or integer columns. An unqualified table name that could resolve to a temporary relation
 or an explicit `pg_temp` name has no widening site because the scanner does

@@ -776,7 +776,7 @@ def collect_mutation_sites(
     adapter: LanguageAdapter,
     operators: tuple[str, ...],
     limit: int,
-    context_sources: Iterable[str] | None = None,
+    context_sources: Iterable[str | tuple[str, str]] | None = None,
 ) -> tuple[MutantJob, ...] | Literal["UNSUPPORTED"]:
     """Aggregate bounded candidate sites across possibly many changed files
     into ONE deterministic job list, or report adapter-wide capability
@@ -820,17 +820,47 @@ def collect_mutation_sites(
     ordered_targets = sorted(targets, key=lambda item: item.path)
     if not ordered_targets:
         return ()
-    context_preparer = getattr(adapter, "prepare_mutation_context", None)
-    def context_texts() -> Iterator[str]:
-        if context_sources is not None:
-            yield from context_sources
-        yield from (target.text for target in ordered_targets)
-
-    mutation_context = (
-        context_preparer(context_texts())
-        if callable(context_preparer)
-        else None
+    context_source_items = tuple(context_sources or ())
+    source_context_preparer = getattr(
+        adapter, "prepare_mutation_context_with_sources", None
     )
+    source_contextual_generator = getattr(
+        adapter, "generate_mutation_sites_with_context_for_source", None
+    )
+    if callable(source_context_preparer) and callable(source_contextual_generator):
+        identified_sources: list[tuple[str, str]] = []
+        for index, item in enumerate(context_source_items):
+            if (
+                isinstance(item, tuple)
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], str)
+            ):
+                identified_sources.append(item)
+            elif isinstance(item, str):
+                # Legacy context callers do not identify a path. Preserve each
+                # entry as a distinct external source instead of conflating
+                # identical contents with the current candidate.
+                identified_sources.append((f"external-context:{index}", item))
+            else:
+                raise TypeError("mutation context sources must be text or (path, text)")
+        identified_sources.extend(
+            (target.path, target.text) for target in ordered_targets
+        )
+        mutation_context = source_context_preparer(identified_sources)
+    else:
+        context_preparer = getattr(adapter, "prepare_mutation_context", None)
+
+        def context_texts() -> Iterator[str]:
+            for item in context_source_items:
+                yield item[1] if isinstance(item, tuple) else item
+            yield from (target.text for target in ordered_targets)
+
+        mutation_context = (
+            context_preparer(context_texts())
+            if callable(context_preparer)
+            else None
+        )
     contextual_generator = getattr(adapter, "generate_mutation_sites_with_context", None)
 
     jobs: list[MutantJob] = []
@@ -839,7 +869,20 @@ def collect_mutation_sites(
     for target in ordered_targets:
         if remaining <= 0:
             break
-        if mutation_context is not None and callable(contextual_generator):
+        if (
+            mutation_context is not None
+            and callable(source_contextual_generator)
+            and callable(source_context_preparer)
+        ):
+            result = source_contextual_generator(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+                context=mutation_context,
+                source_identity=target.path,
+            )
+        elif mutation_context is not None and callable(contextual_generator):
             result = contextual_generator(
                 target.text,
                 set(target.lines),
