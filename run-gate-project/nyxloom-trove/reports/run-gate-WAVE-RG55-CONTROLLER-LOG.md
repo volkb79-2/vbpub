@@ -9257,3 +9257,33 @@ properly released Run-Gate wheel is available. Local main is 150 commits
 ahead of origin after this report; the prior push authorization covered only
 the then-observed 83-commit gap, so publication remains unauthorized until
 the expanded remote update is explicitly settled.
+
+### RW-564 — 2026-10-11 10:09:23 UTC — resume dual R2 campaigns; record updated push and cockpit authority
+
+The operator now explicitly authorizes pushing at any time, releasing tools
+with unreleased versions, updating the cockpit, and using a second concurrent
+test container. The RG-55 integration through `36c9b404e` was pushed and
+confirmed synchronized with `origin/main`. Since then, local main advanced to
+`8bced974b` with a provisional Assay B132-B134 merge (14 commits ahead of
+origin, observed in the shared checkout). This controller has not pushed that
+Assay package: its final integrated gate/release state is not established, and
+the package belongs to a separate in-flight workstream. Do not let its local
+presence silently enter a release snapshot.
+
+P5 R2 remains active in `run-gate-vbpub-assay-r2-1249052-1791712852`, on the
+quiet judged tree `05e7b6cd`, with a 3-CPU cap under `dev-gates.slice`. The
+cgprofile R2 retry is active in `run-gate-vbpub-r2-1252073-1791713034`, on
+`06e7804e` with base `eb3af770`; it resumed 89 of 1,593 candidates and had
+reached its R0 baseline at 10:06:31Z. Its startup check confirmed the exact
+container running with the 3-CPU cap and correct parent; memory PSI full
+avg10 was 1.46. The prior 89-candidate/19-minute attempt suggests roughly
+5.4 hours for the remaining candidates, only a rough rate estimate. Respect
+the 25-minute observation interval absent an error/completion signal; next
+routine checks are due around 10:28Z (P5) and 10:32Z (cgprofile).
+
+The cockpit's Assay was upgraded from 8.0.1.dev76 to released 9.0.0 using the
+local wheel whose SHA-256 matches `cmru resolve`. Run-Gate 23.10.0 remains the
+latest published release and is installed, but it does not accept the current
+RG-55 `resource_observer` configuration; 23.11.0 is not yet released. The
+wave's cgroup-profiler target remains 1.0.0. No package release was started:
+the two R2 campaigns are active, and release gates must not overlap them.
