@@ -328,9 +328,6 @@ class _SqlMutationContext(NamedTuple):
     dropped_tables: frozenset[tuple[bytes | None, bytes]]
     temporary_relation_names: frozenset[bytes]
     relocated_tables: frozenset[tuple[bytes | None, bytes]]
-    lexed_target_sources: tuple[
-        tuple[str, str, bytes, tuple[tuple[int, int], ...]], ...
-    ]
 
 
 # --- shared regex fragments ---------------------------------------------------
@@ -2557,7 +2554,9 @@ def _search_path_temporary_creation_events(
     events.extend(
         (offset, "unknown", None)
         for offset in (
-            *_set_config_search_path_writes(source, masked),
+            *_set_config_search_path_writes(
+                source, masked, check_deadline=check_deadline
+            ),
             *_dynamic_sql_execute_offsets(masked, dollar_body_ranges),
             *_search_path_reset_offsets(
                 source,
@@ -3130,25 +3129,40 @@ def _pg_settings_search_path_updates(
     return tuple(updates)
 
 
-def _set_config_search_path_writes(source: bytes, masked: bytes) -> tuple[int, ...]:
+def _set_config_search_path_writes(
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> tuple[int, ...]:
     """Return calls that can change search_path or whose setting is unknown."""
     writes: list[int] = []
     for call in _SET_CONFIG_NAME_RE.finditer(source):
-        opening = _skip_sql_trivia(source, call.end())
+        if check_deadline is not None:
+            check_deadline()
+        opening = _skip_sql_trivia(
+            source, call.end(), check_deadline=check_deadline
+        )
         if opening is None or masked[opening : opening + 1] != b"(":
             # The spelling occurred in a comment, literal or non-call name.
             # A quoted identifier is blanked in `masked`, but its following
             # code parenthesis remains visible.
             continue
-        argument = _skip_sql_trivia(source, opening + 1)
+        argument = _skip_sql_trivia(
+            source, opening + 1, check_deadline=check_deadline
+        )
         if argument is None or source[argument : argument + 1] != b"'":
             # Dynamic, escaped, or otherwise unfamiliar setting names cannot
             # prove that set_config leaves search_path alone.
             writes.append(call.start())
             continue
         cursor = argument + 1
+        scanned = 0
         value = bytearray()
         while cursor < len(source):
+            if check_deadline is not None and scanned % 256 == 0:
+                check_deadline()
+            scanned += 1
             if source[cursor] == ord("'"):
                 if cursor + 1 < len(source) and source[cursor + 1] == ord("'"):
                     value.append(ord("'"))
@@ -3160,7 +3174,9 @@ def _set_config_search_path_writes(source: bytes, masked: bytes) -> tuple[int, .
         else:
             writes.append(call.start())
             continue
-        after_name = _skip_sql_trivia(source, cursor + 1)
+        after_name = _skip_sql_trivia(
+            source, cursor + 1, check_deadline=check_deadline
+        )
         if (
             after_name is None
             or after_name >= len(masked)
@@ -3172,6 +3188,8 @@ def _set_config_search_path_writes(source: bytes, masked: bytes) -> tuple[int, .
             writes.append(call.start())
         elif bytes(value).lower() == b"search_path":
             writes.append(call.start())
+    if check_deadline is not None:
+        check_deadline()
     return tuple(writes)
 
 
@@ -3378,7 +3396,9 @@ def _search_path_may_shadow_catalog(
     ``set_config('search_path', ...)`` call has the same effect and is unsafe
     unless its setting name is a different, statically known literal.
     """
-    if _set_config_search_path_writes(source, masked):
+    if _set_config_search_path_writes(
+        source, masked, check_deadline=check_deadline
+    ):
         return True
     if dollar_body_ranges is None:
         dollar_body_ranges = lex_sql(
@@ -3572,7 +3592,9 @@ def _build_search_path_timeline(
     ]
     events.extend(
         (offset, True, False, True)
-        for offset in _set_config_search_path_writes(source, masked)
+        for offset in _set_config_search_path_writes(
+            source, masked, check_deadline=check_deadline
+        )
     )
     events.extend(
         (offset, True, False, True)
@@ -3666,7 +3688,6 @@ def _collect_sql_mutation_context(
     sources: Iterable[tuple[str | None, str]],
     *,
     check_deadline: Remaining | None = None,
-    target_source_identities: frozenset[str] = frozenset(),
 ) -> _SqlMutationContext:
     """Find linked indexes, type changes and explicit collations in context."""
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
@@ -3688,33 +3709,30 @@ def _collect_sql_mutation_context(
     relation_edges: dict[bytes, set[bytes]] = {}
     type_rename_edges: dict[tuple[bytes | None, bytes], set[bytes]] = {}
     temporary_type_names: set[tuple[bytes, bytes]] = set()
-    source_items: list[
+    def lexed_sources() -> Iterator[
         tuple[str | None, bytes, bytes, tuple[tuple[int, int], ...]]
-    ] = []
-    target_lexes: dict[
-        str, tuple[str, bytes, tuple[tuple[int, int], ...]] | None
-    ] = {}
-    for source_identity, text in sources:
-        if check_deadline is not None:
-            check_deadline()
-        source = text.encode("utf-8")
-        lexed = lex_sql(source, check_deadline=check_deadline)
-        if check_deadline is not None:
-            check_deadline()
-        source_items.append(
-            (source_identity, source, lexed.mask, lexed.dollar_bodies)
-        )
-        if source_identity in target_source_identities:
-            current = (text, lexed.mask, lexed.dollar_bodies)
-            previous = target_lexes.get(source_identity)
-            if previous is None and source_identity not in target_lexes:
-                target_lexes[source_identity] = current
-            elif previous != current:
-                # A duplicate identity with different text cannot safely
-                # reuse one source's mask for another. The generator will
-                # lex that target from its own text instead.
-                target_lexes[source_identity] = None
-    for source_identity, source, masked, dollar_body_ranges in source_items:
+    ]:
+        for source_identity, text in sources:
+            if check_deadline is not None:
+                check_deadline()
+            source = text.encode("utf-8")
+            lexed = lex_sql(source, check_deadline=check_deadline)
+            if check_deadline is not None:
+                check_deadline()
+            yield (
+                source_identity,
+                source,
+                lexed.mask,
+                lexed.dollar_bodies,
+            )
+
+    # Scan each source before reading and lexing the next one. Cross-file
+    # relationships are accumulated as compact facts below, so keeping every
+    # encoded source and mask alive is unnecessary and can exceed a 2 GiB gate
+    # on a legal 512 MiB source tree. Selected targets are lexed again one at
+    # a time during candidate generation; this trades bounded CPU for bounded
+    # memory instead of retaining a tree of target masks in the context.
+    for source_identity, source, masked, dollar_body_ranges in lexed_sources():
         if check_deadline is not None:
             check_deadline()
         for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
@@ -3830,11 +3848,6 @@ def _collect_sql_mutation_context(
         frozenset(dropped_tables),
         frozenset(temporary_relation_names),
         frozenset(relocated_tables),
-        tuple(
-            (identity, *lexed)
-            for identity, lexed in sorted(target_lexes.items())
-            if lexed is not None
-        ),
     )
 
 
@@ -5130,17 +5143,6 @@ class SqlAdapter:
         """Pre-scan context with path identities for same-file exclusions."""
         return _collect_sql_mutation_context(sources)
 
-    def prepare_mutation_context_with_sources_for_targets(
-        self,
-        sources: Iterable[tuple[str, str]],
-        *,
-        target_source_identities: frozenset[str],
-    ) -> _SqlMutationContext:
-        """Pre-scan context and retain exact lex results for selected targets."""
-        return _collect_sql_mutation_context(
-            sources, target_source_identities=target_source_identities
-        )
-
     def prepare_mutation_context_with_sources_bounded(
         self,
         sources: Iterable[tuple[str, str]],
@@ -5149,20 +5151,6 @@ class SqlAdapter:
     ) -> _SqlMutationContext:
         """Pre-scan SQL context while honoring the lane's one deadline."""
         return _collect_sql_mutation_context(sources, check_deadline=remaining)
-
-    def prepare_mutation_context_with_sources_for_targets_bounded(
-        self,
-        sources: Iterable[tuple[str, str]],
-        *,
-        remaining: Remaining,
-        target_source_identities: frozenset[str],
-    ) -> _SqlMutationContext:
-        """Bounded context pre-scan with target lex reuse enabled explicitly."""
-        return _collect_sql_mutation_context(
-            sources,
-            check_deadline=remaining,
-            target_source_identities=target_source_identities,
-        )
 
     def generate_mutation_sites(
         self,
@@ -5201,26 +5189,9 @@ class SqlAdapter:
         if check_deadline is not None:
             check_deadline()
         source = text.encode("utf-8")
-        cached_lex: tuple[bytes, bytes, tuple[tuple[int, int], ...]] | None = None
-        if context is not None and source_identity is not None:
-            cached_index = bisect_left(
-                context.lexed_target_sources, (source_identity,)
-            )
-            if (
-                cached_index < len(context.lexed_target_sources)
-                and context.lexed_target_sources[cached_index][0] == source_identity
-            ):
-                _, cached_text, cached_mask, cached_bodies = (
-                    context.lexed_target_sources[cached_index]
-                )
-                if cached_text == text:
-                    cached_lex = (source, cached_mask, cached_bodies)
-        if cached_lex is None:
-            lex = lex_sql(source, check_deadline=check_deadline)
-            masked = lex.mask
-            dollar_bodies = lex.dollar_bodies
-        else:
-            _, masked, dollar_bodies = cached_lex
+        lex = lex_sql(source, check_deadline=check_deadline)
+        masked = lex.mask
+        dollar_bodies = lex.dollar_bodies
         if check_deadline is not None:
             check_deadline()
         selected = set(operators)

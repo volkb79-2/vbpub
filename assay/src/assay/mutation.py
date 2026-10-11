@@ -823,11 +823,6 @@ def collect_mutation_sites(
         if deadline_check is not None:
             deadline_check()
         return ()
-    context_source_items = []
-    for item in context_sources or ():
-        if deadline_check is not None:
-            deadline_check()
-        context_source_items.append(item)
     source_context_preparer = getattr(
         adapter, "prepare_mutation_context_with_sources", None
     )
@@ -841,36 +836,53 @@ def collect_mutation_sites(
         target_source_identities = frozenset(
             target.path for target in ordered_targets
         )
-        identified_sources: list[tuple[str, str]] = []
-        for index, item in enumerate(context_source_items):
-            if (
-                isinstance(item, tuple)
-                and len(item) == 2
-                and isinstance(item[0], str)
-                and isinstance(item[1], str)
-            ):
-                if item[0] in target_source_identities:
-                    # The selected target carries the current candidate text.
-                    # A context snapshot for the same path can be stale (for
-                    # example, a changed-lines target at a later HEAD), so it
-                    # is replaced below instead of being parsed alongside it.
-                    continue
-                identified_sources.append(item)
-            elif isinstance(item, str):
-                # Legacy context callers do not identify a path. Preserve each
-                # entry as a distinct external source instead of conflating
-                # identical contents with the current candidate.
-                identified_sources.append((f"external-context:{index}", item))
-            else:
-                raise TypeError("mutation context sources must be text or (path, text)")
-        identified_sources.extend(
-            (target.path, target.text) for target in ordered_targets
-        )
-        # The selected target is often already present in the source-root
-        # inventory. Its current path and text are authoritative; context
-        # preparation scans that pair once, then SQL reuses its mask and
-        # dollar-body ranges during candidate generation.
-        identified_sources = list(dict.fromkeys(identified_sources))
+
+        def identified_sources() -> Iterator[tuple[str, str]]:
+            # Keep only compact digests while de-duplicating. Retaining every
+            # context string here kept the full source tree alive while SQL
+            # also built encoded and masked copies for its cross-file scan.
+            seen: set[tuple[str, bytes]] = set()
+
+            def emit(identity: str, text: str) -> Iterator[tuple[str, str]]:
+                digest = hashlib.sha256(text.encode("utf-8")).digest()
+                key = (identity, digest)
+                if key not in seen:
+                    seen.add(key)
+                    yield identity, text
+
+            for index, item in enumerate(context_sources or ()):
+                if deadline_check is not None:
+                    deadline_check()
+                if (
+                    isinstance(item, tuple)
+                    and len(item) == 2
+                    and isinstance(item[0], str)
+                    and isinstance(item[1], str)
+                ):
+                    identity, text = item
+                    if identity in target_source_identities:
+                        # The selected target carries the current candidate
+                        # text. A context snapshot for the same path can be
+                        # stale, so use the target version below.
+                        continue
+                elif isinstance(item, str):
+                    # Legacy context callers keep each external source
+                    # distinct even when the contents happen to be equal.
+                    identity, text = f"external-context:{index}", item
+                else:
+                    raise TypeError(
+                        "mutation context sources must be text or (path, text)"
+                    )
+                yield from emit(identity, text)
+
+            for target in ordered_targets:
+                if deadline_check is not None:
+                    deadline_check()
+                yield from emit(target.path, target.text)
+
+        # This is a one-pass stream: the adapter consumes each context source
+        # before the next full source string is retained by this function.
+        identified_source_stream = identified_sources()
         bounded_target_context_preparer = getattr(
             adapter,
             "prepare_mutation_context_with_sources_for_targets_bounded",
@@ -887,31 +899,33 @@ def collect_mutation_sites(
             and deadline_check is not None
         ):
             mutation_context = bounded_target_context_preparer(
-                identified_sources,
+                identified_source_stream,
                 remaining=deadline_check,
                 target_source_identities=target_source_identities,
             )
         elif callable(bounded_source_context_preparer) and deadline_check is not None:
             mutation_context = bounded_source_context_preparer(
-                identified_sources, remaining=deadline_check
+                identified_source_stream, remaining=deadline_check
             )
         else:
             if deadline_check is not None:
                 deadline_check()
             if callable(target_context_preparer):
                 mutation_context = target_context_preparer(
-                    identified_sources,
+                    identified_source_stream,
                     target_source_identities=target_source_identities,
                 )
             else:
-                mutation_context = source_context_preparer(identified_sources)
+                mutation_context = source_context_preparer(identified_source_stream)
             if deadline_check is not None:
                 deadline_check()
     else:
         context_preparer = getattr(adapter, "prepare_mutation_context", None)
 
         def context_texts() -> Iterator[str]:
-            for item in context_source_items:
+            for item in context_sources or ():
+                if deadline_check is not None:
+                    deadline_check()
                 yield item[1] if isinstance(item, tuple) else item
             yield from (target.text for target in ordered_targets)
 

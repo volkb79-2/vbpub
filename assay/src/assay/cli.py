@@ -3880,6 +3880,9 @@ def _discover_plan_jobs(
                     source_root_paths=source_root_paths,
                     adapter=adapter,
                     deadline=deadline,
+                    target_source_identities=frozenset(
+                        target.path for target in targets
+                    ),
                 ),
                 deadline_check=deadline.remaining,
             )

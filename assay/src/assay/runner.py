@@ -145,7 +145,7 @@ from .mutation_witness import (
     make_attempt_plan,
     receipt_facts,
     supports_sequential_pytest,
-    survivor_proof_ok,
+    survivor_proof_failure,
 )
 from .output import VerdictOutput
 from .records import record
@@ -3492,13 +3492,16 @@ def _mutation_context_sources(
     source_root_paths: Sequence[Path],
     adapter: LanguageAdapter,
     deadline: LaneDeadline,
+    target_source_identities: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, str]] | None:
-    """Read every adapter source under the declared roots for cross-file rules.
+    """Read non-target adapter sources under declared roots for cross-file rules.
 
     Candidate selection controls which files may produce mutants. It cannot
     narrow facts needed to decide whether a candidate is safe: for example,
-    an unchanged migration may attach a unique index declared in a changed
-    file. Context bytes come only from the prepared commit manifest.
+    an unchanged migration may attach a unique index declared in another file.
+    Selected targets already carry their exact snapshot text, so excluding
+    them here avoids reading and retaining each full source twice. Context
+    bytes come only from the prepared commit manifest.
     """
     if not (
         callable(getattr(adapter, "prepare_mutation_context", None))
@@ -3508,6 +3511,7 @@ def _mutation_context_sources(
 
     roots: set[PurePosixPath] = set()
     for root in source_root_paths:
+        deadline.remaining()
         try:
             relative = root.relative_to(snapshot_repo_top)
         except ValueError as exc:
@@ -3521,13 +3525,15 @@ def _mutation_context_sources(
 
     paths = {
         path
-        for root in roots
-        for path in prepared.paths_under(root)
+        for path in prepared.iter_paths_under_any(
+            roots, check_deadline=deadline.remaining
+        )
         if any(
             fnmatch.fnmatch(path.as_posix(), pattern)
             for pattern in adapter.source_globs
         )
         and not adapter.is_test_path(path.as_posix())
+        and path.as_posix() not in target_source_identities
         and not any(
             part in adapter.excluded_dir_names for part in path.parts[:-1]
         )
@@ -3977,6 +3983,7 @@ def _run_prepared_lane(
         liveness_reason = liveness_injection.reason
         liveness_plugin_path = liveness_injection.plugin
     coverage_facts = None
+    coverage_proof_failure = None
     r2_facts = None
     r2_plan = None
     r2_command_payload: R2Command | None = None
@@ -4153,12 +4160,13 @@ def _run_prepared_lane(
         result = unit.result
         if cold_witness:
             coverage_facts = receipt_facts(coverage_receipt)
-            if coverage_facts is None or not survivor_proof_ok(
+            coverage_proof_failure = survivor_proof_failure(
                 coverage_receipt,
                 process_exit_status=result.returncode,
                 expected=coverage_facts,
                 command="declared",
-            ):
+            )
+            if coverage_proof_failure is not None:
                 coverage_facts = None
         r0_claim = build_r0_claim(result)
         # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
@@ -4860,8 +4868,8 @@ def _run_prepared_lane(
                     or coverage_facts.runtime_fingerprint_sha256 is None
                 ):
                     raise mutation.R2CommandProofError(
-                        "cold witness: the coverage baseline collection, hooks, "
-                        "or runtime could not be proven"
+                        "cold witness: coverage baseline proof failed: "
+                        f"{coverage_proof_failure or 'the collection or runtime facts are incomplete'}"
                     )
                 r2_manifest_sidecar = witness_dir / "r2-manifest.txt"
                 try:
@@ -4931,26 +4939,30 @@ def _run_prepared_lane(
                                 "cold witness: the no-coverage R2 baseline did not pass"
                             )
                         r2_facts = receipt_facts(r2_receipt)
-                        if (
-                            r2_facts is None
-                            or r2_facts.duplicates != 0
-                            or r2_facts.runtime_fingerprint_sha256 is None
-                            or not survivor_proof_ok(
-                                r2_receipt,
-                                process_exit_status=r2_result.returncode,
-                                expected=r2_facts,
-                                command="r2",
-                            )
-                            or not isinstance(r2_receipt, Mapping)
-                            or r2_receipt.get("unsupported") is not False
-                            or r2_facts.collection_count != coverage_facts.collection_count
-                            or r2_facts.collection_sha256 != coverage_facts.collection_sha256
-                        ):
+                        r2_proof_failure = survivor_proof_failure(
+                            r2_receipt,
+                            process_exit_status=r2_result.returncode,
+                            expected=r2_facts,
+                            command="r2",
+                        )
+                        if r2_proof_failure is None:
+                            assert r2_facts is not None
+                            if (
+                                r2_facts.collection_count
+                                != coverage_facts.collection_count
+                                or r2_facts.collection_sha256
+                                != coverage_facts.collection_sha256
+                            ):
+                                r2_proof_failure = (
+                                    "the no-coverage R2 baseline test collection "
+                                    "differs from the coverage baseline"
+                                )
+                        if r2_proof_failure is not None:
                             raise mutation.R2CommandProofError(
-                                "cold witness: the no-coverage R2 baseline did not "
-                                "prove the same unique collection, trusted hooks, "
-                                "and runtime"
+                                "cold witness: no-coverage R2 baseline proof failed: "
+                                f"{r2_proof_failure}"
                             )
+                        assert r2_facts is not None
                         try:
                             manifest_bytes = safeio.read_bounded_file(
                                 witness_dir,
@@ -5059,6 +5071,9 @@ def _run_prepared_lane(
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
                         adapter=adapter,
                         deadline=deadline,
+                        target_source_identities=frozenset(
+                            target.path for target in targets
+                        ),
                     ),
                     adapter=adapter,
                     jobs=lane.judge.mutation.jobs,
