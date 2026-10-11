@@ -12232,8 +12232,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
                 run_record["profile_ref"] = profile_result["profile_ref"]
-            if barrier_nonce is not None:
-                clear_inflight_record(project_dir, lane_name)
+            clear_inflight_record(project_dir, lane_name)
             fail_infra(f"lane {lane_name!r} placement refused: {refusal}; "
                        "lane body was not started")
     # RG-55: use Popen + OutputTee so basic sampling and daemon/in-process
@@ -12277,7 +12276,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         if proc is None:
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, bufsize=0)
-        elif barrier_nonce is not None:
+        else:
+            # This process exists only when the placement path already set
+            # its nonce and held the wrapper at the ready barrier.
             signal_placement_barrier(
                 proc, barrier_nonce, release=True,
                 profile_active=profiler_state.get("mode") == "daemon")
@@ -12656,7 +12657,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, bufsize=0,
                                     start_new_session=True)
-        elif barrier_nonce is not None:
+        else:
+            # This process exists only when the placement path already set
+            # its nonce and held the wrapper at the ready barrier.
             signal_placement_barrier(
                 proc, barrier_nonce, release=True,
                 profile_active=profiler_state.get("mode") == "daemon")

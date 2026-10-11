@@ -20598,9 +20598,16 @@ class TestAwaitContainerProfilingWiring:
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
         docker = shutil.which("docker")
+        clock_values = [0.0]
+
+        def advancing_clock():
+            clock_values[0] += 0.1
+            return clock_values[0]
+
         assert run_gate.await_container(
             docker, name, {"kind": "command"}, "suite", tmp_path,
-            tmp_path, tmp_path, profiler=profiler, watch=_Fallback()) == 0
+            tmp_path, tmp_path, profiler=profiler, watch=_Fallback(),
+            clock=advancing_clock) == 0
         assert client.watch_calls == 1
 
     @pytest.mark.parametrize("daemon_verdict, expect_stall", [
@@ -20893,6 +20900,66 @@ class TestBareHostProfilingWiring:
             argv = ["true"]
             clean_tree = false
         """
+
+    def test_preflight_fatal_reason_is_preserved_on_missing_version(
+            self, tmp_path, monkeypatch):
+        class Client:
+            pass
+
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda _docker: (RG55_CONTAINER_ID, None))
+        reason = "profiling preflight failed unexpectedly: planted"
+        state = run_gate.start_bare_host_profiling(
+            {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+            tmp_path, "docker", {"enabled": True, "daemon": "d"},
+            preflight={"client": Client(), "version": None,
+                       "reason": reason, "fatal_reason": reason})
+        assert state["mode"] == "rusage"
+        assert state["warning"] == reason
+
+    def test_host_document_runs_bare_host_admission_before_start(
+            self, tmp_path, monkeypatch):
+        host_doc = {"host": {"gates_slice": {"present": True}}}
+
+        class Client:
+            carrier = "exec"
+
+            def __init__(self, *args, **kwargs):
+                self.start_kwargs = None
+
+            def version(self):
+                return {"cgprofile": "1.1.0", "daemon": {"damon": "off"}}, None
+
+            def host(self):
+                return host_doc, None
+
+            def start(self, *_args, **kwargs):
+                self.start_kwargs = kwargs
+                return None, "planted start refusal"
+
+        client = Client()
+        admission_calls = []
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda _docker: (RG55_CONTAINER_ID, None))
+        monkeypatch.setattr(run_gate, "ProfilerClient", lambda *_a, **_k: client)
+        monkeypatch.setattr(
+            run_gate, "profile_placement_plan",
+            lambda *_args: {"place": False, "memory_high": None,
+                            "memory_max": None, "cpu_weight": None})
+        monkeypatch.setattr(
+            run_gate, "profile_admission",
+            lambda *args: admission_calls.append(args) or {"state": "admitted"})
+        state = run_gate.start_bare_host_profiling(
+            {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+            tmp_path, "docker", {"enabled": True, "daemon": "d",
+                                  "damon": False, "interval": "1s"})
+        assert state["mode"] == "rusage"
+        assert state["warning"] == "planted start refusal"
+        assert len(admission_calls) == 1
+        assert admission_calls[0][0] is client
+        assert admission_calls[0][1] == "suite"
+        assert admission_calls[0][4] is host_doc
+        assert client.start_kwargs["place"] is False
 
     def test_unexpected_version_probe_exception_falls_back_to_rusage(
             self, tmp_path, monkeypatch):
@@ -22650,6 +22717,130 @@ PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
 
 
 class TestPlacementBarrier:
+    def _exec_lane_fixture(self, tmp_path, monkeypatch, placement=None):
+        marker = tmp_path / "exec-placement-body"
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        docker_shim = shim_dir_of(monkeypatch) / "docker"
+        docker_shim.write_text(docker_shim.read_text().replace(
+            'case "$1" in',
+            'case "$1" in\n  ps) printf "probe-runner" ;;'))
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *_args, **_kwargs: {"id": RG55_CONTAINER_ID})
+        requested = {"place": True, "memory_high": 1024,
+                     "memory_max": 2048, "cpu_weight": None}
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: {
+                "client": object(), "version": {"ok": True}, "host": {},
+                "placement": requested, "admission": {"state": "admitted"}})
+        children = []
+        real_spawn = run_gate.spawn_placement_barrier
+
+        def spawn_exec_barrier(docker_argv, nonce, **kwargs):
+            container_index = docker_argv.index("probe-runner")
+            proc = real_spawn(docker_argv[container_index + 1:], nonce, **kwargs)
+            children.append(proc)
+            return proc
+
+        monkeypatch.setattr(run_gate, "spawn_placement_barrier",
+                            spawn_exec_barrier)
+        client = SimpleNamespace(
+            carrier="exec", socket_path="/run/cgprofile/ctl.sock",
+            watch=lambda *_args: None)
+        state = {
+            "mode": "daemon", "client": client,
+            "daemon": "cgprofile-host-daemon", "session": "s-test",
+            "session_line": None, "warning": None, "sampler": None,
+            "profiler_status": None, "placement": placement or {
+                "requested": True,
+                "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+                "applied": {"memory.high": 1024, "memory.max": 2048},
+                "error": None},
+            "admission": {"state": "admitted"}}
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            run_gate, "finish_lane_profiling",
+            lambda _state: {"resources": None, "profile_error": None,
+                            "profile_ref": None})
+        lane = {"kind": "command", "argv": [
+            "bash", "-c", f"touch {shlex.quote(str(marker))}"],
+            "clean_tree": False}
+        args = (lane, "suite", project, repo, repo, {"forward_env": []},
+                "test-env", "probe-runner", "test-src", "test-remedy",
+                None, "no-slice")
+        profile_plan = {
+            "enabled": True, "daemon": "cgprofile-host-daemon",
+            "interval": "1s", "damon": False, "source": "test",
+            "token": "profile-token", "disabled_reason": "disabled"}
+        return marker, args, profile_plan, state, children
+
+    def _bare_host_lane_fixture(self, tmp_path, monkeypatch):
+        marker = tmp_path / "bare-placement-body"
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: {
+                "client": object(), "version": {"ok": True}, "host": {},
+                "placement": {"place": True, "memory_high": 1024,
+                              "memory_max": 2048, "cpu_weight": None},
+                "admission": {"state": "admitted"}})
+        placement = {"requested": True,
+                     "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+                     "applied": {"memory.high": 1024, "memory.max": 2048},
+                     "error": None}
+        client = SimpleNamespace(watch=lambda *_args: None)
+        state = {"mode": "daemon", "client": client,
+                 "daemon": "cgprofile-host-daemon", "session": "s-bare",
+                 "session_line": None, "warning": None, "sampler": None,
+                 "profiler_status": None, "placement": placement,
+                 "admission": {"state": "admitted"}}
+        children = []
+        real_spawn = run_gate.spawn_bare_host_placement_barrier
+
+        def capture_barrier(*args, **kwargs):
+            proc = real_spawn(*args, **kwargs)
+            children.append(proc)
+            return proc
+
+        monkeypatch.setattr(run_gate, "spawn_bare_host_placement_barrier",
+                            capture_barrier)
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *_args, **_kwargs: state)
+        monkeypatch.setattr(
+            run_gate, "finish_lane_profiling",
+            lambda _state: {"resources": None, "profile_error": None,
+                            "profile_ref": None})
+        monkeypatch.setattr(
+            run_gate, "finish_bare_host_profiling",
+            lambda *_args: {"resources": None, "profile_error": None,
+                            "profile_ref": None})
+        lane = {"kind": "command", "environment": "bare-host",
+                "argv": ["bash", "-c",
+                         f"touch {shlex.quote(str(marker))}"],
+                "clean_tree": False}
+        plan = {"enabled": True, "daemon": "cgprofile-host-daemon",
+                "interval": "1s", "damon": False, "source": "test",
+                "token": "profile-token", "disabled_reason": "disabled"}
+        return marker, lane, project, repo, plan, state, children
+
     def test_exec_shell_barrier_waits_and_unprofiled_release_drops_token(
             self, tmp_path):
         marker = tmp_path / "shell-entered"
@@ -22701,6 +22892,256 @@ class TestPlacementBarrier:
                            match="no readiness stream"):
             run_gate.wait_for_placement_barrier(
                 SimpleNamespace(stdout=None), "45" * 16)
+
+    def test_stdin_forwarder_stops_after_destination_closes(self):
+        class Source:
+            reads = 0
+
+            def read(self, _size):
+                self.reads += 1
+                return b"first" if self.reads == 1 else b"must-not-forward"
+
+        class Destination:
+            def __init__(self):
+                self.forwarder = None
+                self.writes = []
+                self.close_calls = 0
+
+            def write(self, chunk):
+                self.writes.append(chunk)
+                self.forwarder.stopped.set()
+
+            def flush(self):
+                pass
+
+            def close(self):
+                self.close_calls += 1
+                raise ValueError("already closed by consumer")
+
+        source = Source()
+        destination = Destination()
+        forwarder = run_gate.StdinForwarder(source, destination)
+        destination.forwarder = forwarder
+        forwarder.thread.join(timeout=2)
+        assert not forwarder.thread.is_alive()
+        assert source.reads == 1
+        assert destination.writes == [b"first"]
+        forwarder.close()
+        assert destination.close_calls == 2
+
+    def test_readiness_timeout_is_reported_before_select(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        try:
+            with pytest.raises(run_gate.GateInfraError,
+                               match="did not become ready"):
+                run_gate.wait_for_placement_barrier(
+                    SimpleNamespace(stdout=stream), "56" * 16, timeout=0)
+        finally:
+            stream.close()
+            os.close(write_fd)
+
+    def test_readiness_timeout_after_select_reports_not_readable(
+            self, monkeypatch):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        monkeypatch.setattr(run_gate.select, "select",
+                            lambda *_args: ([], [], []))
+        try:
+            with pytest.raises(run_gate.GateInfraError,
+                               match="did not become ready"):
+                run_gate.wait_for_placement_barrier(
+                    SimpleNamespace(stdout=stream), "67" * 16, timeout=1)
+        finally:
+            stream.close()
+            os.close(write_fd)
+
+    @pytest.mark.parametrize(("payload", "message"), [
+        (b"", "exited before readiness$"),
+        (b"partial diagnostic", "exited before readiness: partial diagnostic$"),
+    ])
+    def test_readiness_eof_reports_optional_partial_diagnostic(
+            self, payload, message):
+        read_fd, write_fd = os.pipe()
+        if payload:
+            os.write(write_fd, payload)
+        os.close(write_fd)
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        try:
+            with pytest.raises(run_gate.GateInfraError, match=message):
+                run_gate.wait_for_placement_barrier(
+                    SimpleNamespace(stdout=stream), "78" * 16)
+        finally:
+            stream.close()
+
+    def test_readiness_rejects_overlong_marker(self):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"x" * 257 + b"\n")
+        os.close(write_fd)
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        try:
+            with pytest.raises(run_gate.GateInfraError,
+                               match="exceeded 256 bytes"):
+                run_gate.wait_for_placement_barrier(
+                    SimpleNamespace(stdout=stream), "89" * 16)
+        finally:
+            stream.close()
+
+    def test_bare_host_spawn_closes_control_pipe_if_popen_fails(
+            self, monkeypatch):
+        real_pipe = os.pipe
+        opened = []
+
+        def tracked_pipe():
+            pair = real_pipe()
+            opened.extend(pair)
+            return pair
+
+        def fail_popen(*_args, **_kwargs):
+            raise OSError("planted Popen failure")
+
+        monkeypatch.setattr(run_gate.os, "pipe", tracked_pipe)
+        monkeypatch.setattr(run_gate.subprocess, "Popen", fail_popen)
+        with pytest.raises(OSError, match="planted Popen failure"):
+            run_gate.spawn_bare_host_placement_barrier(["true"], "90" * 16)
+        assert len(opened) == 2
+        for fd in opened:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+
+    def test_bare_host_spawn_aborts_if_readiness_handshake_fails(
+            self, tmp_path, monkeypatch):
+        marker = tmp_path / "readiness-failure-body"
+        real_popen = run_gate.subprocess.Popen
+        children = []
+
+        def capture_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            children.append(proc)
+            return proc
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", capture_popen)
+        monkeypatch.setattr(
+            run_gate, "wait_for_placement_barrier",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                run_gate.GateInfraError("planted handshake failure")))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="planted handshake failure"):
+            run_gate.spawn_bare_host_placement_barrier(
+                ["bash", "-c", "touch \"$1\"", "probe", str(marker)],
+                "91" * 16, cwd=str(tmp_path))
+        assert children and children[0].returncode == 125
+        assert not marker.exists()
+
+    def test_signal_requires_a_control_channel(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="no control channel"):
+            run_gate.signal_placement_barrier(
+                SimpleNamespace(stdin=None), "a1" * 16, release=True)
+
+    @pytest.mark.parametrize("stream_kind", ["open", "closed", "none"])
+    @pytest.mark.parametrize("control_kind", ["open", "closed", "none"])
+    def test_abort_fallback_closes_any_remaining_channels(
+            self, monkeypatch, stream_kind, control_kind):
+        class Stream:
+            def __init__(self, closed):
+                self.closed = closed
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+                raise OSError("planted stream close failure")
+
+        stream = (Stream(closed=stream_kind == "closed")
+                  if stream_kind != "none" else None)
+        read_fd = write_fd = None
+        if control_kind != "none":
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            if control_kind == "closed":
+                os.close(write_fd)
+        else:
+            write_fd = None
+        proc = SimpleNamespace(
+            stdin=stream, _run_gate_placement_control_fd=write_fd,
+            wait=lambda **_kwargs: 0)
+        monkeypatch.setattr(
+            run_gate, "signal_placement_barrier",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                BrokenPipeError("planted signal failure")))
+        run_gate.abort_placement_barrier(proc, "a2" * 16)
+        if stream_kind == "open":
+            assert stream.close_calls == 1
+        elif stream is not None:
+            assert stream.close_calls == 0
+        if control_kind != "none":
+            assert proc._run_gate_placement_control_fd is None
+        if control_kind == "open":
+            with pytest.raises(OSError):
+                os.fstat(write_fd)
+
+    @pytest.mark.parametrize(("lookup_errors",), [(False,), (True,)])
+    def test_abort_escalates_and_reaps_wrapper(self, monkeypatch, lookup_errors):
+        class Process:
+            stdin = None
+            _run_gate_placement_control_fd = None
+
+            def __init__(self):
+                self.wait_calls = 0
+                self.terminate_calls = 0
+                self.kill_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if self.wait_calls <= 2:
+                    raise subprocess.TimeoutExpired("wrapper", timeout)
+                return 125
+
+            def terminate(self):
+                self.terminate_calls += 1
+                if lookup_errors:
+                    raise ProcessLookupError
+
+            def kill(self):
+                self.kill_calls += 1
+                if lookup_errors:
+                    raise ProcessLookupError
+
+        proc = Process()
+        monkeypatch.setattr(
+            run_gate, "signal_placement_barrier",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                run_gate.GateInfraError("no channel")))
+        run_gate.abort_placement_barrier(proc, "a3" * 16)
+        assert proc.terminate_calls == 1
+        assert proc.kill_calls == 1
+        assert proc.wait_calls == 3
+
+    def test_abandon_skips_absent_wrapper_and_non_daemon_state(self,
+                                                               monkeypatch):
+        assert run_gate.abandon_placement_launch(None, None) is None
+        assert run_gate.abandon_placement_launch(
+            None, None, {"mode": "rusage"}) is None
+        monkeypatch.setattr(
+            run_gate, "finish_lane_profiling",
+            lambda _state: (_ for _ in ()).throw(
+                AssertionError("non-daemon state must not be finalized")))
+        assert run_gate.abandon_placement_launch(
+            None, None, {"mode": "basic"}) is None
+
+    def test_abandon_reports_wrapper_and_daemon_cleanup_failures(
+            self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            run_gate, "abort_placement_barrier",
+            lambda *_args: (_ for _ in ()).throw(OSError("abort failed")))
+        monkeypatch.setattr(
+            run_gate, "finish_lane_profiling",
+            lambda _state: (_ for _ in ()).throw(RuntimeError("stop failed")))
+        assert run_gate.abandon_placement_launch(
+            object(), "nonce", {"mode": "daemon"}) is None
+        captured = capsys.readouterr()
+        assert "placement wrapper cleanup failed: abort failed" in captured.err
+        assert "refused-placement cleanup failed: stop failed" in captured.err
 
     def test_bare_host_barrier_keeps_pid_and_profile_token_on_release(
             self, tmp_path):
@@ -22900,6 +23341,178 @@ class TestPlacementBarrier:
                 lane, "suite", project, repo, repo, run_record={},
                 profile_plan=profile_plan) == 0
             assert marker.exists()
+
+    def test_exec_preflight_exception_falls_back_without_blocking_lane(
+            self, tmp_path, monkeypatch):
+        _marker, args, plan, _state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("planted preflight error")))
+        seen = []
+
+        def fallback(*_args, preflight=None, **_kwargs):
+            seen.append(preflight)
+            return {"mode": "disabled", "client": None, "daemon": None,
+                    "session": None, "session_line": None,
+                    "warning": preflight["fatal_reason"], "sampler": None,
+                    "profiler_status": None,
+                    "disabled_reason": preflight["fatal_reason"]}
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling", fallback)
+        assert run_gate.run_exec_lane(
+            *args, run_record={}, profile_plan=plan) == 0
+        assert not children
+        assert seen[0]["fatal_reason"] == (
+            "profiling preflight failed unexpectedly: planted preflight error")
+
+    def test_exec_placement_without_token_refuses_before_wrapper(
+            self, tmp_path, monkeypatch):
+        _marker, args, plan, _state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch)
+        plan["token"] = None
+        monkeypatch.setattr(
+            run_gate, "start_lane_profiling",
+            lambda *_args, **_kwargs: pytest.fail(
+                "profiling must not start without a placement token"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="requests placement but has no profile token"):
+            run_gate.run_exec_lane(*args, run_record={}, profile_plan=plan)
+        assert not children
+
+    def test_exec_base_exception_aborts_blocked_wrapper(
+            self, tmp_path, monkeypatch):
+        marker, args, plan, _state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "start_lane_profiling",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt))
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.run_exec_lane(*args, run_record={}, profile_plan=plan)
+        assert children and children[0].returncode == 125
+        assert not marker.exists()
+
+    def test_exec_inflight_write_failure_aborts_and_clears_barrier(
+            self, tmp_path, monkeypatch):
+        marker, args, plan, state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *_args, **_kwargs: state)
+        monkeypatch.setattr(
+            run_gate, "write_inflight_record",
+            lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt))
+        cleared = []
+        monkeypatch.setattr(run_gate, "clear_inflight_record",
+                            lambda *args: cleared.append(args))
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.run_exec_lane(*args, run_record={}, profile_plan=plan)
+        assert children and children[0].returncode == 125
+        assert not marker.exists()
+        assert len(cleared) == 1
+
+    def test_exec_inflight_write_failure_without_barrier_still_clears(
+            self, tmp_path, monkeypatch):
+        _marker, args, plan, _state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch)
+        plan["enabled"] = False
+        monkeypatch.setattr(
+            run_gate, "write_inflight_record",
+            lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt))
+        cleared = []
+        monkeypatch.setattr(run_gate, "clear_inflight_record",
+                            lambda *args: cleared.append(args))
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.run_exec_lane(*args, run_record={}, profile_plan=plan)
+        assert not children
+        assert len(cleared) == 1
+
+    def test_exec_refusal_without_run_record_still_clears_inflight(
+            self, tmp_path, monkeypatch):
+        placement = {"requested": True, "leaf": None, "applied": None,
+                     "error": "place-refused:no-target-pids"}
+        _marker, args, plan, state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch, placement)
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *_args, **_kwargs: state)
+        cleared = []
+        monkeypatch.setattr(run_gate, "clear_inflight_record",
+                            lambda *args: cleared.append(args))
+        with pytest.raises(run_gate.GateInfraError, match="placement refused"):
+            run_gate.run_exec_lane(*args, run_record=None, profile_plan=plan)
+        assert children and children[0].returncode == 125
+        assert len(cleared) == 1
+
+    def test_bare_host_preflight_exception_degrades_without_blocking_lane(
+            self, tmp_path, monkeypatch):
+        marker, lane, project, repo, plan, _state, children = \
+            self._bare_host_lane_fixture(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("planted preflight error")))
+        seen = []
+
+        def fallback(*_args, preflight=None, **_kwargs):
+            seen.append(preflight)
+            return {"mode": "rusage", "client": None,
+                    "daemon": "cgprofile-host-daemon", "session": None,
+                    "session_line": None,
+                    "warning": preflight["fatal_reason"], "sampler": None,
+                    "profiler_status": None,
+                    "disabled_reason": preflight["fatal_reason"]}
+
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling", fallback)
+        assert run_gate.run_bare_host_lane(
+            lane, "suite", project, repo, repo, run_record={},
+            profile_plan=plan) == 0
+        assert marker.exists()
+        assert not children
+        assert seen[0]["fatal_reason"] == (
+            "profiling preflight failed unexpectedly: planted preflight error")
+
+    def test_bare_host_placement_without_token_refuses_before_wrapper(
+            self, tmp_path, monkeypatch):
+        _marker, lane, project, repo, plan, _state, children = \
+            self._bare_host_lane_fixture(tmp_path, monkeypatch)
+        plan["token"] = None
+        monkeypatch.setattr(
+            run_gate, "start_bare_host_profiling",
+            lambda *_args, **_kwargs: pytest.fail(
+                "profiling must not start without a placement token"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="requests placement but has no profile token"):
+            run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record={},
+                profile_plan=plan)
+        assert not children
+
+    def test_bare_host_base_exception_aborts_blocked_wrapper(
+            self, tmp_path, monkeypatch):
+        marker, lane, project, repo, plan, _state, children = \
+            self._bare_host_lane_fixture(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "start_bare_host_profiling",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt))
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record={},
+                profile_plan=plan)
+        assert children and children[0].returncode == 125
+        assert not marker.exists()
+
+    def test_bare_host_refusal_without_run_record_still_reaps_wrapper(
+            self, tmp_path, monkeypatch):
+        _marker, lane, project, repo, plan, state, children = \
+            self._bare_host_lane_fixture(tmp_path, monkeypatch)
+        state["placement"] = {"requested": True, "leaf": None,
+                              "applied": None,
+                              "error": "place-refused:no-target-pids"}
+        with pytest.raises(run_gate.GateInfraError, match="placement refused"):
+            run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record=None,
+                profile_plan=plan)
+        assert children and children[0].returncode == 125
 
     @pytest.mark.parametrize(("state", "requested", "expected"), [
         ({}, False, None),

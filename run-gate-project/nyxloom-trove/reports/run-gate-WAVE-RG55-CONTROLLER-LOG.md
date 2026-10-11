@@ -9089,3 +9089,29 @@ readiness pipe; the focused stdlib/placement/exec/bare-host selection then
 passed 72 tests with 1,645 deselected. The subsequent complete selftest and
 remaining Run-Gate short gates must run on the refreshed frozen revision;
 the failed `adcfc` result remains part of the record, not a passing receipt.
+
+### RW-557 — 2026-10-11 02:03:19 UTC — repair changed-area coverage on the P5 barrier
+
+The registered Run-Gate `selftest` on frozen tree
+`992cce2291097ed2eac8bec42913d978aa9267bb` completed its pytest suite
+successfully (1,874 passed, 2 skipped), but the branch-aware changed-area
+judge failed: 980/1,067 changed executable lines (91.8%) and 452/476 changed
+branches. The misses were concentrated in the newly added placement-barrier
+EOF/timeout/pipe-cleanup/abort paths, the exec and bare-host preflight and
+refusal cleanup paths, and daemon-watch fallback suppression. This is a real
+coverage failure; passing pytest does not waive the 100% line-and-branch bar.
+
+Binding resolution: add behavioral tests for those real paths, including
+zero-timeout and unreadable readiness, empty/partial EOF, overlong marker,
+Popen/readiness failure cleanup, missing control channel, abort escalation,
+non-daemon and failing daemon finalization, missing placement token,
+preflight fallback, BaseException cleanup, and inflight-write cleanup with
+and without a barrier. Exercise the healthy daemon-watch path with an
+advancing injected clock so the local fallback is demonstrably not polled.
+Remove the redundant nonce checks whose false branches are impossible under
+the proc-assignment invariant; do not introduce coverage exclusions or lower
+the gate. `py_compile` and `git diff --check` passed after the repair edits,
+but these edits are not yet covered by a registered test result. Commit the
+repair, freeze a fresh review packet against that repair commit, then require
+a new exact-tree selftest before proceeding. No merge or release is authorized
+by this ruling.
