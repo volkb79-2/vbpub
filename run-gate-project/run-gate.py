@@ -14,7 +14,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 63  # rev 63: gate explicit daemon placement before lane-body entry
+__revision__ = 64  # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
 # handshake until daemon placement is read back; explicit refusal is an
 # infrastructure refusal before the body, not an unplaced candidate run.
@@ -2141,11 +2141,17 @@ class ProfilerClient:
         if not isinstance(doc, dict):
             return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
                           f"(exit {returncode})")
-        if doc.get("contract") != PROFILE_CONTRACT:
+        if (type(doc.get("contract")) is not int
+                or doc["contract"] != PROFILE_CONTRACT):
             return None, (f"`cgprofile ctl {verb}` reports contract "
                           f"{doc.get('contract')!r}, this client accepts "
                           f"{PROFILE_CONTRACT} only")
-        if not doc.get("ok", False):
+        if "ok" not in doc:
+            return None, f"`cgprofile ctl {verb}` refused (missing 'ok' key)"
+        if type(doc["ok"]) is not bool:
+            return None, (f"`cgprofile ctl {verb}` response has a "
+                          "non-boolean 'ok' value")
+        if not doc["ok"]:
             err = doc.get("error")
             if err is not None and not isinstance(err, dict):
                 return None, (f"`cgprofile ctl {verb}` response has a "
@@ -2154,6 +2160,10 @@ class ProfilerClient:
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
+        if returncode != 0:
+            return None, (f"`cgprofile ctl {verb}` reported success but "
+                          f"its carrier exited {returncode}; stderr: "
+                          f"{stderr_tail}")
         required = self._REQUIRED_KEY.get(verb)
         if required is not None and required not in doc:
             return None, (f"`cgprofile ctl {verb}` response is missing the "
@@ -2352,6 +2362,7 @@ class ProfilerWatch:
         self._socket = None
         self._process = None
         self._closed = False
+        self._failed = False
         self._thread = threading.Thread(target=self._read, daemon=True,
                                         name=f"cgprofile-watch-{session}")
         self._thread.start()
@@ -2394,14 +2405,39 @@ class ProfilerWatch:
             self._events.put(("end", None))
 
     def _accept(self, raw: str) -> None:
+        if getattr(self, "_failed", False):
+            return
         try:
             event = json.loads(raw)
         except (ValueError, TypeError):
             self._events.put(("error", "watch returned unparsable JSON"))
+            self._failed = True
             return
         if not isinstance(event, dict):
             self._events.put(("error", "watch returned non-object JSON"))
+            self._failed = True
             return
+        if (type(event.get("contract")) is not int
+                or event["contract"] != PROFILE_CONTRACT
+                or event.get("session") != self.session
+                or event.get("event") not in ("reading", "verdict", "end")):
+            self._events.put(("error", "watch returned a mismatched protocol event"))
+            self._failed = True
+            return
+        if event["event"] == "verdict":
+            decision = event.get("watch")
+            if (not isinstance(decision, dict)
+                    or decision.get("state") not in (
+                        "stalled", "runaway", "over_ceiling", "hung",
+                        "throttled", "ok")
+                    or decision.get("verdict") not in (
+                        "killed", "reported", "none")
+                    or not isinstance(decision.get("reason"), str)
+                    or type(decision.get("readings")) is not int
+                    or decision["readings"] < 0):
+                self._events.put(("error", "watch returned a malformed verdict"))
+                self._failed = True
+                return
         self._last_event_at = self.clock()
         self._events.put(("event", event))
 
@@ -2426,7 +2462,7 @@ class ProfilerWatch:
         ended reader is no longer alive and therefore cannot satisfy
         `idle()`'s liveness predicate.
         """
-        return not self._thread.is_alive()
+        return getattr(self, "_failed", False) or not self._thread.is_alive()
 
     def close(self) -> None:
         self._closed = True

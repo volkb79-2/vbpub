@@ -18,6 +18,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - feat(run-gate): request/read back daemon placement for daemon-backed lanes and apply bounded gates-slice admission without turning load or profiler failures into lane verdicts (RG-55 P5)
 
 ### Fixed
+- fix(run-gate): reject nonzero profiler carrier exits, malformed success fields, and foreign or malformed watch verdicts before they can certify a profiling session or change a lane outcome (P5 final review, rev 64)
 - fix(run-gate): let a healthy daemon watch alone decide liveness, reconcile a terminal verified kill from the stopped session summary, and use report policy for a shared-scope lane without placement (P5 final review, rev 62)
 - fix(run-gate): serialize the observer-backed native R2 lane so a shared tester-cgroup limit event cannot be assigned to the wrong mutant
 - fix(run-gate): scope Assay progress to the latest `run` record, calculate resumed rates from run-local events, and suppress ETAs without a trustworthy current-run `pending_total` (RG-90, rev 60)

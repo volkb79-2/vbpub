@@ -1,7 +1,7 @@
 # RG-55 P5 live placement-barrier probe
 
 This fixture is for the controller's bounded live acceptance probe of Run-Gate
-rev 63 against the CIU-managed `cgprofile-host-daemon`. It exercises a real
+rev 64 against the CIU-managed `cgprofile-host-daemon`. It exercises a real
 daemon request for both persistent-runner (`exec`) and bare-host lanes:
 
 - the success lanes request 64 MiB/128 MiB and print a body marker only after

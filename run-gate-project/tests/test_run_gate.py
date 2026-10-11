@@ -3466,7 +3466,7 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
 
     # The tagged release remains source rev 55. RG-90's telemetry change is
     # historical at rev 60; the P5 transport and placement launch gate are
-    # current at rev 63.
+    # current at rev 64.
     # RG-89 stays at the revision that introduced its observer contract.
     assert "This section describes released source rev 55." in changes
     assert "RG-90, rev 60" in changes
@@ -18206,6 +18206,25 @@ class TestProfilerClient:
         assert reason is None
         assert doc == json.loads(golden)
 
+    @pytest.mark.parametrize("body, returncode, expected", [
+        ('{"ok":true,"contract":1}', 3, "carrier exited 3"),
+        ('{"ok":true,"contract":true}', 0, "reports contract True"),
+        ('{"ok":"yes","contract":1}', 0, "non-boolean 'ok'"),
+    ])
+    def test_exec_transport_cannot_certify_failed_or_malformed_success(
+            self, tmp_path, monkeypatch, body, returncode, expected):
+        set_cgprofile_plan(
+            tmp_path, monkeypatch, version=(body, returncode, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert doc is None
+        assert expected in reason
+        set_cgprofile_plan(
+            tmp_path, monkeypatch,
+            version=('{"ok":true,"contract":1}', 0, None))
+        valid, valid_reason = client.version()
+        assert valid_reason is None and valid == {"ok": True, "contract": 1}
+
     def test_socket_start_emits_the_v11_request_shape(self, short_socket_root):
         response = '{"ok": true, "contract": 1, "session": "s-test"}\n'
         path, received, thread = self._socket_round_trip(
@@ -18313,9 +18332,11 @@ class TestProfilerClient:
     def test_socket_watch_stream_is_single_reader_and_preserves_events(
             self, short_socket_root):
         response = (
-            '{"event":"reading","reading":{"memory_current_bytes":7}}\n'
-            '{"event":"verdict","watch":{"verdict":"reported",'
-            '"reason":"brief gap"}}\n')
+            '{"contract":1,"session":"s-test","event":"reading",'
+            '"reading":{"memory_current_bytes":7}}\n'
+            '{"contract":1,"session":"s-test","event":"verdict",'
+            '"watch":{"state":"stalled","verdict":"reported",'
+            '"reason":"brief gap","readings":1}}\n')
         path, received, thread = self._socket_round_trip(
             short_socket_root, response)
         client = run_gate.ProfilerClient(
@@ -18395,7 +18416,8 @@ class TestProfilerClient:
 
     def test_exec_watch_reader_accepts_events_before_clean_end(self, monkeypatch):
         class Proc:
-            stdout = ['{"event":"reading"}\n']
+            stdout = ['{"contract":1,"session":"s-test",'
+                      '"event":"reading"}\n']
 
             def wait(self):
                 return 0
@@ -18409,18 +18431,55 @@ class TestProfilerClient:
             "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
         watch = client.watch("s-test", watch_interval=2)
         watch._thread.join(timeout=2)
-        assert watch.drain()[0] == ("event", {"event": "reading"})
+        assert watch.drain()[0] == (
+            "event", {"contract": 1, "session": "s-test", "event": "reading"})
         watch.close()
 
     def test_watch_reader_and_accept_report_transport_shape_errors(self):
         watch = object.__new__(run_gate.ProfilerWatch)
         watch._events = queue.SimpleQueue()
+        watch.session = "s-test"
         watch._accept("not json")
+        assert watch.drain() == [("error", "watch returned unparsable JSON")]
+        watch._failed = False
         watch._accept("[1, 2]")
-        assert watch.drain() == [
-            ("error", "watch returned unparsable JSON"),
-            ("error", "watch returned non-object JSON"),
-        ]
+        assert watch.drain() == [("error", "watch returned non-object JSON")]
+
+    @pytest.mark.parametrize("line, expected", [
+        ('{"contract":1,"session":"s-other","event":"verdict",'
+         '"watch":{"state":"stalled","verdict":"killed",'
+         '"reason":"wrong session","readings":1}}',
+         "mismatched protocol event"),
+        ('{"contract":true,"session":"s-test","event":"verdict",'
+         '"watch":{"state":"stalled","verdict":"killed",'
+         '"reason":"wrong contract","readings":1}}',
+         "mismatched protocol event"),
+        ('{"contract":1,"session":"s-test","event":"verdict",'
+         '"watch":{"verdict":"killed","reason":"missing state"}}',
+         "malformed verdict"),
+    ])
+    def test_watch_rejects_foreign_or_malformed_kill_before_consumer(
+            self, short_socket_root, line, expected):
+        later_kill = (
+            '{"contract":1,"session":"s-test","event":"verdict",'
+            '"watch":{"state":"stalled","verdict":"killed",'
+            '"reason":"later line","readings":2}}')
+        path, received, server = self._socket_round_trip(
+            short_socket_root, line + "\n" + later_kill + "\n")
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
+            transport="socket", socket_path=str(path))
+        watch = client.watch("s-test")
+        server.join(timeout=60)
+        watch._thread.join(timeout=60)
+        assert watch.ended() is True
+        profiler = {}
+        assert run_gate.consume_profiler_watch(
+            watch, profiler, "suite", Path("/project"), Path("/tree"),
+            None) is None
+        assert profiler["warning"] == f"daemon watch failed: watch returned a {expected}"
+        assert json.loads(received[0])["args"]["session"] == "s-test"
+        watch.close()
 
     def test_watch_idle_and_close_cover_dead_socket_and_kill_timeout(
             self, monkeypatch):
