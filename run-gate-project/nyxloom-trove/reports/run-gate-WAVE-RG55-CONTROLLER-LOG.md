@@ -9136,3 +9136,24 @@ events, connect the destination after observing `started`, then release the
 chunk. This deterministically proves that a destination close stops another
 read iteration. Re-freeze the packet after this test-only repair and rerun
 the registered selftest; no other gate should start until it is green.
+
+### RW-559 — 2026-10-11 02:20:18 UTC — pass P5 changed-area selftest on the frozen tree
+
+The registered Run-Gate `selftest` on frozen tree
+`4ba9bd80a1ab21442d0dea69c35be6fe40626fd5` passed in exact container
+`run-gate-vbpub-selftest-989050-1791684917`. The container was created with
+`--cpus=3` and immediately updated/read back at `NanoCpus=3000000000`,
+`Memory=1073741824`, parent `dev-gates.slice`. Pytest completed with 1,908
+passed, 2 skipped, 1 existing fixture-deprecation warning in 153.26s; the
+changed-area judge passed at 1,064/1,064 executable lines and 470/470
+branches. Run-Gate's separately read history records PASS/exit 0, 158.1s,
+started `2026-10-11T02:15:17Z`. Host memory PSI full avg10 remained 0.00% at
+the 90-second health check and completion. DAMON was unavailable with `EBUSY`
+because host `DAMON_STAT=Y`; the selftest verdict was still PASS and no
+functional judgment depended on profiling.
+
+Binding resolution: the RW-558 synchronization is accepted as a deterministic
+oracle; the branch-aware coverage bar remains unchanged. Continue with the
+remaining Run-Gate short gates (`assay-r1`, `assay-r3`, `doctor`) and a fresh
+Sol P5 review on the next report/packet freeze. No merge or release is
+authorized by this ruling.

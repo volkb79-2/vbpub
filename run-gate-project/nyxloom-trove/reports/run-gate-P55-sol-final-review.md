@@ -10,7 +10,7 @@ depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-558
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-559
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -291,12 +291,13 @@ behavioral tests for the uncovered timeout, EOF, abort, fallback, and
 inflight-cleanup paths. The next selftest on `0ca078342` ran pytest to 1,908
 passed, 2 skipped, but failed changed-area coverage on one stop-loop branch;
 the first fake-input fixture raced its helper thread. RW-558 records the
-deterministic event handshake committed at `b1293e902`. That repair has not
-yet passed a registered selftest. After the metadata-freeze commit, the
-controller must obtain a green exact-tree selftest and the remaining short
-gates before this fresh Sol round. The reviewer independently reviews the
-exact HEAD supplied by the controller and the full integrated diff; round 1
-does not authorize acceptance.
+deterministic event handshake committed at `b1293e902`. Selftest then passed
+on packet-freeze tree `4ba9bd80a`: 1,908 passed, 2 skipped, 1,064/1,064
+changed lines, and 470/470 branches; RW-559 records the exact receipt. The
+controller will refresh the report/ledger and rerun the remaining short gates
+on that resulting clean review tree before this fresh Sol round. The reviewer
+independently reviews the exact HEAD supplied by the controller and the full
+integrated diff; round 1 does not authorize acceptance.
 
 The committed CP-19 addition provides origin-unit lifetime protection: inventory the
 full source cgroup subtree before initial and later moves; refuse a known
