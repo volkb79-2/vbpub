@@ -9322,3 +9322,23 @@ overlap candidate sampling windows. A diagnostic follow-up is warranted:
 include the payload-safe ancestor path, counter name, and before/after deltas
 in the error receipt so future shared-event failures can be attributed without
 guessing.
+
+### RW-566 — 2026-10-11 10:36:13 UTC — resume cgprofile R2 serially
+
+The operator confirmed the Assay test container had ended and authorized the
+tests needed to continue RG-55. A fresh preflight found no active Run-Gate
+test container, the cgprofile worktree clean at the exact judged tree
+`06e7804eaf0126c8d8611ff28e61f92657a57d49`, and memory PSI `full avg10=0.00`.
+Resumed `r2 --base eb3af770eb16362cff4c39388193c0180c2d370c` from saved Assay
+state. Container `run-gate-vbpub-r2-1274146-1791714842` started at
+10:34:03.557Z, with `NanoCpus=3000000000` and `CgroupParent=dev-gates.slice`.
+At the required early health check it was running the R0 baseline pytest
+command; progress recorded the baseline command active at 60 seconds, and
+memory PSI remained low. The lane budget is 24h. Based on the prior resume's
+11 newly completed candidates in about 7.3 minutes and 1,593 total candidates,
+the rough full-campaign estimate is about 17h; this is throughput extrapolation,
+not an ETA guarantee. Keep this exact tree quiet and do not overlap another
+mutation or gate container, because shared-ancestor events can invalidate
+candidate measurements under Assay B145. P5 R2 remains parked until this run
+ends. After the startup check, observe no more frequently than every 25
+minutes unless an error or likely completion warrants an earlier check.
