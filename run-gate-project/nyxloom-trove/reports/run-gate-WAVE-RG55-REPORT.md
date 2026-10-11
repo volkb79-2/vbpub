@@ -86,11 +86,13 @@ gates; use the repository's source runner until the proper Run-Gate release
 is available, then install the released wheel and verify it against the
 current config. No wheel was installed or published in this closeout snapshot.
 
-Local `main` is 149 commits ahead of `origin/main`. CMRU releases operate from
-an `origin/main` snapshot. The operator previously authorized publication
-when the gap was 83 commits; the current larger gap is outside that exact
-authorization, so obtain renewed direction before pushing the now-advanced
-main or attempting publication. This does not prevent local gate/review work.
+At the 04:09Z pre-report check, local `main` was 150 commits ahead of
+`origin/main`; subsequent controller/report commits mean the exact count must
+be rechecked before publication. CMRU releases operate from an `origin/main`
+snapshot. The operator previously authorized publication when the gap was 83
+commits; the current larger gap is outside that exact authorization, so obtain
+renewed direction before pushing the now-advanced main or attempting
+publication. This does not prevent local gate/review work.
 
 ## Remaining closeout
 
