@@ -3563,7 +3563,9 @@ def run_mutation(
             operators=operators,
             limit=max_mutants + 1,
             context_sources=context_sources,
-            deadline_check=deadline.remaining,
+            deadline_check=(
+                deadline.remaining if deadline is not None else None
+            ),
         )
         if expected_plan_sha256 is not None:
             if (

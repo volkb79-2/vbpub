@@ -272,18 +272,27 @@ def test_sql_context_checks_deadline_inside_long_view_alias(monkeypatch):
     alias_start = source.index(alias)
     original = sql_adapter_module._read_sql_identifier
     alias_deadline_seen = False
-    calls = 0
+    alias_reader_returned = False
+    alias_started = False
+    alias_checks = 0
 
     def tracked(source_arg, pos, *, check_deadline=None):
-        nonlocal alias_deadline_seen
-        if source_arg == source_bytes and pos == alias_start:
+        nonlocal alias_deadline_seen, alias_reader_returned, alias_started
+        tracks_alias = source_arg == source_bytes and pos == alias_start
+        if tracks_alias:
             alias_deadline_seen = check_deadline is not None
-        return original(source_arg, pos, check_deadline=check_deadline)
+            alias_started = True
+        result = original(source_arg, pos, check_deadline=check_deadline)
+        if tracks_alias:
+            alias_reader_returned = True
+        return result
 
     def monotonic() -> float:
-        nonlocal calls
-        calls += 1
-        return 2.0 if calls >= 21 else 0.0
+        nonlocal alias_checks
+        if not alias_started:
+            return 0.0
+        alias_checks += 1
+        return 2.0 if alias_checks >= 2 else 0.0
 
     monkeypatch.setattr(sql_adapter_module, "_read_sql_identifier", tracked)
     deadline = runner.LaneDeadline(expires_at=1.0, monotonic=monotonic)
@@ -295,7 +304,8 @@ def test_sql_context_checks_deadline_inside_long_view_alias(monkeypatch):
 
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
     assert alias_deadline_seen
-    assert calls >= 21
+    assert not alias_reader_returned
+    assert alias_checks == 2
 
 
 def test_sql_context_checks_deadline_between_temporary_view_join_segments():
