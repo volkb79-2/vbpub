@@ -6389,7 +6389,8 @@ def abandon_placement_launch(proc: subprocess.Popen | None, nonce: str | None,
 
 
 def placement_refusal_reason(state: dict, requested: bool,
-                             requested_limits: dict | None = None
+                             requested_limits: dict | None,
+                             host_doc: dict | None, token: str | None
                              ) -> str | None:
     """Validate a daemon's applied placement before releasing a requested lane."""
     if not requested:
@@ -6402,10 +6403,23 @@ def placement_refusal_reason(state: dict, requested: bool,
     error = placement.get("error")
     if error is not None:
         return f"daemon refused requested placement: {error}"
+    gates = ((host_doc or {}).get("host") or {}).get("gates_slice") or {}
+    gates_cgroup = gates.get("cgroup")
+    if (gates.get("present") is not True
+            or not isinstance(gates_cgroup, str)
+            or not gates_cgroup.startswith("/")
+            or gates_cgroup == "/"
+            or not isinstance(token, str)
+            or re.fullmatch(r"[A-Za-z0-9._-]{8,64}", token) is None):
+        return "cannot derive the expected placement leaf from host and token"
+    expected_leaf = (f"{gates_cgroup.rstrip('/')}/"
+                     f"rg-profile-{token}.scope/rg-{token}")
     leaf = placement.get("leaf")
     applied = placement.get("applied")
     if not isinstance(leaf, str) or not leaf.startswith("/"):
         return "daemon omitted the verified placement leaf"
+    if leaf != expected_leaf:
+        return "daemon reported a placement leaf different from this lane"
     if not isinstance(applied, dict):
         return "daemon omitted the applied placement limits"
     readback = {}
@@ -12260,7 +12274,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         refusal = placement_refusal_reason(profiler_state,
                                            placement_requested,
                                            (profile_preflight or {}).get(
-                                               "placement"))
+                                               "placement"),
+                                           (profile_preflight or {}).get("host"),
+                                           profile_plan.get("token"))
         if refusal is not None:
             profile_result = abandon_placement_launch(
                 proc, barrier_nonce, profiler_state)
@@ -12621,7 +12637,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         refusal = placement_refusal_reason(profiler_state,
                                            placement_requested,
                                            (profile_preflight or {}).get(
-                                               "placement"))
+                                               "placement"),
+                                           (profile_preflight or {}).get("host"),
+                                           profile_plan.get("token"))
         if refusal is not None:
             profile_result = abandon_placement_launch(
                 proc, barrier_nonce, profiler_state)

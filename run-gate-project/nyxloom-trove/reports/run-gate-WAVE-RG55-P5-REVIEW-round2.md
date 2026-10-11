@@ -17,6 +17,11 @@ REJECT
 
 No code or tests were edited before this record. The final disposition and exact-tree gate evidence will be appended after the repairs are judged.
 
+## Second blind checkpoint (after first repair, before second repair)
+
+- B3 — High, `run-gate-project/run-gate.py:6391`, `placement_refusal_reason`: a placement response with `leaf=/tmp/unplaced`, `requested=true`, `error=null`, and numerically matching `memory.high`/`memory.max` returns no refusal. The exec/bare-host caller then sends `continue` to its blocked wrapper even though the result does not identify the token's verified leaf beneath the gates slice. Direct pure-function reproduction returned `None` for that wrong leaf. Require an exact leaf derived from the preflight host gates-slice cgroup and invocation token; if either fact is absent or the response differs, refuse before body entry. Add wrong-leaf and valid-leaf behavioral cases at the body-release boundary.
+- The first registered `selftest` after B1/B2 repair ran on clean commit `8e6af75f99c1f1b76659ad3741107e69ac64b15f` in `run-gate-vbpub-selftest-1025582-1791686561` (`dev-gates.slice`, 3 CPU, 1 GiB), with host PSI full avg10 0.51%. It exited 1: 1,913 passed, 2 skipped, one assertion failure in `test_unreleased_changelog_matches_revision_and_recovery_contract`, because the rev-64 changelog entry omitted the required `RG-55/P5, rev 64` string. This is a repair bookkeeping defect, not a passing gate. Fix the entry and rerun the exact-tree gate after B3 repair.
+
 ## Repair checkpoint (before registered gates)
 
 - The Run-Gate parser now requires an exact integer contract, an exact boolean `ok`, and exit 0 before accepting a successful control response. Refusal JSON still carries its stated error. The watch reader requires the correct contract and session; an invalid verdict becomes a watch error and cannot be followed by a queued kill event from that stream. A valid reading/verdict stream remains accepted. The copy-drift marker advances to rev 64.

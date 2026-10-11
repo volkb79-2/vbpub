@@ -22773,6 +22773,11 @@ class TestProfilerClientDegradesOnMalformedResponses:
 
 
 PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
+RG55_PLACEMENT_TOKEN = "profile-token"
+RG55_PLACEMENT_HOST = {"host": {"gates_slice": {
+    "present": True, "cgroup": "/dev.slice/dev-gates.slice"}}}
+RG55_PLACEMENT_LEAF = (
+    "/dev.slice/dev-gates.slice/rg-profile-profile-token.scope/rg-profile-token")
 
 
 class TestPlacementBarrier:
@@ -22798,7 +22803,7 @@ class TestPlacementBarrier:
         monkeypatch.setattr(
             run_gate, "prepare_profile_start",
             lambda *_args, **_kwargs: {
-                "client": object(), "version": {"ok": True}, "host": {},
+                "client": object(), "version": {"ok": True}, "host": RG55_PLACEMENT_HOST,
                 "placement": requested, "admission": {"state": "admitted"}})
         children = []
         real_spawn = run_gate.spawn_placement_barrier
@@ -22820,7 +22825,7 @@ class TestPlacementBarrier:
             "session_line": None, "warning": None, "sampler": None,
             "profiler_status": None, "placement": placement or {
                 "requested": True,
-                "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+                "leaf": RG55_PLACEMENT_LEAF,
                 "applied": {"memory.high": 1024, "memory.max": 2048},
                 "error": None},
             "admission": {"state": "admitted"}}
@@ -22857,12 +22862,12 @@ class TestPlacementBarrier:
         monkeypatch.setattr(
             run_gate, "prepare_profile_start",
             lambda *_args, **_kwargs: {
-                "client": object(), "version": {"ok": True}, "host": {},
+                "client": object(), "version": {"ok": True}, "host": RG55_PLACEMENT_HOST,
                 "placement": {"place": True, "memory_high": 1024,
                               "memory_max": 2048, "cpu_weight": None},
                 "admission": {"state": "admitted"}})
         placement = {"requested": True,
-                     "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+                     "leaf": RG55_PLACEMENT_LEAF,
                      "applied": {"memory.high": 1024, "memory.max": 2048},
                      "error": None}
         client = SimpleNamespace(watch=lambda *_args: None)
@@ -23242,7 +23247,7 @@ class TestPlacementBarrier:
         assert not marker.exists()
 
     @pytest.mark.parametrize("placement", [
-        {"requested": True, "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+        {"requested": True, "leaf": RG55_PLACEMENT_LEAF,
          "applied": {"memory.high": 1024, "memory.max": 2048},
          "error": None},
         {"requested": True, "leaf": None, "applied": None,
@@ -23270,7 +23275,7 @@ class TestPlacementBarrier:
         monkeypatch.setattr(
             run_gate, "prepare_profile_start",
             lambda *_args, **_kwargs: {
-                "client": object(), "version": {"ok": True}, "host": {},
+                "client": object(), "version": {"ok": True}, "host": RG55_PLACEMENT_HOST,
                 "placement": {"place": True, "memory_high": 1024,
                               "memory_max": 2048, "cpu_weight": None},
                 "admission": {"state": "admitted"}})
@@ -23346,14 +23351,14 @@ class TestPlacementBarrier:
         monkeypatch.setattr(
             run_gate, "prepare_profile_start",
             lambda *_args, **_kwargs: {
-                "client": object(), "version": {"ok": True}, "host": {},
+                "client": object(), "version": {"ok": True}, "host": RG55_PLACEMENT_HOST,
                 "placement": {"place": True, "memory_high": 1024,
                               "memory_max": 2048, "cpu_weight": None},
                 "admission": {"state": "admitted"}})
         placement = ({"requested": True, "leaf": None, "applied": None,
                       "error": "place-refused:no-target-pids"} if refused else
                      {"requested": True,
-                      "leaf": "/dev.slice/dev-gates.slice/s.scope/rg-t",
+                      "leaf": RG55_PLACEMENT_LEAF,
                       "applied": {"memory.high": 1024, "memory.max": 2048},
                       "error": None})
         client = type("Client", (), {
@@ -23582,6 +23587,41 @@ class TestPlacementBarrier:
                 profile_plan=plan)
         assert children and children[0].returncode == 125
 
+    @pytest.mark.parametrize("kind", ["exec", "bare-host"])
+    def test_wrong_placement_leaf_cannot_release_body(
+            self, tmp_path, monkeypatch, kind):
+        wrong = {"requested": True, "leaf": "/tmp/unplaced",
+                 "applied": {"memory.high": 1024, "memory.max": 2048},
+                 "error": None}
+        if kind == "exec":
+            marker, args, plan, state, children = self._exec_lane_fixture(
+                tmp_path, monkeypatch, wrong)
+            monkeypatch.setattr(run_gate, "start_lane_profiling",
+                                lambda *_args, **_kwargs: state)
+            run = lambda: run_gate.run_exec_lane(
+                *args, run_record={}, profile_plan=plan)
+        else:
+            marker, lane, project, repo, plan, state, children = \
+                self._bare_host_lane_fixture(tmp_path, monkeypatch)
+            state["placement"] = wrong
+            run = lambda: run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record={},
+                profile_plan=plan)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="placement leaf different from this lane"):
+            run()
+        assert children and children[0].returncode == 125
+        assert not marker.exists()
+
+    def test_placement_without_host_slice_cannot_release_body(self):
+        state = {"placement": {
+            "requested": True, "leaf": RG55_PLACEMENT_LEAF,
+            "applied": {"memory.high": 1024, "memory.max": 2048},
+            "error": None}}
+        assert run_gate.placement_refusal_reason(
+            state, True, None, None, RG55_PLACEMENT_TOKEN) == (
+            "cannot derive the expected placement leaf from host and token")
+
     @pytest.mark.parametrize(("state", "requested", "expected"), [
         ({}, False, None),
         ({}, True, "daemon omitted the requested placement result"),
@@ -23595,51 +23635,52 @@ class TestPlacementBarrier:
         ({"placement": {"requested": True, "error": None, "leaf": "relative",
                         "applied": {}}}, True,
          "daemon omitted the verified placement leaf"),
-        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+        ({"placement": {"requested": True, "error": None, "leaf": RG55_PLACEMENT_LEAF,
                         "applied": None}}, True,
          "daemon omitted the applied placement limits"),
-        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+        ({"placement": {"requested": True, "error": None, "leaf": RG55_PLACEMENT_LEAF,
                         "applied": {"memory.high": True, "memory.max": 20}}},
          True, "daemon did not read back a valid memory.high value"),
-        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+        ({"placement": {"requested": True, "error": None, "leaf": RG55_PLACEMENT_LEAF,
                         "applied": {"memory.high": 10, "memory.max": "max"}}},
          True, "daemon did not read back a valid memory.max value"),
-        ({"placement": {"requested": True, "error": None, "leaf": "/lane",
+        ({"placement": {"requested": True, "error": None, "leaf": RG55_PLACEMENT_LEAF,
                         "applied": {"memory.high": 10, "memory.max": 20}}},
          True, None),
     ])
     def test_placement_readback_is_required_before_body_release(
             self, state, requested, expected):
-        assert run_gate.placement_refusal_reason(state, requested) == expected
+        assert run_gate.placement_refusal_reason(
+            state, requested, None, RG55_PLACEMENT_HOST, RG55_PLACEMENT_TOKEN) == expected
 
     @pytest.mark.parametrize(("placement", "requested_limits", "expected"), [
-        ({"requested": True, "leaf": "/lane",
+        ({"requested": True, "leaf": RG55_PLACEMENT_LEAF,
           "applied": {"memory.high": 20, "memory.max": 10},
           "error": None},
          {"memory_high": 10, "memory_max": 20, "cpu_weight": None},
          "daemon read back memory.max below memory.high"),
-        ({"requested": True, "leaf": "/lane",
+        ({"requested": True, "leaf": RG55_PLACEMENT_LEAF,
           "applied": {"memory.high": 11, "memory.max": 20},
           "error": None},
          {"memory_high": 10, "memory_max": 20, "cpu_weight": None},
          "daemon read back memory.high above the requested limit"),
-        ({"requested": True, "leaf": "/lane",
+        ({"requested": True, "leaf": RG55_PLACEMENT_LEAF,
           "applied": {"memory.high": 10, "memory.max": 21},
           "error": None},
          {"memory_high": 10, "memory_max": 20, "cpu_weight": None},
          "daemon read back memory.max above the requested limit"),
-        ({"requested": True, "leaf": "/lane",
+        ({"requested": True, "leaf": RG55_PLACEMENT_LEAF,
           "applied": {"memory.high": 10, "memory.max": 20},
           "error": None},
          {"memory_high": 10, "memory_max": 20, "cpu_weight": 100},
          "daemon did not read back a valid cpu.weight value"),
-        ({"requested": True, "leaf": "/lane",
+        ({"requested": True, "leaf": RG55_PLACEMENT_LEAF,
           "applied": {"memory.high": 10, "memory.max": 20,
                       "cpu.weight": 200},
           "error": None},
          {"memory_high": 10, "memory_max": 20, "cpu_weight": 100},
          "daemon read back a different cpu.weight than requested"),
-        ({"requested": True, "leaf": "/lane",
+        ({"requested": True, "leaf": RG55_PLACEMENT_LEAF,
           "applied": {"memory.high": 10, "memory.max": 20,
                       "cpu.weight": 100},
           "error": None},
@@ -23649,7 +23690,8 @@ class TestPlacementBarrier:
     def test_applied_limits_must_be_at_least_as_strict_as_request(
             self, placement, requested_limits, expected):
         assert run_gate.placement_refusal_reason(
-            {"placement": placement}, True, requested_limits) == expected
+            {"placement": placement}, True, requested_limits,
+            RG55_PLACEMENT_HOST, RG55_PLACEMENT_TOKEN) == expected
 
 
 class TestExecLaneProfilingWiring:
