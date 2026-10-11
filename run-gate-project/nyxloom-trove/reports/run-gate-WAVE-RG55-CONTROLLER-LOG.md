@@ -9157,3 +9157,33 @@ oracle; the branch-aware coverage bar remains unchanged. Continue with the
 remaining Run-Gate short gates (`assay-r1`, `assay-r3`, `doctor`) and a fresh
 Sol P5 review on the next report/packet freeze. No merge or release is
 authorized by this ruling.
+
+### RW-560 — 2026-10-11 03:31:28 UTC — accept P5 repairs for provisional integration
+
+Fresh GPT-6-Sol xhigh review session `01a128d2-601a-7331-b2f2-78672733648d`
+returned **ACCEPT** for P5. Its report is
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-REVIEW-round2.md`.
+The initial reviewed tree was `4bb006a9f06108dd9b1513f8fe900387be9d4297`;
+the review repaired three blockers: strict profiler response status/type
+validation, rejection of malformed or wrong-session watch events, and binding
+successful placement readback to the exact token-derived gates-slice leaf.
+The repaired code checkpoint is `3b6a4ab4146d51f7f56547411db3c3d60e019763`;
+the review artifact-only commit is `f05464eb9e6fc3b271c184ae80a25fc52c615bb1`.
+
+On the repaired code checkpoint, the separately read Run-Gate histories are
+PASS for selftest (1,917 passed, 2 skipped; 1,094/1,094 changed executable
+lines and 492/492 branches), assay-r1 (R0/R1 PASS; 1,624/1,624 lines and
+492/492 branches), and assay-r3 (both canaries rejected, zero survivors).
+Doctor reported 21 OK, zero failures, one known linked-worktree warning, and
+one informational stale-lock notice. The review also recorded live exec and
+bare-host success/refusal placement probes against the real daemon; the body
+was blocked on refusal and no session/leaf remained. The tracked footprint
+manifest and byte-identical contract mirrors were verified. `main` and
+`origin/main` remain at `efaf112945233e3a8f6d53f2fef136439d18d089`, and the
+candidate is clean at the review artifact commit before this log update.
+
+This ACCEPT authorizes provisional integration under the operator's standing
+rule; it is not release approval. Exact-current-tree assay-r2 and gate-full,
+all P1/P6 survivor dispositions, and Assay's own package release gate remain
+release holds. No package release, installation, or final daemon transition is
+recorded here.
