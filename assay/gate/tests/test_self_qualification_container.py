@@ -931,6 +931,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     )
 
     assert proc.returncode == 0, proc.stderr
+    assert ["inspect", CONTAINER_ID, "--format", '{{join .HostConfig.GroupAdd ","}}'] in calls
     assert marker in proc.stdout
     if lane.startswith("b110-"):
         assert "ASSAY_B110_GATE_CONTAINER_EXIT=0" in proc.stdout

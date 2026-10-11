@@ -10724,6 +10724,8 @@ cross-repo-dependent, container-backed test to be in scope.
 
 **Status: OPEN — the separate full-source R0–R3 self-qualification lane is present, but neither attempted campaign completed; a verifier-accepted full result is required before M7 (operator agreement, 2026-09-25).**
 
+**Preflight gate finding (2026-10-11).** The registered `self-qualification-preflight` on `5d64e59c` passed the B105 cgroup reserve check but failed while inspecting Docker `GroupAdd`: the Go-template format contained backslash-escaped quotes and Docker rejected it. The wrapper now uses `{{join .HostConfig.GroupAdd ","}}`, and the launcher test pins that exact format. No preflight receipt or preflight campaign state was produced; the corrected live gate remains pending.
+
 **Release evidence:** At assay-v7.0.0, `assay/run-gate.toml` registered only
 the R0 `tester-unified` lane. The release controller record distinguishes
 the CIU lane's `INCONCLUSIVE/NO_MUTANTS`

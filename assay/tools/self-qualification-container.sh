@@ -631,7 +631,7 @@ if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]] \
   die 'B105 container is missing the declared background cgroup tier'
 fi
 container_groups="$(docker_bounded inspect "$container_id" \
-  --format '{{join .HostConfig.GroupAdd \",\"}}')" \
+  --format '{{join .HostConfig.GroupAdd ","}}')" \
   || die 'could not inspect B105 supplementary groups'
 [[ "$container_groups" == "$observer_gid" ]] \
   || die "B105 container supplementary groups differ from the observer socket group (groups=$container_groups expected=$observer_gid)"
