@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "f1beb8e2a"
+input_revision: "b1293e902"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-557
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-558
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -288,11 +288,15 @@ fix is committed in `80a8cf90d`. A subsequent selftest on `992cce229` passed
 pytest (1,874 passed, 2 skipped) but failed the changed-area judge at 980/1,067
 lines and 452/476 branches. RW-557 records the repair; commit `f1beb8e2a` adds
 behavioral tests for the uncovered timeout, EOF, abort, fallback, and
-inflight-cleanup paths. That repair checkpoint has not yet passed a registered
-selftest. After the metadata-freeze commit, the controller must obtain a green
-exact-tree selftest and the remaining short gates before this fresh Sol round.
-The reviewer independently reviews the exact HEAD supplied by the controller
-and the full integrated diff; round 1 does not authorize acceptance.
+inflight-cleanup paths. The next selftest on `0ca078342` ran pytest to 1,908
+passed, 2 skipped, but failed changed-area coverage on one stop-loop branch;
+the first fake-input fixture raced its helper thread. RW-558 records the
+deterministic event handshake committed at `b1293e902`. That repair has not
+yet passed a registered selftest. After the metadata-freeze commit, the
+controller must obtain a green exact-tree selftest and the remaining short
+gates before this fresh Sol round. The reviewer independently reviews the
+exact HEAD supplied by the controller and the full integrated diff; round 1
+does not authorize acceptance.
 
 The committed CP-19 addition provides origin-unit lifetime protection: inventory the
 full source cgroup subtree before initial and later moves; refuse a known
@@ -320,7 +324,8 @@ registered `r0-r1` coverage passed on evidence tree `db6d5b73`. The controller
 report records both. The rev-63 B3 repair, report, ruling, and probe fixture
 are committed at `aee194b7e`; the stdlib allowlist correction and RW-556 are
 committed at `80a8cf90d`; changed-area coverage tests and RW-557 are committed
-at `f1beb8e2a`. This packet's `input_revision` follows the two-step freeze
+at `f1beb8e2a`; the deterministic stop-loop oracle and RW-558 are committed
+at `b1293e902`. This packet's `input_revision` follows the two-step freeze
 and pins the latest code-fix commit. Cgroup-profiler unit/coverage/
 canary and local Nyxloom lint passed at `adcfc4958`; no Assay or
 cgroup-profiler files changed in the subsequent Run-Gate test-oracle repair.

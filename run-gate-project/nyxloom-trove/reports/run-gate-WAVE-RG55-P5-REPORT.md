@@ -15,9 +15,12 @@ records that failure and fix. The next selftest on `992cce229` passed all
 executable lines and 452/476 branches; RW-557 records the uncovered barrier
 cleanup/fallback paths. Commit `f1beb8e2a` adds behavioral oracles for those
 paths and removes three unreachable nonce rechecks. That repair has only
-passed `py_compile` and `git diff --check` so far; its registered selftest is
-still required. The refreshed-tree Run-Gate short matrix and fresh Sol review
-remain pending. Earlier
+passed a registered selftest's pytest phase but its coverage judge found one
+remaining branch at `run-gate.py:6124`: the test fixture raced the
+`StdinForwarder` thread before assigning its callback. RW-558 records that
+failure. Commit `b1293e902` synchronizes the test with explicit events; the
+registered selftest on that repair and the refreshed-tree Run-Gate short
+matrix and fresh Sol review remain pending. Earlier
 `db6d` selftest and cgroup-profiler coverage receipts remain historical, not
 exact-current-tree evidence. Exact-tree mutation/full gates remain release
 blockers.
@@ -25,10 +28,11 @@ blockers.
 ## Candidate identity and release boundary
 
 - Current code-repair checkpoint: rev 63, commit
-  `f1beb8e2a` (`test(run-gate): cover placement barrier failure paths`),
-  following the B3 implementation `aee194b7e` and stdlib-oracle fix
-  `80a8cf90d`. The metadata-freeze commit pins the Sol packet to `f1beb8e2a`;
-  the controller must then gate the exact frozen review tree.
+  `b1293e902` (`test(run-gate): synchronize forwarder shutdown oracle`),
+  following the changed-area test repair `f1beb8e2a`, B3 implementation
+  `aee194b7e`, and stdlib-oracle fix `80a8cf90d`. The metadata-freeze commit
+  pins the Sol packet to `b1293e902`; the controller must then gate the exact
+  frozen review tree.
 - Main/origin base at this checkpoint: `efaf112945233e3a8f6d53f2fef136439d18d089`.
 - Candidate: worktree `.worktrees/rg55-p5-transport-port-20261010`, branch
   `rg55-p5-transport-port-20261010`, HEAD
@@ -354,14 +358,22 @@ RW-557 binds the repair to behavioral oracles, not coverage exclusions. Commit
 pipe/process outcomes, and removes redundant nonce conditions whose false
 arms cannot occur after the wrapper process is created. `py_compile` and
 `git diff --check` pass on that repair checkpoint. No registered test has yet
-validated it; the next selftest must meet 100% changed executable lines and
+validated the entire repair. The next selftest on `0ca078342d5f9c2bb933c93cd05f895b75a790d2`
+ran in `run-gate-vbpub-selftest-984455-1791684549`, under
+`dev-gates.slice` at 3 CPUs and 1 GiB. Pytest passed 1,908 tests and skipped
+2 in 151.49s, but the diff judge found one missed stop-loop branch at line
+6124 (1,063/1,064 changed lines; 469/470 branches). A fixture-race warning
+occurred before the assertion could stop the forwarder; history separately
+records FAIL/exit 1 and 156.4s. RW-558 records the deterministic event
+handshake committed at `b1293e902`. That revision still needs a new metadata
+freeze and registered selftest; require 100% changed executable lines and
 branches before other Run-Gate short gates or Sol review proceed.
 
 ## Still required
 
-1. The committed metadata freeze pins the fresh Sol packet to code repair
-   `f1beb8e2a`; run Run-Gate `selftest`, `assay-r1`, `assay-r3`, and `doctor`
-   on that quiet frozen tree, and read each verdict separately.
+1. The next committed metadata freeze must pin the fresh Sol packet to code
+   repair `b1293e902`; run Run-Gate `selftest`, `assay-r1`, `assay-r3`, and
+   `doctor` on that quiet frozen tree, and read each verdict separately.
    cgroup-profiler unit/coverage/canary and project-local Nyxloom lint passed
    on `adcfc4958`; no Assay or cgroup-profiler files changed in the subsequent
    Run-Gate test-oracle repair commits.
