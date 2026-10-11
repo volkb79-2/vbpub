@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,11 @@ from assay.resource_limits import (
     ResourceLimitCounters,
     ResourceLimitEvidence,
     ResourceLimitObservationError,
+)
+
+
+_INSPECT_CURRENT_CGROUP_OBSERVATION = (
+    resource_limits.inspect_current_cgroup_observation
 )
 
 
@@ -320,6 +326,7 @@ def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
             self.daemon = daemon
             self.started = False
             self.join_timeout = None
+            self.alive_checks = 0
             workers.append(self)
 
         def start(self):
@@ -329,6 +336,7 @@ def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
             self.join_timeout = timeout
 
         def is_alive(self):
+            self.alive_checks += 1
             return self.started
 
     monkeypatch.setattr(
@@ -337,17 +345,30 @@ def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
     monkeypatch.setattr(
         resource_limits, "_RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS", 0.05
     )
-    monkeypatch.setattr(resource_limits.threading, "Thread", StuckWorker)
+    # The autouse conftest fixture makes ordinary tests independent of the
+    # host cgroup view by replacing this module attribute with an available
+    # result. Restore the production function for this capability test, and
+    # replace only its local Thread dependency so no process-wide thread class
+    # is changed while the suite runs.
+    monkeypatch.setattr(
+        resource_limits,
+        "inspect_current_cgroup_observation",
+        _INSPECT_CURRENT_CGROUP_OBSERVATION,
+    )
+    monkeypatch.setattr(
+        resource_limits, "threading", SimpleNamespace(Thread=StuckWorker)
+    )
     capability = resource_limits.inspect_current_cgroup_observation()
 
-    assert not capability.available
-    assert "did not complete before its deadline" in capability.reason
     assert len(workers) == 1
     assert workers[0].started
     assert workers[0].name == "assay-cgroup-observation-preflight"
     assert workers[0].daemon is True
     assert callable(workers[0].target)
     assert workers[0].join_timeout == pytest.approx(0.1)
+    assert workers[0].alive_checks == 1
+    assert not capability.available
+    assert "did not complete before its deadline" in capability.reason
 
 
 @pytest.mark.parametrize("contents", ["not-json\n", "{}\n\n"])

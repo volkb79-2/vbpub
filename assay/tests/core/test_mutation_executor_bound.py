@@ -1485,7 +1485,7 @@ def test_fatal_stops_submission_but_records_other_in_flight_results(
     names = _candidate_names(_TARGETS5)
     name_at = dict(enumerate(names))
     release = threading.Event()
-    fatal_started = threading.Event()
+    fatal_observed = threading.Event()
     state = {
         "lock": threading.Lock(),
         "outstanding": 0,
@@ -1506,12 +1506,22 @@ def test_fatal_stops_submission_but_records_other_in_flight_results(
         outcome=Outcome.ERROR,
         reason_code=ReasonCode.GIT_FAILED,
     )
+    real_wait = mutation_module.wait
+
+    def wait_until_fatal_is_observed(futures, *args, **kwargs):
+        done, pending = real_wait(futures, *args, **kwargs)
+        if any(future.exception() is fatal for future in done):
+            fatal_observed.set()
+        return done, pending
+
+    monkeypatch.setattr(
+        mutation_module, "wait", wait_until_fatal_is_observed
+    )
     real_execute_plan = runner_module.execute_plan
 
     def fail_position_one(plan, *, cwd, **kwargs):
         source = (cwd / "pkg/flags.py").read_text(encoding="utf-8")
         if f"{name_at[1]} = False" in source:
-            fatal_started.set()
             raise fatal
         return real_execute_plan(plan, cwd=cwd, **kwargs)
 
@@ -1536,8 +1546,10 @@ def test_fatal_stops_submission_but_records_other_in_flight_results(
             progress_events=progress_events,
             executor_factory=factory,
         )
-        assert fatal_started.wait(5), "position 1 did not reach the fatal path"
-        release.set()
+        try:
+            assert fatal_observed.wait(5), "the queue did not observe the fatal future"
+        finally:
+            release.set()
         with pytest.raises(AssayError) as caught:
             task.result(timeout=10)
     assert caught.value is fatal
