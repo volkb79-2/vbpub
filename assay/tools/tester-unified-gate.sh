@@ -23,6 +23,17 @@ set -euo pipefail
 
 die() { printf 'tester-unified-gate: %s\n' "$*" >&2; exit 1; }
 
+bounded_docker_update_cpu_cap() {
+  local container_name="$1" purpose="$2" status
+  if timeout --signal=TERM --kill-after=5s 30s \
+    docker update --cpus=3 "$container_name" >/dev/null; then
+    return 0
+  else
+    status=$?
+  fi
+  die "could not apply the $purpose CPU cap (bounded docker update exit $status)"
+}
+
 RESOURCE_OBSERVER_SOURCE="/run/cgprofile/resource-observer.sock"
 RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
 
@@ -898,13 +909,14 @@ run_registered_tester_container() {
     -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     --network=none \
+    --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     tester-unified:local \
     bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree")" \
     || die "could not start named tester-unified container"
-  docker update --cpus=3 "$_assay_gate_container_name" >/dev/null \
-    || die "could not apply the tester-unified container CPU cap"
+  bounded_docker_update_cpu_cap "$_assay_gate_container_name" \
+    'tester-unified container'
   if [[ -z "$container_id" ]]; then
     [[ ! -s "$_assay_gate_container_ownership_file" ]] || _assay_gate_launch_evidence_ambiguous=1
     die 'docker run returned an empty container ID'
@@ -1064,8 +1076,8 @@ run_b145_bounded_wait_acceptance_probe() {
       cleanup_b145_probe_container || true
       die "could not start the B145 bounded-wait probe container (docker run exit $launch_rc)"
     }
-  docker update --cpus=3 "$_assay_b145_probe_container_name" >/dev/null \
-    || die 'could not apply the B145 bounded-wait probe CPU cap'
+  bounded_docker_update_cpu_cap "$_assay_b145_probe_container_name" \
+    'B145 bounded-wait probe'
   _assay_b145_probe_container_id="$container_id"
   if [[ ! "$container_id" =~ ^[0-9a-f]{64}$ || ! -f "$_assay_b145_probe_cidfile" ]]; then
     _assay_b145_probe_evidence_ambiguous=1
@@ -1146,8 +1158,8 @@ run_b145_low_pids_probe() {
       cleanup_b145_probe_container || true
       die "could not start the B145 low-pids acceptance container (docker run exit $launch_rc)"
     }
-  docker update --cpus=3 "$_assay_b145_probe_container_name" >/dev/null \
-    || die 'could not apply the B145 low-pids probe CPU cap'
+  bounded_docker_update_cpu_cap "$_assay_b145_probe_container_name" \
+    'B145 low-pids probe'
   _assay_b145_probe_container_id="$container_id"
   if [[ ! "$container_id" =~ ^[0-9a-f]{64}$ || ! -f "$_assay_b145_probe_cidfile" ]]; then
     _assay_b145_probe_evidence_ambiguous=1
@@ -1353,8 +1365,8 @@ cat "$scratch/expected.marker"
       "$worktree" "$_assay_sql_scratch" "$commit" "$cgroup" \
       "$_assay_sql_container_name" "$_assay_sql_runner_container_name" "$shared" \
       "$_assay_sql_ownership_token" 2>"$runner_launch_stderr")"; then
-    docker update --cpus=3 "$_assay_sql_runner_container_name" >/dev/null \
-      || die 'could not apply the SQL qualification runner CPU cap'
+    bounded_docker_update_cpu_cap "$_assay_sql_runner_container_name" \
+      'SQL qualification runner'
     cat "$runner_launch_stderr" >&2
   else
     runner_launch_status=$?

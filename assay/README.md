@@ -239,9 +239,13 @@ assay exists to close that gap mechanically, not by policy:
   an early stop prevents a full command from starting, the candidate stays
   `budget_exceeded` and gets a shared zero-duration sample at sweep close;
   replacement materialization or a saved-witness replay may already have run,
-  and that sample does not describe that earlier work. A positive delta during
-  a full command records the candidate as `crashed`; a positive replay delta
-  stops the lane with payload-free `ERROR/EXEC_FAILED`. Assay requires
+  and that sample does not describe that earlier work. A positive candidate-leaf
+  delta, with every positive visible-ancestor delta matching it, records that
+  candidate as `crashed` and makes R2 `ERROR/EXEC_FAILED`. An unmatched or
+  different ancestor delta cannot be attributed to the candidate, so Assay
+  withholds mutation outcomes and fails with the same infrastructure error.
+  A positive replay delta stops the lane with payload-free `ERROR/EXEC_FAILED`.
+  Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
   `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
   controls refuse the run. If a private cgroup namespace hides ancestors,
@@ -1348,12 +1352,14 @@ you're changing assay itself:
   kernel hostname identifies the inspected cockpit container, and checks its
   mount and PID namespaces through `docker exec` before trusting its `CgroupParent`.
   The MDT host-side initialize command verifies the interactive, background,
-  and gates slices before creating the cockpit. A tightly capped bootstrap
-  probe queries the host system bus from this already-used parent,
-  then verifies both units before any container uses the gates slice and checks
-  for 2 GiB of point-in-time RAM headroom. It attaches the cgroup probe and
-  detached `tester-unified` runner to the gates slice, sets explicit CPU/memory
-  bounds, mounts the whole
+  and gates slices before creating the cockpit. A capped bootstrap query runs
+  under the verified interactive tier; through the host system bus it verifies
+  both units and reads the gates slice's configured limit and current usage.
+  It requires 2 GiB of point-in-time RAM headroom. Only the detached
+  `tester-unified` runner is placed under the gates slice. The runner
+  keeps Docker's private cgroup namespace, uses `--init`, sets explicit
+  CPU/memory bounds, and receives only the read-only resource-observer socket
+  needed for hidden ancestors. It mounts the whole
   workspace root at both its physical host path and `/workspaces/vbpub` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and

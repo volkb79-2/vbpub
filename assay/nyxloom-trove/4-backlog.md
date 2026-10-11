@@ -10724,6 +10724,8 @@ cross-repo-dependent, container-backed test to be in scope.
 
 **Status: OPEN — the separate full-source R0–R3 self-qualification lane is present, but neither attempted campaign completed; a verifier-accepted full result is required before M7 (operator agreement, 2026-09-25).**
 
+**Preflight gate finding (2026-10-11).** The registered `self-qualification-preflight` on `5d64e59c` passed the B105 cgroup reserve check but failed while inspecting Docker `GroupAdd`: the Go-template format contained backslash-escaped quotes and Docker rejected it. The wrapper now uses `{{join .HostConfig.GroupAdd ","}}`, and the launcher test pins that exact format. No preflight receipt or preflight campaign state was produced; the corrected live gate remains pending.
+
 **Release evidence:** At assay-v7.0.0, `assay/run-gate.toml` registered only
 the R0 `tester-unified` lane. The release controller record distinguishes
 the CIU lane's `INCONCLUSIVE/NO_MUTANTS`
@@ -11641,6 +11643,7 @@ inventories refuse.
 - [x] Round-32 Sol xhigh findings: after final Git checks, repeat snapshot digest/deadline validation and receipt/path checks; after the archive snapshot sweep, rehash and revalidate the receipt, attestation, and archived transcript. Six targeted race tests pass; the full focused suite passes 268 tests in 213.92s.
 - [x] Fresh independent Sol xhigh review accepts the complete exact diff, including untracked files (round 33; `/tmp/assay-b118-round33-review.md`; HEAD and status unchanged).
 - [x] Registered `tester-unified` passed first at the committed P7c tip `68f8a477b761fe650fdae6268cbe77e46ae148a0` (receipt tree `14d9211c804c5e84d4414fbecd49b019f05b407e`). It later passed on the integrated B131/B110 tree at `b8713d56`, covering the round-34/38 checker repairs. Logs: P7c `/tmp/run-gate/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`; integrated `/tmp/run-gate/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`.
+- [ ] Exact B105 preflight at `d4ea3ab3` exposed that the selector integration test recursively planned `self-qualification` from the lane's shallow P22 snapshot. P22 correctly refused the nested source because `.git/shallow` changes reachable history. The test now builds its real CLI plan from a separate one-commit fixture repository; exact-tip registered gate evidence is pending.
 - [ ] B105 preflight and both bounded pilots remain pending. On 2026-10-10, registered pilot attempts on `77805722` refused before child launch: B105 had 1,048,875,008 bytes and analysis R2 had 1,048,760,320 bytes of `dev-gates.slice` headroom, each below the 2,147,483,648-byte requirement. Logs: `/tmp/run-gate/lanes/b110-pilot/cfdd415cf5e1c02ebd713156ea6ce6b3.log` and `/tmp/run-gate/lanes/analysis-r2-pilot/310f3c22808e3521ee1696c3c0a9bddf.log`. No campaign started and no pilot measurement exists.
 
 ## B119 — B110 P9: distributed/async mutation evidence
@@ -11846,6 +11849,8 @@ The pinned `hazard-cases.json` runs cases with a generated site or historical co
 **Review 21 follow-up.** A `SET SCHEMA` name is not proof that a path entry exists or grants the current role `USAGE`; rolled-back schema DDL must restore the earlier facts; and a schema with revoked `USAGE` can be skipped before `pg_temp`. The collector now tracks schema creation, rename, drop, transaction commit/rollback, usage revocations, owner and role changes conservatively. `CREATE SCHEMA IF NOT EXISTS` and `SET SCHEMA` do not establish usability. Unit oracles cover both rollback directions and role/privilege changes; PostgreSQL hazards cover missing `SET SCHEMA`, rollback rename and drop, and a non-superuser role with revoked `USAGE`. Focused SQL and fixture tests passed (444 tests), Ruff and `git diff --check` passed. A fresh exact-diff review and registered gate remain pending.
 
 **Review 22–25 follow-up.** `SET SCHEMA` fixtures now use PostgreSQL's string-literal grammar, and a rollback `DROP SCHEMA` case uses `CASCADE` when a dependent table exists. Schema facts are visible to later statements in a transaction and restored on rollback; `SET LOCAL ROLE` expires at transaction end and the session role is restored. `REVOKE USAGE FROM PUBLIC` preserves the creator's direct privilege, and `REVOKE GRANT OPTION FOR USAGE` does not erase ordinary `USAGE`. Named-role revocation remains conservative when source cannot establish whether the grantee is the current schema owner. Unit tests and pinned hazards cover these branches; privilege hazards execute as dedicated non-superuser owners and their assertions distinguish baseline from widened behavior. The 70-case fixture hash is pinned in both loader and tests; 534 focused tests pass, Ruff and `git diff --check` pass, and Sol xhigh review 25 found no findings. A fresh exact-tip registered PostgreSQL gate remains pending.
+
+**Registered gate finding (2026-10-11).** The exact-tree run at `36e5abfb` passed Python, analysis, self-hosting and lint, then failed the revoked-schema hazard baseline because its assertion used a session-local type from a later psql connection. Moving its baseline insert into source/apply made that case pass with the expected `probe=crashed`, SQLSTATE `22P02` on rerun at `90f2e3ab`; the same run exposed an invalid baseline in `set-local-role-commit-restores-session-owner`, also reading a session-local type from the later test connection. That insert now runs in source/apply too; its test stage is cleanup-only. The pinned fixture hash is refreshed. Sol xhigh found no issue in the first repair; the second repair review and exact-tip registered gate remain pending.
 
 **W5 matrix scope (A-480; CD22).** The original 24-row schema did not exercise these constructs. Separate focused cases in `hazard-cases.json` now cover `NOT NULL` on `IDENTITY`, `serial`, and primary-key columns; enum string widening; generated expressions; `EVENT` triggers; quoted foreign-key targets; triggers created inside a `DO` block; `ADD COLUMN IF NOT EXISTS` serial columns; array widening refusal for `[]` and `ARRAY` declarations; temporary-table and temporary-view type shadowing, plus temporary-table relation shadowing through `CREATE TEMP`, `SELECT INTO TEMP`, `SELECT INTO pg_temp`, and `CREATE TABLE pg_temp`; and stale types after table rename or schema move.
 
@@ -12208,3 +12213,70 @@ GNU `timeout` rejected the compound duration strings `2h20m`, `7h30m`, and `7h10
 `collect_mutation_sites` promises a supported empty tuple when there are no targets, but it prepared adapter-wide context first. For SQL, malformed unrelated context could therefore raise even though no candidate would be analyzed. After validating the operator policy, return the empty tuple before preparing context or consuming `context_sources`.
 
 **Oracle:** `test_no_targets_do_not_scan_context_sources` passes malformed SQL as context and asserts the supported empty tuple.
+
+## B151 — SQL discovery must honor the lane deadline during planning and lexing
+
+**Status: IN PROGRESS (review finding from the 2026-10-11 B132–B134 integration review; implementation and regressions added, pending final review and registered gate).**
+
+`assay plan` creates a `LaneDeadline`, but did not pass its `remaining` callback
+to `collect_mutation_sites`. SQL therefore selected the unbounded cross-file
+context preparer. After context preparation was bounded, SQL still generated
+each target's mutation sites without the callback and re-lexed the target in
+several context helpers. That work could continue after the lane budget
+expired, then return a plan successfully.
+
+**Chosen contract:** planning passes its own lane deadline into mutation-site
+collection. SQL lexes each context source and target once with the same
+callback, reuses the dollar-body ranges through its context helpers, checks the
+callback during long byte scans, balanced-parenthesis walks, and list splits,
+and propagates expiry as the lane timeout before returning any plan. Context
+metadata, temporary relation and ALTER TABLE scans, and search-path parsing
+must carry the callback through their subordinate readers, including
+`_read_search_path_schemas` and transaction-keyword reads. Target source pairs
+already present in the context inventory are de-duplicated; their exact mask
+and dollar-body ranges are retained for site generation only when identity and
+bytes agree through SQL's explicit target-aware preparer hook, leaving the
+existing source-aware preparer signatures untouched for other adapters. The
+trigger and delete-action scanners also check the deadline
+before computing line positions. Plan-row identity hashing, reuse
+classification, and serialization check the same deadline before the plan is
+reported. Shard candidate hashing also checks the deadline between candidate
+identities; unsharded selection returns the jobs without hashing them. An
+expired deadline in the cgroup visibility preflight is delivered through the
+reserved-verdict path. The no-target path also checks an expired deadline
+before returning the supported empty result.
+
+**Oracles:** `test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery`
+asserts the preparer and target generator receive the actual `LaneDeadline`
+callback and that expiry inside an unmatched large `CHECK` raises
+`LANE_TIMEOUT`; the target-lex oracle counts one lex of a source present in
+both target and context inventory; plan-row identity work has an expiry
+oracle, as does shard identity work; unsharded selection skips those hashes.
+The cgroup-preflight timeout regression verifies its reserved verdict.
+Bounded-context tests cover expiry in table metadata, UNIQUE and
+FOREIGN KEY parenthesis scans, NOT NULL action splitting, widened `IN`-list
+splitting, search-path identifiers, and transaction keywords. The no-target
+oracle proves an expired deadline is checked without parsing malformed
+context.
+`test_bounded_sql_context_reuses_lexed_ranges_for_statement_events` proves the
+role and transaction scanners reuse the bounded lex result. Large comment and
+dollar-tag lexer fixtures exercise bounded scanning. The exact-tip registered
+`tester-unified` gate is required for acceptance.
+
+## B152 — the registered tester gate must mount both repository namespaces
+
+**Status: IN PROGRESS (review finding from the 2026-10-11 B132–B134 integration review).**
+
+`run_registered_tester_container` mounted the physical host repository only at
+`/workspaces/vbpub`. A valid worktree created from the host namespace can have
+a `.git` file that points to the physical path; the tester container then
+cannot resolve that gitdir. The bounded-wait and low-pids probe containers
+already mount both paths.
+
+**Chosen contract:** the registered tester container binds the same host
+repository at both its physical host path and `/workspaces/vbpub`, preserving
+gitfile paths from either namespace.
+
+**Oracle:** the distribution-gate regression asserts both bind destinations;
+the registered exact-tip `tester-unified` run accepts the Docker argv and
+continues through the self-hosted and SQL phases.

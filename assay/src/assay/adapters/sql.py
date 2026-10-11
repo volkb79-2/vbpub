@@ -124,7 +124,12 @@ def _is_word_byte(b: int) -> bool:
     return b == 0x5F or 0x30 <= b <= 0x39 or 0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A
 
 
-def _find_matching_close_paren(masked: bytes, open_index: int) -> int | None:
+def _find_matching_close_paren(
+    masked: bytes,
+    open_index: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
     """``masked[open_index] == '('``. Returns the index of its matching
     ``)`` (nested parens counted), or ``None`` if the source runs out first
     -- a malformed/unbalanced construct a scanner simply skips (an honest
@@ -134,7 +139,13 @@ def _find_matching_close_paren(masked: bytes, open_index: int) -> int | None:
     depth = 1
     i = open_index + 1
     n = len(masked)
+    next_deadline_check = i + 4096
+    if check_deadline is not None:
+        check_deadline()
     while i < n:
+        if check_deadline is not None and i >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = i + 4096
         b = masked[i]
         if b == _OPEN_PAREN:
             depth += 1
@@ -192,7 +203,11 @@ def _inside_any(spans: tuple[tuple[int, int], ...] | list[tuple[int, int]], pos:
     return any(start <= pos < end for start, end in spans)
 
 
-def _split_top_level(region: bytes) -> list[tuple[int, int]]:
+def _split_top_level(
+    region: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> list[tuple[int, int]]:
     """Byte ranges (relative to *region*) of each comma-separated member at
     PAREN DEPTH ZERO within *region* -- a comma inside a nested call's own
     parens is never treated as a list separator. *region* is expected to be
@@ -202,7 +217,13 @@ def _split_top_level(region: bytes) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     depth = 0
     start = 0
+    next_deadline_check = 4096
+    if check_deadline is not None:
+        check_deadline()
     for i, b in enumerate(region):
+        if check_deadline is not None and i >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = i + 4096
         if b == _OPEN_PAREN:
             depth += 1
         elif b == _CLOSE_PAREN:
@@ -307,6 +328,9 @@ class _SqlMutationContext(NamedTuple):
     dropped_tables: frozenset[tuple[bytes | None, bytes]]
     temporary_relation_names: frozenset[bytes]
     relocated_tables: frozenset[tuple[bytes | None, bytes]]
+    lexed_target_sources: tuple[
+        tuple[str, str, bytes, tuple[tuple[int, int], ...]], ...
+    ]
 
 
 # --- shared regex fragments ---------------------------------------------------
@@ -376,7 +400,20 @@ _CREATE_TEMP_VIEW_RE = re.compile(
 )
 _FROM_OR_JOIN_RE = re.compile(rb"\b(?:FROM|JOIN)\b", re.IGNORECASE)
 _FROM_CLAUSE_END_KEYWORDS = frozenset(
-    {b"where", b"group", b"order", b"having", b"limit", b"offset", b"fetch", b"union", b"intersect", b"except", b"window"}
+    {
+        b"join",
+        b"where",
+        b"group",
+        b"order",
+        b"having",
+        b"limit",
+        b"offset",
+        b"fetch",
+        b"union",
+        b"intersect",
+        b"except",
+        b"window",
+    }
 )
 _CREATE_TABLE_DEFINITION_RE = re.compile(
     rb"\bCREATE\s+(?:(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+|UNLOGGED\s+)?TABLE\b",
@@ -475,7 +512,12 @@ _DECLARE_RE = re.compile(rb"\bDECLARE\b", re.IGNORECASE)
 _BEGIN_RE = re.compile(rb"\bBEGIN\b", re.IGNORECASE)
 
 
-def _extend_references_clause(masked: bytes, start: int) -> int | None:
+def _extend_references_clause(
+    masked: bytes,
+    start: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
     """*start* indexes the ``R`` of ``REFERENCES``. Returns the end offset
     of the whole clause: the target (optionally schema-qualified) table
     name, an optional parenthesized column list, and any trailing
@@ -487,6 +529,8 @@ def _extend_references_clause(masked: bytes, start: int) -> int | None:
         return None
     end = target.end()
     while True:
+        if check_deadline is not None:
+            check_deadline()
         action = _ON_ACTION_RE.match(masked, end)
         if action is not None:
             end = action.end()
@@ -500,11 +544,20 @@ def _extend_references_clause(masked: bytes, start: int) -> int | None:
 # --- sql:drop-check ------------------------------------------------------
 
 
-def _scan_drop_check(source: bytes, masked: bytes) -> "list[_Site]":
+def _scan_drop_check(
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> "list[_Site]":
     sites = []
     for m in _CHECK_OPEN_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         open_paren = m.end() - 1
-        close = _find_matching_close_paren(masked, open_paren)
+        close = _find_matching_close_paren(
+            masked, open_paren, check_deadline=check_deadline
+        )
         if close is None:
             continue
         sites.append(
@@ -523,7 +576,12 @@ def _scan_drop_check(source: bytes, masked: bytes) -> "list[_Site]":
 # --- sql:drop-unique -------------------------------------------------------
 
 
-def _unique_constraint_end(masked: bytes, keyword_end: int) -> int | None:
+def _unique_constraint_end(
+    masked: bytes,
+    keyword_end: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
     """Return the full UNIQUE constraint span end, including its index and
     deferrability options, or ``None`` for an unbalanced option list."""
     cursor = keyword_end
@@ -536,7 +594,9 @@ def _unique_constraint_end(masked: bytes, keyword_end: int) -> int | None:
     while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
         cursor += 1
     if cursor < len(masked) and masked[cursor] == _OPEN_PAREN:
-        close = _find_matching_close_paren(masked, cursor)
+        close = _find_matching_close_paren(
+            masked, cursor, check_deadline=check_deadline
+        )
         if close is None:
             return None
         cursor = close + 1
@@ -565,7 +625,9 @@ def _unique_constraint_end(masked: bytes, keyword_end: int) -> int | None:
                 cursor += 1
             if cursor >= len(masked) or masked[cursor] != _OPEN_PAREN:
                 return None
-            close = _find_matching_close_paren(masked, cursor)
+            close = _find_matching_close_paren(
+                masked, cursor, check_deadline=check_deadline
+            )
             if close is None:
                 return None
             cursor = close + 1
@@ -578,7 +640,9 @@ def _unique_constraint_end(masked: bytes, keyword_end: int) -> int | None:
                 cursor += 1
             if cursor >= len(masked) or masked[cursor] != _OPEN_PAREN:
                 return None
-            close = _find_matching_close_paren(masked, cursor)
+            close = _find_matching_close_paren(
+                masked, cursor, check_deadline=check_deadline
+            )
             if close is None:
                 return None
             cursor = close + 1
@@ -596,19 +660,52 @@ def _normalize_sql_identifier(token: bytes) -> bytes:
     return token.lower()
 
 
-def _skip_sql_trivia(source: bytes, pos: int) -> int | None:
+def _skip_sql_trivia(
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
     """Advance past SQL whitespace, line comments and nested block comments."""
+    next_deadline_check = pos
+    if check_deadline is not None:
+        check_deadline()
+        next_deadline_check = pos + 4096
+
     while pos < len(source):
+        if check_deadline is not None and pos >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = pos + 4096
         if source[pos] in b" \t\r\n\f\v":
             pos += 1
             continue
         if source.startswith(b"--", pos):
-            newline = source.find(b"\n", pos + 2)
-            return len(source) if newline < 0 else _skip_sql_trivia(source, newline + 1)
+            if check_deadline is None:
+                newline = source.find(b"\n", pos + 2)
+                if newline < 0:
+                    return len(source)
+                pos = newline + 1
+                continue
+            cursor = pos + 2
+            while cursor < len(source) and source[cursor] != ord("\n"):
+                if cursor >= next_deadline_check:
+                    check_deadline()
+                    next_deadline_check = cursor + 4096
+                cursor += 1
+            if cursor >= len(source):
+                return len(source)
+            pos = cursor + 1
+            continue
         if source.startswith(b"/*", pos):
             depth = 1
             cursor = pos + 2
             while cursor < len(source) and depth:
+                if (
+                    check_deadline is not None
+                    and cursor >= next_deadline_check
+                ):
+                    check_deadline()
+                    next_deadline_check = cursor + 4096
                 if source.startswith(b"/*", cursor):
                     depth += 1
                     cursor += 2
@@ -625,14 +722,23 @@ def _skip_sql_trivia(source: bytes, pos: int) -> int | None:
     return pos
 
 
-def _read_sql_identifier(source: bytes, pos: int) -> tuple[bytes, int] | None:
+def _read_sql_identifier(
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> tuple[bytes, int] | None:
     """Read one ASCII or double-quoted SQL identifier after trivia."""
-    pos = _skip_sql_trivia(source, pos)
+    pos = _skip_sql_trivia(source, pos, check_deadline=check_deadline)
     if pos is None or pos >= len(source):
         return None
     if source[pos] == ord('"'):
         cursor = pos + 1
+        next_deadline_check = cursor + 4096
         while cursor < len(source):
+            if check_deadline is not None and cursor >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = cursor + 4096
             if source[cursor] == ord('"'):
                 if cursor + 1 < len(source) and source[cursor + 1] == ord('"'):
                     cursor += 2
@@ -640,20 +746,54 @@ def _read_sql_identifier(source: bytes, pos: int) -> tuple[bytes, int] | None:
                 return source[pos : cursor + 1], cursor + 1
             cursor += 1
         return None
+    if check_deadline is not None:
+        first = source[pos]
+        if not (
+            first == ord("_")
+            or ord("A") <= first <= ord("Z")
+            or ord("a") <= first <= ord("z")
+        ):
+            return None
+        cursor = pos + 1
+        next_deadline_check = cursor + 4096
+        while cursor < len(source):
+            if cursor >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = cursor + 4096
+            byte = source[cursor]
+            if not (
+                byte == ord("_")
+                or byte == ord("$")
+                or ord("0") <= byte <= ord("9")
+                or ord("A") <= byte <= ord("Z")
+                or ord("a") <= byte <= ord("z")
+            ):
+                break
+            cursor += 1
+        return source[pos:cursor], cursor
     match = re.match(rb"[A-Za-z_][A-Za-z0-9_$]*", source[pos:])
     if match is None:
         return None
     return match.group(0), pos + match.end()
 
 
-def _read_sql_single_quoted_string(source: bytes, pos: int) -> tuple[bytes, int] | None:
+def _read_sql_single_quoted_string(
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> tuple[bytes, int] | None:
     """Read a standard SQL single-quoted string, decoding doubled quotes."""
-    pos = _skip_sql_trivia(source, pos)
+    pos = _skip_sql_trivia(source, pos, check_deadline=check_deadline)
     if pos is None or pos >= len(source) or source[pos] != ord("'"):
         return None
     value = bytearray()
     cursor = pos + 1
+    next_deadline_check = cursor + 4096
     while cursor < len(source):
+        if check_deadline is not None and cursor >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = cursor + 4096
         byte = source[cursor]
         if byte == ord("'"):
             if cursor + 1 < len(source) and source[cursor + 1] == ord("'"):
@@ -667,14 +807,24 @@ def _read_sql_single_quoted_string(source: bytes, pos: int) -> tuple[bytes, int]
 
 
 def _set_schema_value(
-    source: bytes, masked: bytes, value_start: int | None
+    source: bytes,
+    masked: bytes,
+    value_start: int | None,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bool, bytes | None]:
     """Return whether an offset is a SET SCHEMA value and its static name."""
+    if check_deadline is not None:
+        check_deadline()
     if value_start is None or re.search(
         rb"\bSCHEMA\s*$", masked[:value_start], re.IGNORECASE
     ) is None:
         return False, None
-    string_value = _read_sql_single_quoted_string(source, value_start)
+    if check_deadline is not None:
+        check_deadline()
+    string_value = _read_sql_single_quoted_string(
+        source, value_start, check_deadline=check_deadline
+    )
     if string_value is None:
         # PostgreSQL's SET SCHEMA grammar takes a string literal. A bare
         # identifier is not a schema name; leave malformed or unsupported
@@ -684,14 +834,20 @@ def _set_schema_value(
     statement_end = masked.find(b";", value_end)
     if statement_end < 0:
         statement_end = len(masked)
-    trailing = _skip_sql_trivia(source, value_end)
+    trailing = _skip_sql_trivia(
+        source, value_end, check_deadline=check_deadline
+    )
     if trailing is None or trailing < statement_end:
         return True, None
     return True, name
 
 
 def _read_search_path_schemas(
-    source: bytes, masked: bytes, value_start: int | None
+    source: bytes,
+    masked: bytes,
+    value_start: int | None,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes, ...] | None:
     """Read a static comma-separated search_path value.
 
@@ -707,17 +863,21 @@ def _read_search_path_schemas(
     cursor = value_start
     schemas: list[bytes] = []
     while True:
-        cursor = _skip_sql_trivia(source, cursor)
+        cursor = _skip_sql_trivia(source, cursor, check_deadline=check_deadline)
         if cursor is None or cursor >= statement_end:
             break
         if source[cursor : cursor + 5].lower() == b"$user":
             item = (b"$user", cursor + 5)
         else:
-            item = _read_sql_identifier(source, cursor)
+            item = _read_sql_identifier(
+                source, cursor, check_deadline=check_deadline
+            )
         if item is None:
             return None
         schemas.append(_normalize_sql_identifier(item[0]))
-        cursor = _skip_sql_trivia(source, item[1])
+        cursor = _skip_sql_trivia(
+            source, item[1], check_deadline=check_deadline
+        )
         if cursor is None or cursor >= statement_end:
             break
         if masked[cursor : cursor + 1] != b",":
@@ -892,16 +1052,37 @@ def _schemas_with_revoked_usage_by_statement(
 
 
 def _role_context_change_events(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, str, bytes | None], ...]:
     """Find session-scoped and transaction-local role identity changes."""
     events: list[tuple[int, str, bytes | None]] = []
-    for start, end in _sql_statement_ranges(source, masked):
-        first = _next_sql_keyword(source, masked, start)
+    for start, end in _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    ):
+        if check_deadline is not None:
+            check_deadline()
+        first = _next_sql_keyword(
+            source, masked, start, check_deadline=check_deadline
+        )
         if first is None or first[1] > end:
             continue
         if first[0] == b"RESET":
-            words = tuple(_iter_sql_keywords(source, masked, first[1], end))
+            words = tuple(
+                _iter_sql_keywords(
+                    source,
+                    masked,
+                    first[1],
+                    end,
+                    check_deadline=check_deadline,
+                )
+            )
             if words and (
                 words[0][0] == b"ROLE"
                 or (
@@ -914,7 +1095,15 @@ def _role_context_change_events(
             continue
         if first[0] != b"SET":
             continue
-        words = tuple(_iter_sql_keywords(source, masked, first[1], end))
+        words = tuple(
+            _iter_sql_keywords(
+                source,
+                masked,
+                first[1],
+                end,
+                check_deadline=check_deadline,
+            )
+        )
         if not words:
             continue
         scope = "session"
@@ -938,7 +1127,9 @@ def _role_context_change_events(
             role_keyword = command[1]
         else:
             continue
-        role = _read_sql_identifier(source, role_keyword[1])
+        role = _read_sql_identifier(
+            source, role_keyword[1], check_deadline=check_deadline
+        )
         role_name = None if role is None else _normalize_sql_identifier(role[0])
         if role_name in {b"none", b"default", b"current_user", b"current_role", b"session_user"}:
             role_name = None
@@ -946,11 +1137,26 @@ def _role_context_change_events(
     return tuple(events)
 
 
-def _role_membership_change_offsets(source: bytes, masked: bytes) -> tuple[int, ...]:
+def _role_membership_change_offsets(
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
+) -> tuple[int, ...]:
     """Find role membership changes that can alter inherited schema USAGE."""
     offsets: list[int] = []
-    for start, end in _sql_statement_ranges(source, masked):
-        first = _next_sql_keyword(source, masked, start)
+    for start, end in _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    ):
+        if check_deadline is not None:
+            check_deadline()
+        first = _next_sql_keyword(
+            source, masked, start, check_deadline=check_deadline
+        )
         if first is None or first[1] > end:
             continue
         keyword = first[0]
@@ -959,18 +1165,33 @@ def _role_membership_change_offsets(source: bytes, masked: bytes) -> tuple[int, 
             # handled separately; either can change inherited schema USAGE.
             if not any(
                 candidate[0] == b"ON"
-                for candidate in _iter_sql_keywords(source, masked, first[1], end)
+                for candidate in _iter_sql_keywords(
+                    source,
+                    masked,
+                    first[1],
+                    end,
+                    check_deadline=check_deadline,
+                )
             ):
                 offsets.append(start)
     return tuple(offsets)
 
 
 def _iter_sql_keywords(
-    source: bytes, masked: bytes, start: int, end: int
+    source: bytes,
+    masked: bytes,
+    start: int,
+    end: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> Iterator[tuple[bytes, int]]:
     cursor = start
     while True:
-        keyword = _next_sql_keyword(source, masked, cursor)
+        if check_deadline is not None:
+            check_deadline()
+        keyword = _next_sql_keyword(
+            source, masked, cursor, check_deadline=check_deadline
+        )
         if keyword is None or keyword[1] > end:
             return
         yield keyword
@@ -978,16 +1199,31 @@ def _iter_sql_keywords(
 
 
 def _transaction_control_events(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, str], ...]:
     """Return transaction boundaries relevant to source-known schema facts."""
     events: list[tuple[int, str]] = []
-    for start, end in _sql_statement_ranges(source, masked):
-        first = _next_sql_keyword(source, masked, start)
+    for start, end in _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    ):
+        if check_deadline is not None:
+            check_deadline()
+        first = _next_sql_keyword(
+            source, masked, start, check_deadline=check_deadline
+        )
         if first is None or first[1] > end:
             continue
         keyword = first[0]
-        second = _next_sql_keyword(source, masked, first[1])
+        second = _next_sql_keyword(
+            source, masked, first[1], check_deadline=check_deadline
+        )
         if keyword == b"BEGIN" or (
             keyword == b"START" and second is not None and second[0] == b"TRANSACTION"
         ):
@@ -1003,17 +1239,23 @@ def _transaction_control_events(
             continue
         suffix = second
         if suffix is not None and suffix[0] in {b"WORK", b"TRANSACTION"}:
-            suffix = _next_sql_keyword(source, masked, suffix[1])
+            suffix = _next_sql_keyword(
+                source, masked, suffix[1], check_deadline=check_deadline
+            )
         if keyword == b"ROLLBACK" and suffix is not None and suffix[0] == b"TO":
             events.append((start, "uncertain-transaction"))
             continue
         chained = False
         if suffix is not None and suffix[0] == b"AND":
-            chain = _next_sql_keyword(source, masked, suffix[1])
+            chain = _next_sql_keyword(
+                source, masked, suffix[1], check_deadline=check_deadline
+            )
             no_chain = False
             if chain is not None and chain[0] == b"NO":
                 no_chain = True
-                chain = _next_sql_keyword(source, masked, chain[1])
+                chain = _next_sql_keyword(
+                    source, masked, chain[1], check_deadline=check_deadline
+                )
             chained = chain is not None and chain[0] == b"CHAIN" and not no_chain
         prefix = "rollback" if keyword in {b"ABORT", b"ROLLBACK"} else "commit"
         events.append((start, f"{prefix}-chain" if chained else prefix))
@@ -1021,17 +1263,24 @@ def _transaction_control_events(
 
 
 def _read_qualified_sql_identifier_details(
-    source: bytes, pos: int
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes, int] | None:
-    first = _read_sql_identifier(source, pos)
+    first = _read_sql_identifier(source, pos, check_deadline=check_deadline)
     if first is None:
         return None
     first_token, cursor = first
-    after_first = _skip_sql_trivia(source, cursor)
+    after_first = _skip_sql_trivia(
+        source, cursor, check_deadline=check_deadline
+    )
     if after_first is None:
         return None
     if after_first < len(source) and source[after_first] == ord('.'):
-        second = _read_sql_identifier(source, after_first + 1)
+        second = _read_sql_identifier(
+            source, after_first + 1, check_deadline=check_deadline
+        )
         if second is None:
             return None
         second_token, second_end = second
@@ -1044,67 +1293,101 @@ def _read_qualified_sql_identifier_details(
 
 
 def _read_create_index_name_details(
-    source: bytes, pos: int
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes | None, int] | None:
     """Read a CREATE INDEX name and its end, including optional modifiers."""
     name_pos = pos
-    word = _read_sql_identifier(source, pos)
+    word = _read_sql_identifier(source, pos, check_deadline=check_deadline)
     if word is None:
         return None
     raw_word, cursor = word
     if not raw_word.startswith(b'"') and raw_word.upper() == b"CONCURRENTLY":
         name_pos = cursor
-        word = _read_sql_identifier(source, cursor)
+        word = _read_sql_identifier(source, cursor, check_deadline=check_deadline)
         if word is None:
             return None
         raw_word, cursor = word
     if not raw_word.startswith(b'"') and raw_word.upper() == b"IF":
-        not_word = _read_sql_identifier(source, cursor)
+        not_word = _read_sql_identifier(
+            source, cursor, check_deadline=check_deadline
+        )
         if not_word is None or not_word[0].upper() != b"NOT":
             return None
-        exists_word = _read_sql_identifier(source, not_word[1])
+        exists_word = _read_sql_identifier(
+            source, not_word[1], check_deadline=check_deadline
+        )
         if exists_word is None or exists_word[0].upper() != b"EXISTS":
             return None
         cursor = exists_word[1]
         name_pos = cursor
-    name = _read_sql_identifier(source, name_pos)
+    name = _read_sql_identifier(source, name_pos, check_deadline=check_deadline)
     if name is not None and not name[0].startswith(b'"') and name[0].upper() == b"ON":
         # PostgreSQL permits omitting the index name. The next token is the
         # ON clause, and PostgreSQL generates an identity that cannot be
         # derived safely from this local syntax alone.
         return None, None, name_pos
-    return _read_qualified_sql_identifier_details(source, name_pos)
+    return _read_qualified_sql_identifier_details(
+        source, name_pos, check_deadline=check_deadline
+    )
 
 
 def _read_created_index_identity(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes | None] | None:
-    parsed = _read_create_index_name_details(source, pos)
+    parsed = _read_create_index_name_details(
+        source, pos, check_deadline=check_deadline
+    )
     if parsed is None:
         return None
     index_schema, index_name, index_end = parsed
     on_clause = _CREATE_INDEX_ON_RE.match(masked, index_end)
     if on_clause is None:
         return index_schema, index_name
-    table = _read_qualified_sql_identifier_details(source, on_clause.end())
+    table = _read_qualified_sql_identifier_details(
+        source, on_clause.end(), check_deadline=check_deadline
+    )
     if index_schema is None and table is not None:
         index_schema = table[0]
     return index_schema, index_name
 
 
 def _attachment_index_reference(
-    source: bytes, masked: bytes, attachment: re.Match[bytes]
+    source: bytes,
+    masked: bytes,
+    attachment: re.Match[bytes],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes] | None:
-    reference = _read_qualified_sql_identifier_details(source, attachment.end())
+    reference = _read_qualified_sql_identifier_details(
+        source, attachment.end(), check_deadline=check_deadline
+    )
     if reference is None:
         return None
     schema, name, _ = reference
     if schema is not None:
         return schema, name
     statement_start = masked.rfind(b";", 0, attachment.start()) + 1
-    alters = tuple(_ALTER_TABLE_RE.finditer(masked, statement_start, attachment.start()))
-    if alters:
-        table = _read_alter_table_identity(source, masked, alters[-1].end())
+    alter = None
+    for match in _ALTER_TABLE_RE.finditer(
+        masked, statement_start, attachment.start()
+    ):
+        if check_deadline is not None:
+            check_deadline()
+        alter = match
+    if alter is not None:
+        table = _read_alter_table_identity(
+            source,
+            masked,
+            alter.end(),
+            check_deadline=check_deadline,
+        )
         if table is not None:
             table_schema, _ = table[0]
             if table_schema is not None:
@@ -1121,7 +1404,10 @@ def _table_key_from_match(match: re.Match[bytes]) -> tuple[bytes | None, bytes]:
 
 
 def _create_table_column_list(
-    masked: bytes, table_match: re.Match[bytes]
+    masked: bytes,
+    table_match: re.Match[bytes],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[re.Match[bytes], int, int] | None:
     """Return this statement's parenthesized CREATE TABLE column list.
 
@@ -1143,7 +1429,9 @@ def _create_table_column_list(
         table_open += 1
     if table_open >= statement_end or masked[table_open] != _OPEN_PAREN:
         return None
-    table_close = _find_matching_close_paren(masked, table_open)
+    table_close = _find_matching_close_paren(
+        masked, table_open, check_deadline=check_deadline
+    )
     if table_close is None or table_close >= statement_end:
         return None
     return table_name, table_open, table_close
@@ -1169,20 +1457,57 @@ def _type_name_from_match(match: re.Match[bytes]) -> bytes:
 
 
 def _next_sql_keyword(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes, int] | None:
     """Read the next unquoted code keyword from a masked SQL source."""
-    cursor = _skip_sql_trivia(source, pos)
+    cursor = _skip_sql_trivia(source, pos, check_deadline=check_deadline)
     if cursor is None:
         return None
+    if check_deadline is not None and cursor < len(masked):
+        first = masked[cursor]
+        if not (
+            first == ord("_")
+            or ord("A") <= first <= ord("Z")
+            or ord("a") <= first <= ord("z")
+        ):
+            check_deadline()
+            return None
+        end = cursor + 1
+        next_deadline_check = end + 4096
+        while end < len(masked):
+            if end >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = end + 4096
+            byte = masked[end]
+            if not (
+                byte == ord("_")
+                or byte == ord("$")
+                or ord("0") <= byte <= ord("9")
+                or ord("A") <= byte <= ord("Z")
+                or ord("a") <= byte <= ord("z")
+            ):
+                break
+            end += 1
+        check_deadline()
+        return masked[cursor:end].upper(), end
     match = re.match(rb"[A-Za-z_][A-Za-z0-9_$]*", masked[cursor:])
+    if check_deadline is not None:
+        check_deadline()
     if match is None:
         return None
     return match.group(0).upper(), cursor + match.end()
 
 
 def _create_table_is_if_not_exists(
-    source: bytes, masked: bytes, table_match: re.Match[bytes]
+    source: bytes,
+    masked: bytes,
+    table_match: re.Match[bytes],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> bool:
     """Whether this CREATE TABLE declaration can be a no-op.
 
@@ -1190,38 +1515,58 @@ def _create_table_is_if_not_exists(
     list. Its types therefore cannot establish facts about the relation that
     will actually be used by later DDL.
     """
-    keyword = _next_sql_keyword(source, masked, table_match.end())
+    keyword = _next_sql_keyword(
+        source, masked, table_match.end(), check_deadline=check_deadline
+    )
     if keyword is None or keyword[0] != b"IF":
         return False
-    not_keyword = _next_sql_keyword(source, masked, keyword[1])
+    not_keyword = _next_sql_keyword(
+        source, masked, keyword[1], check_deadline=check_deadline
+    )
     if not_keyword is None or not_keyword[0] != b"NOT":
         return False
-    exists_keyword = _next_sql_keyword(source, masked, not_keyword[1])
+    exists_keyword = _next_sql_keyword(
+        source, masked, not_keyword[1], check_deadline=check_deadline
+    )
     return exists_keyword is not None and exists_keyword[0] == b"EXISTS"
 
 
 def _read_alter_table_identity(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[bytes | None, bytes], int] | None:
     """Read ALTER TABLE's possibly quoted name using lexer-validated offsets."""
     cursor = pos
-    keyword = _next_sql_keyword(source, masked, cursor)
+    keyword = _next_sql_keyword(
+        source, masked, cursor, check_deadline=check_deadline
+    )
     if keyword is not None and keyword[0] == b"IF":
-        exists = _next_sql_keyword(source, masked, keyword[1])
+        exists = _next_sql_keyword(
+            source, masked, keyword[1], check_deadline=check_deadline
+        )
         if exists is None or exists[0] != b"EXISTS":
             return None
         cursor = exists[1]
-        keyword = _next_sql_keyword(source, masked, cursor)
+        keyword = _next_sql_keyword(
+            source, masked, cursor, check_deadline=check_deadline
+        )
     if keyword is not None and keyword[0] == b"ONLY":
         cursor = keyword[1]
-    parsed = _read_qualified_sql_identifier_details(source, cursor)
+    parsed = _read_qualified_sql_identifier_details(
+        source, cursor, check_deadline=check_deadline
+    )
     if parsed is None:
         return None
     schema, table, end = parsed
     # PostgreSQL accepts `name *` to include inheritance descendants. The
     # marker belongs to the table reference, so action parsing must start
     # after it rather than treating the first action as an unknown clause.
-    after_table = _skip_sql_trivia(source, end)
+    after_table = _skip_sql_trivia(
+        source, end, check_deadline=check_deadline
+    )
     if (
         after_table is not None
         and after_table < len(masked)
@@ -1232,32 +1577,48 @@ def _read_alter_table_identity(
 
 
 def _read_create_table_identity(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes, int] | None:
     """Read CREATE TABLE's optional IF NOT EXISTS and possibly quoted name."""
     cursor = pos
-    keyword = _next_sql_keyword(source, masked, cursor)
+    keyword = _next_sql_keyword(
+        source, masked, cursor, check_deadline=check_deadline
+    )
     if keyword is not None and keyword[0] == b"IF":
-        not_keyword = _next_sql_keyword(source, masked, keyword[1])
+        not_keyword = _next_sql_keyword(
+            source, masked, keyword[1], check_deadline=check_deadline
+        )
         exists_keyword = (
             None
             if not_keyword is None or not_keyword[0] != b"NOT"
-            else _next_sql_keyword(source, masked, not_keyword[1])
+            else _next_sql_keyword(
+                source, masked, not_keyword[1], check_deadline=check_deadline
+            )
         )
         if exists_keyword is None or exists_keyword[0] != b"EXISTS":
             return None
         cursor = exists_keyword[1]
-    return _read_qualified_sql_identifier_details(source, cursor)
+    return _read_qualified_sql_identifier_details(
+        source, cursor, check_deadline=check_deadline
+    )
 
 
 def _read_action_identifier(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes, int] | None:
     """Read a column identifier only when the masked source says it is code."""
-    cursor = _skip_sql_trivia(source, pos)
+    cursor = _skip_sql_trivia(source, pos, check_deadline=check_deadline)
     if cursor is None:
         return None
-    parsed = _read_sql_identifier(source, cursor)
+    parsed = _read_sql_identifier(source, cursor, check_deadline=check_deadline)
     if parsed is None:
         return None
     token, end = parsed
@@ -1269,7 +1630,10 @@ def _read_action_identifier(
 
 
 def _collect_dropped_tables(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> frozenset[tuple[bytes | None, bytes]]:
     """Return table identities removed by DROP TABLE statements.
 
@@ -1279,14 +1643,22 @@ def _collect_dropped_tables(
     """
     dropped: set[tuple[bytes | None, bytes]] = set()
     for statement in _DROP_TABLE_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         cursor = statement.end()
         while True:
-            table = _read_alter_table_identity(source, masked, cursor)
+            if check_deadline is not None:
+                check_deadline()
+            table = _read_alter_table_identity(
+                source, masked, cursor, check_deadline=check_deadline
+            )
             if table is None:
                 break
             table_key, table_end = table
             dropped.add(table_key)
-            after_table = _skip_sql_trivia(source, table_end)
+            after_table = _skip_sql_trivia(
+                source, table_end, check_deadline=check_deadline
+            )
             if (
                 after_table is None
                 or after_table >= len(masked)
@@ -1297,37 +1669,76 @@ def _collect_dropped_tables(
     return frozenset(dropped)
 
 
-def _collect_temporary_relation_names(
+def _collect_temporary_relation_facts(
     source: bytes,
     masked: bytes,
-    known_temporary_names: Iterable[bytes] = (),
-) -> frozenset[bytes]:
-    """Names that may shadow permanent relations or types in DDL.
+    *,
+    check_deadline: Remaining | None = None,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+) -> tuple[
+    frozenset[bytes],
+    tuple[tuple[bytes, bytes], ...],
+    tuple[tuple[bytes | None, bytes, bytes], ...],
+]:
+    """Collect temporary relation seeds and source-independent graph edges.
 
-    The connection and search-path context are not part of SQL mutation
-    discovery. Any temporary relation name therefore makes an unqualified
-    type lookup ambiguous, even if its declaration is in another source.
+    Names may propagate through ALTER renames and views that read a temporary
+    relation. Returning those edges separately lets context preparation
+    resolve cross-file chains without rescanning every source per name.
     """
-    names: set[bytes] = set(known_temporary_names)
-    temporary_schema_events = _search_path_temporary_creation_events(source, masked)
+    names: set[bytes] = set()
+    renames: set[tuple[bytes, bytes]] = set()
+    view_dependencies: set[tuple[bytes | None, bytes, bytes]] = set()
+    temporary_schema_events = _search_path_temporary_creation_events(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
     for statement in _CREATE_TEMP_TABLE_RE.finditer(masked):
-        table = _read_create_table_identity(source, masked, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_create_table_identity(
+            source,
+            masked,
+            statement.end(),
+            check_deadline=check_deadline,
+        )
         if table is not None:
             names.add(table[1])
     for statement in _CREATE_TEMP_VIEW_RE.finditer(masked):
-        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        relation = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if relation is not None:
             names.add(relation[1])
     for statement in _SELECT_INTO_TEMP_RE.finditer(masked):
-        table = _read_qualified_sql_identifier_details(source, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if table is not None:
             names.add(table[1])
     for statement in _INTO_RE.finditer(masked):
-        table = _read_qualified_sql_identifier_details(source, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if table is not None and _is_temporary_schema(table[0]):
             names.add(table[1])
     for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
-        table = _read_create_table_identity(source, masked, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_create_table_identity(
+            source,
+            masked,
+            statement.end(),
+            check_deadline=check_deadline,
+        )
         if table is None:
             continue
         if _is_temporary_schema(table[0]) or (
@@ -1338,42 +1749,51 @@ def _collect_temporary_relation_names(
         ):
             names.add(table[1])
     for statement in _CREATE_VIEW_RE.finditer(masked):
-        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        relation = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if relation is None:
             continue
+        schema, view_name, relation_end = relation
         if _is_temporary_schema(relation[0]) or (
             relation[0] is None
             and _search_path_may_be_temporary_at(
                 temporary_schema_events, statement.start()
             )
         ):
-            names.add(relation[1])
-        view_end = masked.find(b";", relation[2])
+            names.add(view_name)
+        view_end = _view_statement_end(masked, relation_end, check_deadline)
         if view_end < 0:
             view_end = len(masked)
-        if _view_references_temporary_relation(
-            source, masked, relation[2], view_end, names
-        ):
-            names.add(relation[1])
-    # Renaming a temporary relation also renames its implicit composite row
-    # type. Source ordering across files is not known, so context collection
-    # passes all known temporary names here and repeatedly expands this set to
-    # a fixed point. Within one source, the same ordered scan also handles
-    # rename chains.
+        view_dependencies.update(
+            (referenced_schema, referenced_name, view_name)
+            for referenced_schema, referenced_name in _view_relation_references(
+                source,
+                masked,
+                relation_end,
+                view_end,
+                check_deadline=check_deadline,
+            )
+        )
     for alter in _ALTER_RELATION_RE.finditer(masked):
-        table = _read_alter_table_identity(source, masked, alter.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_alter_table_identity(
+            source, masked, alter.end(), check_deadline=check_deadline
+        )
         if table is None:
             continue
         old_key, table_end = table
-        if (
-            old_key[1] not in names
-            or (old_key[0] is not None and not _is_temporary_schema(old_key[0]))
-        ):
+        if old_key[0] is not None and not _is_temporary_schema(old_key[0]):
             continue
         statement_end = masked.find(b";", table_end)
         if statement_end < 0:
             statement_end = len(masked)
-        for start, end in _split_top_level(masked[table_end:statement_end]):
+        for start, end in _split_top_level(
+            masked[table_end:statement_end], check_deadline=check_deadline
+        ):
             action_start = table_end + start
             action_end = table_end + end
             change = re.match(
@@ -1388,7 +1808,46 @@ def _collect_temporary_relation_names(
                 continue
             new_name = _read_sql_identifier(source, next_keyword[1])
             if new_name is not None:
-                names.add(_normalize_sql_identifier(new_name[0]))
+                renames.add(
+                    (old_key[1], _normalize_sql_identifier(new_name[0]))
+                )
+    return (
+        frozenset(names),
+        tuple(sorted(renames)),
+        tuple(sorted(view_dependencies, key=lambda edge: (edge[0] or b"", edge[1], edge[2]))),
+    )
+
+
+def _collect_temporary_relation_names(
+    source: bytes,
+    masked: bytes,
+    known_temporary_names: Iterable[bytes] = (),
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
+) -> frozenset[bytes]:
+    """Return temporary names reachable within this source and its context."""
+    seeds, renames, view_dependencies = _collect_temporary_relation_facts(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
+    names = set(seeds)
+    names.update(known_temporary_names)
+    edges: dict[bytes, set[bytes]] = {}
+    for old_name, new_name in renames:
+        edges.setdefault(old_name, set()).add(new_name)
+    for schema, referenced_name, view_name in view_dependencies:
+        if schema is None or _is_temporary_schema(schema):
+            edges.setdefault(referenced_name, set()).add(view_name)
+    pending = list(names)
+    while pending:
+        old_name = pending.pop()
+        for new_name in edges.get(old_name, ()):
+            if new_name not in names:
+                names.add(new_name)
+                pending.append(new_name)
     return frozenset(names)
 
 
@@ -1399,51 +1858,103 @@ def _is_temporary_schema(schema: bytes | None) -> bool:
     )
 
 
-def _view_references_temporary_relation(
+def _view_statement_end(
+    masked: bytes, start: int, check_deadline: Remaining | None
+) -> int:
+    if check_deadline is None:
+        return masked.find(b";", start)
+    cursor = start
+    while cursor < len(masked):
+        check_deadline()
+        chunk_end = min(cursor + 4096, len(masked))
+        found = masked.find(b";", cursor, chunk_end)
+        if found >= 0:
+            return found
+        cursor = chunk_end
+    return -1
+
+
+def _view_relation_references(
     source: bytes,
     masked: bytes,
     query_start: int,
     statement_end: int,
-    temporary_names: set[bytes],
-) -> bool:
-    """Whether a view query may read one of the known temporary relations."""
+    *,
+    check_deadline: Remaining | None = None,
+) -> frozenset[tuple[bytes | None, bytes]]:
+    """Return relation identities found in FROM/JOIN relation positions."""
 
     def relation_after(start: int) -> tuple[
         tuple[bytes | None, bytes, int] | None, int | None
     ]:
         cursor = start
-        keyword = _next_sql_keyword(source, masked, cursor)
+        keyword = _next_sql_keyword(
+            source, masked, cursor, check_deadline=check_deadline
+        )
         while keyword is not None and keyword[0] in {b"ONLY", b"LATERAL"}:
             cursor = keyword[1]
-            keyword = _next_sql_keyword(source, masked, cursor)
-        cursor = _skip_sql_trivia(source, cursor)
+            keyword = _next_sql_keyword(
+                source, masked, cursor, check_deadline=check_deadline
+            )
+        cursor = _skip_sql_trivia(
+            source, cursor, check_deadline=check_deadline
+        )
         if cursor is None:
             return None, None
         if masked[cursor : cursor + 1] == b"(":
-            close = _find_matching_close_paren(masked, cursor)
+            close = _find_matching_close_paren(
+                masked, cursor, check_deadline=check_deadline
+            )
             return None, None if close is None else close + 1
-        parsed = _read_qualified_sql_identifier_details(source, cursor)
+        parsed = _read_qualified_sql_identifier_details(
+            source, cursor, check_deadline=check_deadline
+        )
         return (None, None) if parsed is None else (parsed, parsed[2])
 
-    for clause in _FROM_OR_JOIN_RE.finditer(masked, query_start, statement_end):
+    def clauses() -> Iterator[re.Match[bytes]]:
+        if check_deadline is None:
+            yield from _FROM_OR_JOIN_RE.finditer(
+                masked, query_start, statement_end
+            )
+            return
+        chunk_start = query_start
+        while chunk_start < statement_end:
+            check_deadline()
+            chunk_end = min(chunk_start + 4096, statement_end)
+            search_end = min(chunk_end + 4, statement_end)
+            for clause in _FROM_OR_JOIN_RE.finditer(
+                masked, chunk_start, search_end
+            ):
+                if clause.start() >= chunk_end:
+                    break
+                yield clause
+            chunk_start = chunk_end
+
+    references: set[tuple[bytes | None, bytes]] = set()
+    for clause in clauses():
+        if check_deadline is not None:
+            check_deadline()
         relation, cursor = relation_after(clause.end())
         if cursor is None:
             continue
         if relation is not None:
             schema, name, _ = relation
-            if name in temporary_names and (
-                schema is None or _is_temporary_schema(schema)
-            ):
-                return True
+            references.add((schema, name))
 
         # Also inspect comma-separated relation lists at this FROM level.
         # Parenthesized subqueries and function arguments are skipped, and
         # clause keywords end the list so their expression commas are ignored.
         depth = 0
+        next_deadline_check = cursor + 4096
         while cursor < statement_end:
+            if check_deadline is not None and cursor >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = cursor + 4096
             byte = masked[cursor]
             if source[cursor : cursor + 1] == b'"':
-                identifier = _read_sql_identifier(source, cursor)
+                identifier = _read_sql_identifier(
+                    source, cursor, check_deadline=check_deadline
+                )
                 if identifier is not None:
                     cursor = identifier[1]
                     continue
@@ -1452,14 +1963,20 @@ def _view_references_temporary_relation(
             elif byte == _CLOSE_PAREN:
                 depth = max(0, depth - 1)
             elif depth == 0:
-                token = _read_sql_identifier(source, cursor)
                 if (
-                    token is not None
-                    and not token[0].startswith(b'"')
-                    and _normalize_sql_identifier(token[0]).lower()
-                    in _FROM_CLAUSE_END_KEYWORDS
+                    byte == ord("_")
+                    or ord("A") <= byte <= ord("Z")
+                    or ord("a") <= byte <= ord("z")
                 ):
-                    break
+                    token = _read_sql_identifier(
+                        source, cursor, check_deadline=check_deadline
+                    )
+                    if token is not None:
+                        token_word = _normalize_sql_identifier(token[0]).lower()
+                        if token_word in _FROM_CLAUSE_END_KEYWORDS:
+                            break
+                        cursor = token[1]
+                        continue
                 if byte == _COMMA:
                     following, next_end = relation_after(cursor + 1)
                     if next_end is not None:
@@ -1467,24 +1984,29 @@ def _view_references_temporary_relation(
                             cursor = next_end
                             continue
                         next_schema, next_name, _ = following
-                        if next_name in temporary_names and (
-                            next_schema is None
-                            or _is_temporary_schema(next_schema)
-                        ):
-                            return True
+                        references.add((next_schema, next_name))
                         cursor = next_end
                         continue
             cursor += 1
-    return False
+    if check_deadline is not None:
+        check_deadline()
+    return frozenset(references)
 
 
 def _collect_relocated_tables(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> frozenset[tuple[bytes | None, bytes]]:
     """Return table identities changed by rename or schema-move DDL."""
     relocated: set[tuple[bytes | None, bytes]] = set()
     for alter in _ALTER_TABLE_RE.finditer(masked):
-        table = _read_alter_table_identity(source, masked, alter.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_alter_table_identity(
+            source, masked, alter.end(), check_deadline=check_deadline
+        )
         if table is None:
             continue
         old_key, table_end = table
@@ -1492,7 +2014,9 @@ def _collect_relocated_tables(
         if statement_end < 0:
             statement_end = len(masked)
         actions = masked[table_end:statement_end]
-        for start, end in _split_top_level(actions):
+        for start, end in _split_top_level(
+            actions, check_deadline=check_deadline
+        ):
             action_start = table_end + start
             action_end = table_end + end
             change = re.match(
@@ -1502,18 +2026,25 @@ def _collect_relocated_tables(
                 continue
             verb = change.group(1).upper()
             next_keyword = _next_sql_keyword(
-                source, masked, action_start + change.end()
+                source,
+                masked,
+                action_start + change.end(),
+                check_deadline=check_deadline,
             )
             if verb == b"RENAME":
                 if next_keyword is None or next_keyword[0] != b"TO":
                     continue
-                new_name = _read_sql_identifier(source, next_keyword[1])
+                new_name = _read_sql_identifier(
+                    source, next_keyword[1], check_deadline=check_deadline
+                )
                 if new_name is None:
                     continue
                 relocated.add(old_key)
                 relocated.add((old_key[0], _normalize_sql_identifier(new_name[0])))
             elif next_keyword is not None and next_keyword[0] == b"SCHEMA":
-                new_schema = _read_sql_identifier(source, next_keyword[1])
+                new_schema = _read_sql_identifier(
+                    source, next_keyword[1], check_deadline=check_deadline
+                )
                 if new_schema is None:
                     continue
                 relocated.add(old_key)
@@ -1524,7 +2055,10 @@ def _collect_relocated_tables(
 
 
 def _collect_altered_columns(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> frozenset[tuple[tuple[bytes | None, bytes], bytes]]:
     """Return columns whose final type cannot be inferred from CREATE TABLE.
 
@@ -1534,7 +2068,11 @@ def _collect_altered_columns(
     """
     altered_columns: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for alter in _ALTER_TABLE_RE.finditer(masked):
-        table = _read_alter_table_identity(source, masked, alter.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_alter_table_identity(
+            source, masked, alter.end(), check_deadline=check_deadline
+        )
         if table is None:
             continue
         table_key, table_end = table
@@ -1542,7 +2080,11 @@ def _collect_altered_columns(
         if statement_end < 0:
             statement_end = len(masked)
         actions = masked[table_end:statement_end]
-        for action_start, action_end in _split_top_level(actions):
+        for action_start, action_end in _split_top_level(
+            actions, check_deadline=check_deadline
+        ):
+            if check_deadline is not None:
+                check_deadline()
             action_start += table_end
             action_end += table_end
             action = re.match(
@@ -1552,34 +2094,53 @@ def _collect_altered_columns(
                 continue
             verb = action.group(1).upper()
             cursor = action_start + action.end()
-            first_keyword = _next_sql_keyword(source, masked, cursor)
+            first_keyword = _next_sql_keyword(
+                source, masked, cursor, check_deadline=check_deadline
+            )
             if verb == b"DROP":
                 if first_keyword is not None and first_keyword[0] == b"COLUMN":
                     cursor = first_keyword[1]
                 elif first_keyword is not None and first_keyword[0] == b"CONSTRAINT":
                     continue
-                optional = _next_sql_keyword(source, masked, cursor)
+                optional = _next_sql_keyword(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if optional is not None and optional[0] == b"IF":
-                    exists = _next_sql_keyword(source, masked, optional[1])
+                    exists = _next_sql_keyword(
+                        source, masked, optional[1], check_deadline=check_deadline
+                    )
                     if exists is None or exists[0] != b"EXISTS":
                         continue
                     cursor = exists[1]
-                after_optional = _next_sql_keyword(source, masked, cursor)
+                after_optional = _next_sql_keyword(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if after_optional is not None and after_optional[0] == b"CONSTRAINT":
                     continue
-                column = _read_action_identifier(source, masked, cursor)
+                column = _read_action_identifier(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if column is not None:
                     altered_columns.add((table_key, column[0]))
             elif verb == b"ADD":
                 if first_keyword is not None and first_keyword[0] == b"COLUMN":
                     cursor = first_keyword[1]
-                optional = _next_sql_keyword(source, masked, cursor)
+                optional = _next_sql_keyword(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if optional is not None and optional[0] == b"IF":
-                    not_word = _next_sql_keyword(source, masked, optional[1])
+                    not_word = _next_sql_keyword(
+                        source, masked, optional[1], check_deadline=check_deadline
+                    )
                     exists = (
                         None
                         if not_word is None
-                        else _next_sql_keyword(source, masked, not_word[1])
+                        else _next_sql_keyword(
+                            source,
+                            masked,
+                            not_word[1],
+                            check_deadline=check_deadline,
+                        )
                     )
                     if (
                         not_word is None
@@ -1589,34 +2150,56 @@ def _collect_altered_columns(
                     ):
                         continue
                     cursor = exists[1]
-                next_keyword = _next_sql_keyword(source, masked, cursor)
+                next_keyword = _next_sql_keyword(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if next_keyword is not None and next_keyword[0] in {
                     b"CONSTRAINT", b"CHECK", b"FOREIGN", b"PRIMARY", b"UNIQUE", b"EXCLUDE"
                 }:
                     continue
-                column = _read_action_identifier(source, masked, cursor)
+                column = _read_action_identifier(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if column is not None:
                     altered_columns.add((table_key, column[0]))
             elif verb == b"ALTER":
                 if first_keyword is not None and first_keyword[0] == b"COLUMN":
                     cursor = first_keyword[1]
-                optional = _next_sql_keyword(source, masked, cursor)
+                optional = _next_sql_keyword(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if optional is not None and optional[0] == b"IF":
-                    exists = _next_sql_keyword(source, masked, optional[1])
+                    exists = _next_sql_keyword(
+                        source, masked, optional[1], check_deadline=check_deadline
+                    )
                     if exists is None or exists[0] != b"EXISTS":
                         continue
                     cursor = exists[1]
-                column = _read_action_identifier(source, masked, cursor)
+                column = _read_action_identifier(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if column is None:
                     continue
-                type_keyword = _next_sql_keyword(source, masked, column[1])
+                type_keyword = _next_sql_keyword(
+                    source, masked, column[1], check_deadline=check_deadline
+                )
                 changes_type = type_keyword is not None and type_keyword[0] == b"TYPE"
                 if type_keyword is not None and type_keyword[0] == b"SET":
-                    data_keyword = _next_sql_keyword(source, masked, type_keyword[1])
+                    data_keyword = _next_sql_keyword(
+                        source,
+                        masked,
+                        type_keyword[1],
+                        check_deadline=check_deadline,
+                    )
                     type_after_data = (
                         None
                         if data_keyword is None
-                        else _next_sql_keyword(source, masked, data_keyword[1])
+                        else _next_sql_keyword(
+                            source,
+                            masked,
+                            data_keyword[1],
+                            check_deadline=check_deadline,
+                        )
                     )
                     changes_type = (
                         data_keyword is not None
@@ -1633,13 +2216,19 @@ def _collect_altered_columns(
                     b"TO", b"CONSTRAINT"
                 }:
                     continue
-                old = _read_action_identifier(source, masked, cursor)
+                old = _read_action_identifier(
+                    source, masked, cursor, check_deadline=check_deadline
+                )
                 if old is None:
                     continue
-                to_keyword = _next_sql_keyword(source, masked, old[1])
+                to_keyword = _next_sql_keyword(
+                    source, masked, old[1], check_deadline=check_deadline
+                )
                 if to_keyword is None or to_keyword[0] != b"TO":
                     continue
-                new = _read_action_identifier(source, masked, to_keyword[1])
+                new = _read_action_identifier(
+                    source, masked, to_keyword[1], check_deadline=check_deadline
+                )
                 if new is not None:
                     altered_columns.add((table_key, old[0]))
                     altered_columns.add((table_key, new[0]))
@@ -1652,6 +2241,8 @@ def _table_column_declarations(
     table_key: tuple[bytes | None, bytes],
     table_open: int,
     table_close: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[
     frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
     frozenset[tuple[tuple[bytes | None, bytes], bytes]],
@@ -1659,7 +2250,11 @@ def _table_column_declarations(
     declared_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
     collated: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     table_body = masked[table_open + 1 : table_close]
-    for start, end in _split_top_level(table_body):
+    for start, end in _split_top_level(
+        table_body, check_deadline=check_deadline
+    ):
+        if check_deadline is not None:
+            check_deadline()
         clause = table_body[start:end]
         column = _ENUM_COLUMN_DECL_RE.match(clause)
         if column is None:
@@ -1685,7 +2280,10 @@ def _table_column_declarations(
 
 
 def _collect_table_column_metadata(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[
     frozenset[tuple[tuple[bytes | None, bytes], bytes, bytes]],
     frozenset[tuple[tuple[bytes | None, bytes], bytes]],
@@ -1693,15 +2291,29 @@ def _collect_table_column_metadata(
     declared_types: set[tuple[tuple[bytes | None, bytes], bytes, bytes]] = set()
     collated: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     for table_match in _CREATE_TABLE_RE.finditer(masked):
-        if _create_table_is_if_not_exists(source, masked, table_match):
+        if check_deadline is not None:
+            check_deadline()
+        if _create_table_is_if_not_exists(
+            source,
+            masked,
+            table_match,
+            check_deadline=check_deadline,
+        ):
             continue
-        column_list = _create_table_column_list(masked, table_match)
+        column_list = _create_table_column_list(
+            masked, table_match, check_deadline=check_deadline
+        )
         if column_list is None:
             continue
         table_name, table_open, table_close = column_list
         table_key = _table_key_from_match(table_name)
         table_types, table_collations = _table_column_declarations(
-            source, masked, table_key, table_open, table_close
+            source,
+            masked,
+            table_key,
+            table_open,
+            table_close,
+            check_deadline=check_deadline,
         )
         declared_types.update(table_types)
         collated.update(table_collations)
@@ -1712,69 +2324,146 @@ def _collect_declared_type_names(
     source: bytes,
     masked: bytes,
     known_temporary_types: Iterable[tuple[bytes, bytes]] = (),
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> frozenset[tuple[bytes | None, bytes]]:
-    """Collect source-visible named and relation-generated composite types."""
-    names: set[tuple[bytes | None, bytes]] = set()
-    for pattern in (_CREATE_TYPE_STMT_RE, _CREATE_DOMAIN_STMT_RE):
-        for statement in pattern.finditer(masked):
-            parsed = _read_qualified_sql_identifier_details(source, statement.end())
-            if parsed is None:
-                continue
-            schema, name, _ = parsed
-            names.add((schema, name))
-    names.update(
-        (b"pg_temp", name)
-        for name in _unqualified_type_names_created_in_temp_schema(source, masked)
+    """Collect source-visible types plus renames reachable from temporary types."""
+    names, renames = _collect_declared_type_facts(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
     )
-    for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
-        relation = _read_create_table_identity(source, masked, statement.end())
-        if relation is not None:
-            names.add((relation[0], relation[1]))
-    for statement in _CREATE_VIEW_RE.finditer(masked):
-        relation = _read_qualified_sql_identifier_details(source, statement.end())
-        if relation is not None:
-            names.add((relation[0], relation[1]))
+    result = set(names)
     temporary_types = {
         (schema, name)
         for schema, name in names
         if schema is not None and _is_temporary_schema(schema)
     }
     temporary_types.update(known_temporary_types)
+    explicit_edges: dict[tuple[bytes, bytes], set[bytes]] = {}
+    unqualified_edges: dict[bytes, set[bytes]] = {}
+    for schema, old_name, new_name in renames:
+        if schema is None:
+            unqualified_edges.setdefault(old_name, set()).add(new_name)
+        else:
+            explicit_edges.setdefault((schema, old_name), set()).add(new_name)
+    pending = list(temporary_types)
+    while pending:
+        if check_deadline is not None:
+            check_deadline()
+        schema, old_name = pending.pop()
+        new_names = set(explicit_edges.get((schema, old_name), ()))
+        new_names.update(unqualified_edges.get(old_name, ()))
+        for new_name in new_names:
+            renamed = (schema, new_name)
+            if renamed not in result:
+                result.add(renamed)
+                temporary_types.add(renamed)
+                pending.append(renamed)
+    return frozenset(result)
+
+
+def _collect_declared_type_facts(
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
+) -> tuple[
+    frozenset[tuple[bytes | None, bytes]],
+    tuple[tuple[bytes | None, bytes, bytes], ...],
+]:
+    """Collect declared types and possible temporary-type rename edges."""
+    names: set[tuple[bytes | None, bytes]] = set()
+    for pattern in (_CREATE_TYPE_STMT_RE, _CREATE_DOMAIN_STMT_RE):
+        for statement in pattern.finditer(masked):
+            if check_deadline is not None:
+                check_deadline()
+            parsed = _read_qualified_sql_identifier_details(
+                source, statement.end(), check_deadline=check_deadline
+            )
+            if parsed is None:
+                continue
+            schema, name, _ = parsed
+            names.add((schema, name))
+    names.update(
+        (b"pg_temp", name)
+        for name in _unqualified_type_names_created_in_temp_schema(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
+    )
+    for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
+        relation = _read_create_table_identity(
+            source,
+            masked,
+            statement.end(),
+            check_deadline=check_deadline,
+        )
+        if relation is not None:
+            names.add((relation[0], relation[1]))
+    for statement in _CREATE_VIEW_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
+        relation = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
+        if relation is not None:
+            names.add((relation[0], relation[1]))
+    renames: set[tuple[bytes | None, bytes, bytes]] = set()
     for alter in _ALTER_TYPE_RE.finditer(masked):
-        relation = _read_qualified_sql_identifier_details(source, alter.end())
+        if check_deadline is not None:
+            check_deadline()
+        relation = _read_qualified_sql_identifier_details(
+            source, alter.end(), check_deadline=check_deadline
+        )
         if relation is None:
             continue
         schema, name, relation_end = relation
-        if _is_temporary_schema(schema):
-            old_types = {(schema, name)}
-        elif schema is None:
-            old_types = {
-                (temp_schema, name)
-                for temp_schema, temp_name in temporary_types
-                if temp_name == name
-            }
-        else:
+        if schema is not None and not _is_temporary_schema(schema):
             old_types = set()
-        if not old_types:
-            continue
-        rename = _next_sql_keyword(source, masked, relation_end)
+        else:
+            old_types = {(schema, name)}
+        rename = _next_sql_keyword(
+            source, masked, relation_end, check_deadline=check_deadline
+        )
         if rename is None or rename[0] != b"RENAME":
             continue
-        to = _next_sql_keyword(source, masked, rename[1])
+        to = _next_sql_keyword(
+            source, masked, rename[1], check_deadline=check_deadline
+        )
         if to is None or to[0] != b"TO":
             continue
-        new_type = _read_sql_identifier(source, to[1])
+        new_type = _read_sql_identifier(
+            source, to[1], check_deadline=check_deadline
+        )
         if new_type is None:
             continue
-        for temp_schema, _ in old_types:
-            renamed = (temp_schema, _normalize_sql_identifier(new_type[0]))
-            temporary_types.add(renamed)
-            names.add(renamed)
-    return frozenset(names)
+        normalized_new_name = _normalize_sql_identifier(new_type[0])
+        for temp_schema, old_name in old_types:
+            renames.add(
+                (temp_schema, old_name, normalized_new_name)
+            )
+            # An explicit pg_temp-qualified ALTER is itself evidence that the
+            # resulting type is temporary, even when its CREATE lives outside
+            # this source inventory.
+            if temp_schema is not None:
+                names.add((temp_schema, normalized_new_name))
+    return frozenset(names), tuple(sorted(renames, key=lambda edge: (edge[0] or b"", edge[1], edge[2])))
 
 
 def _unqualified_type_names_created_in_temp_schema(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> frozenset[bytes]:
     """Find unqualified named types whose source-visible current schema may be temporary.
 
@@ -1782,7 +2471,12 @@ def _unqualified_type_names_created_in_temp_schema(
     Explicit path settings narrow that state; an unresolved writer restores the
     conservative possibility until a later static setting resolves it.
     """
-    path_events = _search_path_temporary_creation_events(source, masked)
+    path_events = _search_path_temporary_creation_events(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
     statements = sorted(
         (
             statement.start(),
@@ -1793,55 +2487,101 @@ def _unqualified_type_names_created_in_temp_schema(
     )
     names: set[bytes] = set()
     for statement_offset, statement in statements:
+        if check_deadline is not None:
+            check_deadline()
         if not _search_path_may_be_temporary_at(path_events, statement_offset):
             continue
-        parsed = _read_qualified_sql_identifier_details(source, statement.end())
+        parsed = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if parsed is not None and parsed[0] is None:
             names.add(parsed[1])
     return frozenset(names)
 
 
 def _search_path_temporary_creation_events(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, bool], ...]:
     """Track temporary creation possibility as path/schema facts change."""
     events: list[tuple[int, str, object]] = []
-    dollar_body_ranges = lex_sql(source).dollar_bodies
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
     events.extend(
         (offset, "transaction", kind)
-        for offset, kind in _transaction_control_events(source, masked)
+        for offset, kind in _transaction_control_events(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     )
     events.extend(
         (offset, "role-change", (scope, role_name))
-        for offset, scope, role_name in _role_context_change_events(source, masked)
+        for offset, scope, role_name in _role_context_change_events(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     )
     for offset, value_start, untrusted_scope in _search_path_value_starts(
-        source, masked
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
     ):
-        is_schema, schema_name = _set_schema_value(source, masked, value_start)
+        is_schema, schema_name = _set_schema_value(
+            source,
+            masked,
+            value_start,
+            check_deadline=check_deadline,
+        )
         if untrusted_scope:
             path_schemas = None
         elif is_schema:
             path_schemas = None if schema_name is None else (schema_name,)
         else:
-            path_schemas = _read_search_path_schemas(source, masked, value_start)
+            path_schemas = _read_search_path_schemas(
+                source,
+                masked,
+                value_start,
+                check_deadline=check_deadline,
+            )
         events.append((offset, "path", path_schemas))
     events.extend(
         (offset, "unknown", None)
         for offset in (
             *_set_config_search_path_writes(source, masked),
             *_dynamic_sql_execute_offsets(masked, dollar_body_ranges),
-            *_search_path_reset_offsets(source, masked),
+            *_search_path_reset_offsets(
+                source,
+                masked,
+                dollar_body_ranges=dollar_body_ranges,
+                check_deadline=check_deadline,
+            ),
         )
     )
     events.extend(
         (offset, "clear-schemas", None)
         for offset in (
             *_dynamic_sql_execute_offsets(masked, dollar_body_ranges),
-            *_role_membership_change_offsets(source, masked),
+            *_role_membership_change_offsets(
+                source,
+                masked,
+                dollar_body_ranges=dollar_body_ranges,
+                check_deadline=check_deadline,
+            ),
         )
     )
     for statement in _CREATE_SCHEMA_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         if _inside_any(dollar_body_ranges, statement.start()):
             events.append((statement.start(), "clear-schemas", None))
             continue
@@ -1849,12 +2589,16 @@ def _search_path_temporary_creation_events(
         if schema is not None:
             events.append((statement.start(), "add-schema", schema))
     for statement in _DROP_SCHEMA_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         if _inside_any(dollar_body_ranges, statement.start()):
             events.append((statement.start(), "clear-schemas", None))
             continue
         schemas = _schema_names_dropped_by_statement(source, masked, statement)
         events.append((statement.start(), "forget-schemas", schemas))
     for statement in _ALTER_SCHEMA_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         if _inside_any(dollar_body_ranges, statement.start()):
             events.append((statement.start(), "clear-schemas", None))
             continue
@@ -1864,8 +2608,17 @@ def _search_path_temporary_creation_events(
         else:
             altered = _schema_altered_by_statement(source, masked, statement)
             events.append((statement.start(), "forget-schemas", None if altered is None else (altered,)))
-    for statement_start, statement_end in _sql_statement_ranges(source, masked):
-        first = _next_sql_keyword(source, masked, statement_start)
+    for statement_start, statement_end in _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    ):
+        if check_deadline is not None:
+            check_deadline()
+        first = _next_sql_keyword(
+            source, masked, statement_start, check_deadline=check_deadline
+        )
         if first is None or first[0] != b"REVOKE":
             continue
         revocation = _schemas_with_revoked_usage_by_statement(
@@ -2057,6 +2810,7 @@ def _search_path_value_starts(
     configuration_ranges: tuple[tuple[int, int], ...] | None = None,
     transaction_ranges: tuple[tuple[int, int], ...] | None = None,
     dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, int | None, bool], ...]:
     """Locate explicit search_path values, including quoted GUC names.
 
@@ -2066,17 +2820,36 @@ def _search_path_value_starts(
     session-path evidence: SET LOCAL, a SET inside an explicit transaction, or
     a SET found inside a dollar-quoted body.
     """
-    if configuration_ranges is None:
-        configuration_ranges = _non_session_configuration_ranges(source, masked)
-    if transaction_ranges is None:
-        transaction_ranges = _explicit_transaction_ranges(source, masked)
     if dollar_body_ranges is None:
-        dollar_body_ranges = lex_sql(source).dollar_bodies
-    statement_ranges = _sql_statement_ranges(source, masked)
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
+    if configuration_ranges is None:
+        configuration_ranges = _non_session_configuration_ranges(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
+    if transaction_ranges is None:
+        transaction_ranges = _explicit_transaction_ranges(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
+    statement_ranges = _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
     statement_starts = tuple(start for start, _ in statement_ranges)
     dollar_body_starts = tuple(start for start, _ in dollar_body_ranges)
     starts: list[tuple[int, int | None, bool]] = []
     for statement in _SET_WORD_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         body_index = bisect_right(dollar_body_starts, statement.start()) - 1
         inside_dollar_body = (
             body_index >= 0
@@ -2095,7 +2868,10 @@ def _search_path_value_starts(
             if statement_index < 0:
                 continue
             first = _next_sql_keyword(
-                source, masked, statement_ranges[statement_index][0]
+                source,
+                masked,
+                statement_ranges[statement_index][0],
+                check_deadline=check_deadline,
             )
             if first is None or first[0] != b"SET":
                 # UPDATE ... SET column=... and other SET clauses are not
@@ -2109,10 +2885,14 @@ def _search_path_value_starts(
                 # A SET target inside UPDATE (including a PL/pgSQL body) is a
                 # column assignment, not a session GUC statement.
                 continue
-        cursor = _skip_sql_trivia(source, statement.end())
+        cursor = _skip_sql_trivia(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if cursor is None:
             continue
-        parameter = _read_sql_identifier(source, cursor)
+        parameter = _read_sql_identifier(
+            source, cursor, check_deadline=check_deadline
+        )
         if parameter is None:
             continue
         untrusted_scope = False
@@ -2121,11 +2901,15 @@ def _search_path_value_starts(
             and _normalize_sql_identifier(parameter[0]) in {b"local", b"session"}
         ):
             untrusted_scope = _normalize_sql_identifier(parameter[0]) == b"local"
-            parameter = _read_sql_identifier(source, parameter[1])
+            parameter = _read_sql_identifier(
+                source, parameter[1], check_deadline=check_deadline
+            )
             if parameter is None:
                 continue
         parameter_name = _normalize_sql_identifier(parameter[0]).lower()
-        cursor = _skip_sql_trivia(source, parameter[1])
+        cursor = _skip_sql_trivia(
+            source, parameter[1], check_deadline=check_deadline
+        )
         if cursor is None:
             continue
         untrusted_scope = untrusted_scope or any(
@@ -2135,7 +2919,13 @@ def _search_path_value_starts(
             # SET SCHEMA is equivalent to a one-schema search_path. Preserve
             # the value so implicit pg_catalog-first semantics can be proved.
             starts.append(
-                (statement.start(), _skip_sql_trivia(source, cursor), untrusted_scope)
+                (
+                    statement.start(),
+                    _skip_sql_trivia(
+                        source, cursor, check_deadline=check_deadline
+                    ),
+                    untrusted_scope,
+                )
             )
             continue
         if parameter_name != b"search_path":
@@ -2143,14 +2933,18 @@ def _search_path_value_starts(
         if masked[cursor : cursor + 1] == b"=":
             starts.append((statement.start(), cursor + 1, untrusted_scope))
             continue
-        assignment = _read_sql_identifier(source, cursor)
+        assignment = _read_sql_identifier(
+            source, cursor, check_deadline=check_deadline
+        )
         if assignment is None or assignment[0].startswith(b'"'):
             continue
         assignment_name = _normalize_sql_identifier(assignment[0])
         if assignment_name == b"to":
             starts.append((statement.start(), assignment[1], untrusted_scope))
         elif assignment_name == b"from":
-            current = _read_sql_identifier(source, assignment[1])
+            current = _read_sql_identifier(
+                source, assignment[1], check_deadline=check_deadline
+            )
             if (
                 current is not None
                 and not current[0].startswith(b'"')
@@ -2164,6 +2958,7 @@ def _search_path_value_starts(
             masked,
             transaction_ranges=transaction_ranges,
             dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
         )
     )
     return tuple(starts)
@@ -2175,6 +2970,7 @@ def _pg_settings_search_path_updates(
     *,
     transaction_ranges: tuple[tuple[int, int], ...] | None = None,
     dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, bool], ...]:
     """Find UPDATEs that can change pg_settings.search_path.
 
@@ -2182,14 +2978,29 @@ def _pg_settings_search_path_updates(
     complex predicates are treated as unknown and invalidate path evidence.
     """
     if transaction_ranges is None:
-        transaction_ranges = _explicit_transaction_ranges(source, masked)
+        transaction_ranges = _explicit_transaction_ranges(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     if dollar_body_ranges is None:
-        dollar_body_ranges = lex_sql(source).dollar_bodies
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
     body_starts = tuple(start for start, _ in dollar_body_ranges)
     updates: list[tuple[int, bool]] = []
     for update in _UPDATE_WORD_RE.finditer(masked):
-        cursor = _skip_sql_trivia(source, update.end())
-        target = _read_sql_identifier(source, cursor or update.end())
+        if check_deadline is not None:
+            check_deadline()
+        cursor = _skip_sql_trivia(
+            source, update.end(), check_deadline=check_deadline
+        )
+        target = _read_sql_identifier(
+            source,
+            update.end() if cursor is None else cursor,
+            check_deadline=check_deadline,
+        )
         if (
             target is not None
             and not target[0].startswith(b'"')
@@ -2199,7 +3010,9 @@ def _pg_settings_search_path_updates(
         target_relation = (
             None
             if cursor is None
-            else _read_qualified_sql_identifier_details(source, cursor)
+            else _read_qualified_sql_identifier_details(
+                source, cursor, check_deadline=check_deadline
+            )
         )
         if (
             target_relation is None
@@ -2224,28 +3037,41 @@ def _pg_settings_search_path_updates(
         assignments_start = target_end + set_keyword.end()
         assignments = masked[assignments_start:set_clause_end]
         writes_setting = False
-        for start, end in _split_top_level(assignments):
+        for start, end in _split_top_level(
+            assignments, check_deadline=check_deadline
+        ):
             assignment_start = assignments_start + start
             assignment_end = assignments_start + end
-            left_start = _skip_sql_trivia(source, assignment_start)
+            left_start = _skip_sql_trivia(
+                source, assignment_start, check_deadline=check_deadline
+            )
             if left_start is None:
                 continue
             if masked[left_start : left_start + 1] == b"(":
-                left_close = _find_matching_close_paren(masked, left_start)
+                left_close = _find_matching_close_paren(
+                    masked, left_start, check_deadline=check_deadline
+                )
                 if left_close is None or left_close >= assignment_end:
                     continue
-                fields = _split_top_level(masked[left_start + 1 : left_close])
+                fields = _split_top_level(
+                    masked[left_start + 1 : left_close],
+                    check_deadline=check_deadline,
+                )
                 has_setting = False
                 for field_start, field_end in fields:
+                    if check_deadline is not None:
+                        check_deadline()
                     field_start += left_start + 1
                     field_end += left_start + 1
                     field = _read_qualified_sql_identifier_details(
-                        source, field_start
+                        source, field_start, check_deadline=check_deadline
                     )
                     field_tail = (
                         None
                         if field is None
-                        else _skip_sql_trivia(source, field[2])
+                        else _skip_sql_trivia(
+                            source, field[2], check_deadline=check_deadline
+                        )
                     )
                     if (
                         field is not None
@@ -2254,10 +3080,12 @@ def _pg_settings_search_path_updates(
                     ):
                         has_setting = True
                         break
-                equals = _skip_sql_trivia(source, left_close + 1)
+                equals = _skip_sql_trivia(
+                    source, left_close + 1, check_deadline=check_deadline
+                )
             else:
                 left_hand = _read_qualified_sql_identifier_details(
-                    source, left_start
+                    source, left_start, check_deadline=check_deadline
                 )
                 has_setting = (
                     left_hand is not None and left_hand[1] == b"setting"
@@ -2265,7 +3093,9 @@ def _pg_settings_search_path_updates(
                 equals = (
                     None
                     if left_hand is None
-                    else _skip_sql_trivia(source, left_hand[2])
+                    else _skip_sql_trivia(
+                        source, left_hand[2], check_deadline=check_deadline
+                    )
                 )
             if (
                 has_setting
@@ -2357,22 +3187,33 @@ def _dynamic_sql_execute_offsets(
     )
 
 
-def _sql_statement_ranges(source: bytes, masked: bytes) -> tuple[tuple[int, int], ...]:
+def _sql_statement_ranges(
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
+) -> tuple[tuple[int, int], ...]:
     """Statement spans split only at semicolons outside dollar-quoted bodies."""
-    dollar_bodies = lex_sql(source).dollar_bodies
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
     body_index = 0
     statement_start = 0
     ranges: list[tuple[int, int]] = []
     for semicolon in re.finditer(rb";", masked):
+        if check_deadline is not None:
+            check_deadline()
         while (
-            body_index < len(dollar_bodies)
-            and dollar_bodies[body_index][1] <= semicolon.start()
+            body_index < len(dollar_body_ranges)
+            and dollar_body_ranges[body_index][1] <= semicolon.start()
         ):
             body_index += 1
         if (
-            body_index < len(dollar_bodies)
-            and dollar_bodies[body_index][0] <= semicolon.start()
-            < dollar_bodies[body_index][1]
+            body_index < len(dollar_body_ranges)
+            and dollar_body_ranges[body_index][0] <= semicolon.start()
+            < dollar_body_ranges[body_index][1]
         ):
             continue
         end = semicolon.end()
@@ -2384,17 +3225,32 @@ def _sql_statement_ranges(source: bytes, masked: bytes) -> tuple[tuple[int, int]
 
 
 def _explicit_transaction_ranges(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Find explicit transaction spans for path-setting conservatism."""
     ranges: list[tuple[int, int]] = []
     active_start: int | None = None
-    for statement_start, statement_end in _sql_statement_ranges(source, masked):
-        first = _next_sql_keyword(source, masked, statement_start)
+    for statement_start, statement_end in _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    ):
+        if check_deadline is not None:
+            check_deadline()
+        first = _next_sql_keyword(
+            source, masked, statement_start, check_deadline=check_deadline
+        )
         if first is None or first[1] > statement_end:
             continue
         keyword = first[0].upper()
-        second = _next_sql_keyword(source, masked, first[1])
+        second = _next_sql_keyword(
+            source, masked, first[1], check_deadline=check_deadline
+        )
         if keyword == b"BEGIN" or (
             keyword == b"START" and second is not None and second[0] == b"TRANSACTION"
         ):
@@ -2411,14 +3267,20 @@ def _explicit_transaction_ranges(
             continue
         suffix = second
         if suffix is not None and suffix[0] in {b"WORK", b"TRANSACTION"}:
-            suffix = _next_sql_keyword(source, masked, suffix[1])
+            suffix = _next_sql_keyword(
+                source, masked, suffix[1], check_deadline=check_deadline
+            )
         if keyword == b"ROLLBACK" and suffix is not None and suffix[0] == b"TO":
             continue
         if suffix is not None and suffix[0] == b"AND":
-            chain = _next_sql_keyword(source, masked, suffix[1])
+            chain = _next_sql_keyword(
+                source, masked, suffix[1], check_deadline=check_deadline
+            )
             no_chain = chain is not None and chain[0] == b"NO"
             if no_chain:
-                chain = _next_sql_keyword(source, masked, chain[1])
+                chain = _next_sql_keyword(
+                    source, masked, chain[1], check_deadline=check_deadline
+                )
             if chain is not None and chain[0] == b"CHAIN" and not no_chain:
                 # AND CHAIN finishes this transaction and immediately opens
                 # another one. Path changes in the new transaction remain
@@ -2437,14 +3299,24 @@ def _search_path_reset_offsets(
     *,
     configuration_ranges: tuple[tuple[int, int], ...] | None = None,
     dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[int, ...]:
     """Locate RESET/DISCARD path resets, including quoted GUC identifiers."""
     if configuration_ranges is None:
-        configuration_ranges = _non_session_configuration_ranges(source, masked)
+        configuration_ranges = _non_session_configuration_ranges(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     if dollar_body_ranges is None:
-        dollar_body_ranges = lex_sql(source).dollar_bodies
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
     offsets: list[int] = []
     for reset in _RESET_WORD_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         target = _read_sql_identifier(source, reset.end())
         if target is None:
             continue
@@ -2469,6 +3341,8 @@ def _search_path_reset_offsets(
         if not in_configuration or in_executable_body:
             offsets.append(reset.start())
     for discard in _DISCARD_WORD_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         target = _read_sql_identifier(source, discard.end())
         if (
             target is None
@@ -2491,6 +3365,9 @@ def _search_path_may_shadow_catalog(
     source: bytes,
     masked: bytes,
     path_settings: tuple[tuple[int, int | None, bool], ...] | None = None,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> bool:
     """Whether source can put a non-catalog schema before pg_catalog.
 
@@ -2503,18 +3380,33 @@ def _search_path_may_shadow_catalog(
     """
     if _set_config_search_path_writes(source, masked):
         return True
-    dollar_body_ranges = lex_sql(source).dollar_bodies
+    if dollar_body_ranges is None:
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
     if _dynamic_sql_execute_offsets(masked, dollar_body_ranges):
         return True
     if path_settings is None:
-        path_settings = _search_path_value_starts(source, masked)
+        path_settings = _search_path_value_starts(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     for _, value_start, untrusted_scope in path_settings:
+        if check_deadline is not None:
+            check_deadline()
         if untrusted_scope:
             # Its effective state depends on a transaction or a procedural
             # body. Refuse the source rather than let a rolled-back or
             # transaction-local path certify a later declaration.
             return True
-        is_schema, schema_name = _set_schema_value(source, masked, value_start)
+        is_schema, schema_name = _set_schema_value(
+            source,
+            masked,
+            value_start,
+            check_deadline=check_deadline,
+        )
         if is_schema:
             # SET SCHEMA creates a one-schema path. PostgreSQL implicitly
             # searches pg_catalog first unless the schema is pg_temp.
@@ -2523,10 +3415,17 @@ def _search_path_may_shadow_catalog(
             continue
         if value_start is None:
             return True
-        first = _read_sql_identifier(source, value_start)
+        first = _read_sql_identifier(
+            source, value_start, check_deadline=check_deadline
+        )
         if first is None or _normalize_sql_identifier(first[0]) != b"pg_catalog":
             return True
-    if _search_path_reset_offsets(source, masked):
+    if _search_path_reset_offsets(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    ):
         # RESET and DISCARD ALL return to connection-specific defaults;
         # source cannot prove those schemas are harmless. A reset inside
         # executable routine text can also persist when that routine runs.
@@ -2535,29 +3434,20 @@ def _search_path_may_shadow_catalog(
 
 
 def _search_path_explicitly_orders_temp_after_catalog(
-    source: bytes, masked: bytes, value_start: int | None
+    source: bytes,
+    masked: bytes,
+    value_start: int | None,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> bool:
-    if value_start is None:
+    schemas = _read_search_path_schemas(
+        source,
+        masked,
+        value_start,
+        check_deadline=check_deadline,
+    )
+    if schemas is None:
         return False
-    statement_end = masked.find(b";", value_start)
-    if statement_end < 0:
-        statement_end = len(masked)
-    cursor = value_start
-    schemas: list[bytes] = []
-    while True:
-        cursor = _skip_sql_trivia(source, cursor)
-        if cursor is None or cursor >= statement_end:
-            break
-        item = _read_sql_identifier(source, cursor)
-        if item is None:
-            return False
-        schemas.append(_normalize_sql_identifier(item[0]))
-        cursor = _skip_sql_trivia(source, item[1])
-        if cursor is None or cursor >= statement_end:
-            break
-        if masked[cursor : cursor + 1] != b",":
-            return False
-        cursor += 1
     try:
         return schemas.index(b"pg_catalog") < schemas.index(b"pg_temp")
     except ValueError:
@@ -2567,25 +3457,44 @@ def _search_path_explicitly_orders_temp_after_catalog(
 
 
 def _search_path_explicitly_starts_with_catalog(
-    source: bytes, masked: bytes, value_start: int | None
+    source: bytes,
+    masked: bytes,
+    value_start: int | None,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> bool:
     if value_start is None:
         return False
-    is_schema, schema_name = _set_schema_value(source, masked, value_start)
+    is_schema, schema_name = _set_schema_value(
+        source, masked, value_start, check_deadline=check_deadline
+    )
     if is_schema:
         return schema_name is not None and not _is_temporary_schema(schema_name)
-    first = _read_sql_identifier(source, value_start)
+    first = _read_sql_identifier(
+        source, value_start, check_deadline=check_deadline
+    )
     return first is not None and _normalize_sql_identifier(first[0]) == b"pg_catalog"
 
 
 def _non_session_configuration_ranges(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Spans whose SET/RESET clauses do not change the current session."""
-    statements = _sql_statement_ranges(source, masked)
+    statements = _sql_statement_ranges(
+        source,
+        masked,
+        dollar_body_ranges=dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
     ranges: list[tuple[int, int]] = []
     for pattern in (_ROUTINE_DDL_RE, _ALTER_GUC_DDL_RE):
         for ddl in pattern.finditer(masked):
+            if check_deadline is not None:
+                check_deadline()
             for start, end in statements:
                 if start <= ddl.start() < end:
                     ranges.append((start, end))
@@ -2605,6 +3514,7 @@ def _build_search_path_timeline(
     path_settings: tuple[tuple[int, int | None, bool], ...] | None = None,
     configuration_ranges: tuple[tuple[int, int], ...] | None = None,
     dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> _SearchPathTimeline:
     """Build search-path facts once for constant-time candidate lookups.
 
@@ -2615,26 +3525,47 @@ def _build_search_path_timeline(
     sorting these events for every candidate made path analysis quadratic.
     """
     if path_settings is None:
-        path_settings = _search_path_value_starts(source, masked)
+        path_settings = _search_path_value_starts(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     if configuration_ranges is None:
-        configuration_ranges = _non_session_configuration_ranges(source, masked)
+        configuration_ranges = _non_session_configuration_ranges(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
     if dollar_body_ranges is None:
-        dollar_body_ranges = lex_sql(source).dollar_bodies
+        dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
     events: list[tuple[int, bool, bool, bool]] = [
         (
             statement_start,
             untrusted_scope
             or not _search_path_explicitly_orders_temp_after_catalog(
-                source, masked, value_start
+                source,
+                masked,
+                value_start,
+                check_deadline=check_deadline,
             ),
             not untrusted_scope
             and _search_path_explicitly_starts_with_catalog(
-                source, masked, value_start
+                source,
+                masked,
+                value_start,
+                check_deadline=check_deadline,
             ),
             untrusted_scope
             or value_start is None
             or not _search_path_explicitly_starts_with_catalog(
-                source, masked, value_start
+                source,
+                masked,
+                value_start,
+                check_deadline=check_deadline,
             ),
         )
         for statement_start, value_start, untrusted_scope in path_settings
@@ -2654,6 +3585,7 @@ def _build_search_path_timeline(
             masked,
             configuration_ranges=configuration_ranges,
             dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
         )
     )
     events.sort(key=lambda event: event[0])
@@ -2662,6 +3594,8 @@ def _build_search_path_timeline(
     catalog_first_proven: list[bool] = []
     catalog_may_shadow: list[bool] = []
     for offset, may_shadow, proven, path_may_shadow in events:
+        if check_deadline is not None:
+            check_deadline()
         offsets.append(offset)
         temporary_may_shadow.append(may_shadow)
         catalog_first_proven.append(proven)
@@ -2730,6 +3664,9 @@ def _is_unshadowed_builtin_type(
 
 def _collect_sql_mutation_context(
     sources: Iterable[tuple[str | None, str]],
+    *,
+    check_deadline: Remaining | None = None,
+    target_source_identities: frozenset[str] = frozenset(),
 ) -> _SqlMutationContext:
     """Find linked indexes, type changes and explicit collations in context."""
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
@@ -2748,62 +3685,139 @@ def _collect_sql_mutation_context(
     dropped_tables: set[tuple[bytes | None, bytes]] = set()
     temporary_relation_names: set[bytes] = set()
     relocated_tables: set[tuple[bytes | None, bytes]] = set()
-    source_items = [
-        (
-            source_identity,
-            text.encode("utf-8"),
-            lex_sql(text.encode("utf-8")).mask,
+    relation_edges: dict[bytes, set[bytes]] = {}
+    type_rename_edges: dict[tuple[bytes | None, bytes], set[bytes]] = {}
+    temporary_type_names: set[tuple[bytes, bytes]] = set()
+    source_items: list[
+        tuple[str | None, bytes, bytes, tuple[tuple[int, int], ...]]
+    ] = []
+    target_lexes: dict[
+        str, tuple[str, bytes, tuple[tuple[int, int], ...]] | None
+    ] = {}
+    for source_identity, text in sources:
+        if check_deadline is not None:
+            check_deadline()
+        source = text.encode("utf-8")
+        lexed = lex_sql(source, check_deadline=check_deadline)
+        if check_deadline is not None:
+            check_deadline()
+        source_items.append(
+            (source_identity, source, lexed.mask, lexed.dollar_bodies)
         )
-        for source_identity, text in sources
-    ]
-    for source_identity, source, masked in source_items:
+        if source_identity in target_source_identities:
+            current = (text, lexed.mask, lexed.dollar_bodies)
+            previous = target_lexes.get(source_identity)
+            if previous is None and source_identity not in target_lexes:
+                target_lexes[source_identity] = current
+            elif previous != current:
+                # A duplicate identity with different text cannot safely
+                # reuse one source's mask for another. The generator will
+                # lex that target from its own text instead.
+                target_lexes[source_identity] = None
+    for source_identity, source, masked, dollar_body_ranges in source_items:
+        if check_deadline is not None:
+            check_deadline()
         for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
-            reference = _attachment_index_reference(source, masked, attachment)
+            if check_deadline is not None:
+                check_deadline()
+            reference = _attachment_index_reference(
+                source,
+                masked,
+                attachment,
+                check_deadline=check_deadline,
+            )
             if reference is None:
                 unresolved_index_attachment = True
             else:
                 attached_indexes.add(reference)
-        altered_columns.update(_collect_altered_columns(source, masked))
-        dropped_tables.update(_collect_dropped_tables(source, masked))
-        temporary_relation_names.update(
-            _collect_temporary_relation_names(source, masked)
+        altered_columns.update(
+            _collect_altered_columns(
+                source, masked, check_deadline=check_deadline
+            )
         )
-        relocated_tables.update(_collect_relocated_tables(source, masked))
-        declared, collated = _collect_table_column_metadata(source, masked)
+        dropped_tables.update(
+            _collect_dropped_tables(source, masked, check_deadline=check_deadline)
+        )
+        relation_seeds, relation_renames, view_dependencies = (
+            _collect_temporary_relation_facts(
+                source,
+                masked,
+                check_deadline=check_deadline,
+                dollar_body_ranges=dollar_body_ranges,
+            )
+        )
+        temporary_relation_names.update(relation_seeds)
+        for old_name, new_name in relation_renames:
+            relation_edges.setdefault(old_name, set()).add(new_name)
+        for schema, referenced_name, view_name in view_dependencies:
+            if schema is None or _is_temporary_schema(schema):
+                relation_edges.setdefault(referenced_name, set()).add(view_name)
+        relocated_tables.update(
+            _collect_relocated_tables(
+                source, masked, check_deadline=check_deadline
+            )
+        )
+        declared, collated = _collect_table_column_metadata(
+            source, masked, check_deadline=check_deadline
+        )
         declared_column_types.update(declared)
         declared_column_type_sources.append((source_identity, declared))
         collated_columns.update(collated)
-        declared_type_names.update(_collect_declared_type_names(source, masked))
-        source_path_may_shadow = _search_path_may_shadow_catalog(source, masked)
+        declared, type_renames = _collect_declared_type_facts(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
+        declared_type_names.update(declared)
+        temporary_type_names.update(
+            (schema, name)
+            for schema, name in declared
+            if schema is not None and _is_temporary_schema(schema)
+        )
+        for schema, old_name, new_name in type_renames:
+            type_rename_edges.setdefault((schema, old_name), set()).add(new_name)
+        source_path_may_shadow = _search_path_may_shadow_catalog(
+            source,
+            masked,
+            dollar_body_ranges=dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
         if source_path_may_shadow:
             search_path_may_shadow_sources.append(source_identity)
-    # Temporary table/view declarations and ALTERs may live in separate SQL
-    # files. Propagate renamed row-type names until no source can add another.
-    while True:
-        expanded = set(temporary_relation_names)
-        for _, source, masked in source_items:
-            expanded.update(
-                _collect_temporary_relation_names(
-                    source, masked, temporary_relation_names
-                )
-            )
-        if expanded == temporary_relation_names:
-            break
-        temporary_relation_names = expanded
-    while True:
-        temporary_types = {
-            (schema, name)
-            for schema, name in declared_type_names
-            if schema is not None and _is_temporary_schema(schema)
-        }
-        expanded = set(declared_type_names)
-        for _, source, masked in source_items:
-            expanded.update(
-                _collect_declared_type_names(source, masked, temporary_types)
-            )
-        if expanded == declared_type_names:
-            break
-        declared_type_names = expanded
+    if check_deadline is not None:
+        check_deadline()
+    # Resolve cross-file relation and implicit row-type dependencies in
+    # source-independent graph walks. Each source is parsed once; a reversed
+    # chain of renames therefore costs O(files + edges), not one full source
+    # rescan per discovered name.
+    pending_relations = list(temporary_relation_names)
+    while pending_relations:
+        if check_deadline is not None:
+            check_deadline()
+        old_name = pending_relations.pop()
+        for new_name in relation_edges.get(old_name, ()):
+            if check_deadline is not None:
+                check_deadline()
+            if new_name not in temporary_relation_names:
+                temporary_relation_names.add(new_name)
+                pending_relations.append(new_name)
+
+    pending_types = list(temporary_type_names)
+    while pending_types:
+        if check_deadline is not None:
+            check_deadline()
+        schema, old_name = pending_types.pop()
+        renamed_names = set(type_rename_edges.get((schema, old_name), ()))
+        renamed_names.update(type_rename_edges.get((None, old_name), ()))
+        for new_name in renamed_names:
+            if check_deadline is not None:
+                check_deadline()
+            renamed = (schema, new_name)
+            if renamed not in declared_type_names:
+                declared_type_names.add(renamed)
+                temporary_type_names.add(renamed)
+                pending_types.append(renamed)
     return _SqlMutationContext(
         frozenset(attached_indexes),
         unresolved_index_attachment,
@@ -2816,6 +3830,11 @@ def _collect_sql_mutation_context(
         frozenset(dropped_tables),
         frozenset(temporary_relation_names),
         frozenset(relocated_tables),
+        tuple(
+            (identity, *lexed)
+            for identity, lexed in sorted(target_lexes.items())
+            if lexed is not None
+        ),
     )
 
 
@@ -2824,13 +3843,18 @@ def _scan_drop_unique(
     masked: bytes,
     *,
     context: _SqlMutationContext | None = None,
+    check_deadline: Remaining | None = None,
 ) -> "list[_Site]":
     sites = []
     index_form_spans: list[tuple[int, int]] = []
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
     unresolved_attachment = False
     for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
-        reference = _attachment_index_reference(source, masked, attachment)
+        if check_deadline is not None:
+            check_deadline()
+        reference = _attachment_index_reference(
+            source, masked, attachment, check_deadline=check_deadline
+        )
         if reference is None:
             # If the attachment target cannot be parsed, suppress all unique
             # index sites conservatively below.  The constraint half is
@@ -2850,8 +3874,12 @@ def _scan_drop_unique(
         if schema is not None:
             attached_by_schema.setdefault(schema, set()).add(name)
     for m in _CREATE_UNIQUE_INDEX_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         index_form_spans.append((m.start(), m.end()))
-        index_name_parts = _read_created_index_identity(source, masked, m.end())
+        index_name_parts = _read_created_index_identity(
+            source, masked, m.end(), check_deadline=check_deadline
+        )
         index_schema, index_name = index_name_parts if index_name_parts is not None else (None, None)
         linked = index_name is not None and (
             index_name in attached_any_schema
@@ -2880,13 +3908,17 @@ def _scan_drop_unique(
             )
         )
     for m in _UNIQUE_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         if _inside_any(index_form_spans, m.start()):
             continue
         if _USING_INDEX_ATTACHMENT_RE.match(masked, m.end()) is not None:
             # The existing index and its constraint form one semantic unit;
             # a single-site replacement cannot remove both safely.
             continue
-        end = _unique_constraint_end(masked, m.end())
+        end = _unique_constraint_end(
+            masked, m.end(), check_deadline=check_deadline
+        )
         if end is None:
             continue
         sites.append(
@@ -2945,7 +3977,10 @@ def _declare_section_spans(
 
 
 def _column_definition_clauses(
-    source: bytes, masked: bytes
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> list[tuple[int, int, bytes]]:
     """Return CREATE TABLE items and ALTER TABLE ADD actions.
 
@@ -2956,17 +3991,26 @@ def _column_definition_clauses(
     """
     clauses: list[tuple[int, int, bytes]] = []
     for table_match in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         table_open = _read_create_table_columns_open(
-            source, masked, table_match.end()
+            source,
+            masked,
+            table_match.end(),
+            check_deadline=check_deadline,
         )
         if table_open is None:
             continue
-        table_close = _find_matching_close_paren(masked, table_open)
+        table_close = _find_matching_close_paren(
+            masked, table_open, check_deadline=check_deadline
+        )
         if table_close is None:
             continue
         body_start = table_open + 1
         body = masked[body_start:table_close]
-        for start, end in _split_top_level(body):
+        for start, end in _split_top_level(
+            body, check_deadline=check_deadline
+        ):
             absolute_start = body_start + start
             absolute_end = body_start + end
             clauses.append(
@@ -2974,7 +4018,11 @@ def _column_definition_clauses(
             )
 
     for alter in _ALTER_TABLE_RE.finditer(masked):
-        table = _read_alter_table_identity(source, masked, alter.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_alter_table_identity(
+            source, masked, alter.end(), check_deadline=check_deadline
+        )
         if table is None:
             continue
         _, table_end = table
@@ -2982,7 +4030,9 @@ def _column_definition_clauses(
         if statement_end < 0:
             statement_end = len(masked)
         actions = masked[table_end:statement_end]
-        for start, end in _split_top_level(actions):
+        for start, end in _split_top_level(
+            actions, check_deadline=check_deadline
+        ):
             absolute_start = table_end + start
             absolute_end = table_end + end
             action = masked[absolute_start:absolute_end]
@@ -2996,7 +4046,11 @@ def _column_definition_clauses(
 
 
 def _read_create_table_columns_open(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> int | None:
     """Read a CREATE TABLE header and return its column/constraint list.
 
@@ -3006,32 +4060,46 @@ def _read_create_table_columns_open(
     require the opening parenthesis at the syntactic position instead of
     searching ahead into a later clause.
     """
-    table = _read_create_table_identity(source, masked, pos)
+    table = _read_create_table_identity(
+        source, masked, pos, check_deadline=check_deadline
+    )
     if table is None:
         return None
     cursor = table[2]
 
-    modifier = _next_sql_keyword(source, masked, cursor)
+    modifier = _next_sql_keyword(
+        source, masked, cursor, check_deadline=check_deadline
+    )
     if modifier is not None and modifier[0] == b"PARTITION":
-        of_keyword = _next_sql_keyword(source, masked, modifier[1])
+        of_keyword = _next_sql_keyword(
+            source, masked, modifier[1], check_deadline=check_deadline
+        )
         if of_keyword is None or of_keyword[0] != b"OF":
             return None
-        parent = _read_qualified_sql_identifier_details(source, of_keyword[1])
+        parent = _read_qualified_sql_identifier_details(
+            source, of_keyword[1], check_deadline=check_deadline
+        )
         if parent is None:
             return None
         cursor = parent[2]
     elif modifier is not None and modifier[0] == b"OF":
-        parent_type = _read_qualified_sql_identifier_details(source, modifier[1])
+        parent_type = _read_qualified_sql_identifier_details(
+            source, modifier[1], check_deadline=check_deadline
+        )
         if parent_type is None:
             return None
         cursor = parent_type[2]
     elif modifier is not None and modifier[0] == b"USING":
-        method = _read_qualified_sql_identifier_details(source, modifier[1])
+        method = _read_qualified_sql_identifier_details(
+            source, modifier[1], check_deadline=check_deadline
+        )
         if method is None:
             return None
         cursor = method[2]
 
-    table_open = _skip_sql_trivia(source, cursor)
+    table_open = _skip_sql_trivia(
+        source, cursor, check_deadline=check_deadline
+    )
     if table_open is None or table_open >= len(masked):
         return None
     if masked[table_open] != _OPEN_PAREN:
@@ -3086,12 +4154,20 @@ def _implicit_not_null_reason(
 
 
 def _scan_drop_not_null(
-    source: bytes, masked: bytes, declare_spans: list[tuple[int, int]]
+    source: bytes,
+    masked: bytes,
+    declare_spans: list[tuple[int, int]],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> "list[_Site]":
     sites = []
-    column_clauses = _column_definition_clauses(source, masked)
+    column_clauses = _column_definition_clauses(
+        source, masked, check_deadline=check_deadline
+    )
     column_clause_starts = [start for start, _, _ in column_clauses]
     for m in _NOT_NULL_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         preceding = _preceding_word(masked, m.start())
         word = None if preceding is None else preceding[0]
         if word == b"IS":  # rule 1
@@ -3161,17 +4237,26 @@ def _scan_drop_not_null(
 # --- sql:drop-foreign-key ---------------------------------------------------
 
 
-def _scan_drop_foreign_key(source: bytes, masked: bytes) -> "list[_Site]":
+def _scan_drop_foreign_key(
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> "list[_Site]":
     sites = []
     claimed: set[int] = set()
     n = len(masked)
     for m in _FOREIGN_KEY_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         j = m.end()
         while j < n and masked[j : j + 1].isspace():
             j += 1
         if j >= n or masked[j] != _OPEN_PAREN:
             continue
-        close = _find_matching_close_paren(masked, j)
+        close = _find_matching_close_paren(
+            masked, j, check_deadline=check_deadline
+        )
         if close is None:
             continue
         j = close + 1
@@ -3180,7 +4265,9 @@ def _scan_drop_foreign_key(source: bytes, masked: bytes) -> "list[_Site]":
         ref_match = _REFERENCES_RE.match(masked, j)
         if ref_match is None:
             continue
-        end = _extend_references_clause(masked, ref_match.start())
+        end = _extend_references_clause(
+            masked, ref_match.start(), check_deadline=check_deadline
+        )
         if end is None:
             continue
         claimed.add(ref_match.start())
@@ -3195,12 +4282,16 @@ def _scan_drop_foreign_key(source: bytes, masked: bytes) -> "list[_Site]":
             )
         )
     for m in _REFERENCES_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         if m.start() in claimed:
             continue
         stmt_start = _statement_start(masked, m.start())
         if _first_word(masked, stmt_start) in (b"GRANT", b"REVOKE"):  # A-283
             continue
-        end = _extend_references_clause(masked, m.start())
+        end = _extend_references_clause(
+            masked, m.start(), check_deadline=check_deadline
+        )
         if end is None:
             continue
         sites.append(
@@ -3219,9 +4310,16 @@ def _scan_drop_foreign_key(source: bytes, masked: bytes) -> "list[_Site]":
 # --- sql:weaken-delete-action ------------------------------------------------
 
 
-def _scan_weaken_delete_action(source: bytes, masked: bytes) -> "list[_Site]":
+def _scan_weaken_delete_action(
+    source: bytes,
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> "list[_Site]":
     sites = []
     for m in _WEAKEN_DELETE_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         action_start, action_end = m.start(1), m.end(1)
         action_text = source[action_start:action_end].decode("ascii", "replace")
         sites.append(
@@ -3241,10 +4339,16 @@ def _scan_weaken_delete_action(source: bytes, masked: bytes) -> "list[_Site]":
 
 
 def _scan_drop_trigger(
-    source: bytes, masked: bytes, dollar_bodies: tuple[tuple[int, int], ...]
+    source: bytes,
+    masked: bytes,
+    dollar_bodies: tuple[tuple[int, int], ...],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> "list[_Site]":
     sites = []
     for m in _CREATE_TRIGGER_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         if _inside_any(dollar_bodies, m.start()):  # the carve's own scope reduction
             continue
         semicolon = masked.find(b";", m.end())
@@ -3272,7 +4376,11 @@ def _scan_widen_check_in(
     *,
     context: _SqlMutationContext | None = None,
     source_identity: str | None = None,
+    dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
+    check_deadline: Remaining | None = None,
 ) -> "list[_Site]":
+    if check_deadline is not None:
+        check_deadline()
     sites = []
     enum_types = {
         (
@@ -3295,18 +4403,40 @@ def _scan_widen_check_in(
         ]
     ] = []
     declared_column_types, local_collated_columns = _collect_table_column_metadata(
-        source, masked
+        source, masked, check_deadline=check_deadline
     )
-    declared_type_names = set(_collect_declared_type_names(source, masked))
-    path_configuration_ranges = _non_session_configuration_ranges(source, masked)
-    path_transaction_ranges = _explicit_transaction_ranges(source, masked)
-    path_dollar_body_ranges = lex_sql(source).dollar_bodies
+    path_dollar_body_ranges = dollar_body_ranges
+    if path_dollar_body_ranges is None:
+        path_dollar_body_ranges = lex_sql(
+            source, check_deadline=check_deadline
+        ).dollar_bodies
+    declared_type_names = set(
+        _collect_declared_type_names(
+            source,
+            masked,
+            dollar_body_ranges=path_dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
+    )
+    path_configuration_ranges = _non_session_configuration_ranges(
+        source,
+        masked,
+        dollar_body_ranges=path_dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
+    path_transaction_ranges = _explicit_transaction_ranges(
+        source,
+        masked,
+        dollar_body_ranges=path_dollar_body_ranges,
+        check_deadline=check_deadline,
+    )
     search_path_settings = _search_path_value_starts(
         source,
         masked,
         configuration_ranges=path_configuration_ranges,
         transaction_ranges=path_transaction_ranges,
         dollar_body_ranges=path_dollar_body_ranges,
+        check_deadline=check_deadline,
     )
     search_path_timeline = _build_search_path_timeline(
         source,
@@ -3314,15 +4444,29 @@ def _scan_widen_check_in(
         path_settings=search_path_settings,
         configuration_ranges=path_configuration_ranges,
         dollar_body_ranges=path_dollar_body_ranges,
+        check_deadline=check_deadline,
     )
     context_search_path_may_shadow_catalog = False
     all_declared_column_types = set(declared_column_types)
     context_column_keys: set[tuple[tuple[bytes | None, bytes], bytes]] = set()
     collated_columns = set(local_collated_columns)
-    altered_columns = set(_collect_altered_columns(source, masked))
-    dropped_tables = set(_collect_dropped_tables(source, masked))
-    temporary_relation_names = set(_collect_temporary_relation_names(source, masked))
-    relocated_tables = set(_collect_relocated_tables(source, masked))
+    altered_columns = set(
+        _collect_altered_columns(source, masked, check_deadline=check_deadline)
+    )
+    dropped_tables = set(
+        _collect_dropped_tables(source, masked, check_deadline=check_deadline)
+    )
+    temporary_relation_names = set(
+        _collect_temporary_relation_names(
+            source,
+            masked,
+            dollar_body_ranges=path_dollar_body_ranges,
+            check_deadline=check_deadline,
+        )
+    )
+    relocated_tables = set(
+        _collect_relocated_tables(source, masked, check_deadline=check_deadline)
+    )
     if context is not None:
         all_declared_column_types.update(context.declared_column_types)
         context_column_keys.update(
@@ -3345,7 +4489,11 @@ def _scan_widen_check_in(
         tuple[bytes | None, bytes], dict[bytes, set[int]]
     ] = {}
     for table_match in _CREATE_TABLE_RE.finditer(masked):
-        column_list = _create_table_column_list(masked, table_match)
+        if check_deadline is not None:
+            check_deadline()
+        column_list = _create_table_column_list(
+            masked, table_match, check_deadline=check_deadline
+        )
         if column_list is None:
             continue
         table_name, table_open, table_close = column_list
@@ -3353,9 +4501,19 @@ def _scan_widen_check_in(
         table_types: dict[bytes, set[bytes]] = {}
         table_collations: frozenset[bytes] = frozenset()
         column_type_offsets: dict[bytes, set[int]] = {}
-        if not _create_table_is_if_not_exists(source, masked, table_match):
+        if not _create_table_is_if_not_exists(
+            source,
+            masked,
+            table_match,
+            check_deadline=check_deadline,
+        ):
             declarations, collations = _table_column_declarations(
-                source, masked, table_key, table_open, table_close
+                source,
+                masked,
+                table_key,
+                table_open,
+                table_close,
+                check_deadline=check_deadline,
             )
             offsets_by_column = type_declaration_offsets_by_table.setdefault(
                 table_key, {}
@@ -3403,7 +4561,11 @@ def _scan_widen_check_in(
     semicolons = [match.start() for match in re.finditer(rb";", masked)]
     alter_spans: list[tuple[int, int, tuple[bytes | None, bytes]]] = []
     for alter in _ALTER_TABLE_RE.finditer(masked):
-        table = _read_alter_table_identity(source, masked, alter.end())
+        if check_deadline is not None:
+            check_deadline()
+        table = _read_alter_table_identity(
+            source, masked, alter.end(), check_deadline=check_deadline
+        )
         if table is None:
             continue
         semicolon_index = bisect_right(semicolons, alter.start())
@@ -3578,13 +4740,19 @@ def _scan_widen_check_in(
         )
 
     for check_m in _CHECK_OPEN_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
         open_paren = check_m.end() - 1
-        check_close = _find_matching_close_paren(masked, open_paren)
+        check_close = _find_matching_close_paren(
+            masked, open_paren, check_deadline=check_deadline
+        )
         if check_close is None:
             continue
         region = masked[open_paren + 1 : check_close]
         region_offset = open_paren + 1
         for in_m in _IN_OPEN_RE.finditer(region):
+            if check_deadline is not None:
+                check_deadline()
             in_open = region_offset + in_m.end() - 1
             is_not_in = re.search(rb"\bNOT\s*$", region[: in_m.start()], re.IGNORECASE) is not None
             # `in_open` is a "(" strictly inside the already-balanced span
@@ -3595,8 +4763,13 @@ def _scan_widen_check_in(
             # inside that same span too). Never `None`, never past
             # `check_close`; no defensive check here, because there is no
             # input that could make one fire.
-            in_close = _find_matching_close_paren(masked, in_open)
-            member_spans = _split_top_level(masked[in_open + 1 : in_close])
+            in_close = _find_matching_close_paren(
+                masked, in_open, check_deadline=check_deadline
+            )
+            member_spans = _split_top_level(
+                masked[in_open + 1 : in_close],
+                check_deadline=check_deadline,
+            )
             members = [
                 source[in_open + 1 + s : in_open + 1 + e].strip()
                 for s, e in member_spans
@@ -3785,6 +4958,7 @@ def _all_candidate_sites(
     declare_spans: list[tuple[int, int]],
     context: _SqlMutationContext | None = None,
     source_identity: str | None = None,
+    check_deadline: Remaining | None = None,
 ) -> "list[_Site]":
     """Every candidate from every scanner, in the operator table's own
     order (§3.2) -- never itself filtered by *lines*/*operators*/*limit*;
@@ -3792,20 +4966,67 @@ def _all_candidate_sites(
     single bounded heap, mirroring
     :func:`assay.adapters.python._generate_python_sites` (A-281)."""
     sites: list[_Site] = []
-    sites.extend(_scan_drop_check(source, masked))
-    sites.extend(_scan_drop_unique(source, masked, context=context))
-    sites.extend(_scan_drop_not_null(source, masked, declare_spans))
-    sites.extend(_scan_drop_foreign_key(source, masked))
-    sites.extend(_scan_weaken_delete_action(source, masked))
-    sites.extend(_scan_drop_trigger(source, masked, dollar_bodies))
+    if check_deadline is not None:
+        check_deadline()
+    sites.extend(
+        _scan_drop_check(source, masked, check_deadline=check_deadline)
+    )
+    if check_deadline is not None:
+        check_deadline()
+    sites.extend(
+        _scan_drop_unique(
+            source,
+            masked,
+            context=context,
+            check_deadline=check_deadline,
+        )
+    )
+    if check_deadline is not None:
+        check_deadline()
+    sites.extend(
+        _scan_drop_not_null(
+            source,
+            masked,
+            declare_spans,
+            check_deadline=check_deadline,
+        )
+    )
+    if check_deadline is not None:
+        check_deadline()
+    sites.extend(
+        _scan_drop_foreign_key(source, masked, check_deadline=check_deadline)
+    )
+    if check_deadline is not None:
+        check_deadline()
+    sites.extend(
+        _scan_weaken_delete_action(
+            source, masked, check_deadline=check_deadline
+        )
+    )
+    if check_deadline is not None:
+        check_deadline()
+    sites.extend(
+        _scan_drop_trigger(
+            source,
+            masked,
+            dollar_bodies,
+            check_deadline=check_deadline,
+        )
+    )
+    if check_deadline is not None:
+        check_deadline()
     sites.extend(
         _scan_widen_check_in(
             source,
             masked,
             context=context,
             source_identity=source_identity,
+            dollar_body_ranges=dollar_bodies,
+            check_deadline=check_deadline,
         )
     )
+    if check_deadline is not None:
+        check_deadline()
     return sites
 
 
@@ -3909,6 +5130,40 @@ class SqlAdapter:
         """Pre-scan context with path identities for same-file exclusions."""
         return _collect_sql_mutation_context(sources)
 
+    def prepare_mutation_context_with_sources_for_targets(
+        self,
+        sources: Iterable[tuple[str, str]],
+        *,
+        target_source_identities: frozenset[str],
+    ) -> _SqlMutationContext:
+        """Pre-scan context and retain exact lex results for selected targets."""
+        return _collect_sql_mutation_context(
+            sources, target_source_identities=target_source_identities
+        )
+
+    def prepare_mutation_context_with_sources_bounded(
+        self,
+        sources: Iterable[tuple[str, str]],
+        *,
+        remaining: Remaining,
+    ) -> _SqlMutationContext:
+        """Pre-scan SQL context while honoring the lane's one deadline."""
+        return _collect_sql_mutation_context(sources, check_deadline=remaining)
+
+    def prepare_mutation_context_with_sources_for_targets_bounded(
+        self,
+        sources: Iterable[tuple[str, str]],
+        *,
+        remaining: Remaining,
+        target_source_identities: frozenset[str],
+    ) -> _SqlMutationContext:
+        """Bounded context pre-scan with target lex reuse enabled explicitly."""
+        return _collect_sql_mutation_context(
+            sources,
+            check_deadline=remaining,
+            target_source_identities=target_source_identities,
+        )
+
     def generate_mutation_sites(
         self,
         text: str,
@@ -3934,6 +5189,7 @@ class SqlAdapter:
         limit: int,
         context: _SqlMutationContext | None,
         source_identity: str | None = None,
+        check_deadline: Remaining | None = None,
     ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
         """Generate bounded sites using cross-file DDL facts when available.
 
@@ -3942,21 +5198,47 @@ class SqlAdapter:
         (:class:`~assay.mutation.MutationDiscoveryError`, raised by
         :func:`~assay.adapters.sql_lex.lex_sql` and left to propagate
         uncaught), never capability absence."""
+        if check_deadline is not None:
+            check_deadline()
         source = text.encode("utf-8")
-        lex = lex_sql(source)
+        cached_lex: tuple[bytes, bytes, tuple[tuple[int, int], ...]] | None = None
+        if context is not None and source_identity is not None:
+            cached_index = bisect_left(
+                context.lexed_target_sources, (source_identity,)
+            )
+            if (
+                cached_index < len(context.lexed_target_sources)
+                and context.lexed_target_sources[cached_index][0] == source_identity
+            ):
+                _, cached_text, cached_mask, cached_bodies = (
+                    context.lexed_target_sources[cached_index]
+                )
+                if cached_text == text:
+                    cached_lex = (source, cached_mask, cached_bodies)
+        if cached_lex is None:
+            lex = lex_sql(source, check_deadline=check_deadline)
+            masked = lex.mask
+            dollar_bodies = lex.dollar_bodies
+        else:
+            _, masked, dollar_bodies = cached_lex
+        if check_deadline is not None:
+            check_deadline()
         selected = set(operators)
-        declare_spans = _declare_section_spans(lex.mask, lex.dollar_bodies)
+        declare_spans = _declare_section_spans(masked, dollar_bodies)
 
         heap: list[tuple[_Worst, int, _Site]] = []
         seen = 0
         for site in _all_candidate_sites(
             source,
-            lex.mask,
-            lex.dollar_bodies,
+            masked,
+            dollar_bodies,
             declare_spans,
             context=context,
             source_identity=source_identity,
+            check_deadline=check_deadline,
         ):
+            if check_deadline is not None:
+                check_deadline()
             if site.lineno not in lines or site.operator not in selected:
                 continue
             if not _replacement_is_safe(site.operator, site.replacement):
@@ -3975,7 +5257,7 @@ class SqlAdapter:
                 heapq.heapreplace(heap, entry)
 
         retained = sorted(heap, key=lambda entry: entry[0].key)
-        return tuple(
+        result = tuple(
             MutationSite(
                 start_byte=site.start,
                 end_byte=site.end,
@@ -3986,6 +5268,9 @@ class SqlAdapter:
             )
             for _, _, site in retained
         )
+        if check_deadline is not None:
+            check_deadline()
+        return result
 
     def generate_mutation_sites_with_context_for_source(
         self,
@@ -4005,4 +5290,26 @@ class SqlAdapter:
             limit=limit,
             context=context,
             source_identity=source_identity,
+        )
+
+    def generate_mutation_sites_with_context_for_source_bounded(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+        context: _SqlMutationContext | None,
+        source_identity: str,
+        remaining: Remaining,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """Generate target sites under the plan or run's lane deadline."""
+        return self.generate_mutation_sites_with_context(
+            text,
+            lines,
+            operators=operators,
+            limit=limit,
+            context=context,
+            source_identity=source_identity,
+            check_deadline=remaining,
         )

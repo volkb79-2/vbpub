@@ -1739,14 +1739,70 @@ def test_S4_S5_selector_refuses_missing_known_hard_import_time_sites(tmp_path: P
 def test_selector_accepts_real_assay_plan_and_loader_accepts_its_output(
     tmp_path: Path,
 ):
-    project_root = Path(__file__).resolve().parents[2]
+    # The self-qualification lane runs this suite inside a shallow P22
+    # snapshot. Planning the full self-qualification lane from that snapshot
+    # would try to prepare a nested P22 source and correctly refuse its
+    # `.git/shallow` boundary. Keep this interface test on a separate,
+    # one-commit repository while still generating its plan with Assay's real
+    # CLI and the real scanner source used by the B110 selector.
+    repo_root = tmp_path / "repo"
+    project_root = repo_root / "assay"
+    adapters = project_root / "src" / "assay" / "adapters"
+    adapters.mkdir(parents=True)
+    source_root = (
+        Path(__file__).resolve().parents[2] / "src" / "assay" / "adapters"
+    )
+    (adapters / "go.py").write_bytes((source_root / "go.py").read_bytes())
+    (adapters / "pilot_bool_fixture.py").write_bytes(
+        b"FLAG_A = True\nFLAG_B = False\nFLAG_C = True\n"
+    )
+    lane_file = project_root / "assay.toml"
+    lane_file.write_text(
+        """\
+schema_version = 2
+
+[lanes.self-qualification]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["python", "-c", "pass"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.self-qualification.isolation]
+snapshot_selection = "repository"
+
+[lanes.self-qualification.judge]
+language = "python"
+source_roots = ["src/assay/adapters"]
+mode = "whole_target"
+targets = [
+  "src/assay/adapters/go.py",
+  "src/assay/adapters/pilot_bool_fixture.py",
+]
+
+[lanes.self-qualification.judge.mutation]
+jobs = 1
+max_mutants = 1000
+operators = ["python:compare-swap", "python:bool-const-flip"]
+""",
+        encoding="utf-8",
+    )
+    _git(repo_root, "init", "-q", "--object-format=sha1")
+    _git(repo_root, "config", "user.name", "Assay selector test")
+    _git(repo_root, "config", "user.email", "assay-selector@example.invalid")
+    _git(repo_root, "add", "-A")
+    _git(repo_root, "commit", "--allow-empty", "-m", "selector integration fixture")
+
     plan_stdout, plan_stderr = io.StringIO(), io.StringIO()
     plan_code = assay_cli.main(
         [
             "plan",
             "self-qualification",
             "--file",
-            str(project_root / "assay.toml"),
+            str(lane_file),
             "--allow-dirty",
         ],
         stdout=plan_stdout,
@@ -1772,7 +1828,7 @@ def test_selector_accepts_real_assay_plan_and_loader_accepts_its_output(
     subprocess.run(
         ["git", "-c", "maintenance.auto=false", "-c", "maintenance.autoDetach=false",
          "-c", "gc.autoDetach=false", "clone", "--quiet", "--shared", "--no-checkout",
-         str(project_root.parent), str(tmp_path / "clean-repo")],
+         str(repo_root), str(tmp_path / "clean-repo")],
         check=True,
         capture_output=True,
     )
@@ -1799,7 +1855,7 @@ def test_selector_accepts_real_assay_plan_and_loader_accepts_its_output(
         )
     assert selection_code == 0, selection_stderr.getvalue() + selection_stdout.getvalue()
 
-    lane = assay_cli._resolve_lane_file(project_root / "assay.toml").lane(
+    lane = assay_cli._resolve_lane_file(lane_file).lane(
         "self-qualification"
     )
     assert lane.judge is not None and lane.judge.mutation is not None

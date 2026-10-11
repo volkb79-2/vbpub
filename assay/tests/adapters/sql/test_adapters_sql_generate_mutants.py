@@ -2774,6 +2774,7 @@ def test_replacement_invariant_is_actually_wired_into_generate_mutation_sites(mo
         *,
         context=None,
         source_identity=None,
+        check_deadline=None,
     ):
         sites = list(
             real_candidates(
@@ -2783,6 +2784,7 @@ def test_replacement_invariant_is_actually_wired_into_generate_mutation_sites(mo
                 declare_spans,
                 context=context,
                 source_identity=source_identity,
+                check_deadline=check_deadline,
             )
         )
         sites.append(

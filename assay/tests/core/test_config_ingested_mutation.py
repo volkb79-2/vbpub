@@ -334,6 +334,9 @@ def test_assay_plan_names_why_an_ingested_lane_cannot_be_planned(
             worktree_integrity=None,
             reuse_command_plan=None,
             reuse_command_cwd=None,
+            deadline=cli.runner.LaneDeadline(
+                expires_at=60.0, monotonic=lambda: 0.0
+            ),
         ),
     )
     out, err = io.StringIO(), io.StringIO()

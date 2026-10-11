@@ -662,10 +662,13 @@ immediately before and after it. If the lane stops before a full command starts,
 that candidate remains `budget_exceeded` and shares a zero-duration sample
 taken after already-submitted work finishes. Replacement materialization or a
 saved-witness replay may already have run; the shared sample does not describe
-that earlier work or prove it did not happen. A positive delta during a full
-command records that candidate as `crashed`, making R2
-`ERROR/EXEC_FAILED`. A positive delta during witness-prefix replay instead
-stops the lane with payload-free `ERROR/EXEC_FAILED` before retry, so the replay
+that earlier work or prove it did not happen. A positive candidate-leaf delta,
+with every positive visible-ancestor delta matching it, records that candidate
+as `crashed`, making R2 `ERROR/EXEC_FAILED`. An unmatched or different positive
+ancestor delta cannot be attributed to that candidate, so Assay withholds
+mutation outcomes and fails with the same infrastructure error. A positive
+delta during witness-prefix replay likewise stops the lane with payload-free
+`ERROR/EXEC_FAILED` before retry, so the replay
 event cannot be hidden by a later command. A positive delta never certifies a
 kill or survivor. The visible cgroup paths, controller availability, and
 configured limits must match between the bracketing samples. If they change,
@@ -2483,12 +2486,12 @@ actual `CgroupParent`, then compares mount and PID namespaces through
 `docker exec` to bind that lookup to the cockpit itself. Its first read-only
 system-bus query is a tightly capped bootstrap container under the already
 verified interactive tier. The gates slice is not used until both unit
-identities and installed fragments are verified. The
-read-only cgroup probe
-then checks at least 2 GiB of point-in-time RAM headroom. The wrapper launches
-a detached `tester-unified` container in that
-slice with `--cgroupns=host`, `--init`, network disabled, explicit CPU and
-memory bounds, and the whole workspace root mounted at both its physical host
+identities and installed fragments are verified. It also checks the gates
+slice's loaded systemd properties and at least 2 GiB of point-in-time RAM
+headroom through the host system bus.
+The wrapper launches the detached `tester-unified` runner in that slice with
+`--cgroupns=private`, `--init`, network disabled, explicit CPU and memory
+bounds, the read-only resource-observer socket, and the whole workspace root mounted at both its physical host
 path and `/workspaces/vbpub`. Mounting the workspace root keeps a linked
 worktree's nested path and shared Git directory available in the container. It
 verifies the container's ID, ownership token, cgroup,

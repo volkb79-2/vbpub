@@ -197,6 +197,12 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out:\n"
         "    out.write(json.dumps(args) + '\\n')\n"
         "if args[:2] == ['run', '-d']:\n"
+        "    gitfile = pathlib.Path(os.environ['HOST_WORKTREE_GITFILE']).read_text(encoding='ascii')\n"
+        "    gitdir = gitfile.strip().split(' ', 1)[1]\n"
+        "    host_root = os.environ['HOST_REPO_ROOT']\n"
+        "    physical_mount = ['--mount', f'type=bind,src={host_root},dst={host_root}']\n"
+        "    if not gitdir.startswith(host_root + '/') or not all(value in args for value in physical_mount):\n"
+        "        raise SystemExit(91)\n"
         "    cid = os.environ.get('DOCKER_CID_VALUE', 'a' * 64)\n"
         "    pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).unlink(missing_ok=True)\n"
         "    name = args[args.index('--name') + 1]\n"
@@ -228,6 +234,12 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
+    host_worktree = tmp_path / "host-worktree"
+    host_worktree.mkdir()
+    host_gitfile = host_worktree / ".git"
+    host_gitfile.write_text(
+        "gitdir: /host/vbpub/.git/worktrees/test\n", encoding="ascii"
+    )
     env = {
         **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -236,6 +248,8 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         "DOCKER_OWNER_FILE": str(tmp_path / "tester-owner.txt"),
         "DOCKER_REMOVED_FILE": str(tmp_path / "tester-removed.txt"),
         "DOCKER_WAIT_STATUS": "17",
+        "HOST_WORKTREE_GITFILE": str(host_gitfile),
+        "HOST_REPO_ROOT": "/host/vbpub",
         "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
         "ASSAY_GATE_EXPECTED_COMMIT": HEX40,
     }
@@ -269,6 +283,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
+    assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
     assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
     assert not any("docker.sock" in value for value in run)
@@ -321,6 +336,40 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     foreign_run = next(argv for argv in foreign_calls if argv[:2] == ["run", "-d"])
     foreign_cidfile_path = Path(foreign_run[3])
     assert foreign_cidfile_path.parent.exists(), "preserve a planted foreign ID for recovery"
+
+    calls_path.unlink()
+    env.pop("DOCKER_RUN_STATUS", None)
+    env.pop("DOCKER_CID_ON_FAILED_LAUNCH", None)
+    env.pop("DOCKER_INSPECT_OWNER_OVERRIDE", None)
+    timeout_calls = tmp_path / "timeout-calls.txt"
+    timeout_shim = fake_bin / "timeout"
+    timeout_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$TIMEOUT_CALLS"\n'
+        'while [[ "$1" == --* || "$1" =~ ^[0-9]+s$ ]]; do shift; done\n'
+        'if [[ "$1" == docker && "$2" == update ]]; then exit 124; fi\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    timeout_shim.chmod(0o755)
+    env["TIMEOUT_CALLS"] = str(timeout_calls)
+    update_timeout = run_bash(
+        'run_registered_tester_container "/workspaces/vbpub/.worktrees/test" '
+        '"/host/vbpub" "dev-gates.slice" "994"',
+        gate_functions=gate_functions,
+        env=env,
+    )
+    assert update_timeout.returncode != 0
+    assert "bounded docker update exit 124" in update_timeout.stderr
+    timeout_argv = timeout_calls.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "--signal=TERM --kill-after=5s 30s docker update --cpus=3 " in call
+        for call in timeout_argv
+    )
+    timeout_calls_docker = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert timeout_calls_docker[-1] == ["rm", "-f", container_id]
 
 
 @pytest.mark.parametrize("ps_mode", ["error", "uninterruptible"])

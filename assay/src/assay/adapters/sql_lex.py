@@ -59,6 +59,7 @@ clean run; a wrong raise on genuinely valid DDL is at worst a false failure
 
 from __future__ import annotations
 
+from .base import Remaining
 from ..records import record
 
 from ..errors import require_advance
@@ -76,6 +77,54 @@ _DOUBLE_QUOTE = 0x22
 _DOLLAR = 0x24
 _BACKSLASH = 0x5C
 _UNDERSCORE = 0x5F
+_DEADLINE_CHECK_INTERVAL = 4096
+
+
+def _matches_at(
+    source: bytes,
+    needle: bytes | memoryview,
+    position: int,
+    *,
+    check_deadline: Remaining,
+) -> bool:
+    if position + len(needle) > len(source):
+        return False
+    offset = 0
+    while offset < len(needle):
+        check_deadline()
+        end = min(len(needle), offset + _DEADLINE_CHECK_INTERVAL)
+        if source[position + offset : position + end] != needle[offset:end]:
+            return False
+        offset = end
+    return True
+
+
+def _find_next(
+    source: bytes,
+    needle: bytes | memoryview,
+    start: int,
+    *,
+    check_deadline: Remaining | None,
+) -> int:
+    """Find *needle* while bounding each source and pattern comparison."""
+    if not needle:
+        return start
+    if check_deadline is None:
+        return source.find(bytes(needle), start)
+    first_byte = bytes((needle[0],))
+    cursor = start
+    while cursor < len(source):
+        check_deadline()
+        search_end = min(len(source), cursor + _DEADLINE_CHECK_INTERVAL)
+        found = source.find(first_byte, cursor, search_end)
+        while found >= 0:
+            if _matches_at(
+                source, needle, found, check_deadline=check_deadline
+            ):
+                return found
+            found = source.find(first_byte, found + 1, search_end)
+        cursor = search_end
+    return -1
 
 
 def _is_ident_start_byte(b: int) -> bool:
@@ -101,19 +150,34 @@ def _is_word_byte(b: int) -> bool:
     return _is_ident_continue_byte(b)
 
 
-def _blank(mask: bytearray, start: int, end: int) -> None:
+def _blank(
+    mask: bytearray,
+    start: int,
+    end: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> None:
     """Overwrite ``mask[start:end]`` with spaces, except any real ``\\n``,
     which is left untouched so a masked construct never fuses two source
     lines into one and never turns a genuine line break into something it
     wasn't (mirrors :mod:`assay.adapters.go`'s own ``_blank``, one module
     over, operating on ``bytes`` here instead of ``str``)."""
+    next_deadline_check = start + _DEADLINE_CHECK_INTERVAL
     for i in range(start, end):
+        if check_deadline is not None and i >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = i + _DEADLINE_CHECK_INTERVAL
         if mask[i] != _NEWLINE:
             mask[i] = _SPACE
 
 
 def _scan_quoted(
-    source: bytes, start: int, quote: int, *, backslash_escapes: bool
+    source: bytes,
+    start: int,
+    quote: int,
+    *,
+    backslash_escapes: bool,
+    check_deadline: Remaining | None = None,
 ) -> int | None:
     """``source[start] == quote``, the OPENING delimiter of a ``'...'``
     string, ``"..."`` quoted identifier, or ``E'...'`` escape string.
@@ -134,7 +198,11 @@ def _scan_quoted(
     """
     n = len(source)
     i = start + 1
+    next_deadline_check = i + _DEADLINE_CHECK_INTERVAL
     while i < n:
+        if check_deadline is not None and i >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = i + _DEADLINE_CHECK_INTERVAL
         b = source[i]
         if backslash_escapes and b == _BACKSLASH:
             i += 2
@@ -148,7 +216,9 @@ def _scan_quoted(
     return None
 
 
-def _find_dollar_tag_end(source: bytes, start: int) -> int | None:
+def _find_dollar_tag_end(
+    source: bytes, start: int, *, check_deadline: Remaining | None = None
+) -> int | None:
     """``source[start] == '$'``. Returns the index just past the CLOSING
     ``$`` of the tag (so the whole delimiter is ``source[start:returned]``),
     or ``None`` if this ``$`` does not open a valid dollar-quote tag at all
@@ -165,14 +235,20 @@ def _find_dollar_tag_end(source: bytes, start: int) -> int | None:
     j = i
     if j < n and _is_ident_start_byte(source[j]):
         j += 1
+        next_deadline_check = j + _DEADLINE_CHECK_INTERVAL
         while j < n and _is_ident_continue_byte(source[j]):
+            if check_deadline is not None and j >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = j + _DEADLINE_CHECK_INTERVAL
             j += 1
         if j < n and source[j] == _DOLLAR:
             return j + 1
     return None
 
 
-def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
+def _lex_once(
+    source: bytes, *, check_deadline: Remaining | None = None
+) -> tuple[bytearray, list[tuple[int, int]]]:
     """ONE forward pass (phase 1): classify every byte of *source* as code
     or not, returning a mutable mask (code bytes verbatim, everything else
     blanked per :func:`_blank`) and every dollar-quoted BODY span found
@@ -184,17 +260,23 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
     unterminated string, quoted identifier, dollar quote, or block comment
     is found -- phase 3, fail closed."""
     n = len(source)
+    if check_deadline is not None:
+        check_deadline()
     mask = bytearray(source)
     dollar_bodies: list[tuple[int, int]] = []
     i = 0
+    next_deadline_check = _DEADLINE_CHECK_INTERVAL
     while i < n:
+        if check_deadline is not None and i >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = i + _DEADLINE_CHECK_INTERVAL
         b = source[i]
 
         # -- line comment: to the next '\n' or EOF.
         if b == _DASH and i + 1 < n and source[i + 1] == _DASH:
-            end = source.find(b"\n", i)
+            end = _find_next(source, b"\n", i, check_deadline=check_deadline)
             end = n if end == -1 else end
-            _blank(mask, i, end)
+            _blank(mask, i, end, check_deadline=check_deadline)
             i = require_advance(i, end)
             continue
 
@@ -202,7 +284,11 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
         if b == _SLASH and i + 1 < n and source[i + 1] == _STAR:
             depth = 1
             j = i + 2
+            next_comment_check = j + _DEADLINE_CHECK_INTERVAL
             while j < n and depth > 0:
+                if check_deadline is not None and j >= next_comment_check:
+                    check_deadline()
+                    next_comment_check = j + _DEADLINE_CHECK_INTERVAL
                 if source[j] == _SLASH and j + 1 < n and source[j + 1] == _STAR:
                     depth += 1
                     j += 2
@@ -217,7 +303,7 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
                     "sql mutation discovery: unterminated block comment "
                     f"starting at byte {i}"
                 )
-            _blank(mask, i, j)
+            _blank(mask, i, j, check_deadline=check_deadline)
             i = j
             continue
 
@@ -230,54 +316,83 @@ def _lex_once(source: bytes) -> tuple[bytearray, list[tuple[int, int]]]:
             and (i == 0 or not _is_word_byte(source[i - 1]))
         ):
             end = _scan_quoted(
-                source, i + 1, _SINGLE_QUOTE, backslash_escapes=True
+                source,
+                i + 1,
+                _SINGLE_QUOTE,
+                backslash_escapes=True,
+                check_deadline=check_deadline,
             )
             if end is None:
                 raise MutationDiscoveryError(
                     "sql mutation discovery: unterminated escape string "
                     f"starting at byte {i}"
                 )
-            _blank(mask, i, end)
+            _blank(mask, i, end, check_deadline=check_deadline)
             i = end
             continue
 
         # '...' string literal (also the tail half of U&'...', which needs
         # no special case: 'U&' is two ordinary code bytes ahead of it).
         if b == _SINGLE_QUOTE:
-            end = _scan_quoted(source, i, _SINGLE_QUOTE, backslash_escapes=False)
+            end = _scan_quoted(
+                source,
+                i,
+                _SINGLE_QUOTE,
+                backslash_escapes=False,
+                check_deadline=check_deadline,
+            )
             if end is None:
                 raise MutationDiscoveryError(
                     f"sql mutation discovery: unterminated string starting at byte {i}"
                 )
-            _blank(mask, i, end)
+            _blank(mask, i, end, check_deadline=check_deadline)
             i = end
             continue
 
         # "..." quoted identifier.
         if b == _DOUBLE_QUOTE:
-            end = _scan_quoted(source, i, _DOUBLE_QUOTE, backslash_escapes=False)
+            end = _scan_quoted(
+                source,
+                i,
+                _DOUBLE_QUOTE,
+                backslash_escapes=False,
+                check_deadline=check_deadline,
+            )
             if end is None:
                 raise MutationDiscoveryError(
                     "sql mutation discovery: unterminated quoted identifier "
                     f"starting at byte {i}"
                 )
-            _blank(mask, i, end)
+            _blank(mask, i, end, check_deadline=check_deadline)
             i = end
             continue
 
         # $tag$...$tag$ dollar-quoted string.
         if b == _DOLLAR:
-            tag_end = _find_dollar_tag_end(source, i)
+            tag_end = _find_dollar_tag_end(
+                source, i, check_deadline=check_deadline
+            )
             if tag_end is not None:
-                delimiter = source[i:tag_end]
-                close = source.find(delimiter, tag_end)
+                delimiter = (
+                    source[i:tag_end]
+                    if check_deadline is None
+                    else memoryview(source)[i:tag_end]
+                )
+                close = _find_next(
+                    source, delimiter, tag_end, check_deadline=check_deadline
+                )
                 if close == -1:
                     raise MutationDiscoveryError(
                         "sql mutation discovery: unterminated dollar-quoted "
                         f"string starting at byte {i}"
                     )
                 dollar_bodies.append((tag_end, close))
-                _blank(mask, i, close + len(delimiter))
+                _blank(
+                    mask,
+                    i,
+                    close + len(delimiter),
+                    check_deadline=check_deadline,
+                )
                 i = require_advance(i, close + len(delimiter))
                 continue
             i += 1
@@ -308,7 +423,9 @@ class LexResult:
     dollar_bodies: tuple[tuple[int, int], ...]
 
 
-def lex_sql(source: bytes) -> LexResult:
+def lex_sql(
+    source: bytes, *, check_deadline: Remaining | None = None
+) -> LexResult:
     """The public entry point: phase 1 over *source*, then phase 2 -- each
     recorded dollar-quoted body is re-lexed by the SAME phase-1 routine and
     its result spliced back into the outer mask at that exact byte range,
@@ -318,10 +435,13 @@ def lex_sql(source: bytes) -> LexResult:
     Raises :class:`~assay.mutation.MutationDiscoveryError` for a source that
     does not lex cleanly at either level -- an unterminated construct
     anywhere, including inside a dollar-quoted body, fails the whole file
-    closed.
+    closed. When supplied, *check_deadline* is called during large scans and
+    its exception propagates unchanged.
     """
-    mask, dollar_bodies = _lex_once(source)
+    mask, dollar_bodies = _lex_once(source, check_deadline=check_deadline)
     for start, end in dollar_bodies:
-        inner_mask, _ = _lex_once(source[start:end])
+        inner_mask, _ = _lex_once(
+            source[start:end], check_deadline=check_deadline
+        )
         mask[start:end] = inner_mask
     return LexResult(mask=bytes(mask), dollar_bodies=tuple(dollar_bodies))

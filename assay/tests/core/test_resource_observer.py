@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -270,6 +271,83 @@ def test_socket_client_sends_one_request_and_parses_one_response(tmp_path):
     assert received["args"] == {"thread_id": threading.get_native_id()}
     assert received["contract"] == 1
     assert counters.path_event_counters[0][0] == LEAF
+
+
+def test_socket_client_deadline_bounds_a_slowly_streaming_peer(tmp_path, monkeypatch):
+    socket_path = tmp_path / "observer.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS", 0.05
+    )
+
+    def serve_slowly():
+        conn, _ = listener.accept()
+        with conn:
+            request_bytes = bytearray()
+            while b"\n" not in request_bytes:
+                request_bytes.extend(conn.recv(4096))
+            request = json.loads(bytes(request_bytes).split(b"\n", 1)[0])
+            response = json.dumps(
+                _document(request["args"]["thread_id"])
+            ).encode("utf-8") + b"\n"
+            for offset in range(0, len(response), 16):
+                try:
+                    conn.sendall(response[offset : offset + 16])
+                except OSError:
+                    return
+                time.sleep(0.01)
+
+    server = threading.Thread(target=serve_slowly, daemon=True)
+    server.start()
+    try:
+        with pytest.raises(ResourceLimitObservationError, match="timed out"):
+            resource_limits.read_resource_observer_counters(str(socket_path))
+    finally:
+        server.join(timeout=2)
+        listener.close()
+    assert not server.is_alive()
+
+
+def test_observation_preflight_bounds_a_stuck_probe_thread(monkeypatch):
+    workers = []
+
+    class StuckWorker:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+            self.join_timeout = None
+            workers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout=None):
+            self.join_timeout = timeout
+
+        def is_alive(self):
+            return self.started
+
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS", 0.05
+    )
+    monkeypatch.setattr(
+        resource_limits, "_RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS", 0.05
+    )
+    monkeypatch.setattr(resource_limits.threading, "Thread", StuckWorker)
+    capability = resource_limits.inspect_current_cgroup_observation()
+
+    assert not capability.available
+    assert "did not complete before its deadline" in capability.reason
+    assert len(workers) == 1
+    assert workers[0].started
+    assert workers[0].name == "assay-cgroup-observation-preflight"
+    assert workers[0].daemon is True
+    assert callable(workers[0].target)
+    assert workers[0].join_timeout == pytest.approx(0.1)
 
 
 @pytest.mark.parametrize("contents", ["not-json\n", "{}\n\n"])
