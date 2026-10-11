@@ -132,9 +132,9 @@ def test_sql_context_resolves_reverse_ordered_temp_relation_rename_graph_once(
     original = sql_adapter_module._collect_temporary_relation_facts
     scanned: list[bytes] = []
 
-    def counted(source: bytes, masked: bytes):
+    def counted(source: bytes, masked: bytes, *, check_deadline=None):
         scanned.append(source)
-        return original(source, masked)
+        return original(source, masked, check_deadline=check_deadline)
 
     monkeypatch.setattr(sql_adapter_module, "_collect_temporary_relation_facts", counted)
     context = SqlAdapter().prepare_mutation_context_with_sources_bounded(
@@ -170,6 +170,168 @@ def test_sql_context_checks_lane_deadline_while_resolving_dependencies():
         )
 
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    "source",
+    (b"/*" + b"x" * 8192 + b"*/", b"--" + b"x" * 8192),
+)
+def test_sql_trivia_scan_checks_deadline_inside_large_comment(source: bytes):
+    moments = iter((0.0, 2.0))
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=lambda: next(moments))
+
+    with pytest.raises(AssayError) as caught:
+        sql_adapter_module._skip_sql_trivia(
+            source, 0, check_deadline=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
+def test_sql_identifier_scan_checks_deadline_inside_long_identifier():
+    source = b"a" * 8192
+    moments = iter((0.0, 2.0))
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=lambda: next(moments))
+
+    with pytest.raises(AssayError) as caught:
+        sql_adapter_module._read_sql_identifier(
+            source, 0, check_deadline=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
+def test_sql_context_checks_deadline_inside_temporary_view_comment():
+    comment = "/*" + "x" * 8192 + "*/"
+    source = (
+        "CREATE TEMP VIEW pg_temp.derived AS "
+        f"SELECT * FROM {comment} seed;"
+    )
+    calls = 0
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return 2.0 if calls >= 15 else 0.0
+
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=monotonic)
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("view.sql", source),), remaining=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls >= 15
+
+
+def test_sql_context_checks_deadline_inside_temporary_table_comment(monkeypatch):
+    comment = "/*" + "x" * 8192 + "*/"
+    source = f"CREATE TEMP TABLE {comment} seed (value integer);"
+    source_bytes = source.encode()
+    table_name_start = source_bytes.index(b"TABLE") + len(b"TABLE")
+    original = sql_adapter_module._read_create_table_identity
+    table_deadline_seen = False
+    calls = 0
+
+    def tracked(source_arg, masked, pos, *, check_deadline=None):
+        nonlocal table_deadline_seen
+        if source_arg == source_bytes and pos == table_name_start:
+            table_deadline_seen = check_deadline is not None
+        return original(
+            source_arg, masked, pos, check_deadline=check_deadline
+        )
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return 2.0 if calls >= 5 else 0.0
+
+    monkeypatch.setattr(
+        sql_adapter_module, "_read_create_table_identity", tracked
+    )
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=monotonic)
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("table.sql", source),), remaining=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert table_deadline_seen
+    assert calls >= 5
+
+
+def test_sql_context_checks_deadline_inside_long_view_alias(monkeypatch):
+    alias = "a" * 8192
+    source = (
+        "CREATE TEMP VIEW pg_temp.derived AS "
+        f"SELECT * FROM seed AS {alias};"
+    )
+    source_bytes = source.encode()
+    alias_start = source.index(alias)
+    original = sql_adapter_module._read_sql_identifier
+    alias_deadline_seen = False
+    calls = 0
+
+    def tracked(source_arg, pos, *, check_deadline=None):
+        nonlocal alias_deadline_seen
+        if source_arg == source_bytes and pos == alias_start:
+            alias_deadline_seen = check_deadline is not None
+        return original(source_arg, pos, check_deadline=check_deadline)
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return 2.0 if calls >= 21 else 0.0
+
+    monkeypatch.setattr(sql_adapter_module, "_read_sql_identifier", tracked)
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=monotonic)
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("view.sql", source),), remaining=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert alias_deadline_seen
+    assert calls >= 21
+
+
+def test_sql_context_checks_deadline_between_temporary_view_join_segments():
+    joins = " ".join(
+        f"JOIN relation_{index} ON true" for index in range(64)
+    )
+    source = f"CREATE TEMP VIEW pg_temp.derived AS SELECT * FROM seed {joins};"
+    calls = 0
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return 2.0 if calls >= 80 else 0.0
+
+    deadline = runner.LaneDeadline(expires_at=1.0, monotonic=monotonic)
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("view.sql", source),), remaining=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls >= 80
+
+
+def test_sql_view_relation_after_prejoin_alias_still_reads_comma_relation():
+    source = (
+        "CREATE TEMP TABLE temp_table (value integer);\n"
+        "CREATE VIEW public.derived AS "
+        "SELECT * FROM seed AS prejoin, pg_temp.temp_table "
+        "JOIN other ON true;\n"
+    )
+
+    context = SqlAdapter().prepare_mutation_context((source,))
+
+    assert b"derived" in context.temporary_relation_names
 
 
 def test_sql_context_resolves_reverse_ordered_temp_type_rename_graph_once(

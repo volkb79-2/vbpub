@@ -124,7 +124,12 @@ def _is_word_byte(b: int) -> bool:
     return b == 0x5F or 0x30 <= b <= 0x39 or 0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A
 
 
-def _find_matching_close_paren(masked: bytes, open_index: int) -> int | None:
+def _find_matching_close_paren(
+    masked: bytes,
+    open_index: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
     """``masked[open_index] == '('``. Returns the index of its matching
     ``)`` (nested parens counted), or ``None`` if the source runs out first
     -- a malformed/unbalanced construct a scanner simply skips (an honest
@@ -134,7 +139,11 @@ def _find_matching_close_paren(masked: bytes, open_index: int) -> int | None:
     depth = 1
     i = open_index + 1
     n = len(masked)
+    next_deadline_check = i + 4096
     while i < n:
+        if check_deadline is not None and i >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = i + 4096
         b = masked[i]
         if b == _OPEN_PAREN:
             depth += 1
@@ -376,7 +385,20 @@ _CREATE_TEMP_VIEW_RE = re.compile(
 )
 _FROM_OR_JOIN_RE = re.compile(rb"\b(?:FROM|JOIN)\b", re.IGNORECASE)
 _FROM_CLAUSE_END_KEYWORDS = frozenset(
-    {b"where", b"group", b"order", b"having", b"limit", b"offset", b"fetch", b"union", b"intersect", b"except", b"window"}
+    {
+        b"join",
+        b"where",
+        b"group",
+        b"order",
+        b"having",
+        b"limit",
+        b"offset",
+        b"fetch",
+        b"union",
+        b"intersect",
+        b"except",
+        b"window",
+    }
 )
 _CREATE_TABLE_DEFINITION_RE = re.compile(
     rb"\bCREATE\s+(?:(?:(?:GLOBAL|LOCAL)\s+)?(?:TEMP|TEMPORARY)\s+|UNLOGGED\s+)?TABLE\b",
@@ -596,19 +618,52 @@ def _normalize_sql_identifier(token: bytes) -> bytes:
     return token.lower()
 
 
-def _skip_sql_trivia(source: bytes, pos: int) -> int | None:
+def _skip_sql_trivia(
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
     """Advance past SQL whitespace, line comments and nested block comments."""
+    next_deadline_check = pos
+    if check_deadline is not None:
+        check_deadline()
+        next_deadline_check = pos + 4096
+
     while pos < len(source):
+        if check_deadline is not None and pos >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = pos + 4096
         if source[pos] in b" \t\r\n\f\v":
             pos += 1
             continue
         if source.startswith(b"--", pos):
-            newline = source.find(b"\n", pos + 2)
-            return len(source) if newline < 0 else _skip_sql_trivia(source, newline + 1)
+            if check_deadline is None:
+                newline = source.find(b"\n", pos + 2)
+                if newline < 0:
+                    return len(source)
+                pos = newline + 1
+                continue
+            cursor = pos + 2
+            while cursor < len(source) and source[cursor] != ord("\n"):
+                if cursor >= next_deadline_check:
+                    check_deadline()
+                    next_deadline_check = cursor + 4096
+                cursor += 1
+            if cursor >= len(source):
+                return len(source)
+            pos = cursor + 1
+            continue
         if source.startswith(b"/*", pos):
             depth = 1
             cursor = pos + 2
             while cursor < len(source) and depth:
+                if (
+                    check_deadline is not None
+                    and cursor >= next_deadline_check
+                ):
+                    check_deadline()
+                    next_deadline_check = cursor + 4096
                 if source.startswith(b"/*", cursor):
                     depth += 1
                     cursor += 2
@@ -625,14 +680,23 @@ def _skip_sql_trivia(source: bytes, pos: int) -> int | None:
     return pos
 
 
-def _read_sql_identifier(source: bytes, pos: int) -> tuple[bytes, int] | None:
+def _read_sql_identifier(
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> tuple[bytes, int] | None:
     """Read one ASCII or double-quoted SQL identifier after trivia."""
-    pos = _skip_sql_trivia(source, pos)
+    pos = _skip_sql_trivia(source, pos, check_deadline=check_deadline)
     if pos is None or pos >= len(source):
         return None
     if source[pos] == ord('"'):
         cursor = pos + 1
+        next_deadline_check = cursor + 4096
         while cursor < len(source):
+            if check_deadline is not None and cursor >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = cursor + 4096
             if source[cursor] == ord('"'):
                 if cursor + 1 < len(source) and source[cursor + 1] == ord('"'):
                     cursor += 2
@@ -640,6 +704,31 @@ def _read_sql_identifier(source: bytes, pos: int) -> tuple[bytes, int] | None:
                 return source[pos : cursor + 1], cursor + 1
             cursor += 1
         return None
+    if check_deadline is not None:
+        first = source[pos]
+        if not (
+            first == ord("_")
+            or ord("A") <= first <= ord("Z")
+            or ord("a") <= first <= ord("z")
+        ):
+            return None
+        cursor = pos + 1
+        next_deadline_check = cursor + 4096
+        while cursor < len(source):
+            if cursor >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = cursor + 4096
+            byte = source[cursor]
+            if not (
+                byte == ord("_")
+                or byte == ord("$")
+                or ord("0") <= byte <= ord("9")
+                or ord("A") <= byte <= ord("Z")
+                or ord("a") <= byte <= ord("z")
+            ):
+                break
+            cursor += 1
+        return source[pos:cursor], cursor
     match = re.match(rb"[A-Za-z_][A-Za-z0-9_$]*", source[pos:])
     if match is None:
         return None
@@ -1021,17 +1110,24 @@ def _transaction_control_events(
 
 
 def _read_qualified_sql_identifier_details(
-    source: bytes, pos: int
+    source: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes, int] | None:
-    first = _read_sql_identifier(source, pos)
+    first = _read_sql_identifier(source, pos, check_deadline=check_deadline)
     if first is None:
         return None
     first_token, cursor = first
-    after_first = _skip_sql_trivia(source, cursor)
+    after_first = _skip_sql_trivia(
+        source, cursor, check_deadline=check_deadline
+    )
     if after_first is None:
         return None
     if after_first < len(source) and source[after_first] == ord('.'):
-        second = _read_sql_identifier(source, after_first + 1)
+        second = _read_sql_identifier(
+            source, after_first + 1, check_deadline=check_deadline
+        )
         if second is None:
             return None
         second_token, second_end = second
@@ -1169,13 +1265,46 @@ def _type_name_from_match(match: re.Match[bytes]) -> bytes:
 
 
 def _next_sql_keyword(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes, int] | None:
     """Read the next unquoted code keyword from a masked SQL source."""
-    cursor = _skip_sql_trivia(source, pos)
+    cursor = _skip_sql_trivia(source, pos, check_deadline=check_deadline)
     if cursor is None:
         return None
+    if check_deadline is not None and cursor < len(masked):
+        first = masked[cursor]
+        if not (
+            first == ord("_")
+            or ord("A") <= first <= ord("Z")
+            or ord("a") <= first <= ord("z")
+        ):
+            check_deadline()
+            return None
+        end = cursor + 1
+        next_deadline_check = end + 4096
+        while end < len(masked):
+            if end >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = end + 4096
+            byte = masked[end]
+            if not (
+                byte == ord("_")
+                or byte == ord("$")
+                or ord("0") <= byte <= ord("9")
+                or ord("A") <= byte <= ord("Z")
+                or ord("a") <= byte <= ord("z")
+            ):
+                break
+            end += 1
+        check_deadline()
+        return masked[cursor:end].upper(), end
     match = re.match(rb"[A-Za-z_][A-Za-z0-9_$]*", masked[cursor:])
+    if check_deadline is not None:
+        check_deadline()
     if match is None:
         return None
     return match.group(0).upper(), cursor + match.end()
@@ -1232,22 +1361,34 @@ def _read_alter_table_identity(
 
 
 def _read_create_table_identity(
-    source: bytes, masked: bytes, pos: int
+    source: bytes,
+    masked: bytes,
+    pos: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes, int] | None:
     """Read CREATE TABLE's optional IF NOT EXISTS and possibly quoted name."""
     cursor = pos
-    keyword = _next_sql_keyword(source, masked, cursor)
+    keyword = _next_sql_keyword(
+        source, masked, cursor, check_deadline=check_deadline
+    )
     if keyword is not None and keyword[0] == b"IF":
-        not_keyword = _next_sql_keyword(source, masked, keyword[1])
+        not_keyword = _next_sql_keyword(
+            source, masked, keyword[1], check_deadline=check_deadline
+        )
         exists_keyword = (
             None
             if not_keyword is None or not_keyword[0] != b"NOT"
-            else _next_sql_keyword(source, masked, not_keyword[1])
+            else _next_sql_keyword(
+                source, masked, not_keyword[1], check_deadline=check_deadline
+            )
         )
         if exists_keyword is None or exists_keyword[0] != b"EXISTS":
             return None
         cursor = exists_keyword[1]
-    return _read_qualified_sql_identifier_details(source, cursor)
+    return _read_qualified_sql_identifier_details(
+        source, cursor, check_deadline=check_deadline
+    )
 
 
 def _read_action_identifier(
@@ -1300,6 +1441,8 @@ def _collect_dropped_tables(
 def _collect_temporary_relation_facts(
     source: bytes,
     masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> tuple[
     frozenset[bytes],
     tuple[tuple[bytes, bytes], ...],
@@ -1316,23 +1459,39 @@ def _collect_temporary_relation_facts(
     view_dependencies: set[tuple[bytes | None, bytes, bytes]] = set()
     temporary_schema_events = _search_path_temporary_creation_events(source, masked)
     for statement in _CREATE_TEMP_TABLE_RE.finditer(masked):
-        table = _read_create_table_identity(source, masked, statement.end())
+        table = _read_create_table_identity(
+            source,
+            masked,
+            statement.end(),
+            check_deadline=check_deadline,
+        )
         if table is not None:
             names.add(table[1])
     for statement in _CREATE_TEMP_VIEW_RE.finditer(masked):
-        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        relation = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if relation is not None:
             names.add(relation[1])
     for statement in _SELECT_INTO_TEMP_RE.finditer(masked):
-        table = _read_qualified_sql_identifier_details(source, statement.end())
+        table = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if table is not None:
             names.add(table[1])
     for statement in _INTO_RE.finditer(masked):
-        table = _read_qualified_sql_identifier_details(source, statement.end())
+        table = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if table is not None and _is_temporary_schema(table[0]):
             names.add(table[1])
     for statement in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
-        table = _read_create_table_identity(source, masked, statement.end())
+        table = _read_create_table_identity(
+            source,
+            masked,
+            statement.end(),
+            check_deadline=check_deadline,
+        )
         if table is None:
             continue
         if _is_temporary_schema(table[0]) or (
@@ -1343,7 +1502,11 @@ def _collect_temporary_relation_facts(
         ):
             names.add(table[1])
     for statement in _CREATE_VIEW_RE.finditer(masked):
-        relation = _read_qualified_sql_identifier_details(source, statement.end())
+        if check_deadline is not None:
+            check_deadline()
+        relation = _read_qualified_sql_identifier_details(
+            source, statement.end(), check_deadline=check_deadline
+        )
         if relation is None:
             continue
         schema, view_name, relation_end = relation
@@ -1354,13 +1517,17 @@ def _collect_temporary_relation_facts(
             )
         ):
             names.add(view_name)
-        view_end = masked.find(b";", relation_end)
+        view_end = _view_statement_end(masked, relation_end, check_deadline)
         if view_end < 0:
             view_end = len(masked)
         view_dependencies.update(
             (referenced_schema, referenced_name, view_name)
             for referenced_schema, referenced_name in _view_relation_references(
-                source, masked, relation_end, view_end
+                source,
+                masked,
+                relation_end,
+                view_end,
+                check_deadline=check_deadline,
             )
         )
     for alter in _ALTER_RELATION_RE.finditer(masked):
@@ -1432,11 +1599,29 @@ def _is_temporary_schema(schema: bytes | None) -> bool:
     )
 
 
+def _view_statement_end(
+    masked: bytes, start: int, check_deadline: Remaining | None
+) -> int:
+    if check_deadline is None:
+        return masked.find(b";", start)
+    cursor = start
+    while cursor < len(masked):
+        check_deadline()
+        chunk_end = min(cursor + 4096, len(masked))
+        found = masked.find(b";", cursor, chunk_end)
+        if found >= 0:
+            return found
+        cursor = chunk_end
+    return -1
+
+
 def _view_relation_references(
     source: bytes,
     masked: bytes,
     query_start: int,
     statement_end: int,
+    *,
+    check_deadline: Remaining | None = None,
 ) -> frozenset[tuple[bytes | None, bytes]]:
     """Return relation identities found in FROM/JOIN relation positions."""
 
@@ -1444,21 +1629,52 @@ def _view_relation_references(
         tuple[bytes | None, bytes, int] | None, int | None
     ]:
         cursor = start
-        keyword = _next_sql_keyword(source, masked, cursor)
+        keyword = _next_sql_keyword(
+            source, masked, cursor, check_deadline=check_deadline
+        )
         while keyword is not None and keyword[0] in {b"ONLY", b"LATERAL"}:
             cursor = keyword[1]
-            keyword = _next_sql_keyword(source, masked, cursor)
-        cursor = _skip_sql_trivia(source, cursor)
+            keyword = _next_sql_keyword(
+                source, masked, cursor, check_deadline=check_deadline
+            )
+        cursor = _skip_sql_trivia(
+            source, cursor, check_deadline=check_deadline
+        )
         if cursor is None:
             return None, None
         if masked[cursor : cursor + 1] == b"(":
-            close = _find_matching_close_paren(masked, cursor)
+            close = _find_matching_close_paren(
+                masked, cursor, check_deadline=check_deadline
+            )
             return None, None if close is None else close + 1
-        parsed = _read_qualified_sql_identifier_details(source, cursor)
+        parsed = _read_qualified_sql_identifier_details(
+            source, cursor, check_deadline=check_deadline
+        )
         return (None, None) if parsed is None else (parsed, parsed[2])
 
+    def clauses() -> Iterator[re.Match[bytes]]:
+        if check_deadline is None:
+            yield from _FROM_OR_JOIN_RE.finditer(
+                masked, query_start, statement_end
+            )
+            return
+        chunk_start = query_start
+        while chunk_start < statement_end:
+            check_deadline()
+            chunk_end = min(chunk_start + 4096, statement_end)
+            search_end = min(chunk_end + 4, statement_end)
+            for clause in _FROM_OR_JOIN_RE.finditer(
+                masked, chunk_start, search_end
+            ):
+                if clause.start() >= chunk_end:
+                    break
+                yield clause
+            chunk_start = chunk_end
+
     references: set[tuple[bytes | None, bytes]] = set()
-    for clause in _FROM_OR_JOIN_RE.finditer(masked, query_start, statement_end):
+    for clause in clauses():
+        if check_deadline is not None:
+            check_deadline()
         relation, cursor = relation_after(clause.end())
         if cursor is None:
             continue
@@ -1470,10 +1686,16 @@ def _view_relation_references(
         # Parenthesized subqueries and function arguments are skipped, and
         # clause keywords end the list so their expression commas are ignored.
         depth = 0
+        next_deadline_check = cursor + 4096
         while cursor < statement_end:
+            if check_deadline is not None and cursor >= next_deadline_check:
+                check_deadline()
+                next_deadline_check = cursor + 4096
             byte = masked[cursor]
             if source[cursor : cursor + 1] == b'"':
-                identifier = _read_sql_identifier(source, cursor)
+                identifier = _read_sql_identifier(
+                    source, cursor, check_deadline=check_deadline
+                )
                 if identifier is not None:
                     cursor = identifier[1]
                     continue
@@ -1482,14 +1704,20 @@ def _view_relation_references(
             elif byte == _CLOSE_PAREN:
                 depth = max(0, depth - 1)
             elif depth == 0:
-                token = _read_sql_identifier(source, cursor)
                 if (
-                    token is not None
-                    and not token[0].startswith(b'"')
-                    and _normalize_sql_identifier(token[0]).lower()
-                    in _FROM_CLAUSE_END_KEYWORDS
+                    byte == ord("_")
+                    or ord("A") <= byte <= ord("Z")
+                    or ord("a") <= byte <= ord("z")
                 ):
-                    break
+                    token = _read_sql_identifier(
+                        source, cursor, check_deadline=check_deadline
+                    )
+                    if token is not None:
+                        token_word = _normalize_sql_identifier(token[0]).lower()
+                        if token_word in _FROM_CLAUSE_END_KEYWORDS:
+                            break
+                        cursor = token[1]
+                        continue
                 if byte == _COMMA:
                     following, next_end = relation_after(cursor + 1)
                     if next_end is not None:
@@ -1501,6 +1729,8 @@ def _view_relation_references(
                         cursor = next_end
                         continue
             cursor += 1
+    if check_deadline is not None:
+        check_deadline()
     return frozenset(references)
 
 
@@ -2830,7 +3060,9 @@ def _collect_sql_mutation_context(
         altered_columns.update(_collect_altered_columns(source, masked))
         dropped_tables.update(_collect_dropped_tables(source, masked))
         relation_seeds, relation_renames, view_dependencies = (
-            _collect_temporary_relation_facts(source, masked)
+            _collect_temporary_relation_facts(
+                source, masked, check_deadline=check_deadline
+            )
         )
         temporary_relation_names.update(relation_seeds)
         for old_name, new_name in relation_renames:
