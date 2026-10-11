@@ -3504,9 +3504,16 @@ def _run_reserved(
                 if discovered.jobs != mutation.UNSUPPORTED:
                     mutation_config = lane.judge.mutation
                     if len(discovered.jobs) <= mutation_config.max_mutants:
-                        selected_jobs = _select_plan_jobs(
-                            discovered.jobs, getattr(args, "shard", None)
-                        )
+                        try:
+                            selected_jobs = _select_plan_jobs(
+                                discovered.jobs,
+                                getattr(args, "shard", None),
+                                deadline_check=discovered.deadline.remaining,
+                            )
+                        except AssayError as exc:
+                            if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
+                                raise
+                            return _deliver_refusal(exc)
                         if selected_jobs:
                             return _deliver_refusal(
                                 AssayError(
@@ -3663,13 +3670,36 @@ def _parse_mutation_shard(raw: str | None) -> tuple[int, int]:
 
 
 def _select_plan_jobs(
-    jobs: Sequence[mutation.MutantJob], shard: str | None
+    jobs: Sequence[mutation.MutantJob],
+    shard: str | None,
+    *,
+    deadline_check: Callable[[], float] | None = None,
 ) -> tuple[mutation.MutantJob, ...]:
+    if shard is None:
+        if deadline_check is not None:
+            deadline_check()
+        selected_jobs = tuple(jobs)
+        if deadline_check is not None:
+            deadline_check()
+        return selected_jobs
     index, count = _parse_mutation_shard(shard)
+    candidate_ids: list[str] = []
+    for job in jobs:
+        if deadline_check is not None:
+            deadline_check()
+        candidate_ids.append(mutation.candidate_id(job))
+        if deadline_check is not None:
+            deadline_check()
     selected = mutation.select_mutation_shard(
-        [mutation.candidate_id(job) for job in jobs], index=index, count=count
+        candidate_ids,
+        index=index,
+        count=count,
+        deadline_check=deadline_check,
     )
-    return tuple(jobs[position] for position in selected)
+    selected_jobs = tuple(jobs[position] for position in selected)
+    if deadline_check is not None:
+        deadline_check()
+    return selected_jobs
 
 
 PLAN_ESTIMATE_HINT = (
@@ -3688,6 +3718,7 @@ class _PlanDiscovery:
     worktree_integrity: Any
     reuse_command_plan: Any
     reuse_command_cwd: Path | None
+    deadline: runner.LaneDeadline
 
 
 def _discover_plan_jobs(
@@ -3850,6 +3881,7 @@ def _discover_plan_jobs(
                     adapter=adapter,
                     deadline=deadline,
                 ),
+                deadline_check=deadline.remaining,
             )
     return _PlanDiscovery(
         commit=commit,
@@ -3858,6 +3890,7 @@ def _discover_plan_jobs(
         worktree_integrity=worktree_integrity,
         reuse_command_plan=reuse_command_plan,
         reuse_command_cwd=reuse_command_cwd,
+        deadline=deadline,
     )
 
 
@@ -3873,10 +3906,16 @@ class PlanRow(TypedDict):
     mutated_file_sha256: str
 
 
-def _plan_rows_from_jobs(jobs: Any) -> list[dict[str, Any]]:
+def _plan_rows_from_jobs(
+    jobs: Any,
+    *,
+    deadline_check: Callable[[], float] | None = None,
+) -> list[dict[str, Any]]:
     """One row per job: today's 7 keys plus the two candidate-identity digests."""
     rows: list[dict[str, Any]] = []
     for job in jobs:
+        if deadline_check is not None:
+            deadline_check()
         identity = mutation.candidate_identity_fields(job)
         rows.append(
             {
@@ -3891,6 +3930,10 @@ def _plan_rows_from_jobs(jobs: Any) -> list[dict[str, Any]]:
                 "mutated_file_sha256": identity["mutated_file_sha256"],
             }
         )
+        if deadline_check is not None:
+            deadline_check()
+    if deadline_check is not None:
+        deadline_check()
     return rows
 
 
@@ -3923,7 +3966,9 @@ def plan_jobs(
     )
     if discovered.jobs == mutation.UNSUPPORTED:
         return mutation.UNSUPPORTED
-    return _plan_rows_from_jobs(discovered.jobs)
+    return _plan_rows_from_jobs(
+        discovered.jobs, deadline_check=discovered.deadline.remaining
+    )
 
 
 def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) -> int:
@@ -4014,6 +4059,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         allow_dirty=getattr(args, "allow_dirty", False),
         resolve_reuse_command=reuse_source is not None or cold_witness,
     )
+    deadline_check = discovered.deadline.remaining
+    deadline_check()
     commit = discovered.commit
     tree = discovered.tree
     jobs = discovered.jobs
@@ -4025,6 +4072,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         if _has_native_r2(lane)
         else None
     )
+    deadline_check()
     resource_observation_applies_to = "none"
 
     if jobs == mutation.UNSUPPORTED:
@@ -4051,15 +4099,22 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         }
     else:
         candidate_limit_exceeded = len(jobs) > lane.judge.mutation.max_mutants
-        jobs = _select_plan_jobs(jobs, args.shard)
+        jobs = _select_plan_jobs(
+            jobs, args.shard, deadline_check=deadline_check
+        )
+        deadline_check()
         if (
             _has_native_r2(lane)
             and not candidate_limit_exceeded
             and jobs
         ):
             resource_observation_applies_to = "selected_candidates"
-        by_operator = Counter(job.site.operator for job in jobs)
-        by_file = Counter(job.path for job in jobs)
+        by_operator: Counter[str] = Counter()
+        by_file: Counter[str] = Counter()
+        for job in jobs:
+            deadline_check()
+            by_operator[job.site.operator] += 1
+            by_file[job.path] += 1
         per_candidate = lane.judge.mutation.budget_per_candidate
         # (B091/D-23) `assay plan` never executes anything, so it cannot
         # measure the baseline "auto" would derive from -- an omitted key,
@@ -4078,7 +4133,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
         wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
-        candidate_rows = _plan_rows_from_jobs(jobs)
+        candidate_rows = _plan_rows_from_jobs(
+            jobs, deadline_check=deadline_check
+        )
         sequential_pytest_supported = False
         if reuse_source is not None:
             from .mutation_witness import supports_sequential_pytest
@@ -4096,6 +4153,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             )
         if reuse_source is not None:
             for row in candidate_rows:
+                deadline_check()
                 classification, detail = classify_candidate(
                     reuse_source,
                     row["id"],
@@ -4127,14 +4185,23 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         if reuse_source is not None:
             from .reuse import prior_only_candidates, classify_candidate
 
-            labels = [
-                classify_candidate(
+            labels = []
+            for candidate in candidate_rows:
+                deadline_check()
+                labels.append(classify_candidate(
                     reuse_source,
                     candidate["id"],
                     sequential_pytest_supported=sequential_pytest_supported,
-                )[0]
-                for candidate in candidate_rows
-            ]
+                )[0])
+            deadline_check()
+            current_candidate_ids = []
+            for job in jobs:
+                deadline_check()
+                current_candidate_ids.append(_plan_candidate_id(job))
+            prior_only = prior_only_candidates(
+                reuse_source, current_candidate_ids
+            )
+            deadline_check()
             payload["reuse_from"] = {
                 "path": str(reuse_source.path),
                 "schema_version": reuse_source.schema_version,
@@ -4143,19 +4210,19 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
                 "complete_unsharded_native": reuse_source.complete_unsharded_native,
                 "sequential_pytest_supported": sequential_pytest_supported,
                 "prior_candidate_count": len(reuse_source.candidate_ids),
-                "prior_only_candidates": prior_only_candidates(
-                    reuse_source,
-                    [_plan_candidate_id(job) for job in jobs],
-                ),
+                "prior_only_candidates": prior_only,
                 "classification_counts": dict(sorted(Counter(labels).items())),
             }
     if cold_witness:
+        deadline_check()
         payload["cold_witness"] = _cold_witness_plan_preview(
             lane,
             adapter=adapter,
             command_plan=discovered.reuse_command_plan,
             cwd=discovered.reuse_command_cwd,
         )
+        deadline_check()
+    deadline_check()
     payload["resource_observation"] = {
         "applies_to": resource_observation_applies_to,
         "available": (
@@ -4165,7 +4232,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             cgroup_capability.reason if cgroup_capability is not None else None
         ),
     }
-    print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    rendered_payload = json.dumps(payload, indent=2, sort_keys=True)
+    deadline_check()
+    print(rendered_payload, file=out)
     if payload["status"] == "ok" and err is not None:
         print(PLAN_ESTIMATE_HINT, file=err)
     return 0

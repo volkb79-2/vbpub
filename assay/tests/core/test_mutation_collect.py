@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 
+from assay import runner
 from assay.adapters.python import PythonAdapter
 from assay.adapters.sql import SqlAdapter
 from assay.mutation import (
@@ -25,7 +26,9 @@ from assay.mutation import (
     MutationSite,
     MutationTarget,
     collect_mutation_sites,
+    select_mutation_shard,
 )
+from assay.errors import AssayError, ReasonCode
 
 OPERATORS = ("python:compare-swap", "python:boolop-swap", "python:bool-const-flip")
 
@@ -90,6 +93,78 @@ def test_targets_are_visited_in_path_order_regardless_of_input_order():
 
     assert [path for path, _ in adapter.calls] == ["a.py", "b.py", "c.py"]
     assert [job.path for job in jobs] == ["a.py", "b.py", "c.py"]
+
+
+@pytest.mark.parametrize("bounded", (False, True))
+def test_source_aware_adapters_keep_their_existing_preparer_signatures(bounded):
+    class LegacySourceAwareAdapter:
+        name = "legacy-source-aware"
+
+        def __init__(self):
+            self.prepared_with = None
+
+        def prepare_mutation_context_with_sources(self, sources):
+            self.prepared_with = "unbounded"
+            return object()
+
+        def prepare_mutation_context_with_sources_bounded(
+            self, sources, *, remaining
+        ):
+            self.prepared_with = "bounded"
+            return object()
+
+        def generate_mutation_sites_with_context_for_source(
+            self, text, lines, *, operators, limit, context, source_identity
+        ):
+            return ()
+
+        def generate_mutation_sites_with_context_for_source_bounded(
+            self,
+            text,
+            lines,
+            *,
+            operators,
+            limit,
+            context,
+            source_identity,
+            remaining,
+        ):
+            return ()
+
+    adapter = LegacySourceAwareAdapter()
+    target = _target("src/item.sql", "SELECT 1;\n", {1})
+    jobs = collect_mutation_sites(
+        (target,),
+        adapter=adapter,
+        operators=("sql:drop-check",),
+        limit=1,
+        context_sources=((target.path, target.text),),
+        deadline_check=(lambda: 1.0) if bounded else None,
+    )
+
+    assert jobs == ()
+    assert adapter.prepared_with == ("bounded" if bounded else "unbounded")
+
+
+def test_shard_assignment_checks_deadline_between_candidate_ids():
+    checks = 0
+
+    def check_deadline():
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise RuntimeError("deadline expired")
+        return 1.0
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        select_mutation_shard(
+            ("candidate-a", "candidate-b"),
+            index=0,
+            count=1,
+            deadline_check=check_deadline,
+        )
+
+    assert checks == 2
 
 
 def test_each_file_receives_only_the_remaining_capacity():
@@ -219,16 +294,22 @@ def test_no_targets_returns_the_supported_empty_tuple():
 
 def test_no_targets_do_not_scan_context_sources():
     """An empty candidate set requires no language-context scan."""
-    assert (
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
         collect_mutation_sites(
             (),
             adapter=SqlAdapter(),
             operators=("sql:widen-check-in",),
             limit=1,
             context_sources=("SELECT 'unterminated",),
+            deadline_check=deadline.remaining,
         )
-        == ()
-    )
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
 
 
 @pytest.mark.parametrize(

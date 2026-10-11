@@ -14,6 +14,8 @@ import pytest
 from conftest import GitRepo
 
 from assay import cli, mutation, runner
+from assay.adapters import sql as sql_adapter_module
+from assay.adapters.sql import SqlAdapter
 from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main, plan_jobs
 from assay.config import LaneFile, load_lane_file
@@ -79,6 +81,54 @@ operators = ["python:compare-swap"]
     return path
 
 
+def _seed_sql(repo: GitRepo, *, modified_source: str | None = None) -> Path:
+    repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
+    repo.write(
+        "src/schema.sql",
+        "CREATE TABLE item (value integer CHECK (value > 0));\n",
+    )
+    base = repo.commit_all("seed SQL target")
+    repo.write(
+        "src/schema.sql",
+        modified_source
+        if modified_source is not None
+        else "CREATE TABLE item (value integer CHECK (value >= 0));\n",
+    )
+    repo.commit_all("change SQL target")
+    path = repo.write(
+        "assay.toml",
+        f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "sql"
+source_roots = ["src"]
+base = "{base}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 20
+operators = ["sql:drop-check"]
+equivalence_artifact = ".assay/schema-dump.sql"
+""",
+    )
+    repo.commit_all("add SQL lane")
+    return path
+
+
 def _load(toml: Path) -> tuple[LaneFile, object]:
     lane_file = load_lane_file(toml)
     return lane_file, lane_file.lane("package")
@@ -119,6 +169,197 @@ def test_o16a_the_identity_key_set_is_exactly_the_helpers_keyword_set(git_repo: 
     assert set(mutation.candidate_identity_fields(job)) == IDENTITY_KEYS
     assert mutation.candidate_id(job) == candidate_id_from_fields(
         **mutation.candidate_identity_fields(job)
+    )
+
+
+def test_plan_row_identity_work_checks_the_lane_deadline(git_repo: GitRepo):
+    lane_file, lane = _load(_seed(git_repo))
+    discovered = cli._discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=cli._resolve_declared_adapters(lane),
+        base_declaration=runner.resolve_base_declaration(lane, None),
+        operators=lane.judge.mutation.operators,
+        allow_dirty=False,
+        resolve_reuse_command=False,
+    )
+    checks = 0
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if checks >= 2 else 0.0,
+        honors_termination=False,
+    )
+
+    def check_deadline():
+        nonlocal checks
+        checks += 1
+        return deadline.remaining()
+
+    with pytest.raises(AssayError) as caught:
+        cli._plan_rows_from_jobs(
+            discovered.jobs, deadline_check=check_deadline
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert checks == 2
+
+
+def test_shard_candidate_identity_work_checks_the_lane_deadline(
+    git_repo: GitRepo,
+):
+    lane_file, lane = _load(_seed(git_repo))
+    discovered = cli._discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=cli._resolve_declared_adapters(lane),
+        base_declaration=runner.resolve_base_declaration(lane, None),
+        operators=lane.judge.mutation.operators,
+        allow_dirty=False,
+        resolve_reuse_command=False,
+    )
+    checks = 0
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if checks >= 2 else 0.0,
+        honors_termination=False,
+    )
+
+    def check_deadline():
+        nonlocal checks
+        checks += 1
+        return deadline.remaining()
+
+    with pytest.raises(AssayError) as caught:
+        cli._select_plan_jobs(
+            discovered.jobs,
+            "0/1",
+            deadline_check=check_deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert checks == 2
+
+
+def test_unsharded_plan_selection_skips_candidate_identity_hashing(
+    git_repo: GitRepo, monkeypatch
+):
+    lane_file, lane = _load(_seed(git_repo))
+    discovered = cli._discover_plan_jobs(
+        lane_file,
+        lane,
+        adapter=cli._resolve_declared_adapters(lane),
+        base_declaration=runner.resolve_base_declaration(lane, None),
+        operators=lane.judge.mutation.operators,
+        allow_dirty=False,
+        resolve_reuse_command=False,
+    )
+    monkeypatch.setattr(
+        mutation,
+        "candidate_id",
+        lambda _job: pytest.fail("unsharded selection must not hash candidates"),
+    )
+
+    assert cli._select_plan_jobs(discovered.jobs, None) == discovered.jobs
+
+
+def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
+    git_repo: GitRepo, monkeypatch
+):
+    large_check = "CREATE TABLE item (value integer CHECK (" + (
+        "value > 0 AND " * 1000
+    )
+    lane_file, lane = _load(
+        _seed_sql(git_repo, modified_source=large_check)
+    )
+    original_prepare = (
+        SqlAdapter.prepare_mutation_context_with_sources_for_targets_bounded
+    )
+    original_generate = (
+        SqlAdapter.generate_mutation_sites_with_context_for_source_bounded
+    )
+    matcher_started = False
+    deadlines = []
+    seen_deadlines = []
+    original_matcher = sql_adapter_module._find_matching_close_paren
+
+    def start(cls, *, budget_seconds, monotonic):
+        deadline = runner.LaneDeadline(
+            expires_at=1.0,
+            monotonic=lambda: 2.0 if matcher_started else 0.0,
+            honors_termination=False,
+        )
+        deadlines.append(deadline)
+        return deadline
+
+    def observe_prepare(self, sources, *, remaining, target_source_identities):
+        seen_deadlines.append(remaining)
+        return original_prepare(
+            self,
+            sources,
+            remaining=remaining,
+            target_source_identities=target_source_identities,
+        )
+
+    def observe_generate(
+        self,
+        text,
+        lines,
+        *,
+        operators,
+        limit,
+        context,
+        source_identity,
+        remaining,
+    ):
+        seen_deadlines.append(remaining)
+        return original_generate(
+            self,
+            text,
+            lines,
+            operators=operators,
+            limit=limit,
+            context=context,
+            source_identity=source_identity,
+            remaining=remaining,
+        )
+
+    def observe_matcher(masked, open_index, *, check_deadline=None):
+        nonlocal matcher_started
+        if check_deadline is not None:
+            matcher_started = True
+        return original_matcher(
+            masked, open_index, check_deadline=check_deadline
+        )
+
+    monkeypatch.setattr(
+        SqlAdapter,
+        "prepare_mutation_context_with_sources_for_targets_bounded",
+        observe_prepare,
+    )
+    monkeypatch.setattr(
+        SqlAdapter,
+        "generate_mutation_sites_with_context_for_source_bounded",
+        observe_generate,
+    )
+    monkeypatch.setattr(
+        runner.LaneDeadline, "start", classmethod(start)
+    )
+    monkeypatch.setattr(
+        sql_adapter_module, "_find_matching_close_paren", observe_matcher
+    )
+
+    with pytest.raises(AssayError) as caught:
+        plan_jobs(lane_file, lane)
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert matcher_started
+    assert len(deadlines) == 1
+    assert len(seen_deadlines) == 2
+    assert seen_deadlines[0] == seen_deadlines[1]
+    assert all(callback.__self__ is deadlines[0] for callback in seen_deadlines)
+    assert all(
+        callback.__func__ is runner.LaneDeadline.remaining
+        for callback in seen_deadlines
     )
 
 

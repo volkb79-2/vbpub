@@ -12213,3 +12213,70 @@ GNU `timeout` rejected the compound duration strings `2h20m`, `7h30m`, and `7h10
 `collect_mutation_sites` promises a supported empty tuple when there are no targets, but it prepared adapter-wide context first. For SQL, malformed unrelated context could therefore raise even though no candidate would be analyzed. After validating the operator policy, return the empty tuple before preparing context or consuming `context_sources`.
 
 **Oracle:** `test_no_targets_do_not_scan_context_sources` passes malformed SQL as context and asserts the supported empty tuple.
+
+## B151 — SQL discovery must honor the lane deadline during planning and lexing
+
+**Status: IN PROGRESS (review finding from the 2026-10-11 B132–B134 integration review; implementation and regressions added, pending final review and registered gate).**
+
+`assay plan` creates a `LaneDeadline`, but did not pass its `remaining` callback
+to `collect_mutation_sites`. SQL therefore selected the unbounded cross-file
+context preparer. After context preparation was bounded, SQL still generated
+each target's mutation sites without the callback and re-lexed the target in
+several context helpers. That work could continue after the lane budget
+expired, then return a plan successfully.
+
+**Chosen contract:** planning passes its own lane deadline into mutation-site
+collection. SQL lexes each context source and target once with the same
+callback, reuses the dollar-body ranges through its context helpers, checks the
+callback during long byte scans, balanced-parenthesis walks, and list splits,
+and propagates expiry as the lane timeout before returning any plan. Context
+metadata, temporary relation and ALTER TABLE scans, and search-path parsing
+must carry the callback through their subordinate readers, including
+`_read_search_path_schemas` and transaction-keyword reads. Target source pairs
+already present in the context inventory are de-duplicated; their exact mask
+and dollar-body ranges are retained for site generation only when identity and
+bytes agree through SQL's explicit target-aware preparer hook, leaving the
+existing source-aware preparer signatures untouched for other adapters. The
+trigger and delete-action scanners also check the deadline
+before computing line positions. Plan-row identity hashing, reuse
+classification, and serialization check the same deadline before the plan is
+reported. Shard candidate hashing also checks the deadline between candidate
+identities; unsharded selection returns the jobs without hashing them. An
+expired deadline in the cgroup visibility preflight is delivered through the
+reserved-verdict path. The no-target path also checks an expired deadline
+before returning the supported empty result.
+
+**Oracles:** `test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery`
+asserts the preparer and target generator receive the actual `LaneDeadline`
+callback and that expiry inside an unmatched large `CHECK` raises
+`LANE_TIMEOUT`; the target-lex oracle counts one lex of a source present in
+both target and context inventory; plan-row identity work has an expiry
+oracle, as does shard identity work; unsharded selection skips those hashes.
+The cgroup-preflight timeout regression verifies its reserved verdict.
+Bounded-context tests cover expiry in table metadata, UNIQUE and
+FOREIGN KEY parenthesis scans, NOT NULL action splitting, widened `IN`-list
+splitting, search-path identifiers, and transaction keywords. The no-target
+oracle proves an expired deadline is checked without parsing malformed
+context.
+`test_bounded_sql_context_reuses_lexed_ranges_for_statement_events` proves the
+role and transaction scanners reuse the bounded lex result. Large comment and
+dollar-tag lexer fixtures exercise bounded scanning. The exact-tip registered
+`tester-unified` gate is required for acceptance.
+
+## B152 — the registered tester gate must mount both repository namespaces
+
+**Status: IN PROGRESS (review finding from the 2026-10-11 B132–B134 integration review).**
+
+`run_registered_tester_container` mounted the physical host repository only at
+`/workspaces/vbpub`. A valid worktree created from the host namespace can have
+a `.git` file that points to the physical path; the tester container then
+cannot resolve that gitdir. The bounded-wait and low-pids probe containers
+already mount both paths.
+
+**Chosen contract:** the registered tester container binds the same host
+repository at both its physical host path and `/workspaces/vbpub`, preserving
+gitfile paths from either namespace.
+
+**Oracle:** the distribution-gate regression asserts both bind destinations;
+the registered exact-tip `tester-unified` run accepts the Docker argv and
+continues through the self-hosted and SQL phases.

@@ -311,3 +311,31 @@ def test_failed_discovery_stops_before_r0_without_a_false_empty_plan(
     )
     assert not marker.exists()
     assert expected_reason.value in err
+
+
+def test_shard_selection_timeout_writes_the_reserved_verdict(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    marker = tmp_path / "r0-ran"
+    lane = _native_lane(git_repo, marker)
+    _unavailable(monkeypatch)
+
+    def timeout_selection(*_args, **_kwargs):
+        raise AssayError(
+            "fixture lane deadline expired during shard selection",
+            outcome=Outcome.BUDGET_EXCEEDED,
+            reason_code=ReasonCode.LANE_TIMEOUT,
+        )
+
+    monkeypatch.setattr(cli, "_select_plan_jobs", timeout_selection)
+    code, out, err = _run(
+        ["run", "package", "--file", str(lane), "--verdict-json", "-"]
+    )
+
+    document = json.loads(out)
+    assert code == Outcome.BUDGET_EXCEEDED.exit_code
+    assert document["outcome"] == Outcome.BUDGET_EXCEEDED.value
+    assert document["reason_code"] == ReasonCode.LANE_TIMEOUT.value
+    assert verify_document(document) == []
+    assert not marker.exists()
+    assert "fixture lane deadline expired during shard selection" in err

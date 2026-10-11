@@ -820,6 +820,8 @@ def collect_mutation_sites(
 
     ordered_targets = sorted(targets, key=lambda item: item.path)
     if not ordered_targets:
+        if deadline_check is not None:
+            deadline_check()
         return ()
     context_source_items = []
     for item in context_sources or ():
@@ -831,6 +833,9 @@ def collect_mutation_sites(
     )
     source_contextual_generator = getattr(
         adapter, "generate_mutation_sites_with_context_for_source", None
+    )
+    bounded_source_contextual_generator = getattr(
+        adapter, "generate_mutation_sites_with_context_for_source_bounded", None
     )
     if callable(source_context_preparer) and callable(source_contextual_generator):
         identified_sources: list[tuple[str, str]] = []
@@ -852,17 +857,48 @@ def collect_mutation_sites(
         identified_sources.extend(
             (target.path, target.text) for target in ordered_targets
         )
+        # The selected target is often already present in the source-root
+        # inventory. Its path and exact text identify the same source; scan
+        # that pair once during context preparation, then let SQL reuse its
+        # mask and dollar-body ranges during candidate generation.
+        identified_sources = list(dict.fromkeys(identified_sources))
+        target_source_identities = frozenset(
+            target.path for target in ordered_targets
+        )
+        bounded_target_context_preparer = getattr(
+            adapter,
+            "prepare_mutation_context_with_sources_for_targets_bounded",
+            None,
+        )
+        target_context_preparer = getattr(
+            adapter, "prepare_mutation_context_with_sources_for_targets", None
+        )
         bounded_source_context_preparer = getattr(
             adapter, "prepare_mutation_context_with_sources_bounded", None
         )
-        if callable(bounded_source_context_preparer) and deadline_check is not None:
+        if (
+            callable(bounded_target_context_preparer)
+            and deadline_check is not None
+        ):
+            mutation_context = bounded_target_context_preparer(
+                identified_sources,
+                remaining=deadline_check,
+                target_source_identities=target_source_identities,
+            )
+        elif callable(bounded_source_context_preparer) and deadline_check is not None:
             mutation_context = bounded_source_context_preparer(
                 identified_sources, remaining=deadline_check
             )
         else:
             if deadline_check is not None:
                 deadline_check()
-            mutation_context = source_context_preparer(identified_sources)
+            if callable(target_context_preparer):
+                mutation_context = target_context_preparer(
+                    identified_sources,
+                    target_source_identities=target_source_identities,
+                )
+            else:
+                mutation_context = source_context_preparer(identified_sources)
             if deadline_check is not None:
                 deadline_check()
     else:
@@ -887,9 +923,25 @@ def collect_mutation_sites(
     remaining = limit
     saw_supported = False
     for target in ordered_targets:
+        if deadline_check is not None:
+            deadline_check()
         if remaining <= 0:
             break
         if (
+            mutation_context is not None
+            and callable(bounded_source_contextual_generator)
+            and deadline_check is not None
+        ):
+            result = bounded_source_contextual_generator(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+                context=mutation_context,
+                source_identity=target.path,
+                remaining=deadline_check,
+            )
+        elif (
             mutation_context is not None
             and callable(source_contextual_generator)
             and callable(source_context_preparer)
@@ -917,6 +969,8 @@ def collect_mutation_sites(
                 operators=operators,
                 limit=remaining,
             )
+        if deadline_check is not None:
+            deadline_check()
         if result == UNSUPPORTED:
             if saw_supported:
                 raise MutationDiscoveryError(
@@ -936,6 +990,8 @@ def collect_mutation_sites(
                 MutantJob(path=target.path, original_text=target.text, site=site)
             )
         remaining -= len(sites)
+    if deadline_check is not None:
+        deadline_check()
     return tuple(jobs)
 
 
@@ -2593,7 +2649,13 @@ def _execution_from_state_record(record: Mapping[str, Any]) -> MutationExecution
 execution_from_state_record = _execution_from_state_record
 
 
-def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) -> list[int]:
+def select_mutation_shard(
+    candidates: Sequence[str],
+    *,
+    index: int,
+    count: int,
+    deadline_check: Callable[[], float] | None = None,
+) -> list[int]:
     """Return deterministic positions whose opaque IDs assign to *index*."""
     if isinstance(index, bool) or isinstance(count, bool):
         raise ValueError("shard index and count must be integers")
@@ -2605,15 +2667,19 @@ def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) 
         )
     if not 0 <= index < count:
         raise ValueError(f"shard index {index} is outside 0..{count - 1}")
-    return [
-        position
-        for position, candidate in enumerate(candidates)
-        if int.from_bytes(
-            hashlib.blake2b(candidate.encode("ascii"), digest_size=4).digest(), "big"
-        )
-        % count
-        == index
-    ]
+    selected: list[int] = []
+    for position, candidate in enumerate(candidates):
+        if deadline_check is not None:
+            deadline_check()
+        shard = int.from_bytes(
+            hashlib.blake2b(candidate.encode("ascii"), digest_size=4).digest(),
+            "big",
+        ) % count
+        if shard == index:
+            selected.append(position)
+    if deadline_check is not None:
+        deadline_check()
+    return selected
 
 
 _SHARD_REQUIRED_KEYS = frozenset(

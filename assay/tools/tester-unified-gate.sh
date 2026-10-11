@@ -909,6 +909,7 @@ run_registered_tester_container() {
     -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     --network=none \
+    --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     tester-unified:local \

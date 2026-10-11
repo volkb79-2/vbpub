@@ -172,6 +172,97 @@ def test_sql_context_checks_lane_deadline_while_resolving_dependencies():
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
 
 
+def test_search_path_schema_reader_honors_the_lane_deadline(monkeypatch):
+    source = 'SET search_path TO "' + ("schema" * 2000) + '";\n'
+    original = sql_adapter_module._read_search_path_schemas
+    entered_reader = False
+    reader_checks = 0
+
+    def observe_reader(
+        source_arg, masked, value_start, *, check_deadline=None
+    ):
+        nonlocal entered_reader
+        entered_reader = True
+        assert check_deadline is not None
+
+        def observe_deadline():
+            nonlocal reader_checks
+            reader_checks += 1
+            return check_deadline()
+
+        return original(
+            source_arg,
+            masked,
+            value_start,
+            check_deadline=observe_deadline,
+        )
+
+    monkeypatch.setattr(
+        sql_adapter_module, "_read_search_path_schemas", observe_reader
+    )
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if entered_reader and reader_checks >= 4 else 0.0,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("path.sql", source),), remaining=deadline.remaining
+        )
+
+    assert entered_reader
+    assert reader_checks == 4
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
+def test_transaction_keyword_reads_receive_the_lane_deadline(monkeypatch):
+    original = sql_adapter_module._next_sql_keyword
+    deadline_check = lambda: 1.0
+    callbacks = []
+
+    def observe_keyword(source, masked, pos, *, check_deadline=None):
+        callbacks.append(check_deadline)
+        return original(
+            source, masked, pos, check_deadline=check_deadline
+        )
+
+    monkeypatch.setattr(sql_adapter_module, "_next_sql_keyword", observe_keyword)
+    source = b"BEGIN; COMMIT;"
+    ranges = sql_adapter_module._explicit_transaction_ranges(
+        source,
+        source,
+        dollar_body_ranges=(),
+        check_deadline=deadline_check,
+    )
+
+    assert ranges == ((0, 6),)
+    assert callbacks and all(callback is deadline_check for callback in callbacks)
+
+
+@pytest.mark.parametrize(
+    ("scanner", "source", "extra"),
+    (
+        (
+            sql_adapter_module._scan_weaken_delete_action,
+            b"REFERENCES item(id) ON DELETE RESTRICT;",
+            (),
+        ),
+        (
+            sql_adapter_module._scan_drop_trigger,
+            b"CREATE TRIGGER audit AFTER INSERT ON item FOR EACH ROW EXECUTE FUNCTION audit_row();",
+            ((),),
+        ),
+    ),
+)
+def test_remaining_sql_candidate_scanners_check_the_deadline(scanner, source, extra):
+    def expired():
+        raise RuntimeError("deadline expired")
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        scanner(source, source, *extra, check_deadline=expired)
+
+
 @pytest.mark.parametrize(
     "source",
     (b"/*" + b"x" * 8192 + b"*/", b"--" + b"x" * 8192),
@@ -225,6 +316,355 @@ def test_sql_context_checks_deadline_inside_temporary_view_comment():
     assert calls >= 15
 
 
+def test_bounded_sql_context_reuses_lexed_ranges_for_statement_events(monkeypatch):
+    source = (
+        "BEGIN; SET LOCAL ROLE app_user; "
+        "SET search_path TO pg_catalog, pg_temp; "
+        "CREATE TYPE item_kind AS ENUM ('one'); COMMIT;"
+    )
+    original = sql_adapter_module.lex_sql
+    callbacks = []
+
+    def tracked(source_arg, *, check_deadline=None):
+        callbacks.append(check_deadline)
+        return original(source_arg, check_deadline=check_deadline)
+
+    monkeypatch.setattr(sql_adapter_module, "lex_sql", tracked)
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 0.0,
+        honors_termination=False,
+    )
+
+    SqlAdapter().prepare_mutation_context_with_sources_bounded(
+        (("context.sql", source),), remaining=deadline.remaining
+    )
+
+    assert len(callbacks) == 1
+    assert callbacks[0].__self__ is deadline
+    assert callbacks[0].__func__ is runner.LaneDeadline.remaining
+
+
+def test_sql_target_reuses_its_context_lex_result_for_site_generation(monkeypatch):
+    source = "CREATE TABLE item (value integer CHECK (value > 0));\n"
+    target = mutation.MutationTarget(
+        path="src/item.sql",
+        text=source,
+        lines=frozenset({1}),
+    )
+    original = sql_adapter_module.lex_sql
+    lexed_sources: list[bytes] = []
+
+    def tracked(source_arg, *, check_deadline=None):
+        lexed_sources.append(source_arg)
+        return original(source_arg, check_deadline=check_deadline)
+
+    monkeypatch.setattr(sql_adapter_module, "lex_sql", tracked)
+    jobs = mutation.collect_mutation_sites(
+        (target,),
+        adapter=SqlAdapter(),
+        operators=("sql:drop-check",),
+        limit=10,
+        context_sources=((target.path, source),),
+        deadline_check=lambda: 1.0,
+    )
+
+    assert len(jobs) == 1
+    assert lexed_sources.count(source.encode("utf-8")) == 1
+
+
+def test_sql_target_does_not_reuse_context_lex_for_conflicting_same_path(monkeypatch):
+    context_source = "CREATE TABLE item (value integer CHECK (value < 0));\n"
+    target_source = "CREATE TABLE item (value integer CHECK (value > 0));\n"
+    target = mutation.MutationTarget(
+        path="src/item.sql",
+        text=target_source,
+        lines=frozenset({1}),
+    )
+    original = sql_adapter_module.lex_sql
+    lexed_sources: list[bytes] = []
+
+    def tracked(source_arg, *, check_deadline=None):
+        lexed_sources.append(source_arg)
+        return original(source_arg, check_deadline=check_deadline)
+
+    monkeypatch.setattr(sql_adapter_module, "lex_sql", tracked)
+    jobs = mutation.collect_mutation_sites(
+        (target,),
+        adapter=SqlAdapter(),
+        operators=("sql:drop-check",),
+        limit=10,
+        context_sources=((target.path, context_source),),
+        deadline_check=lambda: 1.0,
+    )
+
+    assert len(jobs) == 1
+    assert lexed_sources.count(context_source.encode("utf-8")) == 1
+    assert lexed_sources.count(target_source.encode("utf-8")) == 1
+
+
+def test_sql_context_table_column_matcher_honors_lane_deadline(monkeypatch):
+    source = "CREATE TABLE item (" + ("value integer, " * 3000)
+    source_bytes = source.encode()
+    table_open = source_bytes.index(b"(")
+    matcher_started = False
+    original_matcher = sql_adapter_module._find_matching_close_paren
+
+    def observe_matcher(masked, open_index, *, check_deadline=None):
+        nonlocal matcher_started
+        if check_deadline is not None and open_index == table_open:
+            matcher_started = True
+        return original_matcher(
+            masked, open_index, check_deadline=check_deadline
+        )
+
+    monkeypatch.setattr(
+        sql_adapter_module, "_find_matching_close_paren", observe_matcher
+    )
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if matcher_started else 0.0,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().prepare_mutation_context_with_sources_bounded(
+            (("table.sql", source),), remaining=deadline.remaining
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert matcher_started
+
+
+def test_unique_target_parenthesis_matcher_honors_lane_deadline(monkeypatch):
+    source = "CREATE TABLE item (value integer, UNIQUE (" + (
+        "value, " * 3000
+    )
+    source_bytes = source.encode()
+    unique_open = source_bytes.index(b"(", source_bytes.index(b"UNIQUE"))
+    matcher_started = False
+    original_matcher = sql_adapter_module._find_matching_close_paren
+
+    def observe_matcher(masked, open_index, *, check_deadline=None):
+        nonlocal matcher_started
+        if check_deadline is not None and open_index == unique_open:
+            matcher_started = True
+        return original_matcher(
+            masked, open_index, check_deadline=check_deadline
+        )
+
+    monkeypatch.setattr(
+        sql_adapter_module, "_scan_drop_check", lambda *_a, **_k: []
+    )
+    monkeypatch.setattr(
+        sql_adapter_module, "_find_matching_close_paren", observe_matcher
+    )
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if matcher_started else 0.0,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().generate_mutation_sites_with_context_for_source_bounded(
+            source,
+            {1},
+            operators=("sql:drop-unique",),
+            limit=10,
+            context=None,
+            source_identity="schema.sql",
+            remaining=deadline.remaining,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert matcher_started
+
+
+def test_foreign_key_target_parenthesis_matcher_honors_lane_deadline(monkeypatch):
+    source = "ALTER TABLE item ADD CONSTRAINT fk FOREIGN KEY (" + (
+        "value, " * 3000
+    )
+    source_bytes = source.encode()
+    foreign_key_open = source_bytes.index(b"(", source_bytes.index(b"FOREIGN KEY"))
+    matcher_started = False
+    original_matcher = sql_adapter_module._find_matching_close_paren
+
+    def observe_matcher(masked, open_index, *, check_deadline=None):
+        nonlocal matcher_started
+        if check_deadline is not None and open_index == foreign_key_open:
+            matcher_started = True
+        return original_matcher(
+            masked, open_index, check_deadline=check_deadline
+        )
+
+    monkeypatch.setattr(
+        sql_adapter_module, "_find_matching_close_paren", observe_matcher
+    )
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if matcher_started else 0.0,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().generate_mutation_sites_with_context_for_source_bounded(
+            source,
+            {1},
+            operators=("sql:drop-foreign-key",),
+            limit=10,
+            context=None,
+            source_identity="schema.sql",
+            remaining=deadline.remaining,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert matcher_started
+
+
+def test_not_null_target_action_split_honors_lane_deadline(monkeypatch):
+    source = "ALTER TABLE item " + ("DROP COLUMN old, " * 3000) + (
+        "ALTER COLUMN value SET NOT NULL;"
+    )
+    split_started = False
+    split_returned = False
+    split_checks = 0
+    original_split = sql_adapter_module._split_top_level
+
+    def observe_split(region, *, check_deadline=None):
+        nonlocal split_started, split_returned
+        if region.startswith(b"DROP COLUMN old, "):
+            split_started = True
+        result = original_split(region, check_deadline=check_deadline)
+        if region.startswith(b"DROP COLUMN old, "):
+            split_returned = True
+        return result
+
+    def monotonic() -> float:
+        nonlocal split_checks
+        if split_started:
+            split_checks += 1
+            return 2.0 if split_checks >= 2 else 0.0
+        return 0.0
+
+    monkeypatch.setattr(sql_adapter_module, "_split_top_level", observe_split)
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=monotonic,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().generate_mutation_sites_with_context_for_source_bounded(
+            source,
+            {1},
+            operators=("sql:drop-not-null",),
+            limit=10,
+            context=None,
+            source_identity="schema.sql",
+            remaining=deadline.remaining,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert split_started
+    assert not split_returned
+    assert split_checks >= 2
+
+
+def test_widen_check_in_list_split_honors_lane_deadline(monkeypatch):
+    source = "CREATE TABLE item (value integer CHECK (value IN (" + (
+        "1, " * 3000
+    ) + "2)));"
+    split_started = False
+    split_returned = False
+    split_checks = 0
+    original_split = sql_adapter_module._split_top_level
+
+    def observe_split(region, *, check_deadline=None):
+        nonlocal split_started, split_returned
+        is_member_list = region.startswith(b"1, 1, ")
+        if is_member_list:
+            split_started = True
+        result = original_split(region, check_deadline=check_deadline)
+        if is_member_list:
+            split_returned = True
+        return result
+
+    def monotonic() -> float:
+        nonlocal split_checks
+        if split_started:
+            split_checks += 1
+            return 2.0 if split_checks >= 2 else 0.0
+        return 0.0
+
+    monkeypatch.setattr(
+        sql_adapter_module, "_scan_drop_check", lambda *_a, **_k: []
+    )
+    monkeypatch.setattr(sql_adapter_module, "_split_top_level", observe_split)
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=monotonic,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().generate_mutation_sites_with_context_for_source_bounded(
+            source,
+            {1},
+            operators=("sql:widen-check-in",),
+            limit=10,
+            context=None,
+            source_identity="schema.sql",
+            remaining=deadline.remaining,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert split_started
+    assert not split_returned
+    assert split_checks >= 2
+
+
+def test_widen_check_parenthesis_scan_honors_lane_deadline(monkeypatch):
+    source = "CREATE TABLE item (value integer CHECK (value IN (" + (
+        "1, " * 3000
+    ) + "2)));"
+    source_bytes = source.encode()
+    check_open = source_bytes.index(b"CHECK (") + len(b"CHECK ")
+    matcher_started = False
+    original_matcher = sql_adapter_module._find_matching_close_paren
+
+    def observe_matcher(masked, open_index, *, check_deadline=None):
+        nonlocal matcher_started
+        if check_deadline is not None and open_index == check_open:
+            matcher_started = True
+        return original_matcher(
+            masked, open_index, check_deadline=check_deadline
+        )
+
+    monkeypatch.setattr(sql_adapter_module, "_scan_drop_check", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        sql_adapter_module, "_find_matching_close_paren", observe_matcher
+    )
+    deadline = runner.LaneDeadline(
+        expires_at=1.0,
+        monotonic=lambda: 2.0 if matcher_started else 0.0,
+        honors_termination=False,
+    )
+
+    with pytest.raises(AssayError) as caught:
+        SqlAdapter().generate_mutation_sites_with_context_for_source_bounded(
+            source,
+            {1},
+            operators=("sql:widen-check-in",),
+            limit=10,
+            context=None,
+            source_identity="schema.sql",
+            remaining=deadline.remaining,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert matcher_started
+
+
 def test_sql_context_checks_deadline_inside_temporary_table_comment(monkeypatch):
     comment = "/*" + "x" * 8192 + "*/"
     source = f"CREATE TEMP TABLE {comment} seed (value integer);"
@@ -232,20 +672,30 @@ def test_sql_context_checks_deadline_inside_temporary_table_comment(monkeypatch)
     table_name_start = source_bytes.index(b"TABLE") + len(b"TABLE")
     original = sql_adapter_module._read_create_table_identity
     table_deadline_seen = False
+    table_reader_returned = False
+    table_reader_started = False
+    table_checks = 0
     calls = 0
 
     def tracked(source_arg, masked, pos, *, check_deadline=None):
-        nonlocal table_deadline_seen
+        nonlocal table_deadline_seen, table_reader_returned, table_reader_started
         if source_arg == source_bytes and pos == table_name_start:
             table_deadline_seen = check_deadline is not None
-        return original(
+            table_reader_started = True
+        result = original(
             source_arg, masked, pos, check_deadline=check_deadline
         )
+        if source_arg == source_bytes and pos == table_name_start:
+            table_reader_returned = True
+        return result
 
     def monotonic() -> float:
-        nonlocal calls
+        nonlocal calls, table_checks
         calls += 1
-        return 2.0 if calls >= 5 else 0.0
+        if not table_reader_started:
+            return 0.0
+        table_checks += 1
+        return 2.0 if table_checks >= 2 else 0.0
 
     monkeypatch.setattr(
         sql_adapter_module, "_read_create_table_identity", tracked
@@ -259,7 +709,8 @@ def test_sql_context_checks_deadline_inside_temporary_table_comment(monkeypatch)
 
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
     assert table_deadline_seen
-    assert calls >= 5
+    assert not table_reader_returned
+    assert table_checks == 2
 
 
 def test_sql_context_checks_deadline_inside_long_view_alias(monkeypatch):

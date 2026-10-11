@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from conftest import PROJECT_ROOT
 
-from assay.adapters.sql_lex import lex_sql
+from assay.adapters.sql_lex import _find_next, lex_sql
 from assay.mutation import MutationDiscoveryError
 
 import pytest
@@ -85,6 +85,47 @@ def test_control_a_terminated_block_comment_does_not_raise():
     """Paired must-succeed control for the unterminated-block-comment probe
     above: the identical construct, properly closed, lexes cleanly."""
     lex_sql(b"A /* closed */ B")
+
+
+def test_large_block_comment_checks_deadline_before_lexing_following_sql():
+    checks = 0
+
+    def check_deadline() -> float:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise TimeoutError("lane deadline expired")
+        return 1.0
+
+    source = b"/*" + b"x" * 8192 + b"*/ 'unterminated"
+    with pytest.raises(TimeoutError, match="lane deadline expired"):
+        lex_sql(source, check_deadline=check_deadline)
+    assert checks == 2
+
+
+def test_long_dollar_delimiter_comparison_checks_deadline_in_chunks():
+    delimiter = memoryview(b"$" + b"t" * 8192 + b"$")
+    near_match = b"$" + b"t" * 8192 + b"x"
+    checks = 0
+
+    def check_deadline() -> float:
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise TimeoutError("lane deadline expired")
+        return 1.0
+
+    with pytest.raises(TimeoutError, match="lane deadline expired"):
+        _find_next(near_match, delimiter, 0, check_deadline=check_deadline)
+    assert checks == 3
+
+
+def test_dollar_delimiter_can_begin_at_a_chunk_boundary():
+    source = b"$q$" + b"x" * 4096 + b"$q$"
+
+    result = lex_sql(source, check_deadline=lambda: 1.0)
+
+    assert result.dollar_bodies == ((3, 4099),)
 
 
 # --- construct 3: '...' string literal --------------------------------------

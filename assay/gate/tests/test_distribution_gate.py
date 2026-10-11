@@ -197,6 +197,12 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         "with open(os.environ['DOCKER_CALLS'], 'a', encoding='utf-8') as out:\n"
         "    out.write(json.dumps(args) + '\\n')\n"
         "if args[:2] == ['run', '-d']:\n"
+        "    gitfile = pathlib.Path(os.environ['HOST_WORKTREE_GITFILE']).read_text(encoding='ascii')\n"
+        "    gitdir = gitfile.strip().split(' ', 1)[1]\n"
+        "    host_root = os.environ['HOST_REPO_ROOT']\n"
+        "    physical_mount = ['--mount', f'type=bind,src={host_root},dst={host_root}']\n"
+        "    if not gitdir.startswith(host_root + '/') or not all(value in args for value in physical_mount):\n"
+        "        raise SystemExit(91)\n"
         "    cid = os.environ.get('DOCKER_CID_VALUE', 'a' * 64)\n"
         "    pathlib.Path(os.environ['DOCKER_REMOVED_FILE']).unlink(missing_ok=True)\n"
         "    name = args[args.index('--name') + 1]\n"
@@ -228,6 +234,12 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
+    host_worktree = tmp_path / "host-worktree"
+    host_worktree.mkdir()
+    host_gitfile = host_worktree / ".git"
+    host_gitfile.write_text(
+        "gitdir: /host/vbpub/.git/worktrees/test\n", encoding="ascii"
+    )
     env = {
         **_host_environ(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -236,6 +248,8 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
         "DOCKER_OWNER_FILE": str(tmp_path / "tester-owner.txt"),
         "DOCKER_REMOVED_FILE": str(tmp_path / "tester-removed.txt"),
         "DOCKER_WAIT_STATUS": "17",
+        "HOST_WORKTREE_GITFILE": str(host_gitfile),
+        "HOST_REPO_ROOT": "/host/vbpub",
         "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
         "ASSAY_GATE_EXPECTED_COMMIT": HEX40,
     }
@@ -269,6 +283,7 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
+    assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
     assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
     assert not any("docker.sock" in value for value in run)
