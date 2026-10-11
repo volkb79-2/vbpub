@@ -1,10 +1,10 @@
 # RG-55 wave report — interim closeout
 
-Evidence snapshot: 2026-10-11. RG-55 is **not complete or released**. The
-implementation and live-probe evidence are substantially in place, and P5 plus
-the cgroup-profiler R2-cap correction are provisionally integrated on local
-`main`. Mutation evidence, final full gates, publication, installation, and
-final adoption closeout remain open.
+Evidence snapshot: 2026-10-11 10:36 UTC. RG-55 is **not complete or
+released**. The implementation and live-probe evidence are substantially in
+place, and P5 plus the cgroup-profiler R2-cap correction are provisionally
+integrated on local `main`. Mutation evidence, final full gates, publication,
+installation, and final adoption closeout remain open.
 
 ## Live acceptance and measurement
 
@@ -54,18 +54,23 @@ default setting.
   planning found 1,593 candidates. Fresh Sol review accepted the change;
   exact-tree R0/R1 and R3 passed. It was provisionally merged as
   `da511e7bf` (RW-562).
-- The exact-tree cgprofile R2 is still running in
+- Earlier exact-tree cgprofile R2 resumes on `06e7804e` ended with
+  `ERROR/EXEC_FAILED`, not a mutation verdict: Assay B145 withheld outcomes
+  after an un-attributable shared-ancestor resource event. The latest retry
+  resumed saved state at 10:34:03Z in
   `.worktrees/rg55-cgprofile-cap-20261011` at `06e7804e`, container
-  `run-gate-vbpub-r2-1100789-1791691250`, under `dev-gates.slice` capped at 3
-  CPUs. At the 04:05:28Z progress read it had completed 14/1,593 candidates,
-  all killed. That early sample is insufficient for a defensible ETA.
-- The P5 R2 attempt on `05e7b6cd` ended with `ERROR/EXEC_FAILED` after 12
-  candidates, not a mutation verdict. Assay detected an unmatched resource
-  event on a shared cgroup ancestor and withheld outcomes. It overlapped the
-  cgprofile R2 launch; the precise counter/source is not established. Preserve
-  its partial records and resume from the exact judged tree after the active
-  cgprofile R2 ends, avoiding concurrent mutation campaigns in the shared
-  ancestor.
+  `run-gate-vbpub-r2-1274146-1791714842`, with a 3-CPU cap under
+  `dev-gates.slice`. The required early check found the R0 baseline pytest
+  command active at 10:35:11Z; no new candidate outcome was available yet.
+  Based on the prior resume's 11 candidates in about 7.3 minutes, the rough
+  estimate for 1,593 candidates is about 17 hours, not a guarantee. The exact
+  tree remains quiet, and this retry is serialized to avoid another
+  shared-ancestor attribution failure.
+- The latest P5 R2 attempt on `05e7b6cd` ended with `ERROR/EXEC_FAILED` after
+  resuming 13 records and completing four new candidates, not a mutation
+  verdict. Assay withheld outcomes after the same un-attributable
+  shared-ancestor resource event. Preserve its partial records and resume from
+  the exact judged tree only after cgprofile R2 ends.
 - No final `gate-full` receipt, survivor disposition, or release has been
   recorded. The cap worktree must remain unchanged until its R2 ends.
 
@@ -79,20 +84,22 @@ version. Assay's latest tag is `assay-v9.0.0`; the assay release belongs to
 the coordinating Assay work, not this wave. The daemon container is running
 from the local image `cgprofile:local`; no RG-55 package release is recorded.
 
-The cockpit venv currently reports `assay 8.0.1.dev76`, and its installed
-`run-gate` refuses the current `run-gate.toml` because it does not recognize
+The cockpit venv reports released `assay 9.0.0`, installed from a local wheel
+whose SHA-256 was checked against `cmru resolve`. Installed Run-Gate remains
+23.10.0 and refuses the current `run-gate.toml` because it does not recognize
 `resource_observer`. Do not use that installed entrypoint for current source
 gates; use the repository's source runner until the proper Run-Gate release
 is available, then install the released wheel and verify it against the
-current config. No wheel was installed or published in this closeout snapshot.
+current config. No RG-55 wheel was installed or published in this closeout
+snapshot.
 
-At the 04:09Z pre-report check, local `main` was 150 commits ahead of
-`origin/main`; subsequent controller/report commits mean the exact count must
-be rechecked before publication. CMRU releases operate from an `origin/main`
-snapshot. The operator previously authorized publication when the gap was 83
-commits; the current larger gap is outside that exact authorization, so obtain
-renewed direction before pushing the now-advanced main or attempting
-publication. This does not prevent local gate/review work.
+CMRU releases operate from an `origin/main` snapshot. The operator has since
+authorized pushes at any time, but local `main` also contains provisional
+Assay B132-B134 commits from a separate in-flight workstream. Do not let those
+unrelated commits enter an RG-55 publication snapshot without that workstream's
+gate/release disposition; isolate the RG-55 release inputs or coordinate the
+shared-main publication boundary first. This does not prevent local gate and
+review work.
 
 ## Remaining closeout
 
