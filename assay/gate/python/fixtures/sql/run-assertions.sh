@@ -8,7 +8,9 @@ failed=""
 for probe in "$SCHEMA_GATE_ASSERT_DIR"/K*.sql; do
     [ -f "$probe" ] || { echo "no probes in $SCHEMA_GATE_ASSERT_DIR" >&2; exit 2; }
     id="$(basename "$probe" .sql)"
-    psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$SCHEMA_GATE_DBNAME" -f "$probe"
+    # Keep NOTICE text visible: K18/K19 emit literal SQLSTATE markers. Quiet
+    # mode hides notices, while sqlstate verbosity replaces their message text.
+    psql -X -v ON_ERROR_STOP=1 -v VERBOSITY=default -U postgres -d "$SCHEMA_GATE_DBNAME" -f "$probe"
     rc=$?
     case "$rc" in
         0) ;;

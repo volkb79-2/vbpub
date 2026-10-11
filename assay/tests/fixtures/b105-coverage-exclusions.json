@@ -18,8 +18,8 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/git.py": {
-      "lines": [405, 406, 1377, 1378],
-      "reason": "Selector cleanup catches only the narrow race where a descriptor is already unregistered or closed during deterministic process teardown."
+      "lines": [405, 406, 1384, 1385],
+      "reason": "These defensive cleanup branches handle selector teardown and best-effort closure of pending writer descriptors."
     }
   }
 }

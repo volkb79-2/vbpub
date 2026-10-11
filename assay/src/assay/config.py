@@ -122,6 +122,7 @@ __all__ = [
     "SNAPSHOT_HISTORIES",
     "SNAPSHOT_SELECTIONS",
     "find_lane_file",
+    "lane_validation_warnings",
     "load_lane_file",
     "parse_duration",
 ]
@@ -1363,6 +1364,29 @@ class LaneFile:
             raise LaneConfigError(
                 f"{self.path}: no lane named {name!r}; declared lanes: {known}"
             ) from None
+
+
+def lane_validation_warnings(lane: Lane) -> tuple[str, ...]:
+    """Return advisory issues that do not make a declared lane invalid.
+
+    A pytest fail-fast option can leave a coverage artifact incomplete after
+    the first failures. Preserve the lane as declared, but surface that risk
+    anywhere the CLI validates or runs the lane.
+    """
+    if lane.judge is None or lane.judge.coverage is None:
+        return ()
+    # Kept lazy: the lane loader does not need the mutation witness machinery
+    # unless this particular lane declares both pytest and coverage.
+    from .mutation_witness import pytest_fail_fast_option
+
+    option = pytest_fail_fast_option(lane.argv)
+    if option is None:
+        return ()
+    return (
+        f"pytest {option} can stop the suite after failures and leave the declared "
+        "coverage artifact incomplete; remove the fail-fast option from a "
+        "coverage lane when complete coverage is required",
+    )
 
 
 def find_lane_file(start: Path | None = None) -> Path:

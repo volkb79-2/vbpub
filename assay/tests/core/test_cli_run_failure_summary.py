@@ -10,12 +10,14 @@ never recast as a test failure.
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
-from conftest import R0_LANE, GitRepo, set_key
+from conftest import R0_LANE, R1_LANE, GitRepo, set_key
 
 from assay import failure_summary
 from assay.cli import main
+from assay.verify import verify_document
 
 FIRST = "tests/test_alpha.py::test_first"
 SECOND = "tests/test_beta.py::test_second"
@@ -37,22 +39,64 @@ def _lane(repo: GitRepo, shell: str):
 
 def test_a_failing_pytest_style_r0_names_the_first_failure_in_execution_order(
     git_repo: GitRepo,
+    tmp_path,
 ):
     path = _lane(
         git_repo,
         f"echo 'FAILED {FIRST} - boom'; echo 'FAILED {SECOND} - bang'; exit 1",
     )
 
-    code, out, _ = _run(["run", "package", "--file", str(path)])
+    verdict_path = tmp_path / "verdict.json"
+    code, out, _ = _run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--verdict-json",
+            str(verdict_path),
+        ]
+    )
 
     assert code == 1
     assert "package: FAIL/COMMAND_FAILED (exit 1)" in out
     assert f"  R0: FAIL (first failing test: {FIRST})" in out
     assert f"first failing test: {SECOND}" not in out
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    claims = document["claims"]
+    r0 = next(claim for claim in claims if claim["rigor"] == "R0")
+    assert r0["detail"] == f"R0 command failed; first failing test: {FIRST}"
+    assert r0["detail_dropped_bytes"] == 0
+    assert verify_document(document) == []
+
+
+def test_lanes_warns_on_pytest_fail_fast_with_coverage_without_polluting_json(
+    git_repo: GitRepo,
+):
+    git_repo.write("src/package.py", "value = 1\n")
+    git_repo.write("scripts/helper.py", "value = 2\n")
+    lane = set_key(
+        R1_LANE,
+        "argv",
+        '["python", "-m", "pytest", "tests", "-x"]',
+    )
+    path = git_repo.write("assay.toml", lane)
+    out, err = io.StringIO(), io.StringIO()
+
+    code = main(["lanes", "--file", str(path), "--json"], stdout=out, stderr=err)
+
+    assert code == 0
+    lanes = json.loads(out.getvalue())["lanes"]
+    package = next(lane for lane in lanes if lane["name"] == "package")
+    assert package["rigor"] == ["R0", "R1"]
+    assert "assay: warning:" in err.getvalue()
+    assert "lane 'package'" in err.getvalue()
+    assert "coverage artifact incomplete" in err.getvalue()
 
 
 def test_a_failing_suite_that_dirties_the_tree_still_reports_r0_fail(
     git_repo: GitRepo,
+    tmp_path,
 ):
     path = _lane(
         git_repo,
@@ -60,11 +104,60 @@ def test_a_failing_suite_that_dirties_the_tree_still_reports_r0_fail(
         "echo dirt > made.txt; exit 1",
     )
 
-    code, out, _ = _run(["run", "package", "--file", str(path)])
+    verdict_path = tmp_path / "verdict.json"
+    code, out, _ = _run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(verdict_path)]
+    )
 
     assert code == 3
     assert "package: NO_MEASUREMENT/DIRTY_TREE (exit 3)" in out
     assert f"  R0: FAIL (first failing test: {FIRST})" in out
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r0 = next(claim for claim in document["claims"] if claim["rigor"] == "R0")
+    assert r0["status"] == "NO_MEASUREMENT"
+    assert r0["detail"].startswith(
+        f"R0 command failed; first failing test: {FIRST}; run refusal:"
+    )
+    assert "made.txt" in r0["detail"]
+    assert verify_document(document) == []
+
+
+def test_dirty_tree_r0_detail_accounts_for_both_diagnostic_parts(
+    git_repo: GitRepo, tmp_path
+):
+    create_files = "; ".join(
+        f": > dirty-{index:02d}-{'x' * 120}.txt" for index in range(24)
+    )
+    path = _lane(
+        git_repo,
+        f"echo 'FAILED {FIRST} - boom'; echo 'FAILED {SECOND} - bang'; "
+        f"{create_files}; exit 1",
+    )
+
+    verdict_path = tmp_path / "verdict.json"
+    code, out, err = _run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(verdict_path)]
+    )
+
+    assert code == 3
+    assert "package: NO_MEASUREMENT/DIRTY_TREE (exit 3)" in out
+    refusal_line = next(line for line in err.splitlines() if "DIRTY_TREE:" in line)
+    refusal_message = refusal_line.split(": ", maxsplit=2)[2]
+    document = json.loads(verdict_path.read_text(encoding="utf-8"))
+    r0 = next(claim for claim in document["claims"] if claim["rigor"] == "R0")
+    full_detail = (
+        f"R0 command failed; first failing test: {FIRST}; run refusal: "
+        f"{refusal_message}"
+    )
+
+    assert len(full_detail.encode("utf-8")) > 2048
+    assert r0["detail"].startswith(
+        f"R0 command failed; first failing test: {FIRST}; run refusal:"
+    )
+    assert r0["detail_dropped_bytes"] == len(full_detail.encode("utf-8")) - len(
+        r0["detail"].encode("utf-8")
+    )
+    assert verify_document(document) == []
 
 
 def test_a_no_measurement_without_a_failing_test_is_not_recast(git_repo: GitRepo):

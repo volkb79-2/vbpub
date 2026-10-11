@@ -124,6 +124,7 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .failure_summary import first_failing_test
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -1454,9 +1455,9 @@ def _execute_plan_inner(
     # them, a PASS that carries them IS the signature of an overridden exit
     # code. The verdict's own contract already allows this
     # (`Verdict.result_stdout_tail`: "a PASS whose evidence was not
-    # requested"), and `Claim.detail` deliberately is NOT used here -- that
-    # field is forbidden on a PASS claim, which is precisely the direction
-    # worth annotating, so an asymmetric FAIL-only note would be noise.
+    # requested"), and `Claim.detail` is not used here -- that field is
+    # forbidden on a PASS claim. B146 uses it only for recognized R0 failures;
+    # this verified PASS over a non-zero exit is not such a failure.
     # The reason code stays A-073's own, unchanged in MEANING (B078 changes
     # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
     # member, so the closed vocabulary A-050 guards is untouched. The two
@@ -1597,12 +1598,24 @@ def build_r0_claim(result: CommandResult) -> Claim:
     a caller (P05) that already has a :class:`CommandResult` never has to
     reconstruct this by hand.
     """
+    failing_test = (
+        first_failing_test(result.stdout_tail, result.stderr_tail)
+        if result.outcome is Outcome.FAIL
+        else None
+    )
+    detail = (
+        refusal_detail(f"R0 command failed; first failing test: {failing_test}")
+        if failing_test is not None
+        else None
+    )
     return Claim(
         rigor="R0",
         source="computed",
         status=result.outcome,
         verified_by_assay=True,
         reason_code=result.reason_code,
+        detail=detail.text if detail is not None else None,
+        detail_dropped_bytes=detail.dropped_bytes if detail is not None else None,
     )
 
 
@@ -3472,6 +3485,67 @@ def _read_prepared_source_text(
         ) from exc
 
 
+def _mutation_context_sources(
+    *,
+    prepared: "isolation.SnapshotRepository",
+    snapshot_repo_top: Path,
+    source_root_paths: Sequence[Path],
+    adapter: LanguageAdapter,
+    deadline: LaneDeadline,
+) -> Iterator[tuple[str, str]] | None:
+    """Read every adapter source under the declared roots for cross-file rules.
+
+    Candidate selection controls which files may produce mutants. It cannot
+    narrow facts needed to decide whether a candidate is safe: for example,
+    an unchanged migration may attach a unique index declared in a changed
+    file. Context bytes come only from the prepared commit manifest.
+    """
+    if not (
+        callable(getattr(adapter, "prepare_mutation_context", None))
+        or callable(getattr(adapter, "prepare_mutation_context_with_sources", None))
+    ):
+        return None
+
+    roots: set[PurePosixPath] = set()
+    for root in source_root_paths:
+        try:
+            relative = root.relative_to(snapshot_repo_top)
+        except ValueError as exc:
+            raise AssayError(
+                f"mutation source root {root} is outside the prepared repository "
+                f"{snapshot_repo_top}; cross-file context cannot be established",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            ) from exc
+        roots.add(PurePosixPath(relative.as_posix()))
+
+    paths = {
+        path
+        for root in roots
+        for path in prepared.paths_under(root)
+        if any(
+            fnmatch.fnmatch(path.as_posix(), pattern)
+            for pattern in adapter.source_globs
+        )
+        and not adapter.is_test_path(path.as_posix())
+        and not any(
+            part in adapter.excluded_dir_names for part in path.parts[:-1]
+        )
+    }
+
+    def read_context() -> Iterator[tuple[str, str]]:
+        for path in sorted(paths):
+            source_path = path.as_posix()
+            yield (
+                source_path,
+                _read_prepared_source_text(
+                    prepared, source_path, deadline=deadline
+                ),
+            )
+
+    return read_context()
+
+
 def _mutation_targets_from_diff(
     added: diff.AddedLines,
     *,
@@ -4979,6 +5053,13 @@ def _run_prepared_lane(
                     plan=r2_plan if cold_witness else plan,
                     deadline=deadline,
                     targets=targets,
+                    context_sources=_mutation_context_sources(
+                        prepared=prepared,
+                        snapshot_repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                        adapter=adapter,
+                        deadline=deadline,
+                    ),
                     adapter=adapter,
                     jobs=lane.judge.mutation.jobs,
                     max_mutants=lane.judge.mutation.max_mutants,
@@ -7222,16 +7303,24 @@ def _finish_direct_r0_lane(
         if post_observed_head != pre_run_head:
             post_run_reason = ReasonCode.HEAD_CHANGED
     if post_run_reason is not None:
+        post_error = post_command_refusal(
+            post_run_reason,
+            where=repo,
+            recorded_commit=pre_run_head,
+            dirty=post_dirty,
+            observed_head=post_observed_head,
+        )
         direct_post_detail = announce_refusal(
-            post_command_refusal(
-                post_run_reason,
-                where=repo,
-                recorded_commit=pre_run_head,
-                dirty=post_dirty,
-                observed_head=post_observed_head,
-            ),
+            post_error,
             diagnostics=diagnostics,
         )
+        # Keep the measured R0 failure in its claim even though this later
+        # post-run guard replaces the claim status with NO_MEASUREMENT. In
+        # this one case both diagnostics share the existing unstructured
+        # bounded detail field; the stderr refusal line remains unchanged.
+        if r0_claim.detail is not None:
+            combined = f"{r0_claim.detail}; run refusal: {post_error}"
+            direct_post_detail = refusal_detail(combined)
         return assemble_verdict(
             lane=lane,
             commit=commit,

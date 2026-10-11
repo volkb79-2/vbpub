@@ -99,6 +99,7 @@ from .config import (
     Lane,
     LaneFile,
     find_lane_file,
+    lane_validation_warnings,
     load_lane_file,
     parse_duration,
 )
@@ -622,6 +623,8 @@ def main(
     try:
         if args.command == "lanes":
             lane_file = _resolve_lane_file(args.file)
+            for lane in lane_file.lanes.values():
+                _emit_lane_validation_warnings(lane_file, lane, err)
             if args.json:
                 _render_lanes_json(lane_file, out)
             else:
@@ -665,6 +668,16 @@ def _split_appended_argv(raw: list[str]) -> tuple[list[str], list[str]]:
 
 def _resolve_lane_file(path: Path | None) -> LaneFile:
     return load_lane_file(find_lane_file() if path is None else path)
+
+
+def _emit_lane_validation_warnings(
+    lane_file: LaneFile, lane: Lane, diagnostics: TextIO
+) -> None:
+    for warning in lane_validation_warnings(lane):
+        print(
+            f"assay: warning: {lane_file.path}: lane {lane.name!r}: {warning}",
+            file=diagnostics,
+        )
 
 
 _CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -1834,7 +1847,6 @@ def _campaign_state_records_match(state_dir: Path, deadline_sha256: str) -> None
 def _cmd_campaign_init(
     args: argparse.Namespace, out: TextIO, err: TextIO
 ) -> int:
-    del err
     if _CAMPAIGN_NAME_RE.fullmatch(args.campaign) is None:
         raise LaneConfigError("--campaign must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
     if args.hours is not None and (
@@ -1849,6 +1861,8 @@ def _cmd_campaign_init(
     lane_file = _resolve_lane_file(args.file)
     lane_names = tuple(sorted(args.lane))
     lanes = tuple(lane_file.lane(name) for name in lane_names)
+    for lane in lanes:
+        _emit_lane_validation_warnings(lane_file, lane, err)
     first_commit, first_tree = _campaign_git_identity(lane_file, lanes[0])
 
     plan_digests: dict[str, str | None] = {}
@@ -2004,6 +2018,7 @@ def _cmd_run(
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
+    _emit_lane_validation_warnings(lane_file, lane, err)
     candidates_path = getattr(args, "candidates_file", None)
     pilot_selection: frozenset[str] | None = None
     candidates_file_sha256: str | None = None
@@ -3828,6 +3843,13 @@ def _discover_plan_jobs(
                 adapter=adapter,
                 operators=operators,
                 limit=lane.judge.mutation.max_mutants + 1,
+                context_sources=runner._mutation_context_sources(
+                    prepared=prepared,
+                    snapshot_repo_top=prepared.spec.repo_top,
+                    source_root_paths=source_root_paths,
+                    adapter=adapter,
+                    deadline=deadline,
+                ),
             )
     return _PlanDiscovery(
         commit=commit,
@@ -3913,6 +3935,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
     """
     lane_file = _resolve_lane_file(args.file)
     lane = lane_file.lane(args.lane)
+    _emit_lane_validation_warnings(lane_file, lane, err or sys.stderr)
     cold_witness = getattr(args, "cold_witness", False)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
         raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")

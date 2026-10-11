@@ -32,6 +32,7 @@
 #   SCHEMA_GATE_DBNAME            target database (already CREATEd)
 #   SCHEMA_GATE_DUMP_PATH         where the equivalence-artifact dump lands
 #   SCHEMA_GATE_KILL_SIGNAL_PATH  where a failing test's signal is written
+#   SCHEMA_GATE_STAGE_PATH        phase receipt: apply, dump or test
 #   SCHEMA_GATE_RESTRICT_KEY      the pinned `pg_dump --restrict-key` value
 #   SCHEMA_GATE_TEST_CMD          the schema-test command, run via `sh -c`
 set -eu
@@ -40,20 +41,23 @@ SCRIPT_DIR="${SCHEMA_GATE_INIT_SCRIPTS_DIR:?SCHEMA_GATE_INIT_SCRIPTS_DIR is requ
 DB_NAME="${SCHEMA_GATE_DBNAME:?SCHEMA_GATE_DBNAME is required}"
 DUMP_PATH="${SCHEMA_GATE_DUMP_PATH:?SCHEMA_GATE_DUMP_PATH is required}"
 KILL_SIGNAL_PATH="${SCHEMA_GATE_KILL_SIGNAL_PATH:?SCHEMA_GATE_KILL_SIGNAL_PATH is required}"
+STAGE_PATH="${SCHEMA_GATE_STAGE_PATH:?SCHEMA_GATE_STAGE_PATH is required}"
 RESTRICT_KEY="${SCHEMA_GATE_RESTRICT_KEY:?SCHEMA_GATE_RESTRICT_KEY is required}"
 TEST_CMD="${SCHEMA_GATE_TEST_CMD:?SCHEMA_GATE_TEST_CMD is required}"
 
 [ -d "$SCRIPT_DIR" ] || { echo "[schema-gate] ERROR: init-scripts dir not found: ${SCRIPT_DIR}" >&2; exit 1; }
 
 # --- 1. apply -----------------------------------------------------------
+printf '%s\n' apply > "$STAGE_PATH"
 echo "[schema-gate] --- apply (${SCRIPT_DIR}) ---"
 for sql_file in "$SCRIPT_DIR"/[0-9][0-9]-*.sql; do
     [ -f "$sql_file" ] || continue
     echo "[schema-gate] applying: $(basename "$sql_file")"
-    psql -v ON_ERROR_STOP=1 -U postgres -d "$DB_NAME" -f "$sql_file"
+    psql -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -U postgres -d "$DB_NAME" -f "$sql_file"
 done
 
 # --- 2. dump, self-enforced reproducible (NB-6) --------------------------
+printf '%s\n' dump > "$STAGE_PATH"
 echo "[schema-gate] --- dump (restrict-key pinned, verified reproducible) ---"
 rm -f "$DUMP_PATH" "${DUMP_PATH}.verify"
 pg_dump --schema-only --no-owner --restrict-key="$RESTRICT_KEY" -U postgres -d "$DB_NAME" > "$DUMP_PATH"
@@ -71,6 +75,7 @@ rm -f "${DUMP_PATH}.verify"
 # --- 3. test --------------------------------------------------------------
 # The dump above has ALREADY landed, unconditionally -- this step's own exit
 # status changes nothing about that (A-279's ordering).
+printf '%s\n' test > "$STAGE_PATH"
 echo "[schema-gate] --- test ---"
 out="$(mktemp)"
 set +e

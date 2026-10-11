@@ -134,13 +134,61 @@ def test_a_git_marker_that_is_neither_a_directory_nor_a_regular_file_is_refused(
     assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
 
 
-def test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused(tmp_path: Path):
-    lonely = tmp_path / "a" / "b" / "c"
-    lonely.mkdir(parents=True)
+def test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    start = tmp_path / "isolated" / "project"
+    start.mkdir(parents=True)
+    original_lstat = Path.lstat
+
+    def hide_git_markers(path: Path):
+        if path.name == ".git":
+            raise FileNotFoundError(path)
+        return original_lstat(path)
+
+    # Keep the production unbounded walk independent of where pytest places
+    # its temp directory, while letting every non-marker filesystem check run
+    # normally.
+    monkeypatch.setattr(Path, "lstat", hide_git_markers)
     with pytest.raises(AssayError) as excinfo:
-        git_module._nearest_git_marker(lonely)
+        git_module._nearest_git_marker(start)
+
     assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
-    assert "no .git marker" in str(excinfo.value)
+    assert "within" not in str(excinfo.value)
+
+
+def test_git_marker_above_explicit_walk_boundary_is_ignored(tmp_path: Path):
+    """A marker above the explicitly owned walk root is outside this probe."""
+    boundary = tmp_path / "walk-boundary"
+    lonely = boundary / "a" / "b" / "c"
+    lonely.mkdir(parents=True)
+    (tmp_path / ".git").mkdir()
+    with pytest.raises(AssayError) as excinfo:
+        git_module._nearest_git_marker(lonely, stop_at=boundary)
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
+    assert str(excinfo.value) == (
+        f"no .git marker found in any ancestor of {lonely.resolve()} within {boundary.resolve()}"
+    )
+
+
+def test_nearest_git_marker_checks_the_boundary_before_stopping(tmp_path: Path):
+    boundary = tmp_path / "walk-boundary"
+    nested = boundary / "a" / "b"
+    nested.mkdir(parents=True)
+    (boundary / ".git").mkdir()
+
+    assert git_module._nearest_git_marker(nested, stop_at=boundary) == boundary
+
+
+def test_nearest_git_marker_refuses_a_boundary_outside_the_start(tmp_path: Path):
+    start = tmp_path / "inside" / "leaf"
+    start.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(AssayError, match="is not an ancestor") as excinfo:
+        git_module._nearest_git_marker(start, stop_at=outside)
+    assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
 
 
 # --- _resolve_repo: the bootstrap rev-parse --absolute-git-dir call -----------

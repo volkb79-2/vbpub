@@ -776,17 +776,21 @@ def collect_mutation_sites(
     adapter: LanguageAdapter,
     operators: tuple[str, ...],
     limit: int,
+    context_sources: Iterable[str | tuple[str, str]] | None = None,
 ) -> tuple[MutantJob, ...] | Literal["UNSUPPORTED"]:
     """Aggregate bounded candidate sites across possibly many changed files
     into ONE deterministic job list, or report adapter-wide capability
     absence (P21/A-180/A-183).
 
-    Targets are visited in ``path`` order, and each call receives only the
-    REMAINING capacity — so the total number of descriptors this function
-    ever holds is bounded by *limit* regardless of how many candidates the
-    files actually contain. Once capacity is exhausted, later files are not
-    called at all: that is what makes the bound a work bound and not merely
-    a reporting one.
+    Targets are visited in ``path`` order, and each per-file discovery call
+    receives only the REMAINING capacity — so the total number of candidate
+    descriptors this function ever holds is bounded by *limit* regardless of
+    how many candidates the files actually contain. An adapter with
+    cross-file rules may do one metadata pre-scan over *context_sources*;
+    when omitted, selected target texts remain the context. That scan may
+    not materialize candidate descriptors. Once capacity is exhausted, later files are not
+    sent to per-file site discovery, which keeps candidate generation bounded
+    rather than merely truncating the report.
 
     Three results, deliberately distinguishable (A-183):
 
@@ -813,18 +817,86 @@ def collect_mutation_sites(
         )
     _check_operator_policy(operators)
 
+    ordered_targets = sorted(targets, key=lambda item: item.path)
+    if not ordered_targets:
+        return ()
+    context_source_items = tuple(context_sources or ())
+    source_context_preparer = getattr(
+        adapter, "prepare_mutation_context_with_sources", None
+    )
+    source_contextual_generator = getattr(
+        adapter, "generate_mutation_sites_with_context_for_source", None
+    )
+    if callable(source_context_preparer) and callable(source_contextual_generator):
+        identified_sources: list[tuple[str, str]] = []
+        for index, item in enumerate(context_source_items):
+            if (
+                isinstance(item, tuple)
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], str)
+            ):
+                identified_sources.append(item)
+            elif isinstance(item, str):
+                # Legacy context callers do not identify a path. Preserve each
+                # entry as a distinct external source instead of conflating
+                # identical contents with the current candidate.
+                identified_sources.append((f"external-context:{index}", item))
+            else:
+                raise TypeError("mutation context sources must be text or (path, text)")
+        identified_sources.extend(
+            (target.path, target.text) for target in ordered_targets
+        )
+        mutation_context = source_context_preparer(identified_sources)
+    else:
+        context_preparer = getattr(adapter, "prepare_mutation_context", None)
+
+        def context_texts() -> Iterator[str]:
+            for item in context_source_items:
+                yield item[1] if isinstance(item, tuple) else item
+            yield from (target.text for target in ordered_targets)
+
+        mutation_context = (
+            context_preparer(context_texts())
+            if callable(context_preparer)
+            else None
+        )
+    contextual_generator = getattr(adapter, "generate_mutation_sites_with_context", None)
+
     jobs: list[MutantJob] = []
     remaining = limit
     saw_supported = False
-    for target in sorted(targets, key=lambda item: item.path):
+    for target in ordered_targets:
         if remaining <= 0:
             break
-        result = adapter.generate_mutation_sites(
-            target.text,
-            set(target.lines),
-            operators=operators,
-            limit=remaining,
-        )
+        if (
+            mutation_context is not None
+            and callable(source_contextual_generator)
+            and callable(source_context_preparer)
+        ):
+            result = source_contextual_generator(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+                context=mutation_context,
+                source_identity=target.path,
+            )
+        elif mutation_context is not None and callable(contextual_generator):
+            result = contextual_generator(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+                context=mutation_context,
+            )
+        else:
+            result = adapter.generate_mutation_sites(
+                target.text,
+                set(target.lines),
+                operators=operators,
+                limit=remaining,
+            )
         if result == UNSUPPORTED:
             if saw_supported:
                 raise MutationDiscoveryError(
@@ -3006,6 +3078,7 @@ def run_mutation(
     plan: CommandPlan,
     deadline: LaneDeadline,
     targets: Iterable[MutationTarget],
+    context_sources: Iterable[str] | None = None,
     adapter: LanguageAdapter,
     jobs: int,
     max_mutants: int,
@@ -3465,7 +3538,11 @@ def run_mutation(
         from .runner import execute_plan, resolve_run_cwd
 
         collected = collect_mutation_sites(
-            targets, adapter=adapter, operators=operators, limit=max_mutants + 1
+            targets,
+            adapter=adapter,
+            operators=operators,
+            limit=max_mutants + 1,
+            context_sources=context_sources,
         )
         if expected_plan_sha256 is not None:
             if (

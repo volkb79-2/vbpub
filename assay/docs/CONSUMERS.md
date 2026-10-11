@@ -1894,23 +1894,131 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
-### What assay's own SQL qualification does not cover
+### What assay's own SQL qualification covers
 
-assay qualifies this adapter against a real PostgreSQL 18.6 with its own schema
-(24 representative sites; see [§11 of the design guide](DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126)),
-not against your schema. Two families are outside that evidence and are tracked
-in `nyxloom-trove/4-backlog.md`:
+Assay qualifies its SQL adapter against real PostgreSQL 18.6 using its own
+schema, not your schema. The registered qualification combines a 24-row matrix
+with the separate B132 hazard cases; see [§11 of the design
+guide](DESIGN-GUIDE.md#how-the-sql-adapter-is-qualified-against-a-real-postgresql-a-480-b126).
+The case file pins expected current and comparison-probe outcomes; the
+registered gate measures them and its passing receipt is the evidence for the
+exact package commit.
+The gate records whether PostgreSQL failed during apply, dump, or test. If a
+current generated site fails before its probe runs, qualification fails; that
+is not a kill.
 
-- **Constructs PostgreSQL may refuse (B132).** A generated mutant can be
-  invalid DDL the qualification never exercises: `NOT NULL` dropped from an
-  `IDENTITY`/`serial`/primary-key column, a string widen of an enum `CHECK`
-  (unknown outcomes), and constructs the schema does not reach (generated
-  expressions, `EVENT` triggers, quoted foreign-key targets, triggers created
-  inside a `DO` block). Such a mutant is `crashed`, never a kill; a probe for
-  them needs an ad-hoc-construct mode of the qualification harness.
-- **Operator labels (B133).** `sql:widen-check-in` on a `NOT IN` list
-  *narrows* the check, and `sql:drop-check` also rewrites `CREATE POLICY ...
-  WITH CHECK`; the operator names describe the common case only.
+The adapter offers no site for either half of a linked `UNIQUE USING INDEX` or
+`PRIMARY KEY USING INDEX` pair, or for an enum string check whose resolved type
+cannot be established. It preserves `varchar(n)` modifiers and does not offer
+the fixed-sentinel widening site for bounded columns. A `DROP TABLE`, table
+rename, or schema move anywhere in the scanned corpus invalidates type facts
+for the old and new names because the scanner does not resolve DDL order. For
+array types it does not assume scalar literal or equality rules. An unqualified name that may
+resolve to a temporary table, or an explicit `pg_temp` name, has no widening
+site because its type cannot be established from the source corpus alone. For
+`sql:drop-not-null`, identity, serial, and inline primary-key columns use an
+equivalent removal of an unnamed explicit clause. Named and table-level
+`NOT NULL` constraints and `NOT NULL NO INHERIT` forms produce no site because
+a partial replacement would leave invalid SQL. String `NOT IN` rewrites are refused
+because PostgreSQL type and collation rules can make distinct source strings
+compare equal; for example, `CHAR(n)` ignores trailing spaces. Historical
+comparison probes that fail at apply are useful only with an exact SQLSTATE
+pin.
+
+### What the SQL qualification does not cover
+
+The built-in schema and hazard cases do not certify behavior on your own DDL,
+extensions, PostgreSQL versions, or consumer test probes. Run your declared SQL
+lane against the complete DDL corpus your command applies and review its own
+registered gate evidence.
+
+### SQL operator behavior (B133)
+
+`sql:widen-check-in` appends a member to `IN ('open', 'pending')` only for
+homogeneous string literals on declared `text`, unbounded `varchar`, or `name`
+columns without an explicit `COLLATE` clause, or unsigned integers on declared
+bounded integer columns. Fixed-length
+  `CHAR` types have no string widening site because PostgreSQL ignores
+  trailing-space differences in their comparisons. An integer `NOT IN` list
+  on a declared bounded integer column can remove one uniquely listed excluded
+  member, which widens the accepted set. It emits no site for string `NOT IN`
+  lists, unknown or approximate column types, out-of-range integer members, a
+  singleton, empty, duplicate-only, non-literal, or mixed lists. The
+  `sql:drop-check` operator applies to both table constraints and
+  row security policies: it replaces `CHECK (predicate)` or `WITH CHECK
+  (predicate)` with the corresponding `true` clause.
+
+  Candidate selection and safety context have different scopes. A SQL lane
+  may use the default changed-lines mode or `whole_target` to choose which
+  files can produce mutants. Before discovery, Assay reads every tracked,
+  recognized, non-test SQL source under `judge.source_roots` from the prepared
+  commit, including unchanged files, to resolve cross-file index attachments,
+  column declarations, type changes and collations. Both `UNIQUE USING INDEX`
+  and `PRIMARY KEY USING INDEX` link an index to its constraint; neither half
+  is safe to mutate alone. An unnamed index has no source-derived identity; if
+  the scan finds attachments, Assay skips it rather than guessing the name
+  PostgreSQL generates. A declaration in another included file can establish
+  the type for a schema-qualified `ALTER TABLE` check. An unqualified
+  `ALTER TABLE` check gets no type-based widening site because its table
+  depends on session `search_path`; inline checks use only their own
+  `CREATE TABLE` declaration. Unknown or conflicting
+  types are refused. `CREATE TABLE AS` query results are not type-inferred; Assay reads type facts only from an explicit parenthesized column list in that statement, so a later table cannot supply its column type. `CREATE TABLE IF NOT EXISTS` declarations do not establish types because PostgreSQL may skip them when the table already exists. Unqualified declarations are not used to infer types for schema-qualified references because their schema depends on session `search_path`. Declare roots that cover the complete DDL corpus the lane
+  command applies; a dependency outside those roots cannot inform the scan.
+  Unqualified `CREATE TYPE` and `CREATE DOMAIN` names retain possible
+  temporary-schema provenance across later path changes. A catalog-first path
+  is not enough unless it explicitly places `pg_temp` after `pg_catalog`.
+  The connection's initial creation schema is unknown to a source scan, so
+  unqualified tables remain possible temporary row types until source proves a
+  non-temporary schema is first and usable. The full static path list is considered
+  because PostgreSQL skips missing schemas; a later `pg_temp` can therefore be
+  the creation schema unless an earlier schema is known to exist.
+  Only a plain `CREATE SCHEMA name` proves the schema exists and is usable by
+  the current role. `SET SCHEMA 'name'` does not prove that: PostgreSQL silently
+  skips missing or inaccessible path entries. `CREATE SCHEMA IF NOT EXISTS`
+  may leave existing access unchanged, so it also cannot prove usability.
+  Revoking schema `USAGE`, changing its owner, or changing the effective role
+  can invalidate that proof. Revoking `USAGE` from `PUBLIC` leaves the
+  creator's direct privilege intact, and `REVOKE GRANT OPTION FOR USAGE` leaves
+  ordinary `USAGE` intact. `SET LOCAL ROLE` expires at transaction end: commit
+  restores the session role and rollback restores the prior role and schema
+  facts. If source cannot establish whether a named grantee is the current
+  schema owner, Assay treats the revocation as potentially removing access.
+  The scan follows schema changes inside a transaction for later statements;
+  commit keeps them and rollback restores the earlier source-known state.
+  Bare built-in spellings such as `text` and `integer` are refused if a
+  same-named source type exists. An earlier session-level `SET search_path`
+  in the same source proves `pg_catalog` first only when it precedes the
+  column's `CREATE TABLE` declaration. For an `ALTER TABLE` check, Assay uses
+  the path at the original column declaration as type evidence and checks for
+  unsafe path changes before the candidate. A later catalog-first setting
+  cannot prove an earlier declaration; a later `RESET` or `set_config` does not
+  retroactively invalidate an earlier candidate. A static `SET SCHEMA` to a
+  non-temporary schema preserves PostgreSQL's implicit `pg_catalog`-first
+  type lookup but does not prove the named schema exists or is usable for
+  object creation; `SET SCHEMA 'pg_temp'` remains unsafe because temporary types
+  can shadow built-ins. Unresolved schema values, updates to `pg_settings.search_path`,
+  and unknown or computed `set_config` setting names are path changes. Dynamic
+  `EXECUTE` in dollar-quoted executable text is an unknown path writer. An
+  ordinary `UPDATE ... SET` is not path configuration,
+  but a targeted `pg_settings` update is.
+  A path setting inside an explicit transaction, including `SET LOCAL`, cannot
+  prove resolution because rollback or transaction end can restore another
+  path. Function, procedure, or routine `SET` clauses, `ALTER ROUTINE ... RESET`,
+  and `ALTER ROLE`, `ALTER USER`, `ALTER DATABASE`, or `ALTER SYSTEM` settings
+  do not change the current
+  migration session. A `SET` or `RESET` in executable dollar-quoted routine
+  text is treated as unsafe because calling that routine can change the session
+  path. `RESET search_path`, `RESET ALL`, and `DISCARD ALL` also make path
+  resolution unsafe because the connection-specific default is unknown. A
+  `set_config` call that changes or may change `search_path` also makes
+  unqualified lookup unsafe. PostgreSQL searches the temporary schema first
+  for type names unless the path explicitly lists `pg_temp` after
+  `pg_catalog`. A matching temporary table or view name is refused unless
+  that ordering is set before the declaration; a transaction-local or later
+  `SET` does not prove it. Renaming a temporary table, view or named type
+  carries the same ambiguity, even across SQL files. A plain view that reads a
+  temporary table is temporary too. Use `pg_catalog.text` or `pg_catalog.int4`
+  when the catalog type is intended.
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 
@@ -4101,12 +4209,14 @@ v10 without your product changing:**
 
 ### If you read refusals: `claim.detail` is now on the wire
 
-A non-PASS claim may carry `detail` (the refusing sentence) and
+A non-PASS claim may carry `detail` (a refusal sentence, a recognized R0 test
+failure diagnostic, or both when a post-run refusal replaces a failing R0
+claim) and
 `detail_dropped_bytes` beside it. The pair is all-or-nothing, a PASS claim
 carries neither, and the text is bounded at 2048 UTF-8 bytes with the head
 kept. **Nothing is required of you** — the field is optional and additive.
-It is **declared, not verified**: assay copies the sentence it printed and
-never parses it. The closed `(outcome, reason_code)` pair remains the only
+It is **declared, not verified**: assay does not validate the diagnostic's
+meaning. The closed `(outcome, reason_code)` pair remains the only
 machine-readable statement in the document; a gate that pattern-matches
 `detail` is reading diagnosis as policy.
 
@@ -4256,6 +4366,17 @@ Where it goes:
   measurably failed. A run whose output names no failing test prints no such
   line, so a genuine no-measurement is never recast as a test failure. NAME is
   the first failure visible in the bounded output tail the verdict retains.
+  The R0 claim's existing `detail` field carries the same first-failure
+  diagnostic; its closed outcome/reason pair and schema remain unchanged. A
+  coverage lane that invokes the `pytest` executable or Python's initial
+  `-m pytest` form with a nonzero effective limit from `--maxfail`,
+  `--exitfirst`, or `-x` also emits an advisory to stderr because fail-fast can
+  leave the artifact incomplete. `--maxfail=0` clears an earlier fail-fast
+  setting, and later settings take precedence. Tokens after `python -c` or a
+  script path are not treated as pytest flags.
+  If a post-run refusal replaces the R0 claim, `detail`
+  keeps both the failure and refusal text. The warning does not alter lane
+  validity or JSON stdout.
 - **From a library caller**, to whatever stream you pass as `diagnostics=` to
   `assay.runner.run_lane`. Nothing is written to the process's stderr behind
   your back; omit the argument and assay stays silent, exactly as before.

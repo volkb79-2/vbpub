@@ -1,0 +1,937 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "unique-deferrable",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "UNIQUE (value)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_unique_deferrable (value integer,\n-- ASSAY-FOCUS: unique-deferrable\n  CONSTRAINT assay_b132_unique_deferrable_uq UNIQUE (value) DEFERRABLE INITIALLY DEFERRED\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  SET CONSTRAINTS ALL IMMEDIATE;\n  BEGIN\n    INSERT INTO assay_b132_unique_deferrable (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "0A000"
+    },
+    {
+      "id": "unique-nulls-not-distinct",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "UNIQUE",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_unique_nulls_not_distinct (value integer,\n-- ASSAY-FOCUS: unique-nulls-not-distinct\n  CONSTRAINT assay_b132_unique_nulls_not_distinct_uq UNIQUE NULLS NOT DISTINCT (value)\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_nulls_not_distinct (value) VALUES (NULL), (NULL);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "unique-include",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "UNIQUE (value)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_unique_include (value integer, payload text,\n-- ASSAY-FOCUS: unique-include\n  CONSTRAINT assay_b132_unique_include_uq UNIQUE (value) INCLUDE (payload)\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_include (value, payload) VALUES (1, 'a'), (1, 'b');\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "unique-using-index-constraint",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "expected_probe_sqlstate": "42601",
+      "probe": {
+        "before": "UNIQUE",
+        "after": "CHECK (true)"
+      },
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_using_index (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\n-- ASSAY-FOCUS: unique-using-index-constraint\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
+    },
+    {
+      "id": "unique-using-index-index",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "expected_probe_sqlstate": "42809",
+      "probe": {
+        "before": "CREATE UNIQUE INDEX",
+        "after": "CREATE INDEX"
+      },
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unique_using_index (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "source": "CREATE TABLE assay_b132_unique_using_index (value integer);\n-- ASSAY-FOCUS: unique-using-index-index\nCREATE UNIQUE INDEX assay_b132_unique_using_index_idx ON assay_b132_unique_using_index (value);\nALTER TABLE assay_b132_unique_using_index ADD CONSTRAINT assay_b132_unique_using_index_uq UNIQUE USING INDEX assay_b132_unique_using_index_idx;\n"
+    },
+    {
+      "id": "primary-key-using-index-index",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "expected_probe_sqlstate": null,
+      "probe": null,
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_primary_key_using_index (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "source": "CREATE TABLE assay_b132_primary_key_using_index (value integer);\n-- ASSAY-FOCUS: primary-key-using-index-index\nCREATE UNIQUE INDEX assay_b132_primary_key_using_index_idx ON assay_b132_primary_key_using_index (value);\nALTER TABLE assay_b132_primary_key_using_index ADD CONSTRAINT assay_b132_primary_key_using_index_pk PRIMARY KEY USING INDEX assay_b132_primary_key_using_index_idx;\n"
+    },
+    {
+      "id": "fk-match-full",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "FOREIGN KEY (a, b) REFERENCES assay_b132_fk_match_full_parent (a, b)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_fk_match_full_parent (a integer, b integer, PRIMARY KEY (a, b));\n-- ASSAY-FOCUS: fk-match-full\nCREATE TABLE assay_b132_fk_match_full_child (a integer, b integer, CONSTRAINT assay_b132_fk_match_full FOREIGN KEY (a, b) REFERENCES assay_b132_fk_match_full_parent (a, b) MATCH FULL);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_match_full_parent (a, b) VALUES (1, 1);\n  BEGIN\n    INSERT INTO assay_b132_fk_match_full_child (a, b) VALUES (1, NULL);\n  EXCEPTION WHEN foreign_key_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "fk-deferrable",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "FOREIGN KEY (parent_id) REFERENCES assay_b132_fk_deferrable_parent (id)",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_fk_deferrable_parent (id integer PRIMARY KEY);\n-- ASSAY-FOCUS: fk-deferrable\nCREATE TABLE assay_b132_fk_deferrable_child (parent_id integer, CONSTRAINT assay_b132_fk_deferrable FOREIGN KEY (parent_id) REFERENCES assay_b132_fk_deferrable_parent (id) DEFERRABLE INITIALLY DEFERRED);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_deferrable_child (parent_id) VALUES (999);\n  BEGIN\n    SET CONSTRAINTS ALL IMMEDIATE;\n  EXCEPTION WHEN foreign_key_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "0A000"
+    },
+    {
+      "id": "fk-set-null-columns",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "FOREIGN KEY (a, b) REFERENCES assay_b132_fk_set_null_parent (a, b) ON DELETE SET NULL",
+        "after": "CHECK (true)"
+      },
+      "source": "CREATE TABLE assay_b132_fk_set_null_parent (a integer, b integer, PRIMARY KEY (a, b));\n-- ASSAY-FOCUS: fk-set-null-columns\nCREATE TABLE assay_b132_fk_set_null_child (a integer, b integer, CONSTRAINT assay_b132_fk_set_null FOREIGN KEY (a, b) REFERENCES assay_b132_fk_set_null_parent (a, b) ON DELETE SET NULL (b));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  INSERT INTO assay_b132_fk_set_null_parent (a, b) VALUES (1, 2);\n  INSERT INTO assay_b132_fk_set_null_child (a, b) VALUES (1, 2);\n  DELETE FROM assay_b132_fk_set_null_parent WHERE a = 1 AND b = 2;\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_fk_set_null_child WHERE a = 1 AND b IS NULL\n  ) THEN\n    RAISE EXCEPTION 'K01';\n  END IF;\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "not-null-identity",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_not_null_identity (\n-- ASSAY-FOCUS: not-null-identity\n  id bigint GENERATED BY DEFAULT AS IDENTITY (START WITH 10) NOT NULL, payload integer\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_identity (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "not-null-serial",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_not_null_serial (\n-- ASSAY-FOCUS: not-null-serial\n  id serial NOT NULL, payload integer\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_serial (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "not-null-primary-key",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_not_null_pk (\n-- ASSAY-FOCUS: not-null-primary-key\n  id integer NOT NULL PRIMARY KEY, payload integer\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_not_null_pk (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "enum-check-string-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "IN ('open', 'closed')",
+        "after": "IN ('open', 'closed', '__assay_widened__')"
+      },
+      "source": "CREATE TYPE assay_b132_status AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_enum_check (status assay_b132_status,\n-- ASSAY-FOCUS: enum-check-string-widen\n  CHECK (status IN ('open', 'closed'))\n);\n",
+      "expected_probe_sqlstate": "22P02",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_enum_check (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN invalid_text_representation OR check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n"
+    },
+    {
+      "id": "generated-expression",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_generated (base integer,\n-- ASSAY-FOCUS: generated-expression\n  value integer GENERATED ALWAYS AS (base + 1) STORED NOT NULL\n);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_generated (base) VALUES (NULL);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "event-trigger",
+      "operator": "sql:drop-trigger",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE FUNCTION assay_b132_event_trigger_fn() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$;\n-- ASSAY-FOCUS: event-trigger\nCREATE EVENT TRIGGER assay_b132_event_trigger ON ddl_command_start EXECUTE FUNCTION assay_b132_event_trigger_fn();\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "quoted-fk-target",
+      "operator": "sql:drop-foreign-key",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE \"assay b132 quoted parent\" (\"id value\" integer PRIMARY KEY);\n-- ASSAY-FOCUS: quoted-fk-target\nCREATE TABLE assay_b132_quoted_child (parent_id integer, CONSTRAINT assay_b132_quoted_fk FOREIGN KEY (parent_id) REFERENCES \"assay b132 quoted parent\" (\"id value\"));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "do-block-trigger",
+      "operator": "sql:drop-trigger",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_do_trigger (value integer);\nCREATE FUNCTION assay_b132_do_trigger_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;\n-- ASSAY-FOCUS: do-block-trigger\nDO $$ BEGIN EXECUTE 'CREATE TRIGGER assay_b132_do_trigger BEFORE INSERT ON assay_b132_do_trigger FOR EACH ROW EXECUTE FUNCTION assay_b132_do_trigger_fn()'; END $$;\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "not-null-add-if-not-exists-serial",
+      "operator": "sql:drop-not-null",
+      "expected_site_count": 1,
+      "expected_bucket": "equivalent",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "NOT NULL",
+        "after": "NULL"
+      },
+      "source": "CREATE TABLE assay_b132_add_serial (payload integer);\n-- ASSAY-FOCUS: not-null-add-if-not-exists-serial\nALTER TABLE assay_b132_add_serial ADD COLUMN IF NOT EXISTS id serial NOT NULL;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_add_serial (id, payload) VALUES (NULL, 1);\n  EXCEPTION WHEN not_null_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42601"
+    },
+    {
+      "id": "array-check-string-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_array_check (k text ARRAY,\n-- ASSAY-FOCUS: array-check-string-widen\n  CHECK (k IN ('{a}', '{b}'))\n);\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "array-bracket-check-string-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_array_bracket_check (k text[],\n-- ASSAY-FOCUS: array-bracket-check-string-widen\n  CHECK (k IN ('{a}', '{b}'))\n);\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "temp-table-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE public.assay_b132_temp_shadow (k text);\nCREATE TABLE pg_temp.assay_b132_temp_shadow AS SELECT 'a'::varchar(5) AS k;\n-- ASSAY-FOCUS: temp-table-shadow-widen\nALTER TABLE assay_b132_temp_shadow ADD CHECK (k IN ('a', 'b'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "create-temp-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE public.assay_b132_create_temp_shadow (k text);\nCREATE TEMP TABLE assay_b132_create_temp_shadow (k varchar(5));\n-- ASSAY-FOCUS: create-temp-shadow-widen\nALTER TABLE assay_b132_create_temp_shadow ADD CHECK (k IN ('a', 'b'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "select-into-temp-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_temp_state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_select_into_temp (status text);\nSELECT 'open'::assay_b132_temp_state AS status INTO TEMP TABLE assay_b132_select_into_temp;\n-- ASSAY-FOCUS: select-into-temp-shadow-widen\nALTER TABLE assay_b132_select_into_temp ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "select-into-pg-temp-shadow-widen",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_select_into_pg_temp_state AS ENUM ('open', 'closed');\nCREATE TABLE public.assay_b132_select_into_pg_temp (status text);\nSELECT 'open'::assay_b132_select_into_pg_temp_state AS status INTO pg_temp.assay_b132_select_into_pg_temp;\n-- ASSAY-FOCUS: select-into-pg-temp-shadow-widen\nALTER TABLE assay_b132_select_into_pg_temp ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "table-rename-stale-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_rename_state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_rename_task (status text);\nALTER TABLE assay_b132_rename_task RENAME TO assay_b132_rename_old;\nCREATE TABLE assay_b132_rename_task AS SELECT 'open'::assay_b132_rename_state AS status;\n-- ASSAY-FOCUS: table-rename-stale-type\nALTER TABLE assay_b132_rename_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "table-schema-move-stale-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_move_state AS ENUM ('open', 'closed');\nCREATE SCHEMA assay_b132_archive;\nCREATE TABLE public.assay_b132_move_task (status text);\nALTER TABLE public.assay_b132_move_task SET SCHEMA assay_b132_archive;\nCREATE TABLE public.assay_b132_move_task AS SELECT 'open'::assay_b132_move_state AS status;\n-- ASSAY-FOCUS: table-schema-move-stale-type\nALTER TABLE public.assay_b132_move_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "create-table-as-does-not-borrow-later-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_ctas_state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_ctas_task AS SELECT 'open'::assay_b132_ctas_state AS status;\nCREATE TABLE assay_b132_ctas_decoy (status text);\n-- ASSAY-FOCUS: create-table-as-does-not-borrow-later-type\nALTER TABLE assay_b132_ctas_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "if-not-exists-does-not-supply-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE assay_b132_ifne_state AS ENUM ('open', 'closed');\nCREATE TABLE public.assay_b132_ifne_task AS SELECT 'open'::assay_b132_ifne_state AS status;\nCREATE TABLE IF NOT EXISTS public.assay_b132_ifne_task (status text);\n-- ASSAY-FOCUS: if-not-exists-does-not-supply-type\nALTER TABLE public.assay_b132_ifne_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unqualified-type-does-not-apply-to-qualified-table",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TYPE public.assay_b132_qualified_state AS ENUM ('open', 'closed');\nCREATE SCHEMA assay_b132_qualified_archive;\nSET search_path TO assay_b132_qualified_archive;\nCREATE TABLE assay_b132_qualified_task (status text);\nRESET search_path;\nCREATE TABLE public.assay_b132_qualified_task AS SELECT 'open'::public.assay_b132_qualified_state AS status;\n-- ASSAY-FOCUS: unqualified-type-does-not-apply-to-qualified-table\nALTER TABLE public.assay_b132_qualified_task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unnamed-index-with-attachment-context",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "no-site",
+      "probe": null,
+      "source": "CREATE TABLE assay_b132_unnamed_idx (value integer, other integer);\n-- ASSAY-FOCUS: unnamed-index-with-attachment-context\nCREATE UNIQUE INDEX ON assay_b132_unnamed_idx (value);\nCREATE UNIQUE INDEX attached ON assay_b132_unnamed_idx (other);\nALTER TABLE assay_b132_unnamed_idx ADD CONSTRAINT attached_uq UNIQUE USING INDEX attached;\n",
+      "assertion": null,
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unqualified-alter-does-not-borrow-cross-schema-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_archive;\nCREATE SCHEMA assay_b132_other;\nCREATE TYPE assay_b132_other.state AS ENUM ('open', 'closed');\nCREATE TABLE assay_b132_archive.task (status text);\nCREATE TABLE assay_b132_other.task (status assay_b132_other.state);\nSET search_path TO pg_catalog, assay_b132_other, assay_b132_archive;\n-- ASSAY-FOCUS: unqualified-alter-does-not-borrow-cross-schema-type\nALTER TABLE task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": "BEGIN;\nINSERT INTO assay_b132_other.task (status) VALUES ('open');\nROLLBACK;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "search-path-shadowed-string-builtin",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "survived",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_tenant;\nCREATE DOMAIN assay_b132_tenant.text AS pg_catalog.text\n  CHECK (VALUE IN ('open', 'closed'));\nSET search_path TO assay_b132_tenant, pg_catalog;\n-- ASSAY-FOCUS: search-path-shadowed-string-builtin\nCREATE TABLE task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_tenant.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "search-path-shadowed-integer-builtin",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "survived",
+      "probe": {
+        "before": "CHECK (value IN (1, 2))",
+        "after": "CHECK (value IN (1, 2, 3))"
+      },
+      "source": "CREATE SCHEMA assay_b132_integer_tenant;\nCREATE DOMAIN assay_b132_integer_tenant.int4 AS pg_catalog.int4\n  CHECK (VALUE IN (1, 2));\nSET search_path TO assay_b132_integer_tenant, pg_catalog;\n-- ASSAY-FOCUS: search-path-shadowed-integer-builtin\nCREATE TABLE task (value int4 CHECK (value IN (1, 2)));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_integer_tenant.task (value) VALUES (3);\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "explicit-catalog-string-builtin-control",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_catalog_control;\nCREATE DOMAIN assay_b132_catalog_control.text AS pg_catalog.text;\nSET search_path TO assay_b132_catalog_control, pg_catalog;\n-- ASSAY-FOCUS: explicit-catalog-string-builtin-control\nCREATE TABLE task (status pg_catalog.text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_catalog_control.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "pg-catalog-first-builtin-with-shadow",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_catalog_first;\nCREATE DOMAIN assay_b132_catalog_first.text AS pg_catalog.text;\nSET search_path TO pg_catalog, assay_b132_catalog_first;\n-- ASSAY-FOCUS: pg-catalog-first-builtin-with-shadow\nCREATE TABLE assay_b132_catalog_first.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_catalog_first.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "later-catalog-first-does-not-prove-earlier-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_late_path;\nCREATE DOMAIN assay_b132_late_path.text AS pg_catalog.text;\n-- ASSAY-FOCUS: later-catalog-first-does-not-prove-earlier-type\nCREATE TABLE assay_b132_late_path.task (status text CHECK (status IN ('open', 'closed')));\nSET search_path TO pg_catalog, assay_b132_late_path;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_late_path.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "later-catalog-first-does-not-prove-alter-column-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_alter_path;\nCREATE DOMAIN assay_b132_alter_path.text AS pg_catalog.text;\nSET search_path TO assay_b132_alter_path, pg_catalog;\nCREATE TABLE assay_b132_alter_path.task (status text);\nSET search_path TO pg_catalog, assay_b132_alter_path;\n-- ASSAY-FOCUS: later-catalog-first-does-not-prove-alter-column-type\nALTER TABLE assay_b132_alter_path.task ADD CHECK (status IN ('open', 'closed'));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_alter_path.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "later-set-config-does-not-invalidate-earlier-check",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_late_setconfig;\nCREATE DOMAIN assay_b132_late_setconfig.text AS pg_catalog.text;\nSET search_path TO pg_catalog, assay_b132_late_setconfig;\n-- ASSAY-FOCUS: later-set-config-does-not-invalidate-earlier-check\nCREATE TABLE assay_b132_late_setconfig.task (status text CHECK (status IN ('open', 'closed')));\nSELECT pg_catalog.set_config('search_path', 'assay_b132_late_setconfig, pg_catalog', false);\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_late_setconfig.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "set-schema-implicit-catalog-first-proof",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_set_schema;\nCREATE DOMAIN assay_b132_set_schema.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nSET search_path TO pg_catalog, assay_b132_set_schema;\nSET SCHEMA 'assay_b132_set_schema';\n-- ASSAY-FOCUS: set-schema-implicit-catalog-first-proof\nCREATE TABLE assay_b132_set_schema.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_set_schema.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "set-schema-escape-temp-type-shadow",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_escape_temp;\nCREATE TABLE assay_b132_escape_temp.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nSET SCHEMA E'pg_temp';\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_escape_temp;\n-- ASSAY-FOCUS: set-schema-escape-temp-type-shadow\nCREATE TABLE assay_b132_escape_temp.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_escape_temp.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_escape_temp.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_escape_temp.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'ESCAPE_TEMP_TYPE_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "known-first-search-path-schema-prevents-temp-fallthrough",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_known_path;\nCREATE SCHEMA assay_b132_shadow;\nCREATE TABLE assay_b132_known_path.receipt (verified boolean NOT NULL);\nCREATE DOMAIN assay_b132_shadow.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nSET search_path TO assay_b132_known_path, pg_temp;\nCREATE TABLE text (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_shadow;\n-- ASSAY-FOCUS: known-first-search-path-schema-prevents-temp-fallthrough\nCREATE TABLE assay_b132_shadow.task (status text CHECK (status IN ('open', 'closed')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_shadow.task (status) VALUES ('open');\n  INSERT INTO assay_b132_known_path.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM assay_b132_known_path.receipt WHERE verified) THEN\n    RAISE EXCEPTION 'KNOWN_PATH_TEMP_CONTROL_BASELINE_NOT_VERIFIED';\n  END IF;\n  BEGIN\n    INSERT INTO assay_b132_shadow.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "missing-search-path-entry-falls-through-to-pg-temp-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_missing_temp;\nCREATE TABLE assay_b132_missing_temp.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nSET search_path TO assay_b132_missing_schema, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_missing_temp;\n-- ASSAY-FOCUS: missing-search-path-entry-falls-through-to-pg-temp-type\nCREATE TABLE assay_b132_missing_temp.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_missing_temp.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_missing_temp.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM assay_b132_missing_temp.receipt WHERE verified) THEN\n    RAISE EXCEPTION 'MISSING_PATH_TEMP_TYPE_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "set-schema-temp-unqualified-row-type-shadow",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_temp_row;\nCREATE TABLE assay_b132_temp_row.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nSET SCHEMA 'pg_temp';\nCREATE TABLE text (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_temp_row;\n-- ASSAY-FOCUS: set-schema-temp-unqualified-row-type-shadow\nCREATE TABLE assay_b132_temp_row.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_temp_row.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_temp_row.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM assay_b132_temp_row.receipt WHERE verified) THEN\n    RAISE EXCEPTION 'TEMP_ROW_TYPE_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "alter-routine-reset-keeps-session-path",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_alter_routine;\nCREATE TABLE assay_b132_alter_routine.receipt (verified boolean NOT NULL);\nCREATE DOMAIN assay_b132_alter_routine.text AS pg_catalog.text;\nCREATE FUNCTION assay_b132_alter_routine.f() RETURNS integer AS $$ SELECT 1 $$ LANGUAGE sql SET search_path TO pg_catalog;\nSET search_path TO pg_catalog, assay_b132_alter_routine;\nALTER ROUTINE assay_b132_alter_routine.f() RESET search_path;\nDO $verify_path$\nBEGIN\n  IF current_setting('search_path') <> 'pg_catalog, assay_b132_alter_routine' THEN\n    RAISE EXCEPTION 'ALTER_ROUTINE_CHANGED_SESSION_PATH: %', current_setting('search_path');\n  END IF;\n  INSERT INTO assay_b132_alter_routine.receipt (verified) VALUES (true);\nEND\n$verify_path$;\n-- ASSAY-FOCUS: alter-routine-reset-keeps-session-path\nCREATE TABLE assay_b132_alter_routine.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM assay_b132_alter_routine.receipt WHERE verified) THEN\n    RAISE EXCEPTION 'ALTER_ROUTINE_SESSION_PATH_NOT_VERIFIED';\n  END IF;\n  BEGIN\n    INSERT INTO assay_b132_alter_routine.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "unnamed-index-attached-generated-name",
+      "operator": "sql:drop-unique",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CREATE UNIQUE INDEX",
+        "after": "CREATE INDEX"
+      },
+      "source": "CREATE TABLE assay_b132_unnamed_attached (value integer);\n-- ASSAY-FOCUS: unnamed-index-attached-generated-name\nCREATE UNIQUE INDEX ON assay_b132_unnamed_attached (value);\nALTER TABLE assay_b132_unnamed_attached\n  ADD CONSTRAINT assay_b132_unnamed_attached_uq UNIQUE\n  USING INDEX assay_b132_unnamed_attached_value_idx;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unnamed_attached (value) VALUES (1), (1);\n  EXCEPTION WHEN unique_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": "42809"
+    },
+    {
+      "id": "set-config-search-path-shadow",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "survived",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_setconfig;\nDO $ddl$\nBEGIN\n  EXECUTE 'CREATE DOMAIN assay_b132_setconfig.text AS pg_catalog.text CHECK (VALUE IN (''open'', ''closed''))';\nEND\n$ddl$;\nSET search_path TO pg_catalog, assay_b132_setconfig;\nSELECT pg_catalog.\"set_config\"('search_path', 'assay_b132_setconfig, pg_catalog', false);\n-- ASSAY-FOCUS: set-config-search-path-shadow\nCREATE TABLE assay_b132_setconfig.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_setconfig.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "dynamic-execute-search-path-shadow",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_dynamic_exec;\nCREATE DOMAIN assay_b132_dynamic_exec.text AS pg_catalog.text;\nSET search_path TO pg_catalog, assay_b132_dynamic_exec;\nDO $$ BEGIN EXECUTE 'SET search_path TO assay_b132_dynamic_exec, pg_catalog'; END $$;\n-- ASSAY-FOCUS: dynamic-execute-search-path-shadow\nCREATE TABLE assay_b132_dynamic_exec.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_dynamic_exec.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "temporary-row-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_temp_type;\nCREATE TABLE assay_b132_temp_type.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE \"text\" (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_temp_type;\n-- ASSAY-FOCUS: temporary-row-type-precedes-pg-catalog\nCREATE TABLE assay_b132_temp_type.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_temp_type.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_temp_type.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_temp_type.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'TEMP_TYPE_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "temporary-view-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_temp_view;\nCREATE TABLE assay_b132_temp_view.receipt (verified boolean NOT NULL);\nCREATE TEMP VIEW \"text\" AS SELECT 'open'::pg_catalog.text AS value;\nSET search_path TO pg_catalog, assay_b132_temp_view;\n-- ASSAY-FOCUS: temporary-view-type-precedes-pg-catalog\nCREATE TABLE assay_b132_temp_view.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_temp_view.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_temp_view.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_temp_view.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'TEMP_VIEW_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "implicit-temp-quoted-view-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_implicit_view;\nCREATE TABLE assay_b132_implicit_view.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nCREATE VIEW \"text\" AS SELECT value FROM seed;\nSET search_path TO pg_catalog, assay_b132_implicit_view;\n-- ASSAY-FOCUS: implicit-temp-quoted-view-type-precedes-pg-catalog\nCREATE TABLE assay_b132_implicit_view.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_implicit_view.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_implicit_view.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_implicit_view.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'IMPLICIT_TEMP_VIEW_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "recursive-temp-view-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_recursive_view;\nCREATE TABLE assay_b132_recursive_view.receipt (verified boolean NOT NULL);\nCREATE TEMP RECURSIVE VIEW \"text\"(value) AS SELECT 'open'::pg_catalog.text;\nSET search_path TO pg_catalog, assay_b132_recursive_view;\n-- ASSAY-FOCUS: recursive-temp-view-type-precedes-pg-catalog\nCREATE TABLE assay_b132_recursive_view.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_recursive_view.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_recursive_view.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_recursive_view.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'RECURSIVE_TEMP_VIEW_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "renamed-temporary-row-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_renamed_temp;\nCREATE TABLE assay_b132_renamed_temp.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nALTER TABLE seed RENAME TO text;\nSET search_path TO pg_catalog, assay_b132_renamed_temp;\n-- ASSAY-FOCUS: renamed-temporary-row-type-precedes-pg-catalog\nCREATE TABLE assay_b132_renamed_temp.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_renamed_temp.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_renamed_temp.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_renamed_temp.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'RENAMED_TEMP_TYPE_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "renamed-temporary-view-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_renamed_view;\nCREATE TABLE assay_b132_renamed_view.receipt (verified boolean NOT NULL);\nCREATE TEMP VIEW seed AS SELECT 'open'::pg_catalog.text AS value;\nALTER VIEW seed RENAME TO text;\nSET search_path TO pg_catalog, assay_b132_renamed_view;\n-- ASSAY-FOCUS: renamed-temporary-view-type-precedes-pg-catalog\nCREATE TABLE assay_b132_renamed_view.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_renamed_view.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_renamed_view.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_renamed_view.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'RENAMED_TEMP_VIEW_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "renamed-implicit-temporary-view-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_implicit_renamed_view;\nCREATE TABLE assay_b132_implicit_renamed_view.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nCREATE VIEW view_seed AS SELECT value FROM seed;\nALTER VIEW view_seed RENAME TO text;\nSET search_path TO pg_catalog, assay_b132_implicit_renamed_view;\n-- ASSAY-FOCUS: renamed-implicit-temporary-view-type-precedes-pg-catalog\nCREATE TABLE assay_b132_implicit_renamed_view.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_implicit_renamed_view.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_implicit_renamed_view.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_implicit_renamed_view.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'RENAMED_IMPLICIT_TEMP_VIEW_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "renamed-implicit-temp-view-derived-first-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_derived_view;\nCREATE TABLE assay_b132_derived_view.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nCREATE VIEW view_seed AS SELECT seed.value FROM (SELECT 1) AS x, seed;\nALTER VIEW view_seed RENAME TO text;\nSET search_path TO pg_catalog, assay_b132_derived_view;\n-- ASSAY-FOCUS: renamed-implicit-temp-view-derived-first-precedes-pg-catalog\nCREATE TABLE assay_b132_derived_view.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_derived_view.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_derived_view.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_derived_view.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'DERIVED_TEMP_VIEW_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "renamed-temporary-enum-type-precedes-pg-catalog",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_renamed_enum;\nCREATE TABLE assay_b132_renamed_enum.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nCREATE TYPE pg_temp.enum_seed AS ENUM ('open', 'closed');\nALTER TYPE pg_temp.enum_seed RENAME TO text;\nSET search_path TO pg_catalog, assay_b132_renamed_enum;\n-- ASSAY-FOCUS: renamed-temporary-enum-type-precedes-pg-catalog\nCREATE TABLE assay_b132_renamed_enum.task (status text CHECK (status IN ('open', 'closed')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_renamed_enum.task (status) VALUES ('open');\n  INSERT INTO assay_b132_renamed_enum.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_renamed_enum.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'RENAMED_TEMP_ENUM_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "explicit-pg-temp-after-catalog-preserves-builtin-widening",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE TEMP TABLE text (value pg_catalog.text);\nSET search_path TO pg_catalog, pg_temp;\n-- ASSAY-FOCUS: explicit-pg-temp-after-catalog-preserves-builtin-widening\nCREATE TABLE public.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO public.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "set-local-search-path-expires-before-temp-shadow-check",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_local_path;\nCREATE TABLE assay_b132_local_path.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE text (value pg_catalog.text);\nBEGIN;\nSET LOCAL search_path TO pg_catalog, pg_temp;\nCOMMIT;\n-- ASSAY-FOCUS: set-local-search-path-expires-before-temp-shadow-check\nCREATE TABLE assay_b132_local_path.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_local_path.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_local_path.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_local_path.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'SET_LOCAL_TEMP_PATH_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "routine-search-path-setting-does-not-change-session-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_routine_path;\nCREATE FUNCTION assay_b132_routine_path.lookup() RETURNS integer AS $$ SELECT 1 $$ LANGUAGE sql SET search_path TO assay_b132_routine_path, pg_catalog;\n-- ASSAY-FOCUS: routine-search-path-setting-does-not-change-session-type\nCREATE TABLE public.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO public.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "rolled-back-session-path-does-not-prove-temp-order",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_rollback_path;\nCREATE TABLE assay_b132_rollback_path.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE text (value pg_catalog.text);\nBEGIN;\nSET search_path TO pg_catalog, pg_temp;\nROLLBACK;\n-- ASSAY-FOCUS: rolled-back-session-path-does-not-prove-temp-order\nCREATE TABLE assay_b132_rollback_path.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_rollback_path.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_rollback_path.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_rollback_path.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'ROLLED_BACK_TEMP_PATH_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "unlogged-row-type-does-not-shadow-catalog-first",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_unlogged;\nCREATE UNLOGGED TABLE assay_b132_unlogged.\"text\" (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_unlogged;\n-- ASSAY-FOCUS: unlogged-row-type-does-not-shadow-catalog-first\nCREATE TABLE assay_b132_unlogged.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_unlogged.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "quoted-set-search-path-shadow",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "survived",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_quoted_set;\nDO $ddl$\nBEGIN\n  EXECUTE 'CREATE DOMAIN assay_b132_quoted_set.text AS pg_catalog.text CHECK (VALUE IN (''open'', ''closed''))';\nEND\n$ddl$;\nSET search_path TO pg_catalog, assay_b132_quoted_set;\nSET \"search_path\" TO assay_b132_quoted_set, pg_catalog;\n-- ASSAY-FOCUS: quoted-set-search-path-shadow\nCREATE TABLE assay_b132_quoted_set.task (status text CHECK (status IN ('open', 'closed')));\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_quoted_set.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "set-schema-missing-falls-through-to-temp-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_missing_set;\nCREATE TABLE assay_b132_missing_set.receipt (verified boolean NOT NULL);\nCREATE TEMP TABLE seed (value pg_catalog.text);\nSET SCHEMA 'assay_b132_missing_schema';\nSET search_path TO assay_b132_missing_schema, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_missing_set;\n-- ASSAY-FOCUS: set-schema-missing-falls-through-to-temp-type\nCREATE TABLE assay_b132_missing_set.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_missing_set.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_missing_set.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_missing_set.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'MISSING_SET_SCHEMA_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "rollback-rename-can-fall-through-to-temp-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_rollback_rename;\nCREATE TABLE assay_b132_rollback_rename.receipt (verified boolean NOT NULL);\nCREATE SCHEMA assay_b132_rollback_shadow;\nCREATE TEMP TABLE seed (value pg_catalog.text);\nCREATE DOMAIN assay_b132_rollback_shadow.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nBEGIN;\nALTER SCHEMA assay_b132_rollback_rename RENAME TO assay_b132_rolled_back_name;\nROLLBACK;\nSET search_path TO assay_b132_rolled_back_name, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_rollback_shadow;\n-- ASSAY-FOCUS: rollback-rename-can-fall-through-to-temp-type\nCREATE TABLE assay_b132_rollback_shadow.task (status text CHECK (status IN ('(open)', '(closed)')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_rollback_shadow.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_rollback_rename.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "DO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_rollback_rename.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'ROLLBACK_RENAME_BASELINE_NOT_VERIFIED';\n  END IF;\nEND $$;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "rollback-drop-restores-known-first-schema",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "CREATE SCHEMA assay_b132_rollback_drop;\nCREATE TABLE assay_b132_rollback_drop.receipt (verified boolean NOT NULL);\nCREATE SCHEMA assay_b132_rollback_shadow;\nCREATE DOMAIN assay_b132_rollback_shadow.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nBEGIN;\nDROP SCHEMA assay_b132_rollback_drop CASCADE;\nROLLBACK;\nSET search_path TO assay_b132_rollback_drop, pg_temp;\nCREATE TABLE text (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_rollback_shadow;\n-- ASSAY-FOCUS: rollback-drop-restores-known-first-schema\nCREATE TABLE assay_b132_rollback_shadow.task (status text CHECK (status IN ('open', 'closed')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_rollback_shadow.task (status) VALUES ('open');\n  INSERT INTO assay_b132_rollback_drop.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_rollback_drop.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'ROLLBACK_DROP_BASELINE_NOT_VERIFIED';\n  END IF;\n  BEGIN\n    INSERT INTO assay_b132_rollback_shadow.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "revoked-schema-usage-can-fall-through-to-temp-type",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "source": "DO $role$\nBEGIN\n  CREATE ROLE assay_b132_usage_role;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$role$;\nGRANT CREATE, TEMP ON DATABASE qual TO assay_b132_usage_role;\nSET ROLE assay_b132_usage_role;\nCREATE SCHEMA assay_b132_revoked_usage;\nCREATE TABLE assay_b132_revoked_usage.receipt (verified boolean NOT NULL);\nCREATE SCHEMA assay_b132_revoked_shadow;\nCREATE DOMAIN assay_b132_revoked_shadow.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nCREATE TEMP TABLE seed (value pg_catalog.text);\nREVOKE USAGE ON SCHEMA assay_b132_revoked_usage FROM CURRENT_USER;\nSET search_path TO assay_b132_revoked_usage, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_revoked_shadow;\n-- ASSAY-FOCUS: revoked-schema-usage-can-fall-through-to-temp-type\nCREATE TABLE assay_b132_revoked_shadow.task (status text CHECK (status IN ('(open)', '(closed)')));\n",
+      "assertion": "DO $$\nBEGIN\n  INSERT INTO assay_b132_revoked_shadow.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_revoked_usage.receipt (verified) VALUES (true);\nEND $$;\nDROP OWNED BY assay_b132_usage_role;\nDROP ROLE assay_b132_usage_role;\n",
+      "expected_probe_sqlstate": "22P02"
+    },
+    {
+      "id": "revoking-other-role-usage-preserves-owner-path",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "source": "DO $owner$\nBEGIN\n  CREATE ROLE assay_b132_usage_owner;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$owner$;\nDO $reader$\nBEGIN\n  CREATE ROLE assay_b132_usage_reader;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$reader$;\nGRANT CREATE, TEMP ON DATABASE qual TO assay_b132_usage_owner;\nSET ROLE assay_b132_usage_owner;\nCREATE SCHEMA assay_b132_owner_path;\nCREATE TABLE assay_b132_owner_path.receipt (verified boolean NOT NULL);\nCREATE SCHEMA assay_b132_owner_shadow;\nCREATE DOMAIN assay_b132_owner_shadow.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nGRANT USAGE ON SCHEMA assay_b132_owner_path TO assay_b132_usage_reader;\nREVOKE USAGE ON SCHEMA assay_b132_owner_path FROM assay_b132_usage_reader;\nSET search_path TO assay_b132_owner_path, pg_temp;\nCREATE TABLE text (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_owner_shadow;\n-- ASSAY-FOCUS: revoking-other-role-usage-preserves-owner-path\nCREATE TABLE assay_b132_owner_shadow.task (status text CHECK (status IN ('open', 'closed')));\nDO $verify$\nBEGIN\n  INSERT INTO assay_b132_owner_shadow.task (status) VALUES ('open');\n  INSERT INTO assay_b132_owner_path.receipt (verified) VALUES (true);\nEND\n$verify$;\n",
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM assay_b132_owner_path.receipt WHERE verified\n  ) THEN\n    RAISE EXCEPTION 'OWNER_PATH_BASELINE_NOT_VERIFIED';\n  END IF;\n  BEGIN\n    INSERT INTO assay_b132_owner_shadow.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\nDROP OWNED BY assay_b132_usage_owner;\nDROP ROLE assay_b132_usage_owner;\nDROP ROLE assay_b132_usage_reader;\n",
+      "expected_probe_sqlstate": null
+    },
+    {
+      "id": "set-local-role-commit-restores-session-owner",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 0,
+      "expected_bucket": "no-site",
+      "expected_probe_bucket": "crashed",
+      "expected_probe_sqlstate": "22P02",
+      "probe": {
+        "before": "CHECK (status IN ('(open)', '(closed)'))",
+        "after": "CHECK (status IN ('(open)', '(closed)', '__assay_widened__'))"
+      },
+      "assertion": "DO $$\nBEGIN\n  INSERT INTO assay_b132_local_role_shadow.task (status) VALUES ('(open)');\n  INSERT INTO assay_b132_local_role_tenant.receipt (verified) VALUES (true);\nEND $$;\nDROP OWNED BY assay_b132_local_role_owner;\nREVOKE assay_b132_local_role_reader FROM assay_b132_local_role_owner;\nDROP ROLE assay_b132_local_role_owner;\nDROP ROLE assay_b132_local_role_reader;\n",
+      "source": "DO $owner$\nBEGIN\n  CREATE ROLE assay_b132_local_role_owner;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$owner$;\nDO $reader$\nBEGIN\n  CREATE ROLE assay_b132_local_role_reader;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$reader$;\nGRANT CREATE, TEMP ON DATABASE qual TO assay_b132_local_role_owner;\nGRANT assay_b132_local_role_reader TO assay_b132_local_role_owner;\nSET ROLE assay_b132_local_role_owner;\nCREATE TEMP TABLE seed (value pg_catalog.text);\nBEGIN;\nSET LOCAL ROLE assay_b132_local_role_reader;\nCOMMIT;\nCREATE SCHEMA assay_b132_local_role_tenant;\nCREATE TABLE assay_b132_local_role_tenant.receipt (verified boolean NOT NULL);\nCREATE SCHEMA assay_b132_local_role_shadow;\nCREATE DOMAIN assay_b132_local_role_shadow.text AS pg_catalog.text CHECK (VALUE <> '__assay_widened__');\nREVOKE USAGE ON SCHEMA assay_b132_local_role_tenant FROM assay_b132_local_role_owner;\nSET search_path TO assay_b132_local_role_tenant, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_local_role_shadow;\n-- ASSAY-FOCUS: set-local-role-commit-restores-session-owner\nCREATE TABLE assay_b132_local_role_shadow.task (status text CHECK (status IN ('(open)', '(closed)')));\n"
+    },
+    {
+      "id": "revoke-public-preserves-creator-usage",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "expected_probe_sqlstate": null,
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_public_task.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\nDROP OWNED BY assay_b132_public_owner;\nDROP ROLE assay_b132_public_owner;\n",
+      "source": "DO $owner$\nBEGIN\n  CREATE ROLE assay_b132_public_owner;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$owner$;\nGRANT CREATE, TEMP ON DATABASE qual TO assay_b132_public_owner;\nSET ROLE assay_b132_public_owner;\nCREATE SCHEMA assay_b132_public_usage;\nCREATE SCHEMA assay_b132_public_task;\nREVOKE USAGE ON SCHEMA assay_b132_public_usage FROM PUBLIC;\nSET search_path TO assay_b132_public_usage, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_public_task;\n-- ASSAY-FOCUS: revoke-public-preserves-creator-usage\nCREATE TABLE assay_b132_public_task.task (status text CHECK (status IN ('open', 'closed')));\n"
+    },
+    {
+      "id": "revoke-usage-grant-option-preserves-owner-path",
+      "operator": "sql:widen-check-in",
+      "expected_site_count": 1,
+      "expected_bucket": "killed",
+      "expected_probe_bucket": "killed",
+      "expected_probe_sqlstate": null,
+      "probe": {
+        "before": "CHECK (status IN ('open', 'closed'))",
+        "after": "CHECK (status IN ('open', 'closed', '__assay_widened__'))"
+      },
+      "assertion": "BEGIN;\nDO $$\nBEGIN\n  BEGIN\n    INSERT INTO assay_b132_grant_task.task (status) VALUES ('__assay_widened__');\n  EXCEPTION WHEN check_violation THEN RETURN;\n  END;\n  RAISE EXCEPTION 'K01';\nEND $$;\nROLLBACK;\nDROP OWNED BY assay_b132_grant_owner;\nDROP ROLE assay_b132_grant_owner;\n",
+      "source": "DO $owner$\nBEGIN\n  CREATE ROLE assay_b132_grant_owner;\nEXCEPTION WHEN duplicate_object THEN\n  NULL;\nEND\n$owner$;\nGRANT CREATE, TEMP ON DATABASE qual TO assay_b132_grant_owner;\nSET ROLE assay_b132_grant_owner;\nCREATE SCHEMA assay_b132_grant_option;\nCREATE SCHEMA assay_b132_grant_task;\nREVOKE GRANT OPTION FOR USAGE ON SCHEMA assay_b132_grant_option FROM CURRENT_USER;\nSET search_path TO assay_b132_grant_option, pg_temp;\nCREATE TYPE text AS (value pg_catalog.text);\nSET search_path TO pg_catalog, assay_b132_grant_task;\n-- ASSAY-FOCUS: revoke-usage-grant-option-preserves-owner-path\nCREATE TABLE assay_b132_grant_task.task (status text CHECK (status IN ('open', 'closed')));\n"
+    }
+  ]
+}

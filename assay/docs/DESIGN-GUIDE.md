@@ -962,6 +962,31 @@ reading diagnosis as policy. A structured detail was rejected for precisely
 that reason: `reason_code` is already the structured surface, and a second
 one would re-open the vocabulary A-138/A-170 shut.
 
+### R0 failure diagnostics and coverage fail-fast warning
+
+**A-489 (B146) extends the existing unstructured `claim.detail` field.** When
+the R0 command fails and the retained output tail names a recognized test,
+Assay stores `R0 command failed; first failing test: NAME` on the R0 claim.
+The concise CLI summary reports the same first failure. If a post-run
+refusal replaces that claim (for example, the failing command also dirties
+the tree), `detail` retains both the failure diagnostic and refusal text in
+one bounded string; the stderr refusal line is unchanged. The headline and
+closed `(status, reason_code)` pair remain unchanged, so the verdict can still
+be `NO_MEASUREMENT/DIRTY_TREE`. No reason code, field or schema shape is
+added. `detail` remains declared-not-verified; consumers must not parse it or
+use it as policy, and `assay verify` checks only its existing non-PASS and
+byte-bound rules.
+
+Lane validation also warns on stderr when a declared coverage lane invokes
+pytest directly or through Python's initial `-m pytest` form with an effective
+nonzero failure limit from `--maxfail`, `--exitfirst`, or `-x` (including
+short-option clusters). `--maxfail=0` clears an earlier fail-fast setting, and
+later settings take precedence. Tokens after `python -c` or a script path are
+not interpreted as pytest options. Early stopping can leave a coverage artifact
+incomplete. This is advisory and does not invalidate the lane;
+machine-readable stdout is unchanged. Unknown pytest/plugin option grammars
+are left unclassified rather than guessed.
+
 ### R0 may judge a verified-complete test report instead of the exit code (B078)
 
 By default, R0 decides the wrapped command's outcome from its raw exit code
@@ -3559,6 +3584,26 @@ of a real corpus's only two `ON DELETE RESTRICT` foreign keys. A parser would
 buy nothing further, because none of the seven operators needs to know what
 *kind* of statement it is in — only where its own span starts and ends.
 
+**Operator names describe the effect on the predicate.**
+`sql:widen-check-in` appends a member to `IN (...)` only for homogeneous
+string literals on declared `text`, unbounded `varchar`, or `name` columns without an
+explicit `COLLATE`, or unsigned integer literals on a declared bounded integer
+column. Fixed-length `CHAR` types are excluded because PostgreSQL ignores
+trailing-space differences in their comparisons. The integer is chosen inside
+the column's range and outside the current list. For integer-literal
+`NOT IN (...)` on a declared bounded integer column, the adapter removes one
+uniquely listed excluded member, which widens the accepted set. String
+equality depends on the column's type and collation: for example, `CHAR(n)`
+ignores trailing spaces, so two source-distinct strings can compare equal.
+String `NOT IN` lists and integer lists with unknown or approximate column
+types therefore have no site. A singleton, empty, duplicate-only, or
+non-literal `NOT IN` list is also not a site because no safe removal can
+widen it while preserving valid SQL (A-486).
+`sql:drop-check` deliberately covers both table `CHECK (...)` constraints
+and policy `WITH CHECK (...)` predicates, replacing either expression with
+`true`. Keeping the operator IDs stable avoids a public lane-vocabulary
+change while making the effect explicit (A-486).
+
 **Fail closed, not fail open.** An unterminated string, dollar quote, or
 block comment raises `MutationDiscoveryError` (`ERROR`/
 `MUTATION_DISCOVERY_FAILED`) rather than silently discovering sites in the
@@ -3765,6 +3810,122 @@ runs the same probes (the witness), and the normalized verdict is compared with
 the committed `expected/sql-r2-witness.json`. An incomplete witness (hung or
 budget-exceeded entries, `LANE_TIMEOUT`) is inconclusive and is checked before
 the FAIL requirement.
+
+**Hazard constructs are measured separately from the matrix (B132).** Candidate
+scope may be changed-lines or whole-target, but safety context scans every
+tracked, recognized, non-test SQL source under `judge.source_roots`, including
+unchanged files, before generating sites. This is required because the command
+applies a DDL corpus while the candidate list is only a sampling policy. A lane
+must declare roots covering its complete applied DDL corpus. The context links
+both `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` references across files,
+collects column declarations and types across files, marks columns with any
+`ALTER COLUMN ... TYPE` change unknown for literal widening, and tracks
+explicit column collations. It retains type modifiers, so bounded `varchar(n)`
+is not mistaken for unbounded `varchar`; the fixed widening sentinel may not
+fit the former. Because the scan does not resolve ordered DDL, finding a
+`DROP TABLE` invalidates that table's type facts, including facts from a later
+recreate. A table rename or schema move invalidates facts for both names.
+Unknown or
+conflicting types do not establish a safe widening. `CREATE TABLE AS` query
+results are not type-inferred; only an explicit parenthesized column list in
+that statement supplies type facts, so a later table cannot donate its type.
+`CREATE TABLE IF NOT EXISTS` supplies no type facts because the statement may
+be a no-op. An unqualified declaration is also not attributed to a
+schema-qualified target because Assay does not resolve the session's
+`search_path`.
+Cross-file type facts are used for `ALTER TABLE` checks only when the table
+reference is schema-qualified; an unqualified ALTER target may bind to a
+different same-named table depending on the session path. An inline check is
+bound to the column declarations in its own `CREATE TABLE` statement. Bare
+built-in type spellings are refused when source declares a same-named user
+type. Unqualified `CREATE TYPE` and `CREATE DOMAIN` names retain possible
+temporary-schema provenance across later path changes; a catalog-first path
+is not enough unless it explicitly places `pg_temp` after `pg_catalog`. An
+unknown initial creation schema keeps unqualified table row types possibly
+temporary until source proves a non-temporary schema is first. A missing path
+entry does not make a later `pg_temp` unreachable unless an earlier schema is
+known to exist. An earlier schema counts as known only when the source proves
+the current role can use it: a plain `CREATE SCHEMA name` does, while
+`SET SCHEMA 'name'` may silently skip a missing or inaccessible name, and
+`CREATE SCHEMA IF NOT EXISTS` may leave existing access unchanged. Revoking
+schema `USAGE`, changing its owner, or changing the effective role can
+invalidate the proof. Revoking `USAGE` from `PUBLIC` leaves the creator's
+direct privilege intact; `REVOKE GRANT OPTION FOR USAGE` leaves ordinary
+`USAGE` intact. A transaction-local role expires at transaction end, with
+commit restoring the session role and rollback restoring prior role and
+schema facts. If source cannot establish whether a named grantee is the current
+schema owner, Assay treats the revocation as potentially removing access. The
+scan follows schema mutations inside a transaction for later statements;
+commit keeps them and rollback restores the prior facts. This prevents `tenant, pg_temp`
+from being certified as permanent when PostgreSQL skips `tenant` and creates
+a temporary row type. Such unqualified table row type names join the shadow
+set. An
+earlier session-level `SET search_path` proves `pg_catalog` first
+only when it precedes the column's `CREATE TABLE` declaration. For an
+`ALTER TABLE` check, type resolution evidence comes from that original column
+declaration, while unsafe path changes before the candidate are also
+conservatively refused. A later catalog-first setting cannot prove how an
+earlier declaration resolved; a later `RESET` or `set_config` does not
+retroactively invalidate an earlier candidate. A static `SET SCHEMA` to a
+non-temporary schema preserves PostgreSQL's implicit `pg_catalog`-first type
+lookup but does not establish that the named schema exists or is usable for
+object creation; `SET SCHEMA 'pg_temp'` remains unsafe because temporary types
+can shadow built-ins.
+Unresolved schema values, updates to `pg_settings.search_path`, and unknown or
+computed `set_config` setting names are treated as path changes. Dynamic
+`EXECUTE` in dollar-quoted executable text is an unknown path writer. Ordinary
+`UPDATE ... SET` assignments are not
+path configuration, but a targeted `pg_settings` update is. Path settings
+inside an explicit transaction, including `SET LOCAL`, do not establish a
+resolution fact because rollback or transaction end can restore another path.
+`SET` clauses on functions, procedures, or routines and `ALTER ROUTINE ... RESET`
+configure those routines rather than the migration session. `ALTER ROLE`,
+`ALTER USER`, `ALTER DATABASE`, and
+`ALTER SYSTEM` settings also do not change the current session. A `set_config`
+call that changes or may change `search_path` also makes unqualified lookup
+unsafe. A `SET` or `RESET` in executable dollar-quoted routine text is
+conservatively unsafe because calling that routine can change the session
+path. `RESET search_path`, `RESET ALL`, and `DISCARD ALL` make path resolution
+unsafe because the connection-specific default is unknown. PostgreSQL gives
+the temporary schema
+precedence over `pg_catalog` for type lookup unless the path explicitly lists
+`pg_temp` after `pg_catalog`. A matching temporary table or view name is
+refused unless that ordering is set before the declaration; a local or later
+setting cannot prove it. Renaming a temporary table, view or
+named type carries the same ambiguity, including across source files. A plain
+view that reads a temporary table is temporary too. Explicit `pg_catalog`
+qualification is an unambiguous control. An unnamed unique index has no source-derived name, so when index
+attachments are present the adapter skips it rather than guessing PostgreSQL's
+generated identity.
+Array suffixes stay in the resolved type, so arrays are not treated as scalar
+text or integer columns. An unqualified table name that could resolve to a temporary relation
+or an explicit `pg_temp` name has no widening site because the scanner does
+not model session or search-path state. String `IN` widening
+refuses explicitly collated columns because the adapter cannot prove a
+generated literal is distinct under an arbitrary collation. The qualification
+appends one focused SQL construct
+at a time. Cases with a generated site or a historical comparison rewrite
+run a construct-specific assertion through the same apply/dump/test script;
+a no-site case without a comparison rewrite asserts the focused site count.
+The
+script writes an `apply`, `dump`, or `test` phase receipt before entering each
+phase. A current adapter-generated site that fails during apply or dump is a
+qualification error; it cannot be reported as a mutation crash or kill. The
+historical comparison rewrite may be recorded as `crashed` only when it fails
+during apply with its exact pinned SQLSTATE. Behavior probes exercise the
+construct itself: duplicate values for uniqueness, partial-null and deferred
+foreign keys, column-specific `SET NULL`, and null inserts for `NOT NULL`
+cases. This avoids relying on unrelated matrix tests to classify a changed
+catalog. `UNIQUE USING INDEX` and `PRIMARY KEY USING INDEX` are linked pairs:
+changing the constraint alone leaves the index enforcing uniqueness, while
+changing the index alone makes the attachment invalid, so neither half is a
+one-site mutation. Enum string
+checks and ambiguous equality cases are refused when the scanner cannot prove
+the relevant type. For `sql:drop-not-null`, an explicit `NOT NULL` on identity,
+serial, or inline primary-key columns is removed as an equivalent mutation
+when the constraint is unnamed and has no `NO INHERIT` modifier. Named and
+table-level `NOT NULL` constraints and `NO INHERIT` forms produce no site
+because a partial replacement would leave invalid SQL.
 
 **The residue premise, now a loud failure.** The old premise was that a mutant
 re-applied onto a database that already carries the schema silently does

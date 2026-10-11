@@ -1464,6 +1464,11 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                 "status": "FAIL",
                 "verified_by_assay": True,
                 "reason_code": "COMMAND_FAILED",
+                "detail": (
+                    "R0 command failed; first failing test: "
+                    "tests/test_mod.py::test_f"
+                ),
+                "detail_dropped_bytes": 0,
             },
             r3_claim={
                 "rigor": "R3",

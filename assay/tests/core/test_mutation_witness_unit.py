@@ -35,6 +35,7 @@ from assay.mutation_witness import (
     declared_failure_proof_ok,
     inject_witness_plugin,
     make_attempt_plan,
+    pytest_fail_fast_option,
     read_internal_receipt,
     receipt_facts,
     replay_witness_from_receipt,
@@ -951,6 +952,32 @@ def test_cold_shape_refusal_rejects_unprovable_pytest_shapes(argv, appended, env
 )
 def test_cold_shape_refusal_accepts_selection_and_disabled_randomizer(argv):
     assert cold_shape_refusal(argv, {}) is None
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (("pytest", "-x"), "-x"),
+        (("pytest", "-qvx"), "-x"),
+        (("pytest", "--maxfail", "1"), "--maxfail"),
+        (("pytest", "--maxfail=1"), "--maxfail"),
+        (("pytest", "--maxfail=0"), None),
+        (("pytest", "--maxfail", "0"), None),
+        (("pytest", "-x", "--maxfail=0"), None),
+        (("pytest", "--maxfail=0", "-x"), "-x"),
+        (("pytest", "--maxfail=1", "--maxfail=0"), None),
+        (("python", "-I", "-m", "pytest", "--exitfirst"), "--exitfirst"),
+        (("python3.14", "-W", "ignore", "-m", "pytest", "-x"), "-x"),
+        (("python", "-c", "print(1)", "-m", "pytest", "-x"), None),
+        (("pytest", "-k", "-x"), None),
+        (("pytest", "--rootdir", "-x"), None),
+        (("pytest", "--plugin-mode", "-x"), None),
+        (("pytest", "--", "-x"), None),
+        (("make", "pytest", "-x"), None),
+    ],
+)
+def test_pytest_fail_fast_option_skips_values_and_non_pytest_commands(argv, expected):
+    assert pytest_fail_fast_option(argv) == expected
 
 
 def test_plugin_source_and_hook_fingerprint_contract_are_current():

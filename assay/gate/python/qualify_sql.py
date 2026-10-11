@@ -100,7 +100,8 @@ SCHEMA_PATH = _PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "sql" / "quali
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "sql"
 #: sha256 pins of the two fixture texts the matrix is written against (T0).
 SCHEMA_SHA256 = "b7b07e973e988202dbc34cb3ff69415d6b79adc801c3b3566595cb3a63703af1"
-PROBES_SHA256 = "b5c4eb283dc01ec3d8b15f2441363d5bea9312a49e025bd9eaf318086fd41e10"
+PROBES_SHA256 = "36249c03a558784ea0d1a5e1f45c83ede6f189827f239721a488739a6e1a488c"
+HAZARD_CASES_SHA256 = "7c1f009ce78b973a4cbf74d9489b7e4a4476ccf04e50db0f63324ded4cfdfa4f"
 
 ALL_OPERATORS: tuple[str, ...] = (
     "sql:drop-check",
@@ -120,6 +121,8 @@ _TAG_RE = re.compile(r"\[(K[0-9]{2})\]")
 _SIGNAL_RE = re.compile(
     r"schema test command failed \(exit [1-9][0-9]*\): ASSAY_SQL_FAILED=(none|K[0-9]{2}(,K[0-9]{2})*)"
 )
+_SQLSTATE_MARKER_RE = re.compile(r"ASSAY_SQLSTATE=([0-9A-Z]{5})")
+_SQLSTATE_ERROR_RE = re.compile(r"\b(?:ERROR|FATAL|PANIC):\s*([0-9A-Z]{5})\b")
 _DBNAME = "qual"
 _SCHEMA_NAME = "01-schema.sql"
 _WITNESS_LANE = "sql_qualification"
@@ -223,10 +226,125 @@ def verify_fixture_hashes(schema_path: Path, fixture_root: Path) -> None:
     joined = _sha256(b"".join(path.read_bytes() for path in probes))
     if joined != PROBES_SHA256:
         raise QualificationError(f"probes sha256 {joined} != pinned {PROBES_SHA256}")
+    hazard_cases = _sha256((fixture_root / "hazard-cases.json").read_bytes())
+    if hazard_cases != HAZARD_CASES_SHA256:
+        raise QualificationError(
+            f"hazard cases sha256 {hazard_cases} != pinned {HAZARD_CASES_SHA256}"
+        )
 
 
 def load_matrix(fixture_root: Path) -> list[dict[str, Any]]:
     return json.loads((fixture_root / "matrix.json").read_text(encoding="utf-8"))
+
+
+def load_hazard_cases(fixture_root: Path) -> list[dict[str, Any]]:
+    """Load the separately versioned B132 probes; these never add matrix rows."""
+    document = json.loads(
+        (fixture_root / "hazard-cases.json").read_text(encoding="utf-8")
+    )
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema_version", "cases"}
+        or document["schema_version"] != 1
+        or not isinstance(document["cases"], list)
+    ):
+        raise QualificationError("hazard-cases.json has an unsupported shape")
+    cases = document["cases"]
+    seen: set[str] = set()
+    for case in cases:
+        if (
+            not isinstance(case, dict)
+            or set(case)
+            != {
+                "id",
+                "operator",
+                "expected_site_count",
+                "expected_bucket",
+                "expected_probe_bucket",
+                "expected_probe_sqlstate",
+                "probe",
+                "assertion",
+                "source",
+            }
+        ):
+            raise QualificationError("hazard case has an unsupported shape")
+        case_id = case["id"]
+        if (
+            not isinstance(case_id, str)
+            or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", case_id) is None
+            or case_id in seen
+        ):
+            raise QualificationError(
+                f"hazard case id is invalid or duplicated: {case_id!r}"
+            )
+        seen.add(case_id)
+        if case["operator"] not in ALL_OPERATORS:
+            raise QualificationError(
+                f"{case_id}: unknown SQL operator {case['operator']!r}"
+            )
+        if (
+            type(case["expected_site_count"]) is not int
+            or case["expected_site_count"] not in (0, 1)
+        ):
+            raise QualificationError(f"{case_id}: expected_site_count must be 0 or 1")
+        if not isinstance(case["source"], str) or not case["source"].endswith("\n"):
+            raise QualificationError(f"{case_id}: source must be newline-terminated text")
+        marker = f"-- ASSAY-FOCUS: {case_id}"
+        if case["source"].count(marker) != 1:
+            raise QualificationError(
+                f"{case_id}: source must contain exactly one focus marker"
+            )
+        expected = case["expected_bucket"]
+        expected_probe = case["expected_probe_bucket"]
+        expected_probe_sqlstate = case["expected_probe_sqlstate"]
+        probe = case["probe"]
+        assertion = case["assertion"]
+        if probe is not None and (
+            not isinstance(probe, dict)
+            or set(probe) != {"before", "after"}
+            or not isinstance(probe["before"], str)
+            or not probe["before"]
+            or not isinstance(probe["after"], str)
+        ):
+            raise QualificationError(f"{case_id}: probe must contain before/after text or null")
+        if case["expected_site_count"] == 0:
+            if expected != "no-site":
+                raise QualificationError(f"{case_id}: a zero-site case must expect no-site")
+        elif expected not in (*BUCKETS, None):
+            raise QualificationError(
+                f"{case_id}: expected_bucket is not a mutation bucket or null"
+            )
+        if case["expected_site_count"] == 1 and expected in {"crashed", "hung", "budget_exceeded"}:
+            raise QualificationError(
+                f"{case_id}: a current site may not be pinned as a pre-test or timeout failure"
+            )
+        if assertion is not None and (not isinstance(assertion, str) or not assertion.endswith("\n")):
+            raise QualificationError(f"{case_id}: assertion must be newline-terminated SQL or null")
+        if probe is not None and assertion is None:
+            raise QualificationError(
+                f"{case_id}: a historical probe requires a construct-specific assertion"
+            )
+        if case["expected_site_count"] == 1 and assertion is None:
+            raise QualificationError(f"{case_id}: a generated site requires a construct-specific assertion")
+        if probe is None:
+            if expected_probe != "no-site":
+                raise QualificationError(f"{case_id}: a missing probe must expect no-site")
+        elif expected_probe not in (*BUCKETS, None):
+            raise QualificationError(
+                f"{case_id}: expected_probe_bucket is not a mutation bucket or null"
+            )
+        if case["expected_site_count"] == 1 and probe is None:
+            raise QualificationError(f"{case_id}: a generated site requires a probe")
+        if expected_probe_sqlstate is not None and (
+            not isinstance(expected_probe_sqlstate, str)
+            or re.fullmatch(r"[0-9A-Z]{5}", expected_probe_sqlstate) is None
+        ):
+            raise QualificationError(f"{case_id}: expected_probe_sqlstate must be one SQLSTATE or null")
+        if expected_probe == "crashed" and expected_probe_sqlstate is None:
+            raise QualificationError(f"{case_id}: a crashed historical probe requires an exact SQLSTATE")
+        if expected_probe != "crashed" and expected_probe_sqlstate is not None:
+            raise QualificationError(f"{case_id}: SQLSTATE pin is valid only for a crashed historical probe")
+    return cases
 
 
 def discover_sites(
@@ -326,6 +444,18 @@ class RunResult:
     exit_code: int
     dump: str | None
     signal: str | None
+    diagnostic: str = ""
+    stage: str | None = None
+
+
+def parse_sqlstate_markers(diagnostic: str) -> frozenset[str]:
+    """Return the SQLSTATE facts emitted by the SQL probe controls."""
+    return frozenset(_SQLSTATE_MARKER_RE.findall(diagnostic))
+
+
+def parse_sqlstate_errors(diagnostic: str) -> tuple[str, ...]:
+    """Return PostgreSQL SQLSTATEs from ``psql`` SQLSTATE-verbosity errors."""
+    return tuple(_SQLSTATE_ERROR_RE.findall(diagnostic))
 
 
 class ThrowawayPostgres:
@@ -598,6 +728,12 @@ class ThrowawayPostgres:
         _run(["docker", "cp", str(host_dir), f"{self.docker_ref}:/corpus_new"])
         self.exec(["mv", "/corpus_new", "/corpus"])
 
+    def replace_assertions(self, host_dir: Path) -> None:
+        """Replace the test corpus with one hazard construct's exact probe."""
+        self.exec(["rm", "-rf", "/tests", "/tests_new"])
+        _run(["docker", "cp", str(host_dir), f"{self.docker_ref}:/tests_new"])
+        self.exec(["mv", "/tests_new", "/tests"])
+
     def create_database(self, name: str = _DBNAME) -> None:
         self.exec(["psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-c", f"DROP DATABASE IF EXISTS {name};"])
         self.exec(["psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-c", f"CREATE DATABASE {name};"])
@@ -612,7 +748,7 @@ class ThrowawayPostgres:
 
     def run_gate(self, dbname: str = _DBNAME) -> RunResult:
         """One ``apply && dump && test`` run of the real ``schema-gate.sh``."""
-        self.exec(["rm", "-f", "/dump.sql", "/kill.txt"])
+        self.exec(["rm", "-f", "/dump.sql", "/kill.txt", "/stage"])
         proc = self.exec(
             [
                 "env",
@@ -620,6 +756,7 @@ class ThrowawayPostgres:
                 f"SCHEMA_GATE_DBNAME={dbname}",
                 "SCHEMA_GATE_DUMP_PATH=/dump.sql",
                 "SCHEMA_GATE_KILL_SIGNAL_PATH=/kill.txt",
+                "SCHEMA_GATE_STAGE_PATH=/stage",
                 f"SCHEMA_GATE_RESTRICT_KEY={RESTRICT_KEY}",
                 "SCHEMA_GATE_TEST_CMD=sh /run-assertions.sh",
                 "SCHEMA_GATE_ASSERT_DIR=/tests",
@@ -628,7 +765,14 @@ class ThrowawayPostgres:
             ],
             check=False,
         )
-        return RunResult(proc.returncode, self._read_if_present("/dump.sql"), self._read_if_present("/kill.txt"))
+        stage = self._read_if_present("/stage")
+        return RunResult(
+            proc.returncode,
+            self._read_if_present("/dump.sql"),
+            self._read_if_present("/kill.txt"),
+            (proc.stdout + "\n" + proc.stderr)[-8000:],
+            None if stage is None else stage.strip(),
+        )
 
     def pg_dump(self, dbname: str = _DBNAME) -> str:
         return self.exec(["pg_dump", "--schema-only", "--no-owner", "-U", "postgres", "-d", dbname]).stdout
@@ -699,9 +843,10 @@ def _witness_wrapper_script(*, container_name: str, dbname: str, restrict_key: s
         f"'DROP DATABASE IF EXISTS {dbname};'\n"
         f"docker exec {container_name} psql -v ON_ERROR_STOP=1 -U postgres -c "
         f"'CREATE DATABASE {dbname};'\n"
-        f"docker exec {container_name} rm -f /dump.sql /kill.txt\n"
+        f"docker exec {container_name} rm -f /dump.sql /kill.txt /stage\n"
         f"docker exec -e SCHEMA_GATE_INIT_SCRIPTS_DIR=/corpus -e SCHEMA_GATE_DBNAME={dbname} "
         f"-e SCHEMA_GATE_DUMP_PATH=/dump.sql -e SCHEMA_GATE_KILL_SIGNAL_PATH=/kill.txt "
+        f"-e SCHEMA_GATE_STAGE_PATH=/stage "
         f"-e SCHEMA_GATE_RESTRICT_KEY={restrict_key} -e SCHEMA_GATE_ASSERT_DIR=/tests "
         f"-e 'SCHEMA_GATE_TEST_CMD=sh /run-assertions.sh' "
         f"{container_name} sh /schema-gate.sh\n"
@@ -915,6 +1060,168 @@ def _run_mutant(container: ThrowawayPostgres, schema: bytes, directory: Path) ->
         container.drop_database()
 
 
+def _run_hazard_construct(
+    *,
+    container: ThrowawayPostgres,
+    base_schema: bytes,
+    case: Mapping[str, Any],
+    scratch: Path,
+) -> tuple[str, str]:
+    """Measure one non-matrix construct with the same apply/dump/probe path."""
+    case_id = str(case["id"])
+    schema = base_schema + (b"" if base_schema.endswith(b"\n") else b"\n")
+    schema += case["source"].encode("utf-8")
+    marker = f"-- ASSAY-FOCUS: {case_id}".encode("ascii")
+    marker_offset = schema.find(marker)
+    if marker_offset < 0 or schema.find(marker, marker_offset + len(marker)) >= 0:
+        raise QualificationError(f"{case_id}: focus marker is missing or duplicated")
+    focus_line = schema[:marker_offset].count(b"\n") + 2
+    sites = tuple(
+        site
+        for site in discover_sites(
+            schema.decode("utf-8"), operators=(str(case["operator"]),), limit=1000
+        )
+        if site.lineno == focus_line
+    )
+    if len(sites) != case["expected_site_count"]:
+        raise QualificationError(
+            f"{case_id}: found {len(sites)} focused site(s), expected "
+            f"{case['expected_site_count']}"
+        )
+
+    case_root = scratch / "hazards" / case_id
+    assertion = case["assertion"]
+    if assertion is not None:
+        assertions_dir = case_root / "assertions"
+        assertions_dir.mkdir(parents=True, exist_ok=True)
+        (assertions_dir / "K01.sql").write_text(assertion, encoding="utf-8")
+        container.replace_assertions(assertions_dir)
+    elif hasattr(container, "replace_assertions"):
+        container.replace_assertions(container.fixture_root / "tests")
+    baseline = _run_mutant(container, schema, case_root / "baseline")
+    if (
+        baseline.exit_code != 0
+        or baseline.dump is None
+        or baseline.signal is not None
+        or baseline.stage != "test"
+    ):
+        raise QualificationError(
+            f"{case_id}: unmutated construct is not a valid baseline "
+            f"(exit {baseline.exit_code}, dump={'present' if baseline.dump is not None else 'absent'}, "
+            f"stage={baseline.stage!r}, SQLSTATEs={parse_sqlstate_errors(baseline.diagnostic)})"
+        )
+    probe = case["probe"]
+    probe_schema: bytes | None = None
+    if probe is not None:
+        marker_end = schema.find(b"\n", marker_offset)
+        focus_start = len(schema) if marker_end < 0 else marker_end + 1
+        focus_end = schema.find(b"\n", focus_start)
+        if focus_end < 0:
+            focus_end = len(schema)
+        focus_text = schema[focus_start:focus_end]
+        before = probe["before"].encode("utf-8")
+        after = probe["after"].encode("utf-8")
+        if focus_text.count(before) != 1:
+            raise QualificationError(
+                f"{case_id}: historical probe text is not unique on its focus line"
+            )
+        probe_start = focus_start + focus_text.index(before)
+        probe_schema = schema[:probe_start] + after + schema[probe_start + len(before) :]
+
+    current_schema = sites[0].apply(schema) if sites else None
+    same_output = (
+        current_schema is not None
+        and probe_schema is not None
+        and current_schema == probe_schema
+    )
+
+    probe_bucket = "no-site"
+    probe_sqlstates: tuple[str, ...] = ()
+    probe_stage: str | None = None
+    current_bucket = "no-site"
+    current_sqlstates: tuple[str, ...] = ()
+    current_stage: str | None = None
+    if probe_schema is not None and not same_output:
+        result = _run_mutant(
+            container,
+            probe_schema,
+            case_root / "probe",
+        )
+        probe_sqlstates = parse_sqlstate_errors(result.diagnostic)
+        probe_stage = result.stage
+        if result.stage == "apply":
+            expected_sqlstate = case["expected_probe_sqlstate"]
+            if result.exit_code == 0 or result.dump is not None:
+                raise QualificationError(
+                    f"{case_id} historical probe has apply-stage receipt but inconsistent "
+                    f"exit/dump (exit={result.exit_code}, dump={'present' if result.dump is not None else 'absent'})"
+                )
+            if expected_sqlstate is not None and probe_sqlstates != (expected_sqlstate,):
+                raise QualificationError(
+                    f"{case_id} historical probe failed during apply with SQLSTATEs "
+                    f"{probe_sqlstates}, expected exact {expected_sqlstate!r}"
+                )
+            if len(probe_sqlstates) != 1:
+                raise QualificationError(
+                    f"{case_id} historical probe apply failure did not produce one SQLSTATE: "
+                    f"{probe_sqlstates}"
+                )
+            # An unpinned measurement run records this provisional historical
+            # crash and its exact SQLSTATE, then refuses final qualification
+            # after all cases have been measured. A later run requires the pin.
+            probe_bucket = "crashed"
+        elif result.stage != "test" or result.dump is None:
+            raise QualificationError(
+                f"{case_id} historical probe ended at stage {result.stage!r}; "
+                "dump or test failure is not a mutation outcome"
+            )
+        else:
+            probe_bucket = derive_bucket(
+                "K01",
+                exit_code=result.exit_code,
+                dump=result.dump,
+                baseline_dump=baseline.dump,
+                failed_ids=parse_failed_ids(result.signal),
+            )
+    if current_schema is not None:
+        result = _run_mutant(container, current_schema, case_root / "current-site")
+        current_sqlstates = parse_sqlstate_errors(result.diagnostic)
+        current_stage = result.stage
+        if result.stage != "test" or result.dump is None:
+            raise QualificationError(
+                f"{case_id} current adapter site ended at stage {result.stage!r}; "
+                f"exit={result.exit_code}, SQLSTATEs={current_sqlstates}; "
+                "a generated site may not be counted as a crash or infrastructure failure"
+            )
+        current_bucket = derive_bucket(
+            "K01",
+            exit_code=result.exit_code,
+            dump=result.dump,
+            baseline_dump=baseline.dump,
+            failed_ids=parse_failed_ids(result.signal),
+        )
+        if same_output:
+            probe_bucket = current_bucket
+            probe_sqlstates = current_sqlstates
+            probe_stage = current_stage
+
+    print(
+        f"ASSAY_SQL_HAZARD_RESULT={case_id}:probe={probe_bucket}"
+        f":probe_stage={probe_stage or 'none'}"
+        f":probe_sqlstate={','.join(probe_sqlstates) if probe_sqlstates else 'none'}"
+        f":current={current_bucket}:current_stage={current_stage or 'none'}"
+        f":current_sqlstate={','.join(current_sqlstates) if current_sqlstates else 'none'}",
+        file=sys.stderr,
+    )
+    expected = case["expected_bucket"]
+    if expected is not None:
+        _require_bucket(case_id, current_bucket, str(expected))
+    expected_probe = case["expected_probe_bucket"]
+    if expected_probe is not None:
+        _require_bucket(f"{case_id} probe", probe_bucket, str(expected_probe))
+    return current_bucket, probe_bucket
+
+
 def _residue_control(container: ThrowawayPostgres, schema: bytes, mutant: bytes, scratch: Path, baseline_dump: str) -> None:
     """O4-residue: on ONE database the unmutated apply succeeds, then the K01
     mutant fails loudly with no dump (the non-idempotent schema refuses to be
@@ -959,6 +1266,16 @@ def run_qualification(
                 f"the unmutated baseline did not apply and pass (exit {baseline.exit_code}, "
                 f"dump {'present' if baseline.dump is not None else 'absent'}, signal {baseline.signal!r})"
             )
+        sqlstate_markers = parse_sqlstate_markers(baseline.diagnostic)
+        if not {"23001", "23503"} <= sqlstate_markers:
+            raise QualificationError(
+                "RESTRICT/NO ACTION controls did not report SQLSTATE 23001 and 23503: "
+                f"{sorted(sqlstate_markers)}"
+            )
+        print(
+            "ASSAY_SQLSTATE_CONTROL=restrict:23001,no-action:23503",
+            file=sys.stderr,
+        )
         if container.pg_dump() == container.pg_dump():
             raise QualificationError("o5: two pg_dump runs without --restrict-key were identical")
         print("ASSAY_SQL_CONTROL=o5:differs", file=sys.stderr)
@@ -991,6 +1308,23 @@ def run_qualification(
         bucket = derive_bucket("m11", exit_code=result.exit_code, dump=result.dump, baseline_dump=baseline.dump, failed_ids=frozenset())
         _require_bucket("m11", bucket, "crashed")
         print(f"ASSAY_SQL_CONTROL=m11:{bucket}", file=sys.stderr)
+        unpinned: list[str] = []
+        for case in load_hazard_cases(fixture_root):
+            current_bucket, probe_bucket = _run_hazard_construct(
+                container=container,
+                base_schema=schema_bytes,
+                case=case,
+                scratch=scratch,
+            )
+            if case["expected_bucket"] is None:
+                unpinned.append(f"{case['id']}.current={current_bucket}")
+            if case["expected_probe_bucket"] is None:
+                unpinned.append(f"{case['id']}.probe={probe_bucket}")
+        if unpinned:
+            raise QualificationError(
+                "B132 hazard outcomes need PostgreSQL measurement and pinning: "
+                + ", ".join(unpinned)
+            )
         # (6) the witness
         witness = capture_witness(container=container, schema_bytes=schema_bytes, fixture_root=fixture_root, scratch=scratch / "witness")
         check_witness_verdict(witness["verdict"], matrix)

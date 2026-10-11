@@ -242,6 +242,26 @@ def test_b114_document_parity_check_rejects_the_old_cross_variant_claim():
         _assert_b114_variant_parity_documents(documents)
 
 
+def test_sql_operator_effects_are_explained_in_all_three_user_documents():
+    required_phrases = (
+        "sql:widen-check-in",
+        "not in",
+        "singleton",
+        "with check",
+        "bounded integer",
+        "char(n)",
+    )
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8").casefold()
+        missing = [phrase for phrase in required_phrases if phrase not in text]
+        assert not missing, (
+            f"{path.relative_to(REPO_ROOT)} omits SQL operator effects: {missing}"
+        )
+        assert "needs an ad-hoc-construct mode" not in text, (
+            f"{path.relative_to(REPO_ROOT)} still describes the old B132 harness gap"
+        )
+
+
 def test_assay_cli_skill_capabilities_match_the_current_registry():
     skill = ASSAY_CLI_SKILL.read_text(encoding="utf-8")
     items = _cli_skill_capability_items(skill)

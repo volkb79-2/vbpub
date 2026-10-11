@@ -23,7 +23,12 @@ import tomllib
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 
-from assay.config import CanaryConfig, JUDGE_FIELDS_BY_RIGOR, load_lane_file
+from assay.config import (
+    CanaryConfig,
+    JUDGE_FIELDS_BY_RIGOR,
+    lane_validation_warnings,
+    load_lane_file,
+)
 from assay.errors import LaneConfigError
 
 #: O2's six, spelled out rather than imported, so a change to the source of
@@ -103,6 +108,59 @@ def test_r1_lane_with_all_six_loads(project: Project):
     assert judge.allow_excluded is False
     assert judge.coverage is not None
     assert judge.base == "main"
+
+
+def test_coverage_lane_warns_about_pytest_fail_fast_options(project: Project):
+    lane_text = set_key(
+        R1_LANE,
+        "argv",
+        '["python", "-m", "pytest", "tests", "--maxfail=1"]',
+    )
+    lane = load_lane_file(project.write(lane_text)).lane("package")
+
+    warnings = lane_validation_warnings(lane)
+
+    assert len(warnings) == 1
+    assert "--maxfail" in warnings[0]
+    assert "coverage artifact incomplete" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        '["pytest", "tests", "--maxfail=0"]',
+        '["pytest", "tests", "-x", "--maxfail=0"]',
+        '["pytest", "tests", "--maxfail=1", "--maxfail=0"]',
+    ],
+)
+def test_coverage_lane_does_not_warn_when_effective_maxfail_is_zero(
+    argv: str, project: Project
+):
+    lane = load_lane_file(project.write(set_key(R1_LANE, "argv", argv))).lane("package")
+
+    assert lane_validation_warnings(lane) == ()
+
+
+def test_coverage_lane_does_not_treat_pytest_option_values_as_fail_fast(
+    project: Project,
+):
+    lane_text = set_key(
+        R1_LANE,
+        "argv",
+        '["pytest", "tests", "-k", "-x"]',
+    )
+    lane = load_lane_file(project.write(lane_text)).lane("package")
+
+    assert lane_validation_warnings(lane) == ()
+
+
+def test_r0_lane_without_coverage_does_not_warn_about_pytest_fail_fast(
+    project: Project,
+):
+    lane_text = set_key(R0_LANE, "argv", '["pytest", "tests", "-x"]')
+    lane = load_lane_file(project.write(lane_text)).lane("package")
+
+    assert lane_validation_warnings(lane) == ()
 
 
 @pytest.mark.parametrize("field", R1_JUDGE_FIELDS)

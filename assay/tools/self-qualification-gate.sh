@@ -459,7 +459,7 @@ run_b110_screen() {
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-screen-run.log --stderr-to-stdout -- \
-    timeout --verbose --signal=TERM --kill-after=30s 7h10m \
+    timeout --verbose --signal=TERM --kill-after=30s 25800s \
       "$assay_bin" run self-qualification --file assay.toml --cold-witness --resume \
       "${reuse_args[@]}" \
       --state-dir "$assay_state_root/b110-screen-state" \

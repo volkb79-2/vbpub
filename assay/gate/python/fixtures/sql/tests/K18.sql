@@ -1,11 +1,18 @@
 BEGIN;
 DO $$
+DECLARE caught_sqlstate text;
 BEGIN
   INSERT INTO parent (id,label) VALUES (1,'p');
   INSERT INTO child (id,parent_id,owner_id,slot,qty) VALUES (1,NULL,1,NULL,1);
   BEGIN
     DELETE FROM parent WHERE id=1;
-  EXCEPTION WHEN foreign_key_violation OR restrict_violation THEN RETURN;
+  EXCEPTION WHEN foreign_key_violation OR restrict_violation THEN
+    GET STACKED DIAGNOSTICS caught_sqlstate = RETURNED_SQLSTATE;
+    IF caught_sqlstate <> '23001' THEN
+      RAISE EXCEPTION 'K18 expected SQLSTATE 23001, got %', caught_sqlstate;
+    END IF;
+    RAISE NOTICE 'ASSAY_SQLSTATE=23001';
+    RETURN;
   END;
   RAISE EXCEPTION 'K18';
 END $$;

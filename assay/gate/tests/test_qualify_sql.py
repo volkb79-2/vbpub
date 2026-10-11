@@ -97,7 +97,142 @@ def test_sql_witness_git_boundary_overrides_repository_local_maintenance(tmp_pat
 def test_the_schema_and_the_probes_are_the_pinned_bytes() -> None:
     q.verify_fixture_hashes(_SCHEMA_PATH, _FIXTURE_ROOT)  # must not raise
     assert q.SCHEMA_SHA256.startswith("b7b07e97") and q.SCHEMA_SHA256.endswith("3af1")
-    assert q.PROBES_SHA256.startswith("b5c4eb28") and q.PROBES_SHA256.endswith("1e10")
+    assert q.PROBES_SHA256.startswith("36249c03") and q.PROBES_SHA256.endswith("488c")
+    assert q.HAZARD_CASES_SHA256 == "7c1f009ce78b973a4cbf74d9489b7e4a4476ccf04e50db0f63324ded4cfdfa4f"
+
+
+def test_hazard_cases_are_separate_from_the_matrix_and_cover_the_backlog():
+    cases = q.load_hazard_cases(_FIXTURE_ROOT)
+    ids = {case["id"] for case in cases}
+    assert ids == {
+        "unique-deferrable",
+        "unique-nulls-not-distinct",
+        "unique-include",
+        "unique-using-index-constraint",
+        "unique-using-index-index",
+        "primary-key-using-index-index",
+        "fk-match-full",
+        "fk-deferrable",
+        "fk-set-null-columns",
+        "not-null-identity",
+        "not-null-serial",
+        "not-null-primary-key",
+        "enum-check-string-widen",
+        "generated-expression",
+        "event-trigger",
+        "quoted-fk-target",
+        "do-block-trigger",
+        "not-null-add-if-not-exists-serial",
+        "array-check-string-widen",
+        "array-bracket-check-string-widen",
+        "temp-table-shadow-widen",
+        "create-temp-shadow-widen",
+        "select-into-temp-shadow-widen",
+        "select-into-pg-temp-shadow-widen",
+        "table-rename-stale-type",
+        "table-schema-move-stale-type",
+        "create-table-as-does-not-borrow-later-type",
+        "if-not-exists-does-not-supply-type",
+        "unqualified-type-does-not-apply-to-qualified-table",
+        "unnamed-index-with-attachment-context",
+        "unqualified-alter-does-not-borrow-cross-schema-type",
+        "search-path-shadowed-string-builtin",
+        "search-path-shadowed-integer-builtin",
+        "explicit-catalog-string-builtin-control",
+        "pg-catalog-first-builtin-with-shadow",
+        "later-catalog-first-does-not-prove-earlier-type",
+        "later-catalog-first-does-not-prove-alter-column-type",
+        "later-set-config-does-not-invalidate-earlier-check",
+        "set-schema-implicit-catalog-first-proof",
+        "set-schema-escape-temp-type-shadow",
+        "known-first-search-path-schema-prevents-temp-fallthrough",
+        "missing-search-path-entry-falls-through-to-pg-temp-type",
+        "set-schema-temp-unqualified-row-type-shadow",
+        "alter-routine-reset-keeps-session-path",
+        "dynamic-execute-search-path-shadow",
+        "unnamed-index-attached-generated-name",
+        "set-config-search-path-shadow",
+        "temporary-row-type-precedes-pg-catalog",
+        "temporary-view-type-precedes-pg-catalog",
+        "implicit-temp-quoted-view-type-precedes-pg-catalog",
+        "recursive-temp-view-type-precedes-pg-catalog",
+        "renamed-temporary-row-type-precedes-pg-catalog",
+        "renamed-temporary-view-type-precedes-pg-catalog",
+        "renamed-implicit-temporary-view-type-precedes-pg-catalog",
+        "renamed-implicit-temp-view-derived-first-precedes-pg-catalog",
+        "renamed-temporary-enum-type-precedes-pg-catalog",
+        "explicit-pg-temp-after-catalog-preserves-builtin-widening",
+        "set-local-search-path-expires-before-temp-shadow-check",
+        "routine-search-path-setting-does-not-change-session-type",
+        "rolled-back-session-path-does-not-prove-temp-order",
+        "unlogged-row-type-does-not-shadow-catalog-first",
+        "quoted-set-search-path-shadow",
+        "set-schema-missing-falls-through-to-temp-type",
+        "rollback-rename-can-fall-through-to-temp-type",
+        "rollback-drop-restores-known-first-schema",
+        "revoked-schema-usage-can-fall-through-to-temp-type",
+        "revoking-other-role-usage-preserves-owner-path",
+        "set-local-role-commit-restores-session-owner",
+        "revoke-public-preserves-creator-usage",
+        "revoke-usage-grant-option-preserves-owner-path",
+    }
+    assert all(case["assertion"] for case in cases if case["expected_site_count"] == 1)
+    assert all(case["assertion"] for case in cases if case["probe"] is not None)
+    assert all(case["expected_bucket"] == "no-site" for case in cases if case["expected_site_count"] == 0)
+
+
+def test_hazard_case_loader_refuses_duplicate_ids_and_unpinned_no_site(tmp_path: Path):
+    case = {
+        "id": "example",
+        "operator": "sql:drop-check",
+        "expected_site_count": 0,
+        "expected_bucket": "no-site",
+        "expected_probe_bucket": "no-site",
+        "expected_probe_sqlstate": None,
+        "probe": None,
+        "assertion": None,
+        "source": "-- ASSAY-FOCUS: example\nSELECT 1;\n",
+    }
+    root = tmp_path / "sql"
+    root.mkdir()
+    path = root / "hazard-cases.json"
+    path.write_text(json.dumps({"schema_version": 1, "cases": [case, case]}), encoding="utf-8")
+    with pytest.raises(q.QualificationError, match="duplicated"):
+        q.load_hazard_cases(root)
+    case["expected_bucket"] = None
+    path.write_text(json.dumps({"schema_version": 1, "cases": [case]}), encoding="utf-8")
+    with pytest.raises(q.QualificationError, match="must expect no-site"):
+        q.load_hazard_cases(root)
+
+
+def test_hazard_case_loader_requires_construct_probe_and_rejects_current_crash_pin(
+    tmp_path: Path,
+):
+    case = {
+        "id": "example",
+        "operator": "sql:drop-check",
+        "expected_site_count": 0,
+        "expected_bucket": "no-site",
+        "expected_probe_bucket": None,
+        "expected_probe_sqlstate": None,
+        "probe": {"before": "CHECK (value > 0)", "after": "CHECK (true)"},
+        "assertion": None,
+        "source": "-- ASSAY-FOCUS: example\nSELECT 1;\n",
+    }
+    root = tmp_path / "sql"
+    root.mkdir()
+    path = root / "hazard-cases.json"
+    path.write_text(json.dumps({"schema_version": 1, "cases": [case]}), encoding="utf-8")
+    with pytest.raises(q.QualificationError, match="construct-specific assertion"):
+        q.load_hazard_cases(root)
+
+    case["expected_site_count"] = 1
+    case["expected_bucket"] = "crashed"
+    case["expected_probe_bucket"] = "survived"
+    case["assertion"] = "SELECT 1;\n"
+    path.write_text(json.dumps({"schema_version": 1, "cases": [case]}), encoding="utf-8")
+    with pytest.raises(q.QualificationError, match="current site may not be pinned"):
+        q.load_hazard_cases(root)
 
 
 def test_one_extra_byte_in_the_schema_or_in_a_probe_fails_the_pin(tmp_path: Path) -> None:
@@ -111,6 +246,11 @@ def test_one_extra_byte_in_the_schema_or_in_a_probe_fails_the_pin(tmp_path: Path
         handle.write(b"\n")
     with pytest.raises(q.QualificationError, match="probes sha256"):
         q.verify_fixture_hashes(_SCHEMA_PATH, root)
+    shutil.copytree(_FIXTURE_ROOT, root / "hazard-root")
+    with (root / "hazard-root" / "hazard-cases.json").open("ab") as handle:
+        handle.write(b" ")
+    with pytest.raises(q.QualificationError, match="hazard cases sha256"):
+        q.verify_fixture_hashes(_SCHEMA_PATH, root / "hazard-root")
 
 
 # =============================================================================
@@ -240,6 +380,142 @@ def test_a_missing_dump_outranks_an_equal_one() -> None:
     assert _derive(exit_code=0, dump=None, baseline=None) == "crashed"
 
 
+@pytest.mark.parametrize("pinned_probe_sqlstate", [None, "42601"])
+def test_hazard_construct_runs_one_focused_site_through_apply_dump_test(
+    tmp_path: Path, monkeypatch, capsys, pinned_probe_sqlstate
+):
+    case = {
+        "id": "unique-deferrable",
+        "operator": "sql:drop-unique",
+        "expected_site_count": 1,
+        "expected_bucket": None,
+        "expected_probe_bucket": None if pinned_probe_sqlstate is None else "crashed",
+        "expected_probe_sqlstate": pinned_probe_sqlstate,
+        "probe": {"before": "UNIQUE (value)", "after": "CHECK (true)"},
+        "assertion": "BEGIN;\nROLLBACK;\n",
+        "source": (
+            "CREATE TABLE hazard_unique (value integer,\n"
+            "-- ASSAY-FOCUS: unique-deferrable\n"
+            "  CONSTRAINT hazard_unique_key UNIQUE (value) DEFERRABLE\n"
+            ");\n"
+        ),
+    }
+    calls: list[tuple[bytes, Path]] = []
+
+    def fake_run_mutant(_container, schema: bytes, directory: Path):
+        calls.append((schema, directory))
+        if len(calls) == 1:
+            return q.RunResult(0, "baseline", None, stage="test")
+        if len(calls) == 2:
+            return q.RunResult(1, None, None, "ERROR:  42601\n", stage="apply")
+        return q.RunResult(0, "mutant", None, stage="test")
+
+    monkeypatch.setattr(q, "_run_mutant", fake_run_mutant)
+    class FakeContainer:
+        fixture_root = tmp_path / "fixture-root"
+
+        def __init__(self):
+            self.assertion_dirs = []
+
+        def replace_assertions(self, path):
+            self.assertion_dirs.append(path)
+
+    container = FakeContainer()
+    bucket = q._run_hazard_construct(
+        container=container,
+        base_schema=b"CREATE TABLE assay_base (id integer);\n",
+        case=case,
+        scratch=tmp_path,
+    )
+
+    assert bucket == ("survived", "crashed")
+    assert len(container.assertion_dirs) == 1
+    assert (container.assertion_dirs[0] / "K01.sql").read_text() == "BEGIN;\nROLLBACK;\n"
+    assert len(calls) == 3
+    assert b"CHECK (true) DEFERRABLE" in calls[1][0]
+    assert b"CONSTRAINT hazard_unique_key CHECK (true)" in calls[2][0]
+    assert b"DEFERRABLE" not in calls[2][0]
+    assert calls[1][1].parts[-1] == "probe"
+    assert calls[2][1].parts[-1] == "current-site"
+    assert (
+        "ASSAY_SQL_HAZARD_RESULT=unique-deferrable:probe=crashed:probe_stage=apply:"
+        "probe_sqlstate=42601:current=survived:current_stage=test:current_sqlstate=none"
+        in capsys.readouterr().err
+    )
+
+
+def test_hazard_construct_no_site_still_requires_a_valid_baseline(
+    tmp_path: Path, monkeypatch
+):
+    case = {
+        "id": "event-trigger",
+        "operator": "sql:drop-trigger",
+        "expected_site_count": 0,
+        "expected_bucket": "no-site",
+        "expected_probe_bucket": "no-site",
+        "expected_probe_sqlstate": None,
+        "probe": None,
+        "assertion": None,
+        "source": (
+            "CREATE FUNCTION hazard_event_fn() RETURNS event_trigger "
+            "LANGUAGE plpgsql AS $$ BEGIN RETURN; END $$;\n"
+            "-- ASSAY-FOCUS: event-trigger\n"
+            "CREATE EVENT TRIGGER hazard_event ON ddl_command_start "
+            "EXECUTE FUNCTION hazard_event_fn();\n"
+        ),
+    }
+    calls = []
+
+    def fake_run_mutant(_container, schema: bytes, directory: Path):
+        calls.append((schema, directory))
+        return q.RunResult(0, "baseline", None, stage="test")
+
+    monkeypatch.setattr(q, "_run_mutant", fake_run_mutant)
+    assert q._run_hazard_construct(
+        container=object(),
+        base_schema=b"CREATE TABLE assay_base (id integer);\n",
+        case=case,
+        scratch=tmp_path,
+    ) == ("no-site", "no-site")
+    assert len(calls) == 1
+
+
+def test_hazard_construct_refuses_a_current_site_that_fails_during_apply(
+    tmp_path: Path, monkeypatch
+):
+    case = {
+        "id": "unique-deferrable",
+        "operator": "sql:drop-unique",
+        "expected_site_count": 1,
+        "expected_bucket": None,
+        "expected_probe_bucket": None,
+        "expected_probe_sqlstate": None,
+        "probe": {"before": "UNIQUE (value)", "after": "CHECK (true)"},
+        "assertion": None,
+        "source": (
+            "CREATE TABLE hazard_unique (value integer,\n"
+            "-- ASSAY-FOCUS: unique-deferrable\n"
+            "  CONSTRAINT hazard_unique_key UNIQUE (value) DEFERRABLE\n"
+            ");\n"
+        ),
+    }
+    results = iter(
+        (
+            q.RunResult(0, "baseline", None, stage="test"),
+            q.RunResult(0, "probe", None, stage="test"),
+            q.RunResult(1, None, None, "ERROR:  42601\n", stage="apply"),
+        )
+    )
+    monkeypatch.setattr(q, "_run_mutant", lambda *_args: next(results))
+    with pytest.raises(q.QualificationError, match="current adapter site ended at stage 'apply'"):
+        q._run_hazard_construct(
+            container=object(),
+            base_schema=b"CREATE TABLE assay_base (id integer);\n",
+            case=case,
+            scratch=tmp_path,
+        )
+
+
 def test_a_bucket_other_than_expected_is_refused_and_crashed_never_passes() -> None:
     q._require_bucket("K05", "killed", "killed")  # must not raise
     with pytest.raises(q.QualificationError, match="K05: derived crashed, expected killed"):
@@ -250,6 +526,16 @@ def test_parse_failed_ids() -> None:
     assert q.parse_failed_ids(None) == frozenset()
     assert q.parse_failed_ids("schema test command failed (exit 1): ASSAY_SQL_FAILED=none\n") == frozenset()
     assert q.parse_failed_ids("schema test command failed (exit 1): ASSAY_SQL_FAILED=K05,K24") == {"K05", "K24"}
+
+
+def test_sqlstate_parsers_preserve_restrict_and_no_action_codes():
+    assert q.parse_sqlstate_markers(
+        "NOTICE: ASSAY_SQLSTATE=23001\nNOTICE: ASSAY_SQLSTATE=23503\n"
+    ) == {"23001", "23503"}
+    assert q.parse_sqlstate_errors("ERROR:  42601\nFATAL:  57P03\n") == (
+        "42601",
+        "57P03",
+    )
 
 
 @pytest.mark.parametrize(
@@ -577,6 +863,7 @@ def test_witness_wrapper_script_interpolates_container_dbname_and_key() -> None:
     assert "my-container" in script
     assert "SCHEMA_GATE_DBNAME=witness" in script
     assert "SCHEMA_GATE_RESTRICT_KEY=thekey" in script
+    assert "SCHEMA_GATE_STAGE_PATH=/stage" in script
     assert "sh /schema-gate.sh" in script
     assert "'SCHEMA_GATE_TEST_CMD=sh /run-assertions.sh'" in script
 
@@ -682,6 +969,7 @@ def test_the_gate_script_declares_the_documented_required_env_vars() -> None:
         "SCHEMA_GATE_DBNAME",
         "SCHEMA_GATE_DUMP_PATH",
         "SCHEMA_GATE_KILL_SIGNAL_PATH",
+        "SCHEMA_GATE_STAGE_PATH",
         "SCHEMA_GATE_RESTRICT_KEY",
         "SCHEMA_GATE_TEST_CMD",
     ):
@@ -740,6 +1028,41 @@ def test_run_assertions_is_silent_and_green_when_every_probe_passes(tmp_path: Pa
     assert (proc.returncode, proc.stdout) == (0, "")
 
 
+def test_run_assertions_preserves_sqlstate_notice_markers(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "K18.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    stub_dir = tmp_path / "fake-bin"
+    stub_dir.mkdir()
+    (stub_dir / "psql").write_text(
+        "#!/bin/sh\n"
+        "for arg; do\n"
+        "  [ \"$arg\" != -q ] || exit 0\n"
+        "  [ \"$arg\" != VERBOSITY=sqlstate ] || exit 0\n"
+        "done\n"
+        "printf '%s\\n' 'NOTICE: ASSAY_SQLSTATE=23001'\n",
+        encoding="utf-8",
+    )
+    (stub_dir / "psql").chmod(0o755)
+    env = {
+        **_host_environ(),
+        "PATH": f"{stub_dir}:{os.environ['PATH']}",
+        "SCHEMA_GATE_DBNAME": "qual",
+        "SCHEMA_GATE_ASSERT_DIR": str(tests),
+    }
+
+    proc = subprocess.run(
+        ["sh", str(_FIXTURE_ROOT / "run-assertions.sh")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.splitlines() == ["NOTICE: ASSAY_SQLSTATE=23001"]
+
+
 def test_run_assertions_treats_any_other_psql_exit_as_infrastructure(tmp_path: Path) -> None:
     proc = _run_assertions(tmp_path, {"K05": 2})
     assert proc.returncode == 2
@@ -756,7 +1079,7 @@ def test_run_assertions_refuses_an_empty_probe_directory(tmp_path: Path) -> None
     assert proc.returncode == 2 and "no probes" in proc.stderr
 
 
-def _schema_gate(tmp_path: Path, psql_rc: dict[str, int]) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+def _schema_gate(tmp_path: Path, psql_rc: dict[str, int]) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "01-a.sql").write_text("SELECT 1;\n", encoding="utf-8")
@@ -765,13 +1088,14 @@ def _schema_gate(tmp_path: Path, psql_rc: dict[str, int]) -> tuple[subprocess.Co
     tests.mkdir()
     for name in ("K05", "K24"):
         (tests / f"{name}.sql").write_text("SELECT 1;\n", encoding="utf-8")
-    dump, kill = tmp_path / "dump.sql", tmp_path / "kill.txt"
+    dump, kill, stage = tmp_path / "dump.sql", tmp_path / "kill.txt", tmp_path / "stage.txt"
     env = {
         **_fake_bin(tmp_path, psql_rc=psql_rc),
         "SCHEMA_GATE_INIT_SCRIPTS_DIR": str(corpus),
         "SCHEMA_GATE_DBNAME": "qual",
         "SCHEMA_GATE_DUMP_PATH": str(dump),
         "SCHEMA_GATE_KILL_SIGNAL_PATH": str(kill),
+        "SCHEMA_GATE_STAGE_PATH": str(stage),
         "SCHEMA_GATE_RESTRICT_KEY": "k",
         "SCHEMA_GATE_TEST_CMD": f"sh {_FIXTURE_ROOT / 'run-assertions.sh'}",
         "SCHEMA_GATE_ASSERT_DIR": str(tests),
@@ -779,27 +1103,30 @@ def _schema_gate(tmp_path: Path, psql_rc: dict[str, int]) -> tuple[subprocess.Co
     proc = subprocess.run(
         ["sh", str(_FIXTURE_ROOT / "schema-gate.sh")], capture_output=True, text=True, env=env, timeout=60
     )
-    return proc, dump, kill
+    return proc, dump, kill, stage
 
 
 def test_a_failing_test_leaves_the_dump_and_a_kill_signal_naming_the_ids(tmp_path: Path) -> None:
-    proc, dump, kill = _schema_gate(tmp_path, {"K05": 3, "K24": 3})
+    proc, dump, kill, stage = _schema_gate(tmp_path, {"K05": 3, "K24": 3})
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert dump.read_text(encoding="utf-8") == "DUMP\n"  # the dump landed before the test ran (A-279)
     assert kill.read_text(encoding="utf-8") == "schema test command failed (exit 1): ASSAY_SQL_FAILED=K05,K24\n"
+    assert stage.read_text(encoding="utf-8") == "test\n"
     assert "applying: 01-a.sql" in proc.stdout and "90-b" not in proc.stdout
 
 
 def test_a_passing_test_writes_no_kill_signal(tmp_path: Path) -> None:
-    proc, dump, kill = _schema_gate(tmp_path, {})
+    proc, dump, kill, stage = _schema_gate(tmp_path, {})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert dump.is_file() and not kill.exists()
+    assert stage.read_text(encoding="utf-8") == "test\n"
 
 
 def test_an_infrastructure_failure_signals_none(tmp_path: Path) -> None:
-    proc, _dump, kill = _schema_gate(tmp_path, {"K05": 2})
+    proc, _dump, kill, stage = _schema_gate(tmp_path, {"K05": 2})
     assert proc.returncode == 2
     assert kill.read_text(encoding="utf-8") == "schema test command failed (exit 2): ASSAY_SQL_FAILED=none\n"
+    assert stage.read_text(encoding="utf-8") == "test\n"
 
 
 # =============================================================================

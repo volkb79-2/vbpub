@@ -97,7 +97,7 @@ artifacts = [
 [lanes.b110-pilot]
 kind = "command"
 environment = "bare-host"
-argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-pilot"]
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "8400s", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-pilot"]
 exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
@@ -134,7 +134,7 @@ artifacts = [
 [lanes.analysis-r2-pilot]
 kind = "command"
 environment = "bare-host"
-argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "2h20m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "analysis-r2-pilot"]
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "8400s", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "analysis-r2-pilot"]
 exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
@@ -161,7 +161,7 @@ artifacts = [
 [lanes.b110-screen]
 kind = "command"
 environment = "bare-host"
-argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "7h30m", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-screen"]
+argv = ["timeout", "--verbose", "--signal=TERM", "--kill-after=30s", "27000s", "bash", "{worktree}/assay/tools/self-qualification-container.sh", "{worktree}", "b110-screen"]
 exit_map = { "3" = "ERROR" }
 resources = { shared = ["assay-self-qualification"] }
 clean_tree = true
