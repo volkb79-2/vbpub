@@ -9187,3 +9187,18 @@ rule; it is not release approval. Exact-current-tree assay-r2 and gate-full,
 all P1/P6 survivor dispositions, and Assay's own package release gate remain
 release holds. No package release, installation, or final daemon transition is
 recorded here.
+
+### RW-561 — 2026-10-11 03:32:41 UTC — provisionally integrate reviewed P5
+
+P5 review round 2 returned ACCEPT after the three repairs recorded in RW-560.
+The reviewed code checkpoint `3b6a4ab4146d51f7f56547411db3c3d60e019763`
+passed the exact-tree selftest, assay-r1, and assay-r3 receipts listed there;
+the fresh Sol review also recorded the live success/refusal placement pair on
+both exec and bare-host carriers. The P5 branch was merged with `--no-ff` to
+main as `e40476b1f6fdd3ab8df1d90cafe26ad54d122a30`. This is provisional
+integration only: the merged tree still requires exact-tree assay-r2 and
+gate-full, P1/P6 survivor accounting, and Assay's registered package gate
+before any release decision. At this ruling, `main` is clean and ahead of
+`origin/main`; memory PSI full avg10 is 1.04 (below the launch limit 5), and
+the only running workload visible in Docker is the existing cgprofile host
+daemon plus unrelated application services. No new gate has yet been launched.
