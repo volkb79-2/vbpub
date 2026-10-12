@@ -3107,6 +3107,22 @@ def test_dockerfile_builds_cmru_from_the_build_requires_mode():
     assert "/src/cmru" in wheel["flags"]
 
 
+def test_tester_unified_build_instructions_load_the_remote_builder_output():
+    readme = (REPO_ROOT / "tester-unified" / "README.md").read_text(
+        encoding="utf-8",
+    )
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    command = (
+        "docker buildx build --load -f tester-unified/Dockerfile "
+        "-t tester-unified:local ."
+    )
+    assert command in readme
+    assert command in dockerfile
+    for document in (readme, dockerfile):
+        assert "docker build -f tester-unified/Dockerfile" not in document
+
+
 def test_tester_unified_venvs_are_cleared_before_creation():
     instructions = _dockerfile_instructions_by_stage(
         DOCKERFILE.read_text(encoding="utf-8"),
