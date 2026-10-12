@@ -208,6 +208,11 @@ docker exec cgprofile-host-daemon cgprofile ctl status --json
 ciu down                           # stops it (run from this dir); the volume survives
 ```
 
+The committed CIU root pins the published `1.0.0` image for the managed
+cockpit. For local development, clear the `[cgprofile.image]` override in
+`ciu.toml.j2` before `ciu up` so CIU selects the locally built image. See the
+[published-image deployment steps](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+
 The daemon's version response is contract major 1:
 
 ```json

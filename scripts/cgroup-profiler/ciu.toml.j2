@@ -1,18 +1,16 @@
-# cgprofile — sparse, committed per-stack override (optional; CIU never
-# auto-creates or auto-fills this from ciu.defaults.toml.j2 — see that
-# file's own field docs for what there is to override). Empty by default:
-# every value this stack needs already has a sane, explicit default. A
-# local operator wanting a different image tag, interval, or retention
-# window for their own dev box adds it here, e.g.:
-#
-#   [cgprofile.image]
-#   registry = "ghcr.io"
-#   namespace = "volkb79-2"
-#   name = "cgprofile"
-#   tag = "1.0.0"
-#
-#   [cgprofile.daemon]
-#   interval = "0.5"
+# cgprofile — sparse, committed per-stack override. The managed cockpit uses
+# the published RG-55 1.0.0 image. For local development, clear this image
+# table before `ciu up` after building `cgprofile:local`; see
+# docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu.
+[cgprofile.image]
+registry = "ghcr.io"
+namespace = "volkb79-2"
+name = "cgprofile"
+tag = "1.0.0"
+
+# Local operators may also override daemon settings, for example:
+# [cgprofile.daemon]
+# interval = "0.5"
 
 [state]
 initialized = false

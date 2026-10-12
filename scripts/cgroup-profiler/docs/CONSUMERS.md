@@ -62,8 +62,8 @@ waiting or racing; ordinary profiling proceeds.
 ## Deploy a published daemon image with CIU
 
 The default CIU image coordinates intentionally select the local development
-image. To deploy the combined RG-55 v1.0.0 daemon release, put this complete
-override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
+image. The managed cockpit's tracked sparse `ciu.toml.j2` pins this complete
+override for the combined RG-55 v1.0.0 daemon release:
 
 ```toml
 [cgprofile.image]
@@ -84,8 +84,10 @@ docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
 
 The version in the response must match the pinned image. For local development,
-leave the sparse override empty and use `python3 build-push.py --build`; that
-path loads only `cgprofile:local` and does not publish it.
+clear the `[cgprofile.image]` table in `ciu.toml.j2` before `ciu up`, then use
+`python3 build-push.py --build`; that path loads only `cgprofile:local` and does
+not publish it. Restore the published-image table before committing a release
+deployment change.
 
 ## Daemon adoption
 
