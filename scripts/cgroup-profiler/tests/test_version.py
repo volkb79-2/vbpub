@@ -255,6 +255,133 @@ def test_publish_refuses_ambient_override_without_exact_tag(tmp_path, monkeypatc
         version.resolve_build_version(root, require_release_tag=True)
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "detail"),
+    [
+        (
+            128, "unexpected output", "fatal: not a git repository",
+            "fatal: not a git repository",
+        ),
+        (128, "unexpected output", "", "exit 128"),
+        (0, "  ", "", "exit 0"),
+    ],
+)
+def test_git_output_refuses_failed_or_empty_resolution(
+    tmp_path, monkeypatch, returncode, stdout, stderr, detail,
+):
+    def fake_run(argv, **kwargs):
+        assert argv == ["git", "rev-parse", "HEAD"]
+        assert kwargs == {
+            "cwd": str(tmp_path), "capture_output": True, "text": True,
+            "check": False,
+        }
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    monkeypatch.setattr(version.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match=f"cannot resolve release source.*{detail}"):
+        version._git_output(tmp_path, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "detail"),
+    [
+        (128, "/repo", "fatal: not a git repository", "fatal: not a git repository"),
+        (128, "/repo", "", "exit 128"),
+        (0, "  ", "", "exit 0"),
+    ],
+)
+def test_tagged_tree_refuses_when_repository_root_cannot_be_read(
+    tmp_path, monkeypatch, returncode, stdout, stderr, detail,
+):
+    def fake_run(argv, **kwargs):
+        assert argv == ["git", "rev-parse", "--show-toplevel"]
+        assert kwargs == {
+            "cwd": str(tmp_path), "capture_output": True, "text": True,
+            "check": False,
+        }
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    monkeypatch.setattr(version.subprocess, "run", fake_run)
+    with pytest.raises(
+        RuntimeError,
+        match=f"cannot verify tagged build tree cleanliness: {detail}",
+    ):
+        version._require_clean_tagged_tree(tmp_path)
+
+
+def test_cmru_release_identity_requires_a_configured_non_empty_prefix(
+    tmp_path, monkeypatch,
+):
+    _root, project, commit, tag, _git = _tagged_git_project(tmp_path)
+    (project / "cmru.toml").write_text("[project]\n", encoding="utf-8")
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", tag)
+
+    with pytest.raises(RuntimeError, match="cmru.toml must declare a non-empty project.prefix"):
+        version.resolve_cmru_release_identity(project)
+
+
+def test_cmru_release_identity_refuses_an_empty_configured_prefix(
+    tmp_path, monkeypatch,
+):
+    root, project, _commit, old_tag, git = _tagged_git_project(tmp_path)
+    (project / "cmru.toml").write_text(
+        '[project]\nprefix = ""\n', encoding="utf-8",
+    )
+    git("add", "scripts/cgroup-profiler/cmru.toml")
+    git("commit", "-q", "-m", "empty project prefix")
+    commit = git("rev-parse", "HEAD")
+    git("tag", "--delete", old_tag)
+    git("tag", "-a", "1.2.3", "-m", "release")
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "1.2.3")
+
+    with pytest.raises(RuntimeError, match="cmru.toml must declare a non-empty project.prefix"):
+        version.resolve_cmru_release_identity(project)
+
+
+def test_cmru_release_identity_rejects_tag_with_wrong_project_prefix(
+    tmp_path, monkeypatch,
+):
+    _root, project, commit, _tag, _git = _tagged_git_project(tmp_path)
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "assay-v1.2.3")
+
+    with pytest.raises(RuntimeError, match="does not use configured prefix"):
+        version.resolve_cmru_release_identity(project)
+
+
+def test_release_tag_must_point_at_the_build_head(tmp_path, monkeypatch):
+    root = _project_root(tmp_path)
+    head = "a" * 40
+    tag = "cgprofile-v1.1.0"
+    tagged_commit = "b" * 40
+
+    def fake_run(argv, **kwargs):
+        assert kwargs == {
+            "cwd": str(root), "capture_output": True, "text": True,
+            "check": False,
+        }
+        if argv == ["git", "rev-parse", "--verify", "HEAD^{commit}"]:
+            return subprocess.CompletedProcess(argv, 0, head, "")
+        if argv == ["git", "tag", "--points-at", head, "--list", "cgprofile-v*"]:
+            return subprocess.CompletedProcess(argv, 0, f"{tag}\n", "")
+        if argv == ["git", "rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(argv, 0, str(root), "")
+        if argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv == [
+            "git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}",
+        ]:
+            return subprocess.CompletedProcess(argv, 0, tagged_commit, "")
+        raise AssertionError(f"unexpected git command: {argv!r}")
+
+    monkeypatch.setattr(version.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="points at .* not checkout HEAD"):
+        version.resolve_build_version(root, require_release_tag=True)
+
+
 def test_dockerfile_requires_an_explicit_image_version_before_package_install():
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
         encoding="utf-8"
