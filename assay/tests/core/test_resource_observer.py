@@ -40,21 +40,27 @@ def _document(thread_id: int) -> dict:
             "memory_max": None,
             "pids_events": {"max": 0},
             "memory_events": dict(MEMORY),
+            "pids_events_local": {"max": 0},
+            "memory_events_local": dict(MEMORY),
         })
     return {
         "ok": True,
-        "contract": 1,
+        "contract": 2,
         "cgroup_version": 2,
         "thread_id": thread_id,
         "gates_slice": GATES,
+        "pids_events_scope": "hierarchical",
+        "memory_events_scope": "hierarchical",
         "cgroups": cgroups,
     }
 
 
-def _path_counters(leaf, *ancestors):
+def _path_counters(leaf, *ancestors, local=None):
     paths = (LEAF, GATES, "/dev.slice", "/")
     values = (leaf, *ancestors)
     assert len(values) == len(paths)
+    local_values = values if local is None else local
+    assert len(local_values) == len(paths)
     return ResourceLimitCounters(
         pids_max=sum(value[0] or 0 for value in values),
         memory_max=sum(value[1] or 0 for value in values),
@@ -62,10 +68,12 @@ def _path_counters(leaf, *ancestors):
         memory_oom_kill=sum(value[3] or 0 for value in values),
         memory_oom_group_kill=sum(value[4] or 0 for value in values),
         limit_signature=tuple(
-            (path, 31, True, None, True, None, True, True) for path in paths
+            (path, 31, True, None, True, None, True, True, True, True, False, False)
+            for path in paths
         ),
         path_event_counters=tuple(
-            (path, *value) for path, value in zip(paths, values, strict=True)
+            (path, *value, *local)
+            for path, value, local in zip(paths, values, local_values, strict=True)
         ),
     )
 
@@ -75,9 +83,65 @@ def test_observer_response_becomes_strict_ancestry_bound_counters():
 
     assert counters.pids_max == 0
     assert counters.memory_max == 0
-    assert counters.limit_signature[0] == (LEAF, 31, True, None, True, None, True, True)
-    assert counters.path_event_counters[0] == (LEAF, 0, 0, 0, 0, 0)
-    assert counters.path_event_counters[-1] == ("/", 0, 0, 0, 0, 0)
+    assert counters.limit_signature[0] == (
+        LEAF, 31, True, None, True, None, True, True, True, True, False, False
+    )
+    assert counters.path_event_counters[0] == (LEAF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    assert counters.path_event_counters[-1] == ("/", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+
+def test_observer_parser_preserves_distinct_hierarchical_and_local_counters():
+    document = _document(77)
+    leaf, parent = document["cgroups"][:2]
+    leaf["pids_events"] = {"max": 3}
+    leaf["pids_events_local"] = {"max": 1}
+    parent["pids_events"] = {"max": 8}
+    parent["pids_events_local"] = {"max": 2}
+    leaf["memory_events"] = {"max": 5, "oom": 4, "oom_kill": 3, "oom_group_kill": 2}
+    leaf["memory_events_local"] = {"max": 1, "oom": 1, "oom_kill": 0, "oom_group_kill": 0}
+    parent["memory_events"] = {"max": 9, "oom": 8, "oom_kill": 7, "oom_group_kill": 6}
+    parent["memory_events_local"] = {"max": 2, "oom": 2, "oom_kill": 1, "oom_group_kill": 0}
+
+    counters = resource_limits._resource_counters_from_observer(document, 77)
+
+    assert counters.path_event_counters[0] == (LEAF, 3, 5, 4, 3, 2, 1, 1, 1, 0, 0)
+    assert counters.path_event_counters[1] == (
+        GATES, 8, 9, 8, 7, 6, 2, 2, 2, 1, 0
+    )
+
+
+def test_observer_contract_2_without_hierarchical_local_counters_is_refused():
+    document = _document(77)
+    document["cgroups"][0]["pids_events_local"] = None
+
+    with pytest.raises(ResourceLimitObservationError, match="pids.events.local is unavailable"):
+        resource_limits._resource_counters_from_observer(document, 77)
+
+
+def test_observer_contract_1_success_is_refused_without_local_counters():
+    legacy = _document(77)
+    legacy["contract"] = 1
+    legacy.pop("pids_events_scope")
+    legacy.pop("memory_events_scope")
+    for cgroup in legacy["cgroups"]:
+        cgroup.pop("pids_events_local")
+        cgroup.pop("memory_events_local")
+
+    with pytest.raises(ResourceLimitObservationError, match="contract version 2 is required"):
+        resource_limits._resource_counters_from_observer(legacy, 77)
+
+
+def test_observer_localevents_regular_file_supplies_local_counters():
+    document = _document(77)
+    document["pids_events_scope"] = "local"
+    for cgroup in document["cgroups"]:
+        cgroup["pids_events_local"] = None
+
+    counters = resource_limits._resource_counters_from_observer(document, 77)
+
+    assert counters.limit_signature[0][8] is False
+    assert counters.limit_signature[0][10] is True
+    assert counters.path_event_counters[0][1] == counters.path_event_counters[0][6]
 
 
 @pytest.mark.parametrize(
@@ -89,6 +153,8 @@ def test_observer_response_becomes_strict_ancestry_bound_counters():
         (lambda raw: raw.update(cgroup_version=1), "cgroup v2"),
         (lambda raw: raw.update(thread_id=78), "thread identity"),
         (lambda raw: raw.update(gates_slice="relative"), "not absolute"),
+        (lambda raw: raw.update(pids_events_scope=[]), "pids event scope is malformed"),
+        (lambda raw: raw.update(memory_events_scope="unknown"), "memory event scope is malformed"),
         (lambda raw: raw.update(cgroups=[]), "non-empty list"),
         (lambda raw: raw["cgroups"][0].update(extra=True), "entry is malformed"),
         (lambda raw: raw["cgroups"][0].update(path="/a/../b"), "not canonical"),
@@ -99,6 +165,7 @@ def test_observer_response_becomes_strict_ancestry_bound_counters():
         (lambda raw: raw["cgroups"][0].update(pids_max_present=False, pids_max=0), "absent pids.max has a value"),
         (lambda raw: raw["cgroups"][0].update(memory_max=-1), "memory.max value is malformed"),
         (lambda raw: raw["cgroups"][0].update(pids_events={"other": 0}), "pids.events fields are malformed"),
+        (lambda raw: raw["cgroups"][0].update(pids_events_local={"other": 0}), "pids.events.local fields are malformed"),
         (lambda raw: raw["cgroups"][0].update(pids_events={"max": True}), "pids.events counters are malformed"),
         (lambda raw: raw["cgroups"][0].update(memory_events=None), "memory.max lacks memory.events"),
         (lambda raw: raw["cgroups"][0].update(pids_events=None), "pids.max lacks pids.events"),
@@ -108,8 +175,8 @@ def test_observer_response_becomes_strict_ancestry_bound_counters():
             ("/dev.slice/dev-background.slice/x.scope", "/dev.slice/dev-background.slice", "/dev.slice", "/"),
             strict=True,
         )], "outside its gates slice"),
-        (lambda raw: [entry.update(pids_events=None, pids_max_present=False, pids_max=None) for entry in raw["cgroups"]], "no pids.events counters"),
-        (lambda raw: [entry.update(memory_events=None, memory_max_present=False, memory_max=None) for entry in raw["cgroups"]], "no memory.events counters"),
+        (lambda raw: [entry.update(pids_events=None, pids_events_local=None, pids_max_present=False, pids_max=None) for entry in raw["cgroups"]], "no pids.events counters"),
+        (lambda raw: [entry.update(memory_events=None, memory_events_local=None, memory_max_present=False, memory_max=None) for entry in raw["cgroups"]], "no memory.events counters"),
     ],
 )
 def test_observer_response_rejects_malformed_or_unattributable_state(mutation, message):
@@ -135,23 +202,55 @@ def test_ancestor_only_and_mixed_sibling_deltas_abort_without_evidence():
     ancestor_only = _path_counters(zero, (1, 0, 0, 0, 0), zero, zero)
     mixed = _path_counters((1, 0, 0, 0, 0), (2, 0, 0, 0, 0), zero, zero)
 
-    for after in (ancestor_only, mixed):
-        with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-            ResourceLimitEvidence.between(before, after)
+    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
+        ResourceLimitEvidence.between(before, ancestor_only)
+    mixed_evidence = ResourceLimitEvidence.between(before, mixed)
+    assert mixed_evidence.limit_hit
+
+
+def test_sibling_hierarchical_delta_does_not_change_ancestor_local_sample():
+    zero = (0, 0, 0, 0, 0)
+    before = _path_counters(zero, zero, zero, zero, local=(zero,) * 4)
+    sibling_only = _path_counters(
+        zero,
+        (1, 0, 0, 0, 0),
+        zero,
+        zero,
+        local=(zero,) * 4,
+    )
+
+    evidence = ResourceLimitEvidence.between(before, sibling_only)
+    assert not evidence.limit_hit
+    assert evidence.pids_events_max.delta == 0
+
+
+def test_candidate_local_delta_is_detected_if_regular_read_misses_it():
+    zero = (0, 0, 0, 0, 0)
+    before = _path_counters(zero, zero, zero, zero, local=(zero,) * 4)
+    candidate_local = (1, 0, 0, 0, 0)
+    after = _path_counters(
+        zero, zero, zero, zero,
+        local=(candidate_local, zero, zero, zero),
+    )
+
+    evidence = ResourceLimitEvidence.between(before, after)
+
+    assert evidence.pids_events_max.delta == 1
+    assert evidence.limit_hit
 
 
 @pytest.mark.parametrize(
     "path_event_counters",
-    [
-        [("/leaf", 0, 0, 0, 0, 0)],
-        (["/leaf", 0, 0, 0, 0, 0],),
-        (("/leaf", 0, 0, 0, 0),),
-        ((42, 0, 0, 0, 0, 0),),
-        (("relative", 0, 0, 0, 0, 0),),
-        (("/leaf/./child", 0, 0, 0, 0, 0),),
-        (("/leaf", 0, 0, 0, 0, 0), ("/leaf", 0, 0, 0, 0, 0)),
-        (("/leaf", True, 0, 0, 0, 0),),
-        (("/leaf", -1, 0, 0, 0, 0),),
+        [
+        [("/leaf", *([0] * 10))],
+        (["/leaf", *([0] * 10)],),
+        (("/leaf", *([0] * 9)),),
+        ((42, *([0] * 10)),),
+        (("relative", *([0] * 10)),),
+        (("/leaf/./child", *([0] * 10)),),
+        (("/leaf", *([0] * 10)), ("/leaf", *([0] * 10))),
+        (("/leaf", True, *([0] * 9)),),
+        (("/leaf", -1, *([0] * 9)),),
     ],
 )
 def test_resource_counter_rejects_malformed_path_event_snapshots(path_event_counters):
@@ -206,7 +305,10 @@ def test_cgroup_ancestry_change_and_decreasing_leaf_counter_refuse():
     before = _path_counters(zero, zero, zero, zero)
     changed = replace(
         before,
-        path_event_counters=(("/different", *zero), *before.path_event_counters[1:]),
+        path_event_counters=(
+            ("/different", *before.path_event_counters[0][1:]),
+            *before.path_event_counters[1:],
+        ),
     )
     with pytest.raises(ResourceLimitObservationError, match="ancestry samples changed"):
         ResourceLimitEvidence.between(before, changed)
@@ -275,7 +377,7 @@ def test_socket_client_sends_one_request_and_parses_one_response(tmp_path):
     assert not server.is_alive()
     assert received["verb"] == "resource-limits"
     assert received["args"] == {"thread_id": threading.get_native_id()}
-    assert received["contract"] == 1
+    assert received["contract"] == 2
     assert counters.path_event_counters[0][0] == LEAF
 
 

@@ -12283,7 +12283,7 @@ continues through the self-hosted and SQL phases.
 
 ## B155 — distinguish candidate resource events from sibling events in native R2
 
-**Status: OPEN (filed 2026-10-11 after reviewing B145 behavior with parallel containers).**
+**Status: IN PROGRESS (operator accepted the behavior and authorized implementation on 2026-10-11).**
 
 R2's mutation score and resource-usage profiling answer different questions.
 R2 asks whether the test suite detects a code mutation. B145 samples resource
@@ -12310,20 +12310,34 @@ whose own limit could affect the candidate remains infrastructure evidence;
 if counters cannot attribute it, Assay withholds the mutation outcome rather
 than guessing `killed` or `survived`.
 
-**Chosen direction:** design a scope-aware evidence model. Keep subtree
-counters for the candidate's execution subtree so its worker descendants are
-covered, and use local event counters at visible ancestors to identify events
-enforced at those ancestors without importing unrelated sibling-leaf events.
-Continue reading the effective `pids.max` and `memory.max` chain and require
-all event counters needed to detect finite ancestor limits. Validate the
-contract against `pids.events.local`, `memory.events.local`, the
-`pids_localevents` and `memory_localevents` modes, inactive child controllers,
-and OOM events. Do not drop ancestor checks, infer safety only from the sum of
-sibling limits, turn ambiguous outcomes into mutation results, or move gate
-containers above `$CGROUP_PARENT_DEV_GATES`. Root-level placement does not
-remove all host limits and bypasses the governed gate tier. Keep R2 event
-classification separate from usage profiling such as CPU time, peak memory,
-and pressure.
+**Chosen contract:** sample the candidate's ordinary `pids.events` and
+`memory.events` as candidate-subtree evidence, the candidate-local event files
+to close sequential-read gaps, and `.local` event files at each visible
+ancestor. A positive event in either candidate scope makes that candidate an
+infrastructure failure. If the candidate has no event but any visible
+ancestor's local counter changes, withhold mutation outcomes because the event
+may have been enforced at a shared ancestor. Ignore hierarchical-only changes
+on ancestors; they can be caused by an unrelated sibling. Continue reading
+the effective `pids.max` and `memory.max` chain and require the corresponding
+regular and local event files for active controllers. Bind event-file
+availability and the mount's `pids_localevents` / `memory_localevents` mode
+across each candidate window. When a localevents mode makes an active
+controller's candidate event file local, require that its cgroup has no child
+cgroups; an inactive controller's mount option alone does not block the run.
+
+The peer-bound cgroup-profiler observer must expose the same two scopes in an
+additive resource-observer contract 2 while preserving contract 1 for existing
+clients. Assay requests contract 2 and refuses an old daemon response rather
+than interpreting hierarchical-only data as local. The observer keeps its
+identity, complete ancestry, mount, controller, and gates-slice checks. Do not
+drop ancestor checks, infer safety only from the sum of sibling limits, turn
+ambiguous outcomes into mutation results, or move gate containers above
+`$CGROUP_PARENT_DEV_GATES`. Root-level placement does not remove all host
+limits and bypasses the governed gate tier. Keep R2 event classification
+separate from usage profiling such as CPU time, peak memory, and pressure.
+Advance the judge identity from `/9` to `/10` so mutation state produced under
+the prior attribution rule is a cold start.
+The cgroup-profiler dependency is tracked by [CP-20](../../scripts/cgroup-profiler/nyxloom-trove/backlog/CP-20-resource-observer-must-expose-local-and-hierarchical-event-coun.md).
 
 **Parent counters to preserve:**
 
@@ -12358,8 +12372,12 @@ these event counters in R2 mutation classification.
   `memory.max` is unlimited.
 - An event at a shared ancestor cannot be tied to one child; the lane remains
   inconclusive and never certifies a mutation outcome.
-- The local/hierarchical counter behavior is proven for supported kernels and
-  both localevents modes; missing or unstable required evidence refuses.
+- The local reader and observer tests distinguish hierarchical and `.local`
+  counters, bind both localevents mount modes, and refuse missing or unstable
+  evidence or child cgroups under a local-only active candidate controller.
+- Observer contract 1 remains byte-shape compatible; contract 2 returns both
+  scopes and refuses malformed scope metadata. Assay sends contract 2 and
+  refuses a daemon that cannot serve it.
 - The registered `tester-unified` gate passes, and README, DESIGN-GUIDE, and
   CONSUMERS describe the score/guard distinction, monitored events, sibling
   limitation, and governed cgroup placement.

@@ -280,6 +280,16 @@ require write access to `cgroup.procs` at the source/destination common
 ancestor for a TID move, so a peer cannot redirect its accounting to an
 unsampled sibling. The observer need not enumerate sibling destinations.
 
+Resource-observer contract 2 adds explicit scope metadata and the
+`pids.events.local` and `memory.events.local` values alongside the existing
+event files. The regular files can be hierarchical or local depending on the
+host mount's `pids_localevents` and `memory_localevents` options; contract 2
+reports those scopes so a consumer cannot silently mistake one for the other.
+Contract 1 remains available with its original response shape. Assay requests
+contract 2 because its candidate counter and ancestor-local counter play
+different roles in mutation classification. See the worked request and
+response in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89).
+
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The
 listener accepts one `resource-limits` query and no start/stop/placement

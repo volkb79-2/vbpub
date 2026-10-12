@@ -239,11 +239,12 @@ assay exists to close that gap mechanically, not by policy:
   an early stop prevents a full command from starting, the candidate stays
   `budget_exceeded` and gets a shared zero-duration sample at sweep close;
   replacement materialization or a saved-witness replay may already have run,
-  and that sample does not describe that earlier work. A positive candidate-leaf
-  delta, with every positive visible-ancestor delta matching it, records that
-  candidate as `crashed` and makes R2 `ERROR/EXEC_FAILED`. An unmatched or
-  different ancestor delta cannot be attributed to the candidate, so Assay
-  withholds mutation outcomes and fails with the same infrastructure error.
+  and that sample does not describe that earlier work. A positive candidate
+  event in either candidate scope records that candidate as `crashed` and
+  makes R2 `ERROR/EXEC_FAILED`. Assay reads each ancestor's `.local` event files: a
+  positive local ancestor delta with no candidate event is ambiguous and
+  withholds mutation outcomes; a hierarchical-only ancestor delta can come
+  from a sibling and does not invalidate the candidate.
   A positive replay delta stops the lane with payload-free `ERROR/EXEC_FAILED`.
   Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
@@ -263,10 +264,13 @@ assay exists to close that gap mechanically, not by policy:
   These counters are an execution-validity guard, not a CPU or memory usage
   profile: R2 still measures whether tests detect code mutations. Assay checks
   ancestors because their limits can affect a container whose own limits say
-  `max`. Hierarchical ancestor counters can also include sibling events, so an
-  unmatched delta currently makes the lane fail closed; the B155 follow-up in
-  the [Assay backlog](nyxloom-trove/4-backlog.md) tracks improving that
-  attribution without dropping ancestor-limit protection.
+  `max`. For a private cgroup namespace, the observer-only cgprofile socket
+  must implement resource-observer contract 2, which reports the regular
+  counters' scope and supplies effective local counters. Contract 1 is refused
+  because it cannot distinguish sibling events from events enforced at a shared ancestor. See B155 in the
+  [Assay backlog](nyxloom-trove/4-backlog.md), the
+  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
+  and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   When native candidates are selected, Assay checks the same complete
   hierarchy before R0 starts. If its private cgroup view hides ancestors, it
   may use the explicitly configured observer-only socket; without a usable

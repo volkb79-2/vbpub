@@ -2370,8 +2370,24 @@ class SessionServer:
         return verb, args, None
 
     @staticmethod
-    def _error_response(code: str, message: str) -> Dict[str, Any]:
-        return {"ok": False, "contract": CONTRACT_VERSION, "error": {"code": code, "message": message}}
+    def _error_response(
+        code: str, message: str, *, contract: int = CONTRACT_VERSION
+    ) -> Dict[str, Any]:
+        return {"ok": False, "contract": contract, "error": {"code": code, "message": message}}
+
+    @staticmethod
+    def _requested_observer_contract(payload: bytes) -> int:
+        """Return a valid observer contract from a decoded request, if present."""
+        try:
+            request = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return CONTRACT_VERSION
+        if not isinstance(request, dict):
+            return CONTRACT_VERSION
+        contract = request.get("contract")
+        if type(contract) is int and contract in {1, 2}:
+            return contract
+        return CONTRACT_VERSION
 
     def _bind(self) -> None:
         socket_dir = os.path.dirname(self.socket_path)
@@ -2896,6 +2912,7 @@ class SessionServer:
 
     def _handle_observer_connection(self, conn: socket.socket) -> None:
         """Serve one strictly read-only query on the dedicated socket."""
+        request_contract = CONTRACT_VERSION
         try:
             peer = self._peer_credentials(conn)
             uid = None if peer is None else peer[1]
@@ -2930,7 +2947,9 @@ class SessionServer:
                             "bad-argument", "observer accepts exactly one request line"
                         )
                     else:
-                        response = self._observer_dispatch(bytes(data[:newline]), peer)
+                        payload = bytes(data[:newline])
+                        request_contract = self._requested_observer_contract(payload)
+                        response = self._observer_dispatch(payload, peer)
                     conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                     return
                 if len(data) > MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES:
@@ -2949,7 +2968,8 @@ class SessionServer:
             )
             try:
                 conn.sendall((json.dumps(self._error_response(
-                    "daemon-error", "resource observer failed closed"
+                    "daemon-error", "resource observer failed closed",
+                    contract=request_contract,
                 )) + "\n").encode("utf-8"))
             except OSError:
                 pass
@@ -2963,23 +2983,46 @@ class SessionServer:
             req = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return self._error_response("bad-argument", "request was not valid JSON")
-        verb, args, wire_error = self._validate_wire(req)
-        if wire_error is not None:
-            return wire_error
-        if verb != "resource-limits":
+        if not isinstance(req, dict) or any(not isinstance(key, str) for key in req):
+            return self._error_response("bad-argument", "request must be a JSON object")
+        contract = req.get("contract")
+        if type(contract) is not int or contract not in {1, 2}:
             return self._error_response(
+                "bad-argument", "resource observer supports contract 1 or 2"
+            )
+
+        def error(code: str, message: str) -> Dict[str, Any]:
+            return {
+                "ok": False,
+                "contract": contract,
+                "error": {"code": code, "message": message},
+            }
+
+        if set(req) != {"verb", "args", "contract"}:
+            return error(
+                "bad-argument",
+                "resource observer request requires exactly verb, args, and contract",
+            )
+        verb = req["verb"]
+        args = req["args"]
+        if not isinstance(verb, str):
+            return error("bad-argument", "request 'verb' must be a string")
+        if not isinstance(args, dict):
+            return error("bad-argument", "request 'args' must be a JSON object")
+        if verb != "resource-limits":
+            return error(
                 "bad-argument", "resource observer socket accepts only 'resource-limits'"
             )
         if set(args) != {"thread_id"}:
-            return self._error_response(
+            return error(
                 "bad-argument", "resource-limits requires exactly one 'thread_id' argument"
             )
         if type(args["thread_id"]) is not int or args["thread_id"] <= 0:
-            return self._error_response(
+            return error(
                 "bad-argument", "resource-limits 'thread_id' must be a positive integer"
             )
         if peer is None:
-            return self._error_response(
+            return error(
                 "peer-refused", "SO_PEERCRED is required for resource observation"
             )
         try:
@@ -2991,10 +3034,11 @@ class SessionServer:
                 cgroup_root=self.cgroup_root,
                 mountinfo_path=os.path.join(self.proc_root, "self", "mountinfo"),
                 gates_slice_name=self.gates_slice_name,
+                contract=contract,
             )
         except resource_observer_mod.ResourceObserverError as exc:
-            return self._error_response("observer-refused", str(exc))
-        return {"ok": True, "contract": CONTRACT_VERSION, **body}
+            return error("observer-refused", str(exc))
+        return {"ok": True, "contract": contract, **body}
 
     def serve_forever(self) -> None:
         """Blocks until :meth:`request_shutdown` is called or a signal

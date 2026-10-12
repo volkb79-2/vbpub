@@ -17,8 +17,8 @@ import pytest
 from lib import serve
 
 
-def _request(verb="resource-limits", **args):
-    return (json.dumps({"verb": verb, "args": args, "contract": 1}) + "\n").encode()
+def _request(verb="resource-limits", *, contract=1, **args):
+    return (json.dumps({"verb": verb, "args": args, "contract": contract}) + "\n").encode()
 
 
 def _response(conn):
@@ -62,6 +62,36 @@ def test_observer_dispatch_accepts_only_peer_bound_resource_query(tmp_path, monk
         "cgroup_root": str(tmp_path / "cgroup"),
         "mountinfo_path": str(tmp_path / "proc" / "self" / "mountinfo"),
         "gates_slice_name": "dev-gates.slice",
+        "contract": 1,
+    }
+
+
+def test_observer_dispatch_accepts_contract_2_without_changing_control_contract(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        serve.resource_observer_mod,
+        "observe_peer_cgroup",
+        lambda **kwargs: {
+            "cgroup_version": 2,
+            "thread_id": kwargs["thread_id"],
+            "pids_events_scope": "local",
+            "memory_events_scope": "hierarchical",
+            "cgroups": [],
+        },
+    )
+
+    response = server._observer_dispatch(
+        _request(thread_id=42, contract=2), (1, 1, 1)
+    )
+
+    assert response == {
+        "ok": True,
+        "contract": 2,
+        "cgroup_version": 2,
+        "thread_id": 42,
+        "pids_events_scope": "local",
+        "memory_events_scope": "hierarchical",
+        "cgroups": [],
     }
 
 
@@ -87,6 +117,113 @@ def test_observer_dispatch_refuses_bad_or_mutating_requests(tmp_path, payload, e
 def test_observer_dispatch_requires_peer_credentials(tmp_path):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     response = server._observer_dispatch(_request(thread_id=42).rstrip(b"\n"), None)
+    assert response["error"]["code"] == "peer-refused"
+
+
+def test_contract_2_observer_errors_keep_the_requested_contract(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    response = server._observer_dispatch(
+        _request(thread_id=42, contract=2), None
+    )
+
+    assert response["contract"] == 2
+    assert response["error"]["code"] == "peer-refused"
+
+
+def test_contract_2_structural_errors_echo_valid_contract(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    request = json.dumps({
+        "verb": "resource-limits",
+        "args": {"thread_id": 42},
+        "contract": 2,
+        "extra": True,
+    }).encode("utf-8")
+
+    response = server._observer_dispatch(request, None)
+
+    assert response["contract"] == 2
+    assert response["error"]["code"] == "bad-argument"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (_request(thread_id=42, contract=3), "supports contract 1 or 2"),
+        (
+            json.dumps({"verb": None, "args": {}, "contract": 2}).encode(),
+            "request 'verb' must be a string",
+        ),
+        (
+            json.dumps({"verb": "resource-limits", "args": [], "contract": 2}).encode(),
+            "request 'args' must be a JSON object",
+        ),
+    ],
+)
+def test_observer_dispatch_rejects_invalid_contract_verb_and_args(
+    tmp_path, payload, message
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    response = server._observer_dispatch(payload, (1234, 1000, 1000))
+
+    assert response["ok"] is False
+    assert message in response["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"not json", 1),
+        (b"[]", 1),
+        (b'{"contract": false}', 1),
+        (b'{"contract": 2}', 2),
+    ],
+)
+def test_requested_observer_contract_uses_safe_default_for_invalid_envelopes(
+    payload, expected
+):
+    assert serve.SessionServer._requested_observer_contract(payload) == expected
+
+
+def test_observer_socket_echoes_valid_contract_for_unhandled_dispatch_error(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(server, "_peer_credentials", lambda _conn: (1234, 1000, 1000))
+    monkeypatch.setattr(server, "_peer_allowed", lambda _uid: True)
+
+    def fail(**_kwargs):
+        raise RuntimeError("synthetic observer crash")
+
+    monkeypatch.setattr(serve.resource_observer_mod, "observe_peer_cgroup", fail)
+    client, daemon = socket.socketpair()
+    client.sendall(_request(thread_id=42, contract=2))
+
+    server._handle_observer_connection(daemon)
+    response = _response(client)
+    client.close()
+
+    assert response == {
+        "ok": False,
+        "contract": 2,
+        "error": {"code": "daemon-error", "message": "resource observer failed closed"},
+    }
+
+
+def test_observer_socket_uses_control_contract_for_peer_refusal_before_read(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(server, "_peer_credentials", lambda _conn: (1234, 1000, 1000))
+    monkeypatch.setattr(server, "_peer_allowed", lambda _uid: False)
+    client, daemon = socket.socketpair()
+
+    server._handle_observer_connection(daemon)
+    response = _response(client)
+    client.close()
+
+    assert response["contract"] == 1
     assert response["error"]["code"] == "peer-refused"
 
 
