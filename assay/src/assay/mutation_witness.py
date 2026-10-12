@@ -1346,7 +1346,17 @@ def witness_from_receipt(
     receipt: dict[str, Any] | None, *, process_exit_status: int | None
 ) -> dict[str, Any] | None:
     """Project only the bounded current-call failure facts onto the verdict."""
-    if receipt is None or set(receipt) != _INTERNAL_RECEIPT_KEYS:
+    if receipt is None:
+        return None
+    receipt_keys = set(receipt)
+    legacy_non_cold = receipt_keys == _LEGACY_NON_COLD_RECEIPT_KEYS
+    if receipt_keys != _INTERNAL_RECEIPT_KEYS and not legacy_non_cold:
+        return None
+    # B158 added unsupported_hook_names for actionable cold-witness refusal
+    # diagnostics. W10 froze the older non-cold projection contract; keep that
+    # path compatible with its exact receipt shape. Cold proof remains strict
+    # in cold_witness_from_receipt and requires the current receipt keys.
+    if legacy_non_cold and receipt.get("cold_requested") is not False:
         return None
     if (
         type(receipt.get("session_exit_status")) is not int
@@ -1469,6 +1479,7 @@ _INTERNAL_RECEIPT_KEYS = frozenset(
         "unsupported_hook_names",
     }
 )
+_LEGACY_NON_COLD_RECEIPT_KEYS = _INTERNAL_RECEIPT_KEYS - {"unsupported_hook_names"}
 
 
 _PLUGIN_SOURCE = r'''"""Temporary standard-library/pytest plugin written by assay."""

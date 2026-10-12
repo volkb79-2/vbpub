@@ -2158,6 +2158,40 @@ def test_valid_failure_receipt_projects_and_replays_only_for_its_exact_target():
     ) is None
 
 
+def test_pre_b158_receipt_shape_is_projected_only_for_non_cold_witnesses():
+    node = "tests/test_example.py::test_case"
+    receipt = _receipt(
+        target_node_id=node,
+        target_count=1,
+        witness_node_id=node,
+        stopped_at_target=True,
+    )
+    receipt.pop("unsupported_hook_names")
+    expected = {
+        "node_id": node,
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+
+    assert witness_from_receipt(receipt, process_exit_status=1) == expected
+    assert replay_witness_from_receipt(
+        receipt, process_exit_status=1, target_node_id=node
+    ) == expected
+
+    receipt["cold_requested"] = True
+    assert witness_from_receipt(receipt, process_exit_status=1) is None
+    assert replay_witness_from_receipt(
+        receipt, process_exit_status=1, target_node_id=node
+    ) is None
+    expected_facts = receipt_facts(_receipt())
+    assert expected_facts is not None
+    assert cold_witness_from_receipt(
+        receipt, process_exit_status=1, expected=expected_facts
+    ) is None
+
+
 def test_legacy_b106_replay_support_does_not_certify_a_cold_witness():
     node = "tests/test_example.py::test_case"
     receipt = _receipt(
