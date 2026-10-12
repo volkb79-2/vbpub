@@ -27,9 +27,12 @@
 # stage installs build-essential and produces venv/; the final stage copies
 # only the finished venv, never the compiler that made it.
 ARG CGPROFILE_VERSION
+ARG GIT_REVISION
 FROM python:3.14-slim AS builder
 ARG CGPROFILE_VERSION
-RUN if [ -z "${CGPROFILE_VERSION}" ]; then echo >&2 'CGPROFILE_VERSION build arg is required'; exit 1; fi
+ARG GIT_REVISION
+RUN if [ -z "${CGPROFILE_VERSION}" ]; then echo >&2 'CGPROFILE_VERSION build arg is required'; exit 1; fi \
+    && if [ -z "${GIT_REVISION}" ]; then echo >&2 'GIT_REVISION build arg is required'; exit 1; fi
 
 WORKDIR /opt/cgprofile
 COPY requirements.txt ./requirements.txt
@@ -44,7 +47,7 @@ RUN apt-get update \
 FROM python:3.14-slim
 
 ARG CGPROFILE_VERSION
-ARG GIT_REVISION=unknown
+ARG GIT_REVISION
 
 # `busctl` is the stdlib-free transport for the one host-systemd placement
 # operation. The daemon uses only AttachProcessesToUnit over the explicitly

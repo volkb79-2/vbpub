@@ -35,25 +35,27 @@ there is no prior cgprofile tag. CMRU passes the protected
 that commit, then builds from a temporary worktree at the same commit. The OCI
 tag, image label, and embedded runtime version all derive from that checked
 identity, so CMRU releases need no manual `CGPROFILE_VERSION` export. An
-untagged local `--build` uses `0.0.0-dev`; a `--push` without CMRU's protected
-identity refuses before registry login. The pair binds the source to a commit
-and tag; it is not an authentication token or proof of CMRU provenance. Use
-`cmru release` for publication and do not hand-write the pair. The Bake file's
-version and image-tag defaults are fixed to the development identity, so a bare `docker buildx bake` ignores an ambient `CGPROFILE_VERSION`.
-Use `cmru release` to publish.
-For a direct source build, use the development identity and
-local-only image tag. Release identity comes from CMRU's exact tag; do not
-label an arbitrary checkout as a release. Pass both the required version and
-the sibling DAMON analysis source context. From `scripts/cgroup-profiler`:
+untagged local `--build` uses `0.0.0-dev` and the checked checkout revision; a
+`--push` without CMRU's protected identity refuses before registry login. The
+pair binds the source to a commit and tag; it is not an authentication token
+or proof of CMRU provenance. Use `cmru release` for publication and do not
+hand-write the pair.
+
+For a local source build, use the identity-resolving wrapper. It supplies both
+the development version and the Git revision from one checked source state,
+requires the cgprofile and sibling DAMON source contexts to be clean, builds
+from a temporary worktree at that commit, and loads only the `cgprofile:local`
+image. Commit or clean changes in either context before building. Run from
+`scripts/cgroup-profiler`:
 
 ```bash
-docker buildx build --load \
-  --build-context damon_analysis=../damon-analysis \
-  --build-arg CGPROFILE_VERSION=0.0.0-dev \
-  -t cgprofile:local .
+python3 build-push.py --build
 ```
 
-The Dockerfile refuses an omitted version before installing packages.
+The Bake file has literal development version and tag values, but no Git
+revision fallback. A bare `docker buildx bake` refuses before package
+installation because the Dockerfile requires both identity fields. Use the
+wrapper for local builds; use `cmru release` for publication.
 
 The local `cgprofile:local` tag is a build-only alias. CMRU's publish step
 selects the separate `cgprofile-release` Bake target, which contains only the

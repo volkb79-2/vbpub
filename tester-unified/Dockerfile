@@ -33,31 +33,19 @@ RUN git config --system maintenance.autoDetach false \
  && test "$(git config --system --get maintenance.autoDetach)" = false \
  && test "$(git config --system --get gc.autoDetach)" = false
 
-# Copy only the Python projects pip needs to resolve + install from their
-# pyprojects. Gate runs execute against the BOUND worktree via PYTHONPATH, so
-# these baked copies only seed the dependency closure, not the code under test.
+# Copy dependency metadata first. The generator reads only these pyprojects, so
+# this layer stays stable when source files change.
 COPY tester-unified/gen-requirements.py /usr/local/lib/tester-unified/gen-requirements.py
 COPY tester-unified/fetch-cli-extended.py /usr/local/lib/tester-unified/fetch-cli-extended.py
-COPY ciu/         /src/ciu/
-COPY cmru/        /src/cmru/
-COPY assay/       /src/assay/
-COPY topos/       /src/topos/
-COPY nyxloom/ /src/nyxloom/
-# The one estate-internal library cmru still packages itself, at the path cmru's
-# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
-# built ONLY from this copied source, never from an index. cli-extended is NOT
-# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
-# from its RELEASE below.
-COPY libraries/worktree/ /src/libraries/worktree/
+COPY ciu/pyproject.toml /src/ciu/pyproject.toml
+COPY cmru/pyproject.toml /src/cmru/pyproject.toml
+COPY assay/pyproject.toml /src/assay/pyproject.toml
+COPY topos/pyproject.toml /src/topos/pyproject.toml
+COPY nyxloom/pyproject.toml /src/nyxloom/pyproject.toml
+COPY scripts/cgroup-profiler/pyproject.toml /src/cgroup-profiler/pyproject.toml
 # ZERO-RELEASE INPUT: empty (a .gitkeep) unless the operator dropped a locally
 # built cli_extended-*.whl here for CLI_EXTENDED_RESOLVE=local (see below).
 COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
-# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
-# scipy/ruptures) that no other project here pulls in. It is NOT a fork
-# candidate the way srdm was: its suite uses fake cgroup trees, injected
-# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
-# privilege, no systemd and no Docker socket — only this closure.
-COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
 # runtime home bind at /home/vscode cannot shadow it).  The build context omits
@@ -130,18 +118,54 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
         --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
     fi
+
+# `venv` preserves existing contents. Start with empty environments so files
+# or `.pth` configuration inherited from a changed base image cannot affect
+# dependency installation or the offline CMRU wheel build.
+RUN rm -rf /opt/tester-venv /tmp/internal-build-venv
+
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
  && /usr/local/bin/python3.14 -m venv /tmp/internal-build-venv \
- && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt \
+ && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt
+
+# Start the source-build roots empty. A base image or earlier metadata layer
+# must not contribute files that setuptools could discover beside the copied
+# candidate sources.
+RUN rm -rf /src/cmru /src/libraries/worktree
+
+# Build tooling is ready before package sources enter the image. These copies
+# stay untouched until the single-command offline CMRU wheel build below; gate
+# runs still execute against the BOUND worktree via PYTHONPATH.
+COPY ciu/ /src/ciu/
+COPY cmru/ /src/cmru/
+COPY assay/ /src/assay/
+COPY topos/ /src/topos/
+COPY nyxloom/ /src/nyxloom/
+# The one estate-internal library cmru still packages itself, at the path cmru's
+# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
+# built ONLY from this copied source, never from an index. cli-extended is NOT
+# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
+# from its RELEASE below.
+COPY libraries/worktree/ /src/libraries/worktree/
+# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
+# scipy/ruptures) that no other project here pulls in. It is NOT a fork
+# candidate the way srdm was: its suite uses fake cgroup trees, injected
+# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
+# privilege, no systemd and no Docker socket — only this closure.
+COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
+
+RUN rm -rf /tmp/internal-wheels \
+ && mkdir -p /tmp/internal-wheels \
  && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified \
     /tmp/internal-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
-      -w /tmp/internal-wheels /src/cmru \
- && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
+      -w /tmp/internal-wheels /src/cmru
+
+RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
  && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
- && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
+ && /opt/tester-venv/bin/python -c "import build, cmru, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
@@ -154,10 +178,11 @@ import os
 from pathlib import Path
 
 import cli_extended
+import cmru
 import worktree
 
 site = "/opt/tester-venv/"
-for module in (cli_extended, worktree):
+for module in (cli_extended, cmru, worktree):
     location = str(Path(module.__file__).resolve())
     assert location.startswith(site), f"{module.__name__} imports from {location}, not {site}"
 version = metadata.version("cmru")

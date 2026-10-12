@@ -332,6 +332,18 @@ def _truthy_env(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _apply_protected_environment(
+    protected_env: Optional[Mapping[str, Optional[str]]],
+) -> None:
+    if not protected_env:
+        return
+    for key, value in protected_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = str(value)
+
+
 def _write_line(handle, line: str) -> None:
     handle.write(line)
     handle.flush()
@@ -491,14 +503,14 @@ def _execute_step(
         os.environ[key] = str(value)
 
     _prepend_path_entries(path_prefixes)
+    # Environment helpers are part of the project step's execution boundary.
+    # They must see the same protected release identity as the step itself,
+    # and ordinary steps must not inherit ambient release identity values.
+    _apply_protected_environment(protected_env)
     apply_env_command(step.env_command, project_root)
     _prepend_path_entries(path_prefixes)
-    if protected_env:
-        for key, value in protected_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = str(value)
+    # A helper can emit values with reserved names; the CMRU-owned values win.
+    _apply_protected_environment(protected_env)
     ensure_required_env(step.required_env)
     maybe_login_multi(step.login, step.registries)
 

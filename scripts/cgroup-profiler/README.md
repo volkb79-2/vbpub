@@ -32,10 +32,11 @@ matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
 profiling output is unchanged. The shell shim and `cgprofile.py` therefore
 expose the same top-level compatibility option.
 
-The Dockerfile requires an explicit `CGPROFILE_VERSION` build argument and
-fails before package installation when it is absent. The Bake file uses
-literal development defaults, so ambient variables cannot change its image
-identity. `build-push.py` supplies per-target overrides. For release, version
+The Dockerfile requires explicit `CGPROFILE_VERSION` and `GIT_REVISION` build
+arguments and fails before package installation when either is absent. The
+Bake file uses a literal development version and tag, but has no fabricated
+revision fallback. `build-push.py` resolves version and commit together and
+supplies both as per-target overrides. For release, version
 and commit come from CMRU's exact candidate tag and commit pair. An ambient
 `CGPROFILE_VERSION` cannot label an untagged checkout as a release. The tagged working tree must also be
 clean so the image source matches that tag. During `cmru release`, CMRU passes
@@ -45,8 +46,11 @@ verifies that `HEAD` and the local tag both match that commit, then builds from
 a temporary worktree at the verified commit. The pair proves source
 consistency; it is not an authentication token or proof of CMRU provenance.
 Invoke `cmru release` for publication and do not hand-write the pair. An
-untagged local build uses `0.0.0-dev`; bare Bake retains the development
-identity. See the [release identity design](docs/DESIGN-GUIDE.md#release-identity).
+untagged local build through `build-push.py --build` requires clean cgprofile
+and DAMON source contexts, uses `0.0.0-dev` with its checked revision, and
+builds from a temporary tree at that commit. A bare Bake invocation has no
+revision value and the Dockerfile refuses before installing packages. See the
+[release identity design](docs/DESIGN-GUIDE.md#release-identity).
 
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.

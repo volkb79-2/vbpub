@@ -854,13 +854,30 @@ inspection. CMRU does not automatically retry a post-tag publication step; `--re
 retained pre-tag candidates. When CMRU proves that a failed tag push left no origin ref and
 removes the local tag, the saved resume command can retry that release; CMRU permits a freshly
 generated annotated tag object for the same tag name in that case.
-For a tagged release, CMRU passes the exact candidate commit and tag to project `build` and
-`push` steps as protected `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values. CMRU clears ambient
-values from other project steps, and project and step configuration cannot override the tagged
-values. A build that derives artifact identity from Git should check `HEAD` and the local tag
-against both values, then build from that exact commit. The pair is consistency metadata, not
-an authentication token or proof of CMRU provenance. Invoke `cmru release` for publication; do not set the
-values manually.
+
+For tagged release artifact steps, CMRU supplies `CMRU_RELEASE_COMMIT` as the
+exact gated candidate commit and `CMRU_RELEASE_TAG` as its tag. It clears both
+ambient values from every other project step, and project and step configuration
+cannot override these protected values. The pair is source-consistency metadata,
+not an authentication token or proof of CMRU provenance.
+
+A build that derives artifact identity from Git should check `HEAD` and the local
+tag against both values, then build from that exact commit. Invoke `cmru release`
+for publication; do not set the values manually.
+
+Put this check in a tagged artifact step before building. It verifies both the
+checked-out commit and the local tag after peeling annotated tags:
+
+```sh
+set -eu
+: "${CMRU_RELEASE_COMMIT:?CMRU did not supply the candidate commit}"
+: "${CMRU_RELEASE_TAG:?CMRU did not supply the release tag}"
+head=$(git rev-parse --verify 'HEAD^{commit}')
+tag_commit=$(git rev-parse --verify "refs/tags/${CMRU_RELEASE_TAG}^{commit}")
+test "$head" = "$CMRU_RELEASE_COMMIT"
+test "$tag_commit" = "$CMRU_RELEASE_COMMIT"
+```
+
 On resume, CMRU checks tag-push attempts and recorded release results against origin. A tag that
 may have been pushed without a completed result, or a recorded result whose source commit is not
 in `origin/main`, causes a refusal and keeps the candidate for inspection. A release-plan refusal

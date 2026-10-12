@@ -573,12 +573,17 @@ CMRU clears ambient release-pair values from non-artifact steps. The pair is
 source-consistency metadata, not an authentication token or proof of CMRU
 provenance, so the supported publication workflow remains `cmru release`.
 
-The Bake file itself uses literal development defaults instead of importing
-environment variables; only the wrapper's explicit target overrides carry the
-resolved version and revision into a build. The Dockerfile has no version
-default and checks the required argument before package installation, so a
-low-level image build cannot silently label an image when no identity was
-supplied. No version lookup depends on network access at runtime.
+The Bake file itself uses a literal development version and tag instead of
+importing environment variables; it supplies no Git revision default. The
+wrapper's explicit target overrides carry the version and revision resolved
+together from one checked source state. The Dockerfile has no version or
+revision default and checks both arguments before package installation, so a
+low-level image build cannot silently label an image when no complete
+identity was supplied. The wrapper refuses changes in either local build
+context and builds from a temporary worktree at the resolved commit, so an
+image label cannot name a commit that omits its build inputs. A bare Bake
+invocation therefore refuses early; the supported local build path is
+`build-push.py --build`. No version lookup depends on network access at runtime.
 
 The local `cgprofile:local` alias is not a release coordinate: because it has
 no registry hostname, Docker resolves it to Docker Hub when used as a publish

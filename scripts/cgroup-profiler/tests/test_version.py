@@ -389,12 +389,18 @@ def test_dockerfile_requires_an_explicit_image_version_before_package_install():
 
     assert "ARG CGPROFILE_VERSION\n" in dockerfile
     assert "ARG CGPROFILE_VERSION=" not in dockerfile
+    assert "ARG GIT_REVISION\n" in dockerfile
+    assert "ARG GIT_REVISION=" not in dockerfile
     version_arg = dockerfile.index("ARG CGPROFILE_VERSION\n")
+    revision_arg = dockerfile.index("ARG GIT_REVISION\n")
     first_from = dockerfile.index("FROM ")
     builder_arg = dockerfile.index("ARG CGPROFILE_VERSION\n", first_from)
     version_guard = dockerfile.index("CGPROFILE_VERSION build arg is required")
+    revision_guard = dockerfile.index("GIT_REVISION build arg is required")
     first_package_install = dockerfile.index("\nRUN apt-get update")
+    revision_builder_arg = dockerfile.index("ARG GIT_REVISION\n", first_from)
     assert version_arg < first_from < builder_arg < version_guard < first_package_install
+    assert revision_arg < first_from < revision_builder_arg < revision_guard < first_package_install
 
 
 def test_direct_consumer_build_recipe_uses_development_identity():
@@ -402,12 +408,14 @@ def test_direct_consumer_build_recipe_uses_development_identity():
         Path(__file__).resolve().parents[1] / "docs" / "CONSUMERS.md"
     ).read_text(encoding="utf-8")
     recipe = consumers.split(
-        "For a direct source build, use the development identity", 1
+        "For a local source build, use the identity-resolving wrapper", 1
     )[1].split("The Dockerfile refuses", 1)[0]
 
-    assert "--build-arg CGPROFILE_VERSION=0.0.0-dev" in recipe
-    assert "-t cgprofile:local ." in recipe
+    assert "python3 build-push.py --build" in recipe
+    assert "docker buildx build" not in recipe
     assert "CGPROFILE_VERSION=1.0.0" not in recipe
+    assert "0.0.0-dev" in consumers
+    assert "cgprofile:local" in consumers
 
 
 def test_all_public_docs_explain_tag_only_release_identity():
@@ -423,16 +431,22 @@ def test_all_public_docs_explain_tag_only_release_identity():
         assert "CGPROFILE_VERSION" in text
         assert "CMRU_RELEASE_COMMIT" in text
         assert "CMRU_RELEASE_TAG" in text
+    assert "requires clean cgprofile" in public_docs[0].read_text(encoding="utf-8")
+    assert "requires the cgprofile and sibling DAMON source contexts to be clean" in public_docs[2].read_text(encoding="utf-8")
+    assert "refuses changes in either local build context" in " ".join(public_docs[1].read_text(encoding="utf-8").split())
     consumers = public_docs[-1].read_text(encoding="utf-8")
-    assert "a `--push` without CMRU's protected" in consumers
-    assert "Use `cmru release` to publish." in consumers
+    consumers_flat = " ".join(consumers.split())
+    assert "`--push` without CMRU's protected identity refuses before registry login" in consumers
+    assert "Use `cmru release` for publication" in consumers
     assert "validated `CGPROFILE_VERSION`" not in consumers
     assert "local tag both point at" in consumers
-    assert "bare `docker buildx bake` ignores an ambient" in consumers
+    assert "A bare `docker buildx bake` refuses before package installation" in consumers_flat
     design = public_docs[1].read_text(encoding="utf-8")
+    design_flat = " ".join(design.split())
     assert "Ambient `CGPROFILE_VERSION` never creates release authority" in design
     assert "temporary full-repository worktree" in design
-    assert "literal development defaults" in design
+    assert "literal development version and tag" in design
+    assert "no version or revision default" in design_flat
 
 
 def test_publish_without_exact_tag_is_refused(tmp_path, monkeypatch):

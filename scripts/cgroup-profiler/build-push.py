@@ -13,9 +13,11 @@ see cmru.toml), not several Playwright-ecosystem pins threaded through a
 CMRU prepare phase and a governed buildx builder. CMRU passes its protected
 release tag and commit to both artifact steps. Those values, the checked-out
 HEAD, and the local tag must identify the same clean commit; the image is then
-built from a temporary worktree at that commit. An untagged local build uses
-`0.0.0-dev`. A push without CMRU's release identity refuses, even if an
-ambient `CGPROFILE_VERSION` is present.
+built from a temporary worktree at that commit. An untagged local build also
+requires clean cgprofile and DAMON source contexts and uses a temporary
+worktree at its resolved HEAD with version `0.0.0-dev`. A push without
+CMRU's release identity refuses, even if an ambient `CGPROFILE_VERSION` is
+present.
 
 No network fetch happens inside the image build itself beyond what `pip
 install -r requirements.txt` and the base image pull need — see the
@@ -73,9 +75,42 @@ def git_revision(project_root: Path = HERE) -> str:
     return result.stdout.strip()
 
 
+def require_clean_local_build_source(project_root: Path = HERE) -> None:
+    root_result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=str(project_root), capture_output=True, text=True, check=False,
+    )
+    if root_result.returncode or not root_result.stdout.strip():
+        detail = root_result.stderr.strip() or f"exit {root_result.returncode}"
+        raise RuntimeError(f"cannot locate local build repository: {detail}")
+    repo_root = Path(root_result.stdout.strip())
+    try:
+        context_paths = (
+            project_root.relative_to(repo_root).as_posix(),
+            (project_root.parent / "damon-analysis").relative_to(repo_root).as_posix(),
+        )
+    except ValueError as exc:
+        raise RuntimeError("local build contexts are outside their Git repository") from exc
+    status = subprocess.run(
+        [
+            "git", "status", "--porcelain", "--untracked-files=all", "--",
+            *context_paths,
+        ],
+        cwd=str(repo_root), capture_output=True, text=True, check=False,
+    )
+    if status.returncode:
+        detail = status.stderr.strip() or f"exit {status.returncode}"
+        raise RuntimeError(f"cannot verify local build context cleanliness: {detail}")
+    if status.stdout:
+        raise RuntimeError(
+            "local build contexts have tracked or untracked changes; commit or "
+            "clean those paths so the image revision identifies its contents"
+        )
+
+
 @contextmanager
 def exact_build_source(commit: str | None) -> Iterator[Path]:
-    """Yield the project root, using an isolated full-repository tree for releases."""
+    """Yield a project root from an isolated full-repository tree at commit."""
     if commit is None:
         yield HERE
         return
@@ -146,13 +181,18 @@ def do_build() -> None:
             version, revision, _tag = identity
     except (OSError, RuntimeError, ValueError) as exc:
         fail(f"cannot determine build identity: {exc}")
+    if identity is None:
+        try:
+            require_clean_local_build_source(HERE)
+        except (OSError, RuntimeError) as exc:
+            fail(f"cannot build from local source: {exc}")
     env.pop("CGPROFILE_VERSION", None)
     env.pop("GIT_REVISION", None)
     env.pop("CMRU_RELEASE_COMMIT", None)
     env.pop("CMRU_RELEASE_TAG", None)
     log(f"Building cgprofile (CGPROFILE_VERSION={version})")
     try:
-        with exact_build_source(revision if identity is not None else None) as source:
+        with exact_build_source(revision) as source:
             run([
                 "docker", "buildx", "bake", *_FS_ALLOW, "all",
                 "--set", f"cgprofile-local.args.CGPROFILE_VERSION={version}",

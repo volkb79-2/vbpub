@@ -14,7 +14,6 @@ target "cgprofile" {
   dockerfile = "Dockerfile"
   args = {
     CGPROFILE_VERSION = "0.0.0-dev"
-    GIT_REVISION       = "unknown"
   }
   // The Dockerfile's own DAMON-support COPY needs the sibling
   // scripts/damon-analysis/lib/damon_analysis.py, which the "." context

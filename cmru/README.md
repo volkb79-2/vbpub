@@ -604,11 +604,15 @@ is rejected. `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and `CMRU_GIT_AUTH_TOKEN` are re
 cannot be set by project, orchestration, or step `[env]` tables. Supply publisher credentials
 through the invoking environment or an ignored `cmru.secret.toml`. Never commit a token.
 
-For tagged release artifact steps, CMRU supplies `CMRU_RELEASE_COMMIT` and
-`CMRU_RELEASE_TAG` as protected values and clears ambient values from every
-other project step. They bind the artifact source to the candidate CMRU gated
-and tagged; project `[env]` and `[steps.*.env]` cannot replace them. They are
-consistency metadata, not an authentication token or proof of CMRU provenance.
+For tagged release artifact steps, CMRU supplies `CMRU_RELEASE_COMMIT` as the
+exact gated candidate commit and `CMRU_RELEASE_TAG` as its tag. It clears both
+ambient values from every other project step, and project and step configuration
+cannot override these protected values. The pair is source-consistency metadata,
+not an authentication token or proof of CMRU provenance.
+
+See the [design guide section on tagged artifact identity](docs/DESIGN-GUIDE.md#tagged-artifact-identity-binds-builds-to-cmrus-candidate)
+for the rationale.
+
 A project that builds or publishes an artifact from Git must validate
 both values against its checkout and build from that commit. Use `cmru release`
 for publication; do not export or hand-write the values.
