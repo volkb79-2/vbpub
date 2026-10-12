@@ -208,10 +208,14 @@ directory group and `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the
 observed socket GID as a supplementary group. A read-only mount of `ctl.sock`
 is not equivalent and is prohibited for this use.
 
-The request is exactly:
+The observer supports contracts 1 and 2 independently of the daemon's
+contract-1 control protocol. Contract 1 keeps the original response shape for
+existing clients. Assay uses contract 2 because it needs the regular event
+scope and effective local counters. The requests are:
 
 ```json
 {"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
+{"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
 There is one positive native TID, one line, and one connection. The complete
@@ -223,11 +227,17 @@ The daemon uses that PID/UID plus the requested TID to prove the caller's
 thread identity, shared thread cgroup/credentials, and gates-slice membership;
 the request cannot choose a PID, cgroup path, or slice. A successful response
 contains only the complete canonical leaf-to-root cgroup-v2 ancestry, mount
-ID, limit presence/value pairs, and pids/memory event counters. It contains
-no process list, PID, or sibling cgroup data. See contract §9 for the exact
-response shape and the verified private-cgroup-namespace path mapping.
+ID, limit presence/value pairs, and pids/memory event counters. Contract 2
+also reports whether the regular event files are `hierarchical` or `local`
+under the verified mount's `pids_localevents` and `memory_localevents` modes,
+and includes effective local event maps at each path. The observer reads the
+`.local` files when available; if a regular file is already local under the
+mount mode, it can supply equivalent local evidence when the `.local` file is
+unavailable. Neither contract returns a
+process list, PID, or sibling cgroup data. See contract §9 for exact response
+shapes and the verified private-cgroup-namespace path mapping.
 
 Assay configures this socket explicitly and consults it only after its local
 reader proves that ancestors are hidden. Any other local failure, invalid
-response, identity mismatch, incomplete hierarchy, or ambiguous shared
-ancestor delta remains a fail-closed lane error.
+response, identity mismatch, incomplete hierarchy, or positive shared-ancestor
+local event without a candidate event remains a fail-closed lane error.

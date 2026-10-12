@@ -702,10 +702,13 @@ cgprofile daemon and performs no placement or cgroup write.
 
 ### 9.1 Request and response
 
-One newline-delimited JSON request per connection:
+One newline-delimited JSON request per connection. Observer contract 1 remains
+available with its original shape; contract 2 adds event-scope metadata and
+local event counters. The control listener remains contract 1.
 
 ```json
 {"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
+{"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
 The request has exactly the three wire keys shown, exactly one argument
@@ -731,15 +734,49 @@ Success has this shape (values abbreviated):
  ]}
 ```
 
+Contract 1 returns the original shape shown above. Contract 2 success adds the
+mount-level scopes and local event maps:
+
+```json
+{"ok":true,"contract":2,"cgroup_version":2,"thread_id":1234,
+ "gates_slice":"/dev.slice/dev-gates.slice",
+ "pids_events_scope":"hierarchical","memory_events_scope":"hierarchical",
+ "cgroups":[
+  {"path":"/dev.slice/dev-gates.slice/rg-abc","mount_id":42,
+   "pids_max_present":true,"pids_max":null,
+   "memory_max_present":true,"memory_max":1073741824,
+   "pids_events":{"max":0},
+   "memory_events":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0},
+   "pids_events_local":{"max":0},
+   "memory_events_local":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0}}
+ ]}
+```
+
+`pids_events_scope` and `memory_events_scope` are each `hierarchical` or
+`local`, derived from the verified cgroup2 mount's superblock options. The
+`.local` maps are always local, regardless of those options. When the local
+file is unavailable but the regular file is local under the verified mount
+mode, the regular file supplies equivalent local evidence. If a localevents
+mode is active for a controller with a candidate event file, the observer
+refuses contract 2 when the peer's candidate cgroup has child cgroups, since
+the local file then cannot prove the whole candidate subtree.
+
 `cgroups` is ordered from the peer's leaf through every ancestor to `/`.
 Each entry carries the canonical hierarchy path, selected mount ID, limit
 presence/value pairs, and event maps (or `null` when the controller exposes
 no such event file). An absent limit is `present:false,value:null`; an
-unlimited limit is `present:true,value:null`. A finite limit requires its
-matching event file. The response contains no PID/TID list, process listing,
-caller-selected path, or sibling cgroup data. A refusal uses the ordinary
-contract-1 error object, with `bad-argument`, `peer-refused`,
-`observer-refused`, or `daemon-error` as applicable.
+unlimited limit is `present:true,value:null`. In contract 1, a finite limit
+requires its matching regular event file. In contract 2, a finite limit also
+requires effective local event evidence: the `.local` file or, when the
+regular file is already local under the mount mode, that regular file.
+The response contains no PID/TID list, process listing, caller-selected path,
+or sibling cgroup data. Once a valid request envelope is dispatched, an error
+object echoes the observer contract version requested (or uses contract 1 when
+the version itself is invalid), with `bad-argument`, `peer-refused`,
+`observer-refused`, or `daemon-error` as applicable. Peer-policy refusals that
+occur before the request is read, and transport/framing errors before a valid
+envelope is available, use contract 1. Existing contract-1 clients remain
+wire-compatible.
 
 ### 9.2 Peer binding and path derivation
 
@@ -789,8 +826,10 @@ cgroup namespace hides ancestors. Other local failures do not fall through.
 The daemon accepts only a peer whose derived leaf is a descendant of the
 configured gates slice. It returns that peer's complete canonical ancestry
 through `/`, with per-path resource limits and event counters; it exposes no
-descendant or sibling cgroups. Per-path samples are compared around each candidate;
-a shared-ancestor delta without the same candidate-leaf delta aborts the lane
-before assigning a candidate bucket. Any endpoint, identity, path, mount,
-counter, or attribution uncertainty remains `ERROR/EXEC_FAILED`, never a
-kill or survivor.
+descendant or sibling cgroups. Assay compares the candidate's regular event
+counters and each ancestor's local counters around the candidate. A
+hierarchical-only ancestor change can come from a sibling and does not block
+the candidate; a positive ancestor-local change without a candidate event is
+ambiguous and aborts the lane before assigning a candidate bucket. Any
+endpoint, identity, path, mount, counter, or attribution uncertainty remains
+`ERROR/EXEC_FAILED`, never a kill or survivor.

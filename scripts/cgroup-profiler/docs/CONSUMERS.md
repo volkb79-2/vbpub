@@ -201,7 +201,7 @@ refusal, not permission to rely on Docker's default parent.
 
 Assay B145 refuses to classify native R2 candidates when private cgroup
 namespaces hide an enforcing ancestor. With a cgprofile daemon that implements
-contract §9 and a Run-Gate build that supports RG-89, opt the lane in:
+resource-observer contract 2 and a Run-Gate build that supports RG-89, opt the lane in:
 
 ```toml
 [lanes.assay-r2]
@@ -250,8 +250,11 @@ Assay uses its local B145 reader first and contacts the observer only when the
 local view specifically proves that ancestors are hidden. The daemon derives
 the peer's cgroup from `SO_PEERCRED` plus the supplied native TID, limits
 queries to the configured gates slice, and returns only that peer's ancestry
-counters. Any incomplete identity or ambiguous shared-ancestor event remains
-`ERROR/EXEC_FAILED`, not a candidate kill/survivor. See the
+counters. Contract 1 remains available to other clients, but lacks the local
+counters Assay needs and is refused for this feature. Any incomplete identity
+or ambiguous shared-ancestor local event remains `ERROR/EXEC_FAILED`, not a
+candidate kill/survivor. A hierarchical-only change from a sibling does not
+invalidate the candidate. See the
 [`observer protocol`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and
 [`design rationale`](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
 

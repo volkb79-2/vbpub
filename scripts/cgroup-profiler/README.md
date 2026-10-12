@@ -168,6 +168,11 @@ cgroup control permissions. It accepts one newline-terminated JSON request
 of at most 4096 bytes including the newline, with a five-second absolute deadline.
 See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)
 and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
+Observer contract 2 returns regular event counters, effective local event
+counters, and the cgroup2 mount's `pids_localevents` and `memory_localevents` modes;
+the daemon's general control protocol remains contract 1. Contract 1 observer
+responses remain available for existing clients, but cannot support Assay's
+scope-aware R2 attribution.
 It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
