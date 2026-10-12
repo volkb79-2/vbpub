@@ -29,15 +29,18 @@ cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.
 ```
 
 The first 1.0.0 release passes CMRU an explicit `--set-version 1.0.0` because
-there is no prior cgprofile tag. CMRU creates the release tag before image
-build. `build-push.py` reads that exact tag to set the OCI tag/label and
-embedded runtime version, so CMRU releases need no manual
-`CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
-manual `--push` refuses unless the exact CMRU release tag points at `HEAD`,
-the tagged working tree is clean, and `CGPROFILE_VERSION` is not used as a
-fallback. The Bake file's version and image-tag defaults are fixed to the
-development identity, so a bare `docker buildx bake` ignores an ambient
-`CGPROFILE_VERSION`; use `build-push.py --push` for a validated release.
+there is no prior cgprofile tag. CMRU passes the protected
+`CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` to its build and push steps.
+`build-push.py` verifies that the checkout's `HEAD` and local tag both point at
+that commit, then builds from a temporary worktree at the same commit. The OCI
+tag, image label, and embedded runtime version all derive from that checked
+identity, so CMRU releases need no manual `CGPROFILE_VERSION` export. An
+untagged local `--build` uses `0.0.0-dev`; a `--push` without CMRU's protected
+identity refuses before registry login. The pair binds the source to a commit
+and tag; it is not an authentication token or proof of CMRU provenance. Use
+`cmru release` for publication and do not hand-write the pair. The Bake file's
+version and image-tag defaults are fixed to the development identity, so a bare `docker buildx bake`
+ignores an ambient `CGPROFILE_VERSION`. Use `cmru release` to publish.
 For a direct source build, use the development identity and
 local-only image tag. Release identity comes from CMRU's exact tag; do not
 label an arbitrary checkout as a release. Pass both the required version and

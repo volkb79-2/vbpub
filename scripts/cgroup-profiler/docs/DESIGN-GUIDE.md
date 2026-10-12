@@ -559,21 +559,25 @@ turns an unreadable metric into zero.
 
 ## Release identity
 
-The daemon image version is the exact `cgprofile-v<version>` CMRU tag at
-`HEAD`. The build script reads the prefix from `cmru.toml`, rejects ambiguous
-or malformed matching tags, and supplies the resolved version to the OCI tag,
-image label, CLI identity, and daemon self-description. The Bake file itself
-uses literal development defaults instead of importing environment variables;
-only the wrapper's explicit target overrides carry the resolved version into a
-release build. This keeps build metadata and live probes on one release fact
-rather than asking operators to type a second version. Untagged local images
-are marked `0.0.0-dev`; publishing
-without an exact tag refuses even when `CGPROFILE_VERSION` is set in the
-environment, and a tagged checkout with tracked or untracked changes refuses.
-That variable carries the identity after the tag has been resolved; it is
-never a source of release authority. The Dockerfile has no
-version default and checks the required argument before package installation,
-so a low-level image build cannot silently label an image when no identity was
+The daemon image version is the exact `cgprofile-v<version>` tag passed by
+CMRU for its release candidate. CMRU also passes protected
+`CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values to both artifact steps.
+Before a build or push, the wrapper checks that the current `HEAD` and the
+local tag both peel to that commit, and that the checkout is clean. It creates
+a temporary full-repository worktree at the same commit and builds from there,
+so version and source cannot come from separate reads of a moving checkout.
+Missing, incomplete, or mismatched identity refuses before registry login.
+An untagged local build resolves its version and commit together and uses
+`0.0.0-dev`. Ambient `CGPROFILE_VERSION` never creates release authority.
+CMRU clears ambient release-pair values from non-artifact steps. The pair is
+source-consistency metadata, not an authentication token or proof of CMRU
+provenance, so the supported publication workflow remains `cmru release`.
+
+The Bake file itself uses literal development defaults instead of importing
+environment variables; only the wrapper's explicit target overrides carry the
+resolved version and revision into a build. The Dockerfile has no version
+default and checks the required argument before package installation, so a
+low-level image build cannot silently label an image when no identity was
 supplied. No version lookup depends on network access at runtime.
 
 The local `cgprofile:local` alias is not a release coordinate: because it has
@@ -583,7 +587,9 @@ default is still the development tag; the validated wrapper overrides the
 release tag and image argument after checking the source tag. A bare Bake
 command cannot turn `CGPROFILE_VERSION` from the environment into a release
 label. CMRU's push step selects only the release target. This keeps developer
-convenience from widening the release's external writes.
+convenience from widening the release's external writes. CMRU owns the
+protected tag/commit handoff; consumers must invoke `cmru release` instead of
+manually exporting either value.
 The pasteable CIU pin and verification command live in
 [`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 

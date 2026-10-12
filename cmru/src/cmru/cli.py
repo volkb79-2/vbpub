@@ -340,7 +340,7 @@ def run_project_step(
         with tempfile.TemporaryDirectory(prefix="cmru-runtime-") as launcher_root:
             launcher_dir = Path(launcher_root)
             launcher = _create_bound_cmru_launcher(launcher_dir)
-            internal_env = {
+            internal_env: dict[str, Optional[str]] = {
                 transaction.INTERNAL_BIN_ENV: str(launcher),
                 "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
                 **{
@@ -350,6 +350,12 @@ def run_project_step(
                 },
                 **dict(protected_env or {}),
             }
+            # A release identity is a protected artifact-step input, never an
+            # ambient capability. Clear stale shell/project values after
+            # project environment commands on every ordinary step; tagged
+            # artifact steps receive the exact pair above.
+            for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
+                internal_env.setdefault(key, None)
             resolved_token = (getattr(project, "github_token", None) or "").strip()
             if resolved_token:
                 # This is applied after project/step env and env commands by
@@ -756,7 +762,7 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
     configured_internal = sorted(name for name in env_config.env if is_reserved_internal_env(name))
     if configured_internal:
         raise UsageRefusal(
-            "release environment key(s) are reserved for CMRU internal launch state: "
+            "release environment key(s) are reserved for CMRU-managed protected context: "
             + ", ".join(configured_internal)
         )
     if github.owner:
@@ -1912,7 +1918,12 @@ def cleanup_project_step(
         step_env["GITHUB_PUSH_PAT"] = publisher_token
     step = _build_step_config("clean", project.steps["clean"])
     from cmru.runner import execute_step
-    protected_env = {"GITHUB_PUSH_PAT": publisher_token} if publisher_token else None
+    protected_env: dict[str, Optional[str]] = {
+        "CMRU_RELEASE_COMMIT": None,
+        "CMRU_RELEASE_TAG": None,
+    }
+    if publisher_token:
+        protected_env["GITHUB_PUSH_PAT"] = publisher_token
     execute_step(
         step, repo_root, log_dir, extra_env=step_env, protected_env=protected_env,
     )
@@ -2639,6 +2650,7 @@ def _run_project_steps(
     *,
     github_config: Optional[GitHubConfig] = None,
     env_config: Optional[ReleaseEnvConfig] = None,
+    protected_env: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Run ``steps`` (in order) for each named project through the unified runner (S3).
 
@@ -2658,7 +2670,12 @@ def _run_project_steps(
                     f"{PROJECT_CONFIG_FILENAME}"
                 )
             log_info(f"{name}: running step '{step}'")
-            run_project_step(project, step, repo_root, log_dir)
+            if protected_env is None:
+                run_project_step(project, step, repo_root, log_dir)
+            else:
+                run_project_step(
+                    project, step, repo_root, log_dir, protected_env=protected_env,
+                )
 
 
 def _run_isolated_build_projects(
@@ -2865,11 +2882,16 @@ def _run_tagged_build_and_publish(
     A failed build rolls the freshly pushed tag back (the candidate stays
     resumable). Once the publishing step has begun, the tag is never touched.
     """
+    release_identity = {
+        "CMRU_RELEASE_COMMIT": candidate_sha,
+        "CMRU_RELEASE_TAG": tag,
+    }
     if artifact_phases:
         try:
             _run_project_steps(
                 repo_root, configs, [name], artifact_phases,
                 github_config=github_config, env_config=env_config,
+                protected_env=release_identity,
             )
         except Exception as exc:  # deliberately broad: ANY build failure must roll the tag back; re-raised
             _rollback_unpublished_release_tag(
@@ -2880,6 +2902,7 @@ def _run_tagged_build_and_publish(
         _run_project_steps(
             repo_root, configs, [name], ["push"],
             github_config=github_config, env_config=env_config,
+            protected_env=release_identity,
         )
         _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
     except Exception:  # deliberately broad: ANY failure after publish began must report it; re-raised

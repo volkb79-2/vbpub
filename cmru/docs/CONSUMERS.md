@@ -854,6 +854,13 @@ inspection. CMRU does not automatically retry a post-tag publication step; `--re
 retained pre-tag candidates. When CMRU proves that a failed tag push left no origin ref and
 removes the local tag, the saved resume command can retry that release; CMRU permits a freshly
 generated annotated tag object for the same tag name in that case.
+For a tagged release, CMRU passes the exact candidate commit and tag to project `build` and
+`push` steps as protected `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values. CMRU clears ambient
+values from other project steps, and project and step configuration cannot override the tagged
+values. A build that derives artifact identity from Git should check `HEAD` and the local tag
+against both values, then build from that exact commit. The pair is consistency metadata, not
+an authentication token or proof of CMRU provenance. Invoke `cmru release` for publication; do not set the
+values manually.
 On resume, CMRU checks tag-push attempts and recorded release results against origin. A tag that
 may have been pushed without a completed result, or a recorded result whose source commit is not
 in `origin/main`, causes a refusal and keeps the candidate for inspection. A release-plan refusal

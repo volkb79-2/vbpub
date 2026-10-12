@@ -125,11 +125,13 @@ def test_rollback_that_cannot_prove_absence_keeps_the_tag_and_prints_recovery(
 class _Steps:
     def __init__(self, monkeypatch, *, fail_on=None, unchanged_fails=False):
         self.steps: list[list[str]] = []
+        self.release_contexts: list[dict[str, str] | None] = []
         self.rolled_back: list[str] = []
         self.reported: list[str] = []
 
-        def run(_root, _configs, _names, steps, **_kwargs):
+        def run(_root, _configs, _names, steps, **kwargs):
             self.steps.append(list(steps))
+            self.release_contexts.append(kwargs.get("protected_env"))
             if fail_on in steps:
                 raise RuntimeError(f"{fail_on} failed")
 
@@ -159,6 +161,10 @@ def test_build_then_publish_run_as_separate_steps_without_any_recovery(monkeypat
     steps = _Steps(monkeypatch)
     steps.run(tmp_path, ["build"])
     assert steps.steps == [["build"], ["push"]]
+    assert steps.release_contexts == [
+        {"CMRU_RELEASE_COMMIT": _OID, "CMRU_RELEASE_TAG": _TAG},
+        {"CMRU_RELEASE_COMMIT": _OID, "CMRU_RELEASE_TAG": _TAG},
+    ]
     assert steps.rolled_back == [] and steps.reported == []
 
 

@@ -611,6 +611,21 @@ def test_build_output_publication_passes_protected_record_context_to_push_step(
     }
 
 
+def test_tagged_release_identity_is_documented_for_adopters_and_maintainers():
+    root = Path(__file__).resolve().parents[1]
+    documents = (
+        root / "README.md",
+        root / "docs" / "DESIGN-GUIDE.md",
+        root / "docs" / "CONSUMERS.md",
+    )
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        assert "CMRU_RELEASE_COMMIT" in text, path
+        assert "CMRU_RELEASE_TAG" in text, path
+        assert "clears ambient values" in text, path
+        assert "not an authentication token" in text, path
+
+
 def test_builtin_publish_handlers_select_only_inventoried_retained_bytes(
     monkeypatch, tmp_path,
 ):
@@ -1570,12 +1585,22 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     step = _step(
         "build",
         [{"label": "build", "argv": ["cmru", "tester-gate"], "cwd": "."}],
-        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={
+            "CMRU_INTERNAL_BIN": "/wrong/step",
+            "CMRU_RELEASE_COMMIT": "wrong-step-commit",
+            "CMRU_RELEASE_TAG": "wrong-step-tag",
+            "PATH": "/wrong/step/bin",
+        },
         quiet=True,
     )
     project = SimpleNamespace(
         name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
-        env={"CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
+        env={
+            "CMRU_INTERNAL_BIN": "/wrong/project",
+            "CMRU_RELEASE_COMMIT": "wrong-project-commit",
+            "CMRU_RELEASE_TAG": "wrong-project-tag",
+            "GITHUB_PUSH_PAT": "declared-value",
+        },
         runtime_kind="none", build_metadata={}, github_token="resolved-token",
         runner_steps={"build": step},
     )
@@ -1591,14 +1616,49 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     captured = {}
     monkeypatch.setattr(cli, "execute_step", lambda _step, _root, _logs, **kwargs: captured.update(kwargs))
 
-    cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
+    release_identity = {
+        "CMRU_RELEASE_COMMIT": SOURCE_COMMIT,
+        "CMRU_RELEASE_TAG": "alpha-v1.2.3",
+    }
+    cli.run_project_step(
+        project, "build", tmp_path, tmp_path / "logs", protected_env=release_identity,
+    )
 
     assert captured["extra_env"] == {
-        "CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
+        "CMRU_INTERNAL_BIN": "/wrong/project",
+        "CMRU_RELEASE_COMMIT": "wrong-project-commit",
+        "CMRU_RELEASE_TAG": "wrong-project-tag",
+        "GITHUB_PUSH_PAT": "declared-value",
     }
     assert captured["protected_env"]["CMRU_INTERNAL_BIN"] == str(launcher_directory[0] / "cmru")
     assert captured["protected_env"]["GITHUB_PUSH_PAT"] == "resolved-token"
+    assert captured["protected_env"]["CMRU_RELEASE_COMMIT"] == SOURCE_COMMIT
+    assert captured["protected_env"]["CMRU_RELEASE_TAG"] == "alpha-v1.2.3"
     assert captured["path_prefixes"] == (launcher_directory[0],)
+
+
+def test_run_project_step_clears_ambient_release_identity_from_ordinary_steps(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", "stale-shell-commit")
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "stale-shell-tag")
+    project = SimpleNamespace(
+        name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
+        env={}, runtime_kind="none", build_metadata={}, github_token=None,
+        runner_steps={"build": _step(
+            "build", [{"label": "build", "argv": ["build"], "cwd": "."}], quiet=True,
+        )},
+    )
+    monkeypatch.setattr(cli, "_create_bound_cmru_launcher", lambda directory: directory / "cmru")
+    captured = {}
+    monkeypatch.setattr(cli, "execute_step", lambda _step, _root, _logs, **kwargs: captured.update(kwargs))
+
+    cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
+
+    assert captured["protected_env"]["CMRU_RELEASE_COMMIT"] is None
+    assert captured["protected_env"]["CMRU_RELEASE_TAG"] is None
+    assert os.environ["CMRU_RELEASE_COMMIT"] == "stale-shell-commit"
+    assert os.environ["CMRU_RELEASE_TAG"] == "stale-shell-tag"
 
 
 def test_runner_reapplies_runtime_binding_after_project_environment_commands(
@@ -1614,7 +1674,11 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
     monkeypatch.setattr(
         runner,
         "apply_env_command",
-        lambda *_args: os.environ.update({"CMRU_INTERNAL_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin"}),
+        lambda *_args: os.environ.update({
+            "CMRU_INTERNAL_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin",
+            "CMRU_RELEASE_COMMIT": "env-command-commit",
+            "CMRU_RELEASE_TAG": "env-command-tag",
+        }),
     )
     monkeypatch.setattr(runner, "maybe_login_multi", lambda *_args: None)
     captured = []
@@ -1632,7 +1696,11 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
         tmp_path,
         tmp_path / "logs",
         extra_env={"PATH": "/wrong/project", "CMRU_INTERNAL_BIN": "/wrong/project/cmru"},
-        protected_env={"CMRU_INTERNAL_BIN": "/bound/cmru"},
+        protected_env={
+            "CMRU_INTERNAL_BIN": "/bound/cmru",
+            "CMRU_RELEASE_COMMIT": None,
+            "CMRU_RELEASE_TAG": None,
+        },
         path_prefixes=(Path("/bound"),),
     )
 
@@ -1640,3 +1708,5 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
     assert argv == ["cmru", "version"]
     assert command_env["CMRU_INTERNAL_BIN"] == "/bound/cmru"
     assert command_env["PATH"].split(":", 1)[0] == "/bound"
+    assert "CMRU_RELEASE_COMMIT" not in command_env
+    assert "CMRU_RELEASE_TAG" not in command_env

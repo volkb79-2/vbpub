@@ -438,7 +438,7 @@ def execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
-    protected_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, Optional[str]]] = None,
     path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
@@ -448,8 +448,9 @@ def execute_step(
     This is the single execution path every build step flows through (S3 contract).
     ``extra_env`` carries project-level declared environment from the orchestrator.
     Declared values override ambient values for this scoped step, so a stale shell setting
-    cannot silently change a project contract. The process environment is restored after
-    the step and cannot leak into a later project in the same orchestration run.
+    cannot silently change a project contract. A ``None`` protected value removes an
+    inherited key after project settings and environment helpers. The process environment is
+    restored after the step and cannot leak into a later project in the same orchestration run.
     """
     original_environment = os.environ.copy()
     try:
@@ -470,7 +471,7 @@ def _execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
-    protected_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, Optional[str]]] = None,
     path_prefixes: Optional[Iterable[Path]] = None,
 ) -> None:
     """Implementation for :func:`execute_step` inside its scoped environment."""
@@ -494,7 +495,10 @@ def _execute_step(
     _prepend_path_entries(path_prefixes)
     if protected_env:
         for key, value in protected_env.items():
-            os.environ[key] = str(value)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
     ensure_required_env(step.required_env)
     maybe_login_multi(step.login, step.registries)
 

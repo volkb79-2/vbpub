@@ -423,6 +423,18 @@ Git transport. For that reason, `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, and
 them after secret resolution. Operators supply them through the invoking environment or an
 ignored `cmru.secret.toml`.
 
+The artifact command needs the same source identity as the CMRU release
+transaction. CMRU therefore passes `CMRU_RELEASE_COMMIT` and
+`CMRU_RELEASE_TAG` to tagged release build and push steps as protected values,
+and clears ambient values from other project steps. The consumer checks its
+current `HEAD` and local tag against that pair before building. Reading a
+matching tag name alone is insufficient: a clean checkout can still carry a
+moved local tag, and a separately-read revision can drift from the version
+lookup. The pair is source-consistency metadata, not an authentication token
+or proof of CMRU provenance; publication must use the supported `cmru release` workflow.
+The values are reserved so project configuration cannot replace the identity
+CMRU supplies to tagged artifact steps.
+
 ## Git transport authentication
 
 The repository-root credential also covers CMRU's own GitHub HTTPS reads and writes. A release

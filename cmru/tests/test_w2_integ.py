@@ -193,6 +193,7 @@ def test_refused_is_the_only_exit_code_name_for_four():
 
 _RESERVED_PROJECT_ENV_NAMES = (
     *INTERNAL_ENV_NAMES, "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD", "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+    "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG",
     "CMRU_INTERNAL_X",  # the PREFIX is reserved, not a list
 )
 
@@ -205,8 +206,8 @@ def test_project_env_cannot_declare_internal_names(name, capsys, monkeypatch):
     with pytest.raises(SystemExit) as refused:
         config._scalar_env({name: "/evil"}, "[env]", reject_credentials=True)
     assert refused.value.code == exit_codes.CONFIG_ERROR
-    assert "reserved for CMRU internal launch state" in capsys.readouterr().err
-    with pytest.raises(RuntimeError, match="reserved for CMRU internal launch state"):
+    assert "reserved for CMRU-managed protected context" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="reserved for CMRU-managed protected context"):
         cli.apply_release_env(
             cli.GitHubConfig("owner", "repo", "", "org"), cli.ReleaseEnvConfig({name: "/evil"}, None),
         )

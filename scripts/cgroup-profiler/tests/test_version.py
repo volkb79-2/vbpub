@@ -17,6 +17,31 @@ def _project_root(tmp_path: Path, prefix: str = "cgprofile-v") -> Path:
     return tmp_path
 
 
+def _tagged_git_project(tmp_path: Path, tag: str = "cgprofile-v1.2.3"):
+    root = tmp_path / "repo"
+    project = root / "scripts" / "cgroup-profiler"
+    project.mkdir(parents=True)
+    (project / "cmru.toml").write_text(
+        '[project]\nprefix = "cgprofile-v"\n', encoding="utf-8",
+    )
+    (project / "source.py").write_text("release = True\n", encoding="utf-8")
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    git("add", ".")
+    git("commit", "-q", "-m", "release candidate")
+    commit = git("rev-parse", "HEAD")
+    git("tag", "-a", tag, "-m", "release")
+    return root, project, commit, tag, git
+
+
 def _git_tags(
     monkeypatch,
     *,
@@ -26,12 +51,22 @@ def _git_tags(
     status_stdout: str = "",
     status_returncode: int = 0,
     status_stderr: str = "",
+    head: str = "a" * 40,
+    tagged_commit: str | None = None,
 ):
     def fake_run(argv, **kwargs):
-        if argv == ["git", "tag", "--points-at", "HEAD"]:
+        if argv[:2] == ["git", "tag"]:
             result_stdout = stdout
             result_stderr = stderr
             result_code = returncode
+        elif argv == ["git", "rev-parse", "--verify", "HEAD^{commit}"]:
+            result_stdout = head
+            result_stderr = ""
+            result_code = 0
+        elif len(argv) == 4 and argv[:3] == ["git", "rev-parse", "--verify"]:
+            result_stdout = tagged_commit or head
+            result_stderr = ""
+            result_code = 0
         elif argv == ["git", "rev-parse", "--show-toplevel"]:
             result_stdout = str(kwargs["cwd"])
             result_stderr = ""
@@ -89,6 +124,77 @@ def test_exact_release_tag_is_authoritative_over_stale_environment(tmp_path, mon
     assert version.resolve_build_version(
         root, require_release_tag=True,
     ) == "1.1.0"
+
+
+def test_cmru_release_identity_binds_annotated_tag_to_exact_clean_commit(
+    tmp_path, monkeypatch,
+):
+    _root, project, commit, tag, _git = _tagged_git_project(tmp_path)
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", tag)
+
+    assert version.resolve_cmru_release_identity(project) == ("1.2.3", commit, tag)
+
+
+def test_cmru_release_identity_rejects_a_moved_local_tag(tmp_path, monkeypatch):
+    _root, project, commit, tag, git = _tagged_git_project(tmp_path)
+    other = git(
+        "commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", commit,
+        "-m", "different source identity",
+    )
+    git("tag", "--force", tag, other)
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", tag)
+
+    with pytest.raises(RuntimeError, match="points at .* expected"):
+        version.resolve_cmru_release_identity(project)
+
+
+def test_cmru_release_identity_rejects_a_checkout_that_moved_after_gating(
+    tmp_path, monkeypatch,
+):
+    root, project, commit, tag, git = _tagged_git_project(tmp_path)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-q", "-m", "later checkout"],
+        cwd=root, check=True,
+    )
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", tag)
+
+    with pytest.raises(RuntimeError, match="does not match checkout HEAD"):
+        version.resolve_cmru_release_identity(project)
+
+
+def test_cmru_release_identity_rejects_dirty_tagged_source(tmp_path, monkeypatch):
+    _root, project, commit, tag, _git = _tagged_git_project(tmp_path)
+    (project / "source.py").write_text("release = False\n", encoding="utf-8")
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("CMRU_RELEASE_TAG", tag)
+
+    with pytest.raises(RuntimeError, match="tagged build tree has tracked or untracked changes"):
+        version.resolve_cmru_release_identity(project)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {},
+        {"CMRU_RELEASE_COMMIT": "a" * 40},
+        {"CMRU_RELEASE_TAG": "cgprofile-v1.2.3"},
+        {"CMRU_RELEASE_COMMIT": "unknown", "CMRU_RELEASE_TAG": "cgprofile-v1.2.3"},
+    ],
+)
+def test_cmru_release_identity_requires_complete_valid_protected_inputs(
+    tmp_path, monkeypatch, identity,
+):
+    _root, project, _commit, _tag, _git = _tagged_git_project(tmp_path)
+    monkeypatch.delenv("CMRU_RELEASE_COMMIT", raising=False)
+    monkeypatch.delenv("CMRU_RELEASE_TAG", raising=False)
+    for key, value in identity.items():
+        monkeypatch.setenv(key, value)
+
+    with pytest.raises(RuntimeError, match="CMRU_RELEASE_COMMIT|incomplete CMRU"):
+        version.resolve_cmru_release_identity(project)
 
 
 def test_dirty_checkout_at_release_tag_is_refused(tmp_path, monkeypatch):
@@ -188,15 +294,17 @@ def test_all_public_docs_explain_tag_only_release_identity():
         text = path.read_text(encoding="utf-8")
         assert "0.0.0-dev" in text
         assert "CGPROFILE_VERSION" in text
+        assert "CMRU_RELEASE_COMMIT" in text
+        assert "CMRU_RELEASE_TAG" in text
     consumers = public_docs[-1].read_text(encoding="utf-8")
-    assert "manual `--push` refuses unless the exact CMRU release tag" in consumers
+    assert "a `--push` without CMRU's protected" in consumers
+    assert "Use `cmru release` to publish." in consumers
     assert "validated `CGPROFILE_VERSION`" not in consumers
-    assert "the tagged working tree is clean" in consumers
+    assert "local tag both point at" in consumers
     assert "bare `docker buildx bake` ignores an ambient" in consumers
-    assert "`build-push.py --push` for a validated release" in consumers
     design = public_docs[1].read_text(encoding="utf-8")
-    assert "never a source of release authority" in design
-    assert "tagged checkout with tracked or untracked changes refuses" in design
+    assert "Ambient `CGPROFILE_VERSION` never creates release authority" in design
+    assert "temporary full-repository worktree" in design
     assert "literal development defaults" in design
 
 

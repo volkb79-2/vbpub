@@ -8,7 +8,7 @@
     "session": "s-20260912T101500Z-9f01",
     "daemon": {
       "name": "cgprofile-host-daemon",
-      "version": "1.1.0"
+      "version": "1.0.0"
     },
     "scope": "container-shared",
     "method": "daemon",

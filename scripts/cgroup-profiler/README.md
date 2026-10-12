@@ -35,14 +35,18 @@ expose the same top-level compatibility option.
 The Dockerfile requires an explicit `CGPROFILE_VERSION` build argument and
 fails before package installation when it is absent. The Bake file uses
 literal development defaults, so ambient variables cannot change its image
-identity. `build-push.py` supplies per-target overrides and derives a release
-identity only from the exact
-`cgprofile-v<version>` tag at `HEAD`; an ambient `CGPROFILE_VERSION` cannot
-label an untagged checkout as a release. The tagged working tree must also be
-clean so the image source matches that tag. An untagged local build uses
-`0.0.0-dev`, and publishing without the exact tag refuses. Use
-`build-push.py --push` for release publication; bare Bake retains the
-development identity.
+identity. `build-push.py` supplies per-target overrides. For release, version
+and commit come from CMRU's exact candidate tag and commit pair. An ambient
+`CGPROFILE_VERSION` cannot label an untagged checkout as a release. The tagged working tree must also be
+clean so the image source matches that tag. During `cmru release`, CMRU passes
+protected `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values to the build and
+push steps; it clears ambient values from other project steps. The wrapper
+verifies that `HEAD` and the local tag both match that commit, then builds from
+a temporary worktree at the verified commit. The pair proves source
+consistency; it is not an authentication token or proof of CMRU provenance.
+Invoke `cmru release` for publication and do not hand-write the pair. An
+untagged local build uses `0.0.0-dev`; bare Bake retains the development
+identity. See the [release identity design](docs/DESIGN-GUIDE.md#release-identity).
 
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.

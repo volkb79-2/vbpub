@@ -1615,6 +1615,15 @@ they MUST NOT appear as keys in project `[env]`, orchestration defaults `[env]`,
 `[steps.*.env]` tables. The strict reader MUST refuse those keys, and the resolved project
 publisher token MUST be applied as protected runner environment after step settings and
 environment helpers.
+For tagged release artifact phases (`build` and `push`), CMRU MUST also pass
+the candidate's exact `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` as protected
+runner environment. Project, orchestration, and step environment tables MUST
+NOT declare either name. The values identify the commit CMRU gated and the
+release tag CMRU created; a project publishing a Git-derived artifact MUST
+verify its checkout and tag against both values before producing the artifact.
+CMRU MUST clear ambient values for these names from all other project steps.
+The pair is source-consistency metadata, not an authentication token or proof
+of CMRU provenance; publication MUST use the supported `cmru release` workflow.
 `tester-gate` likewise has no built-in inputs: it requires `--image`
 or `CMRU_TESTER_UNIFIED_IMAGE`, plus explicit memory, combined memory/swap, CPU, pids-limit, and
 host-systemd probe-image values (CLI options or the effective `[env]`). `--enable-docker` additionally
