@@ -321,17 +321,24 @@ not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
 can help explain runtime or pressure, but they do not by themselves establish
 that a test failure came from resource enforcement.
 
-The current reader samples `pids.events` and `memory.events` at the candidate
-and each visible active ancestor. Their hierarchical counters can include
-events from descendants. A sibling that hits its own process or memory limit
-can therefore change a shared ancestor's counter even when the parent's own
-limit has headroom. Assay currently fails closed if that positive ancestor
-delta cannot be matched to the candidate's delta; the lane result is
-inconclusive, not a kill or survivor. B155 tracks using candidate-subtree
-counters plus local counters at relevant ancestors to avoid treating a
-sibling-only limit event as a candidate event, while still preserving an
-inconclusive result when a shared ancestor's own limit event cannot be
-attributed. See the [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+Assay reads the candidate's regular `pids.events` and `memory.events` files
+and its local event files, then reads each visible ancestor's
+`pids.events.local` and `memory.events.local`. Either positive candidate delta
+records an infrastructure failure; the local sample catches an increment
+between the sequential reads. A sibling's event can change a shared ancestor's
+hierarchical count without changing its local count, so a hierarchical-only
+ancestor delta no longer invalidates an unaffected candidate. A positive
+candidate event records an infrastructure failure. A positive local ancestor
+event without a candidate event remains ambiguous and withholds the mutation
+outcome. On mounts using `pids_localevents` or `memory_localevents`, the
+candidate's ordinary file for that active controller is local; Assay then
+requires the candidate cgroup to have no child cgroups. It binds the mount
+mode and event-file availability across the candidate window. The
+hidden-ancestor observer must implement
+resource-observer contract 2 and return both scopes. Assay refuses contract 1
+rather than treating hierarchical counters as local. See B155 in the
+[Assay backlog](../nyxloom-trove/4-backlog.md) and the
+[Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 for the hierarchy and event-counter semantics.
 
 Do not move a tester container outside `$CGROUP_PARENT_DEV_GATES` to avoid
@@ -378,24 +385,23 @@ this. This protection observes cgroup v2 events; it does not observe
 per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`, so consumers must not
 rely on it to distinguish failures caused by those limits. A change to the visible
 cgroup path, controller availability, or configured limits during a candidate
-also makes the run an infrastructure error. A counter increase at a shared
-ancestor can conservatively refuse a healthy candidate if sibling work hit
-that limit during the same window. A positive candidate-leaf delta, with every
-positive visible-ancestor delta matching it, records that candidate as
-`crashed`; the R2 result is an infrastructure error, never a mutation kill or
-survivor. If an ancestor delta is unmatched or differs from the candidate
-leaf, Assay cannot attribute the event and withholds mutation outcomes with
-`ERROR/EXEC_FAILED`. A positive delta during a saved-witness replay likewise
-stops the lane with a payload-free `ERROR/EXEC_FAILED` before Assay can retry
+also makes the run an infrastructure error. A positive candidate event delta
+records that candidate as `crashed`; the R2 result is an infrastructure error,
+never a mutation kill or survivor. If the candidate is quiet but a visible
+ancestor's local counter increases, Assay cannot attribute the event and
+withholds mutation outcomes with `ERROR/EXEC_FAILED`. A hierarchical-only
+ancestor change does not block the candidate. A positive delta during a
+saved-witness replay likewise stops the lane with a payload-free
+`ERROR/EXEC_FAILED` before Assay can retry
 the candidate; it does not produce a per-candidate outcome. Fix the runner's
 cgroup visibility or process/memory limit pressure, then rerun. If the lane
 budget expires before a candidate's full command starts, it stays `budget_exceeded`. Replacement
 materialization or a saved-witness replay may already have run. The zero-duration
 sample shared by `budget_exceeded` entries is taken after already-submitted work
 finishes; it does not bracket or describe that earlier work and does not prove
-that no earlier work ran. Pre-current
-B145 resume records are automatically cold starts under the new judge
-identity. Ingested third-party R2 reports have no local candidate process and
+that no earlier work ran. Resume records created before B155's `/10` judge
+identity are automatically cold starts because the scope-attribution rule
+changed. Ingested third-party R2 reports have no local candidate process and
 do not carry these counters. See the
 [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 

@@ -153,6 +153,14 @@ def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path
     (cgroup_dir / "memory.events").write_text(
         "max 1\noom 1\noom_kill 2\noom_group_kill 0\n", encoding="ascii"
     )
+    (parent_dir / "pids.events.local").write_text("max 3\n", encoding="ascii")
+    (cgroup_dir / "pids.events.local").write_text("max 2\n", encoding="ascii")
+    (parent_dir / "memory.events.local").write_text(
+        "max 2\noom 3\noom_kill 4\noom_group_kill 1\n", encoding="ascii"
+    )
+    (cgroup_dir / "memory.events.local").write_text(
+        "max 1\noom 1\noom_kill 2\noom_group_kill 0\n", encoding="ascii"
+    )
     _lock_cgroup_controls(mount_root, parent_dir, cgroup_dir)
     cgroup_file = tmp_path / "proc-cgroup"
     cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
@@ -172,12 +180,12 @@ def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path
         memory_oom_kill=6,
         memory_oom_group_kill=1,
         limit_signature=(
-            (str(cgroup_dir), 31, True, None, True, None, True, True),
-            (str(parent_dir), 31, True, 12, True, 4096, True, True),
+            (str(cgroup_dir), 31, True, None, True, None, True, True, True, True, False, False),
+            (str(parent_dir), 31, True, 12, True, 4096, True, True, True, True, False, False),
         ),
         path_event_counters=(
-            (str(cgroup_dir), 2, 1, 1, 2, 0),
-            (str(parent_dir), 3, 2, 3, 4, 1),
+            (str(cgroup_dir), 2, 1, 1, 2, 0, 2, 1, 1, 2, 0),
+            (str(parent_dir), 3, 2, 3, 4, 1, 3, 2, 3, 4, 1),
         ),
     )
 
@@ -196,6 +204,13 @@ def test_reader_uses_the_calling_worker_thread_cgroup(
             f"max {pids_count}\n", encoding="ascii"
         )
         (directory / "memory.events").write_text(
+            "max 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+            encoding="ascii",
+        )
+        (directory / "pids.events.local").write_text(
+            f"max {pids_count}\n", encoding="ascii"
+        )
+        (directory / "memory.events.local").write_text(
             "max 0\noom 0\noom_kill 0\noom_group_kill 0\n",
             encoding="ascii",
         )
@@ -388,6 +403,10 @@ def test_reader_refuses_a_sampled_counter_from_another_mount(
             "max 0\noom 0\noom_kill 0\noom_group_kill 0\n",
             encoding="ascii",
         )
+        (directory / "pids.events.local").write_text("max 0\n", encoding="ascii")
+        (directory / "memory.events.local").write_text(
+            "max 0\noom 0\noom_kill 0\noom_group_kill 0\n", encoding="ascii"
+        )
     _lock_cgroup_controls(mount_point, candidate.parent, candidate)
     cgroup_file = tmp_path / "proc-cgroup"
     cgroup_file.write_text("0::/worker/lane\n", encoding="utf-8")
@@ -456,6 +475,10 @@ def test_reader_fails_closed_when_a_required_controller_counter_is_missing(
     (cgroup_dir / "memory.events").write_text(
         "max 0\noom 0\noom_kill 0\n", encoding="ascii"
     )
+    (cgroup_dir / "pids.events.local").write_text("max 0\n", encoding="ascii")
+    (cgroup_dir / "memory.events.local").write_text(
+        "max 0\noom 0\noom_kill 0\n", encoding="ascii"
+    )
     _lock_cgroup_controls(mount_point, cgroup_dir)
     cgroup_file = tmp_path / "proc-cgroup"
     cgroup_file.write_text("0::/lane\n", encoding="utf-8")
@@ -482,6 +505,10 @@ def test_reader_accepts_inactive_child_controllers_when_finite_parent_is_visible
     (parent_dir / "memory.max").write_text("4096\n", encoding="ascii")
     (parent_dir / "pids.events").write_text("max 3\n", encoding="ascii")
     (parent_dir / "memory.events").write_text(
+        "max 2\noom 3\noom_kill 4\noom_group_kill 1\n", encoding="ascii"
+    )
+    (parent_dir / "pids.events.local").write_text("max 3\n", encoding="ascii")
+    (parent_dir / "memory.events.local").write_text(
         "max 2\noom 3\noom_kill 4\noom_group_kill 1\n", encoding="ascii"
     )
     _lock_cgroup_controls(mount_point, parent_dir, cgroup_dir)
@@ -524,6 +551,12 @@ def test_reader_samples_unlimited_active_ancestors_for_local_events(
     (active / "memory.events").write_text(
         "max 6\noom 7\noom_kill 8\noom_group_kill 9\n", encoding="ascii"
     )
+    for directory, pids_events, memory_events in (
+        (limited, "max 2\n", "max 1\noom 2\noom_kill 3\noom_group_kill 4\n"),
+        (active, "max 5\n", "max 6\noom 7\noom_kill 8\noom_group_kill 9\n"),
+    ):
+        (directory / "pids.events.local").write_text(pids_events, encoding="ascii")
+        (directory / "memory.events.local").write_text(memory_events, encoding="ascii")
     _lock_cgroup_controls(mount_point, limited, active, candidate)
     cgroup_file = tmp_path / "proc-cgroup"
     cgroup_file.write_text("0::/limited/active/lane\n", encoding="utf-8")
@@ -596,13 +629,13 @@ def test_limit_configuration_change_invalidates_candidate_window():
         memory_oom_kill=0,
         memory_oom_group_kill=0,
         limit_signature=(
-            ("/worker/lane", 31, True, 12, True, 4096, True, True),
+            ("/worker/lane", 31, True, 12, True, 4096, True, True, True, True, False, False),
         ),
     )
     after = replace(
         before,
         limit_signature=(
-            ("/worker/lane", 31, True, None, True, 4096, True, True),
+            ("/worker/lane", 31, True, None, True, 4096, True, True, True, True, False, False),
         ),
     )
 
@@ -618,13 +651,13 @@ def test_event_interface_change_invalidates_candidate_window():
         memory_oom_kill=0,
         memory_oom_group_kill=0,
         limit_signature=(
-            ("/worker/lane", 31, False, None, False, None, True, True),
+            ("/worker/lane", 31, False, None, False, None, True, True, True, True, False, False),
         ),
     )
     after = replace(
         before,
         limit_signature=(
-            ("/worker/lane", 31, False, None, False, None, False, True),
+            ("/worker/lane", 31, False, None, False, None, False, True, False, True, False, False),
         ),
     )
 
@@ -640,13 +673,13 @@ def test_mount_identity_change_invalidates_candidate_window():
         memory_oom_kill=0,
         memory_oom_group_kill=0,
         limit_signature=(
-            ("/worker/lane", 31, True, 12, True, 4096, True, True),
+            ("/worker/lane", 31, True, 12, True, 4096, True, True, True, True, False, False),
         ),
     )
     after = replace(
         before,
         limit_signature=(
-            ("/worker/lane", 32, True, 12, True, 4096, True, True),
+            ("/worker/lane", 32, True, 12, True, 4096, True, True, True, True, False, False),
         ),
     )
 

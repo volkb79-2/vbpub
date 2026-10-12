@@ -40,6 +40,10 @@ LimitSignatureEntry = tuple[
     int | None,
     bool,
     bool,
+    bool,
+    bool,
+    bool,
+    bool,
 ]
 
 _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS = 5.0
@@ -82,10 +86,15 @@ class ResourceLimitCounters:
     # or configured limit during one candidate an infrastructure error instead
     # of hiding a counter from the aggregate merely because it became unlimited.
     limit_signature: tuple[LimitSignatureEntry, ...] = ()
-    # Internal per-cgroup snapshots used only to ensure an event is attributable
-    # to the lane leaf. They are never serialized into mutation verdicts.
+    # Internal per-cgroup snapshots used only to attribute events. Each row is
+    # path, regular pids/memory events, then effective local pids/memory events.
+    # They are never serialized into mutation verdicts.
     path_event_counters: tuple[
-        tuple[str, int | None, int | None, int | None, int | None, int | None], ...
+        tuple[
+            str,
+            int | None, int | None, int | None, int | None, int | None,
+            int | None, int | None, int | None, int | None, int | None,
+        ], ...
     ] = ()
 
     def __post_init__(self) -> None:
@@ -104,7 +113,7 @@ class ResourceLimitCounters:
         for entry in self.limit_signature:
             if (
                 type(entry) is not tuple
-                or len(entry) != 8
+                or len(entry) != 12
                 or not isinstance(entry[0], str)
                 or type(entry[1]) is not int
                 or entry[1] <= 0
@@ -120,10 +129,11 @@ class ResourceLimitCounters:
                 )
                 or type(entry[6]) is not bool
                 or type(entry[7]) is not bool
+                or any(type(value) is not bool for value in entry[8:12])
                 or (not entry[2] and entry[3] is not None)
                 or (not entry[4] and entry[5] is not None)
-                or (entry[2] and not entry[6])
-                or (entry[4] and not entry[7])
+                or (entry[2] and (not entry[6] or (not entry[8] and not entry[10])))
+                or (entry[4] and (not entry[7] or (not entry[9] and not entry[11])))
             ):
                 raise ValueError("limit_signature entries are malformed")
         if type(self.path_event_counters) is not tuple:
@@ -132,7 +142,7 @@ class ResourceLimitCounters:
         for entry in self.path_event_counters:
             if (
                 type(entry) is not tuple
-                or len(entry) != 6
+                or len(entry) != 11
                 or not isinstance(entry[0], str)
                 or not entry[0].startswith("/")
                 or str(PurePosixPath(entry[0])) != entry[0]
@@ -269,7 +279,7 @@ class ResourceLimitEvidence:
 def _candidate_counter_deltas(
     before: ResourceLimitCounters, after: ResourceLimitCounters
 ) -> tuple[CounterDelta, CounterDelta, CounterDelta, CounterDelta, CounterDelta]:
-    """Use leaf counters only and reject any unmatched shared-ancestor event."""
+    """Use candidate subtree events and ancestor-local events for attribution."""
     if not before.path_event_counters and not after.path_event_counters:
         # Compatibility for in-memory fixtures and pre-collection callers.
         # Both production readers below always attach per-path samples.
@@ -315,13 +325,25 @@ def _candidate_counter_deltas(
 
     candidate_deltas: list[CounterDelta] = []
     for metric_index in range(5):
-        leaf_delta = per_path[0][metric_index]
+        # Layout: five hierarchical counters followed by five local counters.
+        # The candidate's ordinary events file covers its cgroup subtree unless
+        # the mount explicitly enables localevents; in that mode it still
+        # covers the candidate cgroup itself. Candidate descendants cannot be
+        # introduced by the measured process when that local mode is active.
+        regular_leaf_delta = per_path[0][metric_index]
+        local_leaf_delta = per_path[0][metric_index + 5]
+        if regular_leaf_delta is None:
+            leaf_delta = local_leaf_delta
+        elif local_leaf_delta is not None and regular_leaf_delta.delta == 0:
+            # The two files are read sequentially. A candidate event can land
+            # between reads, so either positive candidate-scope delta counts.
+            leaf_delta = local_leaf_delta if local_leaf_delta.delta > 0 else regular_leaf_delta
+        else:
+            leaf_delta = regular_leaf_delta
         leaf_value = 0 if leaf_delta is None else leaf_delta.delta
         for ancestor in per_path[1:]:
-            ancestor_delta = ancestor[metric_index]
-            if ancestor_delta is not None and ancestor_delta.delta > 0 and (
-                leaf_delta is None or ancestor_delta.delta != leaf_value
-            ):
+            ancestor_delta = ancestor[metric_index + 5]
+            if ancestor_delta is not None and ancestor_delta.delta > 0 and leaf_value == 0:
                 raise ResourceLimitObservationError(
                     "a shared ancestor resource event is not attributable to the "
                     "candidate cgroup; mutation outcomes are withheld"
@@ -550,7 +572,7 @@ def _require_unwritable_cgroup_procs(
 
 def _visible_cgroup_directories(
     *, cgroup_text: str, mountinfo_text: str
-) -> tuple[tuple[Path, ...], int]:
+) -> tuple[tuple[Path, ...], int, bool, bool]:
     unified_path: str | None = None
     for line in cgroup_text.splitlines():
         fields = line.split(":", 2)
@@ -567,7 +589,7 @@ def _visible_cgroup_directories(
         raise ResourceLimitObservationError(
             "the calling thread cgroup path escapes its hierarchy"
         )
-    matching_mounts: list[tuple[int, Path, PurePosixPath]] = []
+    matching_mounts: list[tuple[int, Path, PurePosixPath, bool, bool]] = []
     visible_mount_points: list[Path] = []
     for line in mountinfo_text.splitlines():
         try:
@@ -579,8 +601,11 @@ def _visible_cgroup_directories(
             visible_mount_points.append(mount_point)
             if filesystem_fields[0] != "cgroup2":
                 continue
+            if len(filesystem_fields) < 3:
+                raise ValueError("cgroup2 mount omits superblock options")
             mount_root = PurePosixPath(_unescape_mountinfo(mount_fields[3]))
             mount_options = set(mount_fields[5].split(","))
+            super_options = set(filesystem_fields[2].split(","))
         except (IndexError, ValueError) as exc:
             raise ResourceLimitObservationError("malformed cgroup mount record") from exc
 
@@ -589,7 +614,13 @@ def _visible_cgroup_directories(
         if cgroup_path.is_relative_to(mount_root) or mount_root.is_relative_to(
             cgroup_path
         ):
-            matching_mounts.append((mount_id, mount_point, mount_root))
+            matching_mounts.append((
+                mount_id,
+                mount_point,
+                mount_root,
+                "pids_localevents" in super_options,
+                "memory_localevents" in super_options,
+            ))
             if "ro" not in mount_options:
                 raise ResourceLimitObservationError(
                     "a cgroup2 mount exposes the candidate hierarchy writable"
@@ -600,8 +631,8 @@ def _visible_cgroup_directories(
             "the current process has no visible cgroup v2 mount"
         )
     full_hierarchy_mounts = [
-        (mount_id, point, root)
-        for mount_id, point, root in matching_mounts
+        (mount_id, point, root, pids_localevents, memory_localevents)
+        for mount_id, point, root, pids_localevents, memory_localevents in matching_mounts
         if root == PurePosixPath("/")
     ]
     if not full_hierarchy_mounts:
@@ -609,7 +640,13 @@ def _visible_cgroup_directories(
             "the visible cgroup2 mount omits ancestors above its mount root"
         )
 
-    selected_mount_id, mount_point, _mount_root = full_hierarchy_mounts[0]
+    (
+        selected_mount_id,
+        mount_point,
+        _mount_root,
+        pids_localevents,
+        memory_localevents,
+    ) = full_hierarchy_mounts[0]
     hierarchy_root = mount_point
     opened_mount_id = _mount_id_for_path(hierarchy_root)
     if opened_mount_id != selected_mount_id:
@@ -649,8 +686,10 @@ def _visible_cgroup_directories(
                 "cgroup.procs",
                 "pids.max",
                 "pids.events",
+                "pids.events.local",
                 "memory.max",
                 "memory.events",
+                "memory.events.local",
             )
         )
     for visible_mount in visible_mount_points:
@@ -662,7 +701,22 @@ def _visible_cgroup_directories(
             raise ResourceLimitObservationError(
                 "a visible mount shadows a cgroup path or resource counter"
             )
-    return visible_directories, selected_mount_id
+    return visible_directories, selected_mount_id, pids_localevents, memory_localevents
+
+
+def _require_no_candidate_subgroups(candidate_directory: Path) -> None:
+    """Localevents can cover the candidate cgroup only when it is a leaf."""
+    try:
+        with os.scandir(candidate_directory) as entries:
+            has_child = any(entry.is_dir(follow_symlinks=False) for entry in entries)
+    except OSError as exc:
+        raise ResourceLimitObservationError(
+            "cannot prove the localevents candidate cgroup has no child cgroups"
+        ) from exc
+    if has_child:
+        raise ResourceLimitObservationError(
+            "localevents expose only local events, but the candidate cgroup has child cgroups"
+        )
 
 
 def _read_event_file_if_present(
@@ -689,6 +743,34 @@ def _read_event_file_if_present(
             f"{path.name} is missing required counters {sorted(missing)}"
         )
     return values
+
+
+def _effective_local_events(
+    regular: dict[str, int] | None,
+    local: dict[str, int] | None,
+    *,
+    regular_is_local: bool,
+    required: frozenset[str],
+    controller: str,
+) -> dict[str, int] | None:
+    """Return local event evidence, using localevents as a proven equivalent."""
+    if regular is None:
+        if local is not None:
+            raise ResourceLimitObservationError(
+                f"{controller}.events.local is present without its regular event file"
+            )
+        return None
+    if local is None:
+        if regular_is_local:
+            return {key: regular[key] for key in required}
+        raise ResourceLimitObservationError(
+            f"{controller}.events.local is unavailable"
+        )
+    if regular_is_local:
+        # The two interfaces have the same scope under localevents. Taking the
+        # maximum preserves a concurrent increment between their sequential reads.
+        return {key: max(regular[key], local[key]) for key in required}
+    return {key: local[key] for key in required}
 
 
 def _read_limit_file(
@@ -743,7 +825,7 @@ def read_current_cgroup_counters(
         raise ResourceLimitObservationError(
             f"cannot inspect calling thread cgroup identity: {exc}"
         ) from exc
-    directories, mount_id = _visible_cgroup_directories(
+    directories, mount_id, pids_localevents, memory_localevents = _visible_cgroup_directories(
         cgroup_text=cgroup_text, mountinfo_text=mountinfo_text
     )
     _require_unwritable_cgroup_procs(
@@ -755,7 +837,9 @@ def read_current_cgroup_counters(
     memory_oom_kill = 0
     memory_oom_group_kill = 0
     pids_samples: dict[int, dict[str, int]] = {}
+    pids_local_samples: dict[int, dict[str, int]] = {}
     memory_samples: dict[int, dict[str, int]] = {}
+    memory_local_samples: dict[int, dict[str, int]] = {}
     limits: list[tuple[bool, int | None, bool, int | None]] = []
     limit_signature: list[LimitSignatureEntry] = []
     for directory in directories:
@@ -791,6 +875,20 @@ def read_current_cgroup_counters(
             )
         if pids_events is not None:
             pids_samples[index] = pids_events
+        pids_events_local = _read_event_file_if_present(
+            directory / "pids.events.local",
+            frozenset({"max"}),
+            expected_mount_id=mount_id,
+        )
+        pids_local_effective = _effective_local_events(
+            pids_events,
+            pids_events_local,
+            regular_is_local=pids_localevents,
+            required=frozenset({"max"}),
+            controller="pids",
+        )
+        if pids_local_effective is not None:
+            pids_local_samples[index] = pids_local_effective
 
         memory_events = _read_event_file_if_present(
             directory / "memory.events",
@@ -803,6 +901,25 @@ def read_current_cgroup_counters(
             )
         if memory_events is not None:
             memory_samples[index] = memory_events
+        if index == 0 and (
+            (pids_localevents and pids_events is not None)
+            or (memory_localevents and memory_events is not None)
+        ):
+            _require_no_candidate_subgroups(directory)
+        memory_events_local = _read_event_file_if_present(
+            directory / "memory.events.local",
+            frozenset({"max", "oom", "oom_kill", "oom_group_kill"}),
+            expected_mount_id=mount_id,
+        )
+        memory_local_effective = _effective_local_events(
+            memory_events,
+            memory_events_local,
+            regular_is_local=memory_localevents,
+            required=frozenset({"max", "oom", "oom_kill", "oom_group_kill"}),
+            controller="memory",
+        )
+        if memory_local_effective is not None:
+            memory_local_samples[index] = memory_local_effective
         limit_signature.append(
             (
                 str(directory),
@@ -810,6 +927,10 @@ def read_current_cgroup_counters(
                 *limits[index],
                 pids_events is not None,
                 memory_events is not None,
+                pids_events_local is not None,
+                memory_events_local is not None,
+                pids_localevents,
+                memory_localevents,
             )
         )
 
@@ -837,6 +958,11 @@ def read_current_cgroup_counters(
             memory_samples.get(index, {}).get("oom"),
             memory_samples.get(index, {}).get("oom_kill"),
             memory_samples.get(index, {}).get("oom_group_kill"),
+            pids_local_samples.get(index, {}).get("max"),
+            memory_local_samples.get(index, {}).get("max"),
+            memory_local_samples.get(index, {}).get("oom"),
+            memory_local_samples.get(index, {}).get("oom_kill"),
+            memory_local_samples.get(index, {}).get("oom_group_kill"),
         )
         for index, directory in enumerate(directories)
     )
@@ -895,7 +1021,7 @@ def read_resource_observer_counters(socket_path: str) -> ResourceLimitCounters:
 
     thread_id = threading.get_native_id()
     request = json.dumps(
-        {"verb": "resource-limits", "args": {"thread_id": thread_id}, "contract": 1},
+        {"verb": "resource-limits", "args": {"thread_id": thread_id}, "contract": 2},
         separators=(",", ":"),
     ).encode("utf-8") + b"\n"
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -955,7 +1081,8 @@ def _resource_counters_from_observer(
         error = document.get("error")
         if (
             document.get("ok") is False
-            and document.get("contract") == 1
+            and type(document.get("contract")) is int
+            and document.get("contract") in {1, 2}
             and isinstance(error, Mapping)
             and isinstance(error.get("message"), str)
         ):
@@ -963,14 +1090,27 @@ def _resource_counters_from_observer(
                 f"resource observer refused the query: {error['message']}"
             )
         raise ResourceLimitObservationError("resource observer returned a malformed error")
+    if type(document.get("contract")) is not int or document["contract"] != 2:
+        raise ResourceLimitObservationError(
+            "resource observer contract version 2 is required for local event counters"
+        )
     if set(document) != {
-        "ok", "contract", "cgroup_version", "thread_id", "gates_slice", "cgroups",
+        "ok", "contract", "cgroup_version", "thread_id", "gates_slice",
+        "pids_events_scope", "memory_events_scope", "cgroups",
     }:
         raise ResourceLimitObservationError(
             "resource observer response has unknown or missing fields"
         )
-    if type(document["contract"]) is not int or document["contract"] != 1:
-        raise ResourceLimitObservationError("resource observer contract version is not 1")
+    if not isinstance(document["pids_events_scope"], str) or document[
+        "pids_events_scope"
+    ] not in {"local", "hierarchical"}:
+        raise ResourceLimitObservationError("resource observer pids event scope is malformed")
+    if not isinstance(document["memory_events_scope"], str) or document[
+        "memory_events_scope"
+    ] not in {"local", "hierarchical"}:
+        raise ResourceLimitObservationError("resource observer memory event scope is malformed")
+    pids_localevents = document["pids_events_scope"] == "local"
+    memory_localevents = document["memory_events_scope"] == "local"
     if type(document["cgroup_version"]) is not int or document["cgroup_version"] != 2:
         raise ResourceLimitObservationError("resource observer did not report cgroup v2")
     if type(document["thread_id"]) is not int or document["thread_id"] != expected_thread_id:
@@ -981,7 +1121,13 @@ def _resource_counters_from_observer(
         raise ResourceLimitObservationError("resource observer cgroups must be a non-empty list")
 
     signatures: list[LimitSignatureEntry] = []
-    path_counters: list[tuple[str, int | None, int | None, int | None, int | None, int | None]] = []
+    path_counters: list[
+        tuple[
+            str,
+            int | None, int | None, int | None, int | None, int | None,
+            int | None, int | None, int | None, int | None, int | None,
+        ]
+    ] = []
     pids_total = 0
     memory_totals = [0, 0, 0, 0]
     pids_available = False
@@ -992,6 +1138,7 @@ def _resource_counters_from_observer(
         if not isinstance(raw, Mapping) or set(raw) != {
             "path", "mount_id", "pids_max_present", "pids_max",
             "memory_max_present", "memory_max", "pids_events", "memory_events",
+            "pids_events_local", "memory_events_local",
         }:
             raise ResourceLimitObservationError("resource observer cgroup entry is malformed")
         path_value = _canonical_observer_path(raw["path"], "cgroup path")
@@ -1017,13 +1164,38 @@ def _resource_counters_from_observer(
             {"max", "oom", "oom_kill", "oom_group_kill"},
             "memory.events",
         )
+        pids_events_local = _observer_events(
+            raw["pids_events_local"], {"max"}, "pids.events.local"
+        )
+        memory_events_local = _observer_events(
+            raw["memory_events_local"],
+            {"max", "oom", "oom_kill", "oom_group_kill"},
+            "memory.events.local",
+        )
         if pids_present and pids_events is None:
             raise ResourceLimitObservationError("finite or unlimited pids.max lacks pids.events")
         if memory_present and memory_events is None:
             raise ResourceLimitObservationError("finite or unlimited memory.max lacks memory.events")
+        pids_local_effective = _effective_local_events(
+            pids_events,
+            pids_events_local,
+            regular_is_local=pids_localevents,
+            required=frozenset({"max"}),
+            controller="pids",
+        )
+        memory_local_effective = _effective_local_events(
+            memory_events,
+            memory_events_local,
+            regular_is_local=memory_localevents,
+            required=frozenset({"max", "oom", "oom_kill", "oom_group_kill"}),
+            controller="memory",
+        )
         signatures.append((
             str(path_value), raw["mount_id"], pids_present, pids_limit,
-            memory_present, memory_limit, pids_events is not None, memory_events is not None,
+            memory_present, memory_limit,
+            pids_events is not None, memory_events is not None,
+            pids_events_local is not None, memory_events_local is not None,
+            pids_localevents, memory_localevents,
         ))
         path_counters.append((
             str(path_value),
@@ -1032,6 +1204,11 @@ def _resource_counters_from_observer(
             None if memory_events is None else memory_events["oom"],
             None if memory_events is None else memory_events["oom_kill"],
             None if memory_events is None else memory_events["oom_group_kill"],
+            None if pids_local_effective is None else pids_local_effective["max"],
+            None if memory_local_effective is None else memory_local_effective["max"],
+            None if memory_local_effective is None else memory_local_effective["oom"],
+            None if memory_local_effective is None else memory_local_effective["oom_kill"],
+            None if memory_local_effective is None else memory_local_effective["oom_group_kill"],
         ))
         if pids_events is not None:
             pids_available = True

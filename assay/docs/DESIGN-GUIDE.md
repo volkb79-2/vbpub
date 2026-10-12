@@ -639,39 +639,38 @@ failure is not scored as a mutant kill. They are not a resource-usage profile;
 CPU time, peak memory, and pressure measurements belong to separate runtime
 and liveness evidence.
 
-Assay samples the candidate's
-`pids.events.max` whenever available and the event file at every visible
-ancestor where the pids controller is active; a finite `pids.max` requires its
-counter. Sampling unlimited active ancestors covers `pids_localevents`, where
-a rejected fork can increment the nearest active ancestor's local counter
-while a higher ancestor enforces the finite limit. Assay samples the four
-`memory.events` counters (`max`, `oom`, `oom_kill`, `oom_group_kill`) at the
-candidate and every visible ancestor where the memory controller is active; a
-finite `memory.max` requires its event file. If the candidate memory controller
-is inactive, visible active ancestor event files are sampled too. `max` counts attempts to
-exceed the memory boundary even when the OOM path does not run; `oom_kill` also
-captures a global OOM kill in the candidate when its own `memory.max` is
-unlimited. Unlimited active ancestors are sampled too, so local event counters
-can report a refusal at an intermediate ancestor. Assay must inspect ancestors
-because an ancestor can impose a stricter effective limit than the candidate's
-own cgroup reports. For example, a leaf with `pids.max = max` can still have a
-fork refused when an ancestor's finite `pids.max` is reached; the limit event
-may be recorded at the enforcing ancestor, not the leaf.
+Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
+samples `pids.events.local` and `memory.events.local` at every visible active
+ancestor. A finite `pids.max` or `memory.max` requires its regular event file
+and effective local event evidence: the `.local` file, or the regular file
+when verified mount options make it local. It also samples unlimited active ancestors because a finite limit
+can exist higher in the chain. `max` counts attempts to exceed the memory
+boundary even when the OOM path does not run; `oom_kill` also captures a global
+OOM kill in the candidate when its own `memory.max` is unlimited. Assay must
+inspect ancestors because an ancestor can impose a stricter effective limit
+than the candidate's own cgroup reports. For example, a leaf with
+`pids.max = max` can still have a fork refused when an ancestor's finite
+`pids.max` is reached.
 
-The current reader samples `pids.events` and `memory.events` at the candidate
-and its visible ancestors. These interfaces can report hierarchical events:
-an ancestor's counter may include an event from a descendant. In that case a
-sibling can hit its own `pids.max` or `memory.max` while the shared parent's
-limit still has headroom, yet the parent counter can change during the R2
-candidate window. The event is measurable but its source is ambiguous to the
-candidate reader. Current B145 behavior conservatively withholds the R2
-outcome when an ancestor delta cannot be matched to the candidate leaf. This
-preserves result integrity at the cost of availability under some concurrent
-workloads. B155 tracks a scope-aware design using candidate-subtree counters
-and local event counters at enforcing ancestors, while retaining an
-inconclusive result when a shared ancestor's own limit event cannot be
-attributed. See the [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
-for the hierarchical limit and event-counter semantics. Every visible cgroup2 mount
+In each candidate window, Assay uses the candidate's ordinary event files and
+candidate-local event files, then the ancestors' local event files. Either
+positive candidate delta is an infrastructure failure; the local sample also
+covers an increment between sequential reads of the regular and local files.
+A sibling can change a shared ancestor's hierarchical count without changing
+that ancestor's local count, so that
+hierarchical-only change does not invalidate an unaffected candidate. A
+positive local event at a shared ancestor with no candidate event remains
+ambiguous and withholds mutation outcomes. The candidate's ordinary event file
+becomes local when `pids_localevents` or `memory_localevents` is enabled. For
+each active controller in that mode, Assay requires the candidate cgroup to
+have no child cgroups, so the local file still covers its execution; an
+inactive controller's mount option alone does not block a candidate. The
+cgroup-profiler observer uses contract 2 to provide both scopes to a private
+cgroup namespace. Assay refuses contract 1 rather than interpreting its
+hierarchical counters as local. The mount mode and event-file availability are
+bound across before/after samples. See the
+[Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+for the event and localevents semantics. Every visible cgroup2 mount
 exposing the sampled hierarchy must be read-only. Assay also checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and every
 ancestor. A read-only mount alone cannot stop `CLONE_INTO_CGROUP` from moving a
@@ -687,11 +686,11 @@ immediately before and after it. If the lane stops before a full command starts,
 that candidate remains `budget_exceeded` and shares a zero-duration sample
 taken after already-submitted work finishes. Replacement materialization or a
 saved-witness replay may already have run; the shared sample does not describe
-that earlier work or prove it did not happen. A positive candidate-leaf delta,
-with every positive visible-ancestor delta matching it, records that candidate
-as `crashed`, making R2 `ERROR/EXEC_FAILED`. An unmatched or different positive
-ancestor delta cannot be attributed to that candidate, so Assay withholds
-mutation outcomes and fails with the same infrastructure error. A positive
+that earlier work or prove it did not happen. A positive candidate event delta
+records that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`. If the
+candidate counters stay unchanged while any visible ancestor's local counter
+increases, Assay cannot attribute that event to the candidate and withholds
+mutation outcomes with the same infrastructure error. A positive
 delta during witness-prefix replay likewise stops the lane with payload-free
 `ERROR/EXEC_FAILED` before retry, so the replay
 event cannot be hidden by a later command. A positive delta never certifies a
@@ -713,8 +712,9 @@ does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. Resume state with a positive counter delta is rejected for reuse, and
 the B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
-identity inputs advanced it to `/8`, and the RG-89 observer policy advances
-it to `/9`; older records are cold starts. The mutation-state schema number
+identity inputs advanced it to `/8`, the RG-89 observer policy advanced it to
+`/9`, and B155's event-scope attribution advances it to `/10`; older records
+are cold starts. The mutation-state schema number
 does not change: this is a change in what the judge identity covers, not the
 record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
