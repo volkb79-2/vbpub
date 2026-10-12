@@ -39,8 +39,8 @@ untagged local `--build` uses `0.0.0-dev`; a `--push` without CMRU's protected
 identity refuses before registry login. The pair binds the source to a commit
 and tag; it is not an authentication token or proof of CMRU provenance. Use
 `cmru release` for publication and do not hand-write the pair. The Bake file's
-version and image-tag defaults are fixed to the development identity, so a bare `docker buildx bake`
-ignores an ambient `CGPROFILE_VERSION`. Use `cmru release` to publish.
+version and image-tag defaults are fixed to the development identity, so a bare `docker buildx bake` ignores an ambient `CGPROFILE_VERSION`.
+Use `cmru release` to publish.
 For a direct source build, use the development identity and
 local-only image tag. Release identity comes from CMRU's exact tag; do not
 label an arbitrary checkout as a release. Pass both the required version and
