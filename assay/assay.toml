@@ -358,7 +358,9 @@ argv = [
   "--cov-report=json:.assay/coverage-analysis-r2.json",
 ]
 env = {}
-env_passthrough = ["PATH"]
+# O15/O5 analysis tests invoke real native R2 runs in-process. Preserve the
+# read-only cgroup-profiler endpoint for the command launched by this lane.
+env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 budget = "60m"
 allow_argv_append = false
 

@@ -113,8 +113,9 @@ def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
         assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
 
 
-def test_analysis_lane_forwards_observer_to_real_nested_r2_tests():
-    lane = load_lane_file(SELF_LANE_FILE).lane("analysis")
+@pytest.mark.parametrize("lane_id", ("analysis", "analysis-r2"))
+def test_analysis_lanes_forward_observer_to_real_nested_r2_tests(lane_id):
+    lane = load_lane_file(SELF_LANE_FILE).lane(lane_id)
 
     assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in lane.env_passthrough
 
