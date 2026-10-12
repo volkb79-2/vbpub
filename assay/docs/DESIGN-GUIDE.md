@@ -1480,6 +1480,9 @@ the ordered R2 collection manifest separately: the report checker compares its
 count and digest with the baseline, then binds each candidate's collection
 facts and failed-call witness to that collection. This prevents a fabricated
 node ID or unrelated collection digest from turning a pilot result green.
+When a pilot is incomplete, `refusal.claim_diagnostics` carries each non-pass
+claim's bounded `detail` and `detail_dropped_bytes`. The text is diagnostic;
+claim status and reason code remain the machine-readable outcome.
 
 Exit code **6** is intentionally outside the ordinary `EXIT_CODES` map. It
 means the selected pilot inventory completed, regardless of whether R2 passed

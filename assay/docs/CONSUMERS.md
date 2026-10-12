@@ -1111,6 +1111,13 @@ the plan commit, tree, raw plan digest, and selected IDs in its report. A plan
 from an older commit is refused even when its planned source files are
 unchanged:
 
+When a pilot stops before candidate execution, inspect the JSON summary emitted
+by `assay run` (or the file where you redirected it) and read
+`refusal.claim_diagnostics` for bounded R0/R1 claim details. For a recognized
+test failure, the R0 detail names the first failing test; `detail_dropped_bytes`
+shows whether the text was truncated. The refusal's status and reason code
+remain the outcome.
+
 ### Registered pilot and survivor-screen gates
 
 Use the registered lanes for reviewable gate evidence:
@@ -5390,6 +5397,9 @@ Read `.assay/analysis-r2-pilot-selection.json` for the selected files,
 operators, sample reasons and counts; `.assay/analysis-r2-pilot-summary.json`
 for the completed sample and source-bound `r2_command`; and
 `.assay/r2-manifest-analysis-r2-pilot.txt` for the ordered baseline collection.
+If the pilot is incomplete, inspect the summary's
+`refusal.claim_diagnostics` for the bounded R0/R1 details that explain the
+failure, including a recognized first failing test.
 The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus

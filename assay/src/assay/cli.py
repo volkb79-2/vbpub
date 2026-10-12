@@ -1417,12 +1417,23 @@ def _build_pilot_summary(
         "unresolved": unresolved,
     }
     if r2_mutation is None:
-        summary["refusal"] = {
+        refusal: dict[str, Any] = {
             "status": verdict.outcome.value,
             "reason_code": (
                 verdict.reason_code.value if verdict.reason_code is not None else None
             ),
         }
+        claim_diagnostics = {
+            claim.rigor: {
+                "detail": claim.detail,
+                "detail_dropped_bytes": claim.detail_dropped_bytes,
+            }
+            for claim in verdict.claims
+            if claim.detail is not None
+        }
+        if claim_diagnostics:
+            refusal["claim_diagnostics"] = claim_diagnostics
+        summary["refusal"] = refusal
     return summary
 
 

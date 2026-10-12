@@ -12598,3 +12598,22 @@ full clause copies. Existing bounded-retention tests prove output identities
 remain stable at limits one and many. The SQL adapter suite and exact-tip
 registered `tester-unified` gate provide the implementation and integration
 evidence.
+
+## B161 — incomplete pilot summary drops the failing claim diagnostic
+
+**Status: IMPLEMENTED IN THE CONTRACT-2 CANDIDATE; exact-tip gate pending.** The incomplete pilot
+summary retained only the top-level status and reason code. A measured R0 test
+failure therefore appeared as `COMMAND_FAILED` without the first failing test,
+even though the R0 claim had already retained its bounded diagnostic.
+
+**Chosen contract:** when an incomplete summary has non-pass claim details,
+include them in `refusal.claim_diagnostics`, keyed by rigor. Each entry carries
+the existing bounded `detail` and its `detail_dropped_bytes`; this is diagnostic
+text and does not alter claim status or reason code. Complete-summary shape and
+pilot qualification semantics remain unchanged.
+
+**Oracle:** a deterministic failed R0 command names its first failing test in
+the incomplete pilot summary and retains its truncation count. The summary
+remains incomplete, reports the existing `COMMAND_FAILED` reason, executes no
+candidate, and leaves every selected ID unresolved. README, DESIGN-GUIDE and
+CONSUMERS describe the diagnostic field and its meaning.

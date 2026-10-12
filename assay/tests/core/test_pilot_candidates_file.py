@@ -667,6 +667,50 @@ def test_T10_mutation_discovery_refusal_keeps_r2_reason_and_pilot_terminal(
     assert events[-1]["reason_code"] == "MUTATION_DISCOVERY_FAILED"
 
 
+def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
+    git_repo: GitRepo, tmp_path: Path
+):
+    lane_file, _lines = _seed_pilot_repo(git_repo)
+    candidate = str(_plan(lane_file)[0]["id"])
+    lane_text = lane_file.read_text(encoding="utf-8")
+    failing_command = json.dumps(
+        [
+            "/bin/sh",
+            "-c",
+            "printf 'FAILED tests/test_alpha.py::test_broken - boom\\n'; exit 1",
+        ]
+    )
+    lane_text = lane_text.replace(
+        next(line for line in lane_text.splitlines() if line.startswith("argv = ")),
+        f"argv = {failing_command}",
+        1,
+    )
+    lane_file.write_text(lane_text, encoding="utf-8")
+    git_repo.commit_all("make the pilot baseline fail with a named test")
+    candidates = _candidate_file(tmp_path / "one.txt", [candidate])
+
+    code, stdout, stderr = _run_pilot(
+        lane_file,
+        candidates,
+        tmp_path / "state",
+        tmp_path / "progress.jsonl",
+    )
+
+    assert code == 1, stderr
+    summary = json.loads(stdout)
+    assert summary["completed"] is False
+    assert summary["r0"] == "FAIL"
+    assert summary["r2"] is None
+    assert summary["refusal"]["reason_code"] == "COMMAND_FAILED"
+    assert summary["refusal"]["claim_diagnostics"] == {
+        "R0": {
+            "detail": "R0 command failed; first failing test: tests/test_alpha.py::test_broken",
+            "detail_dropped_bytes": 0,
+        }
+    }
+    assert summary["unresolved"] == [candidate]
+
+
 def test_T10d_nonpilot_records_cannot_seed_a_pilot_state_dir(git_repo: GitRepo, tmp_path: Path):
     lane_file, _lines = _seed_pilot_repo(git_repo)
     state_dir = tmp_path / "state"
