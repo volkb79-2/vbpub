@@ -11471,7 +11471,7 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 ## B114 — B110 P3: verdict v15 cold-witness kills with a proven no-coverage R2 command
 
-**Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; v15 replaces the already shipped v14 target). The implementation is provisionally merged to local `main` as `2cad53d9`; registered `tester-unified` and MDT `smoke` pass on `b8713d56`. The latest `self-qualification-preflight` retry refused before child launch at 1,375,588,352 bytes (1.28 GiB) against its 2 GiB headroom requirement; the B110 pilot on B105 and B131 analysis pilot remain pending until capacity returns. P10a is REVISE on P3a's partial anchor path; P10b remains blocked.**
+**Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; v15 replaces the already shipped v14 target). The integrated `tester-unified` and MDT `smoke` previously passed on `b8713d56`. On 2026-10-11, the B110 pilot on `88c82674` passed RAM admission, R0/R1, and coverage parsing, then refused before candidates on a generic cold-witness receipt proof failure. The current candidate adds reason-specific diagnostics and folds in the latest xhigh resource findings; exact-tip review, gate, and pilot retries remain pending. P10a is REVISE on P3a's partial anchor path; P10b remains blocked.**
 
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
@@ -12228,17 +12228,18 @@ several context helpers. That work could continue after the lane budget
 expired, then return a plan successfully.
 
 **Chosen contract:** planning passes its own lane deadline into mutation-site
-collection. SQL lexes each context source and target once with the same
-callback, reuses the dollar-body ranges through its context helpers, checks the
-callback during long byte scans, balanced-parenthesis walks, and list splits,
-and propagates expiry as the lane timeout before returning any plan. Context
-metadata, temporary relation and ALTER TABLE scans, and search-path parsing
-must carry the callback through their subordinate readers, including
+collection. SQL lexes each context source with the same callback, reuses the
+dollar-body ranges through its context helpers, checks the callback during
+long byte scans, balanced-parenthesis walks, and list splits, and propagates
+expiry as the lane timeout before returning any plan. Selected targets are
+lexed once while building cross-file facts and again one at a time during site
+generation; both passes use the same callback so B153 does not retain a
+tree-sized set of masks. Both `assay plan` and `assay run` pass target
+identities so the context reader does not read target blobs a second time.
+Context metadata, temporary relation and ALTER TABLE scans, and search-path
+parsing must carry the callback through their subordinate readers, including
 `_read_search_path_schemas` and transaction-keyword reads. Target source pairs
-already present in the context inventory are de-duplicated; their exact mask
-and dollar-body ranges are retained for site generation only when identity and
-bytes agree through SQL's explicit target-aware preparer hook, leaving the
-existing source-aware preparer signatures untouched for other adapters. The
+already present in the context inventory are de-duplicated. The
 trigger and delete-action scanners also check the deadline
 before computing line positions. Plan-row identity hashing, reuse
 classification, and serialization check the same deadline before the plan is
@@ -12249,17 +12250,65 @@ reserved-verdict path. The no-target path also checks an expired deadline
 before returning the supported empty result.
 
 **Oracles:** `test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery`
-asserts the preparer and target generator receive the actual `LaneDeadline`
-callback and that expiry inside an unmatched large `CHECK` raises
-`LANE_TIMEOUT`; the target-lex oracle counts one lex of a source present in
-both target and context inventory; plan-row identity work has an expiry
-oracle, as does shard identity work; unsharded selection skips those hashes.
+asserts the context preparer and target generator receive the actual
+`LaneDeadline` callback and that expiry inside an unmatched large `CHECK`
+raises `LANE_TIMEOUT`; target-lex tests prove matching context text is
+excluded, selected target blobs are read once during planning, and target masks
+are not retained; plan-row identity work has an expiry oracle, as does shard
+identity work; unsharded selection skips those hashes.
 The cgroup-preflight timeout regression verifies its reserved verdict.
 Bounded-context tests cover expiry in table metadata, UNIQUE and
 FOREIGN KEY parenthesis scans, NOT NULL action splitting, widened `IN`-list
 splitting, search-path identifiers, and transaction keywords. The no-target
 oracle proves an expired deadline is checked without parsing malformed
-context.
+context. A Sol xhigh review also found that `set_config(...)` argument scans
+did not receive the deadline; the helper now checks it between calls and
+during long quoted arguments, with a dedicated escaped-quote expiry regression.
+
+## B153 — SQL cross-file context retains multiple full copies of the source tree
+
+**Status: IN PROGRESS (Sol xhigh review finding, 2026-10-11; folded into the current release candidate).**
+
+`collect_mutation_sites` retained every context string while the SQL adapter
+also retained encoded bytes and lexer masks for every file. A legal 512 MiB
+source tree with many large SQL files could therefore occupy roughly 1.4 GiB
+before test runtime and fact collection, causing a 2 GiB B105 gate to be
+OOM-killed before producing a verdict.
+
+**Chosen contract:** stream identified context sources into the adapter and
+scan each SQL source before reading the next. Keep only compact duplicate
+digests and the cross-file facts needed for later candidate checks. Neither
+non-target nor selected-target masks accumulate across the tree. Selected
+targets are lexed again one at a time during site generation, under the same
+deadline; this accepts extra CPU work to keep memory bounded. Do not reject a
+legal source tree with a new arbitrary size cap.
+
+**Oracles:** the collector releases one context string before requesting the
+next; the SQL context scanner releases prior non-target and target lexer masks
+before retaining a tree-sized set. B105's bounded pilot remains the live 2 GiB
+measurement after the exact-tip registered gate passes.
+
+## B154 — source-root manifest enumeration ignores the lane deadline
+
+**Status: IN PROGRESS (Sol xhigh review finding, 2026-10-11; folded into the current release candidate).**
+
+`_mutation_context_sources` built the entire path set before its first deadline
+check. It also called `paths_under` once per declared root, rescanning the full
+manifest each time. A large repository with many roots could continue
+enumerating after the lane budget expired, then begin reading source blobs.
+
+**Chosen contract:** normalize roots with deadline checks, traverse manifest
+entries once for their union, and check the lane deadline every bounded batch
+of entries. Selected target paths are omitted from this context read because
+their exact snapshot text is already supplied to mutation-site collection.
+Root overlap returns each manifest path once in manifest order; the reader
+then sorts those paths for deterministic context reads.
+
+**Oracles:** overlapping roots preserve the union of paths in one manifest
+pass; a repository with more than 128 entries and an expiring deadline refuses
+during enumeration before any source blob is read. A plan-level blob-read
+oracle proves selected SQL targets are not fetched again as context. The
+registered `tester-unified` gate covers the integrated path.
 `test_bounded_sql_context_reuses_lexed_ranges_for_statement_events` proves the
 role and transaction scanners reuse the bounded lex result. Large comment and
 dollar-tag lexer fixtures exercise bounded scanning. The exact-tip registered
@@ -12267,7 +12316,7 @@ dollar-tag lexer fixtures exercise bounded scanning. The exact-tip registered
 
 ## B152 — the registered tester gate must mount both repository namespaces
 
-**Status: IN PROGRESS (review finding from the 2026-10-11 B132–B134 integration review).**
+**Status: IMPLEMENTED in the current release candidate; the exact-tip registered gate is pending.**
 
 `run_registered_tester_container` mounted the physical host repository only at
 `/workspaces/vbpub`. A valid worktree created from the host namespace can have

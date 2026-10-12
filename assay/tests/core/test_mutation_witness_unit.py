@@ -40,6 +40,7 @@ from assay.mutation_witness import (
     receipt_facts,
     replay_witness_from_receipt,
     supports_sequential_pytest,
+    survivor_proof_failure,
     survivor_proof_ok,
     witness_from_receipt,
 )
@@ -1011,6 +1012,47 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
         expected=expected,
         command="declared",
     )
+    assert survivor_proof_failure(
+        {**survivor, "runtime_fingerprint_sha256": None},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the pytest runtime fingerprint is unavailable"
+    assert survivor_proof_failure(
+        {**survivor, "started_prefix_ok": False},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "collection failed or execution did not follow the collected order"
+    assert survivor_proof_failure(
+        {**survivor, "started_prefix_ok": False},
+        process_exit_status=0,
+        expected=expected,
+        command="r2",
+    ) == "collection failed or execution did not follow the collected order"
+    other_collection = receipt_facts(
+        {**survivor, "collection_sha256": "d" * 64}
+    )
+    assert other_collection is not None
+    assert survivor_proof_failure(
+        survivor,
+        process_exit_status=0,
+        expected=other_collection,
+        command="r2",
+    ) == "the baseline test collection differs from the expected collection"
+    r2_without_coverage = {
+        **survivor,
+        "hook_fingerprint_sha256": "d" * 64,
+    }
+    r2_facts = receipt_facts(r2_without_coverage)
+    assert r2_facts is not None
+    assert r2_facts.hook_fingerprint_sha256 != expected.hook_fingerprint_sha256
+    assert survivor_proof_failure(
+        r2_without_coverage,
+        process_exit_status=0,
+        expected=r2_facts,
+        command="r2",
+    ) is None
     assert not survivor_proof_ok(
         {**survivor, "unsupported": True},
         process_exit_status=0,

@@ -16,6 +16,8 @@ measure into evidence that nothing was mutable.
 
 from __future__ import annotations
 
+import gc
+
 import pytest
 
 from assay import runner
@@ -144,6 +146,60 @@ def test_source_aware_adapters_keep_their_existing_preparer_signatures(bounded):
 
     assert jobs == ()
     assert adapter.prepared_with == ("bounded" if bounded else "unbounded")
+
+
+def test_source_aware_context_is_consumed_as_a_stream():
+    class TrackedText(str):
+        released_texts: list[bytes] = []
+
+        def __del__(self):
+            type(self).released_texts.append(self.encode("utf-8"))
+
+    class StreamingAdapter:
+        name = "streaming-context"
+
+        def __init__(self):
+            self.released_before_next_source = False
+
+        def prepare_mutation_context_with_sources(self, sources):
+            raise AssertionError("bounded preparer should be selected")
+
+        def prepare_mutation_context_with_sources_bounded(
+            self, sources, *, remaining
+        ):
+            iterator = iter(sources)
+            _first_path, first_text = next(iterator)
+            first_bytes = first_text.encode("utf-8")
+            del first_text
+            _second_path, _second_text = next(iterator)
+            gc.collect()
+            self.released_before_next_source = (
+                first_bytes in TrackedText.released_texts
+            )
+            tuple(iterator)
+            return object()
+
+        def generate_mutation_sites_with_context_for_source(
+            self, text, lines, *, operators, limit, context, source_identity
+        ):
+            return ()
+
+    def sources():
+        yield ("context/one.sql", TrackedText("one" * 4096))
+        yield ("context/two.sql", TrackedText("two" * 4096))
+
+    adapter = StreamingAdapter()
+    jobs = collect_mutation_sites(
+        (_target("target.sql", "SELECT 1;", {1}),),
+        adapter=adapter,
+        operators=("sql:drop-check",),
+        limit=1,
+        context_sources=sources(),
+        deadline_check=lambda: 1.0,
+    )
+
+    assert jobs == ()
+    assert adapter.released_before_next_source
 
 
 def test_shard_assignment_checks_deadline_between_candidate_ids():

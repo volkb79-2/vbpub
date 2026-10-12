@@ -44,7 +44,7 @@ import threading
 from contextlib import contextmanager
 from .records import record
 from pathlib import Path, PurePosixPath
-from typing import Callable, ContextManager, Iterator, Mapping, Sequence
+from typing import Callable, ContextManager, Iterable, Iterator, Mapping, Sequence
 
 from . import git as _git
 from .config import IsolationConfig
@@ -661,18 +661,49 @@ class SnapshotRepository:
         need bytes still pass them through :meth:`read_regular_file` and get
         its fail-closed refusal.
         """
+        return tuple(self.iter_paths_under_any((root,)))
+
+    def iter_paths_under_any(
+        self,
+        roots: Iterable[PurePosixPath],
+        *,
+        check_deadline: Callable[[], float] | None = None,
+    ) -> Iterator[PurePosixPath]:
+        """Yield manifest leaves under any repo-relative root in one pass.
+
+        Multiple source roots must not cause a full manifest rescan per root.
+        The caller's deadline is checked while normalizing roots and during
+        the single manifest traversal, so a large tree cannot outlive its
+        lane budget before context files are read.
+        """
         self._check_open()
-        if not isinstance(root, PurePosixPath):
-            raise ValueError(f"root must be PurePosixPath, got {root!r}")
-        if root != PurePosixPath("."):
-            root = _normalize_path(root)
-        return tuple(
-            entry.path
-            for entry in self._manifest.entries
-            if root == PurePosixPath(".")
-            or entry.path == root
-            or entry.path.is_relative_to(root)
-        )
+        normalized_roots: set[PurePosixPath] = set()
+        for root in roots:
+            if check_deadline is not None:
+                check_deadline()
+            if not isinstance(root, PurePosixPath):
+                raise ValueError(f"root must be PurePosixPath, got {root!r}")
+            normalized_roots.add(
+                root if root == PurePosixPath(".") else _normalize_path(root)
+            )
+        if not normalized_roots:
+            if check_deadline is not None:
+                check_deadline()
+            return
+        whole_repository = PurePosixPath(".") in normalized_roots
+        for index, entry in enumerate(self._manifest.entries):
+            if check_deadline is not None and index % 64 == 0:
+                check_deadline()
+            path = entry.path
+            if whole_repository or path in normalized_roots:
+                yield path
+                continue
+            for parent in path.parents:
+                if parent in normalized_roots:
+                    yield path
+                    break
+        if check_deadline is not None:
+            check_deadline()
 
     def _read_blob(self, oid: str, size: int, deadline: "_git._P22Deadline") -> bytes:
         collected = bytearray()

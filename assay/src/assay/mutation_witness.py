@@ -473,41 +473,77 @@ def survivor_proof_ok(
     expected: ReceiptFacts,
     command: str,
 ) -> bool:
+    return survivor_proof_failure(
+        receipt,
+        process_exit_status=process_exit_status,
+        expected=expected,
+        command=command,
+    ) is None
+
+
+def survivor_proof_failure(
+    receipt: Mapping[str, Any] | None,
+    *,
+    process_exit_status: int,
+    expected: ReceiptFacts | None,
+    command: str,
+) -> str | None:
+    """Explain why a successful baseline receipt cannot anchor a witness.
+
+    Keep this check aligned with :func:`survivor_proof_ok`; callers use the
+    reason only to make a fail-closed cold-witness refusal actionable.
+    """
     if (
         not isinstance(receipt, Mapping)
         or set(receipt) != _INTERNAL_RECEIPT_KEYS
         or command not in ("r2", "declared")
     ):
-        return False
+        return "the receipt is missing, malformed, or has an unexpected schema"
     if type(process_exit_status) is not int or process_exit_status != 0:
-        return False
+        return "the baseline process did not exit successfully"
     if type(receipt.get("session_exit_status")) is not int or receipt["session_exit_status"] != 0:
-        return False
+        return "the pytest session did not exit successfully"
     if any(receipt.get(name) is not False for name in ("auxiliary_failure", "earlier_failure")):
-        return False
+        return "the baseline reported an auxiliary or earlier failure"
     if receipt.get("collection_error") is not False or receipt.get("started_prefix_ok") is not True:
-        return False
+        return "collection failed or execution did not follow the collected order"
     if any(
         receipt.get(name) is not None
         for name in ("witness_node_id", "witness_when", "witness_outcome", "failed_call_index")
     ):
-        return False
+        return "the passing baseline unexpectedly recorded a failure witness"
     if receipt.get("stopped_at_target") is not False or receipt.get("stopped_cold") is not False:
-        return False
+        return "the baseline stopped before completing the declared suite"
     unsupported = receipt.get("unsupported")
     coverage_only = receipt.get("unsupported_pytest_cov_only")
     if type(unsupported) is not bool or type(coverage_only) is not bool:
-        return False
+        return "the baseline support flags are missing or malformed"
     if coverage_only and not unsupported:
-        return False
+        return "the pytest-cov-only support flag contradicts the support result"
     if unsupported and not coverage_only:
-        return False
+        return "the baseline uses an unsupported pytest hook configuration"
     facts = receipt_facts(receipt)
-    if facts is None or facts.started_count != facts.collection_count:
-        return False
+    if facts is None:
+        return "the unique collection manifest or its fingerprints are missing or malformed"
+    if facts.started_count != facts.collection_count:
+        return "execution did not start every collected test"
+    if expected is None:
+        return "the expected collection facts could not be parsed"
     if command == "r2" and unsupported:
-        return False
-    return _facts_match(receipt, expected)
+        return "the no-coverage R2 command uses an unsupported pytest hook configuration"
+    if facts.collection_error:
+        return "the collection manifest reported an error"
+    if facts.collection_count != expected.collection_count or facts.collection_sha256 != expected.collection_sha256:
+        return "the baseline test collection differs from the expected collection"
+    if facts.duplicates != 0:
+        return "the test collection contains duplicate node IDs"
+    if facts.hook_fingerprint_sha256 != expected.hook_fingerprint_sha256:
+        return "the pytest hook fingerprint differs from the expected baseline"
+    if facts.runtime_fingerprint_sha256 is None:
+        return "the pytest runtime fingerprint is unavailable"
+    if facts.runtime_fingerprint_sha256 != expected.runtime_fingerprint_sha256:
+        return "the pytest runtime fingerprint differs from the expected baseline"
+    return None
 
 
 def cold_witness_from_receipt(

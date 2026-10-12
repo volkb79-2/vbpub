@@ -9,11 +9,12 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from pathlib import PurePosixPath
 
 import pytest
 from conftest import GitRepo
 
-from assay import cli, mutation, runner
+from assay import cli, isolation, mutation, runner
 from assay.adapters import sql as sql_adapter_module
 from assay.adapters.sql import SqlAdapter
 from assay.candidate_identity import candidate_id_from_fields
@@ -153,6 +154,28 @@ def test_o16a_i_every_row_reproduces_its_id_from_its_identity_inputs(git_repo: G
     assert len({row["mutated_file_sha256"] for row in rows}) == 4
 
 
+def test_assay_plan_does_not_read_selected_sql_targets_again_as_context(
+    git_repo: GitRepo, monkeypatch
+):
+    lane_file, lane = _load(_seed_sql(git_repo))
+    original = isolation.SnapshotRepository.read_regular_file
+    reads: list[PurePosixPath] = []
+
+    def tracked_read(self, path, *, timeout):
+        reads.append(PurePosixPath(path))
+        return original(self, path, timeout=timeout)
+
+    monkeypatch.setattr(
+        isolation.SnapshotRepository, "read_regular_file", tracked_read
+    )
+
+    jobs = plan_jobs(lane_file, lane)
+
+    assert jobs != mutation.UNSUPPORTED
+    assert len(jobs) == 1
+    assert reads.count(PurePosixPath("src/schema.sql")) == 1
+
+
 def test_o16a_the_identity_key_set_is_exactly_the_helpers_keyword_set(git_repo: GitRepo):
     lane_file, lane = _load(_seed(git_repo))
     adapter = cli._resolve_declared_adapters(lane)
@@ -272,9 +295,7 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
     lane_file, lane = _load(
         _seed_sql(git_repo, modified_source=large_check)
     )
-    original_prepare = (
-        SqlAdapter.prepare_mutation_context_with_sources_for_targets_bounded
-    )
+    original_prepare = SqlAdapter.prepare_mutation_context_with_sources_bounded
     original_generate = (
         SqlAdapter.generate_mutation_sites_with_context_for_source_bounded
     )
@@ -293,13 +314,12 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
         deadlines.append(deadline)
         return deadline
 
-    def observe_prepare(self, sources, *, remaining, target_source_identities):
+    def observe_prepare(self, sources, *, remaining):
         seen_deadlines.append(remaining)
         return original_prepare(
             self,
             sources,
             remaining=remaining,
-            target_source_identities=target_source_identities,
         )
 
     def observe_lex(source, *, check_deadline=None):
@@ -340,7 +360,7 @@ def test_assay_plan_uses_the_lane_deadline_for_sql_context_discovery(
 
     monkeypatch.setattr(
         SqlAdapter,
-        "prepare_mutation_context_with_sources_for_targets_bounded",
+        "prepare_mutation_context_with_sources_bounded",
         observe_prepare,
     )
     monkeypatch.setattr(
