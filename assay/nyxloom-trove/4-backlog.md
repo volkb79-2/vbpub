@@ -11501,6 +11501,13 @@ the exclusion inventory, and updates the SQL witness to schema 16. The
 follow-up focused suite passes (561 tests); independent review and a fresh
 registered gate remain pending.
 
+The exact-tree rerun at `6d40f426b` passed the self-hosted Assay lane but then
+failed the analysis lane: 514 passed and one refusal test failed. Its `jobs=2`
+verdict fixture is now rejected earlier by the v16 schema, which requires
+`jobs=1` for native R2 event attribution, leaving the campaign policy-mismatch
+branch uncovered. The regression now varies the valid `max_mutants` field to
+reach that branch. The full registered gate must pass on the repair commit.
+
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
 - the transform `assay-r2-pytest-nocov/1`;

@@ -475,8 +475,12 @@ CASES = (
     # -- verdict bound to the declared lane ---------------------------------------------
     (
         "verdict-r2-policy-differs",
-        _verdict_edit(lambda d: d["judgment"]["r2"].update(jobs=d["judgment"]["r2"]["jobs"] + 1)),
-        "R2 verdict policy jobs differs from the named lane declaration",
+        _verdict_edit(
+            lambda d: d["judgment"]["r2"].update(
+                max_mutants=d["judgment"]["r2"]["max_mutants"] + 1
+            )
+        ),
+        "R2 verdict policy max_mutants differs from the named lane declaration",
     ),
     # -- plan reconstruction -------------------------------------------------------------
     (
