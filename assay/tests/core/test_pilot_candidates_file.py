@@ -12,6 +12,7 @@ import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -688,6 +689,54 @@ def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
     lane_file.write_text(lane_text, encoding="utf-8")
     git_repo.commit_all("make the pilot baseline fail with a named test")
     candidates = _candidate_file(tmp_path / "one.txt", [candidate])
+    progress = tmp_path / "progress.jsonl"
+
+    code, stdout, stderr = _run_pilot(
+        lane_file,
+        candidates,
+        tmp_path / "state",
+        progress,
+    )
+
+    assert code == 1, stderr
+    summary = json.loads(stdout)
+    assert summary["completed"] is False
+    assert summary["r0"] == "FAIL"
+    assert summary["r2"] is None
+    assert summary["refusal"]["reason_code"] == "COMMAND_FAILED"
+    assert summary["claim_diagnostics"] == {
+        "R0": {
+            "detail": "R0 command failed; first failing test: tests/test_alpha.py::test_broken",
+            "detail_dropped_bytes": 0,
+        }
+    }
+    assert summary["unresolved"] == [candidate]
+    assert summary["candidates"] == []
+    assert not [event for event in _events(progress) if event["event"] == "candidate"]
+
+
+def test_B161_incomplete_pilot_reports_exact_diagnostic_truncation(
+    git_repo: GitRepo, tmp_path: Path
+):
+    lane_file, _lines = _seed_pilot_repo(git_repo)
+    long_test_name = f"tests/{'x' * 2600}::test_broken"
+    lane_text = lane_file.read_text(encoding="utf-8")
+    failing_command = json.dumps(
+        [
+            "/bin/sh",
+            "-c",
+            f"printf 'FAILED {long_test_name} - boom\\n'; exit 1",
+        ]
+    )
+    lane_text = lane_text.replace(
+        next(line for line in lane_text.splitlines() if line.startswith("argv = ")),
+        f"argv = {failing_command}",
+        1,
+    )
+    lane_file.write_text(lane_text, encoding="utf-8")
+    git_repo.commit_all("make the pilot baseline diagnostic exceed its bound")
+    candidate = str(_plan(lane_file)[0]["id"])
+    candidates = _candidate_file(tmp_path / "one.txt", [candidate])
 
     code, stdout, stderr = _run_pilot(
         lane_file,
@@ -698,17 +747,63 @@ def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
 
     assert code == 1, stderr
     summary = json.loads(stdout)
+    detail = summary["claim_diagnostics"]["R0"]["detail"]
+    dropped = summary["claim_diagnostics"]["R0"]["detail_dropped_bytes"]
+    full_detail = (
+        f"R0 command failed; first failing test: {long_test_name}"
+    )
+    assert detail.startswith("R0 command failed; first failing test: ")
+    assert dropped > 0
+    assert len(detail.encode("utf-8")) + dropped == len(full_detail.encode("utf-8"))
     assert summary["completed"] is False
-    assert summary["r0"] == "FAIL"
-    assert summary["r2"] is None
-    assert summary["refusal"]["reason_code"] == "COMMAND_FAILED"
-    assert summary["refusal"]["claim_diagnostics"] == {
-        "R0": {
-            "detail": "R0 command failed; first failing test: tests/test_alpha.py::test_broken",
-            "detail_dropped_bytes": 0,
-        }
+
+
+def test_B161_incomplete_summary_keeps_details_after_r2_result():
+    candidate = "c" * 64
+    mutation_result = SimpleNamespace(
+        **{bucket: () for bucket in cli.MUTATION_BUCKETS}
+    )
+    r2_claim = SimpleNamespace(
+        rigor="R2",
+        mutation=mutation_result,
+        status=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+        detail="R2 campaign timed out after a partial result",
+        detail_dropped_bytes=0,
+    )
+    verdict = SimpleNamespace(
+        claims=(r2_claim,),
+        judgment=None,
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+        commit="a" * 40,
+    )
+    lane = SimpleNamespace(
+        name="package",
+        judge=SimpleNamespace(mutation=SimpleNamespace(jobs=1)),
+    )
+
+    summary = cli._build_pilot_summary(
+        verdict,
+        lane=lane,
+        selected_ids=frozenset({candidate}),
+        selection_order=(candidate,),
+        selection_sha256="b" * 64,
+        candidates_file_sha256="d" * 64,
+        state_dir=Path("state"),
+        pilot_jobs={},
+        judge_sha256="e" * 64,
+        campaign_deadline_sha256=None,
+        cold_witness=False,
+        state_root_fd=None,
+        completed=False,
+    )
+
+    assert summary["r2"]["status"] == Outcome.BUDGET_EXCEEDED.value
+    assert summary["claim_diagnostics"]["R2"] == {
+        "detail": "R2 campaign timed out after a partial result",
+        "detail_dropped_bytes": 0,
     }
-    assert summary["unresolved"] == [candidate]
 
 
 def test_T10d_nonpilot_records_cannot_seed_a_pilot_state_dir(git_repo: GitRepo, tmp_path: Path):

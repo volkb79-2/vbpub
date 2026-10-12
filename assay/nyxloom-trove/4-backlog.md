@@ -12601,19 +12601,21 @@ evidence.
 
 ## B161 — incomplete pilot summary drops the failing claim diagnostic
 
-**Status: IMPLEMENTED IN THE CONTRACT-2 CANDIDATE; exact-tip gate pending.** The incomplete pilot
-summary retained only the top-level status and reason code. A measured R0 test
-failure therefore appeared as `COMMAND_FAILED` without the first failing test,
-even though the R0 claim had already retained its bounded diagnostic.
+**Status: IMPLEMENTED IN THE CONTRACT-2 CANDIDATE; exact-tip gate pending.**
+The incomplete pilot summary retained only the top-level status and reason
+code. A measured R0 test failure therefore appeared as `COMMAND_FAILED`
+without the first failing test, even though the R0 claim had already retained
+its bounded diagnostic.
 
 **Chosen contract:** when an incomplete summary has non-pass claim details,
-include them in `refusal.claim_diagnostics`, keyed by rigor. Each entry carries
+include them in top-level `claim_diagnostics`, keyed by rigor. Each entry carries
 the existing bounded `detail` and its `detail_dropped_bytes`; this is diagnostic
 text and does not alter claim status or reason code. Complete-summary shape and
 pilot qualification semantics remain unchanged.
 
 **Oracle:** a deterministic failed R0 command names its first failing test in
-the incomplete pilot summary and retains its truncation count. The summary
-remains incomplete, reports the existing `COMMAND_FAILED` reason, executes no
-candidate, and leaves every selected ID unresolved. README, DESIGN-GUIDE and
-CONSUMERS describe the diagnostic field and its meaning.
+the incomplete pilot summary and retains its exact truncation count. The
+summary remains incomplete, reports the existing `COMMAND_FAILED` reason,
+executes no candidate, and leaves every selected ID unresolved. A partial R2
+result also retains its claim detail. README, DESIGN-GUIDE and CONSUMERS
+describe the diagnostic field and its meaning.

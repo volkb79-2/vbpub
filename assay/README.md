@@ -994,10 +994,10 @@ code 6 only when every selected candidate has a completed disposition. Exit 6
 means “pilot measurement completed,” never “the lane passed”; use the JSON
 summary and its mutation buckets to read the result. Pilot summaries use schema
 `assay-pilot-summary/2` and include the recorded R2 command when a cold-witness
-baseline ran. An incomplete summary's `refusal.claim_diagnostics` preserves
-bounded non-pass claim details, including a recognized first failing test;
-`detail_dropped_bytes` records any truncation. These diagnostics explain the
-refusal and do not change the summary's claim statuses or reason code. Pilot
+baseline ran. An incomplete summary's `claim_diagnostics` preserves bounded
+non-pass claim details, including a recognized first failing test;
+`detail_dropped_bytes` records any truncation. These diagnostics add context to
+the claim outcome without changing the summary's statuses or reason code. Pilot
 state is tied to one selection and lane and must stay separate from qualifying
 campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
