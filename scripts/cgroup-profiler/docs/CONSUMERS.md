@@ -28,13 +28,29 @@ cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 ```
 
-The first 1.0.0 release uses an explicit override because there is no prior
-cgprofile tag. CMRU creates the release tag
-before image build. `build-push.py` reads that exact tag to set the OCI
-tag/label and embedded runtime version, so CMRU releases need no manual
+The first 1.0.0 release passes CMRU an explicit `--set-version 1.0.0` because
+there is no prior cgprofile tag. CMRU creates the release tag before image
+build. `build-push.py` reads that exact tag to set the OCI tag/label and
+embedded runtime version, so CMRU releases need no manual
 `CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
-manual `--push` needs an exact release tag or a validated `CGPROFILE_VERSION`
-override.
+manual `--push` refuses unless the exact CMRU release tag points at `HEAD`,
+the tagged working tree is clean, and `CGPROFILE_VERSION` is not used as a
+fallback. The Bake file's version and image-tag defaults are fixed to the
+development identity, so a bare `docker buildx bake` ignores an ambient
+`CGPROFILE_VERSION`; use `build-push.py --push` for a validated release.
+For a direct source build, use the development identity and
+local-only image tag. Release identity comes from CMRU's exact tag; do not
+label an arbitrary checkout as a release. Pass both the required version and
+the sibling DAMON analysis source context. From `scripts/cgroup-profiler`:
+
+```bash
+docker buildx build --load \
+  --build-context damon_analysis=../damon-analysis \
+  --build-arg CGPROFILE_VERSION=0.0.0-dev \
+  -t cgprofile:local .
+```
+
+The Dockerfile refuses an omitted version before installing packages.
 
 The local `cgprofile:local` tag is a build-only alias. CMRU's publish step
 selects the separate `cgprofile-release` Bake target, which contains only the
@@ -61,9 +77,12 @@ waiting or racing; ordinary profiling proceeds.
 
 ## Deploy a published daemon image with CIU
 
-The default CIU image coordinates intentionally select the local development
-image. The managed cockpit's tracked sparse `ciu.toml.j2` pins this complete
-override for the combined RG-55 v1.0.0 daemon release:
+Run this after `cmru release cgroup-profiler --set-version 1.0.0` has
+completed and the GHCR manifest is available. Before that first publication,
+leave the tracked sparse `ciu.toml.j2` without an image table; CIU then uses
+the local `cgprofile:local` development default for pre-release checks.
+After publication, commit this sparse override to pin the exact released
+image:
 
 ```toml
 [cgprofile.image]
@@ -76,18 +95,25 @@ tag = "1.0.0"
 The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.0.0`;
 changing only `tag` while leaving the default empty registry and namespace
 would still select a local image. Use the normal CIU bring-up and verify the
-runtime identity before attaching consumers:
+runtime identity before attaching consumers. Run this from
+`scripts/cgroup-profiler/`:
 
 ```bash
 ciu up --dir .
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
 
-The version in the response must match the pinned image. For local development,
-clear the `[cgprofile.image]` table in `ciu.toml.j2` before `ciu up`, then use
-`python3 build-push.py --build`; that path loads only `cgprofile:local` and does
-not publish it. Restore the published-image table before committing a release
-deployment change.
+The version in the response must match the pinned image. For local development
+after the release pin has been committed, temporarily clear the
+`[cgprofile.image]` table in `ciu.toml.j2`. From `scripts/cgroup-profiler/`,
+build the local image before starting CIU; that path loads only
+`cgprofile:local` and does not publish it. Restore the published-image table
+before committing a deployment change:
+
+```bash
+python3 build-push.py --build
+ciu up --dir .
+```
 
 ## Daemon adoption
 
@@ -98,7 +124,11 @@ see [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md#daemon-safety-and-placement).
 
 ## Start the host daemon
 
-From this directory, build the image and start the one host-scoped daemon:
+This recipe starts the local development image. Use it only while
+`ciu.toml.j2` has no `[cgprofile.image]` release override; if that pin is
+committed, `ciu up` selects the pinned GHCR image instead. Clear the table as
+described above before starting a local development image. From this
+directory, build and start the one host-scoped daemon:
 
 ```bash
 python3 build-push.py --build

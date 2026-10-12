@@ -106,8 +106,9 @@ SPEC §9.
 | RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test are in the candidate; final package acceptance and release pending) |
-| RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
+| RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | IN PROGRESS (read-only observer socket shipped in source rev 58; exact release gates pending) |
 | RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
+| RG-91 | Run-Gate's cgprofile control and watch clients pretty-print JSON to a newline-delimited socket, so the daemon reads only `{` and refuses the request | Major | FIXED in candidate rev 65; byte-at-a-time newline-framing regressions cover control and watch requests; exact gate and release pending |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5909,10 +5910,12 @@ cleanup exception.
 
 ## RG-89 — native Assay R2 has no trusted ancestor-counter view in the private-cgroup test environment
 
-**Status:** OPEN, filed 2026-10-07 after the RG-55 Run-Gate rev 56 candidate's
-Assay 8.0.0 R2 attempt stopped before candidate execution. Severity Major:
-without a supported observer path, registered native mutation lanes return
-`ERROR/EXEC_FAILED` before judging any mutants.
+**Status:** IN PROGRESS. The read-only observer socket shipped in source
+revision 58; exact registered gates and release are pending. Filed 2026-10-07
+after the RG-55 Run-Gate rev 56 candidate's Assay 8.0.0 R2 attempt stopped
+before candidate execution. Severity Major: without a supported observer
+path, registered native mutation lanes return `ERROR/EXEC_FAILED` before
+judging any mutants.
 
 **Observed.** Assay B145 intentionally refuses native R2 when the cgroup
 namespace hides process ancestors, because it cannot soundly observe
@@ -5985,3 +5988,21 @@ low run-relative elapsed time reports rate and ETA from current-run candidate
 events and pending work. Same-run movement, re-attach silence, torn-line
 handling, malformed/missing current-run `pending_total`, and legacy streams
 without headers continue to pass.
+
+## RG-91 — cgprofile control requests violate newline-delimited socket framing
+
+**Status:** FIXED in source revision 65 in the current release candidate;
+byte-at-a-time framing regressions pass, with the exact registered gate and
+release pending.
+
+**Observed.** The daemon dispatches a request at its first newline. Both the
+control client and the streaming watch client sent indented JSON, so the first
+line was only `{` and the daemon rejected a valid request as `bad-argument`.
+The existing socket test read to EOF, which did not exercise the daemon's
+newline framing.
+
+**Fix and oracle.** Both clients now send compact single-line JSON followed by
+one newline. The socket fixture reads one byte at a time and dispatches at the
+first newline; control and watch tests assert the received line is complete
+valid JSON. The default auto transport may otherwise hide the control failure
+by falling back to Docker exec, but an explicit socket transport still fails.

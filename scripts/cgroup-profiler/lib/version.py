@@ -7,7 +7,6 @@ import re
 import subprocess
 import tomllib
 from pathlib import Path
-from typing import Mapping
 
 VERSION_ENV = "CGPROFILE_VERSION"
 _PRERELEASE_ID = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
@@ -33,17 +32,40 @@ def _validated_version(value: str, source: str) -> str:
     return version
 
 
+def _require_clean_tagged_tree(project_root: Path) -> None:
+    top_level = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=str(project_root), capture_output=True, text=True, check=False,
+    )
+    if top_level.returncode or not top_level.stdout.strip():
+        detail = top_level.stderr.strip() or f"exit {top_level.returncode}"
+        raise RuntimeError(f"cannot verify tagged build tree cleanliness: {detail}")
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=top_level.stdout.strip(), capture_output=True, text=True, check=False,
+    )
+    if status.returncode:
+        detail = status.stderr.strip() or f"exit {status.returncode}"
+        raise RuntimeError(f"cannot verify tagged build tree cleanliness: {detail}")
+    if status.stdout:
+        raise RuntimeError(
+            "tagged build tree has tracked or untracked changes; refuse to use "
+            "the release identity for source that differs from the tag"
+        )
+
+
 def resolve_build_version(
     project_root: Path,
     *,
     require_release_tag: bool,
-    environ: Mapping[str, str] | None = None,
 ) -> str:
-    """Return the exact release tag at HEAD, or a deliberate local-build value.
+    """Return the exact release tag at HEAD, or the local development identity.
 
     The prefix is read from ``cmru.toml``. A tag at HEAD takes precedence over
-    ambient environment state; an explicit version is only a fallback for
-    manual builds. Publishing without either source refuses.
+    ambient environment state. Environment variables are never a source of
+    release identity: an untagged local build is ``0.0.0-dev``, and publishing
+    without an exact tag refuses.
     """
     root = Path(project_root)
     config = tomllib.loads((root / "cmru.toml").read_text(encoding="utf-8"))
@@ -69,14 +91,12 @@ def resolve_build_version(
             f"multiple {prefix!r} release tags point at HEAD: {', '.join(sorted(candidates))}"
         )
     if candidates:
+        _require_clean_tagged_tree(root)
         tag = candidates[0]
         return _validated_version(tag[len(prefix):], f"release tag {tag!r}")
 
-    env = os.environ if environ is None else environ
-    if VERSION_ENV in env:
-        return _validated_version(env[VERSION_ENV], VERSION_ENV)
     if require_release_tag:
         raise RuntimeError(
-            f"no {prefix}<version> tag points at HEAD; refuse publication without an exact release version"
+            f"no {prefix}<version> tag points at HEAD; refuse publication without an exact release tag"
         )
     return "0.0.0-dev"

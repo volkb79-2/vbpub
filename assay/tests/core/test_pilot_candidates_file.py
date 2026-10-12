@@ -409,6 +409,7 @@ def test_T2_pilot_flag_conflicts_refuse_before_execution(git_repo: GitRepo, tmp_
         ("--rejudge", "f" * 64),
         ("--rejudge-outcome", "killed"),
         ("--pilot-jobs", "0"),
+        ("--pilot-jobs", "2"),
         ("--pilot-jobs", "9"),
         ("--pilot-jobs", "abc"),
         ("--pilot-jobs", "9" * 5000),

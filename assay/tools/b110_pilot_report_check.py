@@ -468,8 +468,8 @@ def _verify_summary(
         expected_lane="self-qualification",
         manifest_path=r2_manifest_path,
     )
-    if type(summary.get("jobs")) is not int or summary["jobs"] != 3:
-        raise ValueError("pilot summary job count does not match the registered three-job pilot")
+    if type(summary.get("jobs")) is not int or summary["jobs"] != 1:
+        raise ValueError("pilot summary job count does not match the registered serial pilot")
     summary_judge_sha256 = _require_sha(
         summary.get("judge_sha256"), "pilot summary judge_sha256"
     )

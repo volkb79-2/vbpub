@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-20
 title: "Resource observer must expose local and hierarchical event counters for R2 attribution"
-status: in_progress
+status: carved
 type: "bugfix"
 severity: "high"
 component: "resource-observer"

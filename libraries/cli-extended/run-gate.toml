@@ -28,7 +28,7 @@ budget = "720m"
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]
-# jobs = 3 workers at ~240 MB peak RSS each, plus the assay parent.
+# B156 keeps one native candidate active so cgroup event windows do not overlap.
 memory = "1536m"
 
 [lanes.r3]

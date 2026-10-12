@@ -293,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pilot-jobs",
         default=None,
         metavar="N",
-        help="pilot-only worker override (1..8); requires --candidates-file",
+        help="pilot-only worker override (must be 1 for native R2); requires --candidates-file",
     )
     run.add_argument(
         "--file",
@@ -329,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v15 verdict; project isolation.dirty_ignore paths "
+            "them in the v16 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -343,7 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v15 verdict; v12-v14 start cold, and every uncertain candidate "
+            "native v16 verdict; v12-v15 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -741,10 +741,10 @@ def _parse_pilot_jobs(raw: str | None, *, candidates_file: bool) -> int | None:
     if not candidates_file:
         raise LaneConfigError("--pilot-jobs requires --candidates-file")
     if re.fullmatch(r"[0-9]+", raw) is None:
-        raise LaneConfigError("--pilot-jobs must be an integer from 1 through 8")
+        raise LaneConfigError("--pilot-jobs must be 1 for native R2 event attribution")
     normalized = raw.lstrip("0")
-    if normalized not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
-        raise LaneConfigError("--pilot-jobs must be an integer from 1 through 8")
+    if normalized != "1":
+        raise LaneConfigError("--pilot-jobs must be 1 for native R2 event attribution")
     return int(normalized)
 
 
@@ -1575,9 +1575,10 @@ def _built_in_registry() -> registry.Registry:
 
     **B087 registers JavaScript at R3 through the existing producer path.**
     Real-Vitest fixture oracles exercise both canary mechanisms. Both current
-    dstdns canaries passed with retained schema-v15 verdicts and verifier
-    transcripts; see ``nyxloom-trove/reports/B087-js-r3-qualification.md`` for
-    scope and limits. This consumer evidence is separate from the integrated
+    dstdns canaries were qualified under Assay 9.0.0/schema v15; their retained
+    verdicts and verifier transcripts document that release. See
+    ``nyxloom-trove/reports/B087-js-r3-qualification.md`` for scope and limits.
+    This consumer evidence is separate from the integrated
     Assay release gate. No verdict or schema change was needed for registration.
     """
     return registry.new_registry(

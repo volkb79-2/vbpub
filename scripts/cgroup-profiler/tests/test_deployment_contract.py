@@ -97,3 +97,35 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
         "daemon's host cgroup-v2 bind is therefore writable"
         in " ".join(design.split())
     )
+
+
+def test_image_recipes_use_one_working_directory_and_build_before_ciu_up():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    pre_release = readme.split("Before the first CMRU release", 1)[1].split(
+        "The daemon's version response", 1
+    )[0]
+    assert "From the repository root" in pre_release
+    assert "cd scripts/cgroup-profiler" in pre_release
+    assert pre_release.index("python3 build-push.py --build") < pre_release.index(
+        "ciu up --dir ."
+    )
+
+    consumers = " ".join(
+        (PROJECT_ROOT / "docs" / "CONSUMERS.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    local_development = consumers.split(
+        "For local development after the release pin has been committed", 1
+    )[1].split("## ", 1)[0]
+    assert "From `scripts/cgroup-profiler/`" in local_development
+    assert local_development.index("python3 build-push.py --build") < (
+        local_development.index("ciu up --dir .")
+    )
+
+    start_daemon = consumers.split("## Start the host daemon", 1)[1].split(
+        "## ", 1
+    )[0]
+    assert "local development image" in start_daemon
+    assert "no `[cgprofile.image]` release override" in start_daemon
+    assert "`ciu up` selects the pinned GHCR image instead" in start_daemon

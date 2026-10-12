@@ -296,7 +296,12 @@ R2 measures whether tests detect changed code, while B145 guards against
 mistaking a resource-limited test failure for a kill. B145 is not a CPU or
 memory usage profile. It samples these counters at the candidate and visible
 active ancestors immediately before and after each started full candidate
-command:
+command. Native candidates run serially: set `judge.mutation.jobs = 1`, and
+use `--pilot-jobs 1` for a bounded native pilot. The config loader, CLI, and
+public `run_mutation` entry point refuse larger values because simultaneous
+candidates share the sampled counters and a delta could not be attributed to
+one candidate. `assay analyze plan-estimate --workers N` only projects
+runtime; it does not run candidates and may use a larger worker count:
 
 | Counter | What it detects |
 |---|---|
@@ -1117,8 +1122,9 @@ Use the registered lanes for reviewable gate evidence:
 
 `b110-pilot` initializes a two-hour campaign after building the exact commit,
 then plans and selects candidates inside that campaign. It runs the selected
-subset with three pilot jobs, cold witnesses, resume state and a progress
-stream. Campaign initialization, planning, selection, Assay execution, report
+subset with one serial pilot job, cold witnesses, resume state and a progress
+stream. Native R2 candidate event windows share cgroup counters, so they cannot
+overlap. Campaign initialization, planning, selection, Assay execution, report
 checking, final source/deadline checks and completion markers share a hard
 90-minute per-invocation cap. Planning and selection are bounded by the
 remaining campaign deadline. Assay execution and evidence checks use the time
@@ -1311,7 +1317,7 @@ pilot_run_s="$(pilot_remaining_s "$SECONDS")"
 if timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_s}s" \
     assay run self-qualification --file assay.toml \
     --candidates-file "$pilot_candidates" \
-    --pilot-jobs 3 \
+    --pilot-jobs 1 \
     --state-dir "$pilot_state" \
     --progress "$pilot_progress" \
     --cold-witness --resume --campaign-deadline "$deadline" \
@@ -1509,7 +1515,7 @@ source_roots = ["src"]
 base = "main"
 
 [lanes.package.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 500
 operators = ["python:compare-swap"]
 identity_exclude = ["nyxloom-trove/**"]
@@ -2077,9 +2083,10 @@ inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
 by the existing cause-sensitive canary runner. Assay still ships no JS/TS
 mutation engine, so a *native* R2 lane is still refused. B087 registers R3
-and local real-Vitest tests exercise both mechanisms. Both current dstdns
-canaries passed with retained schema-v15 verdicts and verifier transcripts;
-the integrated Assay release gate is separate. See the
+and local real-Vitest tests exercise both mechanisms. Both dstdns canaries
+were qualified under Assay 9.0.0/schema v15; their retained verdicts and
+verifier transcripts document that release. The integrated Assay release gate
+is separate. See the
 [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md).
 
 ### Make your test runner emit `coverage-final.json`
@@ -2330,8 +2337,9 @@ from a cold `node_modules`. This triples the cost of that lane. The lane's
 `mechanism` is exactly one of `import-break` or `uncovered-line`; declare
 separate lanes if you want to exercise both, and budget each lane for its own
 baseline and two canary commands. R3 is registered and has local real-Vitest
-oracles. Both current dstdns canaries passed with retained v15 verdicts and
-verifier transcripts; the [qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md)
+oracles. Both dstdns canaries were qualified under Assay 9.0.0/schema v15;
+their retained verdicts and verifier transcripts document that release. The
+[qualification report](../nyxloom-trove/reports/B087-js-r3-qualification.md)
 records the evidence and scope. This is distinct from Assay's integrated
 release gate.
 
@@ -3248,7 +3256,7 @@ plan's facts to choose an optional per-candidate bound:
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
 [lanes.worker_lane.judge.mutation]
-jobs = 4
+jobs = 1
 max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
@@ -3546,7 +3554,7 @@ The recommended shape, with the caller supplying the liveness half:
 budget = "unbounded"
 
 [lanes.worker_lane.judge.mutation]
-jobs = 4
+jobs = 1
 max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
@@ -3752,12 +3760,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v15 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v16 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
   candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
-  under the v15 verifier.
+  under the v16 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -3767,7 +3775,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v15 verdict. On a later commit, Assay always
+each killed candidate. Keep that v16 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -3798,9 +3806,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12, v13, or v14 verdict is a cold start under v15: `assay plan`
-marks its evidence unproven and `assay run` runs every candidate fully after
-the baseline; `assay verify` refuses all three versions. Wrapped commands, xdist,
+that candidate. A v12, v13, v14, or v15 verdict is a cold start under v16:
+`assay plan` marks its evidence unproven and `assay run` runs every candidate
+fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
 full runs. `--reuse-from` cannot be combined with `--shard`, because the
 feature returns a complete unsharded campaign.
@@ -3819,11 +3827,10 @@ It is a **pure time-based tick**: it never reads the child's stdout or stderr,
 counts its bytes, tracks activity, or knows which tool is running. A
 per-language live-test-progress adapter is a separate, larger item (B073) and
 is deliberately not part of this. The tick is armed only around the lane's own
-command, never around each mutant — a `jobs`-way concurrent sweep would
-otherwise interleave N tick streams about work the per-candidate records
-already describe one line at a time. A heartbeat write failure stops the
-heartbeat and nothing else; a diagnostic tick must never be able to kill a
-measured lane.
+command, never around each mutant; candidate progress is already recorded per
+attempt, and native R2 currently runs one candidate at a time (B156). A
+heartbeat write failure stops the heartbeat and nothing else; a diagnostic
+tick must never be able to kill a measured lane.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.
@@ -3891,7 +3898,7 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v15, a hard cut from v14. Lane schema v2 was a
+The current verdict schema is v16, a hard cut from v15. Lane schema v2 was a
 hard cut from v1 and remains current (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -3899,8 +3906,9 @@ for why interpreting an old lane file as if it declared the new grammar would be
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v14 and
-earlier verdicts on the schema version alone; see the [v14-to-v15 migration
+table at all — it is simply an unknown key. `assay verify` rejects v15 and
+earlier verdicts on the schema version alone; see the [v15-to-v16 migration
+notes](#migration-notes-v15-to-v16) and the earlier [v14-to-v15 migration
 notes](#migration-notes-v14-to-v15).
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
@@ -3996,6 +4004,27 @@ mode is opt-in through `assay run --cold-witness` for its supported native
 Python pytest command shape. See [Cold-witness R2 (B114)](#cold-witness-r2-b114)
 for the command and its limits.
 
+## Migration notes (v15 to v16)
+
+Verdict schema v16 is a **hard cut**. `assay verify` rejects v15 and older
+verdicts by schema version; there is no dual-version verifier or in-place
+upgrade. Keep an old release available to verify historical v15 artifacts, or
+regenerate evidence that must pass the current verifier.
+
+Native R2 now requires `judge.mutation.jobs = 1`. Candidate runs share the
+lane's cgroup event counters, so overlapping candidates cannot be assigned a
+resource-limit event reliably. Update native R2 lane configs in the same
+consumer commit that repins Assay; read-only `assay analyze plan-estimate`
+still accepts larger worker counts because it runs no candidates. Ingested R2
+does not declare Assay's native worker policy.
+
+Under `--reuse-from`, a v15 artifact is recognized only as a cold start; no
+candidate outcomes or witnesses are read from it. Mutation state from the
+previous judge identity also starts cold. Lane schema remains v2, and this
+release adds no lane schema version. Run R0 and R2 again to produce evidence
+under v16 and the serial execution contract. See the
+[serial event-window rationale](DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial).
+
 ## Migration notes (v12 to v13)
 
 Verdict schema v13 was a **hard cut**. `assay verify` refuses a v12 verdict by
@@ -4007,9 +4036,10 @@ For `--reuse-from`, a v12 verdict is a cold start: it supplies no reusable
 mutation witness, so the current candidate runs in full. You may keep a v12
 artifact as historical evidence, but it cannot save candidate work. The v13
 cut did not change lane schema v2 or require a lane-file edit. When upgrading
-directly to v15, also apply the [v13-to-v14 migration
-notes](#migration-notes-v13-to-v14) and the [v14-to-v15 migration
-notes](#migration-notes-v14-to-v15).
+directly to v16, also apply the [v13-to-v14 migration
+notes](#migration-notes-v13-to-v14), the [v14-to-v15 migration
+notes](#migration-notes-v14-to-v15), and the [v15-to-v16 migration
+notes](#migration-notes-v15-to-v16).
 
 Adopt in this order: repin Assay, regenerate any archived verdicts that must
 verify under the new pin, then compare or reuse current-run evidence. No lane
@@ -4779,12 +4809,16 @@ day you were not planning a migration.
 
 ### Efficiency
 
-R2 cost is roughly *mutants × (snapshot + full command run)*, so the two levers
-that matter are how many mutants you generate and how fast one command run is.
-Narrow `source_roots` to what you actually judge, keep `max_mutants` at a value
-whose *total* runtime you are willing to pay, and raise `jobs` only as far as
-your command tolerates concurrent execution — a command that contends on a
-shared fixture will get slower, not faster.
+R2 cost is roughly *mutants × (snapshot + full command run)*. Native R2 runs
+one candidate at a time: `judge.mutation.jobs` must be `1`, because overlapping
+candidates would share cgroup event counters and make limit-event attribution
+ambiguous. The loader, public execution API, verdict schema, and verifier
+reject native verdicts that claim multiple workers. Narrow `source_roots` to
+the code you intend to judge and choose `max_mutants` for the runtime you can
+afford. Read-only `assay analyze plan-estimate --workers N` can estimate a
+parallel plan, but it does not run candidates. After the bounded B105 pilot,
+remeasure any old parallel throughput estimate before using it to schedule a
+campaign; see [native R2 and cgroup events](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 
 ## What is not shipped
 

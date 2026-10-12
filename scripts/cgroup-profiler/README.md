@@ -32,6 +32,18 @@ matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
 profiling output is unchanged. The shell shim and `cgprofile.py` therefore
 expose the same top-level compatibility option.
 
+The Dockerfile requires an explicit `CGPROFILE_VERSION` build argument and
+fails before package installation when it is absent. The Bake file uses
+literal development defaults, so ambient variables cannot change its image
+identity. `build-push.py` supplies per-target overrides and derives a release
+identity only from the exact
+`cgprofile-v<version>` tag at `HEAD`; an ambient `CGPROFILE_VERSION` cannot
+label an untagged checkout as a release. The tagged working tree must also be
+clean so the image source matches that tag. An untagged local build uses
+`0.0.0-dev`, and publishing without the exact tag refuses. Use
+`build-push.py --push` for release publication; bare Bake retains the
+development identity.
+
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.
 - **`DESIGN.md`** — architecture and module contracts. Start there if you want
@@ -195,23 +207,24 @@ the deployment authority: it selects `pid: "host"` and binds the host's
 `/proc` at `/hostproc`. Its Compose configuration lives in the
 `scripts/cgroup-profiler/` standalone CIU root;
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
-The default stack uses the local development image; to deploy a versioned GHCR
-release, pin the complete image coordinate in `ciu.toml.j2` and verify the
-daemon identity as shown in the
-[consumer guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+Before the first CMRU release, the managed CIU root has no image override and
+uses the local development default. Build it and start the stack for
+pre-release checks. From the repository root, run:
 
 ```bash
-python3 build-push.py --build      # -> local-only cgprofile:local (needs buildx)
-ciu up --dir .                     # starts cgprofile-host-daemon
+cd scripts/cgroup-profiler
+python3 build-push.py --build
+ciu up --dir .
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 docker exec cgprofile-host-daemon cgprofile ctl status --json
-ciu down                           # stops it (run from this dir); the volume survives
 ```
 
-The committed CIU root pins the published `1.0.0` image for the managed
-cockpit. For local development, clear the `[cgprofile.image]` override in
-`ciu.toml.j2` before `ciu up` so CIU selects the locally built image. See the
-[published-image deployment steps](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+After CMRU publishes `cgprofile-v1.0.0`, add the published image pin to
+`ciu.toml.j2` as shown in the
+[published-image deployment steps](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu),
+then, from that same project directory, run `ciu up --dir .` and verify the
+daemon identity.
+The release pin is not usable before its GHCR manifest exists.
 
 The daemon's version response is contract major 1:
 

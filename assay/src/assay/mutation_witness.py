@@ -209,6 +209,7 @@ class ReceiptFacts:
     config_sha256: str | None
     started_count: int
     collection_error: bool
+    unsupported_hook_names: tuple[str, ...]
 
 
 class ReceiptCapture:
@@ -439,6 +440,17 @@ def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:
             return None
     if type(receipt.get("collection_error")) is not bool:
         return None
+    unsupported_hook_names = receipt.get("unsupported_hook_names")
+    if (
+        not isinstance(unsupported_hook_names, list)
+        or len(unsupported_hook_names) > len(HOOK_FINGERPRINT_HOOKS)
+        or any(
+            type(name) is not str or name not in HOOK_FINGERPRINT_HOOKS
+            for name in unsupported_hook_names
+        )
+        or unsupported_hook_names != sorted(set(unsupported_hook_names))
+    ):
+        return None
     return ReceiptFacts(
         collection_count=count,
         collection_sha256=receipt["collection_sha256"],
@@ -449,6 +461,7 @@ def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:
         config_sha256=receipt["config_sha256"],
         started_count=started_count,
         collection_error=receipt["collection_error"],
+        unsupported_hook_names=tuple(unsupported_hook_names),
     )
 
 
@@ -1453,6 +1466,7 @@ _INTERNAL_RECEIPT_KEYS = frozenset(
         "config_sha256",
         "archive_hook_exception_used",
         "unsupported_pytest_cov_only",
+        "unsupported_hook_names",
     }
 )
 
@@ -1516,6 +1530,7 @@ _TARGET_COUNT = None
 _STANDARD_LOOP = False
 _REPLAY_SUPPORTED = False
 _UNSUPPORTED_PYTEST_COV_ONLY = False
+_UNSUPPORTED_HOOK_NAMES = set()
 _EARLIER_FAILURE = False
 _AUXILIARY_FAILURE = False
 _COLLECTION_ERROR = False
@@ -2132,11 +2147,13 @@ def _hook_impl_signature(impl):
     )
 
 
-def _mark_hook_registry_changed():
+def _mark_hook_registry_changed(hook_name=None):
     global _STANDARD_LOOP, _REPLAY_SUPPORTED, _UNSUPPORTED_PYTEST_COV_ONLY
     _STANDARD_LOOP = False
     _REPLAY_SUPPORTED = False
     _UNSUPPORTED_PYTEST_COV_ONLY = False
+    if hook_name in _HOOKS:
+        _UNSUPPORTED_HOOK_NAMES.add(hook_name)
 
 
 def _test_report_constructor_is_trusted():
@@ -2177,16 +2194,16 @@ def _check_hook_registry(hook_name):
         impls = getattr(_SESSION.config.hook, hook_name).get_hookimpls()
         observed = tuple(_hook_impl_signature(impl) for impl in impls)
     except Exception:
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
         return
     if expected is None or observed != expected:
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
 
 
 def _before_hook_call(hook_name, methods, kwargs):
     _check_hook_registry(hook_name)
     if hook_name == "pytest_runtest_makereport" and not _test_report_constructor_is_trusted():
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
 
 
 def _after_hook_call(outcome, hook_name, methods, kwargs):
@@ -2194,33 +2211,33 @@ def _after_hook_call(outcome, hook_name, methods, kwargs):
     if hook_name != "pytest_runtest_makereport":
         return
     if not _test_report_constructor_is_trusted():
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
     if getattr(outcome, "excinfo", None) is not None:
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
         return
     try:
         report = outcome.get_result()
         call = kwargs.get("call")
         item = kwargs.get("item")
         if call is None or item is None or report.when != call.when or report.nodeid != item.nodeid:
-            _mark_hook_registry_changed()
+            _mark_hook_registry_changed(hook_name)
             return
         if report.when == "call":
             if report.outcome == "passed" and call.excinfo is not None:
-                _mark_hook_registry_changed()
+                _mark_hook_registry_changed(hook_name)
             elif (
                 report.outcome == "failed"
                 and call.excinfo is None
                 and not getattr(report, "wasxfail", None)
                 and not _is_builtin_strict_xpass(report, item)
             ):
-                _mark_hook_registry_changed()
+                _mark_hook_registry_changed(hook_name)
             elif report.outcome not in ("passed", "failed", "skipped"):
-                _mark_hook_registry_changed()
+                _mark_hook_registry_changed(hook_name)
     except BaseException:
         # The monitor must not replace pytest's own hook outcome. Any report
         # it cannot inspect is unsupported for cold/replay proof.
-        _mark_hook_registry_changed()
+        _mark_hook_registry_changed(hook_name)
 
 
 def _hook_fingerprint(config):
@@ -2365,6 +2382,7 @@ def _write(session_exit_status):
     payload = {
         "unsupported": not _STANDARD_LOOP,
         "unsupported_pytest_cov_only": bool(_UNSUPPORTED_PYTEST_COV_ONLY),
+        "unsupported_hook_names": sorted(_UNSUPPORTED_HOOK_NAMES),
         "replay_supported": bool(_REPLAY_SUPPORTED),
         "target_node_id": _TARGET,
         "target_count": _TARGET_COUNT,
@@ -2429,12 +2447,14 @@ def pytest_collection_finish(session):
     global _SESSION, _ITEMS, _TARGET, _TARGET_COUNT, _STANDARD_LOOP, _REPLAY_SUPPORTED
     global _COLD, _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT, _RUNTIME_FINGERPRINT_SHA256, _CONFIG_SHA256
     global _UNSUPPORTED_PYTEST_COV_ONLY
+    global _UNSUPPORTED_HOOK_NAMES
     global _HOOK_IMPL_REGISTRY
     _SESSION = session
     assay_hooks_trusted = _assay_hook_registry_matches(session.config)
     _ITEMS = tuple(item.nodeid for item in session.items)
     _TARGET = os.environ.get("ASSAY_MUTATION_WITNESS_TARGET")
     _COLD = os.environ.get("ASSAY_MUTATION_WITNESS_COLD") == "1"
+    _UNSUPPORTED_HOOK_NAMES = set()
     _TARGET_COUNT = None if _TARGET is None else sum(1 for node_id in _ITEMS if node_id == _TARGET)
     _write_manifest(session)
     config = session.config
@@ -2502,6 +2522,18 @@ def pytest_collection_finish(session):
         )
     except Exception:
         _UNSUPPORTED_PYTEST_COV_ONLY = False
+    for hook_name in _HOOKS:
+        primary = (
+            ("main", "_pytest.main")
+            if hook_name == "pytest_runtestloop"
+            else ("runner", "_pytest.runner")
+            if hook_name == "pytest_runtest_protocol"
+            else None
+        )
+        if not _only_builtin_hook_impls(
+            config, hook_name, primary=primary, allow_coverage=True
+        ):
+            _UNSUPPORTED_HOOK_NAMES.add(hook_name)
     _HOOK_FINGERPRINT_SHA256, _HOOK_COUNT = _hook_fingerprint(config)
     _RUNTIME_FINGERPRINT_SHA256 = _runtime_fingerprint(config)
     _CONFIG_SHA256 = _config_fingerprint(config)

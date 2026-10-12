@@ -225,7 +225,7 @@ mode = "whole_target"
 targets = ["src/assay/adapters/go.py", "src/assay/adapters/pilot_bool_fixture.py"]
 
 [lanes.self-qualification.judge.mutation]
-jobs = 3
+jobs = 1
 max_mutants = 128
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 """,
@@ -449,7 +449,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         "completed": True,
         "lane": "self-qualification",
         "commit": commit,
-        "jobs": 3,
+        "jobs": 1,
         "requested": len(selected_ids),
         "selection_sha256": selection_sha256,
         "judge_sha256": "b" * 64,
@@ -2344,7 +2344,7 @@ def test_host_rejects_a_late_extra_live_state_record(
         ("wrong-replacement-hash", "different replacement identity"),
         ("wrong-mutated-hash", "stale or disagrees with the source plan or summary"),
         ("omitted-configured-target", "complete committed whole-target lane"),
-        ("wrong-job-count", "registered three-job pilot"),
+        ("wrong-job-count", "registered serial pilot"),
         ("coherent-wrong-judge", "differs from the in-memory summary"),
         ("current-selection-digest", "selection digest differs"),
         ("current-resource-mismatch", "resource evidence differs from its state record"),
@@ -2461,7 +2461,7 @@ def test_b110_pilot_checker_rejects_exit_six_without_complete_evidence(
         path.write_text(json.dumps(plan, sort_keys=True) + "\n")
     elif damage == "wrong-job-count":
         summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
-        summary["jobs"] = 1
+        summary["jobs"] = 2
         (artifact_dir / "b110-pilot-summary.json").write_text(json.dumps(summary))
     elif damage == "coherent-wrong-judge":
         for path in fixture["state_dir"].glob("*.json"):

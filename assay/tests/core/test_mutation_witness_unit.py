@@ -90,6 +90,7 @@ def _receipt(**overrides):
         "runtime_fingerprint_sha256": "c" * 64,
         "config_sha256": None,
         "archive_hook_exception_used": False,
+        "unsupported_hook_names": [],
     }
     value.update(overrides)
     return value
@@ -1100,6 +1101,27 @@ def test_cold_and_survivor_proofs_require_complete_matching_receipts():
     ) is None
 
 
+def test_unsupported_hook_receipt_names_the_fail_closed_reason():
+    baseline = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=False,
+        unsupported_hook_names=["pytest_runtest_call"],
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+    )
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    assert survivor_proof_failure(
+        baseline,
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
+
+
 def test_makereport_wrapper_changes_fingerprint_and_cannot_prove_a_cold_kill(tmp_path):
     project = tmp_path / "project"
     tests = project / "tests"
@@ -1923,6 +1945,68 @@ def test_declared_failure_proof_only_allows_reviewed_pytest_cov_unsupported_hook
         expected=expected,
         manifest_node_ids=(node,),
     )
+
+
+def test_unsupported_coverage_baseline_names_the_untrusted_pytest_hook():
+    baseline = _receipt(
+        unsupported=True,
+        unsupported_pytest_cov_only=False,
+        unsupported_hook_names=["pytest_runtest_call"],
+        session_exit_status=0,
+        witness_node_id=None,
+        witness_when=None,
+        witness_outcome=None,
+        started_count=1,
+    )
+    expected = receipt_facts(baseline)
+    assert expected is not None
+
+    assert survivor_proof_failure(
+        baseline,
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
+
+    assert receipt_facts(
+        {**baseline, "unsupported_hook_names": ["pytest_unknown_hook"]}
+    ) is None
+    assert survivor_proof_failure(
+        {**baseline, "unsupported_hook_names": ["pytest_runtest_call", "pytest_runtest_call"]},
+        process_exit_status=0,
+        expected=expected,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
+
+
+def test_real_receipt_names_untrusted_hook_without_weakening_refusal(tmp_path):
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").write_text(
+        "def pytest_runtest_setup(item):\n    return None\n",
+        encoding="utf-8",
+    )
+    (tests / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    result, receipt = _run_child_pytest(
+        project, tmp_path / "plugins", tmp_path / "receipt.json", cold=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert receipt is not None
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is False
+    assert receipt["unsupported_hook_names"] == ["pytest_runtest_setup"]
+    facts = receipt_facts(receipt)
+    assert facts is not None
+    assert survivor_proof_failure(
+        receipt,
+        process_exit_status=result.returncode,
+        expected=facts,
+        command="declared",
+    ) == "the baseline uses an unsupported pytest hook configuration"
 
 
 def test_declared_failure_proof_accepts_a_failure_inside_the_started_prefix():

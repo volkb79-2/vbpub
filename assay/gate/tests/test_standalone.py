@@ -1139,12 +1139,10 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     injected one -- the only one of the six that a real lane can only reach
     by actually waiting.
 
-    The command is content-dependent in the opposite direction to the kill
-    test: it sleeps only when ``x > 0`` is ABSENT, which is true for line
-    2's mutant and false for the baseline and for line 6's. So the baseline
-    and one mutant finish immediately, and exactly one mutant is stopped by
-    the lane's own budget -- never conflated with a kill (a timeout exits
-    non-zero too, which is precisely the conflation A-122 refuses).
+    The command checks the second comparison site: the baseline and line
+    2's mutant finish immediately, while line 6's mutant sleeps until the
+    lane budget expires. Serial execution preserves both dispositions without
+    overlapping the cgroup event windows used by native R2.
 
     The margin is deliberate, not tuned: 5s of budget against a 300s sleep,
     with the passing paths doing one `grep` on a six-line file. This cannot
@@ -1152,11 +1150,11 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     for a different reason (AUTHORING.md §3b.A's own reading -- a slow-host
     red here would be a TRUE red).
     """
-    script = "grep -q 'x > 0' src/mod.py || sleep 300"
+    script = "grep -q 'y > 1' src/mod.py || sleep 300"
     base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path,
-        _r2_lane_toml(script=script, base="control-baseline", jobs=2, budget="5s"),
+        _r2_lane_toml(script=script, base="control-baseline", jobs=1, budget="5s"),
     )
     git_repo.commit_all("add assay.toml")
     before = _tracked_file_hashes(git_repo.path)
@@ -1175,7 +1173,7 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
             outcome="BUDGET_EXCEEDED",
             reason_code="LANE_TIMEOUT",
             exit_code=4,
-            jobs=2,
+            jobs=1,
             operators=["python:compare-swap"],
             r2_claim={
                 "rigor": "R2",
@@ -1186,14 +1184,14 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
                 "mutation": {
                     "candidate_count": 2,
                     "total": 2,
-                    # line 6's mutant leaves `x > 0` in place, so the grep
-                    # succeeds, nothing sleeps, and it SURVIVES.
+                    # line 2's mutant leaves `y > 1` in place, so the grep
+                    # succeeds and it SURVIVES before line 6 is attempted.
                     "killed": [],
-                    "survived": [_gt_site(6)],
+                    "survived": [_gt_site(2)],
                     "crashed": [],
-                    "budget_exceeded": [_gt_site(2)],
+                    "budget_exceeded": [_gt_site(6)],
                     "equivalent": [],
-                    # (B091/A3) present and empty: line 2's mutant is stopped
+                    # (B091/A3) present and empty: line 6's mutant is stopped
                     # by the lane's own budget (`budget_exceeded`), never
                     # conflated with `hung` -- a CPU-spinning mutant is not
                     # hung, per RW-33.

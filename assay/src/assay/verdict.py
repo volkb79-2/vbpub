@@ -390,9 +390,15 @@ __all__ = [
 #: ledger slot. Candidate outcomes may carry collection and hook evidence for
 #: cold/declared attempts. Liveness policy discloses its effective CPU and
 #: idle windows. Campaign deadlines bind resumed work to one commit and plan.
-#: Versions 12-14 are bounded `--reuse-from` cold starts; v11 and older remain
-#: refused. Producers emit v15, and `assay verify` refuses v14.
-VERDICT_SCHEMA_VERSION = 15
+#: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
+#: refused. Producers emit v16, and `assay verify` refuses v15 and older.
+#:
+#: **Bumped 15 -> 16 (B156).** Native R2 fixes `judgment.r2.jobs` at 1 because
+#: candidate cgroup-event windows share counters and overlapping runs cannot
+#: be attributed. The schema/model/verifier refuse a native verdict claiming
+#: more than one worker. Older v15 verdicts remain eligible only as cold
+#: `--reuse-from` inputs; their mutation witnesses are not reused.
+VERDICT_SCHEMA_VERSION = 16
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -3195,6 +3201,10 @@ class JudgmentR2:
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
             raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
+        if self.jobs != 1:
+            raise ValueError(
+                "judgment.r2.jobs must be 1 for native R2 event attribution"
+            )
         if not is_strict_int(self.max_mutants):
             raise ValueError(
                 f"judgment.r2.max_mutants must be an integer, got "

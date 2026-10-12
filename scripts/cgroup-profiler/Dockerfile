@@ -26,7 +26,10 @@
 # not needed at runtime is one this daemon does not carry). The builder
 # stage installs build-essential and produces venv/; the final stage copies
 # only the finished venv, never the compiler that made it.
+ARG CGPROFILE_VERSION
 FROM python:3.14-slim AS builder
+ARG CGPROFILE_VERSION
+RUN if [ -z "${CGPROFILE_VERSION}" ]; then echo >&2 'CGPROFILE_VERSION build arg is required'; exit 1; fi
 
 WORKDIR /opt/cgprofile
 COPY requirements.txt ./requirements.txt
@@ -40,6 +43,9 @@ RUN apt-get update \
 
 FROM python:3.14-slim
 
+ARG CGPROFILE_VERSION
+ARG GIT_REVISION=unknown
+
 # `busctl` is the stdlib-free transport for the one host-systemd placement
 # operation. The daemon uses only AttachProcessesToUnit over the explicitly
 # mounted system bus; it does not run systemd as PID 1. This image does not
@@ -49,9 +55,6 @@ FROM python:3.14-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends systemd \
     && rm -rf /var/lib/apt/lists/*
-
-ARG CGPROFILE_VERSION=1.1.0
-ARG GIT_REVISION=unknown
 
 ENV CGPROFILE_VERSION="${CGPROFILE_VERSION}"
 

@@ -190,7 +190,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
         judgment=Judgment(
             resolved=RESOLVED,
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 **UNATTRIBUTED,
@@ -259,7 +259,7 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
         judgment=Judgment(
             resolved=RESOLVED,
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:boolop-swap", "python:compare-swap"),
                 **UNATTRIBUTED,
@@ -303,7 +303,7 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
         judgment=Judgment(
             resolved=RESOLVED,
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:bool-const-flip", "python:compare-swap"),
                 **UNATTRIBUTED,

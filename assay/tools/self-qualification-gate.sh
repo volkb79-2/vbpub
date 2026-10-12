@@ -166,7 +166,7 @@ run_b110_pilot_inner() {
     --output b110-pilot-summary.json --stderr b110-pilot-run.log -- \
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
       "$assay_bin" run self-qualification --file assay.toml \
-      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 3 --cold-witness --resume \
+      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 1 --cold-witness --resume \
       --state-dir "$assay_state_root/b110-pilot-state" --progress "$assay_state_root/progress-b110-pilot.jsonl" \
       --r2-manifest "$assay_state_root/r2-manifest-b110-pilot.txt" \
       --campaign-deadline "$pilot_deadline"

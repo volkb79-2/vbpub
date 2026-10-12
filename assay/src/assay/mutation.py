@@ -43,9 +43,10 @@ file. :class:`MutationSite` is the identical split, one module over.
 **P12 adds execution** (A-119): baseline-gated, isolated, ``jobs``-bounded
 mutation running lives HERE too, mirroring ``canary.py``'s own precedent of
 holding one claim-tier's entire orchestration in a single dedicated module.
-The surface is :func:`run_mutation` (the entry point: a bounded executor
-fan-out over :func:`collect_mutation_sites`'s job list, then deterministic
-aggregation into a :class:`~assay.verdict.Mutation`),
+  The surface is :func:`run_mutation` (the entry point: a bounded executor
+  over :func:`collect_mutation_sites`'s job list, then deterministic
+  aggregation into a :class:`~assay.verdict.Mutation`; native R2 currently
+  requires one worker so cgroup-event windows cannot overlap),
 :func:`judge_mutation` / :func:`build_mutation_claim` (the pure outcome
 mapping and R2 :class:`~assay.verdict.Claim` wiring, A-117), and
 :func:`collect_mutation_sites` (the bounded cross-file aggregation).
@@ -100,6 +101,7 @@ and avoids re-opening the same cycle purely for a type hint.
 
 from __future__ import annotations
 
+from functools import wraps
 import fnmatch
 import hashlib
 import json
@@ -3177,6 +3179,29 @@ def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
     return max(3.0 * baseline_wall, baseline_wall + 60.0)
 
 
+def _native_r2_serial_only(function):
+    """Keep the supported native-R2 entry point serial for event attribution.
+
+    The implementation retains its bounded queue mechanics for isolated
+    executor tests and possible future per-candidate cgroup evidence. Product
+    callers must go through :func:`run_mutation`, which refuses overlapping
+    candidate event windows.
+    """
+
+    @wraps(function)
+    def checked(*args, **kwargs):
+        jobs = kwargs.get("jobs")
+        if is_strict_int(jobs) and jobs > 1:
+            raise ValueError(
+                "run_mutation jobs must be 1 for native R2 because candidate "
+                "cgroup event windows must not overlap"
+            )
+        return function(*args, **kwargs)
+
+    return checked
+
+
+@_native_r2_serial_only
 def run_mutation(
     *,
     baseline: CommandResult,
@@ -3329,11 +3354,12 @@ def run_mutation(
     let alone anything submitted to an executor (A-116's baseline-
     conditional presence rule) — this function returns ``None``.
 
-    *jobs* is validated (a positive, non-boolean integer) BEFORE the
-    executor boundary (work item 5): this function is a public surface a
-    caller may invoke directly, so :mod:`assay.config`'s load-time
-    discipline for a real ``assay.toml`` cannot be assumed to have already
-    run here.
+    *jobs* is validated BEFORE the executor boundary (work item 5): this
+    function is a public surface a caller may invoke directly, so
+    :mod:`assay.config`'s load-time discipline for a real ``assay.toml``
+    cannot be assumed to have already run here. Native R2 also requires
+    exactly one worker (B156); overlapping candidates would share cgroup
+    event counters and make resource-event attribution ambiguous.
 
     Only when the baseline PASSES: collects every candidate site across
     *targets* at ``limit=max_mutants + 1`` (A-180) — the exact max+1
@@ -3355,7 +3381,9 @@ def run_mutation(
 
     Submission uses a bounded continuous work queue with at most *jobs*
     futures in flight (``executor_factory(jobs)`` called exactly once with
-    the declared value, never a derived value, A-082/A-122). A completed
+    the declared value, never a derived value, A-082/A-122). The public
+    native-R2 entry point pins that value to one; the queue remains bounded
+    for future use if candidates gain independent cgroup evidence. A completed
     future frees a slot immediately, so a slow earlier candidate does not
     hold a whole batch at a barrier. On deadline expiry or a fatal worker
     error, submission stops and every already-submitted future is drained so
@@ -4040,6 +4068,11 @@ def run_mutation(
             if complete_campaign:
                 deadline.remaining()
         return result_payload
+
+
+# The private implementation remains available to executor-focused unit tests;
+# runtime and consumer code must use the serial-checked public entry point.
+_run_mutation_impl = run_mutation.__wrapped__
 
 
 def _execute_mutation_jobs(

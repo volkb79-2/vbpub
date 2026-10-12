@@ -1500,6 +1500,10 @@ def _frame_paths(n: int):
 
 
 def _run_full_lifecycle(scope: str, monkeypatch, tmp_path) -> Dict[str, Any]:
+    # The frozen source-era summary predates the untagged development identity.
+    # Pin the release identity this fixture reproduces instead of inheriting
+    # whichever CMRU build environment happens to run the unit suite.
+    monkeypatch.setattr(serve, "CGPROFILE_VERSION", "1.1.0")
     n_frames = 5
     frame_box = {"n": 0}
     root_link = tmp_path / "cgroup_root"
@@ -3665,6 +3669,11 @@ def _wait_for_socket(socket_path: str) -> None:
 
 
 def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, capsys):
+    # This fixture is a frozen daemon response, not a source-checkout identity
+    # test. Keep its historical release version explicit while
+    # test_untagged_source_daemon_reports_development_identity covers the
+    # current source default.
+    monkeypatch.setattr(serve, "CGPROFILE_VERSION", "1.1.0")
     n_frames = 5
     frame_box = {"n": 0}
     root_link = tmp_path / "cgroup_root"

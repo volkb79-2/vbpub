@@ -562,17 +562,28 @@ turns an unreadable metric into zero.
 The daemon image version is the exact `cgprofile-v<version>` CMRU tag at
 `HEAD`. The build script reads the prefix from `cmru.toml`, rejects ambiguous
 or malformed matching tags, and supplies the resolved version to the OCI tag,
-image label, CLI identity, and daemon self-description. This keeps build
-metadata and live probes on one release fact rather than asking operators to
-type a second version. Untagged local images are marked `0.0.0-dev`; publish
-without an exact tag or explicit manual version refuses. No version lookup
-depends on network access at runtime.
+image label, CLI identity, and daemon self-description. The Bake file itself
+uses literal development defaults instead of importing environment variables;
+only the wrapper's explicit target overrides carry the resolved version into a
+release build. This keeps build metadata and live probes on one release fact
+rather than asking operators to type a second version. Untagged local images
+are marked `0.0.0-dev`; publishing
+without an exact tag refuses even when `CGPROFILE_VERSION` is set in the
+environment, and a tagged checkout with tracked or untracked changes refuses.
+That variable carries the identity after the tag has been resolved; it is
+never a source of release authority. The Dockerfile has no
+version default and checks the required argument before package installation,
+so a low-level image build cannot silently label an image when no identity was
+supplied. No version lookup depends on network access at runtime.
 
 The local `cgprofile:local` alias is not a release coordinate: because it has
 no registry hostname, Docker resolves it to Docker Hub when used as a publish
-output. The Bake file therefore separates a local-only target from the
-versioned GHCR release target, and CMRU's push step selects only the latter.
-This keeps developer convenience from widening the release's external writes.
+output. The Bake file separates the local target from a release target whose
+default is still the development tag; the validated wrapper overrides the
+release tag and image argument after checking the source tag. A bare Bake
+command cannot turn `CGPROFILE_VERSION` from the environment into a release
+label. CMRU's push step selects only the release target. This keeps developer
+convenience from widening the release's external writes.
 The pasteable CIU pin and verification command live in
 [`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 

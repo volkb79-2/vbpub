@@ -433,7 +433,7 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=decide,

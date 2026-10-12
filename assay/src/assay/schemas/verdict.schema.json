@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:15",
+  "$id": "urn:assay:schema:verdict:16",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v15 and the verifier refuses every other version.",
+      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v16 and the verifier refuses every other version.",
       "type": "integer",
-      "const": 15
+      "const": 16
     },
     "assay_version": {
       "type": "string",
@@ -2086,9 +2086,9 @@
           }
         },
         "jobs": {
-          "description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122). Required when producer = 'native'; FORBIDDEN when producer = 'ingested' -- assay chose no concurrency for a run it did not orchestrate, and copying the foreign tool's own setting here would put that tool's configuration on the wire under assay's name.",
+          "description": "Native R2 candidate event counters share one lane cgroup, so native execution is serial until each candidate has independently attributable evidence (B156). Required as 1 when producer = 'native'; FORBIDDEN when producer = 'ingested'.",
           "type": "integer",
-          "minimum": 1
+          "const": 1
         },
         "max_mutants": {
           "description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory. Required when producer = 'native'; FORBIDDEN when producer = 'ingested' for jobs' own reason -- assay declared no ceiling on a discovery it did not perform.",

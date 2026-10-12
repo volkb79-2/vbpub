@@ -623,7 +623,7 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -1022,7 +1022,7 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -1045,7 +1045,7 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
                 deadline=make_deadline(),
                 targets=_TARGETS,
                 adapter=PythonAdapter(),
-                jobs=2,
+                jobs=1,
                 max_mutants=10,
                 operators=("python:bool-const-flip",),
                 process_runner=decide,
@@ -1090,7 +1090,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -1119,7 +1119,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=deciding_recorder,
@@ -1721,7 +1721,7 @@ source_roots = ["pkg"]
 base = "base"
 
 [lanes.package.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 10
 operators = ["python:bool-const-flip"]
 budget_per_candidate = "30s"
@@ -1756,7 +1756,7 @@ budget_per_candidate = "30s"
     assert payload["by_operator"] == {"python:bool-const-flip": 1}
     assert payload["by_file"] == {"pkg/flags.py": 1}
     assert payload["estimated_serial_seconds"] == 30.0
-    assert payload["estimated_wall_seconds"] == 15.0
+    assert payload["estimated_wall_seconds"] == 30.0
     assert [candidate["path"] for candidate in payload["candidates"]] == ["pkg/flags.py"]
     assert [candidate["operator"] for candidate in payload["candidates"]] == [
         "python:bool-const-flip"
@@ -1992,7 +1992,7 @@ source_roots = ["pkg"]
 base = "base"
 
 [lanes.package.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 10
 operators = ["python:bool-const-flip"]
 """
@@ -2150,6 +2150,6 @@ def test_plan_estimates_with_the_60s_fallback_for_every_non_duration_spelling(
     assert exit_code == 0
     payload = json.loads(out.getvalue())
     assert payload["status"] == "ok"
-    # 1 candidate x 60s fallback, / 2 jobs for the wall estimate.
+    # 1 candidate x 60s fallback, / 1 native-R2 worker for the wall estimate.
     assert payload["estimated_serial_seconds"] == 60.0
-    assert payload["estimated_wall_seconds"] == 30.0
+    assert payload["estimated_wall_seconds"] == 60.0

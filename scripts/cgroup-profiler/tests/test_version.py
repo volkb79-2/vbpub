@@ -17,21 +17,43 @@ def _project_root(tmp_path: Path, prefix: str = "cgprofile-v") -> Path:
     return tmp_path
 
 
-def _git_tags(monkeypatch, *, stdout: str = "", returncode: int = 0, stderr: str = ""):
+def _git_tags(
+    monkeypatch,
+    *,
+    stdout: str = "",
+    returncode: int = 0,
+    stderr: str = "",
+    status_stdout: str = "",
+    status_returncode: int = 0,
+    status_stderr: str = "",
+):
     def fake_run(argv, **kwargs):
-        assert argv == ["git", "tag", "--points-at", "HEAD"]
+        if argv == ["git", "tag", "--points-at", "HEAD"]:
+            result_stdout = stdout
+            result_stderr = stderr
+            result_code = returncode
+        elif argv == ["git", "rev-parse", "--show-toplevel"]:
+            result_stdout = str(kwargs["cwd"])
+            result_stderr = ""
+            result_code = 0
+        elif argv == ["git", "status", "--porcelain", "--untracked-files=all"]:
+            result_stdout = status_stdout
+            result_stderr = status_stderr
+            result_code = status_returncode
+        else:
+            raise AssertionError(f"unexpected git command: {argv!r}")
         captured = kwargs.get("capture_output", False)
-        result_stdout = stdout if captured else None
-        result_stderr = stderr if captured else None
+        result_stdout = result_stdout if captured else None
+        result_stderr = result_stderr if captured else None
         if captured and not kwargs.get("text", False):
-            result_stdout = stdout.encode()
-            result_stderr = stderr.encode()
-        if returncode and kwargs.get("check", False):
+            result_stdout = result_stdout.encode()
+            result_stderr = result_stderr.encode()
+        if result_code and kwargs.get("check", False):
             raise subprocess.CalledProcessError(
-                returncode, argv, output=result_stdout, stderr=result_stderr,
+                result_code, argv, output=result_stdout, stderr=result_stderr,
             )
         return subprocess.CompletedProcess(
-            argv, returncode, result_stdout, result_stderr,
+            argv, result_code, result_stdout, result_stderr,
         )
 
     monkeypatch.setattr(version.subprocess, "run", fake_run)
@@ -63,67 +85,127 @@ def test_runtime_version_refuses_invalid_embedded_identity(monkeypatch, bad):
 def test_exact_release_tag_is_authoritative_over_stale_environment(tmp_path, monkeypatch):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch, stdout="assay-v7.0.0\n\ncgprofile-v1.1.0\n")
+    monkeypatch.setenv(version.VERSION_ENV, "9.9.9")
     assert version.resolve_build_version(
-        root, require_release_tag=True, environ={version.VERSION_ENV: "9.9.9"},
+        root, require_release_tag=True,
     ) == "1.1.0"
+
+
+def test_dirty_checkout_at_release_tag_is_refused(tmp_path, monkeypatch):
+    root = _project_root(tmp_path)
+    _git_tags(
+        monkeypatch,
+        stdout="cgprofile-v1.1.0\n",
+        status_stdout=" M scripts/cgroup-profiler/lib/serve.py\n",
+    )
+
+    with pytest.raises(RuntimeError, match="tracked or untracked changes"):
+        version.resolve_build_version(root, require_release_tag=True)
+
+
+def test_release_tag_is_refused_when_cleanliness_cannot_be_verified(
+    tmp_path, monkeypatch,
+):
+    root = _project_root(tmp_path)
+    _git_tags(
+        monkeypatch,
+        stdout="cgprofile-v1.1.0\n",
+        status_returncode=128,
+        status_stderr="fatal: could not read index",
+    )
+
+    with pytest.raises(RuntimeError, match="cannot verify tagged build tree cleanliness"):
+        version.resolve_build_version(root, require_release_tag=True)
 
 
 def test_multiple_project_tags_at_head_are_refused(tmp_path, monkeypatch):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch, stdout="cgprofile-v1.0.0\ncgprofile-v1.1.0\n")
     with pytest.raises(RuntimeError, match="multiple .* release tags"):
-        version.resolve_build_version(root, require_release_tag=True, environ={})
+        version.resolve_build_version(root, require_release_tag=True)
 
 
 def test_malformed_project_tag_at_head_is_refused(tmp_path, monkeypatch):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch, stdout="cgprofile-vlatest\n")
     with pytest.raises(RuntimeError, match="release tag .* semantic version"):
-        version.resolve_build_version(root, require_release_tag=True, environ={})
+        version.resolve_build_version(root, require_release_tag=True)
 
 
-def test_valid_manual_version_is_used_when_no_project_tag_exists(tmp_path, monkeypatch):
-    root = _project_root(tmp_path)
-    _git_tags(monkeypatch)
-    assert version.resolve_build_version(
-        root, require_release_tag=True, environ={version.VERSION_ENV: "2.3.4"},
-    ) == "2.3.4"
-
-
-def test_invalid_manual_version_is_refused(tmp_path, monkeypatch):
-    root = _project_root(tmp_path)
-    _git_tags(monkeypatch)
-    with pytest.raises(RuntimeError, match="CGPROFILE_VERSION must be a semantic version"):
-        version.resolve_build_version(
-            root, require_release_tag=False, environ={version.VERSION_ENV: "latest"},
-        )
-
-
-@pytest.mark.parametrize("require_release_tag", [False, True])
-@pytest.mark.parametrize("explicit_value", ["", "   "])
-def test_explicit_empty_manual_version_is_refused_for_build_and_publish(
-    tmp_path, monkeypatch, require_release_tag, explicit_value,
+def test_untagged_local_build_uses_dev_identity_despite_ambient_override(
+    tmp_path, monkeypatch,
 ):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch)
-    with pytest.raises(RuntimeError, match="CGPROFILE_VERSION must be a semantic version"):
-        version.resolve_build_version(
-            root, require_release_tag=require_release_tag,
-            environ={version.VERSION_ENV: explicit_value},
-        )
+    monkeypatch.setenv(version.VERSION_ENV, "2.3.4")
+    assert version.resolve_build_version(root, require_release_tag=False) == "0.0.0-dev"
 
 
-def test_untagged_local_build_uses_development_identity(tmp_path, monkeypatch):
+def test_publish_refuses_ambient_override_without_exact_tag(tmp_path, monkeypatch):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch)
-    assert version.resolve_build_version(root, require_release_tag=False, environ={}) == "0.0.0-dev"
+    monkeypatch.setenv(version.VERSION_ENV, "2.3.4")
+    with pytest.raises(RuntimeError, match="refuse publication without an exact release tag"):
+        version.resolve_build_version(root, require_release_tag=True)
 
 
-def test_publish_without_tag_or_override_is_refused(tmp_path, monkeypatch):
+def test_dockerfile_requires_an_explicit_image_version_before_package_install():
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ARG CGPROFILE_VERSION\n" in dockerfile
+    assert "ARG CGPROFILE_VERSION=" not in dockerfile
+    version_arg = dockerfile.index("ARG CGPROFILE_VERSION\n")
+    first_from = dockerfile.index("FROM ")
+    builder_arg = dockerfile.index("ARG CGPROFILE_VERSION\n", first_from)
+    version_guard = dockerfile.index("CGPROFILE_VERSION build arg is required")
+    first_package_install = dockerfile.index("\nRUN apt-get update")
+    assert version_arg < first_from < builder_arg < version_guard < first_package_install
+
+
+def test_direct_consumer_build_recipe_uses_development_identity():
+    consumers = (
+        Path(__file__).resolve().parents[1] / "docs" / "CONSUMERS.md"
+    ).read_text(encoding="utf-8")
+    recipe = consumers.split(
+        "For a direct source build, use the development identity", 1
+    )[1].split("The Dockerfile refuses", 1)[0]
+
+    assert "--build-arg CGPROFILE_VERSION=0.0.0-dev" in recipe
+    assert "-t cgprofile:local ." in recipe
+    assert "CGPROFILE_VERSION=1.0.0" not in recipe
+
+
+def test_all_public_docs_explain_tag_only_release_identity():
+    docs = Path(__file__).resolve().parents[1]
+    public_docs = (
+        docs / "README.md",
+        docs / "docs" / "DESIGN-GUIDE.md",
+        docs / "docs" / "CONSUMERS.md",
+    )
+    for path in public_docs:
+        text = path.read_text(encoding="utf-8")
+        assert "0.0.0-dev" in text
+        assert "CGPROFILE_VERSION" in text
+    consumers = public_docs[-1].read_text(encoding="utf-8")
+    assert "manual `--push` refuses unless the exact CMRU release tag" in consumers
+    assert "validated `CGPROFILE_VERSION`" not in consumers
+    assert "the tagged working tree is clean" in consumers
+    assert "bare `docker buildx bake` ignores an ambient" in consumers
+    assert "`build-push.py --push` for a validated release" in consumers
+    design = public_docs[1].read_text(encoding="utf-8")
+    assert "never a source of release authority" in design
+    assert "tagged checkout with tracked or untracked changes refuses" in design
+    assert "literal development defaults" in design
+
+
+def test_publish_without_exact_tag_is_refused(tmp_path, monkeypatch):
     root = _project_root(tmp_path)
     _git_tags(monkeypatch)
+    monkeypatch.setenv(version.VERSION_ENV, "1.0.0")
     with pytest.raises(RuntimeError, match="no cgprofile-v<version> tag points at HEAD"):
-        version.resolve_build_version(root, require_release_tag=True, environ={})
+        version.resolve_build_version(root, require_release_tag=True)
 
 
 @pytest.mark.parametrize(
@@ -136,7 +218,7 @@ def test_git_tag_probe_failure_preserves_diagnostic_or_exit_fallback(
     root = _project_root(tmp_path)
     _git_tags(monkeypatch, returncode=128, stderr=stderr)
     with pytest.raises(RuntimeError) as exc_info:
-        version.resolve_build_version(root, require_release_tag=False, environ={})
+        version.resolve_build_version(root, require_release_tag=False)
     assert "cannot resolve release tag at HEAD" in str(exc_info.value)
     assert expected_detail in str(exc_info.value)
 
@@ -148,34 +230,25 @@ def test_empty_or_non_string_project_prefix_is_refused(tmp_path, monkeypatch, pr
     )
     _git_tags(monkeypatch)
     with pytest.raises(RuntimeError, match="must declare a non-empty project.prefix"):
-        version.resolve_build_version(
-            tmp_path, require_release_tag=False, environ={},
-        )
+        version.resolve_build_version(tmp_path, require_release_tag=False)
 
 
 def test_project_prefix_is_read_from_cmru_contract(tmp_path, monkeypatch):
     root = _project_root(tmp_path, prefix="profile-v")
     _git_tags(monkeypatch, stdout="profile-v3.2.1\n")
-    assert version.resolve_build_version(root, require_release_tag=True, environ={}) == "3.2.1"
+    assert version.resolve_build_version(root, require_release_tag=True) == "3.2.1"
 
 
 def test_missing_project_prefix_is_refused(tmp_path):
     (tmp_path / "cmru.toml").write_text("[project]\nid = 'cgroup-profiler'\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="must declare a non-empty project.prefix"):
-        version.resolve_build_version(tmp_path, require_release_tag=False, environ={})
+        version.resolve_build_version(tmp_path, require_release_tag=False)
 
 
 def test_non_table_project_is_refused(tmp_path):
     (tmp_path / "cmru.toml").write_text("project = 'not a table'\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="must declare a non-empty project.prefix"):
-        version.resolve_build_version(tmp_path, require_release_tag=False, environ={})
-
-
-def test_build_version_reads_ambient_override_when_mapping_omitted(monkeypatch, tmp_path):
-    root = _project_root(tmp_path)
-    _git_tags(monkeypatch)
-    monkeypatch.setenv(version.VERSION_ENV, "3.4.5")
-    assert version.resolve_build_version(root, require_release_tag=True) == "3.4.5"
+        version.resolve_build_version(tmp_path, require_release_tag=False)
 
 
 def test_daemon_version_uses_embedded_release_identity_in_fresh_process():

@@ -114,7 +114,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v15 verdict schema; a receipt
+Receipt verdicts are checked against the current v16 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -209,8 +209,8 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12, v13, or v14 verdict
-  is a cold start under v15, and `assay verify` rejects all three. See the
+  replay because it can override configured addopts. A v12, v13, v14, or v15
+  verdict is a cold start under v16, and `assay verify` rejects all four. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -272,6 +272,14 @@ assay exists to close that gap mechanically, not by policy:
   [Assay backlog](nyxloom-trove/4-backlog.md), the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  Native R2 executes one candidate at a time (`judge.mutation.jobs = 1`) so
+  each cgroup-event window has one owner. Bounded native pilots also require
+  `--pilot-jobs 1`; the config loader, CLI, and public `run_mutation` entry
+  point refuse larger values because overlapping windows cannot attribute
+  shared counter changes. This execution-validity rule is separate from
+  runtime profiling.
+  See the [serial-window rationale](docs/DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial)
+  and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   When native candidates are selected, Assay checks the same complete
   hierarchy before R0 starts. If its private cgroup view hides ancestors, it
   may use the explicitly configured observer-only socket; without a usable
@@ -298,20 +306,22 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 15` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-The verdict is a hard cut: `assay verify` refuses v14 and earlier verdicts
+`VERDICT_SCHEMA_VERSION = 16` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+The verdict is a hard cut: `assay verify` refuses v15 and earlier verdicts
 (no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
 the 8.0.0 release extended it with the explicit project-level
-`[defaults].env_passthrough` option. Existing v2 lane files still load, and a
-lane may omit its own `env_passthrough` only when that project table is
-present. A v2 assay
+`[defaults].env_passthrough` option. Current v2 semantic constraints still
+apply: native R2 lanes must declare `judge.mutation.jobs = 1`; a higher value
+refuses during load. A lane may omit its own `env_passthrough` only when that
+project table is present. A v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
 For the verdict-field addition and the effect on old verdicts and reuse, see
-the [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
+the [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16)
+and the earlier [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
 The previous cut has its own [v12-to-v13 migration notes](docs/CONSUMERS.md#migration-notes-v12-to-v13).
 In v15, present `env_passthrough` values appear in `env_effective` as
 `"<passthrough>"`; their full SHA-256 fingerprints are in
@@ -393,7 +403,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both current dstdns canaries passed with retained v15 verdicts and verifier transcripts; integrated release evidence is separate |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
 
@@ -412,9 +422,10 @@ Three genuinely different states, worth keeping distinct:
   - **Implemented but unregistered** — code may exist without being
   callable through the CLI until it is wired and proven. JavaScript R3
   used to be this state; B087 registers it and adds local real-Vitest
-  oracles. Both current dstdns canaries passed with retained v15 verdicts and
-  verifier transcripts; the [report](nyxloom-trove/reports/B087-js-r3-qualification.md)
-  records the canary scope and evidence.
+  oracles. Both dstdns canaries were qualified under Assay 9.0.0/schema v15;
+  their retained verdicts and verifier transcripts document that release. The
+  [report](nyxloom-trove/reports/B087-js-r3-qualification.md) records the
+  canary scope and evidence.
 
 Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
 (the single authority for what's registered — its own docstring notes this
@@ -755,10 +766,11 @@ producer contract are in the
 [JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
 R3 (the cause-sensitive canary) is registered for JavaScript through B087.
 The two adapter transforms are judged by the existing isolated canary runner;
-local real-Vitest tests exercise the current code, and both current dstdns
-canaries passed with retained v15 verdicts and verifier transcripts. Those
-canaries are distinct from the integrated Assay release gate. The verdict
-schema is unchanged.
+  local real-Vitest tests exercise the current code, and both dstdns canaries
+  were qualified under Assay 9.0.0/schema v15; their retained verdicts and
+  verifier transcripts document that release. Those canaries are distinct from
+  the integrated Assay release gate. B087 did not add verdict fields; the
+  current verdict schema is v16, with the migration described below.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the
@@ -976,8 +988,8 @@ run of the same lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. The verdict does not
 record the destination, exactly as it does not record `--verdict-json`'s.
 
 **Non-qualifying pilot runs** can use `assay run LANE --candidates-file PATH`
-to execute a bounded selection from a native R2 plan; `--pilot-jobs` can set
-1–8 workers for that run. A pilot skips R3, writes no verdict, and returns exit
+to execute a bounded selection from a native R2 plan; `--pilot-jobs 1` is
+required for native R2 event attribution. A pilot skips R3, writes no verdict, and returns exit
 code 6 only when every selected candidate has a completed disposition. Exit 6
 means “pilot measurement completed,” never “the lane passed”; use the JSON
 summary and its mutation buckets to read the result. Pilot summaries use schema

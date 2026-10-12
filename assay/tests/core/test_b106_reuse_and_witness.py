@@ -128,7 +128,7 @@ def test_v12_through_v14_are_bounded_cold_starts_without_candidate_inspection(
     ("content", "detail"),
     [
         ('{"schema_version":14,"schema_version":14}', "duplicate object key"),
-        ('{"schema_version":15}', "current v15 verifier rejected"),
+        ('{"schema_version":16}', "current v16 verifier rejected"),
         ('{"schema_version":true}', "must be an integer"),
         ('{"schema_version":NaN}', "invalid JSON"),
     ],
@@ -1187,6 +1187,11 @@ def test_rejudge_outcome_disables_prior_witness_replay(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["outcome_bucket"] = "hung"
     record["execution"] = {"mode": "full"}
+    record["terminal_result"] = {
+        "outcome": "BUDGET_EXCEEDED",
+        "reason_code": "CANDIDATE_HUNG",
+        "returncode": None,
+    }
     resource_snapshot = {
         "schema_version": 1,
         "status": "available",

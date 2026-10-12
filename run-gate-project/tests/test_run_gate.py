@@ -3466,11 +3466,12 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
 
     # The tagged release remains source rev 55. RG-90's telemetry change is
     # historical at rev 60; the P5 transport and placement launch gate are
-    # current at rev 64.
+    # current at rev 64; RG-91's socket framing fix is current at rev 65.
     # RG-89 stays at the revision that introduced its observer contract.
     assert "This section describes released source rev 55." in changes
     assert "RG-90, rev 60" in changes
-    assert f"RG-55/P5, rev {run_gate.__revision__}" in changes
+    assert "RG-55/P5, rev 64" in changes
+    assert f"RG-91, rev {run_gate.__revision__}" in changes
     assert "RG-89, rev 58" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
@@ -18129,13 +18130,16 @@ class TestProfilerClient:
             with listener:
                 conn, _ = listener.accept()
                 with conn:
-                    chunks = []
-                    while True:
-                        chunk = conn.recv(65536)
+                    # Match the daemon's newline-delimited request reader. A
+                    # pretty-printed JSON request is truncated at its first
+                    # line and fails to parse even though the socket is valid.
+                    line = bytearray()
+                    while b"\n" not in line:
+                        chunk = conn.recv(1)
                         if not chunk:
                             break
-                        chunks.append(chunk)
-                    received.append(b"".join(chunks).decode())
+                        line.extend(chunk)
+                    received.append(bytes(line).decode())
                     conn.sendall(response.encode())
 
         thread = threading.Thread(target=serve)
@@ -18257,7 +18261,10 @@ class TestProfilerClient:
             },
             "contract": 1,
         }
-        assert received == [json.dumps(expected, indent=2) + "\n"]
+        assert received == [
+            json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+            + "\n"
+        ]
 
     @pytest.mark.parametrize("verb, args, body", [
         ("version", (), '{"ok": true, "contract": 1}\n'),

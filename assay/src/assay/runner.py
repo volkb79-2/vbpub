@@ -4167,6 +4167,19 @@ def _run_prepared_lane(
                 command="declared",
             )
             if coverage_proof_failure is not None:
+                if (
+                    diagnostics is not None
+                    and coverage_proof_failure
+                    == "the baseline uses an unsupported pytest hook configuration"
+                    and coverage_facts is not None
+                    and coverage_facts.unsupported_hook_names
+                ):
+                    print(
+                        "assay: cold witness: coverage baseline uses unsupported "
+                        "pytest hooks: "
+                        + ", ".join(coverage_facts.unsupported_hook_names),
+                        file=diagnostics,
+                    )
                 coverage_facts = None
         r0_claim = build_r0_claim(result)
         # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
@@ -4958,6 +4971,19 @@ def _run_prepared_lane(
                                     "differs from the coverage baseline"
                                 )
                         if r2_proof_failure is not None:
+                            if (
+                                diagnostics is not None
+                                and r2_proof_failure
+                                == "the baseline uses an unsupported pytest hook configuration"
+                                and r2_facts is not None
+                                and r2_facts.unsupported_hook_names
+                            ):
+                                print(
+                                    "assay: cold witness: no-coverage R2 baseline "
+                                    "uses unsupported pytest hooks: "
+                                    + ", ".join(r2_facts.unsupported_hook_names),
+                                    file=diagnostics,
+                                )
                             raise mutation.R2CommandProofError(
                                 "cold witness: no-coverage R2 baseline proof failed: "
                                 f"{r2_proof_failure}"

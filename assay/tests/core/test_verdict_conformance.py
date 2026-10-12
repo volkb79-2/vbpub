@@ -1052,7 +1052,7 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             "cold_witness_kills": False,
             "r2_command": None,
             "equivalence_ledger": None,
-            "jobs": 4,
+            "jobs": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
             "kill_attribution": "unattributed",
@@ -1105,7 +1105,7 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             "cold_witness_kills": False,
             "r2_command": None,
             "equivalence_ledger": None,
-            "jobs": 2,
+            "jobs": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
             "kill_attribution": "unattributed",
@@ -1127,6 +1127,18 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
         for entry in r2_claim["mutation"][bucket]
     }
     assert recorded <= set(document["judgment"]["r2"]["operators"])
+
+
+def test_verify_rejects_parallel_native_r2_event_windows(
+    validator: Draft202012Validator,
+):
+    document = _load(JUDGMENT_R2_FIXTURE)
+    document["judgment"]["r2"]["jobs"] = 3
+
+    assert why_invalid(validator, document), "the packaged schema must require jobs=1"
+    failures = verify_document(document)
+    assert failures
+    assert any("jobs" in failure for failure in failures)
 
 
 def test_every_r2_or_r3_judged_claim_in_the_matrix_carries_its_judgment():
@@ -1383,9 +1395,9 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
 #: bump fails here; a bump fails with a KeyError until its digest is added.
 #: Carries forward the retired W9 gate phase's
-#: `test_shipped_schema_is_byte_identical_to_the_locked_v15_asset`.
+#: `test_shipped_schema_is_byte_identical_to_the_locked_v16_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    15: "89d018d68705904f9e609ee528e3f48dc4f4452c0c56c2f525946f187c698621",
+    16: "67fea043a7b517406fe6d10e011bb7ce831113305a232e578d4e6ddc4865c881",
 }
 
 

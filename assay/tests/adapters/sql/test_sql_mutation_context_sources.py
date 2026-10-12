@@ -470,7 +470,7 @@ def test_remaining_sql_candidate_scanners_check_the_deadline(scanner, source, ex
         raise RuntimeError("deadline expired")
 
     with pytest.raises(RuntimeError, match="deadline expired"):
-        scanner(source, source, *extra, check_deadline=expired)
+        list(scanner(source, source, *extra, check_deadline=expired))
 
 
 @pytest.mark.parametrize(

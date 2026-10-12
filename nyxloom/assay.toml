@@ -153,16 +153,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# The current-main diff had 43 eligible candidates (cap 45); the SUCCESSOR
-# package (2026-10) adds toolresult/stopstate/successor and brought the plan to
-# 144 (`assay plan`, measured with a temporary cap of 3000: 54 claude_code.py,
-# 34 stopstate.py, 32 toolresult.py, 10 successor.py, 8 ledger.py, 5 render.py,
-# 1 config.py; a plan over the cap reports cap+1, so earlier 46/53/61/67 readings
-# were only "more than the cap"), so the cap is raised to 150 (see
-# [lanes.session-extract.judge.mutation]). The plan estimates 8640 s wall with two
-# mutation jobs at the 120s per-candidate failsafe (a worst-case bound); allow 3h
-# for baseline, scheduling, and verdict overhead.
-budget = "6h"  # 336 candidates x 120s / 2 jobs = 20160s worst case (5.6h); a bound, not a measurement
+# Native candidates now run serially so cgroup event deltas remain attributable.
+# This six-hour invocation bound is resumable; it is not a completion promise for
+# the 350-candidate ceiling. Read the current plan and progress before projecting
+# a full-campaign finish time.
+budget = "6h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -181,16 +176,14 @@ allow_excluded = false
 require_branch = true
 base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 
-# R2: native python mutation, changed-lines-only -- resolve_mutation_targets
+# R2: native Python mutation, changed-lines-only -- resolve_mutation_targets
 # reuses R1's SAME current-main diff, so this mutates exactly the changed lines
-# under the session-extract source root, not the whole package. jobs=2 with
-# pytest -n 4 bounds total xdist fan-out to eight workers on this shared
-# 8-core host. The authoritative source-backed Assay plan at this selected
-# boundary found 43 candidates under the cap of 45; this finite cap prevents an
-# unbounded campaign.
+# under the session-extract source root, not the whole package. Candidate runs
+# are serial; pytest -n 4 remains the per-candidate test-runner setting. The
+# finite candidate cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
-jobs = 2
+jobs = 1
 # Cap 350: the real plan at c4812cbc8 is 336 candidates (`assay plan --allow-dirty` with
 # a temporary cap of 3000: claude_code 89, shellcmd 47, toolresult 40, stopstate 37,
 # compress 28, presets 22, ledger 18, watch 17, render 16, successor 13, config 4,

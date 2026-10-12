@@ -1173,7 +1173,7 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     assert pilot.index("campaign_remaining_after_run_s=") < pilot.index('if (( pilot_status != 6 ))')
     assert pilot.index("b110_pilot_report_check.py") < pilot.index('echo "B110_PILOT_COMPLETED=1"')
     assert pilot.index("ensure_source_unchanged") < pilot.index("campaign_remaining_after_check_s=")
-    assert "--pilot-jobs 3" in pilot
+    assert "--pilot-jobs 1" in pilot
     for marker in (
         "B110_PILOT_EXIT=", "B110_PILOT_TIMEOUT_FAILSAFE=1",
         "B110_PILOT_INIT_REFUSED=1", "-ge 124", "B110_PILOT_COMPLETED=1",

@@ -1,15 +1,14 @@
-"""O2/A-082/A-122 -- the injected executor factory receives ``max_workers``
-EQUAL TO the caller's own declared ``jobs``, never a value derived from the
-mutant count or the machine (``os.cpu_count()``), and every mutant is
-submitted through the executor it returns; ``jobs=1`` and ``jobs=3``
-produce IDENTICAL ordered result records.
+"""B115 queue mechanics and B156's public serial-R2 boundary.
 
-The negative this defends (O2, verbatim): *constructing the executor with
-mutant count or bypassing it for one task fails the recorded
-bound/submission assertions without any wall-clock measurement.* Every
-assertion below is at the construction/submission BOUNDARY -- no timing,
-no sleeps, no elapsed-time comparison anywhere in this module
-(AUTHORING.md §3b.A).
+The executor implementation remains covered with injected worker counts so
+its ordering, draining, and resume invariants stay tested. Product callers use
+``run_mutation``, which refuses ``jobs > 1`` because candidate cgroup event
+windows cannot overlap safely.
+
+The executor boundary assertions use the private implementation entry point;
+the separate public-entry test proves multi-worker native R2 is refused
+before executor construction. There are no elapsed-time comparisons in this
+module (AUTHORING.md §3b.A).
 """
 
 from __future__ import annotations
@@ -131,7 +130,7 @@ def _run_with_recording_factory(tmp_path: Path, jobs: int):
     plan = make_plan(lane)
     deadline = make_deadline()
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        mutation = run_mutation(
+        mutation = mutation_module._run_mutation_impl(
             baseline=baseline,
             prepared=prepared,
             plan=plan,
@@ -203,7 +202,7 @@ def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: P
             deadline=deadline,
             targets=(),  # nothing to mutate
             adapter=PythonAdapter(),
-            jobs=3,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=_always_pass,
@@ -221,9 +220,7 @@ def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: P
 
 
 def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
-    """The real default executor (a genuine ``ThreadPoolExecutor``) both
-    times -- proving the RESULT is independent of the actual concurrency
-    bound, never a claim about wall-clock speed."""
+    """The private queue implementation keeps result identity stable."""
     lane = make_lane(argv=("pytest", "-q"))
 
     def run(jobs: int):
@@ -234,7 +231,7 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
         plan = make_plan(lane)
         deadline = make_deadline()
         with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-            mutation = run_mutation(
+            mutation = mutation_module._run_mutation_impl(
                 baseline=baseline,
                 prepared=prepared,
                 plan=plan,
@@ -254,6 +251,28 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
     parallel = run(3)
 
     assert serial.to_dict() == parallel.to_dict()
+
+
+def test_public_run_mutation_refuses_parallel_candidate_event_windows():
+    factory_calls = []
+
+    with pytest.raises(ValueError, match="jobs must be 1 for native R2"):
+        run_mutation(
+            baseline=None,
+            prepared=None,
+            plan=None,
+            deadline=None,
+            targets=(),
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=1,
+            operators=(),
+            process_runner=None,
+            clock=None,
+            executor_factory=lambda jobs: factory_calls.append(jobs),
+        )
+
+    assert factory_calls == []
 
 
 # --- jobs is validated BEFORE the executor boundary (P18 work item 5) ------
@@ -445,7 +464,7 @@ def _run_queue_case(
             clock=lambda: datetime.now(timezone.utc),
         )
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        result = run_mutation(
+        result = mutation_module._run_mutation_impl(
             baseline=baseline,
             prepared=prepared,
             plan=plan,

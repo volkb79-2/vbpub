@@ -157,6 +157,30 @@ def _find_matching_close_paren(
     return None
 
 
+def _find_flat_close_paren(
+    masked: bytes,
+    open_index: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    """Match the flat reference-column-list shape used by this scanner."""
+    cursor = open_index + 1
+    next_deadline_check = cursor + 4096
+    if check_deadline is not None:
+        check_deadline()
+    while cursor < len(masked):
+        if check_deadline is not None and cursor >= next_deadline_check:
+            check_deadline()
+            next_deadline_check = cursor + 4096
+        byte = masked[cursor]
+        if byte == _OPEN_PAREN:
+            return None
+        if byte == _CLOSE_PAREN:
+            return cursor
+        cursor += 1
+    return None
+
+
 def _preceding_word(masked: bytes, pos: int) -> tuple[bytes, int] | None:
     """The whitespace-separated WORD token (uppercased) immediately before
     *pos* in *masked*, plus its own start index -- or ``None`` if *pos* is
@@ -334,48 +358,15 @@ class _SqlMutationContext(NamedTuple):
 
 _CHECK_OPEN_RE = re.compile(rb"\bCHECK\b\s*\(", re.IGNORECASE)
 _NOT_NULL_RE = re.compile(rb"\bNOT\s+NULL\b", re.IGNORECASE)
-_FOREIGN_KEY_RE = re.compile(rb"\bFOREIGN\s+KEY\b", re.IGNORECASE)
+_FOREIGN_WORD_RE = re.compile(rb"\bFOREIGN\b", re.IGNORECASE)
 _REFERENCES_RE = re.compile(rb"\bREFERENCES\b", re.IGNORECASE)
-_REFERENCED_TARGET_RE = re.compile(
-    rb"REFERENCES\s+[A-Za-z_][A-Za-z0-9_.]*(?:\s*\([^()]*\))?", re.IGNORECASE
-)
-_ON_ACTION_RE = re.compile(
-    rb"\s*ON\s+(?:DELETE|UPDATE)\s+(?:NO\s+ACTION|RESTRICT|CASCADE|SET\s+NULL(?:\s*\([^()]*\))?|SET\s+DEFAULT)",
-    re.IGNORECASE,
-)
-_FK_MODIFIER_RE = re.compile(
-    rb"\s*(?:MATCH\s+(?:FULL|PARTIAL|SIMPLE)|(?:NOT\s+)?DEFERRABLE|"
-    rb"INITIALLY\s+(?:DEFERRED|IMMEDIATE)|NOT\s+VALID)\b",
-    re.IGNORECASE,
-)
-_UNIQUE_NULLS_RE = re.compile(rb"\s+NULLS\s+(?:NOT\s+)?DISTINCT\b", re.IGNORECASE)
-_UNIQUE_INCLUDE_RE = re.compile(rb"\s*INCLUDE\b", re.IGNORECASE)
-_UNIQUE_WITH_RE = re.compile(rb"\s*WITH\b", re.IGNORECASE)
-_UNIQUE_DEFERRABILITY_RE = re.compile(
-    rb"\s*(?:NOT\s+)?DEFERRABLE\b|\s*INITIALLY\s+(?:DEFERRED|IMMEDIATE)\b",
-    re.IGNORECASE,
-)
+_REFERENCED_TARGET_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_.]*", re.IGNORECASE)
+_UNIQUE_NULLS_WORD_RE = re.compile(rb"NULLS\b", re.IGNORECASE)
+_UNIQUE_NOT_WORD_RE = re.compile(rb"NOT\b", re.IGNORECASE)
+_UNIQUE_DISTINCT_WORD_RE = re.compile(rb"DISTINCT\b", re.IGNORECASE)
 _SQL_IDENTIFIER = rb'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)'
-_UNIQUE_USING_INDEX_RE = re.compile(
-    rb"\s*USING\s+INDEX\s+"
-    + _SQL_IDENTIFIER
-    + rb"(?:\s*\.\s*"
-    + _SQL_IDENTIFIER
-    + rb")?",
-    re.IGNORECASE,
-)
-_UNIQUE_INDEX_TABLESPACE_RE = re.compile(
-    rb"\s*USING\s+INDEX\s+TABLESPACE\s+" + _SQL_IDENTIFIER,
-    re.IGNORECASE,
-)
-_INDEX_ATTACHMENT_RE = re.compile(
-    rb"\b(?:UNIQUE|PRIMARY\s+KEY)\b\s+USING\s+INDEX\b(?!\s+TABLESPACE\b)",
-    re.IGNORECASE,
-)
-_USING_INDEX_ATTACHMENT_RE = re.compile(
-    rb"\s*USING\s+INDEX\b(?!\s+TABLESPACE\b)", re.IGNORECASE
-)
-_WEAKEN_DELETE_RE = re.compile(rb"\bON\s+DELETE\s+(RESTRICT|NO\s+ACTION)\b", re.IGNORECASE)
+_INDEX_ATTACHMENT_PREFIX_RE = re.compile(rb"\b(?:UNIQUE|PRIMARY)\b", re.IGNORECASE)
+_ON_WORD_RE = re.compile(rb"\bON\b", re.IGNORECASE)
 _CREATE_TRIGGER_RE = re.compile(
     rb"\bCREATE\b(?:\s+OR\s+REPLACE)?(?:\s+CONSTRAINT)?\s+TRIGGER\b", re.IGNORECASE
 )
@@ -509,6 +500,114 @@ _DECLARE_RE = re.compile(rb"\bDECLARE\b", re.IGNORECASE)
 _BEGIN_RE = re.compile(rb"\bBEGIN\b", re.IGNORECASE)
 
 
+def _reference_action_end(
+    masked: bytes,
+    cursor: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    on_end = _sql_keyword_end(masked, cursor, b"ON")
+    if on_end is None:
+        return None
+    direction_start = _skip_sql_whitespace(
+        masked, on_end, check_deadline=check_deadline
+    )
+    if direction_start == on_end:
+        return None
+    direction_end = _sql_keyword_end(masked, direction_start, b"DELETE")
+    if direction_end is None:
+        direction_end = _sql_keyword_end(masked, direction_start, b"UPDATE")
+    if direction_end is None:
+        return None
+
+    action_start = _skip_sql_whitespace(
+        masked, direction_end, check_deadline=check_deadline
+    )
+    if action_start == direction_end:
+        return None
+    for keyword in (b"RESTRICT", b"CASCADE"):
+        action_end = _sql_keyword_end(masked, action_start, keyword)
+        if action_end is not None:
+            return action_end
+
+    no_end = _sql_keyword_end(masked, action_start, b"NO")
+    if no_end is not None:
+        action_end = _sql_keyword_after_whitespace(
+            masked, no_end, b"ACTION", check_deadline=check_deadline
+        )
+        if action_end is not None:
+            return action_end
+
+    set_end = _sql_keyword_end(masked, action_start, b"SET")
+    if set_end is None:
+        return None
+    value_start = _skip_sql_whitespace(
+        masked, set_end, check_deadline=check_deadline
+    )
+    if value_start == set_end:
+        return None
+    null_end = _sql_keyword_end(masked, value_start, b"NULL")
+    if null_end is not None:
+        columns_start = _skip_sql_whitespace(
+            masked, null_end, check_deadline=check_deadline
+        )
+        if columns_start < len(masked) and masked[columns_start] == _OPEN_PAREN:
+            close = _find_flat_close_paren(
+                masked, columns_start, check_deadline=check_deadline
+            )
+            return None if close is None else close + 1
+        return null_end
+    return _sql_keyword_end(masked, value_start, b"DEFAULT")
+
+
+def _reference_modifier_end(
+    masked: bytes,
+    cursor: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    match_end = _sql_keyword_end(masked, cursor, b"MATCH")
+    if match_end is not None:
+        value_start = _skip_sql_whitespace(
+            masked, match_end, check_deadline=check_deadline
+        )
+        if value_start == match_end:
+            return None
+        for keyword in (b"FULL", b"PARTIAL", b"SIMPLE"):
+            end = _sql_keyword_end(masked, value_start, keyword)
+            if end is not None:
+                return end
+        return None
+
+    not_end = _sql_keyword_end(masked, cursor, b"NOT")
+    if not_end is not None:
+        deferrable_end = _sql_keyword_after_whitespace(
+            masked, not_end, b"DEFERRABLE", check_deadline=check_deadline
+        )
+        if deferrable_end is not None:
+            return deferrable_end
+        valid_end = _sql_keyword_after_whitespace(
+            masked, not_end, b"VALID", check_deadline=check_deadline
+        )
+        if valid_end is not None:
+            return valid_end
+
+    deferrable_end = _sql_keyword_end(masked, cursor, b"DEFERRABLE")
+    if deferrable_end is not None:
+        return deferrable_end
+    initially_end = _sql_keyword_end(masked, cursor, b"INITIALLY")
+    if initially_end is None:
+        return None
+    deferred_end = _sql_keyword_after_whitespace(
+        masked, initially_end, b"DEFERRED", check_deadline=check_deadline
+    )
+    if deferred_end is not None:
+        return deferred_end
+    return _sql_keyword_after_whitespace(
+        masked, initially_end, b"IMMEDIATE", check_deadline=check_deadline
+    )
+
+
 def _extend_references_clause(
     masked: bytes,
     start: int,
@@ -521,21 +620,46 @@ def _extend_references_clause(
     ``ON DELETE``/``ON UPDATE`` actions in either order (either or both
     absent) -- or ``None`` if there is not even a target table name
     (malformed; the caller skips it rather than guessing a span)."""
-    target = _REFERENCED_TARGET_RE.match(masked, start)
+    keyword = _REFERENCES_RE.match(masked, start)
+    if keyword is None:
+        return None
+    target_start = _skip_sql_whitespace(
+        masked, keyword.end(), check_deadline=check_deadline
+    )
+    if target_start == keyword.end():
+        return None
+    target = _REFERENCED_TARGET_RE.match(masked, target_start)
     if target is None:
         return None
     end = target.end()
+    columns_start = _skip_sql_whitespace(
+        masked, end, check_deadline=check_deadline
+    )
+    if columns_start < len(masked) and masked[columns_start] == _OPEN_PAREN:
+        close = _find_flat_close_paren(
+            masked, columns_start, check_deadline=check_deadline
+        )
+        if close is None:
+            return None
+        end = close + 1
     while True:
         if check_deadline is not None:
             check_deadline()
-        action = _ON_ACTION_RE.match(masked, end)
-        if action is not None:
-            end = action.end()
+        action_start = _skip_sql_whitespace(
+            masked, end, check_deadline=check_deadline
+        )
+        action_end = _reference_action_end(
+            masked, action_start, check_deadline=check_deadline
+        )
+        if action_end is not None:
+            end = action_end
             continue
-        modifier = _FK_MODIFIER_RE.match(masked, end)
-        if modifier is None:
+        modifier_end = _reference_modifier_end(
+            masked, action_start, check_deadline=check_deadline
+        )
+        if modifier_end is None:
             return end
-        end = modifier.end()
+        end = modifier_end
 
 
 # --- sql:drop-check ------------------------------------------------------
@@ -546,8 +670,7 @@ def _scan_drop_check(
     masked: bytes,
     *,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
-    sites = []
+) -> "Iterator[_Site]":
     for m in _CHECK_OPEN_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
@@ -557,23 +680,178 @@ def _scan_drop_check(
         )
         if close is None:
             continue
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, m.start()),
-                operator="sql:drop-check",
-                description="CHECK (...) -> CHECK (true)",
-                start=m.start(),
-                end=close + 1,
-                replacement=b"CHECK (true)",
-            )
+        yield _Site(
+            lineno=line_for_offset(source, m.start()),
+            operator="sql:drop-check",
+            description="CHECK (...) -> CHECK (true)",
+            start=m.start(),
+            end=close + 1,
+            replacement=b"CHECK (true)",
         )
-    return sites
 
 
 # --- sql:drop-unique -------------------------------------------------------
 
 
+def _skip_sql_whitespace(
+    masked: bytes,
+    cursor: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int:
+    """Skip SQL whitespace while keeping long runs inside the lane budget."""
+    next_check = cursor
+    while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
+        if check_deadline is not None and cursor >= next_check:
+            check_deadline()
+            next_check = cursor + 256
+        cursor += 1
+    return cursor
+
+
+def _sql_keyword_end(masked: bytes, cursor: int, keyword: bytes) -> int | None:
+    end = cursor + len(keyword)
+    if masked[cursor:end].upper() != keyword:
+        return None
+    if end < len(masked) and _is_word_byte(masked[end]):
+        return None
+    return end
+
+
+def _sql_keyword_after_whitespace(
+    masked: bytes,
+    cursor: int,
+    keyword: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    next_cursor = _skip_sql_whitespace(
+        masked, cursor, check_deadline=check_deadline
+    )
+    if next_cursor == cursor:
+        return None
+    return _sql_keyword_end(masked, next_cursor, keyword)
+
+
+def _unique_deferrability_end(
+    masked: bytes,
+    cursor: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    not_end = _sql_keyword_end(masked, cursor, b"NOT")
+    if not_end is not None:
+        deferrable_end = _sql_keyword_after_whitespace(
+            masked, not_end, b"DEFERRABLE", check_deadline=check_deadline
+        )
+        if deferrable_end is not None:
+            return deferrable_end
+
+    deferrable_end = _sql_keyword_end(masked, cursor, b"DEFERRABLE")
+    if deferrable_end is not None:
+        return deferrable_end
+
+    initially_end = _sql_keyword_end(masked, cursor, b"INITIALLY")
+    if initially_end is None:
+        return None
+    return _sql_keyword_after_whitespace(
+        masked, initially_end, b"DEFERRED", check_deadline=check_deadline
+    ) or _sql_keyword_after_whitespace(
+        masked, initially_end, b"IMMEDIATE", check_deadline=check_deadline
+    )
+
+
+def _unique_using_index_end(
+    source: bytes,
+    masked: bytes,
+    cursor: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    using_end = _sql_keyword_end(masked, cursor, b"USING")
+    if using_end is None:
+        return None
+    index_end = _sql_keyword_after_whitespace(
+        masked, using_end, b"INDEX", check_deadline=check_deadline
+    )
+    if index_end is None:
+        return None
+    next_cursor = _skip_sql_whitespace(
+        masked, index_end, check_deadline=check_deadline
+    )
+    if next_cursor == index_end:
+        return None
+    tablespace_end = _sql_keyword_end(masked, next_cursor, b"TABLESPACE")
+    if tablespace_end is not None:
+        name_start = _skip_sql_trivia(
+            source, tablespace_end, check_deadline=check_deadline
+        )
+        if name_start is None or name_start == tablespace_end:
+            return None
+        identifier = _read_sql_identifier(
+            source, name_start, check_deadline=check_deadline
+        )
+        return None if identifier is None else identifier[1]
+
+    identifier = _read_qualified_sql_identifier_details(
+        source, next_cursor, check_deadline=check_deadline
+    )
+    return None if identifier is None else identifier[2]
+
+
+def _using_index_attachment_end(
+    masked: bytes,
+    cursor: int,
+    *,
+    check_deadline: Remaining | None = None,
+) -> int | None:
+    """Return the INDEX keyword end for an attachment, excluding TABLESPACE."""
+    using_end = _sql_keyword_after_whitespace(
+        masked, cursor, b"USING", check_deadline=check_deadline
+    )
+    if using_end is None:
+        return None
+    index_end = _sql_keyword_after_whitespace(
+        masked, using_end, b"INDEX", check_deadline=check_deadline
+    )
+    if index_end is None:
+        return None
+    after_index = _skip_sql_whitespace(
+        masked, index_end, check_deadline=check_deadline
+    )
+    if after_index > index_end and _sql_keyword_end(
+        masked, after_index, b"TABLESPACE"
+    ) is not None:
+        return None
+    return index_end
+
+
+def _iter_index_attachment_spans(
+    masked: bytes,
+    *,
+    check_deadline: Remaining | None = None,
+) -> Iterator[tuple[int, int]]:
+    """Find UNIQUE/PRIMARY KEY USING INDEX without regex whitespace scans."""
+    for prefix in _INDEX_ATTACHMENT_PREFIX_RE.finditer(masked):
+        if check_deadline is not None:
+            check_deadline()
+        cursor = prefix.end()
+        if prefix.group().upper() == b"PRIMARY":
+            key_end = _sql_keyword_after_whitespace(
+                masked, cursor, b"KEY", check_deadline=check_deadline
+            )
+            if key_end is None:
+                continue
+            cursor = key_end
+        index_end = _using_index_attachment_end(
+            masked, cursor, check_deadline=check_deadline
+        )
+        if index_end is not None:
+            yield prefix.start(), index_end
+
+
 def _unique_constraint_end(
+    source: bytes,
     masked: bytes,
     keyword_end: int,
     *,
@@ -583,13 +861,37 @@ def _unique_constraint_end(
     deferrability options, or ``None`` for an unbalanced option list."""
     cursor = keyword_end
     included_end = keyword_end
-    nulls = _UNIQUE_NULLS_RE.match(masked, cursor)
+    cursor = _skip_sql_whitespace(
+        masked, cursor, check_deadline=check_deadline
+    )
+    nulls = _UNIQUE_NULLS_WORD_RE.match(masked, cursor)
     if nulls is not None:
-        cursor = nulls.end()
-        included_end = cursor
+        option_cursor = _skip_sql_whitespace(
+            masked, nulls.end(), check_deadline=check_deadline
+        )
+        nulls_end = None
+        if option_cursor > nulls.end():
+            not_word = _UNIQUE_NOT_WORD_RE.match(masked, option_cursor)
+            if not_word is None:
+                distinct = _UNIQUE_DISTINCT_WORD_RE.match(masked, option_cursor)
+            else:
+                distinct_cursor = _skip_sql_whitespace(
+                    masked, not_word.end(), check_deadline=check_deadline
+                )
+                distinct = (
+                    _UNIQUE_DISTINCT_WORD_RE.match(masked, distinct_cursor)
+                    if distinct_cursor > not_word.end()
+                    else None
+                )
+            if distinct is not None:
+                nulls_end = distinct.end()
+        if nulls_end is not None:
+            cursor = nulls_end
+            included_end = cursor
 
-    while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
-        cursor += 1
+    cursor = _skip_sql_whitespace(
+        masked, cursor, check_deadline=check_deadline
+    )
     if cursor < len(masked) and masked[cursor] == _OPEN_PAREN:
         close = _find_matching_close_paren(
             masked, cursor, check_deadline=check_deadline
@@ -600,26 +902,33 @@ def _unique_constraint_end(
         included_end = cursor
 
     while True:
+        cursor = _skip_sql_whitespace(
+            masked, cursor, check_deadline=check_deadline
+        )
         option_start = cursor
-        while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
-            cursor += 1
-        option = _UNIQUE_INDEX_TABLESPACE_RE.match(masked, option_start)
-        if option is None:
-            option = _UNIQUE_USING_INDEX_RE.match(masked, option_start)
-        if option is not None:
-            cursor = option.end()
+        using_index_end = _unique_using_index_end(
+            source,
+            masked,
+            option_start,
+            check_deadline=check_deadline,
+        )
+        if using_index_end is not None:
+            cursor = using_index_end
             included_end = cursor
             continue
-        option = _UNIQUE_DEFERRABILITY_RE.match(masked, option_start)
-        if option is not None:
-            cursor = option.end()
+        deferrability_end = _unique_deferrability_end(
+            masked, option_start, check_deadline=check_deadline
+        )
+        if deferrability_end is not None:
+            cursor = deferrability_end
             included_end = cursor
             continue
-        option = _UNIQUE_INCLUDE_RE.match(masked, option_start)
-        if option is not None:
-            cursor = option.end()
-            while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
-                cursor += 1
+        include_end = _sql_keyword_end(masked, option_start, b"INCLUDE")
+        if include_end is not None:
+            cursor = include_end
+            cursor = _skip_sql_whitespace(
+                masked, cursor, check_deadline=check_deadline
+            )
             if cursor >= len(masked) or masked[cursor] != _OPEN_PAREN:
                 return None
             close = _find_matching_close_paren(
@@ -630,11 +939,12 @@ def _unique_constraint_end(
             cursor = close + 1
             included_end = cursor
             continue
-        option = _UNIQUE_WITH_RE.match(masked, option_start)
-        if option is not None:
-            cursor = option.end()
-            while cursor < len(masked) and masked[cursor : cursor + 1].isspace():
-                cursor += 1
+        with_end = _sql_keyword_end(masked, option_start, b"WITH")
+        if with_end is not None:
+            cursor = with_end
+            cursor = _skip_sql_whitespace(
+                masked, cursor, check_deadline=check_deadline
+            )
             if cursor >= len(masked) or masked[cursor] != _OPEN_PAREN:
                 return None
             close = _find_matching_close_paren(
@@ -1358,22 +1668,23 @@ def _read_created_index_identity(
 def _attachment_index_reference(
     source: bytes,
     masked: bytes,
-    attachment: re.Match[bytes],
+    attachment_start: int,
+    attachment_end: int,
     *,
     check_deadline: Remaining | None = None,
 ) -> tuple[bytes | None, bytes] | None:
     reference = _read_qualified_sql_identifier_details(
-        source, attachment.end(), check_deadline=check_deadline
+        source, attachment_end, check_deadline=check_deadline
     )
     if reference is None:
         return None
     schema, name, _ = reference
     if schema is not None:
         return schema, name
-    statement_start = masked.rfind(b";", 0, attachment.start()) + 1
+    statement_start = masked.rfind(b";", 0, attachment_start) + 1
     alter = None
     for match in _ALTER_TABLE_RE.finditer(
-        masked, statement_start, attachment.start()
+        masked, statement_start, attachment_start
     ):
         if check_deadline is not None:
             check_deadline()
@@ -3735,13 +4046,14 @@ def _collect_sql_mutation_context(
     for source_identity, source, masked, dollar_body_ranges in lexed_sources():
         if check_deadline is not None:
             check_deadline()
-        for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
-            if check_deadline is not None:
-                check_deadline()
+        for attachment_start, attachment_end in _iter_index_attachment_spans(
+            masked, check_deadline=check_deadline
+        ):
             reference = _attachment_index_reference(
                 source,
                 masked,
-                attachment,
+                attachment_start,
+                attachment_end,
                 check_deadline=check_deadline,
             )
             if reference is None:
@@ -3857,16 +4169,19 @@ def _scan_drop_unique(
     *,
     context: _SqlMutationContext | None = None,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
-    sites = []
+) -> "Iterator[_Site]":
     index_form_spans: list[tuple[int, int]] = []
     attached_indexes: set[tuple[bytes | None, bytes]] = set()
     unresolved_attachment = False
-    for attachment in _INDEX_ATTACHMENT_RE.finditer(masked):
-        if check_deadline is not None:
-            check_deadline()
+    for attachment_start, attachment_end in _iter_index_attachment_spans(
+        masked, check_deadline=check_deadline
+    ):
         reference = _attachment_index_reference(
-            source, masked, attachment, check_deadline=check_deadline
+            source,
+            masked,
+            attachment_start,
+            attachment_end,
+            check_deadline=check_deadline,
         )
         if reference is None:
             # If the attachment target cannot be parsed, suppress all unique
@@ -3910,41 +4225,41 @@ def _scan_drop_unique(
             # changing the constraint alone leaves the unique index enforcing
             # the same rule. Refuse the linked index site.
             continue
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, m.start()),
-                operator="sql:drop-unique",
-                description="CREATE UNIQUE INDEX -> CREATE INDEX",
-                start=m.start(),
-                end=m.end(),
-                replacement=b"CREATE INDEX",
-            )
+        yield _Site(
+            lineno=line_for_offset(source, m.start()),
+            operator="sql:drop-unique",
+            description="CREATE UNIQUE INDEX -> CREATE INDEX",
+            start=m.start(),
+            end=m.end(),
+            replacement=b"CREATE INDEX",
         )
     for m in _UNIQUE_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
         if _inside_any(index_form_spans, m.start()):
             continue
-        if _USING_INDEX_ATTACHMENT_RE.match(masked, m.end()) is not None:
+        if (
+            _using_index_attachment_end(
+                masked, m.end(), check_deadline=check_deadline
+            )
+            is not None
+        ):
             # The existing index and its constraint form one semantic unit;
             # a single-site replacement cannot remove both safely.
             continue
         end = _unique_constraint_end(
-            masked, m.end(), check_deadline=check_deadline
+            source, masked, m.end(), check_deadline=check_deadline
         )
         if end is None:
             continue
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, m.start()),
-                operator="sql:drop-unique",
-                description="UNIQUE -> CHECK (true)",
-                start=m.start(),
-                end=end,
-                replacement=b"CHECK (true)",
-            )
+        yield _Site(
+            lineno=line_for_offset(source, m.start()),
+            operator="sql:drop-unique",
+            description="UNIQUE -> CHECK (true)",
+            start=m.start(),
+            end=end,
+            replacement=b"CHECK (true)",
         )
-    return sites
 
 
 # --- sql:drop-not-null -----------------------------------------------------
@@ -3967,9 +4282,41 @@ _NAMED_NOT_NULL_CONSTRAINT_PREFIX_RE = re.compile(
     rb"\bCONSTRAINT(?:\s+" + _SQL_IDENTIFIER + rb")?\s*$", re.IGNORECASE
 )
 
+_DECLARATION_SEARCH_WINDOW_BYTES = 64 * 1024
+_DECLARATION_SEARCH_OVERLAP_BYTES = 16
+
+
+def _search_declaration_keyword(
+    masked: bytes,
+    start: int,
+    end: int,
+    pattern: re.Pattern[bytes],
+    *,
+    check_deadline: Remaining | None,
+) -> re.Match[bytes] | None:
+    """Search a declaration body in bounded windows with its byte offsets."""
+    cursor = start
+    while cursor < end:
+        if check_deadline is not None:
+            check_deadline()
+        boundary = min(end, cursor + _DECLARATION_SEARCH_WINDOW_BYTES)
+        search_end = min(end, boundary + _DECLARATION_SEARCH_OVERLAP_BYTES)
+        match = pattern.search(masked, cursor, search_end)
+        if check_deadline is not None:
+            check_deadline()
+        if match is not None and match.start() < boundary:
+            return match
+        cursor = boundary
+    if check_deadline is not None:
+        check_deadline()
+    return None
+
 
 def _declare_section_spans(
-    masked: bytes, dollar_bodies: tuple[tuple[int, int], ...]
+    masked: bytes,
+    dollar_bodies: tuple[tuple[int, int], ...],
+    *,
+    check_deadline: Remaining | None = None,
 ) -> list[tuple[int, int]]:
     """(A-283, rule 5) The ``[DECLARE, BEGIN)`` byte range of every
     top-level dollar-quoted body's own leading declaration section, if it
@@ -3979,13 +4326,28 @@ def _declare_section_spans(
     brought it there."""
     spans = []
     for body_start, body_end in dollar_bodies:
-        body = masked[body_start:body_end]
-        declare = _DECLARE_RE.search(body)
+        if check_deadline is not None:
+            check_deadline()
+        declare = _search_declaration_keyword(
+            masked,
+            body_start,
+            body_end,
+            _DECLARE_RE,
+            check_deadline=check_deadline,
+        )
         if declare is None:
             continue
-        begin = _BEGIN_RE.search(body, declare.end())
-        declare_end = body_end if begin is None else body_start + begin.start()
-        spans.append((body_start + declare.start(), declare_end))
+        begin = _search_declaration_keyword(
+            masked,
+            declare.end(),
+            body_end,
+            _BEGIN_RE,
+            check_deadline=check_deadline,
+        )
+        declare_end = body_end if begin is None else begin.start()
+        spans.append((declare.start(), declare_end))
+        if check_deadline is not None:
+            check_deadline()
     return spans
 
 
@@ -3994,7 +4356,7 @@ def _column_definition_clauses(
     masked: bytes,
     *,
     check_deadline: Remaining | None = None,
-) -> list[tuple[int, int, bytes]]:
+) -> list[tuple[int, int]]:
     """Return CREATE TABLE items and ALTER TABLE ADD actions.
 
     These bounded clauses let the NOT NULL scanner inspect sibling options
@@ -4002,7 +4364,7 @@ def _column_definition_clauses(
     one. Table-level constraints are included so they can be refused rather
     than mistaken for column-level NOT NULL clauses.
     """
-    clauses: list[tuple[int, int, bytes]] = []
+    clauses: list[tuple[int, int]] = []
     for table_match in _CREATE_TABLE_DEFINITION_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
@@ -4026,9 +4388,7 @@ def _column_definition_clauses(
         ):
             absolute_start = body_start + start
             absolute_end = body_start + end
-            clauses.append(
-                (absolute_start, absolute_end, masked[absolute_start:absolute_end])
-            )
+            clauses.append((absolute_start, absolute_end))
 
     for alter in _ALTER_TABLE_RE.finditer(masked):
         if check_deadline is not None:
@@ -4052,7 +4412,7 @@ def _column_definition_clauses(
             add = re.match(rb"\s*ADD\s+(?:COLUMN\s+)?", action, re.IGNORECASE)
             if add is None:
                 continue
-            clauses.append((absolute_start, absolute_end, action))
+            clauses.append((absolute_start, absolute_end))
 
     clauses.sort(key=lambda clause: clause[0])
     return clauses
@@ -4172,12 +4532,10 @@ def _scan_drop_not_null(
     declare_spans: list[tuple[int, int]],
     *,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
-    sites = []
+) -> "Iterator[_Site]":
     column_clauses = _column_definition_clauses(
         source, masked, check_deadline=check_deadline
     )
-    column_clause_starts = [start for start, _, _ in column_clauses]
     for m in _NOT_NULL_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
@@ -4195,11 +4553,13 @@ def _scan_drop_not_null(
             clause = None
             clause_start = None
             local_start = local_end = 0
-            clause_index = bisect_right(column_clause_starts, m.start()) - 1
+            clause_index = bisect_right(
+                column_clauses, (m.start(), len(masked) + 1)
+            ) - 1
             if clause_index >= 0:
-                clause_start, clause_end, candidate_clause = column_clauses[clause_index]
+                clause_start, clause_end = column_clauses[clause_index]
                 if clause_start <= m.start() < clause_end:
-                    clause = candidate_clause
+                    clause = masked[clause_start:clause_end]
                     local_start = m.start() - clause_start
                     local_end = m.end() - clause_start
             if clause is not None:
@@ -4234,17 +4594,14 @@ def _scan_drop_not_null(
                 description = "NOT NULL -> NULL"
         if _inside_any(declare_spans, span_start):  # rule 5 (A-283)
             continue
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, span_start),
-                operator="sql:drop-not-null",
-                description=description,
-                start=span_start,
-                end=m.end(),
-                replacement=replacement,
-            )
+        yield _Site(
+            lineno=line_for_offset(source, span_start),
+            operator="sql:drop-not-null",
+            description=description,
+            start=span_start,
+            end=m.end(),
+            replacement=replacement,
         )
-    return sites
 
 
 # --- sql:drop-foreign-key ---------------------------------------------------
@@ -4255,16 +4612,19 @@ def _scan_drop_foreign_key(
     masked: bytes,
     *,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
-    sites = []
+) -> "Iterator[_Site]":
     claimed: set[int] = set()
     n = len(masked)
-    for m in _FOREIGN_KEY_RE.finditer(masked):
+    for m in _FOREIGN_WORD_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
-        j = m.end()
-        while j < n and masked[j : j + 1].isspace():
-            j += 1
+        key_end = _sql_keyword_after_whitespace(
+            masked, m.end(), b"KEY", check_deadline=check_deadline
+        )
+        if key_end is None:
+            continue
+        j = key_end
+        j = _skip_sql_whitespace(masked, j, check_deadline=check_deadline)
         if j >= n or masked[j] != _OPEN_PAREN:
             continue
         close = _find_matching_close_paren(
@@ -4273,8 +4633,7 @@ def _scan_drop_foreign_key(
         if close is None:
             continue
         j = close + 1
-        while j < n and masked[j : j + 1].isspace():
-            j += 1
+        j = _skip_sql_whitespace(masked, j, check_deadline=check_deadline)
         ref_match = _REFERENCES_RE.match(masked, j)
         if ref_match is None:
             continue
@@ -4284,15 +4643,13 @@ def _scan_drop_foreign_key(
         if end is None:
             continue
         claimed.add(ref_match.start())
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, m.start()),
-                operator="sql:drop-foreign-key",
-                description="FOREIGN KEY (...) REFERENCES ... -> CHECK (true)",
-                start=m.start(),
-                end=end,
-                replacement=b"CHECK (true)",
-            )
+        yield _Site(
+            lineno=line_for_offset(source, m.start()),
+            operator="sql:drop-foreign-key",
+            description="FOREIGN KEY (...) REFERENCES ... -> CHECK (true)",
+            start=m.start(),
+            end=end,
+            replacement=b"CHECK (true)",
         )
     for m in _REFERENCES_RE.finditer(masked):
         if check_deadline is not None:
@@ -4307,17 +4664,14 @@ def _scan_drop_foreign_key(
         )
         if end is None:
             continue
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, m.start()),
-                operator="sql:drop-foreign-key",
-                description="REFERENCES ... -> CHECK (true)",
-                start=m.start(),
-                end=end,
-                replacement=b"CHECK (true)",
-            )
+        yield _Site(
+            lineno=line_for_offset(source, m.start()),
+            operator="sql:drop-foreign-key",
+            description="REFERENCES ... -> CHECK (true)",
+            start=m.start(),
+            end=end,
+            replacement=b"CHECK (true)",
         )
-    return sites
 
 
 # --- sql:weaken-delete-action ------------------------------------------------
@@ -4328,24 +4682,39 @@ def _scan_weaken_delete_action(
     masked: bytes,
     *,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
-    sites = []
-    for m in _WEAKEN_DELETE_RE.finditer(masked):
+) -> "Iterator[_Site]":
+    for m in _ON_WORD_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
-        action_start, action_end = m.start(1), m.end(1)
-        action_text = source[action_start:action_end].decode("ascii", "replace")
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, action_start),
-                operator="sql:weaken-delete-action",
-                description=f"ON DELETE {action_text} -> ON DELETE CASCADE",
-                start=action_start,
-                end=action_end,
-                replacement=b"CASCADE",
-            )
+        delete_end = _sql_keyword_after_whitespace(
+            masked, m.end(), b"DELETE", check_deadline=check_deadline
         )
-    return sites
+        if delete_end is None:
+            continue
+        action_start = _skip_sql_whitespace(
+            masked, delete_end, check_deadline=check_deadline
+        )
+        if action_start == delete_end:
+            continue
+        action_end = _sql_keyword_end(masked, action_start, b"RESTRICT")
+        if action_end is None:
+            no_end = _sql_keyword_end(masked, action_start, b"NO")
+            if no_end is None:
+                continue
+            action_end = _sql_keyword_after_whitespace(
+                masked, no_end, b"ACTION", check_deadline=check_deadline
+            )
+            if action_end is None:
+                continue
+        action_text = source[action_start:action_end].decode("ascii", "replace")
+        yield _Site(
+            lineno=line_for_offset(source, action_start),
+            operator="sql:weaken-delete-action",
+            description=f"ON DELETE {action_text} -> ON DELETE CASCADE",
+            start=action_start,
+            end=action_end,
+            replacement=b"CASCADE",
+        )
 
 
 # --- sql:drop-trigger --------------------------------------------------------
@@ -4357,8 +4726,7 @@ def _scan_drop_trigger(
     dollar_bodies: tuple[tuple[int, int], ...],
     *,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
-    sites = []
+) -> "Iterator[_Site]":
     for m in _CREATE_TRIGGER_RE.finditer(masked):
         if check_deadline is not None:
             check_deadline()
@@ -4367,17 +4735,14 @@ def _scan_drop_trigger(
         semicolon = masked.find(b";", m.end())
         if semicolon == -1:
             continue
-        sites.append(
-            _Site(
-                lineno=line_for_offset(source, m.start()),
-                operator="sql:drop-trigger",
-                description="CREATE TRIGGER ...; -> SELECT 1;",
-                start=m.start(),
-                end=semicolon + 1,
-                replacement=b"SELECT 1;",
-            )
+        yield _Site(
+            lineno=line_for_offset(source, m.start()),
+            operator="sql:drop-trigger",
+            description="CREATE TRIGGER ...; -> SELECT 1;",
+            start=m.start(),
+            end=semicolon + 1,
+            replacement=b"SELECT 1;",
         )
-    return sites
 
 
 # --- sql:widen-check-in ------------------------------------------------------
@@ -4391,10 +4756,9 @@ def _scan_widen_check_in(
     source_identity: str | None = None,
     dollar_body_ranges: tuple[tuple[int, int], ...] | None = None,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
+) -> "Iterator[_Site]":
     if check_deadline is not None:
         check_deadline()
-    sites = []
     enum_types = {
         (
             _normalize_sql_identifier(match.group("schema"))
@@ -4903,15 +5267,13 @@ def _scan_widen_check_in(
 
                 removal_start, removal_end = literal_span(remove_index)
                 replacement_start, replacement_end = literal_span(replacement_index)
-                sites.append(
-                    _Site(
-                        lineno=line_for_offset(source, removal_start),
-                        operator="sql:widen-check-in",
-                        description="NOT IN (...) widened by removing one unique member",
-                        start=removal_start,
-                        end=removal_end,
-                        replacement=source[replacement_start:replacement_end],
-                    )
+                yield _Site(
+                    lineno=line_for_offset(source, removal_start),
+                    operator="sql:widen-check-in",
+                    description="NOT IN (...) widened by removing one unique member",
+                    start=removal_start,
+                    end=removal_end,
+                    replacement=source[replacement_start:replacement_end],
                 )
                 continue
             if all_strings:
@@ -4951,17 +5313,14 @@ def _scan_widen_check_in(
                 description = f"IN (...) widened with {new_int}"
             else:
                 continue  # rule 3: anything else -> no site
-            sites.append(
-                _Site(
-                    lineno=line_for_offset(source, in_close),
-                    operator="sql:widen-check-in",
-                    description=description,
-                    start=in_close,
-                    end=in_close + 1,
-                    replacement=replacement,
-                )
+            yield _Site(
+                lineno=line_for_offset(source, in_close),
+                operator="sql:widen-check-in",
+                description=description,
+                start=in_close,
+                end=in_close + 1,
+                replacement=replacement,
             )
-    return sites
 
 
 def _all_candidate_sites(
@@ -4972,75 +5331,61 @@ def _all_candidate_sites(
     context: _SqlMutationContext | None = None,
     source_identity: str | None = None,
     check_deadline: Remaining | None = None,
-) -> "list[_Site]":
+) -> "Iterator[_Site]":
     """Every candidate from every scanner, in the operator table's own
     order (§3.2) -- never itself filtered by *lines*/*operators*/*limit*;
-    :meth:`SqlAdapter.generate_mutation_sites` does that centrally, in a
-    single bounded heap, mirroring
-    :func:`assay.adapters.python._generate_python_sites` (A-281)."""
-    sites: list[_Site] = []
+    stream candidates into :meth:`SqlAdapter.generate_mutation_sites`, which
+    applies those filters while retaining only its identity-bounded heap
+    (A-281)."""
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_drop_check(source, masked, check_deadline=check_deadline)
+    yield from _scan_drop_check(source, masked, check_deadline=check_deadline)
+    if check_deadline is not None:
+        check_deadline()
+    yield from _scan_drop_unique(
+        source,
+        masked,
+        context=context,
+        check_deadline=check_deadline,
     )
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_drop_unique(
-            source,
-            masked,
-            context=context,
-            check_deadline=check_deadline,
-        )
+    yield from _scan_drop_not_null(
+        source,
+        masked,
+        declare_spans,
+        check_deadline=check_deadline,
     )
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_drop_not_null(
-            source,
-            masked,
-            declare_spans,
-            check_deadline=check_deadline,
-        )
+    yield from _scan_drop_foreign_key(
+        source, masked, check_deadline=check_deadline
     )
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_drop_foreign_key(source, masked, check_deadline=check_deadline)
+    yield from _scan_weaken_delete_action(
+        source, masked, check_deadline=check_deadline
     )
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_weaken_delete_action(
-            source, masked, check_deadline=check_deadline
-        )
+    yield from _scan_drop_trigger(
+        source,
+        masked,
+        dollar_bodies,
+        check_deadline=check_deadline,
     )
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_drop_trigger(
-            source,
-            masked,
-            dollar_bodies,
-            check_deadline=check_deadline,
-        )
+    yield from _scan_widen_check_in(
+        source,
+        masked,
+        context=context,
+        source_identity=source_identity,
+        dollar_body_ranges=dollar_bodies,
+        check_deadline=check_deadline,
     )
     if check_deadline is not None:
         check_deadline()
-    sites.extend(
-        _scan_widen_check_in(
-            source,
-            masked,
-            context=context,
-            source_identity=source_identity,
-            dollar_body_ranges=dollar_bodies,
-            check_deadline=check_deadline,
-        )
-    )
-    if check_deadline is not None:
-        check_deadline()
-    return sites
 
 
 # --- A-281: the bounded worst-eviction heap, mirroring python.py's own ------
@@ -5195,7 +5540,9 @@ class SqlAdapter:
         if check_deadline is not None:
             check_deadline()
         selected = set(operators)
-        declare_spans = _declare_section_spans(masked, dollar_bodies)
+        declare_spans = _declare_section_spans(
+            masked, dollar_bodies, check_deadline=check_deadline
+        )
 
         heap: list[tuple[_Worst, int, _Site]] = []
         seen = 0

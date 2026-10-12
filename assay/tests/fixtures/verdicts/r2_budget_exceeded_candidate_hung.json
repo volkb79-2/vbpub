@@ -1,5 +1,5 @@
 {
- "schema_version": 15,
+ "schema_version": 16,
  "assay_version": "0.1.0",
  "lane": "package",
  "commit": "555555555555555555555555555555555555555e",
@@ -44,7 +44,7 @@
    "cold_witness_kills": false,
    "r2_command": null,
    "equivalence_ledger": null,
-   "jobs": 2,
+   "jobs": 1,
    "max_mutants": 50,
    "operators": [
     "python:boolop-swap",

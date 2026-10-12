@@ -11,9 +11,10 @@ Simpler than pwmcp/build-push.py on purpose: cgprofile has exactly one
 externally-resolved coordinate (its own release version, `scm` strategy —
 see cmru.toml), not several Playwright-ecosystem pins threaded through a
 CMRU prepare phase and a governed buildx builder. Both steps read the exact
-CMRU release tag at HEAD; an untagged local build uses `0.0.0-dev`, while a
-manual push needs either that exact tag or an explicit `CGPROFILE_VERSION`
-plus GITHUB_USERNAME/GITHUB_PUSH_PAT for the ghcr.io login.
+CMRU release tag at HEAD; an untagged local build uses `0.0.0-dev`, and a push
+refuses unless that exact tag is present on a clean working tree. An ambient
+`CGPROFILE_VERSION` is not release authority. A manual push also needs
+GITHUB_USERNAME/GITHUB_PUSH_PAT for the ghcr.io login.
 
 No network fetch happens inside the image build itself beyond what `pip
 install -r requirements.txt` and the base image pull need — see the
@@ -68,19 +69,26 @@ def git_revision() -> str:
 
 def do_build() -> None:
     env = dict(os.environ)
-    env["CGPROFILE_VERSION"] = resolve_build_version(
-        HERE, require_release_tag=False, environ=env,
+    version = resolve_build_version(
+        HERE, require_release_tag=False,
     )
-    env["GIT_REVISION"] = git_revision()
-    log(f"Building cgprofile (CGPROFILE_VERSION={env['CGPROFILE_VERSION']})")
-    run(["docker", "buildx", "bake", *_FS_ALLOW, "all", "--load"], env=env)
+    revision = git_revision()
+    env.pop("CGPROFILE_VERSION", None)
+    env.pop("GIT_REVISION", None)
+    log(f"Building cgprofile (CGPROFILE_VERSION={version})")
+    run([
+        "docker", "buildx", "bake", *_FS_ALLOW, "all",
+        "--set", f"cgprofile-local.args.CGPROFILE_VERSION={version}",
+        "--set", f"cgprofile-local.args.GIT_REVISION={revision}",
+        "--load",
+    ], env=env)
     log("Build complete. Local tag: cgprofile:local")
 
 
 def do_push() -> None:
     env = dict(os.environ)
     try:
-        version = resolve_build_version(HERE, require_release_tag=True, environ=env)
+        version = resolve_build_version(HERE, require_release_tag=True)
     except RuntimeError as exc:
         fail(f"--push cannot determine the release version: {exc}")
     username = os.environ.get("GITHUB_USERNAME", "").strip()
@@ -94,13 +102,20 @@ def do_push() -> None:
         input=pat.encode(), check=True,
     )
 
-    env["CGPROFILE_VERSION"] = version
-    env["GIT_REVISION"] = git_revision()
+    revision = git_revision()
+    env.pop("CGPROFILE_VERSION", None)
+    env.pop("GIT_REVISION", None)
     log(f"Pushing ghcr.io/volkb79-2/cgprofile:{version}")
     # The local alias is a separate Bake target and must never be included in
     # a registry export: an unqualified `cgprofile:local` name resolves to
     # Docker Hub, not to a private local-only namespace.
-    run(["docker", "buildx", "bake", *_FS_ALLOW, "cgprofile-release", "--push"], env=env)
+    run([
+        "docker", "buildx", "bake", *_FS_ALLOW, "cgprofile-release",
+        "--set", f"cgprofile-release.args.CGPROFILE_VERSION={version}",
+        "--set", f"cgprofile-release.args.GIT_REVISION={revision}",
+        "--set", f"cgprofile-release.tags=ghcr.io/volkb79-2/cgprofile:{version}",
+        "--push",
+    ], env=env)
     log("Push complete.")
 
 

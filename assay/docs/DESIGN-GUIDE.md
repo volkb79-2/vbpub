@@ -639,6 +639,27 @@ failure is not scored as a mutant kill. They are not a resource-usage profile;
 CPU time, peak memory, and pressure measurements belong to separate runtime
 and liveness evidence.
 
+#### Native R2 candidate event windows are serial
+
+All native R2 candidate runs share the lane's cgroup and its event counters. If
+two candidates execute concurrently, an increment during both before/after
+windows cannot identify which candidate caused it. Assay therefore requires
+`judge.mutation.jobs = 1` for native R2 and `--pilot-jobs 1` for native pilots.
+The config loader, CLI, and public `run_mutation` entry point refuse larger
+values before execution. This limits candidate throughput until each candidate
+can have independently attributable cgroup evidence; it does not limit the worker count used by the read-only
+`assay analyze plan-estimate` projection. Ancestor `.local` counters still
+distinguish sibling-only hierarchical changes from events local to a shared
+enforcing ancestor.
+
+This serial rule is part of the wire contract as well as the executor: verdict
+schema v16 requires `judgment.r2.jobs = 1` in the Python model and packaged
+schema, and `assay verify` rejects a native verdict that claims more workers.
+The v15 schema accepted larger values, so v16 is a hard cut. `--reuse-from`
+recognizes a v15 artifact only as a cold start; its candidate results cannot be
+reused under the serial attribution rule. Consumer changes are described in
+the [v15-to-v16 migration notes](CONSUMERS.md#migration-notes-v15-to-v16).
+
 Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
 samples `pids.events.local` and `memory.events.local` at every visible active
 ancestor. A finite `pids.max` or `memory.max` requires its regular event file
@@ -862,8 +883,9 @@ that root hook. It must preserve pytest's session exit status; if it changes
 the status, Assay refuses to use the receipt to prove a kill or survivor.
 Every other unreviewed hook keeps the proof unavailable.
 
-These proofs live in the v15 verdict and are checked independently by
-`assay verify`. B105 adds a separate source-bound check: it reads the lane
+These proofs were introduced in v15 and remain in the current v16 verdict,
+where they are checked independently by `assay verify`. B105 adds a separate
+source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
 recomputes the command transform, validates the ordered manifest sidecar and
 checks that the verdict's campaign binding matches the persisted deadline.
@@ -1098,8 +1120,9 @@ nothing else. That is three call sites, one per lane shape: `execute_command`
 and `_run_prepared_lane`'s baseline unit (every lane declaring R1, R2 or R3 —
 its `CommandResult` is what `build_r0_claim` turns into the R0 claim). Every
 other execution of the lane's argv keeps `execute_plan`'s `result_report=None`
-default: a mutation candidate, whose whole signal is whether the suite fails
-`jobs`-way concurrently against one declared path; R3's canary halves, whose
+default: a mutation candidate, whose whole signal is whether one full
+declared-order suite run fails (native R2 admits one candidate at a time under
+B156); R3's canary halves, whose
 control/transform outcome answers "did injecting this defect change the
 judgement" rather than "did the wrapped suite pass"; and the
 `environment_command` probe, which is not the lane command at all.
@@ -1521,7 +1544,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v15, complete,
+The prior artifact must be a current-verifier-accepted v16, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -2662,11 +2685,13 @@ checks use only the time left after setup and selection; a timeout allows at
 most 30 seconds for process termination.
 The persisted two-hour campaign remains the absolute bound across retries. The
 selector binds the chosen subset to the current plan, commit, tree and source
-bytes. The run uses three pilot jobs, cold witnesses, resume and the
-pilot-specific state directory. The launcher keeps the admitted `.assay`
-directory open and gives Assay proc-fd paths rooted at that descriptor. Assay
-follows only the kernel-owned descriptor link, then opens each child without
-following symlinks; this preserves the admitted directory identity across
+bytes. The run uses one serial pilot job, cold witnesses, resume and the
+pilot-specific state directory. Candidate cgroup-event windows share counters,
+so they cannot overlap without making attribution ambiguous. The launcher keeps
+the admitted `.assay` directory open and gives Assay proc-fd paths rooted at
+that descriptor. Assay follows only the kernel-owned descriptor link, then
+opens each child without following symlinks; this preserves the admitted
+directory identity across
 campaign setup and R2 execution. Exit 6 alone is not completion evidence: an
 independent checker recomputes the selection and validates the source-bound
 summary, per-candidate state, progress stream, resumed dispositions, two-hour
@@ -2938,7 +2963,7 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; both current dstdns canaries passed with retained schema-v15 verdicts and verifier transcripts |
+| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
 
 **B087 registers both adapter transforms through the shared isolated canary
@@ -2950,8 +2975,9 @@ the function body's lines remain uncovered. The runner accepts only the
 matching `COMMAND_FAILED` or `UNCOVERED_LINES` result after a passing control,
 respectively. The live R3 oracles cover ESM and CommonJS; a separate Vitest
 fixture replay confirms the body lines remain missing under both Istanbul
-and V8 artifacts. Both current dstdns canaries passed with retained schema-v15
-verdicts and verifier transcripts; the report at
+and V8 artifacts. Both dstdns canaries were qualified under Assay 9.0.0/schema
+v15; their retained verdicts and verifier transcripts document that release.
+The report at
 `nyxloom-trove/reports/B087-js-r3-qualification.md` records their scope and
 evidence. That consumer evidence is distinct from the integrated Assay release
 gate. No verdict or schema rule changed.
@@ -4060,7 +4086,7 @@ fail_under = 100.0
 allow_excluded = false
 base = "origin/main"
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
-mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap"] }
+mutation = { jobs = 1, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
 attestation_dir = ".assay/attestations"
 evidence = [{source = "attested", key = "adversarial-review"}]

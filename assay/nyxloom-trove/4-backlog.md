@@ -148,6 +148,10 @@ items:
   - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane at its process limit cannot produce a valid R2 kill", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B146, title: "R0 failure summary reports generic NO_MEASUREMENT instead of naming R0 FAIL and the first failing test", type: bugfix, component: cli, context_estimate: small}
   - {id: B147, title: "Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance", type: bugfix, component: execution, context_estimate: small}
+  - {id: B156, title: "native R2 candidate event windows overlap when jobs > 1 and can attribute a limit event to the wrong mutant", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B158, title: "cold-witness refusal omits which untrusted pytest hook made the baseline unsupported", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B159, title: "the schema migration docs test requires hand-written CMRU release notes in an intentionally empty Unreleased section", type: bugfix, component: tests, context_estimate: small}
+  - {id: B160, title: "SQL candidate discovery materializes every mutation site before applying the bounded candidate limit", type: bugfix, component: adapters, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -197,7 +201,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B143 — adopt cli-extended (unified adoption, order 6 of 8; A-005 reworded) — PLANNED (filed 2026-10-05; requires cli-extended 0.2.0 released)
 - B144 — per-candidate covering-test selection for qualifying Python R2 (covering tests first, full suite on survival) — OPEN, decision-gated against B110 D3/A-467 (filed 2026-10-05 from the cli-extended 0.2.0 wave; measured on a real campaign)
 - B145 — fork exhaustion classified as `killed` (false kills at `pids.max`) — SHIPPED in `assay-v8.0.0` (2026-10-07; B145/B147 wave; contaminated post-03:11Z results must be discarded before retry)
-- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — summary shipped in `assay-v8.0.0`; residuals implemented in candidate `assay-b132-b134-fast` under A-489, pending final registered gate and release: retain the first failure in the verdict and warn when coverage is combined with `--maxfail`/`-x`
+- B146 — R0 failure summary should report `FAIL` and name the first failing test instead of `NO_MEASUREMENT` — summary shipped in `assay-v8.0.0`; the A-489 verdict-detail and effective-pytest-warning residuals are implemented on `main` (`853da74ff`, `e437eaba7`) and included in the current v16 release candidate; the exact integrated gate and release remain pending.
 - B147 — hermetic Git boundary permits detached automatic maintenance — SHIPPED in `assay-v8.0.0` (2026-10-07 with B145)
 - B105 — full-source R0-R3 Assay self-qualification — OPEN (next package after the single Wave C release; required before M7; pre-release Wave C gate remains R0-only; full gate must meet B110's 8-hour ceiling; suite scope amended by A-468; equivalents only via the A-465 ledger)
 
@@ -11473,6 +11477,19 @@ The spinning ones cost 3× a baseline each as `budget_exceeded`, and none can ev
 
 **Status: IN PROGRESS (filed 2026-09-28; resumed 2026-10-07; final report/deadline repair pass 2026-10-09; A-469/A-470/A-471; v15 replaces the already shipped v14 target). The integrated `tester-unified` and MDT `smoke` previously passed on `b8713d56`. On 2026-10-11, the B110 pilot on `88c82674` passed RAM admission, R0/R1, and coverage parsing, then refused before candidates on a generic cold-witness receipt proof failure. The current candidate adds reason-specific diagnostics and folds in the latest xhigh resource findings; exact-tip review, gate, and pilot retries remain pending. P10a is REVISE on P3a's partial anchor path; P10b remains blocked.**
 
+**Latest pilot attempt (2026-10-12):** the contract-2 candidate at
+`9c152110d` passed RAM admission, R0/R1, and coverage parsing, then refused
+before candidate execution with `BAD_LANE_CONFIG`: the coverage baseline had
+an unsupported pytest hook configuration. It produced no candidate outcomes
+and is not mutation evidence. The proposed archive-environment explanation
+was withdrawn: the self-qualification lane passes only `PATH` and the
+observer socket to the Assay child, whose runner replaces its environment.
+The current candidate records unsupported hook names in the bounded private
+receipt and emits validated names as a stderr diagnostic, while keeping the
+verdict detail generic. This preserves the fail-closed proof and lets the next
+registered pilot identify the cause. Do not clear unrelated environment
+variables as a substitute.
+
 **Scope:** the B110 cold-witness contract as resolved by A-470:
 - the `--cold-witness` opt-in;
 - the transform `assay-r2-pytest-nocov/1`;
@@ -12165,7 +12182,7 @@ observer acceptance remain pending.
 
 **Oracles:** a deterministic R0 fixture with multiple failing tests reports `FAIL` and the first failure in execution order; a command that cannot produce an R0 measurement retains its existing `NO_MEASUREMENT` result and reason.
 
-**Residuals implemented in candidate `assay-b132-b134-fast` under A-489; the exact-tip registered `tester-unified` gate passed at `2980858b` on 2026-10-10. A follow-up removes a false-positive warning on non-pytest commands and needs a fresh exact-tip gate.** cmru filed a duplicate of this item on its integration branch (W0-GATE finding BG-03, the `--maxfail` and missing `coverage.json` case). The prior merge dropped these two expectations, now included in this candidate:
+**Residuals implemented on `main` under A-489 (`853da74ff`, `e437eaba7`); they are included in the current v16 release candidate.** The earlier exact-tip registered `tester-unified` gate passed at `2980858b` on 2026-10-10; the current integrated tree still needs its exact-tip gate. cmru filed a duplicate of this item on its integration branch (W0-GATE finding BG-03, the `--maxfail` and missing `coverage.json` case). The completed residuals are:
 - (2) carry the first failure in the existing unstructured R0 `claim.detail` field, not only in the summary line;
 - (3) warn on stderr when a coverage lane uses pytest `--maxfail`/`--exitfirst`/`-x`.
 - (4) recognize only a direct pytest executable or Python's initial `-m pytest` form, not `-m pytest` tokens following `python -c` or a script path;
@@ -12218,7 +12235,7 @@ GNU `timeout` rejected the compound duration strings `2h20m`, `7h30m`, and `7h10
 
 ## B151 — SQL discovery must honor the lane deadline during planning and lexing
 
-**Status: IN PROGRESS (review finding from the 2026-10-11 B132–B134 integration review; implementation and regressions added, pending final review and registered gate).**
+**Status: IN PROGRESS (review findings from the 2026-10-11 B132–B134 integration review and 2026-10-12 contract-2 review; implementation and regressions added, pending final review and registered gate).**
 
 `assay plan` creates a `LaneDeadline`, but did not pass its `remaining` callback
 to `collect_mutation_sites`. SQL therefore selected the unbounded cross-file
@@ -12257,13 +12274,23 @@ excluded, selected target blobs are read once during planning, and target masks
 are not retained; plan-row identity work has an expiry oracle, as does shard
 identity work; unsharded selection skips those hashes.
 The cgroup-preflight timeout regression verifies its reserved verdict.
-Bounded-context tests cover expiry in table metadata, UNIQUE and
-FOREIGN KEY parenthesis scans, NOT NULL action splitting, widened `IN`-list
-splitting, search-path identifiers, and transaction keywords. The no-target
+Bounded-context tests cover expiry in table metadata, UNIQUE option and
+internal-token whitespace (including `USING INDEX` and deferrability), index-
+attachment and FOREIGN/KEY token gaps, REFERENCES target and foreign-key
+action token whitespace, FOREIGN KEY parenthesis scans, NOT NULL action
+splitting, widened `IN`-list splitting, search-path identifiers, and
+transaction keywords. The no-target
 oracle proves an expired deadline is checked without parsing malformed
 context. A Sol xhigh review also found that `set_config(...)` argument scans
 did not receive the deadline; the helper now checks it between calls and
 during long quoted arguments, with a dedicated escaped-quote expiry regression.
+The 2026-10-12 contract-2 Sol xhigh review found one remaining unbounded pass:
+the per-target `_declare_section_spans` search copied and regex-searched each
+dollar-quoted body without the lane callback. The fix checks the callback
+between bounded, overlapping byte windows for both `DECLARE` and `BEGIN`,
+preserving byte offsets while enforcing the deadline within a large body.
+Regression oracles force expiry during each keyword search and place a keyword
+across a window boundary.
 
 ## B153 — SQL cross-file context retains multiple full copies of the source tree
 
@@ -12393,6 +12420,8 @@ separate from usage profiling such as CPU time, peak memory, and pressure.
 Advance the judge identity from `/9` to `/10` so mutation state produced under
 the prior attribution rule is a cold start.
 The cgroup-profiler dependency is tracked by [CP-20](../../scripts/cgroup-profiler/nyxloom-trove/backlog/CP-20-resource-observer-must-expose-local-and-hierarchical-event-coun.md).
+Native candidates also run serially (`jobs = 1`) until each candidate can
+receive independently attributable cgroup evidence; see B156.
 
 **Superseded R2 segment (2026-10-12, RW-569):** The prior contract-1
 cgroup-profiler campaign was stopped after 581 saved candidate records (573
@@ -12447,3 +12476,102 @@ these event counters in R2 mutation classification.
 - The registered `tester-unified` gate passes, and README, DESIGN-GUIDE, and
   CONSUMERS describe the score/guard distinction, monitored events, sibling
   limitation, and governed cgroup placement.
+
+## B156 — native R2 candidate event windows overlap when `jobs > 1`
+
+**Status: IN PROGRESS in the contract-2 release candidate (2026-10-12); exact-tip gates pending.**
+
+Native R2 candidates execute in the same lane cgroup and sample the same
+`pids.events` and `memory.events` counters. With more than one worker, an event
+inside overlapping before/after windows can be charged to an unaffected
+candidate, changing a valid mutation outcome into an infrastructure failure.
+The candidate cgroup has no per-worker identity that could resolve the overlap.
+
+**Chosen behavior:** native R2 requires `judge.mutation.jobs = 1`, and native
+bounded pilots require `--pilot-jobs 1`. The loader and CLI refuse larger
+values before execution. Read-only `assay analyze plan-estimate --workers N`
+remains independent because it does not execute candidates. Revisit parallel
+native execution only with independently attributable per-candidate cgroups
+or equivalent evidence. The active in-repo native-R2 lane configurations and
+the CIU v8 demo config are migrated to `jobs = 1` with this release candidate;
+the custom remote-mutation audit configs keep their separate worker policy.
+
+**Oracles:** native lane files with `jobs > 1` refuse at load; jobs 1 remains a
+valid declared config and serial real-lane test; native pilot override 2
+refuses before execution; the pilot gate invokes with 1; a direct public
+`run_mutation(..., jobs=2)` call refuses before executor construction; native
+R2 verdict construction, the packaged schema, and `assay verify` all reject a
+judgment claiming `jobs > 1`; planning projection still accepts a worker count
+greater than 1. README, DESIGN-GUIDE, and CONSUMERS explain the restriction and
+its effect on throughput. The large cli-extended campaign records that its old
+parallel throughput estimate must be remeasured before it is used for planning.
+
+## B158 — cold-witness refusal omits the untrusted pytest hook
+
+**Status: IN PROGRESS in the contract-2 release candidate (2026-10-12); local focused tests pass, exact-tree review and registered gate pending.**
+
+On 2026-10-12, the B110 pilot completed R0/R1 and coverage parsing, then
+refused before candidate execution because the coverage baseline used an
+unsupported pytest hook configuration. The private receipt carried only the
+boolean support result and fingerprint, so the refusal did not identify which
+hook made the proof ineligible. A proposed inherited-environment explanation
+was disproved: the Assay child receives only the lane's declared passthrough
+variables, and the runner replaces the child environment.
+
+**Chosen behavior:** the bounded private pytest receipt records sorted names
+from the closed pytest-hook vocabulary. The fail-closed proof still rejects
+unsupported configurations in either the coverage or no-coverage R2 baseline.
+Assay emits names to execution diagnostics only after the corresponding
+receipt validates them; the verdict detail stays generic, so hook names do not
+enter verdict JSON.
+
+**Oracles:** a receipt with an unsupported hook reports its exact hook name in
+diagnostics; malformed hook-name evidence cannot validate a receipt or be
+reported by name; the real plugin emits the closed-vocabulary list; and real
+Assay runs keep the verdict generic and start no candidates when either
+baseline has an untrusted hook, including an R2-only hook.
+
+## B159 — schema migration docs test requires hand-written CMRU release notes
+
+**Status: FIXED in the v16 release candidate (2026-10-12); focused docs tests pass; registered exact-tree gate pending.**
+
+The schema migration test required the current schema number in `CHANGES.md`
+before release. Assay's changelog is generated by CMRU, and its `[Unreleased]`
+section must remain empty in an untagged worktree, so a correct v16 migration
+documented in `docs/CONSUMERS.md` still made the pre-release docs test fail.
+
+**Chosen behavior:** the docs test always requires the latest two migration
+sections in `CONSUMERS.md`. If the generated changelog already contains the
+current schema note, it must appear in `[Unreleased]` or the latest release
+section; an older historical note cannot satisfy it. CMRU remains the owner of
+generated release history.
+
+**Oracle:** the current v16 migration passes before release with the generated
+changelog section still empty; removing the v15-to-v16 consumer migration
+fails; and a current-schema note present only in an older release section is
+rejected.
+
+## B160 — SQL candidate discovery materializes candidates before applying the limit
+
+**Status: IN PROGRESS (Sol xhigh review finding, 2026-10-12; folded into the current release candidate).**
+
+`_all_candidate_sites` collected every scanner's `_Site` objects into a list
+before `generate_mutation_sites_with_context` applied its bounded identity
+heap. The NOT NULL scanner also retained a copied byte string for every
+CREATE/ALTER clause while finding candidates. A dense SQL source could
+therefore use memory proportional to every possible mutation even when
+`max_mutants` was small, undermining the bounded B105 pilot on a valid target.
+
+**Chosen contract:** stream candidates from each scanner directly into the
+existing identity-ordered bounded heap. Retain only start/end offsets for
+column clauses and slice the relevant clause when a candidate needs context.
+Preserve scanner order, final identity ordering, operator filtering, and
+exact candidate identities. Do not add an arbitrary target-size cap.
+
+**Oracle:** a laziness regression proves `_all_candidate_sites` yields the
+first scanner candidate before requesting its next item; a clause-inventory
+regression asserts the NOT NULL scanner retains integer offsets rather than
+full clause copies. Existing bounded-retention tests prove output identities
+remain stable at limits one and many. The SQL adapter suite and exact-tip
+registered `tester-unified` gate provide the implementation and integration
+evidence.

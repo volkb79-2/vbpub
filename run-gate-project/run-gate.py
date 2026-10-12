@@ -14,7 +14,9 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 64  # rev 64: refuse failed ctl carriers and foreign watch verdicts
+# rev 65: send single-line JSON over the newline-framed cgprofile control socket
+__revision__ = 65  # rev 65: preserve cgprofile socket request framing
+# rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
 # handshake until daemon placement is read back; explicit refusal is an
 # infrastructure refusal before the body, not an unplaced candidate run.
@@ -2227,7 +2229,9 @@ class ProfilerClient:
     def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
         payload = {"verb": verb, "args": self._wire_args(verb, args),
                    "contract": PROFILE_CONTRACT}
-        request = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        request = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ) + "\n"
         timeout = PROFILE_CTL_TIMEOUTS.get(verb, PROFILE_CTL_TIMEOUTS["status"])
         chunks: list[bytes] = []
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as carrier:
@@ -2377,8 +2381,9 @@ class ProfilerWatch:
                     "session": self.session,
                     "watch_interval": self.watch_interval},
                     "contract": PROFILE_CONTRACT}
-                request = json.dumps(payload, indent=2,
-                                     ensure_ascii=False) + "\n"
+                request = json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")
+                ) + "\n"
                 sock.sendall(request.encode("utf-8"))
                 sock.shutdown(socket.SHUT_WR)
                 stream = sock.makefile("rb")

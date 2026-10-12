@@ -1,12 +1,7 @@
-# cgprofile — sparse, committed per-stack override. The managed cockpit uses
-# the published RG-55 1.0.0 image. For local development, clear this image
-# table before `ciu up` after building `cgprofile:local`; see
+# Before the first CMRU release, leave the sparse override empty so CIU uses
+# the local `cgprofile:local` default. Add a published image pin here only
+# after CMRU has published that exact release tag; see
 # docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu.
-[cgprofile.image]
-registry = "ghcr.io"
-namespace = "volkb79-2"
-name = "cgprofile"
-tag = "1.0.0"
 
 # Local operators may also override daemon settings, for example:
 # [cgprofile.daemon]
