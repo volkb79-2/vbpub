@@ -9,6 +9,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ## [Unreleased]
 
 ### Changed
+- protocol(cgprofile): require resource-observer contract 2 for scope-aware
+  R2 attribution; reject contract-1 observer requests explicitly while
+  retaining contract 1 on the separate daemon control protocol
 - fix(cgprofile): serialize P1 native R2 mutants while they share one tester
   cgroup, so overlapping workers cannot attribute a peer's resource-limit
   event to the wrong candidate; resume the longer exact-tree campaign

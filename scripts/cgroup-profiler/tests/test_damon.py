@@ -2043,6 +2043,25 @@ def test_pool_quarantines_free_slot_when_count_disappears_before_claim(
     assert pool.quarantined_indices == frozenset({0})
 
 
+def test_pool_quarantines_free_slot_when_count_excludes_its_pinned_identity(
+    fake_damon,
+):
+    pool = damon.KdamondPool(capacity=1)
+    idx = pool.acquire()
+    pool._live.remove(idx)
+    pool._free.add(idx)
+
+    # Model a counter/path disagreement during an external shrink: the
+    # identity is still readable, but the registry count says index 0 is gone.
+    (fake_damon.root / "nr_kdamonds").write_text(str(idx))
+    assert pool.owns_slot(idx)
+
+    pool._reconcile_live_indices()
+
+    assert idx not in pool._free
+    assert pool.quarantined_indices == frozenset({idx})
+
+
 def test_pool_records_foreign_growth_between_reconciliation_and_claim(
     fake_damon, monkeypatch,
 ):

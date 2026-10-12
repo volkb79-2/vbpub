@@ -407,7 +407,7 @@ def _run_queue_case(
     budget_per_candidate_seconds: float | None = None,
     equivalence_artifact: str | None = None,
     baseline_equivalence: bytes | None = None,
-    oom_counter=None,
+    resource_counter_reader=None,
     deadline=None,
     state_root_guard=None,
     state_root_fd=None,
@@ -423,7 +423,13 @@ def _run_queue_case(
         memory_oom_group_kill=0,
     )
     monkeypatch.setattr(
-        mutation_module, "_read_candidate_resource_counters", lambda: counters
+        mutation_module,
+        "_read_candidate_resource_counters",
+        (
+            (lambda: counters)
+            if resource_counter_reader is None
+            else resource_counter_reader
+        ),
     )
     repo = _seed_repo(tmp_path, name, text) if repo is None else repo
     scratch_root = tmp_path / f"{name}-scratch"
@@ -464,7 +470,6 @@ def _run_queue_case(
             budget_per_candidate_seconds=budget_per_candidate_seconds,
             equivalence_artifact=equivalence_artifact,
             baseline_equivalence=baseline_equivalence,
-            oom_counter=(lambda: 0) if oom_counter is None else oom_counter,
         )
     assert baseline.outcome is Outcome.PASS
     assert result is not None
@@ -671,27 +676,55 @@ def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
     assert len(list(state_root.glob("*.json"))) == 3
 
 
-def test_oom_during_candidate_execution_is_unclassified_and_unrecorded(
+def test_sibling_hierarchical_oom_kill_does_not_abort_candidate(
     tmp_path, monkeypatch
 ):
-    values = iter((0, 0, 1))
-    state_root = tmp_path / "oom-state"
+    def counters(*, parent_hierarchical_oom_kill: int) -> ResourceLimitCounters:
+        return ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=parent_hierarchical_oom_kill,
+            memory_oom_group_kill=0,
+            path_event_counters=(
+                ("/gate/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                (
+                    "/gate",
+                    0,
+                    0,
+                    0,
+                    parent_hierarchical_oom_kill,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            ),
+        )
+
+    before = counters(parent_hierarchical_oom_kill=0)
+    sibling_oom = counters(parent_hierarchical_oom_kill=1)
+    samples = iter((before, before, sibling_oom))
     result = _run_queue_case(
         tmp_path,
         monkeypatch,
-        name="oom-candidate",
-        targets=_TARGETS3,
+        name="sibling-hierarchical-oom",
+        targets=(
+            MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
+        ),
         text=_TEXT3,
         jobs=1,
         process_runner=_decide5(tmp_path, {}),
-        state_root=state_root,
-        oom_counter=lambda: next(values),
+        resource_counter_reader=lambda: next(samples),
     )
 
-    assert len(result.budget_exceeded) == 3
-    assert not result.killed
+    assert result.total == 1
+    assert len(result.killed) == 1
     assert not result.crashed
-    assert list(state_root.glob("*.json")) == []
+    assert result.killed[0].resource_limit_evidence is not None
+    assert result.killed[0].resource_limit_evidence.memory_events_oom_kill.delta == 0
 
 
 def test_deadline_expiring_during_snapshot_cleanup_leaves_candidate_unclassified(

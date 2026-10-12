@@ -17,7 +17,7 @@ import pytest
 from lib import serve
 
 
-def _request(verb="resource-limits", *, contract=1, **args):
+def _request(verb="resource-limits", *, contract=2, **args):
     return (json.dumps({"verb": verb, "args": args, "contract": contract}) + "\n").encode()
 
 
@@ -47,11 +47,11 @@ def test_observer_dispatch_accepts_only_peer_bound_resource_query(tmp_path, monk
 
     monkeypatch.setattr(serve.resource_observer_mod, "observe_peer_cgroup", observe)
     payload = json.dumps({
-        "verb": "resource-limits", "args": {"thread_id": 777}, "contract": 1,
+        "verb": "resource-limits", "args": {"thread_id": 777}, "contract": 2,
     }).encode()
     response = server._observer_dispatch(payload, (1234, 1000, 1000))
     assert response == {
-        "ok": True, "contract": 1, "cgroup_version": 2,
+        "ok": True, "contract": 2, "cgroup_version": 2,
         "thread_id": 777, "cgroups": [],
     }
     assert observed == {
@@ -62,7 +62,7 @@ def test_observer_dispatch_accepts_only_peer_bound_resource_query(tmp_path, monk
         "cgroup_root": str(tmp_path / "cgroup"),
         "mountinfo_path": str(tmp_path / "proc" / "self" / "mountinfo"),
         "gates_slice_name": "dev-gates.slice",
-        "contract": 1,
+        "contract": 2,
     }
 
 
@@ -149,7 +149,8 @@ def test_contract_2_structural_errors_echo_valid_contract(tmp_path):
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
-        (_request(thread_id=42, contract=3), "supports contract 1 or 2"),
+        (_request(thread_id=42, contract=1), "supports contract 2 only"),
+        (_request(thread_id=42, contract=3), "supports contract 2 only"),
         (
             json.dumps({"verb": None, "args": {}, "contract": 2}).encode(),
             "request 'verb' must be a string",
@@ -168,15 +169,17 @@ def test_observer_dispatch_rejects_invalid_contract_verb_and_args(
     response = server._observer_dispatch(payload, (1234, 1000, 1000))
 
     assert response["ok"] is False
+    assert response["contract"] == 2
     assert message in response["error"]["message"]
 
 
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
-        (b"not json", 1),
-        (b"[]", 1),
-        (b'{"contract": false}', 1),
+        (b"not json", 2),
+        (b"[]", 2),
+        (b'{"contract": false}', 2),
+        (b'{"contract": 1}', 2),
         (b'{"contract": 2}', 2),
     ],
 )
@@ -211,7 +214,7 @@ def test_observer_socket_echoes_valid_contract_for_unhandled_dispatch_error(
     }
 
 
-def test_observer_socket_uses_control_contract_for_peer_refusal_before_read(
+def test_observer_socket_uses_current_observer_contract_for_peer_refusal_before_read(
     tmp_path, monkeypatch
 ):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
@@ -223,7 +226,7 @@ def test_observer_socket_uses_control_contract_for_peer_refusal_before_read(
     response = _response(client)
     client.close()
 
-    assert response["contract"] == 1
+    assert response["contract"] == 2
     assert response["error"]["code"] == "peer-refused"
 
 
@@ -236,7 +239,7 @@ def test_observer_dispatch_maps_identity_refusal_to_structured_error(tmp_path, m
     monkeypatch.setattr(serve.resource_observer_mod, "observe_peer_cgroup", refuse)
     response = server._observer_dispatch(_request(thread_id=42).rstrip(b"\n"), (1, 1, 1))
     assert response == {
-        "ok": False, "contract": 1,
+        "ok": False, "contract": 2,
         "error": {"code": "observer-refused", "message": "identity unavailable"},
     }
 
@@ -283,7 +286,9 @@ def test_dedicated_socket_serves_observer_but_control_socket_does_not(tmp_path, 
     control_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     control_client.settimeout(2)
     control_client.connect(server.socket_path)
-    control_client.sendall(_request(thread_id=threading.get_native_id()))
+    control_client.sendall(
+        _request(thread_id=threading.get_native_id(), contract=serve.CONTRACT_VERSION)
+    )
     response = _response(control_client)
     control_client.close()
     assert response["error"]["code"] == "bad-argument"
@@ -711,10 +716,10 @@ def test_observer_request_line_accepts_limit_and_refuses_one_byte_over(
     dispatched = []
     monkeypatch.setattr(
         server, "_observer_dispatch",
-        lambda payload, _peer: (dispatched.append(payload) or {"ok": True, "contract": 1}),
+        lambda payload, _peer: (dispatched.append(payload) or {"ok": True, "contract": 2}),
     )
     prefix = b'{"verb":"resource-limits","args":{"thread_id":1,"padding":"'
-    suffix = b'"},"contract":1}\n'
+    suffix = b'"},"contract":2}\n'
 
     def payload_of_size(size):
         padding = size - len(prefix) - len(suffix)
@@ -760,7 +765,7 @@ def test_observer_request_received_exactly_at_deadline_is_not_dispatched(
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     monkeypatch.setattr(
         server, "_observer_dispatch",
-        lambda *_args: {"ok": True, "contract": 1},
+        lambda *_args: {"ok": True, "contract": 2},
     )
     ticks = iter((10.0, 15.0))
     monkeypatch.setattr(serve.time, "monotonic", lambda: next(ticks))

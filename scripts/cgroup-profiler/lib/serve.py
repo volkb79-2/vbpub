@@ -63,7 +63,10 @@ from . import (
 from .version import runtime_version
 
 CONTRACT_VERSION = 1
-CGPROFILE_VERSION = runtime_version("1.1.0")
+RESOURCE_OBSERVER_CONTRACT_VERSION = (
+    resource_observer_mod.RESOURCE_OBSERVER_CONTRACT_VERSION
+)
+CGPROFILE_VERSION = runtime_version("0.0.0-dev")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
 DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = "/run/cgprofile/resource-observer.sock"
@@ -2377,17 +2380,17 @@ class SessionServer:
 
     @staticmethod
     def _requested_observer_contract(payload: bytes) -> int:
-        """Return a valid observer contract from a decoded request, if present."""
+        """Use the only supported observer contract for error envelopes."""
         try:
             request = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return CONTRACT_VERSION
+            return RESOURCE_OBSERVER_CONTRACT_VERSION
         if not isinstance(request, dict):
-            return CONTRACT_VERSION
+            return RESOURCE_OBSERVER_CONTRACT_VERSION
         contract = request.get("contract")
-        if type(contract) is int and contract in {1, 2}:
+        if type(contract) is int and contract == RESOURCE_OBSERVER_CONTRACT_VERSION:
             return contract
-        return CONTRACT_VERSION
+        return RESOURCE_OBSERVER_CONTRACT_VERSION
 
     def _bind(self) -> None:
         socket_dir = os.path.dirname(self.socket_path)
@@ -2912,13 +2915,14 @@ class SessionServer:
 
     def _handle_observer_connection(self, conn: socket.socket) -> None:
         """Serve one strictly read-only query on the dedicated socket."""
-        request_contract = CONTRACT_VERSION
+        request_contract = RESOURCE_OBSERVER_CONTRACT_VERSION
         try:
             peer = self._peer_credentials(conn)
             uid = None if peer is None else peer[1]
             if not self._peer_allowed(uid):
                 conn.sendall((json.dumps(self._error_response(
-                    "peer-refused", "peer UID is not allowed by the configured socket policy"
+                    "peer-refused", "peer UID is not allowed by the configured socket policy",
+                    contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                 )) + "\n").encode("utf-8"))
                 return
             deadline = time.monotonic() + 5.0
@@ -2941,10 +2945,12 @@ class SessionServer:
                             "bad-argument",
                             f"observer request exceeds "
                             f"{MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES} bytes",
+                            contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                         )
                     elif newline + 1 != len(data):
                         response = self._error_response(
-                            "bad-argument", "observer accepts exactly one request line"
+                            "bad-argument", "observer accepts exactly one request line",
+                            contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                         )
                     else:
                         payload = bytes(data[:newline])
@@ -2957,6 +2963,7 @@ class SessionServer:
                         "bad-argument",
                         f"observer request exceeds "
                         f"{MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES} bytes",
+                        contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                     )
                     conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                     return
@@ -2979,24 +2986,22 @@ class SessionServer:
     def _observer_dispatch(
         self, payload: bytes, peer: Optional[Tuple[int, int, int]]
     ) -> Dict[str, Any]:
-        try:
-            req = json.loads(payload.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return self._error_response("bad-argument", "request was not valid JSON")
-        if not isinstance(req, dict) or any(not isinstance(key, str) for key in req):
-            return self._error_response("bad-argument", "request must be a JSON object")
-        contract = req.get("contract")
-        if type(contract) is not int or contract not in {1, 2}:
-            return self._error_response(
-                "bad-argument", "resource observer supports contract 1 or 2"
-            )
-
         def error(code: str, message: str) -> Dict[str, Any]:
             return {
                 "ok": False,
-                "contract": contract,
+                "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
                 "error": {"code": code, "message": message},
             }
+
+        try:
+            req = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return error("bad-argument", "request was not valid JSON")
+        if not isinstance(req, dict) or any(not isinstance(key, str) for key in req):
+            return error("bad-argument", "request must be a JSON object")
+        contract = req.get("contract")
+        if type(contract) is not int or contract != RESOURCE_OBSERVER_CONTRACT_VERSION:
+            return error("bad-argument", "resource observer supports contract 2 only")
 
         if set(req) != {"verb", "args", "contract"}:
             return error(

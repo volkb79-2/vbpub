@@ -191,3 +191,19 @@ def test_daemon_version_uses_embedded_release_identity_in_fresh_process():
     assert result.returncode == 0
     assert result.stdout == "1.2.0\n"
     assert result.stderr == ""
+
+
+def test_untagged_source_daemon_reports_development_identity():
+    import os
+    import sys
+
+    env = dict(os.environ)
+    env.pop("CGPROFILE_VERSION", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "from lib.serve import CGPROFILE_VERSION; print(CGPROFILE_VERSION)"],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+        check=False, env=env,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "0.0.0-dev\n"
+    assert result.stderr == ""

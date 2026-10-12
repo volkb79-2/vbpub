@@ -136,6 +136,30 @@ def test_damon_write_nr_kdamonds_writes_when_inside_the_admin_root(tmp_path, mon
     assert written == {"path": str(admin / "nr_kdamonds"), "value": 7}
 
 
+def test_damon_write_nr_kdamonds_refuses_target_equal_to_admin_root(
+    tmp_path, monkeypatch,
+):
+    admin = tmp_path / "admin"
+    kdamonds = admin / "kdamonds"
+    kdamonds.mkdir(parents=True)
+    (kdamonds / "nr_kdamonds").symlink_to(admin, target_is_directory=True)
+    monkeypatch.setattr(damon_mod, "KDAMONDS_DIR", str(kdamonds))
+
+    writes = []
+
+    class Fake:
+        @classmethod
+        def _write_int(cls, path, value):
+            writes.append((path, value))
+
+    monkeypatch.setattr(damon_mod, "SysfsInterface", Fake)
+
+    with pytest.raises(damon_mod.HostWriteError, match="outside the DAMON admin root"):
+        damon_mod._write_nr_kdamonds(3)
+
+    assert writes == []
+
+
 # ── session id ───────────────────────────────────────────────────────────
 
 def test_default_session_id_matches_the_contract_format(tmp_path):

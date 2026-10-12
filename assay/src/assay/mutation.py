@@ -3297,7 +3297,6 @@ def run_mutation(
     reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
     expected_plan_sha256: str | None = None,
     campaign_deadline_sha256: str | None = None,
-    oom_counter: Callable[[], int | None] | None = None,
     cold_witness: bool = False,
     declared_plan: CommandPlan | None = None,
     r2_facts: ReceiptFacts | None = None,
@@ -3509,10 +3508,6 @@ def run_mutation(
     if baseline.outcome is not Outcome.PASS:
         return None
 
-    oom_reader = liveness.oom_kill_count if oom_counter is None else oom_counter
-    initial_oom_count = oom_reader()
-    oom_guard_active = type(initial_oom_count) is int and initial_oom_count >= 0
-
     # (B091/D-23) Resolved HERE, once, the instant the baseline is known
     # good and before any candidate is submitted: the derived ceiling is a
     # function of the SAME measurement every candidate is about to be
@@ -3593,7 +3588,6 @@ def run_mutation(
                     "pre_first_event_within_s": liveness_pre_first_event_within_s,
                     "cpu_window_s": liveness_cpu_window_s,
                     "idle_floor_s": liveness_idle_floor_s,
-                    "oom_guard": "active" if oom_guard_active else "unavailable",
                     "cold_witness": cold_witness,
                     "r2_baseline_s": r2_baseline_s,
                 }
@@ -3957,8 +3951,6 @@ def run_mutation(
                 and candidate not in rejudged_candidate_ids
             },
             campaign_deadline_sha256=campaign_deadline_sha256,
-            oom_counter=oom_reader,
-            oom_guard_active=oom_guard_active,
             cold_witness=cold_witness,
             declared_plan=declared_plan,
             r2_facts=r2_facts,
@@ -4083,8 +4075,6 @@ def _execute_mutation_jobs(
     liveness_plugin_path: Path | None = None,
     reuse_witnesses: Mapping[str, tuple[str, str]] | None = None,
     campaign_deadline_sha256: str | None = None,
-    oom_counter: Callable[[], int | None] = liveness.oom_kill_count,
-    oom_guard_active: bool = False,
     cold_witness: bool = False,
     declared_plan: CommandPlan | None = None,
     r2_facts: ReceiptFacts | None = None,
@@ -4237,18 +4227,9 @@ def _execute_mutation_jobs(
                     command_deadline = budget_per_candidate_seconds
                 command_started_monotonic = time.monotonic()
                 resource_limits_before = _read_candidate_resource_counters()
-                oom_before = oom_counter() if oom_guard_active else None
-                if oom_guard_active and (
-                    type(oom_before) is not int or oom_before < 0
-                ):
-                    raise AssayError(
-                        "cgroup memory.events became unavailable before a native "
-                        "R2 attempt; refusing to classify this candidate",
-                        outcome=Outcome.BUDGET_EXCEEDED,
-                        reason_code=ReasonCode.LANE_TIMEOUT,
-                    )
                 execution_error: BaseException | None = None
                 result: CommandResult | None = None
+                resource_limits_after: ResourceLimitCounters | None = None
                 receipt_capture = None
                 try:
                     if witness_capture_active and active_injection is not None:
@@ -4269,41 +4250,30 @@ def _execute_mutation_jobs(
                 except BaseException as exc:
                     execution_error = exc
                 finally:
-                    if receipt_capture is not None:
-                        receipt = receipt_capture.finish()
-                # This is deliberately the first observation after execute_plan
-                # on both normal and exceptional exits: an OOM kill can never
-                # be hidden by a later resource-counter read or classification.
-                oom_after = oom_counter() if oom_guard_active else None
-                if oom_guard_active and (
-                    type(oom_after) is not int
-                    or oom_after < 0
-                    or oom_after < oom_before
-                ):
-                    raise AssayError(
-                        "cgroup memory.events became unavailable or reset during a "
-                        "native R2 attempt; refusing to classify this candidate",
-                        outcome=Outcome.BUDGET_EXCEEDED,
-                        reason_code=ReasonCode.LANE_TIMEOUT,
-                    ) from execution_error
-                if (
-                    oom_guard_active
-                    and type(oom_after) is int
-                    and type(oom_before) is int
-                    and oom_after > oom_before
-                ):
-                    raise AssayError(
-                        "cgroup oom_kill increased during a native R2 attempt; "
-                        "the candidate is unclassified and will be retried on resume",
-                        outcome=Outcome.BUDGET_EXCEEDED,
-                        reason_code=ReasonCode.LANE_TIMEOUT,
-                    ) from execution_error
+                    try:
+                        resource_limits_after = _read_candidate_resource_counters()
+                    finally:
+                        if receipt_capture is not None:
+                            receipt = receipt_capture.finish()
+                # Read candidate and ancestor-local event counters immediately
+                # after execution, including exceptional exits. This single
+                # comparison distinguishes candidate/ancestor events from a
+                # hierarchical-only change caused by a sibling; a second
+                # aggregate memory.events check would invalidate the latter.
+                assert resource_limits_after is not None
+                resource_limit_evidence = _candidate_resource_limit_evidence(
+                    resource_limits_before, resource_limits_after
+                )
                 if execution_error is not None:
+                    if resource_limit_evidence.limit_hit:
+                        raise AssayError(
+                            "cgroup resource-limit event during native R2 attempt; "
+                            "refusing to classify this candidate",
+                            outcome=Outcome.ERROR,
+                            reason_code=ReasonCode.EXEC_FAILED,
+                        ) from execution_error
                     raise execution_error
                 assert result is not None
-                resource_limit_evidence = _candidate_resource_limit_evidence(
-                    resource_limits_before, _read_candidate_resource_counters()
-                )
             except BaseException:
                 _close_attempt_reservations()
                 raise

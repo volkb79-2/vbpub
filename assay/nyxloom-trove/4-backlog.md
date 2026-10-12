@@ -212,11 +212,11 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B111 — P0 measured plan estimate, resource/phase evidence, liveness-test leak, report-checker refusal, snapshot guards — DONE (shipped in `assay-v7.2.0`; see detailed acceptance below)
 - B112 — P1 B105 suite scope (ignore PATH-wheel file, drop override, `zz_slow` tier, dataclass contract) — PARTIAL (original scope shipped or was superseded in `assay-v7.2.0`; current slow-tier remeasurement remains open)
 - B113 — P2 loop-progress guards — DONE (shipped in `assay-v7.2.0`; see detailed acceptance below)
-- B114 — P3 verdict v15 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — IN PROGRESS (integrated locally; `tester-unified` and MDT `smoke` pass on `b8713d56`; preflight refused at 1.19 GiB versus 2 GiB required. P10a is REVISE, using P3a's partial anchor path; P10b remains blocked. Retry qualification preflight when host capacity returns.)
-- B115 — P4 work-queue executor — IMPLEMENTED on the v15 integration; the integrated `tester-unified` gate passed on `b8713d56`; pending v9.0.0 release.
+- B114 — P3 verdict v15 cold witness, R2 command transform, manifests, fingerprints, liveness keys, B105 binding — SHIPPED in `assay-v9.0.0`; the later B105 preflight refused at 1.19 GiB versus 2 GiB required. P10a is REVISE, using P3a's partial anchor path; P10b remains blocked. Retry the bounded pilot when host capacity allows.
+- B115 — P4 work-queue executor — SHIPPED in `assay-v9.0.0`; its integrated `tester-unified` gate passed on `b8713d56`.
 - B116 — P5 snapshot index refresh + incremental closure bound — OPEN
-- B117 — P6 persisted campaign deadline + process-group termination — IN PROGRESS (integrated `tester-unified` passed; its required B105 preflight refused at 1.19 GiB versus 2 GiB required; retry after capacity returns)
-- B118 — P7 non-qualifying pilot selection — IN PROGRESS (P7a/P7b/P7c are integrated; the final integrated `tester-unified` gate and B114 MDT `smoke` passed on the v15 candidate. The fixed B110 pilot has not run because the shared 2 GiB host-headroom check refused; B131 still requires its own measured sample.)
+- B117 — P6 persisted campaign deadline + process-group termination — SHIPPED in `assay-v9.0.0`; the integrated `tester-unified` gate passed. The B105 preflight still needs a successful capacity admission before full qualification.
+- B118 — P7 non-qualifying pilot selection — tooling shipped in `assay-v9.0.0`; P7a/P7b/P7c and the final integrated `tester-unified` gate passed. The B110 pilot still needs a measured run: prior attempts refused at the shared 2 GiB host-headroom check. B131's analysis pilot is separately pending.
 - B108 phase 1 — P8 deterministic campaign analysis core (run-gate closeout stays phase 2) — OPEN
 - B119 — P9 distributed/async evidence import and consolidation — OPEN (after B108 phase 1; D7 defaults to NO until the operator answers; gate mode `b119-import`)
 - B120 — P10 native Python equivalence ledger + same-commit audit — OPEN (P10a design review first; P10c gate mode after P7b)
@@ -11831,6 +11831,8 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 **Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. Both pilots remain pending; no full R2 qualification is claimed. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. These are capacity refusals; neither pilot produced a measurement, and no full R2 qualification is claimed.
 
+**Controller update (2026-10-12):** B131's selector and evidence checker are integrated on `main`; its bounded analysis-package pilot is still pending and is included in the current release wave. It remains a non-qualifying measurement. The historical capacity refusals are not pilot results, and no full analysis R2 qualification is claimed.
+
 ## B132 — SQL constructs PostgreSQL may refuse
 
 **Status: IMPLEMENTED; the prior exact-tip PostgreSQL measurement passed at `2980858b`. Reviews 21–25 added schema existence, transaction and role-state tracking plus precise `USAGE` revocation handling; the latest exact-diff Sol xhigh review found no findings. Focused tests pass (534); the updated 70-case PostgreSQL hazard set still needs its exact-tip registered gate before merge/release.** The SQL adapter generates mutation sites for:
@@ -12283,7 +12285,7 @@ continues through the self-hosted and SQL phases.
 
 ## B155 — distinguish candidate resource events from sibling events in native R2
 
-**Status: IN PROGRESS (operator accepted the behavior and authorized implementation on 2026-10-11).**
+**Status: IN PROGRESS (Assay behavior merged to `main` as `8c874ce8`; the follow-up removing the superseded gate-wide OOM check and its sibling-OOM regression are in the contract-2 integration diff; final exact-tree gates, review, and release pending).**
 
 R2's mutation score and resource-usage profiling answer different questions.
 R2 asks whether the test suite detects a code mutation. B145 samples resource
@@ -12325,10 +12327,14 @@ across each candidate window. When a localevents mode makes an active
 controller's candidate event file local, require that its cgroup has no child
 cgroups; an inactive controller's mount option alone does not block the run.
 
-The peer-bound cgroup-profiler observer must expose the same two scopes in an
-additive resource-observer contract 2 while preserving contract 1 for existing
-clients. Assay requests contract 2 and refuses an old daemon response rather
-than interpreting hierarchical-only data as local. The observer keeps its
+The peer-bound cgroup-profiler observer must expose the same two scopes in
+resource-observer contract 2. Controller ruling RW-569 (2026-10-12): contract
+2 is the only supported observer version; contract-1 observer requests receive
+an explicit unsupported-contract refusal. The daemon's separate control
+protocol remains contract 1; the minimum daemon release is cgroup-profiler
+1.0.0.
+Assay requests contract 2 and refuses an old daemon response
+rather than interpreting hierarchical-only data as local. The observer keeps its
 identity, complete ancestry, mount, controller, and gates-slice checks. Do not
 drop ancestor checks, infer safety only from the sum of sibling limits, turn
 ambiguous outcomes into mutation results, or move gate containers above
@@ -12338,6 +12344,17 @@ separate from usage profiling such as CPU time, peak memory, and pressure.
 Advance the judge identity from `/9` to `/10` so mutation state produced under
 the prior attribution rule is a cold start.
 The cgroup-profiler dependency is tracked by [CP-20](../../scripts/cgroup-profiler/nyxloom-trove/backlog/CP-20-resource-observer-must-expose-local-and-hierarchical-event-coun.md).
+
+**Superseded R2 segment (2026-10-12, RW-569):** The prior contract-1
+cgroup-profiler campaign was stopped after 581 saved candidate records (573
+killed, 8 survived; last completed candidate index 460 of the resumed 1,473
+plan). The process wrote an incomplete `BUDGET_EXCEEDED/LANE_TIMEOUT` verdict
+when it received the operator's termination signal. This is not an R2 verdict
+or qualification; the saved state is retained for audit and must not be reused
+to qualify contract 2. Two additional oracle tests cover the root-target
+refusal and counter/path disagreement cases found in survivor triage. The
+other survivor dispositions remain recorded as masked or contract-equivalent;
+the new exact-tree R2 must confirm the updated oracle set.
 
 **Parent counters to preserve:**
 
@@ -12375,9 +12392,9 @@ these event counters in R2 mutation classification.
 - The local reader and observer tests distinguish hierarchical and `.local`
   counters, bind both localevents mount modes, and refuse missing or unstable
   evidence or child cgroups under a local-only active candidate controller.
-- Observer contract 1 remains byte-shape compatible; contract 2 returns both
-  scopes and refuses malformed scope metadata. Assay sends contract 2 and
-  refuses a daemon that cannot serve it.
+- Observer contract 2 returns both scopes and refuses malformed scope
+  metadata; contract-1 observer requests receive an explicit refusal. Assay
+  sends contract 2 and refuses a daemon that cannot serve it.
 - The registered `tester-unified` gate passes, and README, DESIGN-GUIDE, and
   CONSUMERS describe the score/guard distinction, monitored events, sibling
   limitation, and governed cgroup placement.

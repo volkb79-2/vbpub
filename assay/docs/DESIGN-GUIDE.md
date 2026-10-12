@@ -666,9 +666,11 @@ each active controller in that mode, Assay requires the candidate cgroup to
 have no child cgroups, so the local file still covers its execution; an
 inactive controller's mount option alone does not block a candidate. The
 cgroup-profiler observer uses contract 2 to provide both scopes to a private
-cgroup namespace. Assay refuses contract 1 rather than interpreting its
-hierarchical counters as local. The mount mode and event-file availability are
-bound across before/after samples. See the
+cgroup namespace. Assay refuses contract 1 because that response cannot
+distinguish a sibling's subtree event from a shared ancestor's own limit event.
+Contract 2 is the only supported resource-observer contract; the daemon's
+separate control protocol remains contract 1. The mount mode and event-file
+availability are bound across before/after samples. See the
 [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 for the event and localevents semantics. Every visible cgroup2 mount
 exposing the sampled hierarchy must be read-only. Assay also checks the
@@ -680,6 +682,9 @@ capabilities can write those files, and refuses overmounts that shadow a
 sampled path. A hidden ancestor is still a refusal unless the caller explicitly
 supplies the separate observer-only endpoint described in
 [`CONSUMERS.md`](CONSUMERS.md#native-r2-resource-limit-observation-b145).
+The candidate and ancestor-local comparison is the sole event classifier;
+there is no separate gate-wide `memory.events` OOM check around a candidate,
+because that aggregate can include an unrelated sibling's event.
 
 For each started full candidate command, Assay records the selected counters
 immediately before and after it. If the lane stops before a full command starts,

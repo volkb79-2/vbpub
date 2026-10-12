@@ -208,13 +208,12 @@ directory group and `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the
 observed socket GID as a supplementary group. A read-only mount of `ctl.sock`
 is not equivalent and is prohibited for this use.
 
-The observer supports contracts 1 and 2 independently of the daemon's
-contract-1 control protocol. Contract 1 keeps the original response shape for
-existing clients. Assay uses contract 2 because it needs the regular event
-scope and effective local counters. The requests are:
+The observer requires contract 2, independently of the daemon's contract-1
+control protocol. Contract 2 reports regular event scope and effective local
+counters. Contract-1 observer requests receive `bad-argument` with an
+unsupported-contract message. The request is:
 
 ```json
-{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
 {"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
@@ -227,14 +226,13 @@ The daemon uses that PID/UID plus the requested TID to prove the caller's
 thread identity, shared thread cgroup/credentials, and gates-slice membership;
 the request cannot choose a PID, cgroup path, or slice. A successful response
 contains only the complete canonical leaf-to-root cgroup-v2 ancestry, mount
-ID, limit presence/value pairs, and pids/memory event counters. Contract 2
-also reports whether the regular event files are `hierarchical` or `local`
-under the verified mount's `pids_localevents` and `memory_localevents` modes,
-and includes effective local event maps at each path. The observer reads the
+ID, limit presence/value pairs, both event-counter scopes, and effective
+local event maps at every path. It reports whether the regular event files
+are `hierarchical` or `local` under the verified mount's `pids_localevents`
+and `memory_localevents` modes. The observer reads the
 `.local` files when available; if a regular file is already local under the
 mount mode, it can supply equivalent local evidence when the `.local` file is
-unavailable. Neither contract returns a
-process list, PID, or sibling cgroup data. See contract §9 for exact response
+unavailable. The response contains no process list, PID, or sibling cgroup data. See contract §9 for exact response
 shapes and the verified private-cgroup-namespace path mapping.
 
 Assay configures this socket explicitly and consults it only after its local

@@ -285,10 +285,12 @@ Resource-observer contract 2 adds explicit scope metadata and the
 event files. The regular files can be hierarchical or local depending on the
 host mount's `pids_localevents` and `memory_localevents` options; contract 2
 reports those scopes so a consumer cannot silently mistake one for the other.
-Contract 1 remains available with its original response shape. Assay requests
-contract 2 because its candidate counter and ancestor-local counter play
-different roles in mutation classification. See the worked request and
-response in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89).
+Contract 2 is the only supported resource-observer version: accepting the old
+shape would let a client treat hierarchical counters as local evidence.
+Assay requests contract 2 because its candidate counter and ancestor-local
+counter play different roles in mutation classification. The daemon's
+separate control listener continues to use contract 1. See the worked request
+and response in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89).
 
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The

@@ -267,7 +267,8 @@ assay exists to close that gap mechanically, not by policy:
   `max`. For a private cgroup namespace, the observer-only cgprofile socket
   must implement resource-observer contract 2, which reports the regular
   counters' scope and supplies effective local counters. Contract 1 is refused
-  because it cannot distinguish sibling events from events enforced at a shared ancestor. See B155 in the
+  because it cannot distinguish sibling events from events enforced at a shared ancestor;
+  use cgroup-profiler 1.0.0 or later. See B155 in the
   [Assay backlog](nyxloom-trove/4-backlog.md), the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).

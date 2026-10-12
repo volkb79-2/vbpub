@@ -250,8 +250,11 @@ Assay uses its local B145 reader first and contacts the observer only when the
 local view specifically proves that ancestors are hidden. The daemon derives
 the peer's cgroup from `SO_PEERCRED` plus the supplied native TID, limits
 queries to the configured gates slice, and returns only that peer's ancestry
-counters. Contract 1 remains available to other clients, but lacks the local
-counters Assay needs and is refused for this feature. Any incomplete identity
+counters. The observer requires contract 2. A contract-1 request receives an
+explicit unsupported-contract refusal, so deploy cgroup-profiler 1.0.0 or
+later before enabling this lane. The daemon's separate control socket remains
+contract 1.
+Any incomplete identity
 or ambiguous shared-ancestor local event remains `ERROR/EXEC_FAILED`, not a
 candidate kill/survivor. A hierarchical-only change from a sibling does not
 invalidate the candidate. See the
@@ -520,7 +523,7 @@ pre-wave comparison commit below. From the attached candidate worktree,
 pass that commit explicitly to both registered entrypoints:
 
 ```bash
-P1_BASE=e5e9b95c5ac8be3452c93f1066f9436347f862fd
+P1_BASE=eb3af770eb16362cff4c39388193c0180c2d370c
 ./run-gate.py --base "$P1_BASE" --dry-run r2
 ./run-gate.py --base "$P1_BASE" r2
 ./run-gate.py --base "$P1_BASE" gate
@@ -530,7 +533,10 @@ Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded
 `--request-base` argument without starting the judged lane. Before the long
 R2 run, inspect Assay's plan for the exact commit/tree and the intended
 source candidates. The `gate` lane passes the same base to its nested `r2`.
-R2 and the full gate are release checks; their results belong to the exact
-tree they judge. Run-gate can derive a different base when `--base` is
-omitted, so an omitted flag is not the P1 acceptance command. The rationale
-is in the [design guide](DESIGN-GUIDE.md#mutation-comparison-base).
+The composite is the full RG-55 acceptance sequence and its result belongs to
+the exact tree it judges. CMRU's package-release gate is narrower: it runs
+`r0-r1` and `r3`, while the exact-tree R2 is a separate acceptance
+prerequisite for this wave and is not rerun automatically by `cmru release`.
+Run-gate can derive a different base when `--base` is omitted, so an omitted
+flag is not the P1 acceptance command. The rationale is in the
+[design guide](DESIGN-GUIDE.md#mutation-comparison-base).

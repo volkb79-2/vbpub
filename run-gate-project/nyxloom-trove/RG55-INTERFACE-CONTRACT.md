@@ -16,16 +16,22 @@ nullability note for `peak_over_baseline_bytes`, `§7` new subsection).
 two carriers (§8.1), `watch` (§8.2), placement (§8.3), liveness + policy
 (§8.4), `host.gates_slice` (§8.5), `version.transports` (§8.6), Summary
 `liveness`/`placement`/`watch` (§8.7), new error codes (§8.8). Producers
-implement it in cgprofile 1.1.0 (P6); consumers in run-gate 23.9.0 (P5).
-A v1 consumer talking to a v1.1 producer, and vice versa, keeps working:
+implemented it under the then-planned cgprofile 1.1.0 (P6) and run-gate
+23.9.0 (P5). RW-434/RW-476 later combined these already-merged capabilities
+in cgprofile's first 1.0.0 release. A v1 consumer talking to a v1.1 producer,
+and vice versa, keeps working for this separate daemon control protocol:
 every new field is optional and every new option is opt-in.
 **RW-43 (2026-09-12, §4.3a):** bare-host lanes — `method: "rusage"`,
 `scope: null`, `source: "rusage-maxrss"`, manifest/`meta.expected`
 `source` provenance.
-**RW-484–RW-487 (2026-10-07, §9):** additive contract-1 native-R2 resource
-observer on a second, observer-only Unix socket. Run-Gate opts in per Assay
-lane; Assay uses it only when its local cgroup namespace specifically hides
-ancestors. The control socket and its verbs are unchanged.
+**RW-484–RW-487 (2026-10-07, §9):** native-R2 resource observer on a second,
+observer-only Unix socket. Its initial request contract was 1. Run-Gate opts
+in per Assay lane; Assay uses it only when its local cgroup namespace
+specifically hides ancestors. The control socket and its verbs are unchanged.
+**RW-569 (2026-10-12, §9):** resource-observer contract 2 is the sole
+supported observer version; contract-1 observer requests receive an explicit
+unsupported-contract refusal. The separate daemon control protocol remains
+contract 1. The combined first cgroup-profiler release is 1.0.0.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
@@ -73,7 +79,7 @@ CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
 ### 2.1 `cgprofile ctl version --json`
 
 ```json
-{"ok": true, "contract": 1, "cgprofile": "1.1.0",
+{"ok": true, "contract": 1, "cgprofile": "1.0.0",
  "daemon": {"name": "cgprofile-host-daemon", "started_at": "2026-09-12T10:00:00Z",
             "damon": "available", "damon_default": "on",
             "sessions_live": 2, "max_sessions": 16}}
@@ -182,7 +188,7 @@ measurement.
 ```json
 {
  "schema": 1,
- "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.1.0"},
+ "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.0.0"},
  "scope": "container" | "container-shared",
  "method": "daemon",
  "started_at": "…", "ended_at": "…", "duration_seconds": 316.204,
@@ -702,12 +708,12 @@ cgprofile daemon and performs no placement or cgroup write.
 
 ### 9.1 Request and response
 
-One newline-delimited JSON request per connection. Observer contract 1 remains
-available with its original shape; contract 2 adds event-scope metadata and
-local event counters. The control listener remains contract 1.
+One newline-delimited JSON request per connection. The resource observer
+requires contract 2 and returns event-scope metadata and local event counters.
+The separate control listener remains contract 1; observer contract 1 is no
+longer accepted.
 
 ```json
-{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
 {"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
@@ -722,20 +728,6 @@ is not dispatched. The daemon requires `SO_PEERCRED`; the existing daemon UID
 allowlist, when configured, also applies to this listener.
 
 Success has this shape (values abbreviated):
-
-```json
-{"ok":true,"contract":1,"cgroup_version":2,"thread_id":1234,
- "gates_slice":"/dev.slice/dev-gates.slice","cgroups":[
-  {"path":"/dev.slice/dev-gates.slice/rg-abc","mount_id":42,
-   "pids_max_present":true,"pids_max":null,
-   "memory_max_present":true,"memory_max":1073741824,
-   "pids_events":{"max":0},
-   "memory_events":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0}}
- ]}
-```
-
-Contract 1 returns the original shape shown above. Contract 2 success adds the
-mount-level scopes and local event maps:
 
 ```json
 {"ok":true,"contract":2,"cgroup_version":2,"thread_id":1234,
@@ -765,18 +757,17 @@ the local file then cannot prove the whole candidate subtree.
 Each entry carries the canonical hierarchy path, selected mount ID, limit
 presence/value pairs, and event maps (or `null` when the controller exposes
 no such event file). An absent limit is `present:false,value:null`; an
-unlimited limit is `present:true,value:null`. In contract 1, a finite limit
-requires its matching regular event file. In contract 2, a finite limit also
-requires effective local event evidence: the `.local` file or, when the
+unlimited limit is `present:true,value:null`. A finite limit requires its
+matching regular event file and effective local event evidence: the `.local` file or, when the
 regular file is already local under the mount mode, that regular file.
 The response contains no PID/TID list, process listing, caller-selected path,
 or sibling cgroup data. Once a valid request envelope is dispatched, an error
-object echoes the observer contract version requested (or uses contract 1 when
-the version itself is invalid), with `bad-argument`, `peer-refused`,
+object uses observer contract 2, including when a request uses an unsupported
+version or is malformed, with `bad-argument`, `peer-refused`,
 `observer-refused`, or `daemon-error` as applicable. Peer-policy refusals that
 occur before the request is read, and transport/framing errors before a valid
-envelope is available, use contract 1. Existing contract-1 clients remain
-wire-compatible.
+envelope is available, also use observer contract 2. Contract-1 observer
+clients must upgrade; the separate control protocol remains contract 1.
 
 ### 9.2 Peer binding and path derivation
 
