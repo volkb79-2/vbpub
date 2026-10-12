@@ -20,6 +20,7 @@ from assay import cli, mutation
 from assay.adapters.python import PythonAdapter
 from assay.cli import main
 from assay.errors import LaneConfigError, Outcome, ReasonCode
+from assay.verdict import CLAIM_DETAIL_BYTES
 from conftest import GitRepo, PROJECT_ROOT
 
 
@@ -466,6 +467,7 @@ def test_T3_T5_single_killed_candidate_is_completed_and_persisted(git_repo: GitR
     assert code == 6, stderr
     summary = json.loads(stdout)
     assert summary["qualifying"] is False and summary["completed"] is True
+    assert "claim_diagnostics" not in summary
     current_judge = next(
         event["judge_sha256"]
         for event in _events(progress)
@@ -669,7 +671,7 @@ def test_T10_mutation_discovery_refusal_keeps_r2_reason_and_pilot_terminal(
 
 
 def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
-    git_repo: GitRepo, tmp_path: Path
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     lane_file, _lines = _seed_pilot_repo(git_repo)
     candidate = str(_plan(lane_file)[0]["id"])
@@ -690,6 +692,13 @@ def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
     git_repo.commit_all("make the pilot baseline fail with a named test")
     candidates = _candidate_file(tmp_path / "one.txt", [candidate])
     progress = tmp_path / "progress.jsonl"
+    mutation_calls: list[bool] = []
+
+    def record_mutation_attempt(*_args, **_kwargs):
+        mutation_calls.append(True)
+        raise AssertionError("mutation execution started after the R0 failure")
+
+    monkeypatch.setattr(cli.mutation, "run_mutation", record_mutation_attempt)
 
     code, stdout, stderr = _run_pilot(
         lane_file,
@@ -712,6 +721,7 @@ def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
     }
     assert summary["unresolved"] == [candidate]
     assert summary["candidates"] == []
+    assert mutation_calls == []
     assert not [event for event in _events(progress) if event["event"] == "candidate"]
 
 
@@ -749,12 +759,12 @@ def test_B161_incomplete_pilot_reports_exact_diagnostic_truncation(
     summary = json.loads(stdout)
     detail = summary["claim_diagnostics"]["R0"]["detail"]
     dropped = summary["claim_diagnostics"]["R0"]["detail_dropped_bytes"]
-    full_detail = (
-        f"R0 command failed; first failing test: {long_test_name}"
-    )
-    assert detail.startswith("R0 command failed; first failing test: ")
+    full_detail = f"R0 command failed; first failing test: {long_test_name}"
+    full_detail_bytes = full_detail.encode("utf-8")
+    expected_detail = full_detail_bytes[:CLAIM_DETAIL_BYTES]
+    assert detail == expected_detail.decode("utf-8")
     assert dropped > 0
-    assert len(detail.encode("utf-8")) + dropped == len(full_detail.encode("utf-8"))
+    assert dropped == len(full_detail_bytes) - len(expected_detail)
     assert summary["completed"] is False
 
 
