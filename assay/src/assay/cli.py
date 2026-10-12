@@ -3013,6 +3013,12 @@ def _run_reserved(
                 unresolved=summary["unresolved"],
             )
             summary["completed"] = completed
+            if completed:
+                # The summary was assembled before completion could be
+                # derived from its unresolved-candidate list. Preserve the
+                # completed-pilot wire shape: diagnostics are an incomplete
+                # run aid, not part of a completed result.
+                summary.pop("claim_diagnostics", None)
             exit_code = _pilot_exit_code(verdict, completed=completed, err=err)
             if pilot_state_accepted:
                 assert state_store_root_fd is not None

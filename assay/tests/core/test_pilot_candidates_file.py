@@ -725,7 +725,7 @@ def test_B161_incomplete_pilot_keeps_first_failing_test_diagnostic(
     assert not [event for event in _events(progress) if event["event"] == "candidate"]
 
 
-def test_B161_incomplete_pilot_reports_exact_diagnostic_truncation(
+def test_B161_r0_failure_name_is_bounded_before_pilot_summary(
     git_repo: GitRepo, tmp_path: Path
 ):
     lane_file, _lines = _seed_pilot_repo(git_repo)
@@ -759,12 +759,10 @@ def test_B161_incomplete_pilot_reports_exact_diagnostic_truncation(
     summary = json.loads(stdout)
     detail = summary["claim_diagnostics"]["R0"]["detail"]
     dropped = summary["claim_diagnostics"]["R0"]["detail_dropped_bytes"]
-    full_detail = f"R0 command failed; first failing test: {long_test_name}"
-    full_detail_bytes = full_detail.encode("utf-8")
-    expected_detail = full_detail_bytes[:CLAIM_DETAIL_BYTES]
-    assert detail == expected_detail.decode("utf-8")
-    assert dropped > 0
-    assert dropped == len(full_detail_bytes) - len(expected_detail)
+    bounded_name = long_test_name[: cli.failure_summary.MAX_NAME_CHARS]
+    assert detail == f"R0 command failed; first failing test: {bounded_name}"
+    assert len(detail.encode("utf-8")) <= CLAIM_DETAIL_BYTES
+    assert dropped == 0
     assert summary["completed"] is False
 
 
@@ -778,8 +776,8 @@ def test_B161_incomplete_summary_keeps_details_after_r2_result():
         mutation=mutation_result,
         status=Outcome.BUDGET_EXCEEDED,
         reason_code=ReasonCode.LANE_TIMEOUT,
-        detail="R2 campaign timed out after a partial result",
-        detail_dropped_bytes=0,
+        detail="x" * CLAIM_DETAIL_BYTES,
+        detail_dropped_bytes=73,
     )
     verdict = SimpleNamespace(
         claims=(r2_claim,),
@@ -810,10 +808,10 @@ def test_B161_incomplete_summary_keeps_details_after_r2_result():
     )
 
     assert summary["r2"]["status"] == Outcome.BUDGET_EXCEEDED.value
-    assert summary["claim_diagnostics"]["R2"] == {
-        "detail": "R2 campaign timed out after a partial result",
-        "detail_dropped_bytes": 0,
-    }
+    diagnostic = summary["claim_diagnostics"]["R2"]
+    assert diagnostic["detail"] == "x" * CLAIM_DETAIL_BYTES
+    assert len(diagnostic["detail"].encode("utf-8")) == CLAIM_DETAIL_BYTES
+    assert diagnostic["detail_dropped_bytes"] == 73
 
 
 def test_T10d_nonpilot_records_cannot_seed_a_pilot_state_dir(git_repo: GitRepo, tmp_path: Path):
