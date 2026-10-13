@@ -31,6 +31,13 @@ import analysis_r2_pilot_select as selector  # noqa: E402
 import analysis_r2_pilot_check as checker  # noqa: E402
 from assay.resource_limits import CounterDelta, ResourceLimitEvidence  # noqa: E402
 
+_analysis_src = str(PROJECT_ROOT / "analysis" / "src")
+if _analysis_src not in sys.path:
+    sys.path.insert(0, _analysis_src)
+from assay_analysis import campaign as campaign_api  # noqa: E402
+if sys.path[0] == _analysis_src:
+    sys.path.pop(0)
+
 if sys.path[0] == _tool_path:
     sys.path.pop(0)
 
@@ -413,6 +420,34 @@ def _valid_pilot(tmp_path: Path, *, size: int = 1) -> dict:
         "repo_root": root,
         "r2_manifest_path": r2_manifest_path,
     }
+
+
+def test_real_analysis_selector_report_is_accepted_by_campaign_summary_reader(
+    tmp_path: Path,
+):
+    root, commit, tree = _repository(tmp_path)
+    rows = _planned_rows(root, commit)
+    plan = _plan(root, commit, tree, rows)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan, sort_keys=True) + "\n", encoding="utf-8")
+    _candidates, selection_raw = _write_selection(root, tmp_path, plan, size=1)
+    selection_path = tmp_path / "selection.json"
+    selection_path.write_bytes(selection_raw)
+    selection = json.loads(selection_raw)
+
+    selected_ids, selection_sha256, _plan_artifact, _selection_artifact = (
+        campaign_api._read_pilot_selection(
+            plan_path=plan_path,
+            selection_path=selection_path,
+            lane_name=selector.LANE,
+            expected_commit=commit,
+            expected_tree=tree,
+            plan_rows=rows,
+        )
+    )
+
+    assert selected_ids == set(selection["selected_ids"])
+    assert selection_sha256 == selection["selection_sha256"]
 
 
 def test_analysis_selector_covers_each_file_operator_stratum_and_rare_operator(tmp_path: Path):

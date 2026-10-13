@@ -103,6 +103,10 @@ Rev 20 (run-gate rev 58): RG-89 also permits that explicit read-only observer
 mount on `tester-unified` command lanes, so nested qualification drivers can
 receive the endpoint without hand-rolling mounts. The lane declaration is
 the opt-in; Run-Gate does not infer command semantics from argv.
+Rev 21 (run-gate rev 66): RG-89 permits the observer on any Assay or command
+lane whose resolved environment is ephemeral. Before launching such a lane,
+Run-Gate requires cgprofile's version response to advertise observer contract
+2 at the configured socket path with `listening = true`.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -310,7 +314,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   profiling for this lane outright, or a table `{enabled, damon}`
   overriding `[profile]`'s own defaults — `R-43h`),
   `resource_observer` (RG-89: only `"cgprofile"`, only on an Assay or command
-  lane explicitly using `environment = "tester-unified"`; command wrappers
+  lane whose resolved environment has `mode = "ephemeral"`; command wrappers
   that launch Assay preserve the endpoint variable for that process; it mounts a separate
   observer-only Unix socket read-only, grants its observed GID, and fails
   closed if that host socket or its ownership/mode is not safe), `description` (optional
@@ -2438,11 +2442,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 - `R-46` **Private-namespace Assay R2 resource observer (RG-89).**
   `resource_observer = "cgprofile"` is an optional, closed lane key. It is
-  legal only when `kind = "assay"` or `kind = "command"` and the lane
-  explicitly names `environment = "tester-unified"`. The lane declaration
+  legal only when `kind = "assay"` or `kind = "command"` and the lane's
+  resolved environment has `mode = "ephemeral"`. The lane declaration
   is the opt-in; command wrappers that launch Assay R2 must preserve the
   inherited endpoint variable for that process. The endpoint remains a
-  read-only query bound to the command's own peer. Before building Docker argv, Run-Gate
+  read-only query bound to the command's own peer. Before launching the lane,
+  Run-Gate queries the daemon's control version response and requires observer
+  contract 2, the fixed socket path, and `listening = true`. Before building Docker argv, Run-Gate
   lstat-checks the fixed source
   `/run/cgprofile/resource-observer.sock`: it must be a Unix socket, root
   owned, in the root-owned socket directory with matching GID, group

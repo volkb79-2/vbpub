@@ -724,6 +724,10 @@ when the tests and copied fixture closure exactly match the recorded run. Any te
 change requires a new campaign. Passing full-suite runs still execute every test. Every Assay
 invocation resumes and writes `.assay/progress-cmru.jsonl`; its verdict is
 `.assay/verdict-cmru.json`.
+Each mutant command is isolated in its own process group. On timeout, the
+entire group is killed before resource counters are sampled or another mutant
+starts; a timeout and any observed cgroup resource event are inconclusive, not
+successful kills.
 The disposable controls include the Topos and nyxloom CMRU manifests consumed
 by CMRU's estate-adoption test, so the full suite remains runnable in each
 baseline and mutant copy.

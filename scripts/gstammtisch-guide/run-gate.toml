@@ -43,6 +43,7 @@ budget = "5m"
 # [lanes.r2].
 [lanes.r2]
 kind = "command"
+resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
     "bash", "-c",

@@ -8,6 +8,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- fix(run-gate): preflight cgprofile's advertised observer contract, socket path, and listener state before launching an observer-backed lane; support any configured ephemeral environment (RG-89, rev 66)
+
 ### Added
 - feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
 - feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence (RG-55/P5, rev 62)

@@ -99,6 +99,27 @@ def _job(path: str = "cmru/src/cmru/thing.py", line: int = 7):
     )
 
 
+def _zero_resource_evidence():
+    counter = {"before": 0, "after": 0, "delta": 0}
+    return {
+        "cgroup_version": 2,
+        "pids_events": {"max": dict(counter)},
+        "memory_events": {
+            "max": dict(counter),
+            "oom": dict(counter),
+            "oom_kill": dict(counter),
+            "oom_group_kill": dict(counter),
+        },
+    }
+
+
+def _limited_resource_evidence():
+    evidence = _zero_resource_evidence()
+    evidence["memory_events"]["oom_kill"]["after"] = 1
+    evidence["memory_events"]["oom_kill"]["delta"] = 1
+    return evidence
+
+
 def test_mutation_subprocess_has_a_hard_timeout(tmp_path):
     with pytest.raises(subprocess.TimeoutExpired):
         mutation_campaign._run(
@@ -108,13 +129,78 @@ def test_mutation_subprocess_has_a_hard_timeout(tmp_path):
         )
 
 
-def test_timeout_is_recorded_as_a_killed_candidate():
+def test_mutation_timeout_kills_grandchildren_before_returning(tmp_path):
+    script = (
+        "import subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        "print(child.pid, flush=True); time.sleep(30)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        mutation_campaign._run(
+            [sys.executable, "-c", script], cwd=tmp_path, timeout_seconds=0.2,
+        )
+
+    child_pid = int(caught.value.output.strip().splitlines()[-1])
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            stat_text = Path(f"/proc/{child_pid}/stat").read_text(encoding="ascii")
+        except FileNotFoundError:
+            return
+        # Container init may take a short interval to reap the killed orphan.
+        # A zombie is no longer running test code and cannot leak into the next
+        # candidate's observation window.
+        state = stat_text.rsplit(") ", 1)[1].split()[0]
+        if state == "Z":
+            return
+        time.sleep(0.02)
+    pytest.fail(f"timed-out mutation left child process {child_pid} running")
+
+
+def test_timeout_is_inconclusive_and_cannot_count_as_a_kill():
     result = mutation_campaign._candidate_result(
         _job(), returncode=None, elapsed_seconds=120, timed_out=True,
     )
-    assert result.outcome == "killed"
+    assert result.outcome == "crashed"
     assert result.termination == "timeout"
     assert result.exit_code == 124
+
+
+def test_legacy_resume_evidence_is_refused_after_resource_guard_schema_change(tmp_path):
+    evidence = tmp_path / "mutation.json"
+    evidence.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match=f"predates resource-limit-aware results.*{evidence}",
+    ):
+        mutation_campaign._resume_results(
+            evidence_path=evidence,
+            repo_root=tmp_path,
+            resume=True,
+            base="base",
+            head="head",
+            project_prefix=Path("cmru"),
+            assay_source_commit="assay",
+            assay_git=assay_git,
+            test_argv=["pytest", "tests"],
+            jobs=[],
+            max_mutants=1,
+            timeout_seconds=120,
+        )
+
+
+def test_resource_limit_event_overrides_a_test_failure_kill():
+    evidence = SimpleNamespace(
+        limit_hit=True,
+        to_dict=lambda: _limited_resource_evidence(),
+    )
+    result = mutation_campaign._candidate_result(
+        _job(), returncode=1, elapsed_seconds=2, timed_out=False,
+        resource_limit_evidence=evidence,
+    )
+    assert result.outcome == "crashed"
+    assert result.termination == "resource-limit"
+    assert result.resource_limit_evidence == _limited_resource_evidence()
 
 
 def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
@@ -137,7 +223,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
     ).stdout.strip()
     jobs = [_job(line=7), _job(line=8), _job(line=9)]
     previous = {
-        "schema_version": 1,
+        "schema_version": 2,
         "base": head,
         "head": head,
         "project_prefix": "cmru",
@@ -155,6 +241,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
                 "description": jobs[0].site.description,
                 "exit_code": 1,
                 "outcome": "killed",
+                "resource_limit_evidence": _zero_resource_evidence(),
             },
             {
                 "path": jobs[1].path,
@@ -169,7 +256,7 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
                 "operator": jobs[2].site.operator,
                 "description": jobs[2].site.description,
                 "exit_code": 124,
-                "outcome": "killed",
+                "outcome": "crashed",
                 "termination": "timeout",
             },
         ],
@@ -256,6 +343,7 @@ def test_resume_refuses_changed_source(tmp_path):
     evidence = project / ".assay" / "mutation-cmru.json"
     evidence.parent.mkdir()
     evidence.write_text(json.dumps({
+        "schema_version": 2,
         "base": previous_head,
         "head": previous_head,
         "project_prefix": "cmru",
@@ -270,6 +358,7 @@ def test_resume_refuses_changed_source(tmp_path):
             "operator": job.site.operator,
             "description": job.site.description,
             "outcome": "killed",
+            "resource_limit_evidence": _zero_resource_evidence(),
         }],
     }), encoding="utf-8")
 
@@ -313,6 +402,7 @@ def test_resume_refuses_changed_shared_library_in_the_executed_fixture(tmp_path)
     ).stdout.strip()
     job = _job()
     previous = {
+        "schema_version": 2,
         "base": base,
         "head": base,
         "project_prefix": "cmru",
@@ -330,6 +420,7 @@ def test_resume_refuses_changed_shared_library_in_the_executed_fixture(tmp_path)
             "description": job.site.description,
             "exit_code": 1,
             "outcome": "killed",
+            "resource_limit_evidence": _zero_resource_evidence(),
         }],
     }
     evidence = project / ".assay" / "mutation-cmru.json"
@@ -387,6 +478,7 @@ def test_resume_refuses_added_or_changed_test_files(tmp_path):
     ).stdout.strip()
     job = _job()
     previous = {
+        "schema_version": 2,
         "base": previous_head,
         "head": previous_head,
         "project_prefix": "cmru",
@@ -404,6 +496,7 @@ def test_resume_refuses_added_or_changed_test_files(tmp_path):
             "description": job.site.description,
             "exit_code": 1,
             "outcome": "killed",
+            "resource_limit_evidence": _zero_resource_evidence(),
         }],
     }
     evidence = project / ".assay" / "mutation-cmru.json"
@@ -490,6 +583,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
     ).stdout.strip()
     job = _job()
     previous = {
+        "schema_version": 2,
         "base": previous_head,
         "head": previous_head,
         "project_prefix": "cmru",
@@ -507,6 +601,7 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
             "description": job.site.description,
             "exit_code": 1,
             "outcome": "killed",
+            "resource_limit_evidence": _zero_resource_evidence(),
         }],
     }
     evidence = project / ".assay" / "mutation-cmru.json"

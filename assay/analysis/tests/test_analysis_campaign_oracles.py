@@ -316,7 +316,7 @@ def test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error(tmp_p
     code, _err, document = _analyze(root, head, progress)
     assert code == 2
     assert document["errors"] == [
-        {"source": "progress", "message": "pilot selection unsupported before P7"}
+        {"source": "progress", "message": "pilot progress requires --plan-json and --selection-file"}
     ]
 
 

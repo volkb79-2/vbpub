@@ -726,6 +726,11 @@ comparison commit: if Assay resolves a merge's first parent after the tag, the
 configured CMRU source roots must be unchanged across the gap. A missing tag or
 mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
 origin facts immediately before mutation.
+Each mutation test command runs in its own process group. If a candidate
+times out, CMRU kills the whole group before sampling resource counters or
+starting another candidate, so pytest grandchildren cannot continue into the
+next candidate's evidence window. A timeout or any cgroup resource event is an
+inconclusive infrastructure outcome, never a killed mutant.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
 Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;

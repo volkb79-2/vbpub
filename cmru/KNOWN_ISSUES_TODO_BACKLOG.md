@@ -1733,13 +1733,13 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** `cli-extended surface check` and `cli-extended audit --cli cmru` both exit 0 with no tolerance in the test.
 
-### KI-62 — R2 mutation campaign for 6.0.0 postponed by operator decision 2026-10-06; run it against the `cmru-v6.0.0` tag and backport fixes (LANDPREP) — *open, severity: major (release evidence gap)*
+### KI-62 — R2 mutation campaign for 6.0.0 postponed by operator decision 2026-10-06; restore full R2 to the next release gate — *in progress, severity: major (release evidence gap)*
 
 **Observed:** the operator decided to merge and release cmru 6.0.0 with the R2 mutation campaign postponed. The release step (`cmru.toml` `[steps.run-tests]`) therefore runs `./run-gate.py gate-provisional`, which is `tools/run_release_gate.py --postpone-mutation KI-62`: every lane except `mutation` runs as in `gate`, and `.assay/mutation-postponed-cmru.json` (tracking id, timestamp, reason) is retained with the gate evidence next to one WARN line. The 6.0.0 release therefore has NO mutation evidence.
 
-**Fix direction:** after the release, run `./run-gate.py gate` (full, including R2) against the `cmru-v6.0.0` tag, triage survivors, and backport fixes. Then revert `cmru.toml` `[steps.run-tests]` to `./run-gate.py gate`, delete the `gate-provisional` lane in `run-gate.toml`, and grep for `TODO(cmru-6.0 post-release)`.
+**Current plan:** CMRU 6.2.0 restores `./run-gate.py gate` as its release step and removes the provisional lane. The full R2 gate will qualify the current release source; it does not retroactively add mutation evidence to 6.0.0. CMRU 6.1.0 has superseded 6.0.0, so a separate campaign on the old tag is no longer the release gate.
 
-**Oracle:** a full `gate` verdict (with `.assay/mutation-cmru.json`) exists for the `cmru-v6.0.0` tag, every survivor is fixed or recorded, and no `TODO(cmru-6.0 post-release)` marker remains that this item owns.
+**Oracle:** CMRU's release step names `gate`; the exact 6.2.0 release source passes the full gate with `.assay/mutation-cmru.json`; every survivor is fixed or otherwise dispositioned; and no `gate-provisional` lane remains.
 
 ### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *fixed in the `cmru-hotfix-walk` branch, severity: major (release blocker)*
 
@@ -1802,3 +1802,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** extend `_run_project_steps` to carry protected release context from `_run_tagged_build_and_publish`; reserve the two names; document the behavior in README, DESIGN-GUIDE, CONSUMERS, and SPEC. The cgroup-profiler consumer is the first adopter and uses an exact temporary full-repository worktree for its Docker build context.
 
 **Oracles:** CMRU release-flow tests assert the same commit/tag reach both build and push and cannot be declared in project env; ordinary and cleanup steps clear inherited values after helpers; cgroup-profiler tests reject absent, partial, moved-tag, changed-HEAD, and dirty identities, and assert its build context is the exact temporary worktree; public docs state the pair is not authentication; both registered gates pass.
+
+### KI-70 — Custom mutation campaign counts timeouts and resource-limited test failures as killed — *fixed in source, pending registered gate*
+
+**Observed:** `tools/mutation_campaign.py` classified a test timeout as `killed`, and treated every exit code 1 as a kill without observing the tester cgroup. A timeout, OOM, or process-limit event can therefore be reported as a successful mutation kill. Schema-1 resume records can also reuse these unsupported claims.
+
+**Fixed in source:** the campaign now requires Assay's contract-2 resource counters, captures exact event deltas around each mutant, and treats any cgroup event or timeout as inconclusive. Cgroup events stop the campaign as infrastructure errors. Timed-out test commands run in a dedicated process group, which is killed before the next candidate is sampled so orphaned grandchildren cannot spill into another result. Resume evidence uses schema 2 and refuses schema-1 results; the refusal names the evidence path so operators can archive or remove the stale file and start a new campaign. Only an exit-1 result with valid zero-event evidence can be reused as killed. The registered mutation lane opts into cgprofile's observer-only socket.
+
+**Oracle:** focused campaign tests prove timeouts are not kills and terminate their full process group before returning, resource events override exit-1 kill claims, legacy resume evidence is refused with the evidence path, and only zero-event exit-1 results are reusable; the exact candidate's registered `mutation` lane passes with a schema-2 evidence file.

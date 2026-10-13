@@ -33,10 +33,12 @@ from assay.verdict import MUTATION_BUCKETS
 
 from assay_analysis import evidence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_PROGRESS_BYTES = 64 * 1024 * 1024
 MAX_VERDICT_BYTES = 16 * 1024 * 1024
 MAX_LANE_FILE_BYTES = 4 * 1024 * 1024
+MAX_SELECTION_FILE_BYTES = 4 * 1024 * 1024
+MAX_PLAN_FILE_BYTES = 32 * 1024 * 1024
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_PROGRESS_RUNS = 10_000
 MAX_DETAIL_LIMIT = 500
@@ -531,6 +533,8 @@ def _run_summary(
     plan_total: int | None,
     verdict_by_id: dict[str, dict],
     compare_verdict: bool,
+    explicit_selection: set[str] | None = None,
+    expected_selection_sha256: str | None = None,
 ) -> dict:
     events = run["events"]
     candidates: dict[str, dict] = {}
@@ -549,8 +553,20 @@ def _run_summary(
         if kind == "candidates":
             if candidates_event is not None:
                 raise ValueError("progress run repeats its candidates milestone")
-            if "selection_sha256" in event:
-                raise ValueError("pilot selection unsupported before P7")
+            observed_selection_sha256 = event.get("selection_sha256")
+            if observed_selection_sha256 is not None:
+                if explicit_selection is None or expected_selection_sha256 is None:
+                    raise ValueError(
+                        "pilot progress requires --plan-json and --selection-file"
+                    )
+                if observed_selection_sha256 != expected_selection_sha256:
+                    raise ValueError(
+                        "progress selection_sha256 differs from the bound selection file"
+                    )
+            elif explicit_selection is not None:
+                raise ValueError(
+                    "selection file was supplied but progress has no pilot selection digest"
+                )
             judge = event.get("judge_sha256")
             if judge is not None and (not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge)):
                 raise ValueError("progress judge_sha256 must be a SHA-256 digest")
@@ -648,9 +664,11 @@ def _run_summary(
     candidate_total = None if candidates_event is None else candidates_event.get("candidate_total")
     plan_ids = list(plan_by_id)
     if shard_event is None:
-        selected_ids = set(plan_ids)
+        selected_ids = set(plan_ids) if explicit_selection is None else set(explicit_selection)
         shard = None
     else:
+        if explicit_selection is not None:
+            raise ValueError("pilot selection cannot be combined with a shard")
         index = shard_event.get("shard_index")
         count = shard_event.get("shard_count")
         shard_selected = shard_event.get("selected_total")
@@ -780,6 +798,9 @@ def _run_summary(
         "rejected_total": rejected_total,
         "rejudged_total": rejudged_total,
         "shard": shard,
+        "selection_sha256": (
+            None if candidates_event is None else candidates_event.get("selection_sha256")
+        ),
         "selected_ids": sorted(selected_ids) if candidates_event is not None else [],
         "fresh_candidate_events": len(candidates),
         "sweep_end_buckets": sweep_end.get("buckets") if sweep_end is not None else None,
@@ -824,6 +845,101 @@ def _check_plan_identity(plan_by_id: dict[str, dict]) -> None:
     ]
     if failures:
         raise EvidenceErrors(failures)
+
+
+def _read_pilot_selection(
+    *,
+    plan_path: Path,
+    selection_path: Path,
+    lane_name: str,
+    expected_commit: str,
+    expected_tree: str,
+    plan_rows: list[dict],
+) -> tuple[set[str], str, dict, dict]:
+    """Bind a non-qualifying pilot selection to the exact current plan bytes."""
+    plan_raw, plan_artifact = _read_artifact(
+        plan_path, limit=MAX_PLAN_FILE_BYTES, label="source plan"
+    )
+    try:
+        plan_document = evidence._json(plan_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"source plan is not unique-key UTF-8 JSON: {exc}") from exc
+    if not isinstance(plan_document, dict):
+        raise ValueError("source plan is not an object")
+    if (
+        plan_document.get("status") != "ok"
+        or plan_document.get("lane") != lane_name
+        or plan_document.get("commit") != expected_commit
+        or plan_document.get("tree") != expected_tree
+        or plan_document.get("shard") is not None
+        or type(plan_document.get("candidate_count")) is not int
+        or plan_document["candidate_count"] != len(plan_rows)
+        or plan_document.get("candidates") != plan_rows
+    ):
+        raise ValueError(
+            "source plan is not the current complete unsharded inventory for this lane"
+        )
+
+    selection_raw, selection_artifact = _read_artifact(
+        selection_path, limit=MAX_SELECTION_FILE_BYTES, label="selection"
+    )
+    try:
+        selection = evidence._json(selection_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"selection is not unique-key UTF-8 JSON: {exc}") from exc
+    if not isinstance(selection, dict):
+        raise ValueError("selection is not an object")
+    schema = selection.get("schema")
+    expected_keys = {
+        "b110-pilot-selection/1": {
+            "schema", "plan_commit", "plan_tree", "plan_sha256", "selected_ids",
+            "candidates_file_sha256", "seed", "size", "plan_candidate_count",
+            "files", "operators", "stratified", "known_hard", "overlap",
+            "import_time_total", "selection_sha256",
+        },
+        "assay-analysis-r2-pilot-selection/1": {
+            "schema", "lane", "plan_commit", "plan_tree", "plan_sha256",
+            "plan_candidate_count", "targets", "files", "operators", "seed",
+            "size", "selected_ids", "selected", "selected_by_file",
+            "selected_by_operator", "candidate_file_sha256", "selection_sha256",
+            "rare_operator_census",
+        },
+    }.get(schema)
+    if expected_keys is None or set(selection) != expected_keys:
+        raise ValueError("selection has an unsupported schema or unexpected fields")
+    if "lane" in selection and selection["lane"] != lane_name:
+        raise ValueError("selection names a different lane")
+    if (
+        selection.get("plan_commit") != expected_commit
+        or selection.get("plan_tree") != expected_tree
+        or type(selection.get("plan_candidate_count")) is not int
+        or selection["plan_candidate_count"] != len(plan_rows)
+    ):
+        raise ValueError("selection commit, tree, or candidate count differs from the current plan")
+    plan_sha256 = selection.get("plan_sha256")
+    if not isinstance(plan_sha256, str) or not _SHA256_RE.fullmatch(plan_sha256):
+        raise ValueError("selection plan_sha256 is not a SHA-256 digest")
+    if plan_sha256 != hashlib.sha256(plan_raw).hexdigest():
+        raise ValueError("selection does not bind the exact source plan bytes")
+    selected_ids = selection.get("selected_ids")
+    if (
+        not isinstance(selected_ids, list)
+        or not selected_ids
+        or any(not isinstance(item, str) or not _SHA256_RE.fullmatch(item) for item in selected_ids)
+        or len(selected_ids) != len(set(selected_ids))
+    ):
+        raise ValueError("selection selected_ids must be a non-empty unique list of candidate ids")
+    selected_set = set(selected_ids)
+    plan_ids = [row["id"] for row in plan_rows]
+    if not selected_set <= set(plan_ids):
+        raise ValueError("selection contains a candidate outside the current plan")
+    if selected_ids != [candidate_id for candidate_id in plan_ids if candidate_id in selected_set]:
+        raise ValueError("selection candidate order differs from the current plan")
+    selection_sha256 = selection.get("selection_sha256")
+    expected_sha256 = mutation.plan_sha256(selected_ids)
+    if selection_sha256 != expected_sha256:
+        raise ValueError("selection selection_sha256 does not match selected_ids")
+    return selected_set, expected_sha256, plan_artifact, selection_artifact
 
 
 _STATE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
@@ -1483,6 +1599,8 @@ def campaign(
     command_exit: int | None,
     state_dir: Path | None = None,
     request_base: str | None = None,
+    plan_json_path: Path | None = None,
+    selection_file_path: Path | None = None,
     project_jobs: int | None = None,
     log_path: Path | None = None,
     coverage_path: Path | None = None,
@@ -1500,6 +1618,11 @@ def campaign(
         raise ValueError("command exit must be a non-negative integer")
     if command_exit is not None and verdict_path is None:
         raise ValueError("--command-exit requires --verdict")
+    if (plan_json_path is None) != (selection_file_path is None):
+        raise ValueError("--plan-json and --selection-file must be supplied together")
+    pilot_requested = selection_file_path is not None
+    if pilot_requested and verdict_path is not None:
+        raise ValueError("pilot selection analysis cannot be combined with --verdict")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("detail offset must be a non-negative integer")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_DETAIL_LIMIT:
@@ -1547,6 +1670,29 @@ def campaign(
     plan_ids = list(plan_by_id)
     plan_id_set = set(plan_ids)
     plan_total = len(plan_ids) if plan.get("status") == "ok" else None
+    pilot_selection_sha256 = None
+    pilot_plan_artifact = None
+    pilot_selection_artifact = None
+    explicit_selection = None
+    if pilot_requested:
+        stage.name = "plan"
+        (
+            explicit_selection,
+            pilot_selection_sha256,
+            pilot_plan_artifact,
+            pilot_selection_artifact,
+        ) = _read_pilot_selection(
+            plan_path=plan_json_path,
+            selection_path=selection_file_path,
+            lane_name=lane_name,
+            expected_commit=head,
+            expected_tree=tree,
+            plan_rows=plan_rows,
+        )
+        if project_jobs is not None and native_r2 and project_jobs != lane.judge.mutation.jobs:
+            raise ValueError(
+                "native R2 pilot projection jobs must equal the lane's declared mutation jobs"
+            )
 
     stage.name = "verdict"
     buckets_in_verdict, verdict_by_id = {}, {}
@@ -1573,6 +1719,8 @@ def campaign(
             plan_total=plan_total,
             verdict_by_id=verdict_by_id,
             compare_verdict=verdict is not None and index == len(progress_runs) - 1,
+            explicit_selection=explicit_selection,
+            expected_selection_sha256=pilot_selection_sha256,
         )
         for index, run in enumerate(progress_runs)
     ]
@@ -1617,6 +1765,9 @@ def campaign(
         "verdict": None if verdict_result is None else verdict_result["artifact"],
         "progress": progress_artifact,
     }
+    if pilot_plan_artifact is not None:
+        artifacts["plan_json"] = pilot_plan_artifact
+        artifacts["selection_file"] = pilot_selection_artifact
     stage.name = "lane"
     _lane_bytes, artifacts["lane_file"] = _read_artifact(
         lane_file.path, limit=MAX_LANE_FILE_BYTES, label="lane file"
@@ -1774,7 +1925,7 @@ def campaign(
         "schema_version": SCHEMA_VERSION,
         "analysis": "mutation_campaign",
         "status": status,
-        "qualifying": True,
+        "qualifying": not pilot_requested,
         "complete_blockers": sorted(blockers),
         "expected_commit": expected_commit,
         "tree": tree,
@@ -1801,6 +1952,7 @@ def campaign(
             "per_run_resumed_total": [run["resumed_total"] for run in run_summaries],
             "per_run_rejudged_total": [run["rejudged_total"] for run in run_summaries],
             "execution_mode_counts": dict(sorted(execution_mode_counts.items())),
+            "selection_sha256": pilot_selection_sha256,
             "outcomes": outcome_counts if have_outcomes else None,
         },
         "runs": run_summaries,
@@ -1842,6 +1994,8 @@ def build_campaign_parser(commands: argparse._SubParsersAction) -> None:
     parser.add_argument("--verdict", type=Path, help="verified verdict (optional; without it the result is never complete)")
     parser.add_argument("--state-dir", type=Path, help="mutation state directory to reconcile (read-only)")
     parser.add_argument("--request-base", help="request base to reconstruct the plan without --verdict")
+    parser.add_argument("--plan-json", type=Path, help="exact assay plan JSON used by a bounded pilot selector")
+    parser.add_argument("--selection-file", type=Path, help="B110 or analysis-R2 pilot selection report")
     parser.add_argument("--progress", type=Path, required=True)
     parser.add_argument("--command-exit", type=int)
     parser.add_argument("--project", action="store_true", help="add the diagnostic stratified projection")
@@ -1883,6 +2037,10 @@ def _evidence_error_document(args: argparse.Namespace, exc: BaseException) -> di
 def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
     if args.project != (args.project_jobs is not None):
         args._campaign_parser.error("--project and --project-jobs must be given together")
+    if (args.plan_json is None) != (args.selection_file is None):
+        args._campaign_parser.error("--plan-json and --selection-file must be given together")
+    if args.selection_file is not None and args.verdict is not None:
+        args._campaign_parser.error("pilot selection analysis cannot be combined with --verdict")
     try:
         result = campaign(
             worktree=args.worktree,
@@ -1892,6 +2050,8 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
             verdict_path=args.verdict,
             state_dir=args.state_dir,
             request_base=args.request_base,
+            plan_json_path=args.plan_json,
+            selection_file_path=args.selection_file,
             project_jobs=args.project_jobs,
             progress_path=args.progress,
             command_exit=args.command_exit,

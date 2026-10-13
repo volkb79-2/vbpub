@@ -334,9 +334,18 @@ The version response has the current wire shape:
     "damon_default": "on",
     "sessions_live": 0,
     "max_sessions": 16
+  },
+  "resource_observer": {
+    "contract": 2,
+    "path": "/run/cgprofile/resource-observer.sock",
+    "listening": true
   }
 }
 ```
+
+Check `resource_observer.contract` and `listening` before running an opted-in
+native R2 gate. The field describes the separate observer endpoint; it does
+not change the control protocol's `contract: 1`.
 
 The version response's `daemon.damon: "available"` only means the library
 and admin sysfs interface are visible; it does not prove that the kernel will

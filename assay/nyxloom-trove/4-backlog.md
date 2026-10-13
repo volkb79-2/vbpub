@@ -11051,6 +11051,11 @@ interpretation step.
       and run-gate workflows. `run-gate-project/SPEC.md` documents the
       automatic post-lane integration and its opt-in boundary for wrapped
       Assay commands.
+- [ ] Schema-v2 pilot summaries bind the exact unsharded plan, B110/B131
+      selection report and progress selection digest; they stay
+      `incomplete`/`qualifying: false` even when the selected sample completes.
+      README, DESIGN-GUIDE and CONSUMERS document the boundary and the
+      pasteable workflows.
 
 ## B109 — B106 follow-up: opt-in dependency-aware carry-forward of prior kills across irrelevant changes
 
@@ -11403,12 +11408,12 @@ The acceptance items above are now owned as follows:
 
 **B110 acceptance (remaining after the split; revised for the current v15 wave):**
 - [ ] B111, B113, B114, B115, B117, B118, B108 phase 1 and the P7b gate modes are merged, independently reviewed, and gated. B112 is complete only if its current-tree timing redecision adopts a tier; B116 is included only if measurement shows the snapshot optimization is needed. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
-- [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, within 90 minutes, stopped by 2 hours at the latest.
+- [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, with one serial native-R2 worker under B156, within 90 minutes, stopped by 2 hours at the latest. It is a measurement only unless a fresh one-worker plan records Pilot GO.
   - `reports/assay-B110-PILOT-REPORT.md` records:
     - the cold-kill rate with its interval;
     - the snapshot, collection and prefix distributions;
     - survivor durations;
-    - per-worker peak RSS and aggregate cgroup `memory.peak`;
+    - per-candidate peak RSS and aggregate cgroup `memory.peak`;
     - memory-full stall;
     - a stratified p50/p90 projection with fixed overhead;
     - shard skew;
@@ -11416,7 +11421,7 @@ The acceptance items above are now owned as follows:
   - Consolidation cost is measured in B119, not in the pilot.
 - [ ] **Pilot GO (plan §8.1)** is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
 - [ ] **Qualifying GO (plan §8.2)** is recorded after the screens and the ledger audit at X*.
-- [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane's `jobs` is set from the pilot.
+- [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane remains at `jobs = 1` per B156; a pilot does not tune candidate concurrency.
 
 ## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
 
@@ -11864,7 +11869,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. The B110 selector is B105-specific, and P8 currently refuses selected-pilot progress, so B131 owns its analysis selector and checker. Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker tests and syncs README, DESIGN-GUIDE, CONSUMERS, CHANGES and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. Both pilots remain pending; no full R2 qualification is claimed. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. These are capacity refusals; neither pilot produced a measurement, and no full R2 qualification is claimed.
+**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. B131 owns its analysis selector and checker; the P8 extension in this wave lets its selection report and progress be summarized without qualifying the selected sample (A-490). Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker and selected-summary tests and syncs README, DESIGN-GUIDE, CONSUMERS and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. Both pilots remain pending; no full R2 qualification is claimed. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. These are capacity refusals; neither pilot produced a measurement, and no full R2 qualification is claimed.
 
 **Controller update (2026-10-12):** B131's selector and evidence checker are integrated on `main`; its bounded analysis-package pilot is still pending and is included in the current release wave. It remains a non-qualifying measurement. The historical capacity refusals are not pilot results, and no full analysis R2 qualification is claimed.
 

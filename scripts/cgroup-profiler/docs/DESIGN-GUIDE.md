@@ -291,6 +291,10 @@ Assay requests contract 2 because its candidate counter and ancestor-local
 counter play different roles in mutation classification. The daemon's
 separate control listener continues to use contract 1. See the worked request
 and response in [`PROTOCOL.md`](PROTOCOL.md#8-native-r2-resource-observer-rg-89).
+The control `version` response advertises the observer contract, socket path,
+and whether that listener bound successfully. This makes a required contract
+upgrade visible before a long mutation lane starts; the control contract number
+itself remains 1.
 
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The

@@ -247,10 +247,10 @@ any placement result follows the disclosed R-36h fallback instead.
 Native Assay R2 must inspect the candidate cgroup and every enforcing
 ancestor; a private cgroup namespace hides that ancestry, and Assay refuses
 instead of guessing. When the existing cgprofile daemon is available, an
-Assay or command lane in `tester-unified` may explicitly opt in with
-`resource_observer = "cgprofile"` as shown above. This value is closed and
-legal only for `kind = "assay"` or `kind = "command"` with the explicit
-`tester-unified` environment. It exposes a read-only query about that lane's
+Assay or command lane whose resolved environment has `mode = "ephemeral"` may
+explicitly opt in with `resource_observer = "cgprofile"` as shown above. This
+value is closed and legal only for `kind = "assay"` or `kind = "command"` in
+an ephemeral environment. It exposes a read-only query about that lane's
 own cgroup ancestry; it is intended for native Assay R2 or a command wrapper
 that launches it. Such a wrapper must preserve the inherited
 `ASSAY_RESOURCE_OBSERVER_SOCKET` variable for the Assay process. Opting in
@@ -268,7 +268,9 @@ resource_observer = "cgprofile"
 clean_tree = true
 ```
 
-Run-Gate checks the fixed
+Before starting the lane, Run-Gate queries cgprofile's control `version`
+response and requires observer contract 2, the fixed observer socket path,
+and `listening = true`. It then checks the fixed
 `/run/cgprofile/resource-observer.sock` source and mounts only that socket
 read-only at `/tmp/cgprofile-resource-observer.sock`. It grants the socket's
 observed GID to the tester container and sets

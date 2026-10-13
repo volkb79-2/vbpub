@@ -654,6 +654,12 @@ is not installed — `ctl host` and run-gate `doctor` say "unbounded").
                "allow_uids": [] , "peer_cred": true}}
 ```
 
+The additive `version.resource_observer` object advertises the separate
+native-R2 listener: `{"contract": 2,
+"path": "/run/cgprofile/resource-observer.sock", "listening": true}`.
+This contract number is independent of the control protocol's `contract: 1`;
+`listening` reflects whether the observer socket was bound successfully.
+
 ### 8.7 Summary additions (schema 1, optional keys)
 
 `liveness` (the final §8.4 block), `placement` (the final §8.3 block),

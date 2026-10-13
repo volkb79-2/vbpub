@@ -65,16 +65,22 @@ artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every 
 memory = "2g"
 memory_swap = "16g"
 
-# The mutation lane receives token-free remote facts generated immediately
-# before it starts. CMRU's host-side gate uses its configured secret through
-# CMRU's scoped Git transport; the tester container receives tag names and
-# commit IDs only, never publisher credentials.
+# Dedicated ephemeral environment for CMRU's mutation lane. Inheriting the
+# central tester-unified definition preserves its shared image/cgroup policy;
+# this name adds only CMRU-specific release-baseline facts.
 [environments.cmru-mutation]
 mode = "ephemeral"
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 
+[environments.cmru-mutation.resources]
+cpus = "3"
+
+# The mutation lane receives token-free remote facts generated immediately
+# before it starts. CMRU's host-side gate uses its configured secret through
+# CMRU's scoped Git transport; the tester container receives tag names and
+# commit IDs only, never publisher credentials.
 # Mutation and Assay R1 must use the same PREVIOUS cmru release tag, never
 # origin/main (KI-18): at release time the tree IS origin/main, so that base
 # leaves zero candidates and the campaign fails --require-candidates. The
@@ -92,6 +98,7 @@ forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"
+resource_observer = "cgprofile"
 required_env = ["CMRU_ASSAY_BASELINE_FACTS"]
 argv = [
   "bash",
@@ -170,20 +177,3 @@ clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # total-coverage, 7h tag-based R2 mutation, and cause-sensitive canary
 # lanes; this is advisory but must not understate the declared work.
 budget = "14h"
-
-# PROVISIONAL gate (KI-62, operator decision 2026-10-06): identical to `gate`
-# except the R2 mutation lane is skipped and the postponement is recorded in
-# the retained evidence (.assay/mutation-postponed-cmru.json) plus one WARN
-# line. Used ONLY by cmru.toml [steps.run-tests] for the cmru 6.0.0 release;
-# the full `gate` is then run against the cmru-v6.0.0 tag and fixes backported.
-# TODO(cmru-6.0 post-release): delete this lane once KI-62 is closed.
-[lanes.gate-provisional]
-kind = "command"
-environment = "bare-host"
-argv = [
-  "python3", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}",
-  "--postpone-mutation", "KI-62",
-]
-clean_tree = false   # sub-lanes each enforce their own clean-tree check
-# The conjunction minus the 7h mutation lane (see `gate` for the rest).
-budget = "3h"

@@ -66,8 +66,10 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
    `R-43h`); and `resource_observer = "cgprofile"` for an Assay or command
-   lane in `tester-unified`, which exposes only the read-only observer socket
-   to recover hidden cgroup ancestors for native R2. A command wrapper that
+   lane in any resolved `mode = "ephemeral"` environment, which exposes only
+   the read-only observer socket to recover hidden cgroup ancestors for native
+   R2. Before launch, Run-Gate requires the daemon to advertise observer
+   contract 2, the configured socket path, and `listening = true`. A command wrapper that
    invokes Assay must preserve the inherited observer-path variable for its
    Assay process. It does not expose
    `ctl.sock` or change the lane's private cgroup namespace. See the
@@ -268,7 +270,8 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `tester-unified` container, capped at 3 CPUs with one mutant worker.
    The worker count is one because concurrent candidates would share the
    tester cgroup's resource-event counters. Its `resource_observer = "cgprofile"` opt-in mounts only the
-   daemon's read-only resource-observer socket; the control socket is not
+   daemon's read-only resource-observer socket after checking the daemon's
+   contract-2 version advertisement; the control socket is not
    exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
    the complete host cgroup ancestry required by B145 while keeping the
    mutation campaign inside its own container. The 4h budget is a lane-level

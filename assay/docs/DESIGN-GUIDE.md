@@ -4679,6 +4679,26 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
   `--limit`) and always carry `matching_total` and `next_offset`.
 
+#### Analyze a bounded pilot
+
+Schema v2 accepts `--plan-json` and `--selection-file` together for the B110
+and analysis-R2 selector reports. The raw plan bytes must match the selector's
+`plan_sha256`; the plan must match the current commit, tree, lane and complete
+unsharded inventory; selected IDs must be unique, in-plan and in plan order;
+and the `candidates` progress event's `selection_sha256` must match the report.
+Both files are read through Assay's bounded no-follow reader and their
+fingerprints are retained in the output. Supplying either file without the
+other, combining a selection with a verdict, or projecting a native pilot with
+a worker count different from the lane's declared `mutation.jobs` is refused.
+
+A selected sample is a measurement, not a whole-plan judgment. Its report is
+always `status: incomplete`, `qualifying: false`, with no verdict and exit 3,
+even if every selected candidate has a disposition. The selected count,
+outcomes, progress and diagnostic projection remain useful, but they cannot
+establish that unselected candidates were tested or that the lane qualifies.
+The independent pilot checker remains the authority for whether a pilot's
+evidence completed and verified. This boundary is recorded in [A-490](../nyxloom-trove/decisions.md).
+
 ### Analysis-package R2 pilot (B131)
 
 The analysis package has a separate `analysis-r2` lane because B105 judges

@@ -5338,7 +5338,7 @@ evidence error, 3 incomplete. `complete_blockers` names why a campaign is
 incomplete. Without `--verdict`, a plan whose lane delegates its base to the
 request needs `--request-base`.
 
-- **Plan rows.** `assay plan --json` rows carry `source_sha256` (the
+- **Plan rows.** The JSON rows printed by `assay plan` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the
   mutation applied) beside `path`, `lineno`, `operator`, `description`,
   `start_byte` and `end_byte`. `campaign` recomputes each `candidate_id` from
@@ -5358,6 +5358,38 @@ request needs `--request-base`.
   reported as `artifact_status: missing`; a missing parent directory is an
   evidence error (create it); a supplied `--coverage` path that is not the
   declared one is an evidence error.
+
+### Analyze a bounded pilot
+
+For a B110 self-qualification sample, use the plan and selection report retained
+under `.assay/`:
+
+```bash
+assay analyze campaign self-qualification --file assay.toml \
+  --expected-commit "$REVIEW_HEAD" --progress .assay/progress-b110-pilot.jsonl \
+  --state-dir .assay/b110-pilot-state \
+  --plan-json .assay/b110-pilot-plan.json \
+  --selection-file .assay/b110-pilot-selection.json \
+  --project --project-jobs 1 --outcome survived --limit 20
+```
+
+For B131, use the analysis lane's retained artifacts instead:
+
+```bash
+assay analyze campaign analysis-r2 --file assay.toml \
+  --expected-commit "$REVIEW_HEAD" --progress .assay/progress-analysis-r2-pilot.jsonl \
+  --state-dir .assay/analysis-r2-pilot-state \
+  --plan-json .assay/analysis-r2-pilot-plan.json \
+  --selection-file .assay/analysis-r2-pilot-selection.json \
+  --project --project-jobs 1 --outcome survived --limit 20
+```
+
+The analyzer checks both artifacts against the current lane plan and verifies
+the selection digest recorded in progress. It exits 3 and reports
+`qualifying: false` because a selected sample cannot qualify the full plan.
+Use the registered pilot gate's independent checker and attestation to decide
+whether that measurement completed successfully; this summary only makes its
+selected outcomes easier to inspect.
 
 ### Run the analysis-package R2 pilot (B131)
 

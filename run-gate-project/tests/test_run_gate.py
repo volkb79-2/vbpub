@@ -3466,12 +3466,13 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
 
     # The tagged release remains source rev 55. RG-90's telemetry change is
     # historical at rev 60; the P5 transport and placement launch gate are
-    # current at rev 64; RG-91's socket framing fix is current at rev 65.
-    # RG-89 stays at the revision that introduced its observer contract.
+    # historical at rev 64; RG-91's framing fix is at rev 65; RG-89's
+    # contract-2 preflight is current at rev 66.
     assert "This section describes released source rev 55." in changes
     assert "RG-90, rev 60" in changes
     assert "RG-55/P5, rev 64" in changes
-    assert f"RG-91, rev {run_gate.__revision__}" in changes
+    assert "RG-91, rev 65" in changes
+    assert f"RG-89, rev {run_gate.__revision__}" in changes
     assert "RG-89, rev 58" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
@@ -7936,24 +7937,25 @@ class TestResourceObserverLane:
 
     def test_disabled_observer_adds_no_docker_flags(self):
         assert run_gate.resource_observer_docker_flags(
-            {"kind": "assay", "environment": "tester-unified"}) == []
+            {"kind": "assay"}, {"mode": "ephemeral"}) == []
 
     @pytest.mark.parametrize("lane, message", [
         ({"kind": "assay", "environment": "tester-unified",
          "resource_observer": "other"}, "must be 'cgprofile'"),
-        ({"kind": "command", "environment": "bare-host",
-         "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
         ({"kind": "sequence", "environment": "tester-unified",
           "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
-        ({"kind": "assay", "environment": "bare-host",
-          "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
+         "requires an assay or command lane"),
     ])
     def test_invalid_observer_lane_refuses(self, lane, message):
         with pytest.raises(run_gate.GateError, match=message):
-            run_gate.resource_observer_docker_flags(lane)
+            run_gate.resource_observer_docker_flags(lane, {"mode": "ephemeral"})
+
+    def test_observer_refuses_non_ephemeral_environment(self):
+        with pytest.raises(run_gate.GateError, match="mode = 'ephemeral'"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "resource_observer": "cgprofile"},
+                {"mode": "exec"},
+            )
 
     def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
         run_gate._validate_lane(
@@ -7965,17 +7967,107 @@ class TestResourceObserverLane:
             run_gate._validate_lane(
                 "probe", {"kind": "sequence", "lanes": ["inner"],
                           "resource_observer": "cgprofile"}, "fixture")
-        with pytest.raises(run_gate.GateError,
-                           match="environment = \\\"tester-unified\\\""):
-            run_gate._validate_lane(
-                "r2", {"kind": "assay", "environment": "bare-host",
-                       "assay_lane": "r2", "resource_observer": "cgprofile"},
-                "fixture")
+        run_gate._validate_lane(
+            "r2", {"kind": "assay", "environment": "custom-ephemeral",
+                   "assay_lane": "r2", "resource_observer": "cgprofile"},
+            "fixture")
         with pytest.raises(run_gate.GateError, match="must be 'cgprofile'"):
             run_gate._validate_lane(
                 "r2", {"kind": "assay", "environment": "tester-unified",
                        "assay_lane": "r2", "resource_observer": "anything"},
                 "fixture")
+
+    def test_observer_version_preflight_requires_contract2_path_and_listener(
+            self, monkeypatch):
+        valid = {
+            "resource_observer": {
+                "contract": 2,
+                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "listening": True,
+            },
+        }
+        monkeypatch.setattr(
+            run_gate.ProfilerClient, "version", lambda self: (valid, None),
+        )
+        run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+        for bad, message in [
+            ({}, "does not advertise"),
+            ({"resource_observer": {"contract": 1}}, "contract must be 2"),
+            ({"resource_observer": {"contract": True}}, "contract must be 2"),
+            ({"resource_observer": {"contract": 2, "path": "/wrong",
+                                     "listening": True}}, "unexpected socket path"),
+            ({"resource_observer": {
+                "contract": 2,
+                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "listening": False,
+            }}, "not listening"),
+        ]:
+            monkeypatch.setattr(
+                run_gate.ProfilerClient, "version", lambda self, bad=bad: (bad, None),
+            )
+            with pytest.raises(run_gate.GateInfraError, match=message):
+                run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+    def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.ProfilerClient, "version",
+            lambda self: (None, "control socket unavailable"),
+        )
+        with pytest.raises(run_gate.GateInfraError, match="control socket unavailable"):
+            run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+    def test_live_observer_lane_preflights_before_clearing_or_launching(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        events = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            run_gate, "resource_observer_version_preflight",
+            lambda docker, daemon: events.append(("version", docker, daemon)),
+        )
+        monkeypatch.setattr(
+            run_gate, "clear_previous_assay_verdict",
+            lambda *_a, **_k: events.append(("clear",)),
+        )
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_k: "true")
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a: "a" * 40)
+        monkeypatch.setattr(run_gate, "write_inflight_record", lambda *_a, **_k: True)
+        monkeypatch.setattr(run_gate, "await_container", lambda *_a, **_k: 0)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
+
+        def docker_run(argv, **_kwargs):
+            events.append(("docker-run", argv[1]))
+            return subprocess.CompletedProcess(argv, 0, "container-id\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "private-test",
+             "argv": ["true"], "resource_observer": "cgprofile"},
+            "observer", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", "dev-gates.slice", "fixture",
+            profile_plan={"enabled": False, "daemon": "cgprofile-host-daemon",
+                          "disabled_reason": "test"},
+        ) == 0
+        assert events == [
+            ("version", "/usr/bin/docker", "cgprofile-host-daemon"),
+            ("clear",),
+            ("docker-run", "run"),
+        ]
 
     def test_missing_socket_is_infrastructure_error(self, tmp_path, monkeypatch):
         socket_path = tmp_path / "resource-observer.sock"
@@ -7985,7 +8077,7 @@ class TestResourceObserverLane:
         with pytest.raises(run_gate.GateInfraError, match="unavailable"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
         (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "root-owned directory"),
@@ -8010,7 +8102,7 @@ class TestResourceObserverLane:
         with pytest.raises(run_gate.GateInfraError, match=message):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
@@ -8022,7 +8114,7 @@ class TestResourceObserverLane:
             monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
         assert run_gate.resource_observer_docker_flags({
             "kind": kind, "environment": "tester-unified",
-            "resource_observer": "cgprofile"}) == [
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"}) == [
                 "--mount",
                 f"type=bind,source={socket_path},target="
                 f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",

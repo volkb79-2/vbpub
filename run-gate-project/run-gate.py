@@ -15,7 +15,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 65  # rev 65: preserve cgprofile socket request framing
+__revision__ = 66  # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
 # handshake until daemon placement is read back; explicit refusal is an
@@ -947,9 +947,6 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if kind not in ("assay", "command"):
             fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
                  "only for assay or command lanes")
-        if table.get("environment") != "tester-unified":
-            fail(f"{where} [lanes.{name}]: 'resource_observer' requires "
-                 "environment = \"tester-unified\"")
     if kind == "sequence":
         members = table.get("lanes")
         if not isinstance(members, list) or not members or not all(
@@ -6955,7 +6952,7 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
-def resource_observer_docker_flags(lane: dict) -> list[str]:
+def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
     """Mount only cgprofile's read-only resource-observer socket.
 
     The observer protocol is a separate daemon listener; never mount the
@@ -6966,10 +6963,12 @@ def resource_observer_docker_flags(lane: dict) -> list[str]:
         return []
     if lane.get("resource_observer") != "cgprofile":
         fail("lane resource_observer must be 'cgprofile'")
-    if lane.get("kind") not in ("assay", "command") \
-            or lane.get("environment") != "tester-unified":
+    if lane.get("kind") not in ("assay", "command"):
         fail("resource_observer='cgprofile' requires an assay or command lane "
-             "in tester-unified")
+             "in an ephemeral environment")
+    if environment.get("mode") != "ephemeral":
+        fail("resource_observer='cgprofile' requires the lane's resolved "
+             "environment to have mode = 'ephemeral'")
     socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
     try:
         parent = os.lstat(socket_path.parent)
@@ -6998,6 +6997,32 @@ def resource_observer_docker_flags(lane: dict) -> list[str]:
         "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
         f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
     ]
+
+
+def resource_observer_version_preflight(docker: str, daemon: str) -> None:
+    """Require a live cgprofile daemon that advertises observer contract 2.
+
+    The host socket's presence alone cannot distinguish a current observer
+    from an old daemon or a listener that failed to bind. Query the daemon's
+    control version before launching the judged lane, and refuse any response
+    that cannot establish the exact read-only observer capability Run-Gate
+    will mount.
+    """
+    version, reason = ProfilerClient(docker, daemon).version()
+    if version is None:
+        fail_infra(f"cgprofile resource-observer preflight failed: {reason}")
+    observer = version.get("resource_observer")
+    if not isinstance(observer, dict):
+        fail_infra("cgprofile daemon does not advertise a resource observer")
+    contract = observer.get("contract")
+    if type(contract) is not int or contract != 2:
+        fail_infra("cgprofile resource observer contract must be 2 "
+                   f"(got {contract!r})")
+    if observer.get("path") != CGPROFILE_RESOURCE_OBSERVER_SOURCE:
+        fail_infra("cgprofile resource observer advertises an unexpected "
+                   f"socket path: {observer.get('path')!r}")
+    if observer.get("listening") is not True:
+        fail_infra("cgprofile resource observer is not listening")
 
 
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
@@ -11712,6 +11737,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
         return attached
+    if not dry_run and lane.get("resource_observer") is not None:
+        resource_observer_version_preflight(
+            docker,
+            (profile_plan or {}).get("daemon", PROFILE_DAEMON_DEFAULT),
+        )
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
@@ -11722,7 +11752,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
         *extra_mount_flags(),
-        *resource_observer_docker_flags(lane)]
+        *resource_observer_docker_flags(lane, env)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,

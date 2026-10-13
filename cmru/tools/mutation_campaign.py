@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,7 @@ class Result:
     outcome: str
     termination: str
     elapsed_seconds: float
+    resource_limit_evidence: dict[str, Any] | None = None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -98,10 +100,30 @@ def _write_evidence(path: Path, document: dict[str, Any]) -> None:
 def _run(
     argv: Sequence[str], *, cwd: Path, timeout_seconds: float,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(argv), cwd=cwd, text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, timeout=timeout_seconds,
+    command = list(argv)
+    # A mutant's test command can start grandchildren (pytest workers, helper
+    # servers, and so on). subprocess.run(timeout=...) kills only its direct
+    # child, letting those processes continue into the next candidate's
+    # resource-counter window. Give the command its own process group so a
+    # timeout ends the entire candidate before counters are sampled again.
+    process = subprocess.Popen(
+        command, cwd=cwd, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, start_new_session=True,
     )
+    try:
+        stdout, _ = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, _ = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command, timeout_seconds,
+            output=stdout if stdout is not None else exc.output,
+            stderr=exc.stderr,
+        ) from exc
+    return subprocess.CompletedProcess(command, process.returncode, stdout, None)
 
 
 def _append_progress(path: Path, event: dict[str, Any]) -> None:
@@ -124,16 +146,29 @@ def _result_identity(result: dict[str, Any]) -> tuple[str, int, str, str]:
 
 def _candidate_result(
     job: Any, *, returncode: int | None, elapsed_seconds: float, timed_out: bool,
+    resource_limit_evidence: Any | None = None,
 ) -> Result:
+    evidence = (
+        resource_limit_evidence.to_dict()
+        if resource_limit_evidence is not None else None
+    )
+    resource_limited = bool(
+        resource_limit_evidence is not None
+        and resource_limit_evidence.limit_hit
+    )
     if timed_out:
         exit_code = 124
-        outcome = "killed"
-        termination = "timeout"
+        outcome = "crashed"
+        termination = "resource-limit" if resource_limited else "timeout"
     else:
         assert returncode is not None
         exit_code = returncode
-        outcome = "killed" if returncode == 1 else "survived" if returncode == 0 else "crashed"
-        termination = "exit"
+        if resource_limited:
+            outcome = "crashed"
+            termination = "resource-limit"
+        else:
+            outcome = "killed" if returncode == 1 else "survived" if returncode == 0 else "crashed"
+            termination = "exit"
     return Result(
         path=job.path,
         line=job.site.lineno,
@@ -143,7 +178,24 @@ def _candidate_result(
         outcome=outcome,
         termination=termination,
         elapsed_seconds=round(elapsed_seconds, 3),
+        resource_limit_evidence=evidence,
     )
+
+
+def _read_resource_limit_counters():
+    """Read the current tester cgroup, using the observer for hidden ancestors."""
+    from assay.resource_limits import read_candidate_resource_counters
+
+    return read_candidate_resource_counters(
+        observer_socket_path=os.environ.get("ASSAY_RESOURCE_OBSERVER_SOCKET")
+    )
+
+
+def _resource_limit_evidence(before: Any, after: Any):
+    """Compare exact cgroup-v2 counters; ambiguity is an infrastructure error."""
+    from assay.resource_limits import ResourceLimitEvidence
+
+    return ResourceLimitEvidence.between(before, after)
 
 
 def _changed_since(
@@ -282,6 +334,11 @@ def _resume_results(
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read mutation resume evidence: {evidence_path}") from exc
     previous_head = previous.get("head") if isinstance(previous, dict) else None
+    if not isinstance(previous, dict) or previous.get("schema_version") != 2:
+        raise ValueError(
+            "mutation resume evidence predates resource-limit-aware results; "
+            f"archive or remove {evidence_path} and start a fresh campaign"
+        )
     source_paths = [(project_prefix / "src").as_posix()]
     test_paths = [
         (project_prefix / "tests").as_posix(),
@@ -348,21 +405,30 @@ def _resume_results(
     if not isinstance(prior_results, list) or len(prior_results) > len(jobs):
         raise ValueError("mutation resume evidence has an invalid result list")
     reusable: list[dict[str, Any] | None] = [None] * len(jobs)
+    from assay.resource_limits import ResourceLimitEvidence
+
     for index, prior in enumerate(prior_results):
         if prior is None:
             continue
         if not isinstance(prior, dict) or _result_identity(prior) != _job_identity(jobs[index]):
             raise ValueError(f"mutation resume evidence does not match candidate {index}")
-        if (
-            prior.get("outcome") == "killed"
-            and (
-                (prior.get("termination", "exit") == "exit" and prior.get("exit_code") == 1)
-                or (
-                    prior.get("termination") == "timeout"
-                    and previous.get("timeout_seconds") == timeout_seconds
-                )
+        try:
+            resource_evidence = ResourceLimitEvidence.from_dict(
+                prior["resource_limit_evidence"]
             )
-        ):
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"mutation resume evidence has invalid resource counters for candidate {index}"
+            ) from exc
+        if prior.get("outcome") == "killed":
+            if (
+                prior.get("termination") != "exit"
+                or prior.get("exit_code") != 1
+                or resource_evidence.limit_hit
+            ):
+                raise ValueError(
+                    f"mutation resume evidence contains an unsupported kill claim for candidate {index}"
+                )
             reusable[index] = prior
     return reusable
 
@@ -444,11 +510,27 @@ def run(argv: Sequence[str] | None = None) -> int:
             baseline_root = copy_project_fixture(
                 repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
             )
+            # Refuse before the campaign if exact cgroup-v2 counters or contract-2
+            # observer access are unavailable. A mutation result without this
+            # evidence cannot support a kill claim.
+            baseline_resource_before = _read_resource_limit_counters()
             baseline = _run(test_argv, cwd=baseline_root, timeout_seconds=args.timeout_seconds)
+            baseline_resource_after = _read_resource_limit_counters()
+            baseline_resource_evidence = _resource_limit_evidence(
+                baseline_resource_before, baseline_resource_after
+            )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"the known-good mutation control exceeded {args.timeout_seconds:g} seconds"
         ) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            f"could not verify cgroup resource counters for the known-good control: {exc}"
+        ) from exc
+    if baseline_resource_evidence.limit_hit:
+        raise RuntimeError(
+            "a cgroup resource-limit event occurred during the known-good mutation control"
+        )
     if baseline.returncode != 0:
         raise RuntimeError(
             f"the known-good mutation control failed with exit {baseline.returncode}: "
@@ -471,7 +553,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
     )
     document: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "tool": "cmru mutation campaign using worktree Assay mutation sites",
         "assay_version": assay_version,
         "assay_source": str(assay_source),
@@ -486,6 +568,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         "test_manifest": _test_manifest(repo_root, project_prefix),
         "candidate_count": len(jobs),
         "baseline_exit_code": baseline.returncode,
+        "baseline_resource_limit_evidence": baseline_resource_evidence.to_dict(),
         "status": "running",
         "results": results,
     }
@@ -528,20 +611,57 @@ def run(argv: Sequence[str] | None = None) -> int:
             target.write_bytes(job.site.apply(original.encode("utf-8")))
             candidate_started = time.monotonic()
             try:
+                resource_before = _read_resource_limit_counters()
+            except (OSError, RuntimeError, ValueError) as exc:
+                document["status"] = "infrastructure-error"
+                document["infrastructure_error"] = (
+                    f"could not read cgroup resource counters before candidate {index}: {exc}"
+                )
+                _write_evidence(args.evidence, document)
+                _append_progress(args.progress, {
+                    "event": "complete",
+                    "status": document["status"],
+                    "infrastructure_error": document["infrastructure_error"],
+                })
+                raise RuntimeError(document["infrastructure_error"]) from exc
+            try:
                 completed = _run(
                     test_argv, cwd=candidate_root, timeout_seconds=args.timeout_seconds,
                 )
             except subprocess.TimeoutExpired:
+                timed_out = True
+                returncode = None
+            else:
+                timed_out = False
+                returncode = completed.returncode
+            try:
+                resource_after = _read_resource_limit_counters()
+                limit_evidence = _resource_limit_evidence(resource_before, resource_after)
+            except (OSError, RuntimeError, ValueError) as exc:
+                document["status"] = "infrastructure-error"
+                document["infrastructure_error"] = (
+                    f"could not attribute cgroup resource events around candidate {index}: {exc}"
+                )
+                _write_evidence(args.evidence, document)
+                _append_progress(args.progress, {
+                    "event": "complete",
+                    "status": document["status"],
+                    "infrastructure_error": document["infrastructure_error"],
+                })
+                raise RuntimeError(document["infrastructure_error"]) from exc
+            if timed_out:
                 result = _candidate_result(
                     job, returncode=None,
                     elapsed_seconds=time.monotonic() - candidate_started,
                     timed_out=True,
+                    resource_limit_evidence=limit_evidence,
                 )
             else:
                 result = _candidate_result(
                     job, returncode=completed.returncode,
                     elapsed_seconds=time.monotonic() - candidate_started,
                     timed_out=False,
+                    resource_limit_evidence=limit_evidence,
                 )
         results[index] = asdict(result)
         document["results"] = results
@@ -556,9 +676,23 @@ def run(argv: Sequence[str] | None = None) -> int:
             "description": result.description,
             "outcome": result.outcome,
             "termination": result.termination,
+            "resource_limit_evidence": result.resource_limit_evidence,
             "elapsed_seconds": result.elapsed_seconds,
             "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
         })
+        if limit_evidence.limit_hit:
+            document["status"] = "infrastructure-error"
+            document["infrastructure_error"] = (
+                f"cgroup resource-limit event occurred during candidate {index}; "
+                "the candidate cannot count as killed"
+            )
+            _write_evidence(args.evidence, document)
+            _append_progress(args.progress, {
+                "event": "complete",
+                "status": document["status"],
+                "infrastructure_error": document["infrastructure_error"],
+            })
+            raise RuntimeError(document["infrastructure_error"])
 
     survivors = [result for result in results if result is not None and result["outcome"] != "killed"]
     document["status"] = "failed" if survivors else "passed"

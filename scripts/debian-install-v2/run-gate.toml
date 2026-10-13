@@ -71,6 +71,7 @@ budget = "5m"
 # budget) lives in this project's own assay.toml [lanes.r2].
 [lanes.r2]
 kind = "command"
+resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
     "bash", "-c",

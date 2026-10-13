@@ -18,5 +18,10 @@
       "allow_uids": [],
       "peer_cred": true
     }
+  },
+  "resource_observer": {
+    "contract": 2,
+    "path": "/run/cgprofile/resource-observer.sock",
+    "listening": true
   }
 }

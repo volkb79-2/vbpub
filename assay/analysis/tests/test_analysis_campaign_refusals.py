@@ -377,7 +377,7 @@ CASES = (
     ("latest-run-other-commit", _progress(_other_commit_run), "latest progress run is for commit"),
     # -- run milestones ---------------------------------------------------------
     ("candidates-repeated", _two_events_at(2, {"event": "candidates"}), "repeats its candidates milestone"),
-    ("candidates-pilot-selection", _set(1, selection_sha256="x"), "pilot selection unsupported before P7"),
+    ("candidates-pilot-selection", _set(1, selection_sha256="x"), "pilot progress requires --plan-json and --selection-file"),
     ("candidates-bad-judge", _set(1, judge_sha256="zz"), "progress judge_sha256 must be a SHA-256 digest"),
     ("shard-repeated", _two_events_at(1, SHARD), "repeats its shard milestone"),
     ("shard-out-of-order", _insert(2, SHARD), "shard milestone is out of order"),

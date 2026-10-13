@@ -556,6 +556,12 @@ excludes every local CMRU release tag at HEAD and finds the highest-version
 published tag in HEAD's remaining full ancestry, keeping the pinned R1 base
 stable.
 
+Each mutant command has its own process group. A timeout kills that whole
+group before the campaign samples resource counters or starts the next
+candidate. This prevents helper processes left by a timed-out test from being
+misattributed to a later mutant. Timeouts and cgroup resource events remain
+inconclusive infrastructure outcomes, never mutation kills.
+
 The mutation and coverage-canary controls use the same disposable CMRU test
 closure. It includes the Topos and nyxloom CMRU manifests read by the estate
 adoption contract test; otherwise the control could fail before exercising a

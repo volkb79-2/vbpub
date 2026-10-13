@@ -180,6 +180,18 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 listener. `exec` is `true` by construction — the exec carrier is permanent
 (§8.1 rule 5), not probed.
 
+The additive `resource_observer` field reports the distinct observer listener:
+
+```json
+"resource_observer": {"contract": 2,
+                       "path": "/run/cgprofile/resource-observer.sock",
+                       "listening": true}
+```
+
+Its contract number is independent of the control protocol's `contract: 1`.
+If binding the observer socket failed, `listening` is false; opted-in native
+R2 consumers still fail closed when their configured endpoint is unavailable.
+
 ## 6. Errors
 
 Response shape is always

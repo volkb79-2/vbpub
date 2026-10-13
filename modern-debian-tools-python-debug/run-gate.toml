@@ -37,6 +37,7 @@ budget = "15m"
 kind = "assay"
 assay_lane = "host_setup"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 clean_tree = true
 budget = "2h"
 artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl", ".assay/coverage.json"]

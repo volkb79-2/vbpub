@@ -6,6 +6,7 @@ schema_version = 1
 kind = "assay"
 assay_lane = "worktree"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 budget = "8h"
 
 [lanes.worktree.resources]

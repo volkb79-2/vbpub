@@ -149,6 +149,8 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         for call in calls
         if call[0] == "run" and any(arg.startswith("--memory=") for arg in call)
     )
+    assert "--init" in gate_run
+    assert "--pids-limit=8192" in gate_run
     mounts = [gate_run[index + 1] for index, arg in enumerate(gate_run[:-1]) if arg == "--mount"]
     decoded_mounts = [next(csv.reader(io.StringIO(mount))) for mount in mounts]
     assert decoded_mounts == [
@@ -182,6 +184,8 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         and any(arg.startswith("--memory=") for arg in call)
         and call[call.index("-w") + 1] == f"{repo}/scripts/cgroup-profiler"
     )
+    assert "--init" in main_gate_run
+    assert "--pids-limit=8192" in main_gate_run
     main_mounts = [
         main_gate_run[index + 1]
         for index, arg in enumerate(main_gate_run[:-1])

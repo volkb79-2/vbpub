@@ -248,9 +248,18 @@ The daemon's version response is contract major 1:
     "damon_default": "on",
     "sessions_live": 0,
     "max_sessions": 16
+  },
+  "resource_observer": {
+    "contract": 2,
+    "path": "/run/cgprofile/resource-observer.sock",
+    "listening": true
   }
 }
 ```
+
+The observer field identifies the separate contract-2 endpoint used by opted-
+in native R2 lanes. Its version is independent of the control protocol's
+contract major 1.
 
 In this response, `damon: "available"` is a capability probe: the DAMON
 analysis library loaded and its admin sysfs interface is visible. It does not

@@ -724,7 +724,7 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
    - An outer run-gate exit ≥ 124 is likewise a failsafe with no trusted output.
 
 **Re-piloting on a new commit (P7R2-6).** The new commit gets a new deadline file name, `b110-pilot-<new commit12>`. But `.assay/b110-pilot-state` still holds the old commit's deadline-bound records and its `PILOT-STATE`: P6's `init` refuses the unbound records, and the sentinel refuses the new selection. The append-only `.assay/progress-b110-pilot.jsonl` also contains the previous run, and analysis must not combine progress from one commit with another commit's plan or state. So **before** re-piloting, move both files aside with the old report (for example, `.assay/b110-pilot-state-<old commit12>` and `.assay/progress-b110-pilot-<old commit12>.jsonl`). The new pilot then starts with fresh active paths. Preserve both archived files; never delete or edit their contents.
-3. Offline, on the host, under nice: run P8's `assay analyze campaign` over the matching progress and state pair: the active `.assay/progress-b110-pilot.jsonl` with `.assay/b110-pilot-state`, or, for an archived pilot, `.assay/progress-b110-pilot-<commit12>.jsonl` with `.assay/b110-pilot-state-<commit12>`. Use the exact flags from P8's brief, including P8's required `--project-jobs 3` for the projection. Write the result to `/tmp/b110-pilot-analysis.json`.
+3. Offline, on the host, under nice: run P8's `assay analyze campaign` over the matching progress and state pair: the active `.assay/progress-b110-pilot.jsonl` with `.assay/b110-pilot-state`, or, for an archived pilot, `.assay/progress-b110-pilot-<commit12>.jsonl` with `.assay/b110-pilot-state-<commit12>`. Use the exact flags from P8's brief, including `--project-jobs 1`, which is required to match the lane's serial native-R2 execution. Write the result to `/tmp/b110-pilot-analysis.json`.
 4. Offline projection: use P8's projection output, with the plan §7/C19 strata fall-back (operator × file-size class → operator → all), p50 and p90, plus fixed overhead:
    - the coverage-baseline wall time;
    - the no-cov baseline `wall_s`;
@@ -749,7 +749,7 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
 **Exit / completed:** B110_PILOT_EXIT=… · completed=… · unresolved=<n>
 
 ## 1. Environment
-tester-unified, 3 CPUs, 2 GiB / 8 GiB mem+swap, `--pilot-jobs 3`; concurrent host load (PSI avg10 at start/end); other gates running: none.
+tester-unified, 3 CPUs, 2 GiB / 8 GiB mem+swap, `--pilot-jobs 1`; concurrent host load (PSI avg10 at start/end); other gates running: none.
 
 ## 2. Fixed overhead
 | Phase | Wall s | Source |
@@ -768,7 +768,7 @@ Known-hard set: per label, bucket + elapsed (guards from P2 expected to turn sca
 Aggregate peak memory from the run-gate cgroup `memory.peak` … (C19: this is the GO number); per-candidate 1 Hz RSS samples (a lower bound only) …; memory-full stall s … (… % of wall); CPU avg cores ….
 
 ## 6. Projection (3,760 candidates)
-Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / effective workers; also at p50. Strata fall-back: operator × size_class (small ≤10 / medium 11–100 / large >100 candidates per file) → operator → all (C19, C26). Result: … h (p90), … h (p50). Assumptions + censoring.
+Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / 1; also at p50. The divisor is one because native-R2 event windows are serial. Strata fall-back: operator × size_class (small ≤10 / medium 11–100 / large >100 candidates per file) → operator → all (C19, C26). Result: … h (p90), … h (p50). Assumptions + censoring.
 
 ## 7. Shard skew
 Hash shards (N=3) replay of measured durations vs queue: makespan …. (Consolidation cost is not measured by the pilot; it is B119's acceptance, C7.)

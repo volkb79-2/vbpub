@@ -522,9 +522,9 @@ class TestParseRequest:
         assert req.cap_files() == ["memory.high", "memory.max", "cpu.weight"]
         assert placement.parse_request({"place": True}).cap_files() == []
 
-    @pytest.mark.parametrize("value", [1.5, math.inf, -math.inf, math.nan])
+    @pytest.mark.parametrize("value", [1.0, 1.5, math.inf, -math.inf, math.nan])
     @pytest.mark.parametrize("field", ["memory_high", "memory_max"])
-    def test_memory_caps_reject_fractional_and_nonfinite_values(self, field, value):
+    def test_memory_caps_reject_non_integer_and_nonfinite_values(self, field, value):
         with pytest.raises(placement.CapsError):
             placement.parse_request({"place": True, field: value})
 
@@ -900,6 +900,26 @@ class TestWriteGuard:
             container_cgroup="/dev.slice/dev-gates.slice/" + link.name,
             container_id=CONTAINER_ID,
         )
+        assert guard.container_kill_abs is None
+
+    def test_container_symlink_cannot_alias_a_container_named_gates_root(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        gates = root / "dev.slice" / "dev-gates.slice" / f"docker-{CONTAINER_ID}.scope"
+        gates.mkdir()
+        link = gates / f"docker-{CONTAINER_ID}.scope"
+        link.symlink_to(gates, target_is_directory=True)
+
+        guard = placement.CgroupWriteGuard(
+            cgroup_root=str(root),
+            gates_cgroup=f"/dev.slice/dev-gates.slice/{gates.name}",
+            origin_cgroup=None,
+            leaf_name=None,
+            container_cgroup=(
+                f"/dev.slice/dev-gates.slice/{gates.name}/{link.name}"
+            ),
+            container_id=CONTAINER_ID,
+        )
+
         assert guard.container_kill_abs is None
 
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
@@ -24,6 +26,8 @@ def _repository(tmp_path: Path, document: dict) -> tuple[Path, str, Path]:
     root.mkdir()
     for args in (
         ("init", "-q"),
+        ("config", "maintenance.auto", "false"),
+        ("config", "gc.autoDetach", "false"),
         ("config", "user.name", "Campaign Test"),
         ("config", "user.email", "campaign@example.invalid"),
     ):
@@ -387,6 +391,519 @@ def _complete_fixture(tmp_path, monkeypatch, name: str) -> tuple[Path, str, Path
 def _validate(document: dict) -> None:
     schema = json.loads(files("assay").joinpath("schemas/analysis-campaign.schema.json").read_text())
     Draft202012Validator(schema).validate(document)
+
+
+def _write_pilot_inputs(
+    tmp_path: Path,
+    *,
+    root: Path,
+    head: str,
+    rows: list[dict],
+    schema: str,
+) -> tuple[Path, Path, list[str], str]:
+    tree = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    plan_document = {
+        "status": "ok",
+        "lane": "package",
+        "commit": head,
+        "tree": tree,
+        "candidate_count": len(rows),
+        "shard": None,
+        "candidates": rows,
+    }
+    plan_bytes = (json.dumps(plan_document, sort_keys=True, indent=2) + "\n").encode()
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_bytes(plan_bytes)
+    selected_ids = [rows[0]["id"]]
+    selection_sha256 = campaign_api.mutation.plan_sha256(selected_ids)
+    common = {
+        "plan_commit": head,
+        "plan_tree": tree,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "plan_candidate_count": len(rows),
+        "selected_ids": selected_ids,
+        "selection_sha256": selection_sha256,
+        "seed": 42,
+        "size": len(selected_ids),
+        "files": sorted({row["path"] for row in rows}),
+        "operators": sorted({row["operator"] for row in rows}),
+    }
+    if schema == "b110-pilot-selection/1":
+        selection = {
+            "schema": schema,
+            **common,
+            "candidates_file_sha256": "a" * 64,
+            "stratified": [],
+            "known_hard": [],
+            "overlap": [],
+            "import_time_total": 0,
+        }
+    else:
+        selection = {
+            "schema": schema,
+            "lane": "package",
+            **common,
+            "targets": ["pkg"],
+            "selected": [rows[0]],
+            "selected_by_file": {},
+            "selected_by_operator": {},
+            "candidate_file_sha256": "b" * 64,
+            "rare_operator_census": "python:falsy-swap",
+        }
+    selection_path = tmp_path / "selection.json"
+    selection_path.write_text(json.dumps(selection, sort_keys=True) + "\n")
+    return plan_path, selection_path, selected_ids, selection_sha256
+
+
+def _write_pilot_progress(
+    path: Path,
+    *,
+    head: str,
+    document: dict,
+    rows: list[dict],
+    selected_ids: list[str],
+    selection_sha256: str,
+    prior_selection_sha256: str | None = None,
+    shard: dict | None = None,
+) -> None:
+    started = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    records = []
+    if prior_selection_sha256 is not None:
+        records.extend([
+            {
+                "event": "run",
+                "commit": head,
+                "lane": "package",
+                "rigor": ["R0", "R2"],
+                "started": (started - timedelta(minutes=2)).isoformat(),
+            },
+            {
+                "event": "candidates",
+                "commit": head,
+                "candidate_total": len(rows),
+                "selected_total": len(selected_ids),
+                "pending_total": len(selected_ids),
+                "selection_sha256": prior_selection_sha256,
+            },
+            {"event": "end", "candidate_total": len(rows),
+             "buckets": {bucket: 0 for bucket in MUTATION_BUCKETS},
+             "reason": "interrupted"},
+        ])
+    records.append({
+        "event": "run",
+        "commit": head,
+        "lane": "package",
+        "rigor": ["R0", "R2"],
+        "started": started.isoformat(),
+    })
+    if shard is not None:
+        records.append(shard)
+    records.append({
+            "event": "candidates",
+            "commit": head,
+            "candidate_total": len(rows),
+            "selected_total": len(selected_ids),
+            "pending_total": len(selected_ids),
+            "selection_sha256": selection_sha256,
+        })
+    records.append({"event": "baseline", "candidate_index": -1, "candidate_total": len(rows)})
+    outcome_by_id = {
+        outcome["candidate_id"]: bucket
+        for bucket in MUTATION_BUCKETS
+        for outcome in next(
+            claim["mutation"] for claim in document["claims"] if claim["rigor"] == "R2"
+        ).get(bucket, [])
+    }
+    selected_rows = [row for row in rows if row["id"] in set(selected_ids)]
+    buckets = {bucket: 0 for bucket in MUTATION_BUCKETS}
+    for index, row in enumerate(selected_rows):
+        bucket = outcome_by_id[row["id"]]
+        buckets[bucket] += 1
+        records.append({
+            "event": "candidate",
+            "candidate_id": row["id"],
+            "candidate_index": index,
+            "candidate_total": len(selected_ids),
+            "path": row["path"],
+            "lineno": row["lineno"],
+            "operator": row["operator"],
+            "description": row["description"],
+            "start_byte": row["start_byte"],
+            "end_byte": row["end_byte"],
+            "outcome_bucket": bucket,
+            "elapsed_seconds": 7.0 + index,
+            "emitted_at": (started + timedelta(seconds=10 + index)).isoformat(),
+        })
+    records.append({
+        "event": "end",
+        "candidate_total": len(rows),
+        "buckets": buckets,
+        "reason": None,
+    })
+    path.write_text("".join(json.dumps(item) + "\n" for item in records))
+
+
+@pytest.mark.parametrize(
+    "selection_schema",
+    ["b110-pilot-selection/1", "assay-analysis-r2-pilot-selection/1"],
+)
+def test_pilot_selection_summary_is_plan_bound_and_never_qualifying(
+    tmp_path, monkeypatch, selection_schema
+):
+    fixture = _fixture_document("r2_pass")
+    root, head, _verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, selection_path, selected_ids, selection_sha256 = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema=selection_schema,
+    )
+    progress = tmp_path / "pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256=selection_sha256,
+    )
+
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=(
+            "--plan-json", str(plan_path),
+            "--selection-file", str(selection_path),
+            "--project", "--project-jobs", "1",
+        ),
+    )
+
+    assert (code, error) == (3, "")
+    result = json.loads(output)
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert result["qualifying"] is False
+    assert result["verdict"] is None
+    assert "no_verdict" in result["complete_blockers"]
+    assert result["campaign"]["planned_total"] == len(rows)
+    assert result["campaign"]["selected_total"] == 1
+    assert result["campaign"]["completed_total"] == 1
+    assert result["campaign"]["pending_total"] == 0
+    assert result["campaign"]["selection_sha256"] == selection_sha256
+    assert result["runs"][0]["selection_sha256"] == selection_sha256
+    assert result["evidence"]["plan_json"]["sha256"] == hashlib.sha256(
+        plan_path.read_bytes()
+    ).hexdigest()
+    assert result["evidence"]["selection_file"]["sha256"] == hashlib.sha256(
+        selection_path.read_bytes()
+    ).hexdigest()
+
+
+def test_b110_analysis_accepts_output_from_the_real_selector(tmp_path, monkeypatch):
+    fixture = _fixture_document("r2_pass")
+    root, head, _verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, _synthetic_selection, _ids, _digest = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema="b110-pilot-selection/1",
+    )
+    selector = Path(__file__).resolve().parents[2] / "tools" / "b110_pilot_select.py"
+    candidate_path = tmp_path / "b110-candidates.txt"
+    selection_path = tmp_path / "b110-selection.json"
+    selected = subprocess.run(
+        [
+            sys.executable, str(selector),
+            "--plan", str(plan_path),
+            "--repo-root", str(root),
+            "--out", str(candidate_path),
+            "--report", str(selection_path),
+            "--seed", "b110-analysis-golden",
+            "--size", "1",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert selected.returncode == 0, selected.stderr
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    assert selection["schema"] == "b110-pilot-selection/1"
+    selected_ids = selection["selected_ids"]
+    assert candidate_path.read_text(encoding="utf-8").splitlines()[1:] == selected_ids
+
+    progress = tmp_path / "b110-pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256=selection["selection_sha256"],
+    )
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=(
+            "--plan-json", str(plan_path),
+            "--selection-file", str(selection_path),
+            "--project", "--project-jobs", "1",
+        ),
+    )
+    assert (code, error) == (3, "")
+    result = json.loads(output)
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert result["qualifying"] is False
+    assert result["campaign"]["selection_sha256"] == selection["selection_sha256"]
+    assert result["campaign"]["selected_total"] == len(selected_ids)
+
+
+def test_pilot_selection_rejects_a_progress_digest_from_another_sample(
+    tmp_path, monkeypatch
+):
+    fixture = _fixture_document("r2_pass")
+    root, head, _verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, selection_path, selected_ids, selection_sha256 = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema="assay-analysis-r2-pilot-selection/1",
+    )
+    progress = tmp_path / "pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256="f" * 64,
+    )
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=("--plan-json", str(plan_path), "--selection-file", str(selection_path)),
+    )
+    assert code == 2
+    result = json.loads(output)
+    _validate(result)
+    assert result["status"] == "evidence_error"
+    assert result["errors"][0]["message"] == (
+        "progress selection_sha256 differs from the bound selection file"
+    )
+    assert error.endswith("progress selection_sha256 differs from the bound selection file\n")
+
+
+@pytest.mark.parametrize(
+    "tamper, message",
+    [
+        ("plan-digest", "selection does not bind the exact source plan bytes"),
+        ("unknown-id", "selection contains a candidate outside the current plan"),
+        ("out-of-order", "selection candidate order differs from the current plan"),
+    ],
+)
+def test_pilot_selection_refuses_false_plan_or_inventory_bindings(
+    tmp_path, monkeypatch, tamper, message
+):
+    fixture = _fixture_document("r2_pass")
+    root, head, _verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, selection_path, selected_ids, _digest = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema="assay-analysis-r2-pilot-selection/1",
+    )
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if tamper == "plan-digest":
+        selection["plan_sha256"] = "e" * 64
+    elif tamper == "unknown-id":
+        unknown = "f" * 64
+        assert unknown not in {row["id"] for row in rows}
+        selection["selected_ids"] = [unknown]
+        selection["selection_sha256"] = campaign_api.mutation.plan_sha256([unknown])
+    else:
+        reordered = [row["id"] for row in rows[:2]][::-1]
+        assert len(reordered) == 2
+        selection["selected_ids"] = reordered
+        selection["size"] = len(reordered)
+        selection["selection_sha256"] = campaign_api.mutation.plan_sha256(reordered)
+        selected_ids = reordered
+    selection_path.write_text(json.dumps(selection, sort_keys=True) + "\n")
+    selection_digest = selection["selection_sha256"]
+    progress = tmp_path / "pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256=selection_digest,
+    )
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=("--plan-json", str(plan_path), "--selection-file", str(selection_path)),
+    )
+    assert code == 2
+    result = json.loads(output)
+    _validate(result)
+    assert result["status"] == "evidence_error"
+    assert result["errors"][0]["message"] == message
+    assert error.endswith(message + "\n")
+
+
+def test_pilot_selection_rejects_a_prior_run_with_another_selection_digest(
+    tmp_path, monkeypatch
+):
+    fixture = _fixture_document("r2_pass")
+    root, head, _verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, selection_path, selected_ids, selection_sha256 = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema="assay-analysis-r2-pilot-selection/1",
+    )
+    progress = tmp_path / "pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256=selection_sha256,
+        prior_selection_sha256="f" * 64,
+    )
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=("--plan-json", str(plan_path), "--selection-file", str(selection_path)),
+    )
+    assert code == 2
+    result = json.loads(output)
+    _validate(result)
+    assert result["errors"][0]["message"] == (
+        "progress selection_sha256 differs from the bound selection file"
+    )
+    assert error.endswith("progress selection_sha256 differs from the bound selection file\n")
+
+
+def test_pilot_selection_cannot_be_combined_with_shard_or_verdict(
+    tmp_path, monkeypatch
+):
+    fixture = _fixture_document("r2_pass")
+    root, head, verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, selection_path, selected_ids, selection_sha256 = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema="b110-pilot-selection/1",
+    )
+    progress = tmp_path / "pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256=selection_sha256,
+        shard={"event": "shard", "shard_index": 0, "shard_count": 2,
+               "selected_total": 1},
+    )
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=("--plan-json", str(plan_path), "--selection-file", str(selection_path)),
+    )
+    assert code == 2
+    result = json.loads(output)
+    _validate(result)
+    assert result["errors"][0]["message"] == "pilot selection cannot be combined with a shard"
+    assert error.endswith("pilot selection cannot be combined with a shard\n")
+
+    with pytest.raises(SystemExit) as exit_info:
+        _invoke(
+            root,
+            head,
+            verdict,
+            progress,
+            extra=("--plan-json", str(plan_path), "--selection-file", str(selection_path)),
+        )
+    assert exit_info.value.code == 2
+
+
+def test_native_pilot_projection_must_use_declared_worker_count(tmp_path, monkeypatch):
+    fixture = _fixture_document("r2_pass")
+    root, head, _verdict = _repository(tmp_path, fixture)
+    rows = _plan_rows(fixture)
+    _install_plan(monkeypatch, fixture, rows)
+    plan_path, selection_path, selected_ids, selection_sha256 = _write_pilot_inputs(
+        tmp_path,
+        root=root,
+        head=head,
+        rows=rows,
+        schema="assay-analysis-r2-pilot-selection/1",
+    )
+    progress = tmp_path / "pilot-progress.jsonl"
+    _write_pilot_progress(
+        progress,
+        head=head,
+        document=fixture,
+        rows=rows,
+        selected_ids=selected_ids,
+        selection_sha256=selection_sha256,
+    )
+    code, output, error = _invoke(
+        root,
+        head,
+        None,
+        progress,
+        extra=("--plan-json", str(plan_path), "--selection-file", str(selection_path),
+               "--project", "--project-jobs", "2"),
+    )
+    assert code == 2
+    result = json.loads(output)
+    _validate(result)
+    assert result["status"] == "evidence_error"
+    assert result["errors"][0]["message"] == (
+        "native R2 pilot projection jobs must equal the lane's declared mutation jobs"
+    )
+    assert error.endswith(
+        "native R2 pilot projection jobs must equal the lane's declared mutation jobs\n"
+    )
 
 
 def test_o1_exit_mapping_follows_the_status_table(tmp_path, monkeypatch):

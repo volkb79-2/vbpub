@@ -161,26 +161,33 @@ The existing cgprofile daemon already has the host proc and cgroup view
 required for its measurement and placement duties. Run-Gate's explicit
 resource_observer = "cgprofile" lane setting mounts a separate
 observer-only Unix socket, not ctl.sock, into the opted-in tester container.
-It is supported on native Assay lanes and on any explicitly opted-in
-`tester-unified` command lane. Its intended command use is a wrapper that
+It is supported on native Assay lanes and command lanes whose resolved
+environment has `mode = "ephemeral"`. Its intended command use is a wrapper that
 launches an Assay campaign (such as Assay's B105 self-qualification driver).
 Run-Gate cannot establish from arbitrary command argv whether a script will
 launch Assay, so the opt-in is defined by the declared lane rather than a
 fragile command-string heuristic. This keeps the observer available across
 the wrapper boundary without asking the wrapper to recreate Docker mount or
 credential logic; the inherited endpoint variable must reach its Assay
-process.
+process. Before launching the lane, Run-Gate queries the daemon's control
+`version` response and requires an observer advertisement with contract 2,
+the fixed socket path, and `listening = true`. This catches stale daemons and
+failed socket binds before test code starts. The advertisement is a startup
+capability check; it does not prove the listener will remain healthy for the
+whole lane.
 The first cut restricted the setting to native Assay lanes, but that excluded
 B105's qualification wrapper: it builds and installs the exact source wheel,
 then runs Assay in a private venv, so replacing it with the ordinary lane
-driver would discard its deadline and receipt guarantees. The extension is
-limited to an explicit opt-in on `tester-unified` command lanes. It broadens
-which runner may receive the same read-only endpoint, not what the endpoint
-can do: the daemon still binds each query to that peer's native thread and
-returns only that peer's gates-slice ancestry, never a caller-selected path,
-sibling cgroup, or control operation. The explicit lane declaration is the
-grant; the command process is trusted with the same narrow query capability
-whether or not it passes the endpoint onward to Assay.
+driver would discard its deadline and receipt guarantees. The initial command
+lane extension allowed only `tester-unified`; revision 66 generalized it to
+any command lane whose resolved environment is ephemeral. The environment name
+does not grant the capability: the lane must still opt in explicitly. This
+broadens which runner may receive the same read-only endpoint, not what the
+endpoint can do: the daemon still binds each query to that peer's native thread
+and returns only that peer's gates-slice ancestry, never a caller-selected
+path, sibling cgroup, or control operation. The explicit lane declaration is
+the grant; the command process is trusted with the same narrow query
+capability whether or not it passes the endpoint onward to Assay.
 The observer accepts only a resource-counter request; filesystem read-only
 alone would not constrain the existing control socket's verbs. Docker also
 receives the socket's observed GID as a supplementary group, and the socket

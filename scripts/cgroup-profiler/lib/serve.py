@@ -782,6 +782,14 @@ class SessionServer:
                     "peer_cred": True,
                 },
             },
+            # Resource observation is a separate wire contract and listener;
+            # advertise it so operators can distinguish a control-v1 daemon
+            # that supports the contract-2 R2 observer from an older daemon.
+            "resource_observer": {
+                "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "path": self.observer_socket_path,
+                "listening": self._observer_sock is not None,
+            },
         }
 
     # ── verb: start ──────────────────────────────────────────────────────

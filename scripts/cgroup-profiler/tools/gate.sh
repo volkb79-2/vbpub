@@ -215,6 +215,7 @@ printf 'gate: placement probe container=%s parent=%s\n' "$probe_name" "$probe_pa
 # the response after the daemon has created the named container.
 trap 'docker rm -f "$probe_name" >/dev/null 2>&1 || true' EXIT
 probe_cid="$(docker run -d --name "$probe_name" \
+  --init --pids-limit=8192 \
   --cgroup-parent="$probe_parent" --network=none --cpus=3 \
   --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1003:1003 \
   --mount type=bind,source=/sys/fs/cgroup,target=/hostcg,readonly \
@@ -280,6 +281,7 @@ printf 'gate: test container=%s parent=%s\n' "$container_name" "$parent"
 # response still leaves the EXIT trap able to remove only our attempted gate.
 trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
 cid="$(docker run -d --name "$container_name" \
+  --init --pids-limit=8192 \
   --cgroup-parent="$parent" \
   --network=none \
   --memory="${CGPROFILE_GATE_MEMORY:-3g}" \

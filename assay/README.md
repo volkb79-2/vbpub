@@ -1003,6 +1003,13 @@ campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
 
+`assay analyze campaign` can summarize a completed B110 or B131 sample when
+given the exact JSON output from `assay plan` and its selector report. It checks that
+the selected IDs and progress digest match those inputs; the result remains
+`incomplete` with `qualifying: false` and exit code 3. See the
+[pilot-analysis design](docs/DESIGN-GUIDE.md#analyze-a-bounded-pilot) and
+[worked commands](docs/CONSUMERS.md#analyze-a-bounded-pilot).
+
 The registered B110 pilot retains a host-verified evidence snapshot at
 `.assay/b110-pilot-evidence/`, with a separate receipt at
 `.assay/b110-pilot-evidence.receipt.json`. After validating a successful

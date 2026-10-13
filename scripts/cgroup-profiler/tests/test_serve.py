@@ -3747,7 +3747,13 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
             "socket": {"path": socket_path, "listening": True,
                        "allow_uids": [], "peer_cred": True},
         }
+        assert version_out["resource_observer"] == {
+            "contract": 2,
+            "path": str(Path(socket_path).with_name("resource-observer.sock")),
+            "listening": True,
+        }
         version_out.pop("transports")
+        version_out.pop("resource_observer")
         assert _canon(version_out) == _canon(json.loads((FIXTURES / "version-v1.json").read_text()))
 
         # -- status, paused mid-session at frame 2 --

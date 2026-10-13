@@ -36,6 +36,7 @@ budget = "30m"                       # advisory; consumers may enforce
 # same overreach.
 [lanes.session-extract]
 kind = "assay"
+resource_observer = "cgprofile"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
 # session-extract runs one native candidate at a time for cgroup-event

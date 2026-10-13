@@ -622,11 +622,9 @@ class PlacementRequest:
 def _parse_bytes(raw: Any, *, option: str) -> Optional[int]:
     if raw is None:
         return None
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        raise CapsError(f"{option} must be a number of bytes, got {raw!r}")
-    if isinstance(raw, float) and (not math.isfinite(raw) or not raw.is_integer()):
-        raise CapsError(f"{option} must be a finite whole number of bytes, got {raw!r}")
-    value = int(raw)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise CapsError(f"{option} must be an integer number of bytes, got {raw!r}")
+    value = raw
     if value < 0:
         raise CapsError(f"{option} must be >= 0, got {value}")
     return value
