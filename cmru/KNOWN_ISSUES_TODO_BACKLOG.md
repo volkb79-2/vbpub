@@ -1579,39 +1579,20 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Status: moved to ciu CIU-122 (2026-10, cmru program O4, W1-CIU-ENROLL).** The code moved to `ciu/installer/enroll.py`; the full finding, evidence, contract and oracles are preserved in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` CIU-122.
 
-### KI-51 — Adopt cli-extended (unified adoption, order 2 of 8) — *planned*
+### KI-51 — Adopt cli-extended (unified adoption, order 2 of 8) — *SHIPPED in cmru-v6.1.0*
 
-**Filed:** 2026-10-05 by the cli-extended unified-adoption program (W10). **Type:** feature. **Source documents:** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions") and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session. **SPEC:** `S-CLI.9` (`docs/SPEC.md:373`), which this moves onto the surface lifecycle; the SPEC change is part of the work.
+**Filed:** 2026-10-05 by the cli-extended unified-adoption program (W10).
+**Resolved:** 2026-10-07 in the released `cmru-v6.1.0`. The tagged project
+declares `cli-extended>=0.3.0` as a real wheel dependency, removes the
+vendored library, and documents verified offline installation and installer
+ordering. The current cockpit reports `cmru 6.1.0`; the prior “planned” label
+and unchecked implementation list were stale.
 
-**Observed mechanism (verified in source). cmru already uses cli-extended, but by vendoring, and every tool adopts it through cmru's own release path, so this is the order-2 prerequisite for the rest.**
-
-- Vendoring (AC-24, CX-D1): `pyproject.toml:28` adds `../libraries/cli-extended/src` to `packages.find` and `:32` maps `cli_extended = "../libraries/cli-extended/src/cli_extended"` through `[tool.setuptools.package-dir]` (`:30`). `dependencies = []` at `:14`; no `cli-extended` requirement. `README.md:64` tells readers to use installed console scripts because of the vendored libraries.
-- Library path hacks (AC-25): none toward `libraries/cli-extended` in `src/` (the `sys.path.insert` calls at `src/cmru/config.py:206` and `src/cmru/transaction.py:248` point at `libraries/worktree/src`, a different shared library with the same shape; they are out of this entry's scope but should be tracked with the worktree library's own adoption). Gate lanes carry the library checkout on `PYTHONPATH`: `assay.toml:41`, `run-gate.toml:58,116,171` (`PYTHONPATH=src:../libraries/cli-extended/src:../libraries/worktree/src`), plus `tools/run_release_gate.py:49` and `tools/project_fixture.py:15` copying `libraries/cli-extended` into release-gate fixtures. Under CX-D3 a gate lane may keep the worktree source for the revision under test; decide per lane in the carve.
-- Version reader (AC-01): `src/cmru/cli.py:2345-2358` (`_cmru_version`: `_source_tree_version()`, then `importlib.metadata.version("cmru")`, then the literal `"dev"`), and `src/cmru/cli_support.py:20-33` (a second reader that calls it and falls back to `importlib.metadata` and then `"dev"`, with a `pragma`-marked bootstrap branch). `src/cmru/manifest.py:134-146` reads the installed cmru version again for the release manifest. `cmru_identity` at `cli_support.py:35` builds `CliIdentity(...)` from that string. `CliIdentity.resolve` replaces all three, removing the literal fallback; the manifest reader needs a decision (it must not hide a missing version).
-- Exception wrapper (AC-10, AC-11): no `unexpected_exceptions=`/`expected_exceptions=` and no `--traceback` anywhere in `src/`. `except Exception as exc:` handlers: 17 in `src/cmru/cli.py` (~~8 in `src/cmru/controller/cli.py` and 1 in `src/cmru/agent/cli.py:109`~~: retired 2026-10-05). Each must be classified: domain error to `CliFailure`/`expected_exceptions`, or boundary to `unexpected_exceptions="report"`.
-- Registries (AC-03): `CliRegistry(` is constructed at 12 sites, not the 5 groups the program table names: `src/cmru/cli.py:5484`, ~~`controller/cli.py:212`, `agent/cli.py:246`~~ (retired 2026-10-05: 10 sites remain), `handlers.py:592`, `tester_gate.py:636`, `runner.py:627`, `tool_deps.py:572`, `scaffold.py:403`, `getpy.py:185`, `resolve.py:102`, `versions.py:2053`, `standards.py:168`. Consolidate into one registry (cli, agent, controller, handlers, tester plus the seven per-feature ones) so one surface manifest and one skills/doctor registration cover cmru.
-- `--dry-run` copies (AC-05, AC-12): hand-declared `OptionSpec(("--dry-run",), ...)` at `runner.py:652`, `tool_deps.py:609`, `standards.py:202`, `handlers.py:648`, `scaffold.py:428`, `getpy.py:222`, `versions.py:2068`, `tester_gate.py:675`, ~~`agent/cli.py:262` and `:272`~~ (retired); a `--yes` literal is passed to a delegated tool at `delegated.py:55` (not a CLI option). These collide with the library-owned `--dry-run` and become `VerbSpec(dry_run=True)` on mutating verbs; the carve must check each verb against KI-43/KI-44 (read-only parsers whose handlers read `args.dry_run`), because `--dry-run` on a verb without `dry_run=True` is refused with exit 2.
-- `parse_target_names` (AC-09): `src/cmru/cli_support.py:82-98` (empty name, duplicate, exclusive `all`, raising `TargetSelectionError`) is the reference semantics for `SelectorList` (W2 documents any intentional difference); `select_target_names` at `:101` stays as the registry-resolving layer.
-- Surface lifecycle (AC-16..AC-18): S-CLI.9's audit is hand-maintained (`docs/SPEC.md:373`, `docs/reviews/cli-extended-adoption-review.md`); it becomes `cli-extended surface sync/check` with a review catalog and findings file.
-- Skills (AC-19): `.claude/skills/cmru-cli/SKILL.md` is the source tree; `pyproject.toml:47-48` package-data lists only `templates/*`. Move the skill to package data and call `register_skills_verbs`.
-- Doctor (AC-20): cmru has external prerequisites (git, docker, forge CLIs); decide which of the existing diagnostics become named `doctor` checks.
-- Tests (AC-23): no `_invoke*` subprocess helper found beyond `tests/test_cli_abandon.py:128` (`_invoke_abandon`, which calls the handler in-process); 52 test files call `subprocess.run` directly, which are candidates for `invoke_script(home=...)`.
-- Installer (CX-D2, specific to cmru): `get.py.tmpl` installs each bundled wheel on its own with `pip install --no-index <wheel>` (`src/cmru/templates/get.py.tmpl:634`, in the function documented at `:618` as "Create/update private venv and install bundled wheels (no-index)"); a tool wheel that depends on `cli-extended` cannot resolve it that way. `[[project.installer.wheels]]` is parsed at `src/cmru/config.py:377-390` (`path`, `distribution`) and consumed e.g. by `ciu/cmru.toml:50-52`. Work: install cli-extended first from the sha256-verified release manifest, then every tool wheel with `--no-index --find-links <cache>`; bundle cli-extended's wheel in every installer bundle. Verified in review (2026-10-05, toy wheels, offline): installing the dependency wheel first into the same venv makes the existing per-wheel `--no-index` loop succeed, so install ORDER is the necessary change and `--find-links` is defence in depth — do not over-scope the installer rewrite. This is the change every other tool's adoption depends on.
-
-**Common shape (tick each, cite the AC row).**
-
-- [ ] Declare `cli-extended>=0.2.0`; delete the `package-dir` entry (`pyproject.toml:32`) and the `packages.find` source root (`:28`) (AC-24).
-- [ ] `[[installer.wheels]]` / `get.py` install cli-extended first, `--no-index --find-links` (CX-D2).
-- [ ] `CliIdentity.resolve(...)` for `_cmru_version`, `cli_support.py`, `manifest.py` (AC-01, AC-02).
-- [ ] `unexpected_exceptions="report"`; classify the 26 `except Exception` handlers (AC-10, AC-11).
-- [ ] One consolidated registry; own `--dry-run` options become `dry_run=True`; `parse_target_names` becomes `SelectorList`; constraints where handlers check options (AC-03, AC-05, AC-06, AC-09, AC-12).
-- [ ] Surface lifecycle with review and findings; S-CLI.9 moved onto it (AC-16, AC-17, AC-18).
-- [ ] Skills via `register_skills_verbs` (AC-19); `doctor` (AC-20).
-- [ ] Tests: `assert_cli_contract`, `invoke_script`, plugin if a catalog exists (AC-21, AC-22, AC-23).
-
-**Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; cmru's own registered gate passes (`run-gate.py`, lanes in `run-gate.toml`); a released cmru version is deployed (merge + `cmru release` + devcontainer install; remember the `--resume` / `--set-version` hazard recorded in memory). A fresh `get.py enroll` bundle on a pip-less host installs cmru and cli-extended offline.
-
-**Oracles.** Installing the built cmru wheel into a scratch venv with `--no-index` and no cli-extended wheel fails with the dependency named; with the verified cli-extended wheel it passes `cmru --version`; the installer test in `tests/test_installer.py` gains a case where the tool wheel `Requires-Dist: cli-extended` and installation order is wrong (must fail) versus right (must pass); a controlled wrong implementation that leaves the vendored copy in the wheel fails a wheel-contents check.
+**Acceptance evidence:** the release tag contains the dependency floor and
+the adoption/release notes; the installed command reports 6.1.0. The shared
+library's follow-up floor/surface fixes are tracked separately (for example,
+KI-61 was resolved by cli-extended 0.3.0). No open CMRU worktree is needed to
+complete KI-51.
 
 ### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *fixed in source (a, a', c', b), pending release; (b) is bypassed by assay's hermetic git and filed as assay B147; severity was critical (silent false kills)*
 
@@ -1699,11 +1680,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** the new tests pass; planting the path check as always-true or always-false fails one of them.
 
-### KI-58 — Non-empty `## [Unreleased]` bodies in three estate changelogs will make their next tagged releases fail (KI-30 follow-up, estate) — *fixed in candidate; release dry-run pending, severity: major*
+### KI-58 — Non-empty `## [Unreleased]` bodies in three estate changelogs will make their next tagged releases fail (KI-30 follow-up, estate) — *preflight issue fixed in candidate; release-note carry-forward pending, severity: major*
 
-**Observed:** since W0-REL (REL-10 / KI-30) a tagged release is refused while a plain `## [Unreleased]` section has a non-empty body. Earlier backlog text said the Assay, Run-Gate and cgprofile changelogs still had notes, but that no longer matches the current candidate.
+**Observed:** since W0-REL (REL-10 / KI-30) a tagged release is refused while a plain `## [Unreleased]` section has a non-empty body. The candidate had emptied Run-Gate and cgprofile sections, but the removed release notes must still ship with their releases.
 
-**Fixed in source:** `assay/CHANGES.md`, `run-gate-project/CHANGES.md` and `scripts/cgroup-profiler/CHANGES.md` each keep an empty `[Unreleased]` section with a comment. Their versioned history is generated from project-scoped release commits.
+**Current disposition:** the sections remain empty for CMRU's preflight. The removed Run-Gate and cgprofile notes are preserved in `run-gate-project/nyxloom-trove/reports/CMRU-KI58-unreleased-notes-carry-forward-2026-10-13.md` and must be placed in the matching versioned release sections before tagging. Do not call this complete until the notes appear in the tagged changelogs and the dry-runs pass.
 
 **Oracle:** run `cmru release --dry-run` for each selected project from the pushed integration snapshot and confirm each passes the changelog check.
 
@@ -1741,7 +1722,7 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** CMRU's release step names `gate`; the exact 6.2.0 release source passes the full gate with `.assay/mutation-cmru.json`; every survivor is fixed or otherwise dispositioned; and no `gate-provisional` lane remains.
 
-### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *fixed in the `cmru-hotfix-walk` branch, severity: major (release blocker)*
+### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *superseded by KI-74; retained as incident history*
 
 **Observed:** `cmru release cmru --set-version 6.0.0` failed in `gate-provisional` with `cmru-release-gate: cannot inventory CMRU secret overlays: [Errno 13] Permission denied: '/workspaces/vbpub/nyxloom/mattermost/vol-postgres-data'`. `_secret_overlay_paths` in `tools/run_release_gate.py` walks the whole mount root and its `onerror` raised on any error; that directory is the live production Postgres data dir (`drwx------`, uid 70).
 
@@ -1749,15 +1730,15 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `/workspaces/vbpub` returns and WARNs for `vol-postgres-data`.
 
-### KI-65 — release-gate secret masker walks nested sibling worktrees and can fail restore during a concurrent change (related: KI-63, run-gate RG-86) — *implementation in candidate; exact gate pending, severity: high (release-gate integrity)*
+### KI-65 — release-gate secret masker walks nested sibling worktrees and can fail restore during a concurrent change (related: KI-63, run-gate RG-86) — *superseded by KI-74; retained as incident history*
 
 **Observed:** `tools/run_release_gate.py` pruned `.worktrees/` while inventorying a main checkout. Run-Gate then mounted the whole main path, so publisher secrets in nested sibling worktrees remained visible inside the tester. A concurrent sibling-worktree removal during a long gate could also make restoration fail after all lanes passed (seen 2026-10-07 in a review run). KI-63 already had to teach the walk to tolerate foreign-owned and vanished paths; main-checkout mounting is the exposure, while traversing outside a selected linked worktree is the restoration hazard.
 
-**Expected:** CMRU's registered release gate requires a linked Git worktree and refuses a main checkout before masking or lane launch. Inventory and mask secret overlays physically reachable inside the selected linked worktree, including nested `.worktrees/`; do not walk the shared Git directory or external sibling worktrees. A secret file appearing or vanishing in an external sibling worktree must not affect the verdict. Each overlay is bound to its parent directory identity. If that parent disappears or is replaced during the gate, do not restore into the new tree; preserve the secret in its private backup and fail the gate because restoration is incomplete.
+**Historical expected behavior (superseded):** CMRU's registered release gate required a linked Git worktree and refused a main checkout before masking or lane launch. Inventory and masking were scoped to that selected tree, with identity-bound restoration. KI-74 replaces this behavior with an exact-HEAD sidecar and no caller-tree mount.
 
-**Oracle:** a main-checkout CMRU release gate refuses before masking or lane launch, even when a nested sibling secret exists; linked release lanes mask nested secrets inside their selected worktree and cannot read external caller/sibling secrets; inventory and restoration do not touch external siblings; mocked lanes remove or replace a nested worktree and prove the gate fails, retains the backup path, and never writes the old secret into the replacement; user-facing gate docs describe this boundary.
+**Historical oracle:** the prior tests covered main-checkout refusal, nested secrets, and safe restoration across worktree replacement. KI-74 now tests caller-tree exclusion and the live canary.
 
-**Implementation status:** the contract-2 candidate opens and pins each overlay's parent directory for restoration, performs filesystem operations relative to that descriptor, and checks the original pathname identity before completion. If the parent is absent or replaced, it leaves the replacement untouched, retains a private mode-0600 backup, and raises an error so passed lanes cannot produce a green release gate. Behavioral oracles cover absent, replaced, and operation-boundary replacement cases; the exact registered CMRU gate is pending.
+**Disposition:** the in-place masking approach is no longer used. KI-74 replaces inventory and restoration with an attached exact-HEAD sidecar that is the only checkout mounted into tester lanes.
 
 ### KI-66 — `installed_wheel_smoke` cleanup removes only what its own build created (regression test missing) — *fixed 2026-10-07 (`cmru-post6`), severity: minor*
 
@@ -1787,13 +1768,15 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** a release test with a hand-edited stale generated section asserts the WARN (or refusal) names the dropped line; a current section stays byte-identical with no WARN.
 
-### KI-64 — Scope gate-side secret masking to the selected worktree (CMRU-CREDPASS; RG-NARROW shipped in run-gate 23.10.0) — *implementation in candidate; exact gate pending, severity: minor*
+### KI-64 — Scope gate-side secret masking to the selected worktree (CMRU-CREDPASS; RG-NARROW shipped in run-gate 23.10.0) — *superseded by KI-74; retained as design history*
 
 **Observed:** CMRU-CREDPASS (cmru 6.1) stopped copying `cmru.secret.toml` into release worktrees: the parent resolves the credential on the host and hands it to the transaction child over a private inherited pipe, and a child never reads a credential file from its own root. Run-Gate RG-NARROW mounts only a linked lane's judged worktree plus sanitized Git metadata. The masker handles overlays inside the selected linked worktree; it must not inventory shared Git metadata or external sibling checkouts.
 
-**Chosen behavior:** run-gate 23.10.0 shipped RG-NARROW (ephemeral lanes mount only the worktree under test plus sanitized Git metadata; general main-checkout ephemeral lanes require explicit `--allow-main-checkout`). CMRU's publisher-secret release gate is narrower: it requires a linked worktree because a main-checkout mount can expose sibling secrets. The linked-worktree inventory includes secrets under paths physically inside that selected tree and never scans its external siblings.
+**Historical behavior (superseded):** run-gate 23.10.0 shipped RG-NARROW (ephemeral lanes mount only the worktree under test plus sanitized Git metadata; general main-checkout ephemeral lanes require explicit `--allow-main-checkout`). CMRU's publisher-secret release gate required a linked worktree because a main-checkout mount could expose sibling secrets, then inventoried only that selected tree.
 
-**Oracle:** a main-checkout CMRU release gate refuses before masking or lane launch, even when a nested sibling secret exists; linked release lanes mask nested secrets inside their selected worktree and cannot read external caller/sibling secrets; inventory and restoration do not touch external siblings; user-facing gate docs describe this boundary.
+**Disposition:** KI-74 replaces this masking scope with a separate exact-HEAD sidecar and no mount of the caller's checkout.
+
+**Historical oracle (superseded):** earlier tests covered main-checkout refusal, selected-tree masking, and external sibling isolation. KI-74's exact-snapshot tests replace the masking assertions.
 
 ### KI-69 — Tagged artifact steps do not receive CMRU's exact release source identity — *fixed in source, pending registered gate; severity: high*
 
@@ -1833,10 +1816,48 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 
 **Oracle:** a resume with a dirty untracked file under `analysis/src/` refuses; so does an ignored Python file under a package `core/` directory even when Assay's own Git helper is patched to report clean. An ignored test file and assume-unchanged or skip-worktree index entries also refuse, while generated pytest, bytecode and Hypothesis caches and coverage outputs are allowed. A committed `analysis/src/` change in a linked Assay worktree refuses prior evidence even when CMRU's `--repo-root` points to another checkout. Unchanged Assay packages permit reuse across unrelated monorepo documentation commits. Malformed, missing, duplicate, unsafe, symlinked, non-literal, or unsupported package-root metadata refuses closed; a real import from a declared root succeeds; and campaign startup refuses dirty analysis source before it runs the baseline. Evidence schema 5 records the distribution metadata under an accurately named field.
 
-### KI-73 — CMRU secret inventory skips tester-visible virtual environments and caches — *fixed in source, pending registered gate; severity: high (publisher-secret exposure)*
+### KI-73 — CMRU secret inventory skips tester-visible virtual environments and caches — *superseded by KI-74; retained as incident history*
 
 **Observed:** the release-gate secret inventory pruned `.venv`, `venv`, `node_modules`, Python caches, and other generated directories even though Run-Gate mounts the selected worktree as a whole. A readable `cmru.secret.toml` in one of those paths therefore remained visible to tester code.
 
-**Expected:** inventory every directory visible through the judged worktree mount, including ignored/generated directories, and mask every discovered `cmru.secret.toml`. Continue to fail closed for unreadable directories that the lane UID could traverse; exclude only Git metadata that is not part of the tester's working-tree file view.
+**Disposition:** exhaustive in-place inventory is no longer the chosen control. The aggregate gate mounts a separate committed snapshot, so ignored files in the caller's tree are excluded by construction; see KI-74.
 
-**Oracle:** parameterized inventory tests plant a publisher secret under `.venv`, `node_modules`, `__pycache__`, `.pytest_cache`, and `.mypy_cache`; every path is discovered. `test_release_lanes_run_with_secret_files_and_ambient_credentials_masked` confirms a `.venv` secret is overlaid during each lane and its original bytes and metadata are restored after success.
+**Historical oracle:** earlier masking tests covered secrets under `.venv`, `node_modules`, `__pycache__`, `.pytest_cache`, and `.mypy_cache`. KI-74 adds snapshot exclusion and live-container canary oracles.
+
+### KI-74 — aggregate release lanes must never mount the mutable caller checkout — *implemented with focused tests; registered gate pending; severity: critical (publisher-secret and evidence integrity)*
+
+**Observed:** the aggregate gate inventoried secret paths once and mounted the selected linked worktree read-write into several tester lanes. A publisher secret created after inventory, or in a directory the walk skipped, could therefore be read by tester code. In-place masking also temporarily changed the caller's tree and made safe restoration part of the gate's success claim. Run-Gate's shared Git metadata mount separately allowed a tester to write a common `post-commit` hook that host Git could later execute.
+
+**Chosen behavior:** CMRU requires a linked source worktree with no tracked changes, then creates a stable attached sidecar worktree at the exact source commit through the shared worktree lifecycle. Only the sidecar is mounted into lanes. A host-only canary is checked from inside the actual installed-wheel tester lane. Tracked publisher secrets, configured Git filters, and tracked gate-evidence paths refuse before lanes start. After each lane CMRU validates tracked state, unapproved ignored/untracked files and Run-Gate state; it retains only `.run-gate/` and a fixed evidence allowlist between lanes. Only that allowlist is copied back. Snapshot branches remain attached for resume and are removed with successful release-candidate cleanup. Run-Gate overlays shared `hooks/` with a private empty read-only directory and mounts common `info/` read-only; CMRU disables host hooks while preparing mutation facts. **The gate's own executable code and every helper it imports must also be bound to tracked files at the claimed source HEAD:** a helper imported from an untracked caller-side file is outside the exact snapshot and cannot participate in a gate that claims to judge that commit.
+
+**Oracles:** focused tests prove late ignored secrets in the source stay outside the exact snapshot, tracked secrets/filters/evidence paths refuse, lanes receive only allowlisted prior state, invalid output cannot copy a plausible verdict back, interrupted snapshots are validated before retry cleanup, and release-candidate cleanup removes its snapshot. Add an adversarial case with an untracked caller-side helper that would alter the gate result; the gate must refuse or execute only the helper from the tracked exact-HEAD snapshot. A real registered CMRU tester lane checks the host canary; Run-Gate's real-container acceptance test proves an in-container commit cannot run or replace a host hook or alter `info/exclude`, and a later host commit still runs the original hook unchanged. Exact-tree registered gates and the aggregate release gate remain required before release.
+
+### KI-75 — GitHub release bodies omit curated version notes and migration guidance — *open, severity: major (release usability and upgrade risk)*
+
+**Observed:** CMRU publishes generic product/use/install text in GitHub Release
+bodies, while project `CHANGES.md` files contain the version-specific feature,
+fix, and migration notes. For example, [`assay-v9.0.0`](https://github.com/volkb79-2/vbpub/releases/tag/assay-v9.0.0)
+describes the product and installation but does not include the release's
+detailed change list. Readers must discover a separate source to learn what
+changed or how to migrate.
+
+**Expected behavior:** the body for a CMRU-managed GitHub release keeps its
+generated artifact and installation instructions, then appends the curated
+notes for the exact released version from the configured project changelog.
+The release must not silently omit notes, duplicate them, or pull text from
+`[Unreleased]` or another version. Projects with no curated notes retain the
+generated body. This works for each CMRU-managed artifact type and custom
+changelog paths.
+
+**Dry-run contract:** `cmru release --dry-run` shows the complete composed
+body and the exact version section it used. A malformed or missing version
+section when curated notes are declared is a clear refusal before tag or
+publication side effects.
+
+**Oracles:** a fixture with Added, Fixed, and migration notes proves their
+order after the generated installation block and exact preservation of
+Markdown; a second version and an `[Unreleased]` section prove no cross-version
+mixing; empty-note and missing-section cases distinguish “no notes” from
+“could not read the requested notes”; tests bind the dry-run preview to the
+body passed to the publisher. README, DESIGN-GUIDE, and CONSUMERS explain the
+note source, ordering, preview, and failure behavior before the feature ships.

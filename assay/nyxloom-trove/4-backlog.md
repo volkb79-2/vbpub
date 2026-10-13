@@ -12777,3 +12777,39 @@ worker count, estimates, and available summary facts; `--json` emits one
 complete JSON document with the existing schema and candidate rows. Registered
 Assay gates verify both paths and all in-repository JSON consumers pass the
 explicit flag.
+
+## B167 — provide a released migration path for dstdns's native Assay lanes
+
+**Status: OPEN; paired with dstdns's queued adoption workstream in its
+`docs/FUTURE-IMPROVEMENTS.md` backlog and `docs/OPEN-WORKSTREAMS.md` index.**
+
+dstdns has about 80 native Assay R2 lanes that still pin the Assay 7.2.0
+zipapp and verdict schema v13. Their Run-Gate environments are persistent
+`exec` runners and none declares a cgprofile observer. The current Assay 10
+candidate changes native R2's cgroup-event attribution and judge identity;
+Run-Gate currently accepts `resource_observer = "cgprofile"` only on
+`ephemeral` environments. A consumer cannot safely upgrade these lanes by
+changing one vendored version or copying an observer setting into every lane.
+
+**Assay-owned work:** publish a concise external-consumer migration path tied
+to actual release artifacts. It must state the released Assay version and
+verdict-schema floor, the supported language/adapter matrix, required
+Run-Gate/cgprofile contracts for native R2, how `exec` versus
+`ephemeral` affects observer use, and how a consumer verifies and resumes
+the resulting verdicts. Keep R0/R1 adoption independent of R2 resource
+observation, and describe mutation scoring separately from resource-usage
+profiling. Do not direct consumers to unreleased candidate versions or imply
+that JavaScript, Go, or SQL have capabilities the matrix marks absent or
+ingestion-only.
+
+**Dependencies:** B108/P8 phase 2 must finish before this guide describes
+campaign closeout as complete. Run-Gate and cgprofile must publish the
+contract-2 observer path Assay requires; the consumer guidance must name the
+supported environment mode for that path.
+
+**Acceptance:** README's capability matrix, DESIGN-GUIDE rationale, and
+CONSUMERS migration steps agree on released versions, schemas, language
+capabilities, and environment-mode constraints. The dstdns inventory can map
+every lane to one of those supported paths without inventing an observer
+requirement for R0/R1. Examples use the shipped Assay loader and versioned
+consumer interface; cross-document links resolve.
