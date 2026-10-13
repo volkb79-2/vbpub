@@ -660,8 +660,64 @@ sidecar. The caller's checkout is never mounted into tester-unified. This
 removes the inventory race: a publisher secret already present in an ignored
 directory, or created in the caller after snapshot creation, is outside the
 tester-visible tree rather than temporarily masked. A random host-only canary
-is planted in the caller and the installed-wheel lane verifies from inside the
-real tester container that the canary path is absent.
+is planted in the caller and the `installed-wheel-live` lane verifies from inside
+the real tester container that the canary path is absent. That proof is bound to
+THIS gate rather than to "a file says running": the manifest must name this very
+snapshot checkout, be in state `running`, and have been refreshed within 30
+minutes (the aggregate gate rewrites it before every lane). A `running` manifest
+left behind by a killed gate fails the second and third test, so it can never
+satisfy `--require-live-snapshot`. The plain `installed-wheel` lane carries no
+such requirement and stays directly runnable, as its documentation says;
+`installed-wheel-live` is the aggregate gate's variant and is not meant for
+direct use.
+
+The gate also judges only code bound to the claimed commit. The helpers it
+imports come from the caller's mutable tree, so a gate that "judges commit X"
+could be steered by a file that is not in X. Before anything imports or runs,
+CMRU inventories every directory it puts on `sys.path` (`cmru/src`,
+`cmru/tools`, `assay/src`, `assay/analysis/src`, `assay/tools`,
+`libraries/worktree/src`) against `git ls-tree HEAD` and refuses: an untracked or
+ignored executable module (including a top-level shadow such as `json.py`), any
+symlink, and any tracked file whose blob differs from HEAD or was deleted. The
+comparison is by blob hash, not by `git status --untracked-files=no`, which by
+construction cannot see an untracked file. The check runs again before every
+lane. (The simpler alternative, executing the orchestrator from the snapshot
+itself, was considered; it needs a trusted bootstrap in the caller to start it,
+so this change keeps the host-side runner and binds it to HEAD instead.)
+
+The gate protects the Git refs it owns, not the whole shared ref store. A
+digest of every ref (hundreds on a busy estate) made any other agent's commit,
+tag or fetch during a 14-hour gate a false failure that blamed the tester lane.
+The protected Git refs are the snapshot's branch, the source branch being judged,
+and the gate-owned `refs/cmru-gate/<id>/` namespace; a lane that moves one is a
+failure, and everything else in the repository belongs to concurrent work that a
+gate cannot attribute to a tester. Because the detector must be proven rather
+than assumed, the aggregate gate first runs the `ref-probe` lane: from inside the
+real tester container it writes a ref in that namespace, and the gate must
+detect it (then removes it). A silent detector fails the gate. Limit, stated
+plainly: a tester that writes an unrelated shared ref is not distinguishable from
+another agent doing so; confining that is Run-Gate's mount hardening, not a
+host-side comparison.
+
+Snapshot leases are judged by evidence, never by a stat of an absent PID. A
+holder records its PID, process start ticks, and its PID-namespace and boot
+identity. A lease is `dead` only when (a) there is none, (b) it expired and its
+holder is not a CMRU gate, or (c) the holder is from THIS namespace and its
+process is provably gone or recycled. A holder from another namespace (a host
+PID seen from the devcontainer), an unreadable one, or a legacy format is `live`
+while its 18-hour TTL runs and `indeterminate` after it; neither is ever reaped.
+The same rule applies to the source checkout: a path this process cannot stat
+is not a gone source, because it may live in another mount namespace (the
+estate's own CIU-15 lesson). Absence counts only with Git's evidence: the source
+is no longer registered, or registered, unlocked and reported prunable. The
+shared worktree library enforces that for orphan removal too
+(`remove_orphan_workspace` now refuses a source Git still registers as live).
+
+`cmru gate-snapshots` is the supported way to see and remove retained snapshots
+(`cmru release`'s own cleanup removes its candidate's). It lists each snapshot
+as `removable` or `retained` with the reason, re-judges every candidate from
+fresh facts at removal, and is safe to repeat. A snapshot whose source is still
+at its commit is retained for resume unless `--include-current` says otherwise.
 
 Before allocation, CMRU refuses a tracked `cmru.secret.toml`, a configured Git
 filter that could execute during checkout, and tracked files at the paths
@@ -686,10 +742,59 @@ tag names and commit IDs, not credentials.
 
 The host gate resolves the scoped Git auth from the caller through the private
 credential handoff described above; no secret file enters the sidecar. The
-aggregate `gate` lane owns this boundary. Direct component-lane runs bypass
-snapshotting and should use a secret-free checkout. KI-64/65/73's masking and
+aggregate `gate` lane owns this boundary. An individual tester component lane
+bypasses snapshotting and should use a secret-free checkout. KI-64/65/73's masking and
 restoration requirements are superseded by the exact-snapshot design tracked
 in KI-74; their original incidents remain in the backlog for history.
+
+## Release bodies carry the version's curated notes
+
+A GitHub Release body used to be `<operator notes or "<prefix> <version>">` plus the
+artifact block, and nothing read `CHANGES.md`: readers of `assay-v9.0.0` got install
+text but not the change list or migration notes, and the changelog preflight (which
+accepts a cleared `[Unreleased]`) could pass while the notes were silently absent.
+The body is now the generated block followed by the project's own section for
+exactly that version, taken from the same changelog the release already commits
+and gates.
+
+The choices, and what was rejected:
+
+- **One builder.** `release.build_release_body` (and
+  `build_variants_release_body`) assemble the body; the publisher and
+  `cmru release --dry-run` both call them, so the preview cannot describe text the
+  publisher will not send. A preview that re-implemented the layout would drift the
+  first time one side changed. The only unknowns before a build, the artifact file
+  name and its SHA256, are printed as marked placeholders rather than invented, between
+  `----- begin release body -----` and `----- end release body -----` lines.
+- **Exact section, verbatim, last.** The `## [X.Y.Z] - YYYY-MM-DD` heading through
+  the line before the next `## ` heading, unmodified, so Markdown, code fences and
+  migration steps survive byte for byte. It follows the install block because that
+  is what a reader needs first. `[Unreleased]` and other versions are never read.
+- **No silent fallback.** A missing, undated (`UNRELEASED`), duplicated, wrong-version
+  or empty section refuses. The alternative, publishing the generic body, is the
+  exact failure this change exists to remove. A project that declares
+  `changelog = false` has decided it has no notes and gets the generated body
+  alone; the two cases are distinguished by a protected declaration
+  (`CMRU_RELEASE_NOTES_SOURCE=changelog:<path>` or `none`) that the runner gives the
+  publishing step and projects cannot set. A publisher invoked without it refuses
+  and names the remedy instead of guessing.
+- **Refuse early, read the right bytes.** The prepare phase resolves the pending
+  section right after generating the history, before the gate, tag or upload. At
+  publish time the text is read from the tagged candidate's commit
+  (`CMRU_RELEASE_COMMIT`, or a retained build's source commit), not from whatever
+  the working tree holds later.
+- **`--notes-env` stays, as a supplement.** It replaces only the opening line; it
+  cannot supply or suppress the section.
+- **KI-68 protects the notes.** Curated notes live in the generated section. If
+  later project commits make the section stale, regenerating would replace its body
+  and lose them, so CMRU now refuses (exit 4) when the old body holds lines its own
+  generator would not produce, and lists them. Advance the section's
+  `<!-- cmru: source-end=... -->` to the final project commit in the same commit as
+  the edit and a current section is kept byte-identical. There is deliberately no
+  override flag.
+
+Image-only publishers that do not use a CMRU handler (for example a registry push)
+have no GitHub Release body; their notes stay in the changelog.
 
 ## Release history errors refuse the plan
 

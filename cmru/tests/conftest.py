@@ -39,6 +39,35 @@ def preserved_environ():
             os.environ.update(before)
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_release_notes_preflight: run the real KI-75 release-notes preflight "
+        "instead of the neutral stub unrelated prepare-phase tests get",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_notes_preflight(request, monkeypatch):
+    """Prepare-phase tests that mock changelog generation have no real changelog.
+
+    ``_prepare_release_projects`` refuses (before any gate or tag) when a tagged
+    project's pending section is unusable (KI-75). Tests of OTHER prepare
+    behaviour stub that seam; the KI-75 tests carry the
+    ``real_release_notes_preflight`` marker and exercise the real one.
+    """
+    if request.node.get_closest_marker("real_release_notes_preflight"):
+        return
+    from types import SimpleNamespace
+
+    from cmru import cli
+
+    monkeypatch.setattr(
+        cli, "_pending_release_notes_or_refuse",
+        lambda *_args, **_kwargs: SimpleNamespace(version="0.0.0"),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _restore_process_environment():
     # Hermeticity: the real estate config DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no
@@ -51,4 +80,8 @@ def _restore_process_environment():
     # values a test's own ``monkeypatch.delenv`` recorded (a leak the zz probe catches).
     with preserved_environ():
         os.environ["CGROUP_PARENT_DEV_GATES"] = "test-gates.slice"
+        # KI-75: a publisher refuses to run without a declared release-notes
+        # source. Tests of unrelated publisher behaviour declare "none"; the
+        # KI-75 tests set or remove it explicitly.
+        os.environ["CMRU_RELEASE_NOTES_SOURCE"] = "none"
         yield

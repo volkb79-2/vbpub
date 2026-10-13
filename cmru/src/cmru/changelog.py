@@ -16,6 +16,7 @@ import subprocess
 from typing import Any
 
 from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
+from cmru.release_notes import ReleaseNotes, ReleaseNotesError, extract_release_section
 from cmru.version import (
     _RELEASE_CONTROL_EXCLUDES,
     _external_version,
@@ -147,6 +148,37 @@ def pending_release_tag(
     return f"{getattr(project, 'prefix', None) or project.name + '-v'}{version}"
 
 
+def pending_release_notes(
+    repo_root: Path,
+    project: Any,
+    *,
+    minor: bool = False,
+    major: bool = False,
+    set_version: str | None = None,
+) -> ReleaseNotes:
+    """The curated section a tagged release of *project* will publish (KI-75).
+
+    Reads the changelog from the selected source tree for the SAME pending
+    version the history heading and the tag use. Raises
+    :class:`~cmru.release_notes.ReleaseNotesError` when the exact section is
+    missing, malformed, duplicated or empty, so a caller can refuse before any
+    tag, gate or upload. Only tagged projects with a changelog have a body.
+    """
+    path = _validate_changelog_path(project, repo_root)
+    version, _previous = _project_release_plan(
+        repo_root, project, minor=minor, major=major, set_version=set_version,
+    )
+    if version is None:
+        raise UsageRefusal(
+            f"{project.name}: a no-tag release has no GitHub Release body to preview"
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ReleaseNotesError(f"cannot read release notes source {path}: {exc}") from exc
+    return extract_release_section(text, version, source=str(path))
+
+
 def _subject_groups(
     repo_root: Path,
     previous_ref: str | None,
@@ -215,6 +247,7 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
 
 def _project_commits_after_cursor(
     repo_root: Path, project: Any, changelog_path: Path, section: str,
+    version: str | None = None,
 ) -> bool:
     """Whether project commits exist after a generated section's ``source-end``.
 
@@ -237,13 +270,44 @@ def _project_commits_after_cursor(
     # cmru's own ``file:`` version-bump commit lands AFTER the section is generated
     # and is release machinery, not project work: a resumed release must not count it
     # (it would regenerate the section with a self-referential "chore: bump" entry
-    # and re-tag a new commit).
-    bump_subject = f"chore: bump {getattr(project, 'prefix', None) or project.name + '-v'} to "
+    # and re-tag a new commit). KI-59: skip ONLY the exact commit cmru writes -- the
+    # subject for THIS prefix and the pending version, touching nothing but the
+    # declared version file (and the generated changelog). A look-alike subject on a
+    # real code change is project work.
     return any(
-        not item.startswith(bump_subject)
+        not _is_own_bump_commit(repo_root, project, changelog_path, item, version)
         for items in newer.values()
         for item in items
     )
+
+
+_ENTRY_HASH_RE = re.compile(r"\s\([0-9a-f]{7,40}\)$")
+_MAX_DROPPED_LINES_SHOWN = 20
+
+
+def _is_own_bump_commit(
+    repo_root: Path, project: Any, changelog_path: Path, item: str, version: str | None,
+) -> bool:
+    """Whether a rendered ``subject (hash)`` entry is cmru's own ``file:`` bump commit."""
+    version_cfg = getattr(project, "version", None)
+    strategy = getattr(version_cfg, "strategy", "") if version_cfg else ""
+    if version is None or not strategy.startswith("file:"):
+        return False
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    subject_hash = _ENTRY_HASH_RE.search(item)
+    if subject_hash is None or item[:subject_hash.start()] != f"chore: bump {prefix} to {version}":
+        return False
+    short = subject_hash.group(0).strip()[1:-1]
+    cwd = getattr(project, "cwd", None) or project.name
+    allowed = {
+        f"{cwd}/{strategy[len('file:'):]}",
+        *_generated_exclusions(project, changelog_path, repo_root),
+    }
+    try:
+        touched = _git(repo_root, "show", "--name-only", "--format=", short).split()
+    except RuntimeError:
+        return False
+    return bool(touched) and set(touched) <= allowed
 
 
 def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
@@ -270,6 +334,58 @@ def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(f"git status for generated outputs failed ({result.returncode}): {detail}")
     return bool(result.stdout.strip())
+
+
+def _comparable_lines(text: str) -> list[str]:
+    """Section lines normalised for a generated-vs-hand-written comparison.
+
+    Blank lines, cmru's own HTML-comment markers and the abbreviated trailing
+    commit hash (its length depends on the repository size at render time) do not
+    count as content.
+    """
+    lines = []
+    for raw in text.splitlines():
+        line = _ENTRY_HASH_RE.sub("", raw.rstrip())
+        if not line.strip() or line.lstrip().startswith("<!--"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _dropped_hand_edits(
+    repo_root: Path,
+    project: Any,
+    changelog_path: Path,
+    section: str,
+    heading: str,
+    previous_ref: str | None,
+) -> list[str]:
+    """Lines of an old generated section that the generator would not produce (KI-68).
+
+    The generator's own output for the OLD range (``previous_ref`` .. the section's
+    recorded ``source-end``) is rendered and compared line by line with the old
+    body. What remains are hand edits (including curated release notes, KI-75)
+    that regenerating the section would drop. A section without a readable
+    cursor, or whose range cannot be listed, yields no evidence and therefore no
+    refusal (the same stance as :func:`_project_commits_after_cursor`).
+    """
+    cursor = _last_generated_source_end(section)
+    if cursor is None:
+        return []
+    try:
+        old_groups = _subject_groups(
+            repo_root,
+            previous_ref,
+            list(getattr(project, "paths", None) or [getattr(project, "cwd", None) or project.name]),
+            exclude_paths=_generated_exclusions(project, changelog_path, repo_root),
+            end_ref=cursor,
+        )
+    except RuntimeError:
+        return []
+    produced = set(_comparable_lines(_render_section(heading, old_groups, source_end=cursor)))
+    # The `## [x] - date` heading line is the section's own anchor, never content.
+    body = section.split("\n", 1)[1] if "\n" in section else ""
+    return [line for line in _comparable_lines(body) if line not in produced]
 
 
 def _render_section(
@@ -367,9 +483,29 @@ def generate_release_changelog(
         # from the range). If project commits landed after the cursor, the section
         # is stale -- it would ship without them -- so regenerate it in place.
         if not _project_commits_after_cursor(
-            repo_root, project, path, section,
+            repo_root, project, path, section, version,
         ):
             return False
+        # KI-68: regenerating replaces the whole body, so hand-written lines the
+        # generator would not produce for the OLD range (curated notes among
+        # them) would vanish silently. Refuse instead; there is no override.
+        dropped = _dropped_hand_edits(
+            repo_root, project, path, section, heading, previous_ref,
+        )
+        if dropped:
+            shown = "\n".join(f"  {line}" for line in dropped[:_MAX_DROPPED_LINES_SHOWN])
+            more = len(dropped) - _MAX_DROPPED_LINES_SHOWN
+            if more > 0:
+                shown += f"\n  ... and {more} more"
+            raise RefusedBeforeChange(
+                f"{project.name}: {path} section [{heading}] was generated before later "
+                "project commits landed, so CMRU must regenerate it, but it holds "
+                f"{len(dropped)} line(s) the generator would not produce (hand edits) that "
+                f"would be dropped:\n{shown}\n"
+                "Remedy: advance `<!-- cmru: source-end=... -->` to the final project "
+                "commit in the same commit as the hand edit (a section whose cursor is "
+                "current is kept byte-identical)."
+            )
         regenerated = _render_section(heading, groups, source_end=source_end)
         new_content = (
             existing[:start] + regenerated

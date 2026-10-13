@@ -35,13 +35,58 @@ memory_swap = "16g"
 # into a fresh venv with no system packages, and runs its cmru console script
 # from outside the source checkout. This proves both packaged cli-extended
 # imports and the importlib.resources get.py template.
+# Runnable directly as a component lane. A direct run bypasses the aggregate
+# gate's secret boundary (the checkout it mounts is whatever you point it at),
+# so use a secret-free checkout; only `installed-wheel-live` below proves the
+# exact-HEAD snapshot boundary.
 [lanes.installed-wheel]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
+budget = "10m"
+
+[lanes.installed-wheel.resources]
+memory = "2g"
+memory_swap = "16g"
+
+# The aggregate gate's variant of the lane above: the same acceptance plus the
+# live-snapshot proof. It refuses unless the checkout it runs in is the CURRENT
+# gate's snapshot (fresh manifest bound to that checkout, host canary invisible),
+# so a retained manifest from a killed gate cannot satisfy it. Not for direct use.
+[lanes.installed-wheel-live]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
 budget = "10m"
 
-[lanes.installed-wheel.resources]
+[lanes.installed-wheel-live.resources]
+memory = "2g"
+memory_swap = "16g"
+
+# Live acceptance probe for the aggregate gate's protected-ref check: from inside
+# the real tester container this writes a ref in the gate-owned
+# `refs/cmru-gate/<id>/` namespace, and the gate must DETECT it (then removes
+# it). It refuses to run in any checkout that is not a gate snapshot branch.
+[lanes.ref-probe]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}
+branch=$(git symbolic-ref --short HEAD)
+case "$branch" in
+  cmru-gate-*) ;;
+  *) echo "ref-probe runs only inside a CMRU gate snapshot (branch: $branch)" >&2; exit 2 ;;
+esac
+exec git update-ref "refs/cmru-gate/${branch#cmru-gate-}/ref-probe" HEAD
+''',
+]
+budget = "5m"
+
+[lanes.ref-probe.resources]
 memory = "2g"
 memory_swap = "16g"
 

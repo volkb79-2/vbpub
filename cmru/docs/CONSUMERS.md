@@ -780,7 +780,14 @@ It creates an attached sidecar worktree at that exact commit and runs each
 registered lane from the sidecar, so the caller's checkout is never mounted.
 Ignored files, nested virtual environments, and secrets created in the caller
 after snapshot creation stay outside the tester view. A live host-only canary
-proves this from inside the installed-wheel tester lane.
+proves this from inside the `installed-wheel-live` tester lane (a fresh manifest
+bound to that very snapshot; a stale `running` manifest left by a killed gate does
+not count). The gate judges only code bound to the claimed commit: it refuses an
+untracked or ignored helper, a symlink, or a tracked helper edited since HEAD
+under the directories it imports from, before any lane starts. Run `git status`
+and commit your change first; a refusal names the files. It watches the protected
+Git refs it owns, and its `ref-probe` lane proves that detector from inside the
+real container; other agents' commits, tags and fetches never fail it.
 
 CMRU refuses a tracked `cmru.secret.toml` and any configured Git filter before
 creating the snapshot. It validates lane output, retains only Run-Gate state
@@ -792,7 +799,78 @@ IDs, not credentials. Nested runner calls have publisher-token and
 extra-mount variables removed. See the
 [gate credential design](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 Running an individual tester component lane bypasses this boundary and should
-use a secret-free checkout.
+use a secret-free checkout. `./run-gate.py installed-wheel` stays runnable that
+way; `installed-wheel-live` is the aggregate gate's own variant and refuses unless
+it runs inside that gate's fresh snapshot manifest.
+
+### Retained gate snapshots
+
+Every gated commit leaves one attached `cmru-gate-*` worktree and branch beside its
+source checkout, so a failed or interrupted gate can resume. Inspect and clean them
+with the supported verb, never with `git worktree remove`:
+
+```bash
+cmru gate-snapshots                        # list: removable / retained, with the reason
+cmru gate-snapshots --remove --dry-run     # preview exactly what would be removed
+cmru gate-snapshots --remove               # remove the snapshots whose source moved on
+cmru gate-snapshots --remove --include-current   # also the resumable one for the current HEAD
+```
+
+It keeps a snapshot whose gate is still running, whose lease holder lives in another
+PID namespace and cannot be proven dead from where you are (run the verb where the gate
+ran), or whose source checkout merely cannot be seen from this namespace while Git still
+registers it. Repeating it is safe; each removal is re-judged from fresh facts.
+
+### Release bodies and curated notes
+
+The GitHub Release body for a tagged release is the generated install block followed by
+your changelog's exact section for that version. What you do:
+
+1. Keep `[project.release] changelog` at its default (`CHANGES.md`) or point it at a
+   project-relative file; `changelog = false` opts out and publishes the generated body
+   alone.
+2. Put the curated notes (Added, Fixed, Migration, ...) in the version's own section,
+   which CMRU creates as `## [X.Y.Z] - YYYY-MM-DD` with a `<!-- cmru: generated -->`
+   marker and a `<!-- cmru: source-end=<40-hex> -->` cursor:
+
+   ```text
+   ## [2.0.0] - 2026-10-13
+   <!-- cmru: generated -->
+   <!-- cmru: source-end=0123456789abcdef0123456789abcdef01234567 -->
+
+   ### Added
+   - Your note, in your words.
+
+   ### Migration
+   1. Replace `old` with `new`.
+   ```
+
+3. Check it before you release: `cmru release <name> --dry-run` prints the complete body
+   between `----- begin release body -----` and `----- end release body -----`; the artifact
+   file name and SHA256 are the only placeholders. The real publisher builds the body with
+   the same function.
+
+A missing, undated, duplicated, empty or wrong-version section refuses before the gate,
+tag or upload with a message naming the file and the sections it did find. Do not edit a
+generated section by hand without moving its cursor: if project commits land after
+`source-end`, CMRU must regenerate the section and refuses (exit 4, listing the lines
+it would drop) rather than lose your notes. Set `source-end` to the full SHA of the final
+commit that changed the project (excluding the changelog) in the same commit as the edit,
+and a current section is kept byte-identical. The publish step must run through
+`cmru release` / `cmru publish`, which pass the protected `CMRU_RELEASE_NOTES_SOURCE`
+declaration; a handler started by hand without it refuses and prints the two values it
+accepts (`changelog:<project-relative path>` or `none`).
+
+**Carrying forward notes that were parked outside a changelog (KI-58).** When a
+release's notes were removed from `## [Unreleased]` so the KI-30 preflight passes, move
+them into the pending version's section in ONE commit on `main` before releasing:
+author `## [X.Y.Z] - <date>` with the generated marker, `source-end` set as above, and the
+parked entries under their `### Added/Changed/Fixed/Documentation` groups; leave
+`[Unreleased]` empty. Pin the version with `--set-version X.Y.Z` if the planner could
+choose another. Then run `cmru release <name> --dry-run` from the pushed `main` and check
+that the body ends with exactly those entries and that nothing refuses. A project whose
+publish step is an image push (no CMRU handler) has no GitHub Release body; its notes
+stay in the changelog.
 
 ---
 
@@ -1099,10 +1177,12 @@ step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
 A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body (KI-30),
-and regenerating a stale generated history section overwrites hand edits inside it; see
+and a stale generated history section that holds hand edits is refused rather than regenerated
+over them (KI-68); see
 [release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
 To hand-curate a pending generated section, advance its `source-end` marker in the same final
-commit (so it counts as current), or curate after the release; otherwise the edit is dropped.
+commit (so it counts as current); curated release notes belong there (see "Release bodies and
+curated notes" above), other text may be curated after the release.
 
 After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
 that checkout is dirty with tracked or untracked (non-ignored) changes, CMRU refuses the cleanup

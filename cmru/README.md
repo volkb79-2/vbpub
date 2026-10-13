@@ -145,6 +145,9 @@ cmru standards                    # strict config + project-framework conformanc
 cmru standards pwmcp --update     # safely update CMRU-owned revision markers
 cmru build   <name>               # isolated local build; retains logs/artifacts, then removes worktree
 cmru worktrees                    # list retained failed build/release worktrees
+cmru gate-snapshots               # list retained release-gate snapshots (read-only)
+cmru gate-snapshots --remove --dry-run  # preview removing the ones proven unneeded
+cmru gate-snapshots --remove      # remove them; a live or unprovable gate is never touched
 cmru abandon --dry-run            # inspect exact retained release candidates, no writes
 cmru abandon <branch> --yes       # abandon exactly the named verified candidate
 cmru abandon <branch> --config /path/to/cmru.orchestration.toml
@@ -470,6 +473,22 @@ It does not move the immutable tag. The resulting entry is visibly marked
 `backfilled-after-release`; all future entries are source-first and carried by their
 release tag.
 
+### The GitHub Release body carries the version's curated notes
+
+A GitHub Release published by a CMRU handler (`wheel-publish`, `tarball-publish`) is the
+generated install/artifact block (artifact name, SHA256, verification and
+resolve-latest instructions) followed by the **exact `## [X.Y.Z] - YYYY-MM-DD`
+section of the project's changelog for the version being released**, verbatim.
+`[Unreleased]` and every other version are never included. A project that opted out
+(`changelog = false`) gets the generated body alone. A changelog without exactly one
+dated, non-empty section for that version **refuses before the gate, tag or upload**
+instead of publishing a body without notes. `cmru release --dry-run` prints the complete
+body (between `----- begin release body -----` markers) built by the same function the
+publisher calls; only the artifact file name and SHA256, which exist only after the
+build, appear as marked placeholders. A `--notes-env` text only replaces the opening
+line and cannot bypass this. See [why](docs/DESIGN-GUIDE.md#release-bodies-carry-the-versions-curated-notes)
+and the [adoption recipe](docs/CONSUMERS.md#release-bodies-and-curated-notes).
+
 ## Reproducibility & the commit model
 
 ## Isolated release transactions
@@ -766,17 +785,31 @@ Before tester-unified starts, the aggregate gate creates a dedicated attached
 Git worktree at the caller's exact commit and runs each lane there. The caller's
 checkout is never mounted; files created there after snapshot creation,
 including ignored publisher secrets, stay outside the tester view. A live
-host-only canary verifies that boundary from inside the installed-wheel lane.
+host-only canary verifies that boundary from inside the `installed-wheel-live`
+lane, and only a fresh manifest bound to that very snapshot satisfies it (a
+`running` manifest left by a killed gate does not).
+The gate also judges only code bound to the claimed commit: before it imports or
+runs any helper it refuses an untracked or ignored module, a symlink, or a
+tracked helper edited, replaced or deleted since HEAD under every directory it
+puts on `sys.path`.
 CMRU refuses a tracked publisher-secret file or configured Git filter, validates
 the snapshot after every lane, and copies back only named gate evidence and
-Run-Gate resume state. It strips publisher-token and extra-mount variables from
-nested runner calls and prepares token-free origin facts on the host for
+Run-Gate resume state. It watches the protected Git refs only this gate owns
+(the snapshot branch, the source branch and the `refs/cmru-gate/<id>/`
+namespace) and a live `ref-probe` lane proves from inside the real container
+that a write to one is detected; unrelated commits, tags and fetches by other
+agents never fail the gate. It strips publisher-token and extra-mount variables
+from nested runner calls and prepares token-free origin facts on the host for
 mutation. The aggregate release gate requires a linked Git worktree with no
 tracked changes; it retains the attached snapshot for safe resume and removes
-it when the release candidate is cleaned up. See the
+it when the release candidate is cleaned up, or on demand with
+`cmru gate-snapshots --remove` (a live lease, a holder in another PID namespace
+that cannot be proven dead, or a source path that is merely unobservable keeps
+the snapshot). See the
 [gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
-Direct component-lane runs bypass this boundary and should use a secret-free
-checkout.
+An individual tester component lane bypasses this boundary and should use a
+secret-free checkout; `installed-wheel` stays runnable that way, while
+`installed-wheel-live` is the aggregate gate's own variant.
 When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
 release tag at HEAD and selects the highest-version published tag in its full
 ancestry. An empty source diff records a skip bound to the candidate HEAD. The

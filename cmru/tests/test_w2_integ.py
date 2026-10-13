@@ -43,7 +43,7 @@ _WRITTEN_BY_THE_CODE_UNDER_TEST = ("PYTHONUNBUFFERED",)
 def _clean_env(monkeypatch) -> None:
     for name in (
         *OLD_ENV_NAMES, *INTERNAL_ENV_NAMES, *_WRITTEN_BY_THE_CODE_UNDER_TEST,
-        transaction.CHILD_ENV,
+        transaction.CHILD_ENV, "CMRU_RELEASE_NOTES_SOURCE",  # conftest declares it "none"
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -193,7 +193,7 @@ def test_refused_is_the_only_exit_code_name_for_four():
 
 _RESERVED_PROJECT_ENV_NAMES = (
     *INTERNAL_ENV_NAMES, "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD", "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
-    "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG",
+    "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "CMRU_RELEASE_NOTES_SOURCE",
     "CMRU_INTERNAL_X",  # the PREFIX is reserved, not a list
 )
 

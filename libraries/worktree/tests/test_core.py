@@ -385,6 +385,42 @@ def test_remove_orphan_workspace_refuses_when_source_exists_or_lease_is_live(
     remove_orphan_workspace(context, executor_git_root=repository)
 
 
+def _orphan_target(repository: Path, tmp_path: Path, name: str):
+    source = tmp_path / f"{name}-source"
+    _git(repository, "worktree", "add", "--quiet", "-b", f"{name}-source", str(source), "HEAD")
+    context = create_workspace(
+        source, tmp_path / f"{name}-target", branch=f"workspace/{name}",
+        purpose="test-orphan-cleanup",
+    )
+    return source, context
+
+
+def test_remove_orphan_workspace_removes_when_git_reports_source_prunable(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source, context = _orphan_target(repository, tmp_path, "prunable")
+    shutil.rmtree(source)  # still registered, but Git reports it prunable
+
+    remove_orphan_workspace(context, executor_git_root=repository)
+
+    assert not context.worktree_path.exists()
+    assert not context.record_path.exists()
+
+
+def test_remove_orphan_workspace_refuses_a_locked_registered_source(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source, context = _orphan_target(repository, tmp_path, "locked")
+    _git(repository, "worktree", "lock", str(source))
+    shutil.rmtree(source)
+
+    with pytest.raises(core.WorkspaceError, match="still registered with Git"):
+        remove_orphan_workspace(context, executor_git_root=repository)
+
+    assert context.worktree_path.is_dir()
+    assert context.record_path.exists()
+
+
 def test_explicit_identity_path_is_durable_and_rechecked(repository: Path, tmp_path: Path) -> None:
     target = tmp_path / "checkout"
     identity_path = tmp_path / "allocation-seed"

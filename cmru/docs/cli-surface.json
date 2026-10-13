@@ -810,6 +810,124 @@
       "signature": "sha256:ce02b530aa4f28f6be5a118f6c3964ff988ed6b653dea23650eca85a92c85dcb"
     },
     {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--dry-run",
+        "option:route:entrypoint:cmru/gate-snapshots/--remove"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "any_of": [
+          "--remove"
+        ],
+        "kind": "requires",
+        "option": "--dry-run",
+        "reason": "a removal preview is only meaningful with --remove"
+      },
+      "signature": "sha256:3dce113e4996da6a18620fd46158f1fdcd5eaa0eb0f786564e1818dc1d8679ba"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short",
+        "option:route:entrypoint:cmru/gate-snapshots/--remove",
+        "option:route:entrypoint:cmru/gate-snapshots/--include-current"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short",
+          "option:route:entrypoint:cmru/gate-snapshots/--remove",
+          "option:route:entrypoint:cmru/gate-snapshots/--include-current"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:20bcdc64fa444fae97e819f3e401c79eef76a9328fff6527e9efdc9dd3bffccd"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/gate-snapshots/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:75c06b800556d5a6bfd73a9f03ebee5a5bff0a8f3fb8b5cc079bc7198b97c5b1"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/gate-snapshots/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:3dc2bd586aae61a337d5b093f7af6940e9257668530e2a182df87806fe5a9c99"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--include-current/--include-current",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--include-current"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/gate-snapshots/--include-current",
+        "spelling": "--include-current"
+      },
+      "signature": "sha256:58b898866c1da1ddeba5aebd89ae8a5440ebb8bf9ca6452c820ea11453d4b097"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--json"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/gate-snapshots/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:432476a85d9fc7871020f496a0654ad9d404062aa46bcbbfc9c690ceabc957d8"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:e0b686d58dd2da8b97e7eb3a562768409ed85634138c32202f78e164b2070f26"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--remove/--remove",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/gate-snapshots/--remove"
+      ],
+      "route_id": "route:entrypoint:cmru/gate-snapshots",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/gate-snapshots/--remove",
+        "spelling": "--remove"
+      },
+      "signature": "sha256:9a41a4adf8c6bcbc03156cade9e767325eb1221c2fc4e4df26d25ae1cf9ddcfc"
+    },
+    {
       "id": "case:route:entrypoint:cmru/get-py/argument-shape/argument:route:entrypoint:cmru/get-py/target",
       "kind": "argument-shape",
       "members": [
@@ -6393,6 +6511,210 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "check this tool's environment and report problems",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "gate-snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--remove",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "remove every snapshot judged removable (default: list only)",
+          "dest": "remove",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--remove"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/gate-snapshots/--remove",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "gate-snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--include-current",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "also treat a snapshot whose source is still at its commit as removable (it can then no longer resume)",
+          "dest": "include_current",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--include-current"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/gate-snapshots/--include-current",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "gate-snapshots"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [
+        {
+          "any_of": [
+            "--remove"
+          ],
+          "kind": "requires",
+          "option": "--dry-run",
+          "reason": "a removal preview is only meaningful with --remove"
+        }
+      ],
+      "delegated_metadata": [],
+      "description": "List retained release-gate snapshots; --remove deletes only those proven unneeded.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:cmru/gate-snapshots",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short.action"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "gate-snapshots"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "gate-snapshots"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "List retained release-gate snapshots; --remove deletes only those proven unneeded. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

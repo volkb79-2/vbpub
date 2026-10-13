@@ -271,11 +271,13 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   reworded entry) is only safe if the SAME final commit also advances that section's
   `<!-- cmru: source-end=<sha> -->` marker to the project's current head, so cmru sees the section
   as current and keeps it byte-identical. Otherwise any project commit landing after the old
-  `source-end` makes cmru regenerate the section from commit subjects and silently drop the
-  edit (seen in run-gate 23.10.0, whose release lost hand-curated text that two of its tests
-  pin). The alternative that cannot go wrong: curate AFTER the release (a post-release
-  commit, keeping the markers intact). Tracked as KI-68 (a WARN when regeneration discards
-  non-generated lines).
+  `source-end` makes cmru need to regenerate the section from commit subjects. It used to drop
+  the edit silently (seen in run-gate 23.10.0, whose release lost hand-curated text that two of
+  its tests pin); since KI-68 it **refuses** instead (exit 4, before any gate or tag), listing
+  up to 20 lines the generator would not produce, with no override flag. Curated release
+  notes (KI-75) live in that section, so advancing `source-end` in the same commit is how they
+  survive. Text that is not release notes can still be curated AFTER the release (a
+  post-release commit, keeping the markers intact).
 
 ### Post-publication recovery
 
