@@ -1594,7 +1594,7 @@ library's follow-up floor/surface fixes are tracked separately (for example,
 KI-61 was resolved by cli-extended 0.3.0). No open CMRU worktree is needed to
 complete KI-51.
 
-### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *fixed in source (a, a', c', b), pending release; (b) is bypassed by assay's hermetic git and filed as assay B147; severity was critical (silent false kills)*
+### KI-52 — `cmru tester-gate` starts tester-unified without `--init`: the gate command becomes PID 1, never reaps orphans, and git's detached auto-maintenance fills the container's `pids.max` with zombies until every fork fails — *fixed in source (a, a', c', b), pending release; Assay's independent hermetic Git defense shipped as B147 in assay-v8.0.0; severity was critical (silent false kills)*
 
 **Status:** fixed in source 2026-10-05 by program 2026-10 package W0-TESTER (filed 2026-10-05, investigated on the host with `host-escape`, read-only).
 
@@ -1602,7 +1602,7 @@ complete KI-51.
 - (a) `--init` on the gate workload and on the privileged DinD sidecar (`tester_gate.build_docker_command`, `_dind_start_argv`); `tests/test_w0_tester_hardening.py::test_every_container_cmru_starts_has_the_declared_argv_policy` drives a real `main()` against a recording fake `docker` and asserts the argv of every container it starts.
 - (a') `CMRU_TESTER_PIDS_LIMIT` is a required `REQUIRED_TESTER_ENV` member passed as `--pids-limit` (positive integer, no default; the 19,117 ceiling was systemd's DefaultTasksMax, not a declared limit). Declared as `4096` in `cmru.orchestration.toml`, both templates and both samples.
 - (c') the gate command runs inside an in-container wrapper that, after the command exits, copies the container's own `pids.events` and `memory.events` into `.cmru/tester-gate-events-<uuid>.txt` on the mounted worktree (`--rm` deletes the cgroup, so nothing outside could read it afterwards). cmru reads and removes it: a missing/incomplete file, a non-zero `pids.events max`, or a non-zero `memory.events oom_kill` is an infrastructure failure (exit 3, naming the counter) even when the command exited 0; otherwise the command's own exit status is preserved.
-- (b) `tester-unified/Dockerfile` sets `maintenance.autoDetach false` and `gc.autoDetach false` system-wide (asserted at build time; README documents it). **Not sufficient alone:** assay's hermetic git environment sets `GIT_CONFIG_NOSYSTEM=1` and bypasses `/etc/gitconfig`; filed as assay B147 (`assay/nyxloom-trove/4-backlog.md`).
+- (b) `tester-unified/Dockerfile` sets `maintenance.autoDetach false` and `gc.autoDetach false` system-wide (asserted at build time; README documents it). Assay's hermetic Git environment sets `GIT_CONFIG_NOSYSTEM=1`, so Assay also disables maintenance in its own environment; that independent defense shipped as B147 in assay-v8.0.0.
 - The image build and the `docker run` behaviour were NOT exercised live in W0-TESTER (no docker builds, no real containers); the KI-42 live probe below covers (a)/(a').
 
 **Observed (2026-10-05, host-wide 19,109 zombies):**
@@ -1830,7 +1830,7 @@ complete KI-51.
 
 **Chosen behavior:** CMRU requires a linked source worktree with no tracked changes, then creates a stable attached sidecar worktree at the exact source commit through the shared worktree lifecycle. Only the sidecar is mounted into lanes. A host-only canary is checked from inside the actual installed-wheel tester lane. Tracked publisher secrets, configured Git filters, and tracked gate-evidence paths refuse before lanes start. After each lane CMRU validates tracked state, unapproved ignored/untracked files and Run-Gate state; it retains only `.run-gate/` and a fixed evidence allowlist between lanes. Only that allowlist is copied back. Snapshot branches remain attached for resume and are removed with successful release-candidate cleanup. Run-Gate overlays shared `hooks/` with a private empty read-only directory and mounts common `info/` read-only; CMRU disables host hooks while preparing mutation facts. **The gate's own executable code and every helper it imports must also be bound to tracked files at the claimed source HEAD:** a helper imported from an untracked caller-side file is outside the exact snapshot and cannot participate in a gate that claims to judge that commit.
 
-**Oracles:** focused tests prove late ignored secrets in the source stay outside the exact snapshot, tracked secrets/filters/evidence paths refuse, lanes receive only allowlisted prior state, invalid output cannot copy a plausible verdict back, interrupted snapshots are validated before retry cleanup, and release-candidate cleanup removes its snapshot. Add an adversarial case with an untracked caller-side helper that would alter the gate result; the gate must refuse or execute only the helper from the tracked exact-HEAD snapshot. A real registered CMRU tester lane checks the host canary; Run-Gate's real-container acceptance test proves an in-container commit cannot run or replace a host hook or alter `info/exclude`, and a later host commit still runs the original hook unchanged. Exact-tree registered gates and the aggregate release gate remain required before release.
+**Oracles:** focused tests prove late ignored secrets in the source stay outside the exact snapshot, tracked secrets/filters/evidence paths refuse, lanes receive only allowlisted prior state, invalid output cannot copy a plausible verdict back, interrupted snapshots are validated before retry cleanup, and release-candidate cleanup removes its snapshot. Before preflight or importing CMRU/Assay helpers, the host runner inventories the import roots (including ignored entries) and refuses untracked Python modules or symlinks; it uses a private bytecode cache so ignored checkout-local `.pyc` files cannot shadow tracked code. An adversarial untracked helper that writes a marker on import must be refused before the marker appears, both when normally untracked and when ignored. A real registered CMRU tester lane checks the host canary; Run-Gate's real-container acceptance test proves an in-container commit cannot run or replace a host hook or alter `info/exclude`, and a later host commit still runs the original hook unchanged. Exact-tree registered gates and the aggregate release gate remain required before release.
 
 ### KI-75 — GitHub release bodies omit curated version notes and migration guidance — *open, severity: major (release usability and upgrade risk)*
 
@@ -1861,3 +1861,31 @@ mixing; empty-note and missing-section cases distinguish “no notes” from
 “could not read the requested notes”; tests bind the dry-run preview to the
 body passed to the publisher. README, DESIGN-GUIDE, and CONSUMERS explain the
 note source, ordering, preview, and failure behavior before the feature ships.
+
+### KI-76 — a streamed `get.py` bootstrap has no integrity check before execution — *open, severity: major for privileged installs*
+
+**Observed:** `cmru/docs/CONSUMERS.md` documents `curl ... | sudo python3 -`
+as an unverified pipe and limits it to throwaway hosts. The generated
+installer verifies the downloaded bundle after it starts, but the pipe's
+Python process executes the `get.py` bytes before any digest or signature has
+been checked. A missing download can also become an apparently successful
+empty Python program unless the shell checks the pipeline correctly. This is
+material for projects such as MDT whose bundle ultimately installs and
+restarts privileged host services.
+
+**Expected behavior:** CMRU provides a short supported installation flow that
+verifies the bootstrap before execution and preserves the normal
+`install`/`update`/`status`/`rollback` contract. A convenience pipe may be
+documented only with its trust boundary stated plainly; it must not be called
+verified merely because the later bundle is signed. Select a design that
+either publishes an independently trusted digest/signature and verifies a
+downloaded `get.py` before running it, or deliberately records that direct
+stream execution relies on HTTPS/release-host trust and is not suitable for a
+privileged install.
+
+**Oracles:** a corrupted or missing bootstrap is rejected before any installer
+code runs; the supported copyable command propagates downloader and verifier
+failures; the generated installer can still install and update the signed
+bundle; README, DESIGN-GUIDE, and CONSUMERS distinguish bootstrap integrity
+from bundle integrity. Consider whether the workflow can retain the desired
+one-command UX without shell-specific pipe-status traps.

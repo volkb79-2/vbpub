@@ -2446,6 +2446,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     --no-local` and is unaffected. A sibling `config.worktree` that exists
     gets the `R-45b` sanitized read-only overlay; module plus sibling
     config files are capped at 256 (infrastructure error beyond).
+  - **`R-45f` Host Git hooks and info metadata are not writable in a lane.**
+    For linked and opted-in plain-checkout ephemeral runs, `<common>/hooks`
+    MUST be a real directory and is overlaid at both mount paths by a private,
+    empty directory mounted READ-ONLY. `<common>/info` MUST also be a real
+    directory and is mounted READ-ONLY with its real contents. Missing,
+    symlinked, or non-directory paths are infrastructure errors before lane
+    launch. The common Git directory remains read-write for the behaviors in
+    `R-45a`, but a tester cannot plant a common `post-commit` hook for later
+    host Git commands or change host `info/exclude`. The registered real-container
+    oracle plants a host hook, attempts both in-container writes, verifies both
+    are refused, and then verifies a host commit did not execute the hook.
 
 - `R-46` **Private-namespace Assay R2 resource observer (RG-89).**
   `resource_observer = "cgprofile"` is an optional, closed lane key. It is

@@ -7,6 +7,7 @@ import os
 import shutil
 import signal
 import stat
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,8 +27,9 @@ SPEC.loader.exec_module(run_release_gate)
 
 
 class _AssayGit:
-    def __init__(self, repo: Path):
+    def __init__(self, repo: Path, common: Path):
         self.repo = repo
+        self.common = common
 
     def repo_top(self, project: Path) -> Path:
         return self.repo
@@ -35,14 +37,30 @@ class _AssayGit:
     def run(self, repo: Path, *args: str) -> str:
         assert repo == self.repo
         assert args == ("rev-parse", "--path-format=absolute", "--git-common-dir")
-        return str(self.repo / ".git")
+        return str(self.common)
+
+
+def _git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=root, capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
 
 
 def _fixture(tmp_path: Path, monkeypatch):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "--quiet")
+    _git(primary, "config", "user.name", "CMRU Gate Test")
+    _git(primary, "config", "user.email", "cmru-gate@example.invalid")
+    (primary / "cmru").mkdir()
+    (primary / "README.md").write_text("tracked fixture\n", encoding="utf-8")
+    (primary / "cmru" / "cmru.toml").write_text("schema_version = 1\n", encoding="utf-8")
+    _git(primary, "add", "README.md", "cmru/cmru.toml")
+    _git(primary, "commit", "--quiet", "-m", "fixture")
     repo = tmp_path / "repository"
+    _git(primary, "worktree", "add", "--quiet", "-b", "gate-source", str(repo), "HEAD")
     project = repo / "cmru"
-    project.mkdir(parents=True)
-    (repo / ".git").write_text("gitdir: /tmp/test-worktree/.git/worktrees/repository\n")
     root_secret = repo / "cmru.secret.toml"
     project_secret = project / "cmru.secret.toml"
     root_secret.write_bytes(b"root credential\n")
@@ -59,17 +77,23 @@ def _fixture(tmp_path: Path, monkeypatch):
         for path in (root_secret, project_secret)
     }
     auth = SimpleNamespace(token="test-publisher-token")
-    git = _AssayGit(repo)
+    git = _AssayGit(repo, (primary / ".git").resolve())
     calls = []
 
     def load_components():
         def build_facts(repo_root, project_root, *, git_auth, assay_git):
+            count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+            assert any(
+                os.environ.get(f"GIT_CONFIG_KEY_{index}") == "core.hooksPath"
+                and os.environ.get(f"GIT_CONFIG_VALUE_{index}") == os.devnull
+                for index in range(count)
+            )
             assert repo_root == repo
             assert project_root == project
             assert git_auth is auth
             assert assay_git is git
-            assert root_secret.is_symlink()
-            assert project_secret.is_symlink()
+            assert root_secret.is_file() and not root_secret.is_symlink()
+            assert project_secret.is_file() and not project_secret.is_symlink()
             return {"head": "abc", "selected_tag": "cmru-v1.0.0"}
 
         baseline = SimpleNamespace(
@@ -89,17 +113,22 @@ def test_assay_source_preflight_runs_before_loading_release_components_and_lanes
 ):
     repo, *_rest, _calls = _fixture(tmp_path, monkeypatch)
     events = []
+    prior_cache_prefix = sys.pycache_prefix
+    prior_cache_env = os.environ.get("PYTHONPYCACHEPREFIX")
     load_components = run_release_gate._load_components
 
     def preflight(root):
         assert root == repo
+        assert sys.pycache_prefix
+        assert not Path(sys.pycache_prefix).is_relative_to(repo)
+        assert os.environ.get("PYTHONPYCACHEPREFIX") == sys.pycache_prefix
         events.append("assay-source-preflight")
 
     def load():
         events.append("load-components")
         return load_components()
 
-    def invoke(_root, lane, _environment):
+    def invoke(_root, lane, _environment, _worktree):
         events.append(lane)
         return 0
 
@@ -119,9 +148,60 @@ def test_assay_source_preflight_runs_before_loading_release_components_and_lanes
         "mutation",
         "canary",
     ]
+    assert sys.pycache_prefix == prior_cache_prefix
+    assert os.environ.get("PYTHONPYCACHEPREFIX") == prior_cache_env
 
 
-def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
+@pytest.mark.parametrize("ignored", [False, True])
+def test_untracked_caller_gate_helper_refuses_before_preflight_or_import(
+    tmp_path: Path, monkeypatch, ignored: bool,
+):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    helper = repo / "cmru" / "src" / "cmru" / "gate_attack.py"
+    helper.parent.mkdir(parents=True)
+    marker = tmp_path / "untracked-gate-helper-ran"
+    helper.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+    if ignored:
+        (repo / ".gitignore").write_text(
+            "cmru/src/cmru/gate_attack.py\n", encoding="utf-8",
+        )
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "--quiet", "-m", "ignore a gate helper")
+
+    events = []
+    monkeypatch.setattr(
+        run_release_gate, "_preflight_assay_source",
+        lambda _root: events.append("preflight"),
+    )
+
+    def load_components():
+        events.append("load-components")
+        spec = importlib.util.spec_from_file_location("cmru.gate_attack", helper)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return None, None
+
+    monkeypatch.setattr(run_release_gate, "_load_components", load_components)
+    monkeypatch.setattr(
+        run_release_gate, "_invoke_lane",
+        lambda *_args: events.append("lane") or 0,
+    )
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    with pytest.raises(RuntimeError, match="untracked or ignored executable source"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+
+    assert events == []
+    assert not marker.exists()
+
+
+def test_release_lanes_use_exact_snapshot_without_touching_source_secrets(
     tmp_path, monkeypatch,
 ):
     repo, root_secret, project_secret, metadata, _auth, calls = _fixture(tmp_path, monkeypatch)
@@ -145,19 +225,23 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
     monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "/tmp/private=private")
     monkeypatch.setenv("CMRU_ASSAY_BASELINE_FACTS", "stale-facts")
 
-    def invoke(root, lane, environment):
+    def invoke(root, lane, environment, worktree):
         assert root == repo
-        assert root_secret.is_symlink()
-        assert project_secret.is_symlink()
+        assert root_secret.is_file() and not root_secret.is_symlink()
+        assert project_secret.is_file() and not project_secret.is_symlink()
+        assert not (worktree / "cmru.secret.toml").exists()
+        assert not (worktree / "cmru" / "cmru.secret.toml").exists()
+        assert not (worktree / ".venv" / "cmru.secret.toml").exists()
+        if lane == "installed-wheel":
+            manifest = json.loads((
+                worktree / "cmru" / ".assay" / "release-gate-snapshot.json"
+            ).read_text(encoding="utf-8"))
+            host_canary = Path(manifest["source_root"]) / manifest["source_canary"]
+            assert manifest["state"] == "running"
+            assert host_canary.is_file()
+            assert not (worktree / manifest["source_canary"]).exists()
         assert sibling_secret.is_file() and not sibling_secret.is_symlink()
         assert sibling_secret.read_bytes() == b"unrelated worktree credential\n"
-        for path in (root_secret, project_secret, venv_secret):
-            target = Path(os.readlink(path)) if path.is_symlink() else None
-            assert target is not None and target.is_absolute()
-            assert not target.is_relative_to(repo)
-        backups = [path for path in private_root.iterdir() if path.is_dir()]
-        assert len(backups) == 1
-        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o700
         assert not private_root.resolve().is_relative_to(repo)
         assert all(key not in environment for key in run_release_gate.SECRET_ENV_KEYS)
         assert run_release_gate.EXTRA_MOUNTS_ENV_KEY not in environment
@@ -183,6 +267,7 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
         venv_secret.stat().st_gid,
     ) == venv_metadata
     assert sibling_secret.read_bytes() == b"unrelated worktree credential\n"
+    assert not list(repo.glob(".cmru-gate-canary-*.txt"))
     assert {
         path: (
             stat.S_IMODE(path.stat().st_mode),
@@ -194,12 +279,12 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
     } == metadata
 
 
-def test_release_gate_restores_secrets_after_a_failed_registered_lane(tmp_path, monkeypatch):
+def test_release_gate_failure_preserves_source_secret_files_and_metadata(tmp_path, monkeypatch):
     repo, root_secret, project_secret, _metadata, _auth, calls = _fixture(tmp_path, monkeypatch)
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
 
-    def invoke(_root, lane, _environment):
+    def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
         return 19 if lane == "assay" else 0
 
@@ -210,551 +295,168 @@ def test_release_gate_restores_secrets_after_a_failed_registered_lane(tmp_path, 
     assert project_secret.read_bytes() == b"project override\n"
 
 
-def _inventory_with_walk_error(tmp_path, monkeypatch, error, *, tester_uid=1003):
-    """Run the overlay inventory while os.walk reports ``error`` for one directory."""
-    root = tmp_path / "mount"
-    (root / "cmru").mkdir(parents=True)
-    (root / "elsewhere" / "deep").mkdir(parents=True)
-    (root / "elsewhere" / "deep" / "cmru.secret.toml").write_text("x", encoding="utf-8")
-    (root / "tester-unified").mkdir()
-    (root / "tester-unified" / "Dockerfile").write_text(
-        f"USER root\nUSER {tester_uid}\n", encoding="utf-8",
-    )
-    real_walk = os.walk
-
-    def walk(top, **kwargs):
-        kwargs["onerror"](error)
-        yield from real_walk(top, **kwargs)
-
-    monkeypatch.setattr(run_release_gate.os, "walk", walk)
-    return root, run_release_gate._secret_overlay_paths(root, root / "cmru")
-
-
-def test_overlay_inventory_is_scoped_to_the_judged_linked_worktree(tmp_path):
-    common_root = tmp_path / "main-checkout"
-    judged = common_root / ".worktrees" / "release-candidate"
-    sibling = common_root / ".worktrees" / "other-agent"
-    project = judged / "cmru"
-    project.mkdir(parents=True)
-    sibling.mkdir(parents=True)
-    main_secret = common_root / "cmru.secret.toml"
-    project_secret = project / "cmru.secret.toml"
-    sibling_secret = sibling / "cmru.secret.toml"
-    main_secret.write_text("main credential", encoding="utf-8")
-    project_secret.write_text("judged credential", encoding="utf-8")
-    sibling_secret.write_text("sibling credential", encoding="utf-8")
-
-    found = run_release_gate._secret_overlay_paths(judged, project)
-
-    assert project_secret in found
-    assert main_secret not in found
-    assert sibling_secret not in found
-
-
-def test_linked_worktree_inventory_includes_nested_worktree_secrets(tmp_path):
-    linked = tmp_path / "linked-worktree"
-    project = linked / "cmru"
-    sibling = linked / ".worktrees" / "nested-checkout"
-    project.mkdir(parents=True)
-    sibling.mkdir(parents=True)
-    nested_secret = sibling / "cmru.secret.toml"
-    nested_secret.write_text("nested credential", encoding="utf-8")
-
-    found = run_release_gate._secret_overlay_paths(linked, project)
-
-    assert nested_secret in found
-
-
-@pytest.mark.parametrize(
-    "directory_name",
-    [".venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"],
-)
-def test_linked_worktree_inventory_includes_secrets_in_tester_visible_generated_dirs(
-    tmp_path, directory_name,
-):
-    linked = tmp_path / "linked-worktree"
-    project = linked / "cmru"
-    project.mkdir(parents=True)
-    secret = linked / directory_name / "cmru.secret.toml"
-    secret.parent.mkdir(parents=True)
-    secret.write_text("hidden publisher credential", encoding="utf-8")
-
-    found = run_release_gate._secret_overlay_paths(linked, project)
-
-    assert secret in found
-
-
-def test_release_gate_retains_secret_backup_when_nested_worktree_disappears(
-    tmp_path, monkeypatch,
-):
-    repo, root_secret, project_secret, _metadata, _auth, _calls = _fixture(
-        tmp_path, monkeypatch,
-    )
-    nested = repo / ".claude" / "worktrees" / "hotfix"
-    nested.mkdir(parents=True)
-    (nested / ".git").write_text("gitdir: /tmp/other/.git/worktrees/hotfix\n")
-    nested_secret = nested / "cmru.secret.toml"
-    nested_secret.write_bytes(b"nested publisher credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-
-    removed = False
-
-    def invoke(_root, _lane, _environment):
-        nonlocal removed
-        if not removed:
-            shutil.rmtree(nested)
-            nested.mkdir(parents=True)
-            (nested / ".git").write_text("gitdir: /tmp/new/.git/worktrees/hotfix\n")
-            nested_secret.write_bytes(b"replacement publisher credential\n")
-            removed = True
-        return 0
-
-    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-    with pytest.raises(RuntimeError, match="publisher-secret restoration incomplete") as failure:
-        run_release_gate.run_release_gate(repo, temp_parent=private_root)
-
-    message = str(failure.value)
-    assert str(nested_secret) in message
-    backup_root = Path(message.rsplit("private backups retained at ", 1)[1])
-    backup_path = next(
-        path for path in backup_root.glob("overlay-*.bin")
-        if path.read_bytes() == b"nested publisher credential\n"
-    )
-    assert backup_path.is_file()
-    assert backup_path.read_bytes() == b"nested publisher credential\n"
-    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(backup_root.stat().st_mode) == 0o700
-    assert not root_secret.is_symlink()
-    assert not project_secret.is_symlink()
-    assert nested_secret.read_bytes() == b"replacement publisher credential\n"
-
-
-def test_release_gate_retains_backup_when_nested_worktree_disappears(
-    tmp_path, monkeypatch,
-):
-    repo, _root_secret, _project_secret, _metadata, _auth, _calls = _fixture(
-        tmp_path, monkeypatch,
-    )
-    nested = repo / ".worktrees" / "removed"
-    nested.mkdir(parents=True)
-    nested_secret = nested / "cmru.secret.toml"
-    nested_secret.write_bytes(b"nested publisher credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-
-    def invoke(*_args):
-        shutil.rmtree(nested)
-        return 0
-
-    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-    with pytest.raises(RuntimeError, match="publisher-secret restoration incomplete") as failure:
-        run_release_gate.run_release_gate(repo, temp_parent=private_root)
-
-    message = str(failure.value)
-    assert str(nested_secret) in message
-    backup_root = Path(message.rsplit("private backups retained at ", 1)[1])
-    backup_path = next(
-        path for path in backup_root.glob("overlay-*.bin")
-        if path.read_bytes() == b"nested publisher credential\n"
-    )
-    assert backup_path.read_bytes() == b"nested publisher credential\n"
-    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
-    assert not nested.exists()
-
-
-def test_release_gate_parent_swap_after_binding_never_writes_into_replacement(
-    tmp_path, monkeypatch,
-):
-    repo, _root_secret, _project_secret, _metadata, _auth, _calls = _fixture(
-        tmp_path, monkeypatch,
-    )
-    nested = repo / ".worktrees" / "raced"
-    nested.mkdir(parents=True)
-    nested_secret = nested / "cmru.secret.toml"
-    nested_secret.write_bytes(b"original nested credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-
-    swapped = False
-    original_matches = run_release_gate._secret_parent_path_matches
-
-    def swap_after_parent_check(item):
-        nonlocal swapped
-        result = original_matches(item)
-        if item.path == nested_secret and result and not swapped:
-            # The restore has an open descriptor for the original parent. Swap
-            # the pathname immediately after its identity check, before it can
-            # create the restored file.
-            shutil.rmtree(nested)
-            nested.mkdir(parents=True)
-            nested_secret.write_bytes(b"replacement nested credential\n")
-            swapped = True
-        return result
-
-    def invoke(*_args):
-        monkeypatch.setattr(
-            run_release_gate, "_secret_parent_path_matches", swap_after_parent_check,
-        )
-        return 0
-
-    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-    with pytest.raises(RuntimeError, match="publisher-secret restoration incomplete") as failure:
-        run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert swapped
-    assert nested_secret.read_bytes() == b"replacement nested credential\n"
-    message = str(failure.value)
-    assert str(nested_secret) in message
-    backup_root = Path(message.rsplit("private backups retained at ", 1)[1])
-    backup_path = next(
-        path for path in backup_root.glob("overlay-*.bin")
-        if path.read_bytes() == b"original nested credential\n"
-    )
-    assert backup_path.read_bytes() == b"original nested credential\n"
-    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
-
-
-def test_release_gate_refuses_main_checkout_with_nested_worktree_secret(
-    tmp_path, monkeypatch,
-):
-    repo, root_secret, project_secret, _metadata, _auth, calls = _fixture(
-        tmp_path, monkeypatch,
-    )
-    git_marker = repo / ".git"
-    git_marker.unlink()
-    git_marker.mkdir()
-    sibling_secret = repo / ".worktrees" / "other-agent" / "cmru.secret.toml"
-    sibling_secret.parent.mkdir(parents=True)
-    sibling_secret.write_bytes(b"sibling credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-
-    def invoke(*_args):
-        calls.append("launched")
-        return 0
-
-    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-
-    with pytest.raises(RuntimeError, match="requires a linked Git worktree"):
-        run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == []
-    assert sibling_secret.read_bytes() == b"sibling credential\n"
-    assert not root_secret.is_symlink()
-    assert not project_secret.is_symlink()
-
-
-def _unreadable_dir_error(path):
-    return PermissionError(13, "Permission denied", str(path))
-
-
-def test_overlay_inventory_skips_directory_not_traversable_by_tester_uid(
-    tmp_path, monkeypatch, capsys,
-):
-    foreign = tmp_path / "volume"
-    foreign.mkdir(mode=0o700)
-    foreign.chmod(0o700)
-    tester_uid = foreign.lstat().st_uid + 1
-    root, found = _inventory_with_walk_error(
-        tmp_path, monkeypatch, _unreadable_dir_error(foreign), tester_uid=tester_uid,
-    )
-    assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
-    err = capsys.readouterr().err
-    assert err.count("\n") == 1
-    assert "WARN" in err and f"tester-unified UID {tester_uid}" in err
-    assert str(foreign) in err
-
-
-def test_overlay_inventory_fails_closed_for_directory_owned_by_tester_uid(
-    tmp_path, monkeypatch,
-):
-    owned = tmp_path / "tester-owned"
-    owned.mkdir(mode=0o700)
-    owned.chmod(0o700)
-    tester_uid = owned.lstat().st_uid
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(
-            tmp_path, monkeypatch, _unreadable_dir_error(owned), tester_uid=tester_uid,
-        )
-
-
-def test_overlay_inventory_fails_closed_for_possible_supplementary_group_access(
-    tmp_path, monkeypatch,
-):
-    group_accessible = tmp_path / "observer-group-volume"
-    group_accessible.mkdir(mode=0o710)
-    group_accessible.chmod(0o710)
-    tester_uid = group_accessible.lstat().st_uid + 1
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(
-            tmp_path, monkeypatch, _unreadable_dir_error(group_accessible),
-            tester_uid=tester_uid,
-        )
-
-
-def test_overlay_inventory_skips_vanished_unreadable_directory(
-    tmp_path, monkeypatch, capsys,
-):
-    gone = tmp_path / "vanished"
-    root, found = _inventory_with_walk_error(
-        tmp_path, monkeypatch, _unreadable_dir_error(gone),
-    )
-    assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
-    assert str(gone) in capsys.readouterr().err
-
-
-def test_overlay_inventory_skips_bare_filenotfound_from_the_walk(
-    tmp_path, monkeypatch, capsys,
-):
-    gone = tmp_path / "removed-worktree"
-    root, found = _inventory_with_walk_error(
-        tmp_path, monkeypatch,
-        FileNotFoundError(2, "No such file or directory", str(gone)),
-    )
-    assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
-    err = capsys.readouterr().err
-    assert err.count("\n") == 1 and "WARN" in err and str(gone) in err
-
-
-def test_overlay_inventory_fails_closed_on_filenotfound_without_filename(
-    tmp_path, monkeypatch,
-):
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(
-            tmp_path, monkeypatch, FileNotFoundError(2, "No such file or directory"),
-        )
-
-
-def test_overlay_inventory_fails_closed_when_the_tester_can_traverse_a_directory(
-    tmp_path, monkeypatch,
-):
-    own = tmp_path / "ours"
-    own.mkdir(mode=0o700)
-    own.chmod(0o700)
-    tester_uid = own.lstat().st_uid
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(
-            tmp_path, monkeypatch, _unreadable_dir_error(own), tester_uid=tester_uid,
-        )
-
-
-def test_overlay_inventory_fails_closed_when_error_has_no_filename(
-    tmp_path, monkeypatch,
-):
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(tmp_path, monkeypatch, PermissionError(13, "denied"))
-
-
-def test_overlay_inventory_fails_closed_on_other_oserror(tmp_path, monkeypatch):
-    foreign = tmp_path / "volume"
-    foreign.mkdir()
-    monkeypatch.setattr(run_release_gate.os, "geteuid", lambda: foreign.lstat().st_uid + 1)
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(
-            tmp_path, monkeypatch, OSError(5, "Input/output error", str(foreign)),
-        )
-
-
-def test_overlay_inventory_fails_closed_when_owner_cannot_be_determined(
-    tmp_path, monkeypatch,
-):
-    target = tmp_path / "volume"
-    target.mkdir()
-
-    def broken_lstat(_path):
-        raise OSError(5, "Input/output error")
-
-    monkeypatch.setattr(run_release_gate.os, "lstat", broken_lstat)
-    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(tmp_path, monkeypatch, _unreadable_dir_error(target))
-
-
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
-def test_secret_overlay_restores_files_and_handler_when_termination_signal_arrives(
-    tmp_path, monkeypatch, signum,
-):
-    repo = tmp_path / "repository"
-    repo.mkdir()
-    secret = repo / "cmru.secret.toml"
-    secret.write_bytes(b"publisher credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-    handler_calls = []
-
-    def record_signal_handler(received_signum, handler):
-        handler_calls.append((received_signum, handler))
-        return signal.SIG_DFL
-
-    monkeypatch.setattr(run_release_gate.signal, "signal", record_signal_handler)
-
-    with pytest.raises(SystemExit) as interrupted:
-        with run_release_gate._mask_secret_overlays(
-            [secret], mount_root=repo, temp_parent=private_root,
-        ):
-            assert secret.is_symlink()
-            handler_calls[0][1](signum, None)
-
-    assert interrupted.value.code == 128 + signum
-    assert secret.read_bytes() == b"publisher credential\n"
-    assert handler_calls[2:] == [
-        (signal.SIGTERM, signal.SIG_DFL),
-        (signal.SIGHUP, signal.SIG_DFL),
-    ]
-
-
-def test_secret_overlay_preserves_atomic_rotation_during_gate(tmp_path, monkeypatch):
-    repo = tmp_path / "repository"
-    repo.mkdir()
-    secret = repo / "cmru.secret.toml"
-    secret.write_bytes(b"old publisher credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-    replacement = tmp_path / "rotated.secret"
-    replacement.write_bytes(b"rotated publisher credential\n")
-
+def test_snapshot_is_attached_to_exact_head_and_excludes_source_secrets(tmp_path, monkeypatch):
+    repo, root_secret, project_secret, _metadata, _auth, _calls = _fixture(tmp_path, monkeypatch)
+    from cmru import gate_snapshot
+
+    snapshot = gate_snapshot.open_gate_snapshot(repo)
     try:
-        with run_release_gate._mask_secret_overlays(
-            [secret], mount_root=repo, temp_parent=private_root,
-        ):
-            assert secret.is_symlink()
-            real_replace = os.replace
-            rotated = False
-
-            def rotate_at_restore(source, destination):
-                nonlocal rotated
-                if (
-                    not rotated
-                    and Path(source) == secret
-                    and ".restore-" in Path(destination).name
-                ):
-                    rotated = True
-                    real_replace(replacement, secret)
-                return real_replace(source, destination)
-
-            monkeypatch.setattr(os, "replace", rotate_at_restore)
-    except RuntimeError as exc:
-        assert "preserving the replacement" in str(exc)
-        assert "private publisher-secret backups retained at" in str(exc)
-        assert rotated
-        backup_root = Path(str(exc).rsplit("retained at ", 1)[1])
-    else:
-        raise AssertionError("atomic credential rotation was silently overwritten")
-
-    assert secret.read_bytes() == b"rotated publisher credential\n"
-    backup = next(backup_root.glob("overlay-*.bin"))
-    assert backup.read_bytes() == b"old publisher credential\n"
+        assert snapshot.worktree_path != repo
+        assert snapshot.worktree_path.is_dir()
+        assert not (snapshot.worktree_path / "cmru.secret.toml").exists()
+        assert not (snapshot.worktree_path / "cmru" / "cmru.secret.toml").exists()
+        assert root_secret.read_bytes() == b"root credential\n"
+        assert project_secret.read_bytes() == b"project override\n"
+        assert _git(snapshot.worktree_path, "rev-parse", "HEAD") == snapshot.commit
+        assert _git(snapshot.worktree_path, "branch", "--show-current") == snapshot.branch
+        (repo / ".venv" / "late" / "cmru.secret.toml").parent.mkdir(parents=True)
+        (repo / ".venv" / "late" / "cmru.secret.toml").write_text("late secret")
+        assert not (snapshot.worktree_path / ".venv" / "late" / "cmru.secret.toml").exists()
+    finally:
+        gate_snapshot.close_gate_snapshot(snapshot)
 
 
-def test_secret_overlay_preserves_atomic_rotation_at_mask_boundary(tmp_path, monkeypatch):
-    repo = tmp_path / "repository"
-    repo.mkdir()
-    secret = repo / "cmru.secret.toml"
-    secret.write_bytes(b"old publisher credential\n")
-    private_root = tmp_path / "private-backups"
-    private_root.mkdir(mode=0o700)
-    replacement = tmp_path / "rotated.secret"
-    replacement.write_bytes(b"rotated publisher credential\n")
-    real_replace = os.replace
-    rotated = False
+def test_git_pointer_reads_refuse_symlinks_and_fifos_without_blocking(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    from cmru import gate_snapshot
 
-    def rotate_before_mask_move(source, destination):
-        nonlocal rotated
-        if (
-            not rotated
-            and Path(source) == secret
-            and ".mask-displaced-" in Path(destination).name
-        ):
-            rotated = True
-            real_replace(replacement, secret)
-        return real_replace(source, destination)
-
-    monkeypatch.setattr(os, "replace", rotate_before_mask_move)
-    with pytest.raises(RuntimeError, match="publisher secret changed before masking"):
-        with run_release_gate._mask_secret_overlays(
-            [secret], mount_root=repo, temp_parent=private_root,
-        ):
-            pytest.fail("the overlay was installed after a credential rotation")
-
-    assert rotated
-    assert secret.read_bytes() == b"rotated publisher credential\n"
-    assert not list(repo.glob(".cmru.secret.toml.mask-*"))
-    assert not list(repo.glob(".cmru.secret.toml.mask-displaced-*"))
+    marker = repo / ".git"
+    admin, _common = gate_snapshot._linked_git_context(repo)
+    marker.unlink()
+    os.mkfifo(marker)
+    with pytest.raises(RuntimeError, match="marker is not a regular file"):
+        gate_snapshot._linked_git_context(repo)
+    marker.unlink()
+    (repo / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    (admin / "gitdir").unlink()
+    (admin / "gitdir").symlink_to(repo / ".git")
+    with pytest.raises(RuntimeError, match="cannot read linked-worktree pointer"):
+        gate_snapshot._linked_git_context(repo)
 
 
-def test_release_gate_retains_private_backups_when_secret_restoration_fails(
-    tmp_path, monkeypatch,
-):
-    repo, root_secret, project_secret, _metadata, _auth, calls = _fixture(tmp_path, monkeypatch)
+def test_snapshot_copies_back_only_allowlisted_gate_evidence(tmp_path, monkeypatch):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
 
-    def fail_restore(backups):
-        root_secret_backup = next(item for item in backups if item.path == root_secret)
-        root_secret_backup.path.unlink()
-        raise OSError("simulated restore failure")
+    def invoke(_root, lane, _environment, worktree):
+        calls.append(lane)
+        if lane == "assay":
+            evidence = worktree / "cmru" / ".assay" / "verdict-cmru.json"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text('{"status":"PASS"}\n', encoding="utf-8")
+        return 0
 
-    monkeypatch.setattr(run_release_gate, "_restore", fail_restore)
-    monkeypatch.setattr(
-        run_release_gate,
-        "_invoke_lane",
-        lambda _root, lane, _environment: calls.append(lane) or 0,
-    )
-
-    try:
-        run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    except RuntimeError as exc:
-        assert "simulated restore failure" in str(exc)
-        assert "private publisher-secret backups retained at" in str(exc)
-        backup_root = Path(str(exc).rsplit("retained at ", 1)[1])
-    else:
-        raise AssertionError("failed secret restoration did not fail the gate")
-
-    assert not root_secret.exists()
-    assert project_secret.is_symlink()
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
     assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary"]
-    assert backup_root.is_dir()
-    assert stat.S_IMODE(backup_root.stat().st_mode) == 0o700
-    backup_files = list(backup_root.glob("overlay-*.bin"))
-    assert len(backup_files) == 2
-    assert {path.read_bytes() for path in backup_files} == {
-        b"root credential\n", b"project override\n",
-    }
+    assert (repo / "cmru" / ".assay" / "verdict-cmru.json").read_text() == (
+        '{"status":"PASS"}\n'
+    )
+    assert (repo / "cmru" / ".assay" / "release-gate-snapshot.json").is_file()
 
 
-def test_release_gate_refuses_symlink_secret_and_restores_any_prior_mask(
-    tmp_path, monkeypatch,
-):
-    repo, root_secret, project_secret, _metadata, _auth, calls = _fixture(tmp_path, monkeypatch)
+def test_unapproved_lane_output_fails_and_is_not_copied_back(tmp_path, monkeypatch):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
-    target = tmp_path / "target.secret"
-    target.write_text("preserve\n", encoding="utf-8")
-    project_secret.unlink()
-    project_secret.symlink_to(target)
 
-    monkeypatch.setattr(
-        run_release_gate,
-        "_invoke_lane",
-        lambda *_args: calls.append("unexpected") or 0,
-    )
-    try:
+    def invoke(_root, lane, _environment, worktree):
+        calls.append(lane)
+        if lane == "installed-wheel":
+            evidence = worktree / "cmru" / ".assay" / "verdict-cmru.json"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text('{"status":"PASS"}\n', encoding="utf-8")
+            (worktree / "cmru" / "unapproved-output.txt").write_text("not evidence")
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    with pytest.raises(RuntimeError, match="unapproved ignored/untracked files"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    except RuntimeError as exc:
-        assert "regular file" in str(exc)
-    else:
-        raise AssertionError("symlinked secret was accepted")
+    assert not (repo / "cmru" / "unapproved-output.txt").exists()
+    assert not (repo / "cmru" / ".assay" / "verdict-cmru.json").exists()
 
-    assert root_secret.read_bytes() == b"root credential\n"
-    assert project_secret.is_symlink()
-    assert target.read_text(encoding="utf-8") == "preserve\n"
+
+def test_tracked_publisher_secret_refuses_before_any_lane(tmp_path, monkeypatch):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    tracked_secret = repo / "cmru" / "cmru.secret.toml"
+    tracked_secret.write_text("must not enter a snapshot")
+    _git(repo, "add", "cmru/cmru.secret.toml")
+    _git(repo, "commit", "--quiet", "-m", "track forbidden secret")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        run_release_gate, "_invoke_lane",
+        lambda *_args: calls.append("launched") or 0,
+    )
+    with pytest.raises(RuntimeError, match="tracks a publisher-secret file"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert calls == []
+
+
+def test_tracked_gate_evidence_path_refuses_before_any_lane(tmp_path, monkeypatch):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    tracked_evidence = repo / "cmru" / "coverage.json"
+    tracked_evidence.write_text("committed evidence is not lane state\n")
+    _git(repo, "add", "cmru/coverage.json")
+    _git(repo, "commit", "--quiet", "-m", "track gate evidence path")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        run_release_gate, "_invoke_lane",
+        lambda *_args: calls.append("launched") or 0,
+    )
+    with pytest.raises(RuntimeError, match="evidence paths must be ignored"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+    assert calls == []
+
+
+def test_release_candidate_cleanup_removes_its_gate_snapshot(tmp_path):
+    import worktree
+
+    from cmru import gate_snapshot, transaction
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "--quiet")
+    _git(primary, "config", "user.name", "CMRU Gate Test")
+    _git(primary, "config", "user.email", "cmru-gate@example.invalid")
+    (primary / "README.md").write_text("tracked fixture\n", encoding="utf-8")
+    _git(primary, "add", "README.md")
+    _git(primary, "commit", "--quiet", "-m", "fixture")
+
+    candidate_path = tmp_path / "release-candidate"
+    context = worktree.create_workspace(
+        primary,
+        candidate_path,
+        branch="cmru-test-release-candidate",
+        purpose="cmru-release",
+        base="HEAD",
+    )
+    _git(candidate_path, "reset", "--hard", "HEAD")
+    snapshot = gate_snapshot.open_gate_snapshot(candidate_path)
+    snapshot_path = snapshot.worktree_path
+    gate_snapshot.close_gate_snapshot(snapshot)
+
+    transaction.remove_workspace(transaction.ReleaseWorkspace(
+        repo_root=primary,
+        path=candidate_path,
+        branch=context.branch,
+        base=context.base_commit,
+        context=context,
+    ))
+
+    assert not snapshot_path.exists()
+    assert not candidate_path.exists()
+    assert not worktree.list_workspaces(worktree.discover_git_context(primary)[1])
 
 
 _STARTED_NS = 1_000_000
 _FRESH_NS = 2_000_000
 
 
-def _fake_lane_run(project: Path, writer, returncode: int, monkeypatch):
-    """Fake the lane subprocess with a deterministic clock.
+def _fake_lane_process(project: Path, writer, returncode: int, monkeypatch):
+    """Fake the lane process with a deterministic clock.
 
     ``_invoke_lane`` stamps ``time.time_ns()`` before running; the clock is pinned
     to ``_STARTED_NS`` and every file the fake writes is stamped ``_FRESH_NS`` so
@@ -762,15 +464,30 @@ def _fake_lane_run(project: Path, writer, returncode: int, monkeypatch):
     """
     monkeypatch.setattr(run_release_gate, "time", SimpleNamespace(time_ns=lambda: _STARTED_NS))
 
-    def run(argv, **_kwargs):
+    class FakeProcess:
+        def wait(self, timeout=None):
+            assert timeout is None
+            return returncode
+
+        def poll(self):
+            return returncode
+
+        def send_signal(self, _signum):
+            raise AssertionError("unexpected signal in successful lane fixture")
+
+        def kill(self):
+            raise AssertionError("unexpected kill in successful lane fixture")
+
+    def popen(argv, **_kwargs):
+        assert argv[-1] in {"assay", "coverage"}
         before = {p for p in project.rglob("*") if p.is_file()}
         writer(project)
         for written in (p for p in project.rglob("*") if p.is_file()):
             if written not in before:
                 os.utime(written, ns=(_FRESH_NS, _FRESH_NS))
-        return SimpleNamespace(returncode=returncode)
+        return FakeProcess()
 
-    return run
+    monkeypatch.setattr(run_release_gate.subprocess, "Popen", popen)
 
 
 def _stale(path: Path, text: str) -> None:
@@ -779,8 +496,6 @@ def _stale(path: Path, text: str) -> None:
 
 
 def test_failed_lane_names_the_failing_test_from_the_verdict_tail(tmp_path, monkeypatch, capsys):
-    project = tmp_path / "cmru"
-    (project / ".assay").mkdir(parents=True)
     tail = (
         "....F\nFAILED tests/test_x.py::test_boom - assert 1 == 2\n"
         "ERROR tests/test_y.py::test_err\nFAILED tests/test_x.py::test_boom - assert 1 == 2\n1 failed"
@@ -793,10 +508,13 @@ def test_failed_lane_names_the_failing_test_from_the_verdict_tail(tmp_path, monk
             _json.dumps({"result_stdout_tail": tail}), encoding="utf-8",
         )
 
-    monkeypatch.setattr(
-        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 1, monkeypatch),
-    )
-    assert run_release_gate._invoke_lane(tmp_path, "assay", {}) == 1
+    repo = tmp_path / "source"
+    (repo / "cmru").mkdir(parents=True)
+    snapshot = tmp_path / "snapshot"
+    snapshot_project = snapshot / "cmru"
+    (snapshot_project / ".assay").mkdir(parents=True)
+    _fake_lane_process(snapshot_project, write, 1, monkeypatch)
+    assert run_release_gate._invoke_lane(repo, "assay", {}, snapshot) == 1
     err = capsys.readouterr().err
     assert err.count("FAILED tests/test_x.py::test_boom - assert 1 == 2") == 1  # deduplicated
     assert "ERROR tests/test_y.py::test_err" in err
@@ -806,12 +524,6 @@ def test_failed_lane_names_the_failing_test_from_the_verdict_tail(tmp_path, monk
 def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
     tmp_path, monkeypatch, capsys,
 ):
-    project = tmp_path / "cmru"
-    (project / ".assay").mkdir(parents=True)
-    _stale(project / ".assay" / "verdict-old.json", '{"result_stdout_tail": "FAILED tests/stale.py::t"}')
-    _stale(project / ".assay" / "verdict-bad.json", "{not json")
-    _stale(project / ".assay" / "verdict-notail.json", "{}")
-
     def write(_project):
         (_project / ".assay" / "verdict-fresh-bad.json").write_text("{not json", encoding="utf-8")
         (_project / "junit-coverage.xml").write_text(
@@ -822,10 +534,17 @@ def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
             encoding="utf-8",
         )
 
-    monkeypatch.setattr(
-        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 3, monkeypatch),
-    )
-    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 3
+    repo = tmp_path / "source"
+    (repo / "cmru").mkdir(parents=True)
+    snapshot = tmp_path / "snapshot"
+    snapshot_project = snapshot / "cmru"
+    (snapshot_project / ".assay").mkdir(parents=True)
+    _stale(snapshot_project / ".assay" / "verdict-old.json",
+           '{"result_stdout_tail": "FAILED tests/stale.py::t"}')
+    _stale(snapshot_project / ".assay" / "verdict-bad.json", "{not json")
+    _stale(snapshot_project / ".assay" / "verdict-notail.json", "{}")
+    _fake_lane_process(snapshot_project, write, 3, monkeypatch)
+    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 3
     err = capsys.readouterr().err
     assert "FAILED tests.test_a::test_bad (junit)" in err
     assert "FAILED tests.test_a::test_err (junit)" in err
@@ -834,35 +553,33 @@ def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
 
 
 def test_stale_junit_from_an_earlier_run_is_not_reported(tmp_path, monkeypatch, capsys):
-    project = tmp_path / "cmru"
-    project.mkdir()
+    repo = tmp_path / "source"
+    (repo / "cmru").mkdir(parents=True)
+    snapshot = tmp_path / "snapshot"
+    snapshot_project = snapshot / "cmru"
+    snapshot_project.mkdir(parents=True)
     _stale(
-        project / "junit-coverage.xml",
+        snapshot_project / "junit-coverage.xml",
         '<testsuites><testcase classname="tests.old" name="test_old"><failure/></testcase></testsuites>',
     )
-    monkeypatch.setattr(
-        run_release_gate.subprocess, "run",
-        _fake_lane_run(project, lambda _p: None, 1, monkeypatch),
-    )
-    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 1
+    _fake_lane_process(snapshot_project, lambda _p: None, 1, monkeypatch)
+    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 1
     assert capsys.readouterr().err == ""
 
 
 def test_passing_lane_and_unreadable_reports_stay_silent(tmp_path, monkeypatch, capsys):
-    project = tmp_path / "cmru"
-    project.mkdir()
-
     def write(_project):
         (_project / "junit-coverage.xml").write_text("<broken", encoding="utf-8")
 
-    monkeypatch.setattr(
-        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 0, monkeypatch),
-    )
-    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 0
-    monkeypatch.setattr(
-        run_release_gate.subprocess, "run", _fake_lane_run(project, write, 2, monkeypatch),
-    )
-    assert run_release_gate._invoke_lane(tmp_path, "coverage", {}) == 2
+    repo = tmp_path / "source"
+    (repo / "cmru").mkdir(parents=True)
+    snapshot = tmp_path / "snapshot"
+    snapshot_project = snapshot / "cmru"
+    snapshot_project.mkdir(parents=True)
+    _fake_lane_process(snapshot_project, write, 0, monkeypatch)
+    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 0
+    _fake_lane_process(snapshot_project, write, 2, monkeypatch)
+    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 2
     assert capsys.readouterr().err == ""
 
 
@@ -887,7 +604,7 @@ def _recording_gate(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_release_gate, "_load_components", load_recording)
 
-    def invoke(_root, lane, _environment):
+    def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
         return 0
 
@@ -924,7 +641,7 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
 def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path, monkeypatch):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
 
-    def invoke(_root, lane, _environment):
+    def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
         return 7 if lane == "canary" else 0
 
@@ -939,7 +656,7 @@ def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path
 def test_postponement_does_not_hide_an_earlier_lane_failure(tmp_path, monkeypatch):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
 
-    def invoke(_root, lane, _environment):
+    def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
         return 5 if lane == "coverage" else 0
 
@@ -957,7 +674,7 @@ def test_full_gate_writes_no_marker_and_removes_a_stale_one(tmp_path, monkeypatc
     assert calls == ["installed-wheel", "assay", "coverage", "facts", "mutation", "canary"]
     assert not marker.exists()
     assert "WARN" not in capsys.readouterr().err
-    marker.parent.mkdir(parents=True)
+    marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("{}", encoding="utf-8")
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
     assert not marker.exists()

@@ -422,16 +422,17 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | Language | R0 | R1 — line coverage | R1 — branch coverage | R2 — mutation | R3 — canary/parity |
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
-| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
+| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, progress and candidate-local resource-event checks | ✅ registered |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
-| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
+| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, progress and resource-event path as Python | ❌ not registered |
 
 #### Cross-cutting capabilities beyond language adapters
 
 | Capability | Current support | Limit |
 |---|---|---|
 | Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. A process-limit or OOM event during a candidate is `ERROR/EXEC_FAILED` and never a mutant kill. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. | These are execution features, not language-wide guarantees; see the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
 | Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
 | Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |
 | Campaign closeout | `assay analyze campaign` implements the phase-1 analysis of plan, progress, verdict, and supplied coverage inputs. | B108 remains open: phase-1 acceptance and documentation have residuals, and phase 2—Run-Gate's automatic post-lane closeout and SPEC wiring—is not implemented. |
@@ -444,6 +445,13 @@ The matrix describes language capability, not a qualification claim for every
 package. B131 declares a separate whole-target `analysis-r2` lane, but its
 registered gate currently runs only the bounded non-qualifying pilot. The
 analysis package is not yet qualified over its full R2 plan.
+
+Native campaign lifecycle follows the R2 producer, not the source language:
+Python and SQL currently use Assay's native runner and share resume/rejudge,
+candidate progress, and cgroup event checks. JavaScript/TypeScript R2 ingests
+an external report, so the producer owns its execution and retry state. Assay's
+cgroup event checks decide whether native mutation results are valid; they are
+not a resource-use profile. `cgprofile` provides the separate lane profile.
 
 Three genuinely different states, worth keeping distinct:
 

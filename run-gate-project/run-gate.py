@@ -15,7 +15,8 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 66  # rev 66: preflight observer contract before private R2 lanes
+__revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git readers
+# rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
 # handshake until daemon placement is read back; explicit refusal is an
@@ -3858,12 +3859,38 @@ def physical_path(path: Path, mountinfo_text: str | None = None,
 
 
 def git_out(*args: str, cwd: Path) -> str:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                          text=True, env=host_git_environment())
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
             else f"exit {proc.returncode}"
         fail_infra(f"git {' '.join(args)} failed in {cwd}: {detail}")
     return proc.stdout.strip()
+
+
+def host_git_environment() -> dict[str, str]:
+    """Keep host-side Git readers from executing worktree supplied helpers.
+
+    A lane needs a writable index and shared refs to support the documented
+    in-container commit behavior. Its worktree pointers are separately mounted
+    read-only, while every host Git reader disables fsmonitor and hooks so a
+    config file created through some other path cannot run code on the host.
+    """
+    environment = os.environ.copy()
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0")
+    if not raw_count.isdecimal():
+        fail_infra("GIT_CONFIG_COUNT is malformed; cannot harden host Git")
+    index = int(raw_count)
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_COUNT": str(index + 2),
+        f"GIT_CONFIG_KEY_{index}": "core.fsmonitor",
+        f"GIT_CONFIG_VALUE_{index}": "false",
+        f"GIT_CONFIG_KEY_{index + 1}": "core.hooksPath",
+        f"GIT_CONFIG_VALUE_{index + 1}": os.devnull,
+    })
+    return environment
 
 
 def resolve_repo_and_worktree(project_dir: Path, worktree_override: str | None
@@ -4233,7 +4260,8 @@ def acquire_exec_lock(container_name: str, lane_name: str,
 
 def check_clean_tree(worktree: Path) -> None:
     proc = subprocess.run(["git", "-C", str(worktree), "status", "--porcelain"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True,
+                          env=host_git_environment())
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
             else proc.returncode
@@ -4313,7 +4341,8 @@ def paths_are_git_ignored(worktree: Path, targets: list[Path]) -> bool | None:
     wanted = [str(t) for t in targets]
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "check-ignore",
-                               "--", *wanted], capture_output=True, text=True)
+                               "--", *wanted], capture_output=True, text=True,
+                              env=host_git_environment())
     except OSError:
         return None
     if proc.returncode not in (0, 1):
@@ -4330,7 +4359,8 @@ def git_operation_in_progress(worktree: Path) -> str | None:
     caller pairs this with a separate 'could we even determine it' flag."""
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
-                               "--git-dir"], capture_output=True, text=True)
+                               "--git-dir"], capture_output=True, text=True,
+                              env=host_git_environment())
     except OSError:
         return None
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -4349,7 +4379,7 @@ def head_commit(worktree: Path) -> str | None:
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
                                "--verify", "HEAD"], capture_output=True,
-                              text=True)
+                              text=True, env=host_git_environment())
     except OSError:
         return None
     sha = proc.stdout.strip()
@@ -4365,7 +4395,8 @@ def worktree_is_dirty(worktree: Path) -> bool | None:
     tree produces a perfectly good measurement and must not be excluded."""
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "status",
-                               "--porcelain"], capture_output=True, text=True)
+                               "--porcelain"], capture_output=True, text=True,
+                              env=host_git_environment())
     except OSError:
         return None
     if proc.returncode != 0:
@@ -7773,7 +7804,8 @@ def merge_base_of(worktree: Path, ref: str) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "merge-base", "--end-of-options", ref, "HEAD"],
-            cwd=str(worktree), capture_output=True, text=True)
+            cwd=str(worktree), capture_output=True, text=True,
+            env=host_git_environment())
     except (OSError, ValueError):
         return None
     if proc.returncode != 0:
@@ -7791,7 +7823,7 @@ def current_branch_ref(worktree: Path) -> str | None:
     try:
         proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                               cwd=str(worktree), capture_output=True,
-                              text=True)
+                              text=True, env=host_git_environment())
     except (OSError, ValueError):
         return None
     if proc.returncode != 0:
@@ -8008,7 +8040,8 @@ def derive_upstream_base(worktree: Path) -> str | None:
     an ordinary state this function must report, not an infrastructure
     failure it should abort on."""
     proc = subprocess.run(["git", "merge-base", "HEAD", "@{upstream}"],
-                          cwd=str(worktree), capture_output=True, text=True)
+                          cwd=str(worktree), capture_output=True, text=True,
+                          env=host_git_environment())
     if proc.returncode != 0:
         return None
     return proc.stdout.strip() or None
@@ -10225,7 +10258,8 @@ def render_git_config(entries: list[tuple[str, str | None]]) -> str:
 
 def read_git_config_entries(path: Path) -> list[tuple[str, str | None]]:
     proc = subprocess.run(["git", "config", "--file", str(path), "--list", "-z"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True,
+                          env=host_git_environment())
     if proc.returncode != 0:
         fail_infra(f"cannot read git config {path} to sanitize it: "
                    f"{(proc.stderr.strip().splitlines() or ['git failed'])[-1]}")
@@ -10376,6 +10410,63 @@ def git_worktrees_mount_flags(plan: dict, repo: Path) -> list[str]:
     return flags
 
 
+def git_hook_info_mount_flags(plan: dict, repo: Path) -> list[str]:
+    """Keep tester containers from planting host Git hooks or editing info.
+
+    The common Git directory itself stays read-write because lanes need object
+    writes and in-container commits. Its hooks directory is overlaid with one
+    private, empty, read-only directory, and its info directory is mounted
+    read-only with its real contents. Both paths are dual-mounted wherever the
+    common directory is dual-mounted.
+    """
+    common = plan["common"]
+    hooks = common / "hooks"
+    info = common / "info"
+    for path in (hooks, info):
+        if path.is_symlink() or not path.is_dir():
+            fail_infra(f"shared Git {path.name} directory is missing or unsafe: {path}")
+
+    private, _physical = _make_private_dir(repo)
+    empty_hooks = private / "hooks-empty"
+    empty_hooks.mkdir(mode=0o755)
+    empty_hooks.chmod(0o755)
+    empty_source = physical_path(empty_hooks)
+
+    flags: list[str] = []
+    for destination in _dual(hooks, repo)[1::2]:
+        flags += ["-v", f"{empty_source}:{destination.split(':', 1)[1]}:ro"]
+    for destination in _dual(info, repo)[1::2]:
+        flags += ["-v", f"{physical_path(info)}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+def git_worktree_pointer_mount_flags(
+        plan: dict, worktree: Path, repo: Path) -> list[str]:
+    """Protect the linked worktree pointers that host Git must later follow.
+
+    The worktree marker and admin ``gitdir``/``commondir`` files identify the
+    host-side Git directory. A tester may update the judged branch and index,
+    but it must not redirect the checkout to a Git directory it controls.
+    ``config.worktree`` is already mounted as a sanitized read-only config
+    overlay when it exists; host Git readers also disable fsmonitor and hooks.
+    """
+    if plan["kind"] != "linked":
+        return []
+    files = (worktree / ".git", plan["admin"] / "gitdir",
+             plan["admin"] / "commondir")
+    flags: list[str] = []
+    for path in files:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            fail_infra(f"cannot inspect Git worktree pointer {path}: {exc}")
+        if not stat.S_ISREG(metadata.st_mode):
+            fail_infra(f"Git worktree pointer is not a regular file: {path}")
+        for destination in _dual(path, repo)[1::2]:
+            flags += ["-v", f"{physical_path(path)}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
 _MAIN_CHECKOUT_WARNED: set[str] = set()
 
 
@@ -10425,6 +10516,8 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
     # `<common>/worktrees` read-only with its real contents, own admin dir rw
     mounts += git_worktrees_mount_flags(plan, repo)
     mounts += git_config_overlay_flags(plan, repo)
+    mounts += git_hook_info_mount_flags(plan, repo)
+    mounts += git_worktree_pointer_mount_flags(plan, worktree, repo)
     if with_state and (env or {}).get("state_root") is None:
         state = repo / ".run-gate"
         if create_state:

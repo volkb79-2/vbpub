@@ -143,9 +143,20 @@ dedicated container, never here. For the vbpub family that is
 identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
 
-When installing a locally built wheel for inspection or a bounded local test,
-use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.
-`/home/vscode/.local` is not the wheel installation environment.
+**Do not execute tests from the devcontainer cockpit.** This includes pytest,
+Hypothesis, unittest, project test scripts, and focused test selections. Run
+tests through the project's registered `./run-gate.py <lane>` so the declared
+`tester-unified` image, dependencies, identity, and resource limits define the
+environment. If a behavior has no registered lane, add or use a supported
+tester-unified lane before executing it. The cockpit may inspect files, run
+static analysis that does not execute tests, and drive the registered gate.
+Installing pytest or Hypothesis in the cockpit venv does not make a test run a
+valid gate and must not be used as a fallback.
+
+When installing a locally built wheel for inspection, use the estate venv:
+`/home/vscode/.venv/bin/python -m pip install ...`. `/home/vscode/.local` is
+not the wheel installation environment. Any test of that wheel still runs
+through a registered tester-unified gate.
 
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)

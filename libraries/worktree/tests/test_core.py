@@ -17,6 +17,7 @@ from worktree import (
     list_git_worktrees,
     physical_path,
     read_record,
+    remove_orphan_workspace,
     remove_workspace,
     release_lease,
     workspace_id_for_path,
@@ -332,6 +333,56 @@ def test_allocate_resume_lease_and_remove(repository: Path, tmp_path: Path) -> N
     remove_workspace(context)
     assert not target.exists()
     assert not context.record_path.exists()
+
+
+def test_remove_orphan_workspace_uses_another_checkout_in_the_same_git_family(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-worktree"
+    _git(repository, "worktree", "add", "--quiet", "-b", "orphan-source", str(source), "HEAD")
+    target = tmp_path / "orphan-target"
+    context = create_workspace(
+        source,
+        target,
+        branch="workspace/orphan-target",
+        purpose="test-orphan-cleanup",
+    )
+    record = read_record(context.record_path)
+
+    _git(repository, "worktree", "remove", "--force", str(source))
+    remove_orphan_workspace(record, executor_git_root=repository)
+
+    assert not target.exists()
+    assert not context.record_path.exists()
+    branch = subprocess.run(
+        ["git", "show-ref", "--verify", "refs/heads/workspace/orphan-target"],
+        cwd=repository, capture_output=True, text=True, check=False,
+    )
+    assert branch.returncode == 1
+
+
+def test_remove_orphan_workspace_refuses_when_source_exists_or_lease_is_live(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-worktree"
+    _git(repository, "worktree", "add", "--quiet", "-b", "live-source", str(source), "HEAD")
+    target = tmp_path / "orphan-target"
+    context = create_workspace(
+        source,
+        target,
+        branch="workspace/live-orphan-target",
+        purpose="test-orphan-cleanup",
+    )
+    with pytest.raises(core.WorkspaceError, match="recorded source checkout still exists"):
+        remove_orphan_workspace(context, executor_git_root=repository)
+
+    _git(repository, "worktree", "remove", "--force", str(source))
+    leased = acquire_lease(context, holder="live-owner", ttl=timedelta(minutes=5))
+    with pytest.raises(core.WorkspaceError, match="active lease"):
+        remove_orphan_workspace(leased, executor_git_root=repository)
+    assert target.is_dir()
+    release_lease(leased)
+    remove_orphan_workspace(context, executor_git_root=repository)
 
 
 def test_explicit_identity_path_is_durable_and_rechecked(repository: Path, tmp_path: Path) -> None:

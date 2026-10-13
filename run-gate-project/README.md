@@ -464,7 +464,11 @@ the tool's reason to exist and MUST be implemented + tested:
   judged worktree's own admin dir read-write on top, so an in-container `git
   worktree prune` fails (EROFS), `gc` keeps every sibling's objects and
   `branch -D` of a sibling's branch is refused; `git worktree add` cannot
-  create a new admin dir inside the container. A plain (main) checkout is refused unless `--allow-main-checkout` /
+  create a new admin dir inside the container. The common `hooks/` directory
+  is overlaid with an empty read-only directory and common `info/` is mounted
+  read-only, so a tester cannot plant a host hook or edit host exclude metadata.
+  See the [shared Git mount design](docs/DESIGN-GUIDE.md#shared-git-metadata-keeps-host-hooks-inert).
+  A plain (main) checkout is refused unless `--allow-main-checkout` /
   `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (WARNs). `mode = "exec"` lanes are
   unaffected. Isolation comes from mounting less; run-gate knows no
   project's secret file names.

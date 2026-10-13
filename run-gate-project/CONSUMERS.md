@@ -241,9 +241,13 @@ The host's shipped `dev-gates.slice` example has a `1.5G` memory maximum, so it
 cannot admit this `2G` R2 lane. Before running it, configure the gate slice and
 its `dev.slice` ancestor for the requested lane caps plus overhead. Two
 concurrent `2G` lanes need more than `4G` of gate-slice headroom; the full MDT
-assay lane declares `6G`. Keep the conservative host defaults when that
-capacity is unavailable; run-gate will refuse a request that exceeds its
-admission budget. See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
+assay lane declares `6G`. Run-Gate refuses a request when it can read the
+declared slice's `memory.max` and `memory.current` and the request exceeds that
+slice's remaining budget. If those files are hidden or unreadable, it warns and
+continues under the other shared-infrastructure checks; it does not prove
+ancestor or whole-host headroom. Check and record those limits and current use
+before a high-memory campaign, and serialize campaigns when capacity is tight.
+See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
 
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
@@ -426,8 +430,19 @@ read-write on top: a `git worktree prune` inside the container fails
 (EROFS) instead of deleting other worktrees' admin dirs on the host, `git
 gc` still sees every other worktree's HEAD and index, and `git branch -D` of
 a branch checked out elsewhere is refused. `git worktree add` inside the
-container cannot create a new admin dir (assay's snapshot uses `clone
---no-local` and is unaffected).
+  container cannot create a new admin dir (assay's snapshot uses `clone
+  --no-local` and is unaffected).
+
+The shared Git directory remains read-write for object and in-lane commit
+operations, but its host hook path is not available to the tester: Run-Gate
+overlays `<common>/hooks` with a private empty read-only directory and mounts
+`<common>/info` read-only. A lane can therefore commit inside its worktree
+without installing a hook that a later host Git command could execute or
+changing host `info/exclude`. The container acceptance test plants a host
+`post-commit` hook, attempts both writes from the lane, and verifies the
+in-container commit cannot run or change it. A later host commit still runs
+the original hook unchanged. See the
+[shared Git mount design](docs/DESIGN-GUIDE.md#shared-git-metadata-keeps-host-hooks-inert).
 
 **Main checkout.** An ephemeral lane or probe whose judged tree is a plain
 checkout (not a linked worktree) is REFUSED: the whole checkout, including

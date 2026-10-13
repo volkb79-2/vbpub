@@ -22,6 +22,30 @@ This rule preserves nested projects in a monorepo: a project at
 `packages/service` in the invoking checkout maps to
 `W/packages/service`, while the worktree root stays the Git judgment root.
 
+## Shared Git metadata keeps host hooks inert
+
+Linked-worktree container lanes need the common Git directory read-write for
+object writes and in-lane commits. Making that entire mount read-only would
+break supported lane behavior, while masking only Git config still leaves
+`<common>/hooks` writable. A tester could write `post-commit` there and have a
+later host commit execute tester-controlled code.
+
+Run-Gate keeps the shared directory writable, but overlays its common `hooks/`
+directory with a private empty directory mounted read-only. It mounts the real
+common `info/` directory read-only as well, protecting host exclude metadata.
+Both overlays follow the physical and namespace mount paths. Missing, symlinked,
+or non-directory hook/info paths refuse as infrastructure before the lane
+starts. The real-container oracle plants a host hook, proves the tester cannot
+create a hook or edit `info/exclude`, and verifies the in-container commit
+does not execute the host hook. A subsequent host commit runs the original hook
+unchanged. This preserves normal in-container commits while keeping the host's
+later Git operations outside the tester's hook-writing authority.
+
+CMRU independently disables hooks around its own host Git calls while it
+prepares release-baseline facts. That protects the aggregate controller's
+credential-bearing Git operation; the Run-Gate mount protects later host Git
+operations after a tester lane.
+
 ## The runner belongs to the judged worktree
 
 An exec lane uses a persistent runner managed by that project's deployment

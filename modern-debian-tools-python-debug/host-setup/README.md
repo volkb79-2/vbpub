@@ -140,11 +140,15 @@ The shipped `dev-gates.slice` example is intentionally conservative: its
 `MemoryHigh` and `MemoryMax` above the sum of the active lane caps, with room
 for container and controller overhead. Two concurrent `2G` lanes need more
 than `4G`; a `6G` MDT full-assay lane needs more than `6G` by itself. Check the
-ancestor `dev.slice` limits and current use too. Run-Gate refuses requests that
-do not fit the declared slice budget, while cgprofile reports a candidate as
-inconclusive if a shared ancestor limit changes during execution. Keep the
-smaller default when that extra capacity is not available and run high-memory
-campaigns only on a host profile sized for them.
+ancestor `dev.slice` limits and current use too. Run-Gate refuses a request
+when it can read the declared slice's `memory.max` and `memory.current` and the
+request exceeds that slice's remaining budget. If those files are hidden or
+unreadable, Run-Gate warns and continues under its other shared-infrastructure
+checks; it does not establish ancestor or whole-host headroom. Cgprofile reports
+a candidate as inconclusive if a shared ancestor limit changes during
+execution. Keep the smaller default when that extra capacity is unavailable,
+record the effective slice and ancestor limits before a campaign, and serialize
+high-memory lanes unless measured headroom supports running them together.
 
 Why each row exists:
 
@@ -172,9 +176,13 @@ Before systemd reports the service ready, the post-start check makes the
 root-owned directory non-writable (mode `0711`), rechecks that the endpoint is
 a real socket, verifies its owner from inside the service container's user
 namespace, then assigns the socket to host group `docker` with mode `0660`.
-The next service start restores the bind directory to mode `01777` and removes
-any stale socket before launching BuildKit. This closes a path-replacement
-race and keeps the owner check valid with Docker `userns-remap`. Devcontainer
+The runtime directory is preserved across service stops and restarts so an
+already-running devcontainer keeps the same bind-mounted directory inode. The
+host reboot recreates it because `/run` is tmpfs. A service start corrects the
+directory permissions to `01777` and removes only a stale socket entry before
+launching BuildKit; it does not delete or recreate the directory. This closes
+a path-replacement race and keeps the owner check valid with Docker
+`userns-remap`. Devcontainer
 clients must receive the same host group; the directory itself is never made
 broadly writable as a substitute for socket permissions.
 
@@ -572,6 +580,7 @@ the test stacks.
 | `scripts/mdt-dev-governance-reconcile.sh` | `/usr/local/sbin/` | reconciliation implementation (see below) |
 | `scripts/mdt-container-io-events-watcher.sh` | `/usr/local/sbin/` | `docker events` event watcher — instant counterpart to reconciliation's per-container IO pass |
 | `scripts/mdt-container-io-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
+| `scripts/mdt_cli.py` | `/usr/local/sbin/` | shared argparse diagnostics imported by installed Python entrypoints |
 | `scripts/mdt-container-memory-inotify-watcher.py` | `/usr/local/sbin/` (iff `INOTIFY_OK=1`) | optional inotify watcher for explicitly configured per-container `MemoryHigh`/`MemoryMax`; the periodic sweep does not apply memory caps |
 | `scripts/mdt-slice-memory-min-low-audit.py` | `/usr/local/sbin/` | read-only audit of only `memory.min`/`memory.low` — logs a `[WARN]` when an ancestor makes a value ineffective |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |

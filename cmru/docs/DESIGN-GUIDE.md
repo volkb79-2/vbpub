@@ -653,50 +653,43 @@ following links and installed mode-0600 siblings in the worktree: a tester
 container can read a mode-0600 file owned by its mapped uid even when its
 environment allowlist does not forward the token, so the safest copy is none.)
 
-The gate-side masker handles credential files physically inside the selected
-linked worktree. CMRU refuses its release gate from a main checkout because
-Run-Gate mounts the whole selected path, which can include sibling publisher
-secrets under `.worktrees/`. In a linked worktree, sibling checkouts are outside
-the mount; the inventory scans every tester-visible working-tree directory,
-including ignored virtual environments, dependency directories, generated
-caches and nested `.worktrees/`, but never walks the shared Git common directory
-or external sibling worktrees. This also keeps a transient file in another
-worktree from affecting restoration during a long gate (CMRU KI-64/65/73). Each overlay is
-bound to its parent directory identity. If a nested worktree disappears or is
-replaced during the gate, restoration never writes an old credential into the
-new tree. It retains the private backup and fails the release gate because the
-original file was not restored at its recorded path; passing lanes cannot
-certify an incomplete restore.
-Run-Gate RG-NARROW
-mounts a linked lane's judged worktree plus sanitized Git metadata, so a
-release worktree cannot see the caller checkout's secret files.
-The registered host `gate` lane resolves CMRU's scoped Git auth first, saves
-visible overlays in a private temporary directory outside the judged worktree,
-and replaces their paths with symlinks to the host backups for the full lane
-sequence. Host CMRU processes can still follow those links; tester containers
-see the same absolute `/tmp` paths in their own filesystem, where the host
-backup directory is not mounted. Nested
-`run-gate.py` processes strip publisher-token and extra-mount variables
-(`RUN_GATE_EXTRA_MOUNTS`). The host uses the saved auth object to query origin
-immediately before mutation and forwards only token-free tag and commit facts.
-Masking moves the visible entry to a sibling, checks the inode actually moved,
-then installs the backup symlink with an exclusive link operation. If an atomic
-credential rotation lands at that boundary, CMRU keeps the moved entry or puts
-it back without replacing a newer path entry, and the gate fails before running
-the tester.
-A `finally` path restores the original overlay bytes and file metadata even
-when a registered lane fails, SIGTERM arrives, or SIGHUP arrives. If restoration fails, the gate reports and keeps
-the private backup directory so the only saved secret copy is not deleted.
-If a credential path was atomically replaced while the gate was running, restoration preserves
-that replacement, fails the gate, and retains the original private backup for operator recovery.
-Inventory errors are judged against the identity that can enter the tester,
-not the host process running CMRU: CMRU reads the final `USER` from the shipped
-tester-unified Dockerfile and skips an unreadable directory only when its mode
-rules out traversal by that UID. Any possible group or other traversal access
-remains an error because mutation lanes may add supplementary groups. A vanished
-path is skipped only after confirming it is absent; ambiguous errors fail closed.
-The aggregate `gate` lane owns this boundary. Direct component-lane runs use
-the mounted checkout as-is and require a secret-free checkout.
+The aggregate release gate requires a linked Git worktree with no tracked
+changes. It creates a stable, attached sidecar worktree at that exact commit
+through the shared worktree lifecycle, then runs each registered lane from the
+sidecar. The caller's checkout is never mounted into tester-unified. This
+removes the inventory race: a publisher secret already present in an ignored
+directory, or created in the caller after snapshot creation, is outside the
+tester-visible tree rather than temporarily masked. A random host-only canary
+is planted in the caller and the installed-wheel lane verifies from inside the
+real tester container that the canary path is absent.
+
+Before allocation, CMRU refuses a tracked `cmru.secret.toml`, a configured Git
+filter that could execute during checkout, and tracked files at the paths
+reserved for gate evidence. Lane output is checked before it is trusted or
+cleaned: tracked changes, unexpected ignored/untracked files, unsafe links, or
+oversized Run-Gate state fail the aggregate gate. Between lanes CMRU restores
+the sidecar to the exact commit, retains only its `.run-gate/` resume state,
+and reseeds a fixed evidence allowlist. Only those named evidence files are
+copied to the caller. The attached sidecar and its branch remain available for
+resume; successful release-candidate cleanup removes the sidecar through the
+same worktree lifecycle.
+
+Run-Gate RG-NARROW mounts the judged worktree plus selected Git metadata. The
+shared Git directory must remain read-write for in-lane Git operations, so
+Run-Gate overlays its common `hooks/` directory with a private empty read-only
+directory and mounts `info/` read-only. This prevents a tester from planting a
+host hook for a later host commit or changing host exclude metadata. CMRU also
+disables host Git hooks while it prepares remote baseline facts. Nested
+`run-gate.py` processes receive neither publisher-token nor extra-mount
+variables (`RUN_GATE_EXTRA_MOUNTS`); origin facts passed to mutation contain
+tag names and commit IDs, not credentials.
+
+The host gate resolves the scoped Git auth from the caller through the private
+credential handoff described above; no secret file enters the sidecar. The
+aggregate `gate` lane owns this boundary. Direct component-lane runs bypass
+snapshotting and should use a secret-free checkout. KI-64/65/73's masking and
+restoration requirements are superseded by the exact-snapshot design tracked
+in KI-74; their original incidents remain in the backlog for history.
 
 ## Release history errors refuse the plan
 

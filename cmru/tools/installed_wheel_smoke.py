@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -111,8 +113,46 @@ def _build_wheel(source: Path, wheelhouse: Path, *, cwd: Path) -> None:
                 shutil.rmtree(created, ignore_errors=True)
 
 
-def main() -> int:
+def _check_live_gate_snapshot(repo_root: Path, *, required: bool = False) -> None:
+    """Prove the real tester container cannot see a host-only canary file."""
+    manifest = repo_root / "cmru" / ".assay" / "release-gate-snapshot.json"
+    if not manifest.is_file():
+        if required:
+            raise RuntimeError(f"required active release-gate manifest is missing: {manifest}")
+        return  # this lane can also be run directly, outside the aggregate gate
+    try:
+        record = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"release-gate snapshot manifest is unreadable: {manifest}") from exc
+    if not isinstance(record, dict) or record.get("state") != "running":
+        if required:
+            raise RuntimeError(f"required release-gate manifest is not running: {manifest}")
+        return  # ignore a retained report from a completed aggregate run
+    source_root = record.get("source_root")
+    relative = record.get("source_canary")
+    if not isinstance(source_root, str) or not Path(source_root).is_absolute():
+        raise RuntimeError("active release-gate snapshot has no absolute source_root")
+    if not isinstance(relative, str) or not relative.startswith(".cmru-gate-canary-"):
+        raise RuntimeError("active release-gate snapshot has no host canary path")
+    if Path(relative).name != relative:
+        raise RuntimeError("active release-gate snapshot canary path is not a root filename")
+    canary = Path(source_root) / relative
+    if canary.exists() or canary.is_symlink():
+        raise RuntimeError(
+            "tester container can see the host release-gate source canary; "
+            f"the source checkout is still mounted: {canary}"
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--require-live-snapshot", action="store_true",
+        help="fail unless running inside CMRU's active exact-HEAD release gate",
+    )
+    args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parents[1]
+    _check_live_gate_snapshot(project_root.parent, required=args.require_live_snapshot)
     with tempfile.TemporaryDirectory(prefix="cmru-installed-wheel-") as raw_tmp:
         tmp_path = Path(raw_tmp)
         wheelhouse = tmp_path / "wheelhouse"

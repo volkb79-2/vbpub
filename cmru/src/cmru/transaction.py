@@ -752,6 +752,13 @@ def assert_resume_workspace_committed(path: Path) -> None:
 
 def remove_workspace(workspace: ReleaseWorkspace) -> None:
     """Remove a successful ephemeral worktree and its private branch."""
+    # The aggregate release gate owns attached `cmru-gate-*` snapshots as
+    # sidecars of its candidate worktree. Remove them through the shared
+    # workspace lifecycle before Git removes their source checkout.
+    if (workspace.path / ".git").exists():
+        from cmru.gate_snapshot import remove_gate_snapshots_for_source
+
+        remove_gate_snapshots_for_source(workspace.path)
     if workspace.context is not None:
         try:
             with without_publisher_tokens():

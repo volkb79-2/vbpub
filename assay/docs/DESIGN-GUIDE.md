@@ -640,6 +640,32 @@ failure is not scored as a mutant kill. They are not a resource-usage profile;
 CPU time, peak memory, and pressure measurements belong to separate runtime
 and liveness evidence.
 
+#### Native and ingested R2 campaign features
+
+Language support does not by itself determine who owns a mutation campaign;
+the `judgment.r2.producer` value does. Python and SQL are currently registered
+for native R2, so Assay creates and executes each candidate. They share the
+same resumable candidate state, `--rejudge` controls for survivors or other
+selected outcomes, candidate progress records, and candidate-local cgroup
+event evidence. The language adapters differ in how they find and rewrite
+mutation sites; the campaign executor and its attribution rules are shared.
+
+JavaScript/TypeScript R2 is an ingested path. The lane's external tool runs the
+campaign and produces the report; Assay validates and scores that completed
+report. Assay therefore cannot resume or rejudge the external tool's
+candidates, emit their per-candidate progress, or bracket each candidate with
+its own cgroup event samples. The external producer owns retries and any
+per-candidate measurements it offers. Go R2 is not registered and has no such
+campaign path.
+
+Other diagnostics remain command-dependent even within native R2. The
+pytest-backed liveness plugin can provide owner-test progress (`test` events,
+`tests_completed`) and sampled process-tree CPU/RSS for a supported pytest
+command; it does not make those fields a guarantee for every language or test
+runner. Native R2's cgroup `pids.events` and `memory.events` checks instead
+protect the mutation result from limit interference. Neither mechanism is a
+substitute for cgprofile's separate lane resource profile.
+
 #### Native R2 candidate event windows are serial
 
 All native R2 candidate runs share the lane's cgroup and its event counters. If

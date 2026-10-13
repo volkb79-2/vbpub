@@ -12802,14 +12802,81 @@ profiling. Do not direct consumers to unreleased candidate versions or imply
 that JavaScript, Go, or SQL have capabilities the matrix marks absent or
 ingestion-only.
 
+**Environment choice:** use one fresh ephemeral test-runner container per
+lane invocation, launched from the declared image (dstdns can reuse
+`dstdns/test-runner:latest`). It runs the full lane, including its mutation
+candidates; Assay does not start a new container per candidate. CIU continues
+to own the selected worktree's Compose stack and its dependencies. Run-Gate
+must attach the lane container to that same worktree's CIU network, deriving
+the network from the judged worktree's rendered CIU configuration rather
+than from the invoking checkout or a hand-copied name. This preserves access
+to the lane's existing database and services without keeping a test-runner
+container alive. CIU already has an ephemeral `docker run` path that joins the
+selected stack network; the missing piece is making this network fact
+available to Run-Gate's ephemeral lane contract.
+
+The new container has a clean writable layer, process tree, `HOME`, and
+container-local caches. It does not inherit mutable state from a former
+test-runner container. Only declared worktree/state mounts and services
+reachable over the selected network are shared. In particular, Assay resume
+state must live under its declared bind-mounted state directory. Each lane
+container gets its own Docker identity, so multiple containers from the same
+image can run at once without Compose project-name collisions. Lanes that
+mutate the same database must use isolated database/schema names or Run-Gate's
+declared shared-resource lock; network sharing alone does not make their test
+data isolated.
+
+Do not add observer access to a long-running `exec` test-runner as the normal
+solution. Every `docker exec` candidate would share that container's cgroup
+counters with unrelated processes, including commands left running by another
+tool. Keep `exec` only as a temporary compatibility path for a lane until its
+CIU network and state requirements work with the ephemeral contract. Do not
+require an observer for R0/R1.
+
 **Dependencies:** B108/P8 phase 2 must finish before this guide describes
 campaign closeout as complete. Run-Gate and cgprofile must publish the
-contract-2 observer path Assay requires; the consumer guidance must name the
-supported environment mode for that path.
+contract-2 observer path Assay requires, and Run-Gate must support attaching
+an ephemeral lane container to the judged worktree's CIU network. The consumer
+guidance must name the released environment and observer contracts.
 
 **Acceptance:** README's capability matrix, DESIGN-GUIDE rationale, and
 CONSUMERS migration steps agree on released versions, schemas, language
-capabilities, and environment-mode constraints. The dstdns inventory can map
-every lane to one of those supported paths without inventing an observer
-requirement for R0/R1. Examples use the shipped Assay loader and versioned
-consumer interface; cross-document links resolve.
+capabilities, and environment-mode constraints. The matrix distinguishes
+native mutation execution from externally ingested mutation evidence and
+states which path supports candidate resume/retry, survivor confirmation,
+progress, and per-candidate cgroup resource-event attribution; it must not
+describe that check as a resource-use profile or imply that native campaign
+features apply to an ingested report. The dstdns inventory can map every lane
+to one of those supported paths without inventing an observer requirement for
+R0/R1. Every native R2 lane's mapping records its stack dependencies, selected
+worktree network, persistent state mounts, and any shared database lock or
+lane-specific database name. Every native R2 lane uses an ephemeral lane
+container and proves that it reaches the same worktree's required services,
+that observer events are attributed to its candidate window, and that resume
+state survives a fresh-container retry. Parallel lanes from the same image
+have unique container identities; lanes sharing mutable services are isolated
+or serialized. Examples use the shipped Assay loader and versioned consumer
+interface; cross-document links resolve.
+
+**Amendment 4 (2026-10-13, CIU v8 lifecycle clarification):** CIU owns the
+consumer-facing lane lifecycle. Once the v8 merge is released, invoke a lane
+through `ciu gate` (including `--worktree PATH` when selecting a linked
+worktree); CIU resolves that checkout's testing declaration, creates a
+run-scoped ephemeral lane container with a unique run identity, joins it to
+that CIU instance's network, collects the result, and removes the container.
+Consumers do not issue `docker run`. `ciu up` brings up the selected worktree
+instance's declared service stack; it is not the mechanism for creating a
+second lane runner. Multiple `ciu gate` runs can use the same image and
+worktree network concurrently without creating a CIU worktree per lane.
+Create a separate CIU worktree/instance only when the lane needs its own
+checkout configuration or an independent service stack/network; that choice
+also duplicates the stack's resource cost.
+
+The lane container's processes, writable layer, `HOME`, and local caches are
+disposable. No test may rely on state left by an earlier lane container.
+Assay resume data is the intentional exception and must use the explicitly
+declared CIU/run state mount. A CIU service's database or volume is separate
+from runner state and may persist across lanes, so mutable service data still
+needs per-lane isolation or a declared lock/reset policy. Until the v8
+cutover, use the registered `run-gate` workflow; this transition does not
+authorize hand-written Docker commands.

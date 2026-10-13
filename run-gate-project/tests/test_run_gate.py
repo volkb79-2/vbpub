@@ -29171,11 +29171,10 @@ class TestRgNarrowMounts:
         assert values[:4] == [f"{ph(wt)}:{ph(wt)}", f"{ph(wt)}:{wt}",
                               f"{ph(repo / '.git')}:{ph(repo / '.git')}",
                               f"{ph(repo / '.git')}:{repo / '.git'}"]
-        # exactly the dual worktree + dual git dir (read-write: ciu v8 SPEC
-        # S16.4.9) + `worktrees/` read-only (real contents) + the judged admin
-        # dir read-write on top + the two read-only config overlays: TWO
-        # worktrees mounts however many siblings there are (round 4)
-        assert len(values) == 10
+        # The worktree and common dir remain read-write for in-lane commits.
+        # Sibling admins are visible read-only, the judged admin is read-write,
+        # configs are sanitized overlays, and hooks/info cannot be changed.
+        assert len(values) == 20
         admin = repo / ".git" / "worktrees" / wt.name
         assert values[4:6] == [f"{ph(repo / '.git' / 'worktrees')}:"
                                f"{ph(repo / '.git' / 'worktrees')}:ro",
@@ -29184,6 +29183,28 @@ class TestRgNarrowMounts:
         assert values[6:8] == [f"{ph(admin)}:{ph(admin)}",
                                f"{ph(admin)}:{admin}"]
         assert all(v.endswith(":ro") for v in values[8:])
+        hook_mounts = values[10:12]
+        info_mounts = values[12:14]
+        hook_sources = {v.split(":", 1)[0] for v in hook_mounts}
+        assert len(hook_sources) == 1
+        empty_hooks = Path(next(iter(hook_sources)).removeprefix("/phys"))
+        assert empty_hooks.name == "hooks-empty"
+        assert {v.split(":")[1] for v in hook_mounts} == {
+            ph(repo / ".git" / "hooks"), str(repo / ".git" / "hooks"),
+        }
+        assert all(v.endswith(":ro") for v in info_mounts)
+        assert {v.split(":")[1] for v in info_mounts} == {
+            ph(repo / ".git" / "info"), str(repo / ".git" / "info"),
+        }
+        pointer_mounts = values[14:20]
+        expected_pointers = (wt / ".git", admin / "gitdir", admin / "commondir")
+        assert len(pointer_mounts) == 6
+        for index, pointer in enumerate(expected_pointers):
+            pair = pointer_mounts[index * 2:index * 2 + 2]
+            assert pair == [f"{ph(pointer)}:{ph(pointer)}:ro",
+                            f"{ph(pointer)}:{pointer}:ro"]
+        assert empty_hooks.is_dir() and not list(empty_hooks.iterdir())
+        assert empty_hooks.stat().st_mode & 0o777 == 0o755
         assert not any(v.endswith(":rw") or ":ro" in v
                        for v in (*values[:4], *values[6:8]))
         destinations = [v.split(":")[1] for v in values]
@@ -29265,8 +29286,12 @@ class TestRgNarrowMounts:
         root = repo / ".git" / "worktrees"
         flags = run_gate.container_mount_flags(repo, wt, {})
         under = [v for v in flags[1::2]
-                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))]
-        # two mounts per path-view, independent of the 3 siblings
+                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))
+                 and Path(v.split(":")[1].removeprefix("/phys")).name
+                 not in {"gitdir", "commondir", "config.worktree"}]
+        # The worktrees directory and judged admin are each dual-mounted,
+        # independent of the 3 siblings. Pointer/config overlays are asserted
+        # separately by the focused narrow-mount test.
         assert len(under) == 4
         ro = [v for v in under if v.endswith(":ro")]
         rw = [v for v in under if not v.endswith(":ro")]
@@ -29610,6 +29635,30 @@ class TestRgNarrowRealContainer:
             pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
         monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
         repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        hook_dir = repo / ".git" / "hooks"
+        info_dir = repo / ".git" / "info"
+        hook_dir.mkdir(exist_ok=True)
+        info_dir.mkdir(exist_ok=True)
+        post_commit = hook_dir / "post-commit"
+        post_commit.write_text(
+            "#!/bin/sh\n"
+            "root=$(git rev-parse --show-toplevel)\n"
+            "printf host-hook-ran > \"$root/host-hook-fired\"\n",
+            encoding="utf-8",
+        )
+        post_commit.chmod(0o755)
+        exclude = info_dir / "exclude"
+        exclude.write_text("# host info must remain unchanged\n", encoding="utf-8")
+        original_exclude = exclude.read_bytes()
+        admin = repo / ".git" / "worktrees" / "w1"
+        worktree_config = admin / "config.worktree"
+        worktree_config.write_text("", encoding="utf-8")
+        original_pointers = {
+            path: path.read_bytes()
+            for path in (wt / ".git", admin / "gitdir", admin / "commondir",
+                         worktree_config)
+        }
         # state only a SIBLING worktree's admin dir keeps alive (round-4
         # B-NEW-2): a detached-HEAD commit, and a blob staged only in its index
         other_wt = make_worktree(repo, repo / ".worktrees", "other")
@@ -29646,12 +29695,21 @@ class TestRgNarrowRealContainer:
             f"test ! -e {repo}/README.md; "
             f"test ! -e {repo}/.worktrees/other; "
             f"test ! -e {repo}/.worktrees/other/other.secret; "
+            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
+            "admin=$(git rev-parse --absolute-git-dir); "
             "test \"$(git log -1 --format=%s)\" = 'lane config proj'; "
             "git rev-parse HEAD >/dev/null; git status --porcelain >/dev/null; "
             "git diff --stat >/dev/null; git rev-parse --git-common-dir; "
+            f"no sh -c 'printf redirected > \"$1\"' sh {wt / '.git'}; "
+            "no sh -c 'printf redirected > \"$1\"' sh \"$admin/gitdir\"; "
+            "no sh -c 'printf redirected > \"$1\"' sh \"$admin/commondir\"; "
+            "no sh -c 'printf redirected >> \"$1\"' sh \"$admin/config.worktree\"; "
             "git -c user.name=a -c user.email=a@b.invalid commit --allow-empty "
             "-qm in-container; "
             "test \"$(git log -1 --format=%s)\" = in-container; "
+            "test ! -e host-hook-fired; "
+            "no touch $common/hooks/post-commit; "
+            "no sh -c 'printf compromised >> \"$1/info/exclude\"' sh $common; "
             # gc sees the siblings' HEAD and index and keeps their objects
             # (FIRST, so only the gc check can fail a lane that hides them)
             "git gc --prune=now -q; "
@@ -29661,7 +29719,6 @@ class TestRgNarrowRealContainer:
             "git clone -q --no-local {worktree} /tmp/narrow-clone; "
             "git -C /tmp/narrow-clone log -1 >/dev/null; "
             "no git worktree add -q --detach /tmp/narrow-snap HEAD; "
-            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
             # siblings are VISIBLE (real HEAD/index) but read-only
             "test -f $common/worktrees/other/HEAD; "
             "test -f $common/worktrees/other/index; "
@@ -29694,12 +29751,43 @@ class TestRgNarrowRealContainer:
             clean_tree = false
         """)
         proj = make_project(repo, config)
-        wt = make_worktree(repo, repo / ".worktrees", "w1")
         (other_wt / "other.secret").write_text("FAKE-OTHER-SECRET\n")
         (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "NARROW-OK" in proc.stdout, proc.stdout
+        for path, contents in original_pointers.items():
+            assert path.read_bytes() == contents, path
+        assert not (wt / "proj" / "host-hook-fired").exists()
+        assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+        assert exclude.read_bytes() == original_exclude
+        fsmonitor_marker = tmp_path / "host-fsmonitor-fired"
+        fsmonitor = tmp_path / "host-fsmonitor"
+        fsmonitor.write_text(
+            "#!/bin/sh\n"
+            f"printf executed > {shlex.quote(str(fsmonitor_marker))}\n"
+            "printf '2\\0token\\0'\n",
+            encoding="utf-8",
+        )
+        fsmonitor.chmod(0o755)
+        common_config = repo / ".git" / "config"
+        original_config = common_config.read_bytes()
+        common_config.write_bytes(
+            original_config + b"\n[core]\n\tfsmonitor = "
+            + shlex.quote(str(fsmonitor)).encode() + b"\n"
+        )
+        run_gate.git_out("status", "--porcelain", cwd=wt / "proj")
+        assert not fsmonitor_marker.exists()
+        common_config.write_bytes(original_config)
+        host_commit = subprocess.run(
+            ["git", "-C", str(wt / "proj"), "-c", "user.name=host",
+             "-c", "user.email=host@example.invalid", "commit",
+             "--allow-empty", "-qm", "host-after-lane"],
+            capture_output=True, text=True,
+        )
+        assert host_commit.returncode == 0, host_commit.stderr
+        assert (wt / "proj" / "host-hook-fired").read_text() == "host-hook-ran"
+        assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         # the in-container prune and gc left every host admin dir and every
         # sibling-only object intact
         for name in ("w1", "other", "held", "gone"):

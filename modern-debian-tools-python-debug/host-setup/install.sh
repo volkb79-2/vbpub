@@ -799,6 +799,10 @@ echo "== scripts =="
 install -m 0644 "$HERE/scripts/mdt-container-io-caps.lib.sh" /usr/local/sbin/mdt-container-io-caps.lib.sh
 install -m 0755 "$HERE/scripts/mdt-dev-governance-reconcile.sh"  /usr/local/sbin/mdt-dev-governance-reconcile.sh
 install -m 0755 "$HERE/scripts/mdt-container-io-events-watcher.sh"  /usr/local/sbin/mdt-container-io-events-watcher.sh
+# These Python entrypoints import the shared parser for consistent --version,
+# help, and error output. Keep it beside them so /usr/local/sbin is on
+# sys.path when systemd or an operator executes the installed script.
+install -m 0644 "$HERE/scripts/mdt_cli.py"             /usr/local/sbin/mdt_cli.py
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
 install -d -m 0755 /usr/local/lib/mdt
 install -m 0755 "$HERE/../../scripts/debian-install-v2/tools/iocost_coef_gen.py" \

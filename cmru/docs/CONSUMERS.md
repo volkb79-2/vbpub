@@ -775,32 +775,24 @@ enroll`; see "Installer extensions" below.)
 Release worktrees never contain a credential file: the launcher hands the resolved
 token to its transaction child over a private pipe (see the
 [credential handoff](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers)).
-Run-Gate's narrow mount keeps a linked release lane from seeing secrets in the
-caller checkout or sibling worktrees. CMRU's registered release gate requires
-a linked Git worktree and refuses a main checkout: the whole mounted main tree
-can include publisher secrets under sibling `.worktrees/`. Inside the selected
-linked worktree, CMRU masks every `cmru.secret.toml` in the tester-visible
-working tree, including ignored virtual environments, dependency directories,
-generated caches, and nested `.worktrees/`. It never walks the shared Git
-directory or external sibling worktrees (KI-64/65/73). It points those
-visible overlays at private host backups outside the judged worktree, strips
-publisher-token and extra-mount variables from nested runner calls, and
-restores the files when the gate exits, including on SIGTERM or SIGHUP. If restoration
-fails, the gate reports and retains the private backup path for recovery. If a credential is
-atomically replaced during the gate, CMRU preserves the replacement and fails rather than
-overwriting it with saved bytes. If a nested worktree disappears or is replaced,
-CMRU fails the gate and retains the original secret backup rather than writing
-that secret into a new tree at the same path. Passing lanes cannot hide an
-incomplete restore. The host uses CMRU's scoped Git auth to prepare origin facts for
-the mutation lane; those facts contain tag names and commit IDs, not credentials. See the
+The aggregate release gate requires a linked worktree with no tracked changes.
+It creates an attached sidecar worktree at that exact commit and runs each
+registered lane from the sidecar, so the caller's checkout is never mounted.
+Ignored files, nested virtual environments, and secrets created in the caller
+after snapshot creation stay outside the tester view. A live host-only canary
+proves this from inside the installed-wheel tester lane.
+
+CMRU refuses a tracked `cmru.secret.toml` and any configured Git filter before
+creating the snapshot. It validates lane output, retains only Run-Gate state
+and named evidence, restores the exact commit between lanes, and copies only
+that evidence back to the caller. The sidecar stays attached for resume and is
+removed with its release candidate. The host uses CMRU's scoped Git auth to
+prepare origin facts for mutation; those facts contain tag names and commit
+IDs, not credentials. Nested runner calls have publisher-token and
+extra-mount variables removed. See the
 [gate credential design](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
-When inventory hits an unreadable directory, it uses the final `USER` in the
-shipped tester-unified Dockerfile to decide whether the tester could traverse
-it. It skips only directories that UID cannot traverse and paths confirmed to
-have vanished; possible group or other traversal access fails closed.
-Use the aggregate `gate` lane while a CMRU secret overlay is available in the
-mounted repository. Running an individual tester component lane bypasses this
-host wrapper and is suitable for secret-free checkouts.
+Running an individual tester component lane bypasses this boundary and should
+use a secret-free checkout.
 
 ---
 

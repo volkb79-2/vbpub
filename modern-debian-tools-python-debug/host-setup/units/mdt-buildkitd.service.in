@@ -46,10 +46,11 @@ Wants=docker.service
 
 [Service]
 Type=simple
-# Creates /run/mdt-buildkitd before ExecStart, removes it after — /run is
-# tmpfs, so this must happen every boot; RuntimeDirectory= does it natively
-# instead of a one-shot mkdir in install.sh that would only apply to the run
-# install.sh itself happened in.
+# Creates /run/mdt-buildkitd before ExecStart. Preserve the directory across
+# service stops and restarts: devcontainers bind-mount this host path, and
+# replacing its inode leaves an existing container attached to the old,
+# empty directory. /run is tmpfs, so a fresh directory is still created after
+# each host boot.
 #
 # RuntimeDirectoryMode=01777 is required, not just permissive: this unit has
 # no User=/Group=, so RuntimeDirectory='s default mode (0755, root:root)
@@ -64,14 +65,17 @@ Type=simple
 # user namespace, and assigns that socket to docker:0660 before readiness.
 RuntimeDirectory=mdt-buildkitd
 RuntimeDirectoryMode=01777
+RuntimeDirectoryPreserve=yes
 # Clear any stale container from an unclean shutdown before starting fresh
 # (the "-" prefix makes a failure here non-fatal — nothing to clear is fine).
 ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
 ExecStartPre=-/usr/bin/docker pull @DEV_BUILDKITD_IMAGE@
-# ExecStartPost seals this directory to 0711. Restore the bind path before
-# each start so rootless BuildKit can create its socket; remove any stale
-# filesystem socket while root still owns the directory.
-ExecStartPre=/bin/chmod 01777 /run/mdt-buildkitd
+# ExecStartPost seals this directory to 0711. Restore only drifted metadata
+# before each start so rootless BuildKit can create its socket. Never replace
+# an existing bind source; reject an unexpected path type rather than follow
+# or repair it as a directory.
+ExecStartPre=/bin/sh -ec 'path=/run/mdt-buildkitd; [ -d "$path" ] && [ ! -L "$path" ] || { echo "unsafe BuildKit runtime directory" >&2; exit 1; }; [ "$(/usr/bin/stat -c %%u:%%g "$path")" = 0:0 ] || /bin/chown 0:0 "$path"; [ "$(/usr/bin/stat -c %%a "$path")" = 1777 ] || /bin/chmod 01777 "$path"'
+# Remove any stale filesystem socket while root still owns the directory.
 ExecStartPre=/bin/rm -f /run/mdt-buildkitd/buildkitd.sock
 ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
   --label io.volkb79.mdt.buildkit.managed=true \
@@ -95,7 +99,7 @@ ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
 # chgrp/chmod. Check ownership inside the container's namespace so
 # Docker userns-remap does not create a false mismatch.
 # Double each percent sign so systemd passes stat's format specifiers through.
-ExecStartPost=/bin/sh -ec 'attempt=0; while [ "$attempt" -lt 100 ]; do socket=/run/mdt-buildkitd/buildkitd.sock; if [ -S "$socket" ] && [ ! -L "$socket" ]; then /bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then echo "BuildKit socket changed while sealing its runtime directory" >&2; exit 1; fi; socket_uid=$(/usr/bin/docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock 2>/dev/null) || { echo "cannot read BuildKit socket uid inside service container" >&2; exit 1; }; daemon_uid=$(/usr/bin/docker exec mdt-buildkitd id -u 2>/dev/null) || { echo "cannot read BuildKit service uid" >&2; exit 1; }; [ "$socket_uid" = "$daemon_uid" ] || { echo "BuildKit socket owner does not match service uid" >&2; exit 1; }; /bin/chgrp docker "$socket"; /bin/chmod 0660 "$socket"; socket_group=$(/usr/bin/stat -c %%g "$socket"); docker_gid=$(/usr/bin/getent group docker | /usr/bin/cut -d: -f3); socket_mode=$(/usr/bin/stat -c %%a "$socket"); [ "$socket_group" = "$docker_gid" ] && [ "$socket_mode" = 660 ] || { echo "BuildKit socket permissions did not verify" >&2; exit 1; }; exit 0; fi; attempt=$((attempt + 1)); sleep 0.1; done; echo "BuildKit socket did not become safe and docker-group-accessible" >&2; exit 1'
+ExecStartPost=/bin/sh -ec 'attempt=0; while [ "$attempt" -lt 100 ]; do socket=/run/mdt-buildkitd/buildkitd.sock; if [ -S "$socket" ] && [ ! -L "$socket" ]; then [ "$(/usr/bin/stat -c %%a /run/mdt-buildkitd)" = 711 ] || /bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then echo "BuildKit socket changed while sealing its runtime directory" >&2; exit 1; fi; socket_uid=$(/usr/bin/docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock 2>/dev/null) || { echo "cannot read BuildKit socket uid inside service container" >&2; exit 1; }; daemon_uid=$(/usr/bin/docker exec mdt-buildkitd id -u 2>/dev/null) || { echo "cannot read BuildKit service uid" >&2; exit 1; }; [ "$socket_uid" = "$daemon_uid" ] || { echo "BuildKit socket owner does not match service uid" >&2; exit 1; }; /bin/chgrp docker "$socket"; /bin/chmod 0660 "$socket"; socket_group=$(/usr/bin/stat -c %%g "$socket"); docker_gid=$(/usr/bin/getent group docker | /usr/bin/cut -d: -f3); socket_mode=$(/usr/bin/stat -c %%a "$socket"); [ "$socket_group" = "$docker_gid" ] && [ "$socket_mode" = 660 ] || { echo "BuildKit socket permissions did not verify" >&2; exit 1; }; exit 0; fi; attempt=$((attempt + 1)); sleep 0.1; done; echo "BuildKit socket did not become safe and docker-group-accessible" >&2; exit 1'
 ExecStop=/usr/bin/docker stop -t 30 mdt-buildkitd
 Restart=on-failure
 RestartSec=5

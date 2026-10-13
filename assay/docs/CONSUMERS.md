@@ -1433,6 +1433,10 @@ with its bucket; missing or contradictory legacy records are re-executed. See th
 
 ## Resume and shard a long mutation lane
 
+Assay-managed candidate resume and rejudge apply to **native R2** (currently
+Python and SQL). JavaScript/TypeScript's ingested R2 path has no Assay-owned
+candidate state; see [R2 for JavaScript](#r2-for-javascript-by-ingesting-strykers-report-b046).
+
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
 not only its mutation lanes.** Resume state is still touched only by the
 mutation sweep, so `--resume` is a no-op elsewhere; `--progress` is **no
@@ -2816,6 +2820,17 @@ did not watch being produced — the report is bound to the resolved commit by
 the snapshot itself, and the declared artifact is held through the same
 single-owner reservation the coverage artifact uses, so a committed or stale
 report cannot satisfy the path.
+
+That producer boundary also defines the campaign features. Assay validates
+and scores Stryker's completed report, but does not own Stryker's candidate
+state: Assay's `--resume`, `--rejudge`, and per-candidate cgroup event checks
+apply to native Python/SQL R2, not this ingested JavaScript path. Stryker (or
+the chosen external producer) owns retries and any candidate-level progress
+or measurements it supports. To retry an incomplete or selected survivor
+campaign, use that producer's documented workflow against the same intended
+source snapshot, then let Assay ingest the completed report again. Do not
+interpret the Assay lane's run-level progress as Stryker's per-mutant
+progress.
 
 ```toml
 schema_version = 2

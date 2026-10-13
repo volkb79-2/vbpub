@@ -164,8 +164,23 @@ BUILDKIT_UNIT_OUT="$TMP/mdt-buildkitd.service"
 render "$HERE/units/mdt-buildkitd.service.in" "$BUILDKIT_UNIT_OUT"
 grep -qxF 'RuntimeDirectoryMode=01777' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit runtime directory is not sticky"
-grep -qxF 'ExecStartPre=/bin/chmod 01777 /run/mdt-buildkitd' "$BUILDKIT_UNIT_OUT" \
-  || fail "managed BuildKit service does not restore its writable bind directory before restart"
+grep -qxF 'RuntimeDirectoryPreserve=yes' "$BUILDKIT_UNIT_OUT" \
+  || fail "managed BuildKit service may replace a directory already bind-mounted by a devcontainer"
+if grep -Eq \
+  '(^|[[:space:]])(rm|rmdir)([[:space:]]+[^[:space:]]+)*[[:space:]]+/run/mdt-buildkitd([[:space:]]|$)' \
+  "$BUILDKIT_UNIT_OUT"; then
+  fail "managed BuildKit service removes or replaces the bind-mounted runtime directory"
+fi
+PRESTART_UNIT_LINE="$(grep '^ExecStartPre=/bin/sh -ec ' "$BUILDKIT_UNIT_OUT")"
+[[ "$PRESTART_UNIT_LINE" == *'stat -c %%u:%%g "$path")" = 0:0 ] || /bin/chown 0:0 "$path"'* ]] \
+  || fail "managed BuildKit service does not repair runtime-directory ownership only when needed"
+[[ "$PRESTART_UNIT_LINE" == *'stat -c %%a "$path")" = 1777 ] || /bin/chmod 01777 "$path"'* ]] \
+  || fail "managed BuildKit service does not repair runtime-directory mode only when needed"
+[[ "$PRESTART_UNIT_LINE" == *'[ ! -L "$path" ]'* ]] \
+  || fail "managed BuildKit service does not reject a symlink runtime directory"
+if grep -qxF 'ExecStartPre=/bin/chmod 01777 /run/mdt-buildkitd' "$BUILDKIT_UNIT_OUT"; then
+  fail "managed BuildKit service changes runtime-directory mode unconditionally"
+fi
 grep -qxF 'ExecStartPre=/bin/rm -f /run/mdt-buildkitd/buildkitd.sock' "$BUILDKIT_UNIT_OUT" \
   || fail "managed BuildKit service does not remove a stale socket before restart"
 grep -qF 'ExecStartPost=/bin/sh -ec' "$BUILDKIT_UNIT_OUT" \
@@ -190,14 +205,19 @@ for format in g a; do
   grep -qF "stat -c %%$format \"\$socket\"" <<<"$POSTSTART_UNIT_LINE" \
     || fail "managed BuildKit stat format %$format is not escaped for systemd"
 done
-[[ "$POSTSTART_UNIT_LINE" == *'/bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then'*'docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock'*'/bin/chgrp docker "$socket"'* ]] \
+[[ "$POSTSTART_UNIT_LINE" == *'stat -c %%a /run/mdt-buildkitd)" = 711 ] || /bin/chmod 0711 /run/mdt-buildkitd; if [ ! -S "$socket" ] || [ -L "$socket" ]; then'*'docker exec mdt-buildkitd stat -c %%u /run/buildkit/buildkitd.sock'*'/bin/chgrp docker "$socket"'* ]] \
   || fail "managed BuildKit must seal and revalidate its directory before changing socket ownership"
 # systemd consumes %% as one literal percent before /bin/sh runs. Any percent
 # left after removing those escapes would be interpreted as a unit specifier,
 # not passed through as shell text (e.g. %u becomes the manager's user name).
-if printf '%s\n' "$POSTSTART_UNIT_LINE" | sed 's/%%//g' | grep -q '%'; then
+if printf '%s\n' "$PRESTART_UNIT_LINE" "$POSTSTART_UNIT_LINE" | sed 's/%%//g' | grep -q '%'; then
   fail "managed BuildKit post-start command contains an unescaped systemd specifier"
 fi
+PRESTART_SCRIPT="$(sed -n "s/^ExecStartPre=\/bin\/sh -ec '\(.*\)'$/\1/p" <<<"$PRESTART_UNIT_LINE")"
+[ -n "$PRESTART_SCRIPT" ] \
+  || fail "could not extract the managed BuildKit pre-start repair command"
+printf '%s\n' "$PRESTART_SCRIPT" | sed 's/%%/%/g' | /bin/sh -n \
+  || fail "managed BuildKit pre-start repair command does not parse"
 POSTSTART_SCRIPT="$(sed -n "s/^ExecStartPost=\/bin\/sh -ec '\(.*\)'$/\1/p" "$BUILDKIT_UNIT_OUT")"
 [ -n "$POSTSTART_SCRIPT" ] \
   || fail "could not extract the managed BuildKit post-start command"
