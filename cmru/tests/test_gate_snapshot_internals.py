@@ -327,26 +327,26 @@ def test_the_evidence_directory_must_be_a_real_directory(tmp_path):
 
 
 def test_run_gate_state_may_hold_only_private_regular_files(tmp_path, monkeypatch):
-    gs._validate_run_gate_state(tmp_path)  # absent state is fine
     state = tmp_path / ".run-gate"
+    gs._validate_run_gate_state(state)  # absent state is fine
     state.mkdir()
     (state / "history").mkdir()
     (state / "history" / "run.json").write_text("{}", encoding="utf-8")
-    gs._validate_run_gate_state(tmp_path)
+    gs._validate_run_gate_state(state)
 
     (state / "alias").symlink_to(state / "history")
     with pytest.raises(RuntimeError, match="contains a symlink"):
-        gs._validate_run_gate_state(tmp_path)
+        gs._validate_run_gate_state(state)
     (state / "alias").unlink()
 
     (state / "history" / "cmru.secret.toml").write_text("x", encoding="utf-8")
     with pytest.raises(RuntimeError, match="contains a publisher secret"):
-        gs._validate_run_gate_state(tmp_path)
+        gs._validate_run_gate_state(state)
     (state / "history" / "cmru.secret.toml").unlink()
 
     os.link(state / "history" / "run.json", tmp_path / "second-name")
     with pytest.raises(RuntimeError, match="not a private regular file"):
-        gs._validate_run_gate_state(tmp_path)
+        gs._validate_run_gate_state(state)
     (tmp_path / "second-name").unlink()
 
     def unreadable(_path, followlinks, onerror):
@@ -355,13 +355,13 @@ def test_run_gate_state_may_hold_only_private_regular_files(tmp_path, monkeypatc
 
     monkeypatch.setattr(gs.os, "walk", unreadable)
     with pytest.raises(RuntimeError, match="cannot inspect snapshot Run-Gate state: denied"):
-        gs._validate_run_gate_state(tmp_path)
+        gs._validate_run_gate_state(state)
     monkeypatch.undo()
 
     shutil.rmtree(state)
     state.write_text("a file, not a directory", encoding="utf-8")
     with pytest.raises(RuntimeError, match="state is not a real directory"):
-        gs._validate_run_gate_state(tmp_path)
+        gs._validate_run_gate_state(state)
 
 
 # --- what a lane may leave in its snapshot ---------------------------------------
@@ -381,6 +381,7 @@ def test_lane_output_validation_names_each_kind_of_unapproved_residue(tmp_path, 
         # Generated residue and Run-Gate state are expected and tolerated.
         for relative in (
             ".run-gate/history/run.json", "cmru/.assay/verdict-cmru.json",
+            "cmru/.run-gate/history.json", "cmru/.run-gate/inflight/inflight.lock",
             "cmru/__pycache__/x.cpython-314.pyc", "cmru/.coverage", "cmru/.coverage.host.1",
             "cmru/cmru.egg-info/PKG-INFO", "cmru/stale.pyc",
         ):

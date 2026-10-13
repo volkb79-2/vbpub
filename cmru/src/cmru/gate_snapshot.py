@@ -36,6 +36,13 @@ _MUTATION_RESUME_FILES = (
     "cmru/.assay/progress-mutation-cmru.jsonl",
 )
 _SNAPSHOT_MANIFEST = "cmru/.assay/release-gate-snapshot.json"
+# Run-Gate keeps resume state at the judged tree's root AND a per-project store
+# (history + locks) beside the project; both are ignored, validated, and kept
+# between lanes. Nothing else a lane leaves behind is.
+_RUN_GATE_STATE_DIRS = (".run-gate", "cmru/.run-gate")
+_CLEAN_KEEP = tuple(
+    argument for state in _RUN_GATE_STATE_DIRS for argument in ("-e", f"/{state}/")
+)
 _EVIDENCE_SET = frozenset((*_LANE_EVIDENCE_FILES, _SNAPSHOT_MANIFEST))
 _MAX_EVIDENCE_BYTES = 512 * 1024 * 1024
 _MAX_STATE_FILE_BYTES = 64 * 1024 * 1024
@@ -514,7 +521,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         # Rescue only those named files before resetting its tree.
         copy_evidence_to_source(target, source_root)
         _git(target, "reset", "--hard", head)
-        _git(target, "clean", "-ffdx", "-e", "/.run-gate/")
+        _git(target, "clean", "-ffdx", *_CLEAN_KEEP)
         copy_evidence_to_snapshot(source_root, target)
         _verify_snapshot(context, head)
         if (
@@ -684,8 +691,7 @@ def _generated_cache_path(relative: str) -> bool:
     )
 
 
-def _validate_run_gate_state(root: Path) -> None:
-    state = root / ".run-gate"
+def _validate_run_gate_state(state: Path) -> None:
     try:
         metadata = state.lstat()
     except FileNotFoundError:
@@ -743,16 +749,16 @@ def validate_lane_outputs(
         if not raw:
             continue
         relative = os.fsdecode(raw)
-        parts = PurePosixPath(relative).parts
         if PurePosixPath(relative).name == "cmru.secret.toml":
             unexpected.append(relative)
             continue
-        if parts and parts[0] == ".run-gate":
+        if any(relative.startswith(f"{state}/") for state in _RUN_GATE_STATE_DIRS):
             continue
         if relative in _EVIDENCE_SET or _generated_cache_path(relative):
             continue
         unexpected.append(relative)
-    _validate_run_gate_state(snapshot_root)
+    for state in _RUN_GATE_STATE_DIRS:
+        _validate_run_gate_state(snapshot_root / state)
     if unexpected:
         raise RuntimeError(
             "release gate lane left unapproved ignored/untracked files in its "
@@ -769,7 +775,7 @@ def prepare_lane(snapshot: GateSnapshot, lane: str) -> None:
     )
     copy_evidence_to_source(snapshot.worktree_path, snapshot.source_root)
     _git(snapshot.worktree_path, "reset", "--hard", snapshot.commit)
-    _git(snapshot.worktree_path, "clean", "-ffdx", "-e", "/.run-gate/")
+    _git(snapshot.worktree_path, "clean", "-ffdx", *_CLEAN_KEEP)
     copy_evidence_to_snapshot(snapshot.source_root, snapshot.worktree_path, lane=lane)
     _verify_snapshot(snapshot.context, snapshot.commit)
 
@@ -783,7 +789,7 @@ def finish_lane(snapshot: GateSnapshot, lane: str) -> None:
     )
     copy_evidence_to_source(snapshot.worktree_path, snapshot.source_root)
     snapshot.lane_evidence_sha256[lane] = _existing_evidence_hashes(snapshot.worktree_path)
-    _git(snapshot.worktree_path, "clean", "-ffdx", "-e", "/.run-gate/")
+    _git(snapshot.worktree_path, "clean", "-ffdx", *_CLEAN_KEEP)
     copy_evidence_to_snapshot(snapshot.source_root, snapshot.worktree_path, lane=lane)
 
 
