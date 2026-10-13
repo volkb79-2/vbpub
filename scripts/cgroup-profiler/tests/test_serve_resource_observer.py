@@ -395,7 +395,7 @@ def test_observer_socket_path_derivation_and_control_path_separation(tmp_path):
     derived = serve.SessionServer(
         sessions_dir=str(tmp_path / "derived-sessions"), socket_path=control
     )
-    assert derived.observer_socket_path == str(tmp_path / "resource-observer.sock")
+    assert derived.observer_socket_path == serve.DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH
 
     with pytest.raises(ValueError, match="must be distinct"):
         serve.SessionServer(
@@ -403,6 +403,101 @@ def test_observer_socket_path_derivation_and_control_path_separation(tmp_path):
             socket_path=control,
             observer_socket_path=control,
         )
+
+
+def test_observer_bind_refuses_to_invent_a_missing_directory(tmp_path):
+    observer_dir = tmp_path / "observer"
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(observer_dir / "resource-observer.sock"),
+    )
+    with pytest.raises(OSError, match="provisioned by host setup"):
+        server._bind_observer_socket()
+    assert not observer_dir.exists()
+
+
+def test_observer_bind_does_not_change_host_directory_permissions(tmp_path):
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir(mode=0o751)
+    observer_dir.chmod(0o751)
+    socket_path = observer_dir / "resource-observer.sock"
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(socket_path),
+    )
+    before = observer_dir.stat()
+    server._bind_observer_socket()
+    try:
+        after = observer_dir.stat()
+        socket_stat = socket_path.stat()
+        assert stat.S_IMODE(after.st_mode) == 0o751
+        assert after.st_uid == before.st_uid
+        assert after.st_gid == before.st_gid
+        assert stat.S_IMODE(socket_stat.st_mode) == 0o660
+        assert socket_stat.st_gid == after.st_gid
+    finally:
+        server._close_socket()
+
+
+def test_default_observer_directory_accepts_0751_without_changing_it(
+    tmp_path, monkeypatch,
+):
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir(mode=0o751)
+    observer_dir.chmod(0o751)
+    socket_path = observer_dir / "resource-observer.sock"
+    monkeypatch.setattr(serve, "DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH", str(socket_path))
+    real_lstat = serve.os.lstat
+    directory_gid = 1234
+
+    def host_metadata(path):
+        if str(path) == str(observer_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=directory_gid
+            )
+        if str(path) == str(socket_path) and real_lstat(path):
+            return SimpleNamespace(
+                st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=directory_gid
+            )
+        return real_lstat(path)
+
+    monkeypatch.setattr(serve.os, "lstat", host_metadata)
+    monkeypatch.setattr(serve.os, "chown", lambda *_args: None)
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+    )
+    server._bind_observer_socket()
+    try:
+        assert server._observer_sock is not None
+        assert stat.S_IMODE(observer_dir.stat().st_mode) == 0o751
+    finally:
+        server._close_socket()
+
+
+def test_default_observer_directory_refuses_group_or_world_write(
+    tmp_path, monkeypatch,
+):
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    socket_path = observer_dir / "resource-observer.sock"
+    monkeypatch.setattr(serve, "DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH", str(socket_path))
+    real_lstat = serve.os.lstat
+    monkeypatch.setattr(
+        serve.os, "lstat",
+        lambda path: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o771, st_uid=0, st_gid=1234
+        ) if str(path) == str(observer_dir) else real_lstat(path),
+    )
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+    )
+    with pytest.raises(OSError, match="not writable by group or other users"):
+        server._bind_observer_socket()
+    assert not socket_path.exists()
 
 
 def test_control_socket_stays_available_if_observer_path_is_occupied(tmp_path, monkeypatch):
@@ -438,19 +533,19 @@ def test_observer_bind_propagates_setup_failure_and_closes_new_socket(tmp_path, 
     def fail_permissions(*_args, **_kwargs):
         raise PermissionError("cannot secure socket")
 
-    monkeypatch.setattr(server, "_assert_one_socket_permissions", fail_permissions)
+    monkeypatch.setattr(server, "_assert_observer_socket_permissions", fail_permissions)
     with pytest.raises(PermissionError, match="cannot secure socket"):
         server._bind_observer_socket()
-    assert server._observer_sock is not None
-    with pytest.raises(OSError):
-        server._observer_sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
-    server._close_socket()
+    assert server._observer_sock is None
+    assert server.handle_version({})["resource_observer"]["listening"] is False
     assert not path.exists()
 
 
 def test_close_socket_survives_observer_path_unlink_failure(tmp_path, monkeypatch):
     path = tmp_path / "resource-observer.sock"
-    path.write_text("owned stale path", encoding="ascii")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(path))
+        identity = os.lstat(path)
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"),
         socket_path=str(tmp_path / "ctl.sock"),
@@ -465,6 +560,7 @@ def test_close_socket_survives_observer_path_unlink_failure(tmp_path, monkeypatc
 
     owned = OwnedSocket()
     server._observer_sock = owned
+    server._observer_socket_identity = (identity.st_dev, identity.st_ino)
     unlink = serve.os.unlink
 
     def deny_observer_unlink(candidate, *args, **kwargs):
@@ -547,24 +643,34 @@ def test_observer_accept_loop_handles_absent_socket_timeout_and_close(tmp_path):
 
     class TimeoutOnce:
         calls = 0
+        closed = False
 
         def accept(self):
             self.calls += 1
             server._stopping = True
             raise socket.timeout()
 
+        def close(self):
+            self.closed = True
+
     server._observer_sock = TimeoutOnce()
     server._stopping = False
     server._observer_accept_loop()
-    assert server._observer_sock.calls == 1
+    assert server._observer_sock is None
+    assert server.handle_version({})["resource_observer"]["listening"] is False
 
     class Closed:
         def accept(self):
             raise OSError("closed")
 
+        def close(self):
+            pass
+
     server._observer_sock = Closed()
     server._stopping = False
     server._observer_accept_loop()
+    assert server._observer_sock is None
+    assert server.handle_version({})["resource_observer"]["listening"] is False
 
 
 def test_accept_loop_logs_if_observer_thread_does_not_stop(tmp_path, monkeypatch):

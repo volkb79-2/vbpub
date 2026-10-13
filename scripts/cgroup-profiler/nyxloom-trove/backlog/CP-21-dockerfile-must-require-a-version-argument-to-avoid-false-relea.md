@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-21
 title: "Dockerfile must require a version argument to avoid false release identity"
-status: open
+status: carved
 type: "bugfix"
 severity: "high"
 component: "build"
@@ -36,3 +36,9 @@ The Dockerfile has no release-version or Git-revision default and fails before p
 - Documentation regressions keep README, DESIGN-GUIDE, and CONSUMERS aligned on the exact-tag rule.
 - The registered unit and coverage gates pass with the supported local and release build paths.
 - A live build acceptance verifies that the declared Bake path supplies the version and that an omitted direct build argument is refused before installing packages.
+
+## Updates
+
+**2026-10-13** — 2026-10-13: The protected CMRU commit/tag handoff, exact temporary build tree, and revision-label deployment check are present in the candidate. Keep this entry carved until the registered gates, exact release build acceptance, and post-deploy revision check pass.
+
+**2026-10-13** — 2026-10-13: Protected release source identity and version arguments are implemented in the release candidate. Exact-tip gates, release build acceptance, and post-deploy revision verification remain pending.

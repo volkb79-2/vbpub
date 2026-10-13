@@ -184,7 +184,7 @@ The additive `resource_observer` field reports the distinct observer listener:
 
 ```json
 "resource_observer": {"contract": 2,
-                       "path": "/run/cgprofile/resource-observer.sock",
+                       "path": "/run/cgprofile/observer/resource-observer.sock",
                        "listening": true}
 ```
 
@@ -212,12 +212,16 @@ they are what the run-gate socket client (P5) is written against.
 ## 8. Native R2 resource observer (RG-89)
 
 This is a **separate listener**, not a new verb on the control carrier:
-`/run/cgprofile/resource-observer.sock`. Run-Gate may bind-mount only this
-socket into an explicitly opted-in Assay R2 container. The listener is served
+`/run/cgprofile/observer/resource-observer.sock`. Host setup provisions the
+root-owned `/run/cgprofile/observer` directory as `0751` with the dedicated
+`cgprofile-observer` group. Run-Gate bind-mounts this directory read-only into
+an explicitly opted-in Assay R2 container, so daemon restarts replace the
+socket inode at a path an existing container can still resolve. The listener is served
 by the existing daemon and accepts no control operation, including `start`,
-`stop`, or placement. Its socket mode uses the existing `/run/cgprofile`
-directory group and `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the
-observed socket GID as a supplementary group. A read-only mount of `ctl.sock`
+`stop`, or placement. Its socket mode uses the dedicated observer directory
+group and the `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the observed
+socket GID as a supplementary group. Observer lanes also declare per-container
+memory and PID ceilings and refuse arbitrary extra mounts. A read-only mount of `ctl.sock`
 is not equivalent and is prohibited for this use.
 
 The observer requires contract 2, independently of the daemon's contract-1

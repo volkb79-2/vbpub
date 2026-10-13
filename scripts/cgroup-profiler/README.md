@@ -50,7 +50,9 @@ untagged local build through `build-push.py --build` requires clean cgprofile
 and DAMON source contexts, uses `0.0.0-dev` with its checked revision, and
 builds from a temporary tree at that commit. A bare Bake invocation has no
 revision value and the Dockerfile refuses before installing packages. See the
-[release identity design](docs/DESIGN-GUIDE.md#release-identity).
+[release identity design](docs/DESIGN-GUIDE.md#release-identity), then verify a
+deployed image's version and OCI source revision against the release tag using
+the [CIU deployment guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.
@@ -179,10 +181,17 @@ host `pid_target` values; it keeps a private cgroup namespace, has no network,
 and receives no Docker socket. Workload, helper, gate, and test containers
 remain private. The daemon exposes its existing control protocol on
 `/run/cgprofile/ctl.sock` and a distinct, observer-only
-`/run/cgprofile/resource-observer.sock` for explicitly opted-in native R2
-lanes. That second listener accepts only a peer-bound resource-counter query;
-it is not a broker and provides no control or placement operation. Run-Gate
-mounts only that socket into the selected tester container, never `ctl.sock`.
+`/run/cgprofile/observer/resource-observer.sock` for explicitly opted-in native R2
+lanes. Host setup provisions its parent as `root:cgprofile-observer` mode
+`0751`; this dedicated group is separate from `docker`. Other users can
+traverse the known socket path for preflight but cannot list or connect to it.
+That second listener
+accepts only a peer-bound resource-counter query; it is not a broker and
+provides no control or placement operation. Run-Gate mounts the observer
+directory read-only into the selected tester container, never `ctl.sock`.
+The directory bind keeps the socket reachable across daemon restarts. Observer
+lanes declare their own memory and PID ceilings and cannot add arbitrary host
+mounts.
 It verifies that all peer threads share capability state and cannot bypass
 cgroup control permissions. It accepts one newline-terminated JSON request
 of at most 4096 bytes including the newline, with a five-second absolute deadline.
@@ -251,7 +260,7 @@ The daemon's version response is contract major 1:
   },
   "resource_observer": {
     "contract": 2,
-    "path": "/run/cgprofile/resource-observer.sock",
+    "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }
 }
@@ -319,11 +328,15 @@ see the consumer note for the live probe and safe host procedure.
     (`d /run/cgprofile 0770 root docker -`). The daemon Compose service
     refuses a missing bind source rather than creating an empty directory.
     **That entry decides who may
-    use the socket carrier: members of the `docker` group** — the same
+    use the control socket carrier: members of the `docker` group** — the same
     principals who can already `docker exec` into the daemon, which is why
     the two carriers have the same trust boundary. The daemon re-asserts
     `0770` on the directory and `root:<the directory's own gid>` `0660` on
-    the socket at every start; it never picks the group itself.
+    the socket at every start; it never picks the group itself. Host setup
+    separately creates `/run/cgprofile/observer` as `0751
+    root:cgprofile-observer` with systemd-sysusers; other users can traverse
+    its known socket path for preflight but cannot list or connect. The daemon sets only the
+    observer socket to that group's GID and does not widen this directory.
   - **Without host-setup** the directory is `root:root`, the socket ends up
     root-only, and the daemon logs one INFO line saying so (`docker logs
     cgprofile-host-daemon`). Nothing breaks: the exec carrier is unaffected

@@ -106,9 +106,16 @@ runtime identity before attaching consumers. Run this from
 ```bash
 ciu up --dir .
 docker exec cgprofile-host-daemon cgprofile ctl version --json
+release_commit=$(git rev-parse --verify 'refs/tags/cgprofile-v1.0.0^{commit}')
+daemon_image_id=$(docker inspect cgprofile-host-daemon --format '{{.Image}}')
+image_revision=$(docker image inspect "$daemon_image_id" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+test "$image_revision" = "$release_commit"
 ```
 
-The version in the response must match the pinned image. For local development
+The version in the response must match the pin, and the running image's source
+revision label must match the peeled release tag. For a candidate deployment,
+compare the label with that candidate's commit instead. For local development
 after the release pin has been committed, temporarily clear the
 `[cgprofile.image]` table in `ciu.toml.j2`. From `scripts/cgroup-profiler/`,
 build the local image before starting CIU; that path loads only
@@ -266,18 +273,18 @@ If the observer refuses because the peer threads have different capability
 states, resolve that peer configuration; the counter query will not guess
 which thread state applies.
 
-The existing host `/run/cgprofile` directory bind is sufficient for the
-devcontainer to see the daemon-created socket; no second host mount or new
-host-setup unit is needed. Host-setup must create this directory first;
-Compose refuses a missing source rather than silently creating an empty host
-directory. The upgraded daemon creates
-`/run/cgprofile/resource-observer.sock` beside `ctl.sock`. At gate launch,
-Run-Gate validates that fixed host path and mounts only the observer socket
-read-only into `tester-unified`, adds its observed GID, and sets
-`ASSAY_RESOURCE_OBSERVER_SOCKET` inside the container. A missing daemon/socket
-or unsafe ownership/mode is an infrastructure refusal, never a silent
-fallback. The selected container retains private PID, cgroup, and network
-namespaces; do not mount `ctl.sock` or the Docker socket for this feature.
+Host setup provisions `/run/cgprofile/observer` as root-owned mode `0751` in
+the dedicated `cgprofile-observer` group. The daemon owns only the socket entry
+inside this persistent directory. Run-Gate validates the directory and socket,
+then bind-mounts the directory read-only into `tester-unified`. The directory
+bind lets an already-running container see a new socket after daemon restart;
+binding the socket file would pin the old inode. Run-Gate grants only the
+dedicated observer GID and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` inside the
+container. Observer-backed lanes also declare per-container memory and PID
+ceilings and refuse arbitrary extra mounts. A missing daemon/socket or unsafe
+ownership/mode is an infrastructure refusal, never a silent fallback. The
+selected container retains private PID, cgroup, and network namespaces; do not
+mount `ctl.sock` or the Docker socket for this feature.
 The observer accepts one newline-terminated JSON request of at most 4096 bytes
 including the newline and applies a five-second absolute deadline. Consumers
 must send one complete line; oversized or incomplete requests are not
@@ -337,7 +344,7 @@ The version response has the current wire shape:
   },
   "resource_observer": {
     "contract": 2,
-    "path": "/run/cgprofile/resource-observer.sock",
+    "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }
 }

@@ -35,3 +35,9 @@ The API must remain explicit about its contract version. A consumer must not sil
 - Both `pids_localevents` and `memory_localevents` mount modes are represented or explicitly rejected when equivalent scope cannot be proven; child-cgroup refusal applies when that controller's local-only candidate event file is active.
 - Peer binding, gate-slice membership, mount/ancestry validation, and read-only behavior remain covered by the registered unit, coverage, and canary gates.
 - `scripts/cgroup-profiler/README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and protocol/interface-contract documentation explain the new contract and compatibility requirements.
+
+## Updates
+
+**2026-10-13** — 2026-10-13: The contract-2 observer implementation and scope tests are present in the release candidate. Keep this entry carved until the exact-tip registered gates and live observer acceptance pass; the current in-progress tree is not yet release evidence.
+
+**2026-10-13** — 2026-10-13: Contract-2 local/hierarchical event implementation is present in the release candidate. Exact-tip registered gates and live observer acceptance remain pending.

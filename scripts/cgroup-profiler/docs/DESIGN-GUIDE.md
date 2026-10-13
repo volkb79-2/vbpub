@@ -577,6 +577,14 @@ CMRU clears ambient release-pair values from non-artifact steps. The pair is
 source-consistency metadata, not an authentication token or proof of CMRU
 provenance, so the supported publication workflow remains `cmru release`.
 
+Deployment verification checks two identities. `ctl version --json` confirms
+the daemon's software version and advertised protocol capabilities; the
+running container's `org.opencontainers.image.revision` label binds its image
+to source. Compare that label with the commit peeled from the pinned
+`cgprofile-v<version>` release tag after CIU brings up the service. The
+[consumer recipe](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu) checks
+the source label on the image actually used by `cgprofile-host-daemon`.
+
 The Bake file itself uses a literal development version and tag instead of
 importing environment variables; it supplies no Git revision default. The
 wrapper's explicit target overrides carry the version and revision resolved
