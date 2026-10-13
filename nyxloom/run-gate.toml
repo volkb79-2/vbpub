@@ -43,3 +43,7 @@ environment = "tester-unified"       # central [environments.tester-unified]
 # attribution, with four pytest workers inside that candidate. This is the
 # outer/advisory mirror of assay.toml's resumable six-hour invocation bound.
 budget = "6h"
+
+[lanes.session-extract.resources]
+memory = "2g"
+pids = 8192

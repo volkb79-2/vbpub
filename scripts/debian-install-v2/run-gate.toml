@@ -145,3 +145,7 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+
+[lanes.r2.resources]
+memory = "2g"
+pids = 8192

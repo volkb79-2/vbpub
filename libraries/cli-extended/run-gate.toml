@@ -29,6 +29,7 @@ budget = "720m"
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]
+pids = 8192
 # B156 keeps one native candidate active so cgroup event windows do not overlap.
 memory = "1536m"
 

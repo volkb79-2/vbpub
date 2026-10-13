@@ -10,5 +10,6 @@ resource_observer = "cgprofile"
 budget = "8h"
 
 [lanes.worktree.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"

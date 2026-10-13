@@ -208,11 +208,17 @@ PY
 # writable HOME with XDG dirs, so suites that read/write $HOME/.config or
 # $HOME/.cache (e.g. topos config/record) don't hit PermissionError on the
 # image's root-owned /home/vscode. A gate must give the run-uid a real HOME.
-RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
- && echo "docker:x:994:tester" >> /etc/group \
+RUN if getent group 1003 >/dev/null; then \
+      test "$(getent group 1003 | cut -d: -f1)" != docker; \
+    else \
+      groupadd --gid 1003 tester; \
+    fi \
+ && ! getent passwd 1003 >/dev/null \
+ && ! getent passwd tester >/dev/null \
+ && echo "tester:x:1003:1003:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
- && chown -R 1003:994 /home/tester \
- && chown -R 1003:994 /opt/tester-venv
+ && chown -R 1003:1003 /home/tester \
+ && chown -R 1003:1003 /opt/tester-venv
 
 USER 1003
 ENV HOME=/home/tester \
