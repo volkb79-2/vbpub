@@ -451,7 +451,9 @@ def test_remove_orphan_workspace_reports_failed_git_removal_and_branch_deletion(
 ) -> None:
     locked = _gone_source(repository, tmp_path, "locked-target")
     _git(repository, "worktree", "lock", str(locked.worktree_path))
-    with pytest.raises(core.WorkspaceError, match="git worktree remove failed"):
+    with pytest.raises(
+        core.WorkspaceError, match=r"git worktree remove failed \(\d+\): .*locked working tree",
+    ):
         remove_orphan_workspace(locked, executor_git_root=repository)
     assert locked.worktree_path.is_dir()
 
@@ -459,8 +461,66 @@ def test_remove_orphan_workspace_reports_failed_git_removal_and_branch_deletion(
     lock_file = repository / ".git" / "refs" / "heads" / "workspace" / "stuck-branch.lock"
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     lock_file.write_text("", encoding="utf-8")
-    with pytest.raises(core.WorkspaceError, match="git branch -D workspace/stuck-branch failed"):
+    with pytest.raises(
+        core.WorkspaceError,
+        match=r"git branch -D workspace/stuck-branch failed \(\d+\): .*(cannot lock ref|Unable to create)",
+    ):
         remove_orphan_workspace(stuck, executor_git_root=repository)
+
+
+def test_remove_orphan_workspace_refuses_each_independent_checkout_mismatch(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _gone_source(repository, tmp_path, "independent")
+    real = core.discover_git_context
+    wrong_common = tmp_path / "somewhere-else" / ".git"
+
+    def skewed(field: str):
+        def discover(path):
+            top, common, branch, head = real(path)
+            if core.canonical_path(path) == context.worktree_path:
+                if field == "top":
+                    top = top / "elsewhere"
+                elif field == "common":
+                    common = wrong_common
+                else:
+                    branch = "another-branch"
+            return top, common, branch, head
+        return discover
+
+    for field in ("top", "common", "branch"):
+        monkeypatch.setattr(core, "discover_git_context", skewed(field))
+        with pytest.raises(core.WorkspaceError, match="does not match record"):
+            remove_orphan_workspace(context, executor_git_root=repository)
+        assert context.worktree_path.is_dir()
+
+
+def test_remove_orphan_workspace_refuses_a_source_git_still_treats_as_live(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _gone_source(repository, tmp_path, "live-entry")
+    record = read_record(context.record_path)
+    real = core.list_git_worktrees
+
+    def listed(locked: bool, prunable: bool):
+        def inventory(path):
+            entries = real(path)
+            entry = core.GitWorktree(
+                path=record.source_git_root, head="0" * 40, branch="x",
+                is_primary=False, is_prunable=prunable, is_locked=locked,
+            )
+            return [*entries, entry]
+        return inventory
+
+    # Registered, unlocked, and NOT prunable (a live checkout we merely cannot see),
+    # and registered AND locked even though Git also reports it prunable: both refuse.
+    for locked, prunable in ((False, False), (True, True)):
+        monkeypatch.setattr(core, "list_git_worktrees", listed(locked, prunable))
+        with pytest.raises(core.WorkspaceError, match="still registered with Git"):
+            remove_orphan_workspace(context, executor_git_root=repository)
+    monkeypatch.setattr(core, "list_git_worktrees", listed(False, True))
+    remove_orphan_workspace(context, executor_git_root=repository)  # unlocked + prunable: removed
+    assert not context.worktree_path.exists()
 
 
 def test_remove_orphan_workspace_can_keep_the_branch(repository: Path, tmp_path: Path) -> None:
