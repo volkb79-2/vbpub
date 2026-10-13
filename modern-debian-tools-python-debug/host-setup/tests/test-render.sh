@@ -578,12 +578,35 @@ tail -n1 "$CHECK_OBSERVER_HELPER" | grep -qx '}' \
 
 observer_check_root="$TMP/observer-health-check"
 mkdir -p "$observer_check_root/run/cgprofile/observer" \
-  "$observer_check_root/etc/tmpfiles.d" "$observer_check_root/etc/sysusers.d"
+  "$observer_check_root/etc/tmpfiles.d" "$observer_check_root/etc/sysusers.d" \
+  "$observer_check_root/bin"
 chmod 0751 "$observer_check_root/run/cgprofile/observer"
 cp "$HERE/units/mdt-cgprofile-observer.conf" \
   "$observer_check_root/etc/tmpfiles.d/mdt-cgprofile-observer.conf"
 cp "$HERE/units/mdt-cgprofile.sysusers" \
   "$observer_check_root/etc/sysusers.d/mdt-cgprofile.conf"
+cat > "$observer_check_root/bin/systemd-tmpfiles" <<'EOF'
+#!/bin/sh
+if [ "$1" != --cat-config ] || [ "$2" != --no-pager ]; then
+  exit 64
+fi
+for file in "$CGPROFILE_TEST_TMPFILES_DIR"/*.conf; do
+  [ -f "$file" ] || continue
+  cat "$file"
+done
+EOF
+cat > "$observer_check_root/bin/systemd-sysusers" <<'EOF'
+#!/bin/sh
+if [ "$1" != --cat-config ] || [ "$2" != --no-pager ]; then
+  exit 64
+fi
+for file in "$CGPROFILE_TEST_SYSUSERS_DIR"/*.conf; do
+  [ -f "$file" ] || continue
+  cat "$file"
+done
+EOF
+chmod 0755 "$observer_check_root/bin/systemd-tmpfiles" \
+  "$observer_check_root/bin/systemd-sysusers"
 observer_test_root="$observer_check_root"
 observer_group_gid=1550
 observer_stat_override=""
@@ -603,6 +626,9 @@ check_health_run() {
     export CGPROFILE_DIR="$observer_check_root/run/cgprofile"
     export CGPROFILE_OBSERVER_TMPFILES_FILE="$observer_check_root/etc/tmpfiles.d/mdt-cgprofile-observer.conf"
     export CGPROFILE_OBSERVER_SYSUSERS_FILE="$observer_check_root/etc/sysusers.d/mdt-cgprofile.conf"
+    export CGPROFILE_TEST_TMPFILES_DIR="$observer_check_root/etc/tmpfiles.d"
+    export CGPROFILE_TEST_SYSUSERS_DIR="$observer_check_root/etc/sysusers.d"
+    export PATH="$observer_check_root/bin:$PATH"
     check_cgprofile_observer
     [ "$check_failures" = "$expected_failures" ]
   )
@@ -639,6 +665,15 @@ grep -q 'exactly the required observer tmpfiles rule' "$TMP/observer-health-extr
 cp "$HERE/units/mdt-cgprofile-observer.conf" \
   "$observer_check_root/etc/tmpfiles.d/mdt-cgprofile-observer.conf"
 
+printf '%s\n' 'd /run/cgprofile/observer 0700 root root -' \
+  > "$observer_check_root/etc/tmpfiles.d/competing-observer.conf"
+: > "$TMP/observer-health-competing-tmpfiles.out"
+check_health_run 1 "$TMP/observer-health-competing-tmpfiles.out" \
+  || fail "host-check accepted a competing tmpfiles rule from another active file"
+grep -q 'effective tmpfiles rules' "$TMP/observer-health-competing-tmpfiles.out" \
+  || fail "host-check did not name a competing effective tmpfiles rule"
+rm "$observer_check_root/etc/tmpfiles.d/competing-observer.conf"
+
 printf '%s\n' 'u unexpected-user - "Unexpected user" /nonexistent' \
   >> "$observer_check_root/etc/sysusers.d/mdt-cgprofile.conf"
 : > "$TMP/observer-health-extra-sysusers.out"
@@ -648,6 +683,15 @@ grep -q 'exactly the required observer group rule' "$TMP/observer-health-extra-s
   || fail "host-check did not explain rejection of extra sysusers directives"
 cp "$HERE/units/mdt-cgprofile.sysusers" \
   "$observer_check_root/etc/sysusers.d/mdt-cgprofile.conf"
+
+printf '%s\n' 'g cgprofile-observer 2000 - -' \
+  > "$observer_check_root/etc/sysusers.d/competing-observer.conf"
+: > "$TMP/observer-health-competing-sysusers.out"
+check_health_run 1 "$TMP/observer-health-competing-sysusers.out" \
+  || fail "host-check accepted a competing sysusers rule from another active file"
+grep -q 'effective sysusers rules' "$TMP/observer-health-competing-sysusers.out" \
+  || fail "host-check did not name a competing effective sysusers rule"
+rm "$observer_check_root/etc/sysusers.d/competing-observer.conf"
 
 observer_group_gid=994
 : > "$TMP/observer-health-gid.out"

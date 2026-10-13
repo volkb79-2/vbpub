@@ -134,6 +134,18 @@ available.
 | ├─ `dev-buildkitd.slice` (shared builder) | `1.5G / 2G` | `500%` | `80% of parent` | `60% of parent IOPS` | Protect the shared builder and its cache. |
 | └─ `dev-memory_min_guaranteed.slice` (admitted floor) | optional | inherited | inherited | inherited | Share `MemoryMin` only when explicitly admitted. |
 
+The shipped `dev-gates.slice` example is intentionally conservative: its
+`1.5G` memory maximum cannot admit the contract-2 mutation lanes, which declare
+`2G` per container. Before running those lanes, tune the gate slice's
+`MemoryHigh` and `MemoryMax` above the sum of the active lane caps, with room
+for container and controller overhead. Two concurrent `2G` lanes need more
+than `4G`; a `6G` MDT full-assay lane needs more than `6G` by itself. Check the
+ancestor `dev.slice` limits and current use too. Run-Gate refuses requests that
+do not fit the declared slice budget, while cgprofile reports a candidate as
+inconclusive if a shared ancestor limit changes during execution. Keep the
+smaller default when that extra capacity is not available and run high-memory
+campaigns only on a host profile sized for them.
+
 Why each row exists:
 
 - `dev.slice` is one aggregate shield: all dev children together stay below

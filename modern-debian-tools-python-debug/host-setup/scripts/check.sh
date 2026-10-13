@@ -385,6 +385,8 @@ check_cgprofile_observer() {
   local sysusers_file="${CGPROFILE_OBSERVER_SYSUSERS_FILE:-/etc/sysusers.d/mdt-cgprofile.conf}"
   local docker_entry="" observer_entry="" docker_gid="" observer_gid=""
   local metadata="" tmpfiles_rules="" sysusers_rules=""
+  local effective_tmpfiles="" effective_sysusers=""
+  local active_observer_tmpfiles="" active_observer_sysusers=""
 
   if [ -L "$observer_dir" ] || [ ! -d "$observer_dir" ]; then
     fail "$observer_dir is missing or is not a real directory; resolve any existing path drift, then run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
@@ -429,6 +431,24 @@ check_cgprofile_observer() {
   fi
   if [ "$sysusers_rules" != 'g cgprofile-observer - - -' ]; then
     fail "$sysusers_file does not contain exactly the required observer group rule; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  if ! effective_tmpfiles="$(systemd-tmpfiles --cat-config --no-pager 2>/dev/null)"; then
+    fail "cannot read the merged systemd tmpfiles configuration while checking $observer_dir"
+    return
+  fi
+  active_observer_tmpfiles="$(awk 'NF && $1 !~ /^#/ && $2 == "/run/cgprofile/observer" { print }' <<< "$effective_tmpfiles")"
+  if [ "$active_observer_tmpfiles" != 'd /run/cgprofile/observer 0751 root cgprofile-observer -' ]; then
+    fail "effective tmpfiles rules for /run/cgprofile/observer are not exactly the required rule; remove competing active rules, then rerun host-setup --check"
+    return
+  fi
+  if ! effective_sysusers="$(systemd-sysusers --cat-config --no-pager 2>/dev/null)"; then
+    fail "cannot read the merged systemd sysusers configuration while checking $observer_dir"
+    return
+  fi
+  active_observer_sysusers="$(awk 'NF && $1 !~ /^#/ && $2 == "cgprofile-observer" { print }' <<< "$effective_sysusers")"
+  if [ "$active_observer_sysusers" != 'g cgprofile-observer - - -' ]; then
+    fail "effective sysusers rules for cgprofile-observer are not exactly the required rule; remove competing active rules, then rerun host-setup --check"
     return
   fi
   ok "$observer_dir is root:$observer_gid 0751, distinct from docker; observer sysusers/tmpfiles rules are present"
