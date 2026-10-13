@@ -488,3 +488,68 @@ def test_snapshot_assay_state_is_removed_in_both_layouts_and_never_through_a_lin
         inside.context.record_path, executor_git_root=primary, include_current=True,
     )
     assert not state.exists() and not inside.worktree_path.exists()
+
+
+# --- remaining cleanup and manifest boundaries -------------------------------------
+
+
+def test_a_malformed_manifest_digest_is_ignored_not_trusted(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+    gs.write_snapshot_manifest(snapshot, "passed")
+    manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(snapshot.refs_sha256, "xyz"),
+        encoding="utf-8",
+    )
+    reopened = gs.open_gate_snapshot(repo)
+    try:
+        assert reopened.refs_sha256 == snapshot.refs_sha256
+    finally:
+        gs.close_gate_snapshot(reopened)
+
+
+def test_a_failed_manifest_write_leaves_no_temporary_file(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+
+    def refuse(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gs.os, "replace", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        gs.write_snapshot_manifest(snapshot, "running")
+    assert not list((repo / "cmru" / ".assay").glob(".release-gate-snapshot.*"))
+
+
+def test_remove_gate_snapshot_releases_a_provably_dead_holders_lease(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    from tests.test_release_gate import _lease_snapshot
+
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    _lease_snapshot(
+        snapshot, f"cmru-gate:{child.pid}:1:abc:{gs._local_namespace_identity()}", hours=1,
+    )
+    assert worktree.read_record(snapshot.context.record_path).lease is not None
+    gs.remove_gate_snapshot(
+        snapshot.context.record_path, executor_git_root=repo, include_current=True,
+    )
+    assert not snapshot.worktree_path.exists()
+
+
+def test_cleanup_for_a_source_refuses_a_record_outside_its_snapshot_location(
+    tmp_path, monkeypatch,
+):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    stray = tmp_path / "elsewhere" / "cmru-gate-stray"
+    worktree.create_workspace(
+        repo, stray, branch="cmru-gate-stray", purpose="cmru-gate",
+    )
+    with pytest.raises(RuntimeError, match="outside its owned snapshot location"):
+        gs.remove_gate_snapshots_for_source(repo)
+    assert stray.is_dir()

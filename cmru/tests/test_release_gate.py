@@ -827,10 +827,11 @@ def test_unrelated_commits_tags_and_fetches_do_not_fail_the_gate(tmp_path, monke
     def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
         if lane == "assay":  # another agent's worktree, mid-gate
-            _git(primary, "commit", "--allow-empty", "-q", "-m", "unrelated work")
-            _git(primary, "branch", "unrelated-branch")
-            _git(primary, "tag", "unrelated-tag")
-            _git(primary, "update-ref", "refs/remotes/origin/fetched", "HEAD")
+            serial = len(calls)
+            _git(primary, "commit", "--allow-empty", "-q", "-m", f"unrelated work {serial}")
+            _git(primary, "branch", f"unrelated-branch-{serial}")
+            _git(primary, "tag", f"unrelated-tag-{serial}")
+            _git(primary, "update-ref", f"refs/remotes/origin/fetched-{serial}", "HEAD")
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))

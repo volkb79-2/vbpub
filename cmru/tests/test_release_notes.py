@@ -1,6 +1,7 @@
 """KI-75: a release body is the generated install block plus the exact curated section."""
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import zipfile
 from pathlib import Path
@@ -396,8 +397,9 @@ def test_publisher_steps_receive_the_protected_declaration(tmp_path, monkeypatch
     cli.run_project_step(project, "push", tmp_path, tmp_path / "logs")
     assert seen["CMRU_RELEASE_NOTES_SOURCE"] == "changelog:docs/NEWS.md"
 
-    project.changelog = None
-    cli.run_project_step(project, "push", tmp_path, tmp_path / "logs")
+    cli.run_project_step(
+        dataclasses.replace(project, changelog=None), "push", tmp_path, tmp_path / "logs",
+    )
     assert seen["CMRU_RELEASE_NOTES_SOURCE"] == "none"
 
 

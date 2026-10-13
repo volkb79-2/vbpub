@@ -48,24 +48,35 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
-def _neutral_release_notes_preflight(request, monkeypatch):
-    """Prepare-phase tests that mock changelog generation have no real changelog.
+def _neutral_release_notes_preflight(request):
+    """Tests of other release behaviour have no real changelog to read.
 
     ``_prepare_release_projects`` refuses (before any gate or tag) when a tagged
-    project's pending section is unusable (KI-75). Tests of OTHER prepare
-    behaviour stub that seam; the KI-75 tests carry the
-    ``real_release_notes_preflight`` marker and exercise the real one.
+    project's pending section is unusable, and ``release --dry-run`` previews the
+    release body (KI-75). Tests of OTHER behaviour (mocked changelog generation,
+    fake non-repository projects) stub those two seams; the KI-75 tests carry the
+    ``real_release_notes_preflight`` marker and exercise the real ones.
+
+    Plain attribute swaps, not ``monkeypatch``: a second monkeypatch fixture is torn
+    down AFTER the environment restore below and re-introduces leaked values (the zz
+    probe catches that).
     """
     if request.node.get_closest_marker("real_release_notes_preflight"):
+        yield
         return
     from types import SimpleNamespace
 
     from cmru import cli
 
-    monkeypatch.setattr(
-        cli, "_pending_release_notes_or_refuse",
-        lambda *_args, **_kwargs: SimpleNamespace(version="0.0.0"),
+    saved = (cli._pending_release_notes_or_refuse, cli._preview_release_bodies)
+    cli._pending_release_notes_or_refuse = (
+        lambda *_args, **_kwargs: SimpleNamespace(version="0.0.0")
     )
+    cli._preview_release_bodies = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        cli._pending_release_notes_or_refuse, cli._preview_release_bodies = saved
 
 
 @pytest.fixture(autouse=True)

@@ -80,11 +80,17 @@ assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()
 )
 print("cmru is a local build; cli-extended is the released wheel:", released)
 PY'''
+# The run-uid identity block as the Dockerfile declares it (da06e52de gave the
+# uid its own group 1003 instead of squatting on the host's docker gid 994),
+# joined the way the Dockerfile reader joins continuation lines.
 CMRU_POST_INSTALL_IDENTITY_RUN = (
-    'RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd '
-    '&& echo "docker:x:994:tester" >> /etc/group && mkdir -p /home/tester/.config '
-    '/home/tester/.cache /home/tester/.local/state '
-    '&& chown -R 1003:994 /home/tester && chown -R 1003:994 /opt/tester-venv'
+    'RUN if getent group 1003 >/dev/null; then '
+    'test "$(getent group 1003 | cut -d: -f1)" != docker; '
+    'else groupadd --gid 1003 tester; fi '
+    '&& ! getent passwd 1003 >/dev/null && ! getent passwd tester >/dev/null '
+    '&& echo "tester:x:1003:1003:tester:/home/tester:/bin/bash" >> /etc/passwd '
+    '&& mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state '
+    '&& chown -R 1003:1003 /home/tester && chown -R 1003:1003 /opt/tester-venv'
 )
 CMRU_POST_INSTALL_MUTATIONS = (
     CMRU_POST_INSTALL_VERSION_ASSERTION_RUN,

@@ -38,6 +38,7 @@ from cmru.release import (
     validate_latest_release,
 )
 from cmru.release_notes import (
+    NO_NOTES,
     ReleaseNotes,
     ReleaseNotesError,
     declared_source,
@@ -58,11 +59,14 @@ def _curated_release_notes(
     """
     if not is_release_version(version):
         return None  # a dev build publishes no immutable release body
-    commit = os.environ.get("CMRU_RELEASE_COMMIT") or (
-        build_output["manifest"]["source_commit"] if build_output else None
-    )
     try:
-        return load_release_notes(cwd, declared_source(), version, commit=commit)
+        declaration = declared_source()
+        if declaration == NO_NOTES:
+            return None
+        commit = os.environ.get("CMRU_RELEASE_COMMIT") or (
+            build_output["manifest"]["source_commit"] if build_output else None
+        )
+        return load_release_notes(cwd, declaration, version, commit=commit)
     except ReleaseNotesError as exc:
         print(f"[ERROR] release notes: {exc}", file=sys.stderr)
         raise SystemExit(exit_codes.REFUSED) from None
