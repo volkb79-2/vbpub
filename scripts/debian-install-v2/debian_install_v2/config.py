@@ -21,6 +21,7 @@ REMOVED_KEYS = {
     "zswap_zpool": "the zswap zpool knob is absent on 7.x kernels; zsmalloc is the only backend",
 }
 SCHEMA_VERSION = 1
+CLOUD_INIT_CLEANUP_MODES = ("retain", "userdata-only", "clean", "clean-all")
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
     "SWAP_TOTAL_GB",
@@ -55,6 +56,9 @@ class Config:
     stage2_output: str = "/root/custom_script.output2"
     auto_reboot_after_stage1: bool = True
     never_reboot: bool = False
+    # Cloud-init keeps its fetched user-data under /var/lib/cloud/instance.
+    # Cleanup is opt-in and runs only after stage-two installation work succeeds.
+    cloud_init_cleanup_mode: Literal["retain", "userdata-only", "clean", "clean-all"] = "retain"
 
     run_user_config: bool = True
     run_apt_config: bool = True
@@ -315,6 +319,14 @@ def validate_config(config: Config) -> None:
         raise ConfigError(str(exc)) from None
     if not isinstance(config.credential_mode, str) or config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
+    if (
+        not isinstance(config.cloud_init_cleanup_mode, str)
+        or config.cloud_init_cleanup_mode not in CLOUD_INIT_CLEANUP_MODES
+    ):
+        raise ConfigError(
+            "cloud_init_cleanup_mode must be one of: "
+            + ", ".join(CLOUD_INIT_CLEANUP_MODES)
+        )
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):
         raise ConfigError("credential_mode=root-storage requires state_dir under /var/lib")
 

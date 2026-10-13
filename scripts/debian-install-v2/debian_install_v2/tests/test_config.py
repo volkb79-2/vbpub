@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from debian_install_v2.config import ConfigError, load_config
+from debian_install_v2.config import (
+    CLOUD_INIT_CLEANUP_MODES,
+    ConfigError,
+    load_config,
+)
 
 BASE = {
     "schema_version": 1,
@@ -19,6 +23,18 @@ BASE = {
 def test_known_shape_loads():
     config = load_config(raw_json='{"schema_version":1,"swap_disk_total_gb":32,"swap_file_count":8}')
     assert (config.swap_disk_total_gb, config.swap_file_count) == (32, 8)
+    assert config.cloud_init_cleanup_mode == "retain"
+
+
+@pytest.mark.parametrize("mode", CLOUD_INIT_CLEANUP_MODES)
+def test_cloud_init_cleanup_mode_accepts_each_documented_value(mode):
+    config = load_config(raw_json=json.dumps({"cloud_init_cleanup_mode": mode}))
+    assert config.cloud_init_cleanup_mode == mode
+
+
+def test_cloud_init_cleanup_mode_rejects_unknown_values():
+    with pytest.raises(ConfigError, match="cloud_init_cleanup_mode must be one of"):
+        load_config(raw_json='{"cloud_init_cleanup_mode":"configs-all"}')
 
 
 @pytest.mark.parametrize("name", ["SWAP_ARCH", "SWAP_TOTAL_GB", "SWAP_FILES", "USE_PARTITION"])
@@ -56,6 +72,7 @@ def test_closed_vocabularies_are_validated():
 
 @pytest.mark.parametrize("key", [
     "zswap_compressor", "apt_auto_upgrade_mode", "credential_mode",
+    "cloud_init_cleanup_mode",
 ])
 def test_unhashable_closed_vocabulary_values_are_reported_as_config_errors(key):
     with pytest.raises(ConfigError, match=key):

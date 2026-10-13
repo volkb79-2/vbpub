@@ -12,7 +12,7 @@ from typing import Any
 
 from cli_extended import CliFailure, LogLevel
 
-from .config import Config, ConfigError, load_config
+from .config import CLOUD_INIT_CLEANUP_MODES, Config, ConfigError, load_config
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,12 @@ WIZARD_SECTIONS = (
             WizardField("stage2_output", "Stage-two output log"),
             WizardField("auto_reboot_after_stage1", "Reboot automatically after stage one?", "boolean"),
             WizardField("never_reboot", "Forbid installer-scheduled reboots?", "boolean"),
+            WizardField(
+                "cloud_init_cleanup_mode",
+                "Cloud-init cache policy after successful install (clean modes run cloud-init again on next boot)",
+                "choice",
+                CLOUD_INIT_CLEANUP_MODES,
+            ),
         ),
     ),
     WizardSection(

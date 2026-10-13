@@ -40,6 +40,27 @@ def test_host_facts_new_allowlist_entries_accept_only_their_declared_flags():
         actions.run(["/usr/sbin/sshd", "-t"])
 
 
+def test_cloud_init_allowlist_accepts_only_the_two_cleanup_invocations():
+    actions = HostActions(dry_run=True)
+    actions.run(["/usr/bin/cloud-init", "clean"], dangerous=True)
+    actions.run(
+        ["/usr/bin/cloud-init", "clean", "--logs", "--seed"],
+        dangerous=True,
+    )
+    assert [action.argv for action in actions.planned] == [
+        ("/usr/bin/cloud-init", "clean"),
+        ("/usr/bin/cloud-init", "clean", "--logs", "--seed"),
+    ]
+    for argv in (
+        ["/usr/bin/cloud-init", "status"],
+        ["/usr/bin/cloud-init", "clean", "--configs", "all"],
+        ["/usr/bin/cloud-init", "clean", "--machine-id"],
+        ["/usr/bin/cloud-init", "clean", "--reboot"],
+    ):
+        with pytest.raises(ActionError, match="cloud-init invocation is not allowlisted"):
+            actions.run(argv)
+
+
 def test_dry_run_records_but_does_not_execute():
     actions = HostActions(dry_run=True)
     actions.run(["/usr/sbin/swapoff", "-a"], description="disable existing swap before formatting fresh devices", dangerous=True)
