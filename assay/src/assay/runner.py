@@ -146,6 +146,7 @@ from .mutation_witness import (
     receipt_facts,
     supports_sequential_pytest,
     survivor_proof_failure,
+    unsupported_hook_diagnostic,
 )
 from .output import VerdictOutput
 from .records import record
@@ -4166,21 +4167,17 @@ def _run_prepared_lane(
                 expected=coverage_facts,
                 command="declared",
             )
-            if coverage_proof_failure is not None:
-                if (
-                    diagnostics is not None
-                    and coverage_proof_failure
-                    == "the baseline uses an unsupported pytest hook configuration"
-                    and coverage_facts is not None
-                    and coverage_facts.unsupported_hook_names
-                ):
-                    print(
-                        "assay: cold witness: coverage baseline uses unsupported "
-                        "pytest hooks: "
-                        + ", ".join(coverage_facts.unsupported_hook_names),
-                        file=diagnostics,
-                    )
-                coverage_facts = None
+        if coverage_proof_failure is not None:
+            if (
+                diagnostics is not None
+                and "unsupported pytest hook configuration" in coverage_proof_failure
+            ):
+                print(
+                    "assay: cold witness: coverage baseline "
+                    + unsupported_hook_diagnostic(coverage_receipt),
+                    file=diagnostics,
+                )
+            coverage_facts = None
         r0_claim = build_r0_claim(result)
         # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
         # measurement A1's own `budget_per_candidate_derived_s` already
@@ -4973,15 +4970,11 @@ def _run_prepared_lane(
                         if r2_proof_failure is not None:
                             if (
                                 diagnostics is not None
-                                and r2_proof_failure
-                                == "the baseline uses an unsupported pytest hook configuration"
-                                and r2_facts is not None
-                                and r2_facts.unsupported_hook_names
+                                and "unsupported pytest hook configuration" in r2_proof_failure
                             ):
                                 print(
                                     "assay: cold witness: no-coverage R2 baseline "
-                                    "uses unsupported pytest hooks: "
-                                    + ", ".join(r2_facts.unsupported_hook_names),
+                                    + unsupported_hook_diagnostic(r2_receipt),
                                     file=diagnostics,
                                 )
                             raise mutation.R2CommandProofError(

@@ -178,11 +178,16 @@ declared command. Each baseline must finish its complete suite with both the
 pytest session and process exit status equal to zero; a hook cannot mask a
 baseline failure. Cold proof accepts
 pytest's built-in hooks and the reviewed
-Hypothesis 6.156.6 hooks only when their module source digest, distribution
+Hypothesis 6.169.0 hooks only when their module source digest, distribution
 ownership, plugin identity, function and wrapper flags match. The declared
 fallback may also use the exact reviewed pytest-cov 7.1.0 hooks. These versions
 and module digests are the current reviewed implementations; another version
 or changed source cannot establish a cold kill or survivor.
+Other Hypothesis versions or module digests are refused for cold-witness
+evidence until reviewed. If a baseline refuses for an unsupported hook,
+stderr reports its name only when the closed hook-name field is valid; malformed
+or missing name evidence is reported as unavailable, and hook names stay out of
+verdict JSON.
 Pytest's built-in HookImpl callables are captured before initial conftests
 load; built-ins created later are accepted only when their class and source
 callable match that early snapshot. A callable replacement is unsupported even

@@ -798,7 +798,7 @@ differ because pytest-cov is loaded only by the declared command. Each baseline
 must finish its complete suite with both the pytest session and process exit
 status equal to zero; a hook cannot mask a baseline failure. The lifecycle
 check accepts pytest's built-in hooks and the exact
-reviewed Hypothesis 6.156.6 hooks only when their source digest, distribution
+reviewed Hypothesis 6.169.0 hooks only when their source digest, distribution
 ownership, plugin identity, function and wrapper flags match. The declared
 fallback also recognizes only pytest-cov 7.1.0 with its reviewed module source
 digest. These are code identities, not just names: another version or changed
@@ -817,6 +817,21 @@ prefix because a full pytest retry can continue after the failing call. With
 pytest-cov present, its exact reviewed hooks must be the only unsupported hooks
 and must match that baseline. The ordinary full-suite behavior remains the
 default when the option is absent.
+
+The reviewed Hypothesis 6.169.0 hooks are admitted by exact module digest,
+distribution version, callable identity, and wrapper flags. Its collection
+hook can add a marker that affects `-m` selection, so a real-child oracle
+compares the ordered collection digest between coverage and no-coverage runs.
+The call-hook oracle exercises both a passing generated test and a generated
+example failure; the report-hook oracle checks that call and teardown outcomes
+still match their exceptions. A changed Hypothesis version or source remains
+unsupported until the same review and behavioral checks are repeated.
+
+Unsupported-hook diagnostics are separate from witness evidence. Assay parses
+the sorted hook-name field against the closed pytest-hook vocabulary even when
+other receipt facts are incomplete. Malformed or missing names are reported
+as unavailable; names never repair a receipt, prove a witness, or enter
+verdict JSON.
 
 Witness admission also checks pytest configuration before injecting its
 plugin. It checks recognized config files in pytest's documented precedence

@@ -1503,7 +1503,7 @@ you're changing assay itself:
   command. Each baseline must finish its complete suite with both the pytest
   session and process exit status equal to zero; a hook cannot mask a baseline
   failure. Hook trust is pinned to
-  Hypothesis 6.156.6 and, for the declared
+  Hypothesis 6.169.0 and, for the declared
   fallback, pytest-cov 7.1.0 by version, source digest, exact callable identity,
   and hook flags. Their code objects are pinned too. Pytest's built-in
   HookImpl callables and Assay's generated receipt hooks are captured before
@@ -1517,7 +1517,9 @@ you're changing assay itself:
   `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
   `ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent; that
   hook must preserve the session exit status or its receipt cannot prove a
-  result. The exact command transform,
+  result. Unsupported-hook diagnostics use only a validated closed-vocabulary
+  name list, even when other receipt facts are incomplete; hook names stay out
+  of verdict data. The exact command transform,
   collection and hook checks, and persisted campaign deadline are documented
   in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
   [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does

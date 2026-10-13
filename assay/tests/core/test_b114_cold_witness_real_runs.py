@@ -745,6 +745,13 @@ def test_unsupported_coverage_hook_is_diagnostic_only_not_verdict_data(
     )
     git_repo.commit_all("add a cold-witness-unsupported hook")
     monkeypatch.setenv("ASSAY_TEST_ATTEMPT_LOG", str(attempt_log))
+    # Model a failure in an unrelated receipt fact parser. B158 must still
+    # print only the independently validated, closed hook-name field.
+    from assay import mutation_witness as witness_module
+    from assay import runner as runner_module
+
+    monkeypatch.setattr(runner_module, "receipt_facts", lambda _receipt: None)
+    monkeypatch.setattr(witness_module, "receipt_facts", lambda _receipt: None)
 
     code, stdout, stderr, _progress, _manifest, verdict_path, _state_dir = (
         _run_cold_campaign(

@@ -12526,28 +12526,40 @@ parallel throughput estimate must be remeasured before it is used for planning.
 
 ## B158 — cold-witness refusal omits the untrusted pytest hook
 
-**Status: IN PROGRESS in the contract-2 release candidate (2026-10-12); local focused tests pass, exact-tree review and registered gate pending.**
+**Status: IN PROGRESS in the contract-2 release candidate (2026-10-13); the targeted fix and Sol xhigh review are complete, with registered exact-tree gates pending.**
 
-On 2026-10-12, the B110 pilot completed R0/R1 and coverage parsing, then
+The 2026-10-13 B110 bounded pilot completed R0/R1 and coverage parsing, then
 refused before candidate execution because the coverage baseline used an
-unsupported pytest hook configuration. The private receipt carried only the
-boolean support result and fingerprint, so the refusal did not identify which
-hook made the proof ineligible. A proposed inherited-environment explanation
-was disproved: the Assay child receives only the lane's declared passthrough
-variables, and the runner replaces the child environment.
+unsupported pytest hook configuration. The tester image carried Hypothesis
+6.169.0 while Assay's exact-source allowlist still pinned 6.156.6. A bounded
+tester-unified reproduction identified the three Hypothesis hooks involved;
+it did not involve any mutation candidates. The full pilot did not retain its
+private receipt, so the reason the old diagnostic guard omitted names cannot
+be recovered from that run. The source guard required all receipt facts to
+parse before printing names, even though the hook-name field can be validated
+independently. Inherited environment was not the cause: Assay replaces the
+child environment with the lane's declared passthrough variables.
 
-**Chosen behavior:** the bounded private pytest receipt records sorted names
-from the closed pytest-hook vocabulary. The fail-closed proof still rejects
-unsupported configurations in either the coverage or no-coverage R2 baseline.
-Assay emits names to execution diagnostics only after the corresponding
-receipt validates them; the verdict detail stays generic, so hook names do not
+**Chosen behavior:** pin the tester-unified test closure to the reviewed
+Hypothesis 6.169.0 and pytest-cov 7.1.0 versions; admit only their reviewed
+module digests, exact callables, and flags. Keep unsupported hook configurations
+fail-closed in either baseline. Extract names for stderr from the bounded,
+closed-vocabulary field even when unrelated receipt facts are incomplete; if
+that field is malformed or absent, report names as unavailable. This is
+diagnostic-only: names do not repair receipt validity, prove a witness, or
 enter verdict JSON.
 
-**Oracles:** a receipt with an unsupported hook reports its exact hook name in
-diagnostics; malformed hook-name evidence cannot validate a receipt or be
-reported by name; the real plugin emits the closed-vocabulary list; and real
-Assay runs keep the verdict generic and start no candidates when either
-baseline has an untrusted hook, including an R2-only hook.
+**Oracles:** exact Hypothesis 6.169.0 and pytest-cov 7.1.0 source and hook
+identities are positively accepted in tester-unified; wrong version, source
+digest, callable, or flags are refused.
+Real Hypothesis tests prove ordered collection equality across coverage and
+no-coverage baselines, a passing generated test remains survivor-proven, a
+generated-example failure yields a call witness, and a malformed generated
+test fails baseline admission. A report-hook oracle checks call and teardown
+outcomes against their exceptions. An unsupported-hook receipt reports a
+valid exact hook name even if unrelated facts are missing; malformed names are
+never printed. Real Assay runs still refuse before candidate execution when
+either baseline uses an untrusted hook, and verdict details remain generic.
 
 ## B159 — schema migration docs test requires hand-written CMRU release notes
 

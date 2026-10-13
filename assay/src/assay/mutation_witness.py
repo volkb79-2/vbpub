@@ -465,6 +465,33 @@ def receipt_facts(receipt: Mapping[str, Any] | None) -> ReceiptFacts | None:
     )
 
 
+def unsupported_hook_diagnostic(receipt: Mapping[str, Any] | None) -> str:
+    """Return safe diagnostic text for an unsupported-hook refusal.
+
+    Hook names are useful when unrelated receipt facts are unavailable, but
+    must never be rendered from an open vocabulary or an inconsistent support
+    record. This parser validates only the closed names field; its result is
+    diagnostic text and never contributes to a witness or verdict.
+    """
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("unsupported") is not True
+        or receipt.get("unsupported_pytest_cov_only") is not False
+    ):
+        return "hook names unavailable (support flags are missing or malformed)"
+    names = receipt.get("unsupported_hook_names")
+    if (
+        not isinstance(names, list)
+        or len(names) > len(HOOK_FINGERPRINT_HOOKS)
+        or any(type(name) is not str or name not in HOOK_FINGERPRINT_HOOKS for name in names)
+        or names != sorted(set(names))
+    ):
+        return "hook names unavailable (name evidence is missing or malformed)"
+    if not names:
+        return "no unsupported pytest hook names were recorded"
+    return "unsupported pytest hooks: " + ", ".join(names)
+
+
 def _facts_match(receipt: Mapping[str, Any], expected: ReceiptFacts) -> bool:
     observed = receipt_facts(receipt)
     return bool(
@@ -533,17 +560,27 @@ def survivor_proof_failure(
         return "the baseline support flags are missing or malformed"
     if coverage_only and not unsupported:
         return "the pytest-cov-only support flag contradicts the support result"
-    if unsupported and not coverage_only:
-        return "the baseline uses an unsupported pytest hook configuration"
     facts = receipt_facts(receipt)
+    if command == "r2" and unsupported:
+        if facts is None:
+            return (
+                "the no-coverage R2 baseline uses an unsupported pytest hook "
+                "configuration; receipt facts are missing or malformed"
+            )
+        return "the no-coverage R2 baseline uses an unsupported pytest hook configuration"
+    if unsupported and not coverage_only:
+        if facts is None:
+            return (
+                "the baseline uses an unsupported pytest hook configuration; "
+                "receipt facts are missing or malformed"
+            )
+        return "the baseline uses an unsupported pytest hook configuration"
     if facts is None:
         return "the unique collection manifest or its fingerprints are missing or malformed"
     if facts.started_count != facts.collection_count:
         return "execution did not start every collected test"
     if expected is None:
         return "the expected collection facts could not be parsed"
-    if command == "r2" and unsupported:
-        return "the no-coverage R2 command uses an unsupported pytest hook configuration"
     if facts.collection_error:
         return "the collection manifest reported an error"
     if facts.collection_count != expected.collection_count or facts.collection_sha256 != expected.collection_sha256:
@@ -1852,8 +1889,8 @@ _REVIEWED_EXTERNAL_CALLABLE_CODES = {
 
 _REVIEWED_EXTERNAL_DISTRIBUTIONS = {
     "hypothesis": (
-        "6.156.6",
-        "c0b8c0b39b3eed02eea3591c642d652f2e127acb8b22027058cefe3416b64c35",
+        "6.169.0",
+        "5b8df643a5394e86bfe608b710ff2534ac74f7192f4f81faa091356ad426f182",
     ),
     "pytest-cov": (
         "7.1.0",
