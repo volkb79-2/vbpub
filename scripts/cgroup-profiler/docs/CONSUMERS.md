@@ -104,7 +104,7 @@ runtime identity before attaching consumers. Run this from
 `scripts/cgroup-profiler/`:
 
 ```bash
-ciu up --dir .
+ciu up --profile host
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 release_commit=$(git rev-parse --verify 'refs/tags/cgprofile-v1.0.0^{commit}')
 daemon_image_id=$(docker inspect cgprofile-host-daemon --format '{{.Image}}')
@@ -144,9 +144,13 @@ directory, build and start the one host-scoped daemon:
 
 ```bash
 python3 build-push.py --build
-ciu up --dir .
+ciu up --profile host
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
+
+Use `ciu down --profile host` to stop this singleton before a restart. The
+named profile selects the project-root stack for both lifecycle verbs, so
+operators do not need a raw Docker restart or a destructive `--reset`.
 
 The shipped daemon alone uses the host PID namespace so DAMON sysfs can
 resolve host `pid_target` values. It keeps a private cgroup namespace and

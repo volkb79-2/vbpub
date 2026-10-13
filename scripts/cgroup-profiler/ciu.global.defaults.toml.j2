@@ -23,6 +23,13 @@ environment_tag = "host"
 network_name = "$DOCKER_NETWORK_INTERNAL"
 log_level = "INFO"
 
+# Give the host singleton a named selection for both bring-up and shutdown.
+# In particular, `ciu down --dir .` refuses when the root stack is not part of
+# a deploy selection; this profile keeps lifecycle actions inside CIU and does
+# not change the one-container host identity.
+[deploy.profiles.host]
+stacks = ["."]
+
 # Hostdir ownership values (ciu S6/S7), expanded from ciu.env. The daemon
 # mounts no host bind (only the named `cgprofile-sessions` volume), but ciu
 # requires these to be present regardless.

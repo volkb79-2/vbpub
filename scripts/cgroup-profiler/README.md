@@ -231,7 +231,7 @@ pre-release checks. From the repository root, run:
 ```bash
 cd scripts/cgroup-profiler
 python3 build-push.py --build
-ciu up --dir .
+ciu up --profile host
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 docker exec cgprofile-host-daemon cgprofile ctl status --json
 ```
@@ -239,7 +239,7 @@ docker exec cgprofile-host-daemon cgprofile ctl status --json
 After CMRU publishes `cgprofile-v1.0.0`, add the published image pin to
 `ciu.toml.j2` as shown in the
 [published-image deployment steps](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu),
-then, from that same project directory, run `ciu up --dir .` and verify the
+then, from that same project directory, run `ciu up --profile host` and verify the
 daemon identity.
 The release pin is not usable before its GHCR manifest exists.
 
