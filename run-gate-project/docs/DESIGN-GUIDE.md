@@ -175,6 +175,13 @@ the fixed socket path, and `listening = true`. This catches stale daemons and
 failed socket binds before test code starts. The advertisement is a startup
 capability check; it does not prove the listener will remain healthy for the
 whole lane.
+Observer-backed container lanes also require explicit local memory and PID
+ceilings. These put memory and process-count rejection events on the candidate
+container's own cgroup, where Assay can distinguish them from an event caused
+by a sibling. The observer uses a dedicated group and a stable directory bind,
+so a daemon restart does not pin an already-running lane to an unlinked socket
+inode. Observer lanes refuse extra mounts because they could expose the Docker
+API to test code that receives the observer group.
 The first cut restricted the setting to native Assay lanes, but that excluded
 B105's qualification wrapper: it builds and installs the exact source wheel,
 then runs Assay in a private venv, so replacing it with the ordinary lane
@@ -193,7 +200,11 @@ alone would not constrain the existing control socket's verbs. Docker also
 receives the socket's observed GID as a supplementary group, and the socket
 path, type, owner, group, and mode are checked before launch. Missing service
 or unsafe socket state is an infrastructure refusal, never a reason to
-silently run without B145.
+silently run without B145. To reject a socket that uses Docker's powerful
+group, Run-Gate reads the numeric GID from the root-owned `/run/cgprofile`
+control directory provisioned as `root:docker` by host setup. It does not use
+`getgrnam("docker")` from the devcontainer's potentially different group
+table, and it refuses when that host path cannot be verified.
 
 The client sends only its native thread ID. The daemon binds that request to
 SO_PEERCRED, checks the thread's host/namespace PID mapping, verifies that
@@ -223,6 +234,25 @@ inside worker A's before/after window and look like A's own limit hit.
 The shipped R2 declaration therefore uses `jobs = 1`; `--resume` continues a
 budget-limited campaign on the same tree. Parallel workers require separate
 cgroups and counter bindings before they can be classified independently.
+
+### Assay unavailable observation is an infrastructure error
+
+Assay's `NO_MEASUREMENT` has several causes. Most describe a judged claim that
+cannot be made and keep run-gate's established FAIL mapping. The specific
+`CGROUP_OBSERVATION_UNAVAILABLE` reason means native R2 could not start because
+its required counters were unavailable before the first candidate. The gate
+maps that reason to `ERROR` only after validating the claim and evidence
+records and confirming every other result passed. This preserves the outcome
+precedence that the top-level `NO_MEASUREMENT` rollup can otherwise hide: an
+independent budget stop remains `BUDGET_EXCEEDED`, and an independent failure
+or inconclusive claim remains `FAIL`. A malformed claim or evidence record is
+`ERROR`. The gate preserves the raw Assay outcome and reason. It does not say
+that the tested code failed. If observation is lost after a candidate starts,
+Assay itself returns `ERROR/EXEC_FAILED`; the candidate is withheld because
+its event window cannot be attributed. See the
+[consumer example](../CONSUMERS.md#native-r2-resource-observation-refusals).
+The v16 reason-code mapping requires Assay 10.0.0 or newer because older
+versions do not provide the independent claim and evidence rollup it inspects.
 
 ## Preflight probes preserve lane context
 

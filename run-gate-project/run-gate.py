@@ -141,6 +141,7 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import fcntl
+import grp
 import hashlib
 import io
 import json
@@ -197,6 +198,7 @@ ASSAY_OUTCOMES = frozenset({
     "PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED",
     "INCONCLUSIVE",
 })
+ASSAY_RIGORS = frozenset({"R0", "R1", "R2", "R3", "R4"})
 ASSAY_IDENTITY_MODES = frozenset({"source", "artifact"})
 DEFAULT_LOCK_WAIT = "10m"
 DEFAULT_ADMISSION_WAIT = "10m"
@@ -267,6 +269,8 @@ def assay_lane_result(exit_code: int, outcome: str | None,
                       source_commit: object = None,
                       expected_source_commit: object = None,
                       reason: str | None = None,
+                      claims: object = None,
+                      evidence: object = None,
                       log_path: str | None = None) -> LaneResult:
     """Map Assay's verdict only when its configured judge identity is verified."""
     provenance_keys = {"name", "version", "artifact", "digest_algorithm", "digest"}
@@ -309,8 +313,82 @@ def assay_lane_result(exit_code: int, outcome: str | None,
         "NO_MEASUREMENT": "FAIL",
         "INCONCLUSIVE": "FAIL",
     }[outcome]
+    if outcome == "NO_MEASUREMENT" and reason == "CGROUP_OBSERVATION_UNAVAILABLE":
+        # The top-level rollup can hide an independent R1/R3 failure because
+        # NO_MEASUREMENT outranks FAIL. Preserve adverse claims instead of
+        # treating every observer refusal as infrastructure-only.
+        verdict, mapped_reason = _observer_unavailable_rollup(claims, evidence)
+        if mapped_reason is not None:
+            reason = mapped_reason
     return LaneResult(verdict, exit_code, reason, log_path,
                       assay_outcome=outcome)
+
+
+def _observer_unavailable_rollup(
+        claims: object, evidence: object) -> tuple[str, str | None]:
+    """Map observer unavailability without masking another failed claim."""
+    if not isinstance(claims, list) or not claims:
+        return "ERROR", "invalid-assay-claims-for-observer-refusal"
+    if not isinstance(evidence, list):
+        return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+
+    matching_refusals = 0
+    seen_rigors: set[str] = set()
+    other_statuses: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        rigor = claim.get("rigor")
+        status = claim.get("status")
+        reason_code = claim.get("reason_code")
+        if (not isinstance(rigor, str) or rigor not in ASSAY_RIGORS
+                or rigor in seen_rigors
+                or claim.get("source") != "computed"
+                or claim.get("verified_by_assay") is not True
+                or not isinstance(status, str) or status not in ASSAY_OUTCOMES):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        seen_rigors.add(rigor)
+        if reason_code is not None and not isinstance(reason_code, str):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        if (status == "NO_MEASUREMENT"
+                and reason_code == "CGROUP_OBSERVATION_UNAVAILABLE"):
+            if rigor != "R2":
+                return "ERROR", "invalid-assay-observer-refusal-claim"
+            matching_refusals += 1
+        else:
+            other_statuses.append(status)
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        source = item.get("source")
+        status = item.get("status")
+        if (not isinstance(source, str)
+                or source not in {"adjudicated", "attested"}
+                or not isinstance(item.get("key"), str)
+                or not item.get("key")
+                or not isinstance(item.get("verified_by_assay"), bool)
+                or not isinstance(status, str) or status not in ASSAY_OUTCOMES):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        reason_code = item.get("reason_code")
+        if reason_code is not None and not isinstance(reason_code, str):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        other_statuses.append(status)
+
+    if matching_refusals != 1:
+        return "ERROR", "invalid-assay-observer-refusal-claim"
+    if "BUDGET_EXCEEDED" in other_statuses:
+        return "BUDGET_EXCEEDED", "assay-budget-exceeded-alongside-observer-refusal"
+    if any(status in {"FAIL", "INCONCLUSIVE", "NO_MEASUREMENT"}
+           for status in other_statuses):
+        return "FAIL", "assay-adverse-claim-alongside-observer-refusal"
+    if "ERROR" in other_statuses:
+        return "ERROR", "assay-error-alongside-observer-refusal"
+    if any(status != "PASS" for status in other_statuses):
+        return "ERROR", "invalid-assay-claims-for-observer-refusal"
+    # The observer refusal is infrastructure-only only when every other
+    # computed claim and external evidence entry passed.
+    return "ERROR", None
 
 
 def finish(result: LaneResult) -> int:
@@ -369,8 +447,14 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 
 
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
-CGPROFILE_RESOURCE_OBSERVER_SOURCE = "/run/cgprofile/resource-observer.sock"
-CGPROFILE_RESOURCE_OBSERVER_TARGET = "/tmp/cgprofile-resource-observer.sock"
+CGPROFILE_RESOURCE_OBSERVER_DIRECTORY = "/run/cgprofile/observer"
+CGPROFILE_RESOURCE_OBSERVER_SOURCE = (
+    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/resource-observer.sock"
+)
+CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY = "/run/cgprofile-observer"
+CGPROFILE_RESOURCE_OBSERVER_TARGET = (
+    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/resource-observer.sock"
+)
 ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
@@ -907,6 +991,12 @@ def _validate_cpus(value: object, where: str) -> None:
              f"or '1.5' (docker's own --cpus grammar; got {value!r})")
 
 
+def _validate_pids(value: object, where: str) -> None:
+    if type(value) is not int or value <= 0:
+        fail(f"{where}: 'pids' must be a positive integer Docker PID limit "
+             f"(got {value!r})")
+
+
 def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
     """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
     both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
@@ -1029,10 +1119,12 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if not isinstance(res, dict):
             fail(f"{where} [lanes.{name}]: 'resources' must be a table")
         _check_keys(res, {"memory", "memory_max", "memory_swap", "cpu_weight",
-                          "io_weight", "shared", "cpus"},
+                          "io_weight", "shared", "cpus", "pids"},
                     f"{where} [lanes.{name}.resources]")
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
+        if "pids" in res:
+            _validate_pids(res["pids"], f"{where} [lanes.{name}.resources]")
         if "memory" in res and table.get("memory"):
             fail(f"{where} [lanes.{name}]: declare RAM once — top-level 'memory' "
                  f"and 'resources.memory' are the same knob; use 'resources.memory'")
@@ -1676,6 +1768,7 @@ def load_config_snapshot(project_dir: Path
             break
         if git_root is not None and parent == git_root:
             break
+    _validate_effective_resource_observers(project, central, project_path)
     _validate_effective_assay_pins(project, central, project_path,
                                    central_path)
     return (project, project_path, central, central_path,
@@ -1724,6 +1817,47 @@ def _validate_effective_assay_pins(project: dict, central: dict,
                  f"'assay_command' — pins verify an external judge artifact; "
                  f"declare the command on the lane or in [assay], or remove "
                  f"the pins for a source-backed Assay lane")
+
+
+def _validate_effective_resource_observers(project: dict, central: dict,
+                                           project_path: Path) -> None:
+    """Observer-backed lanes must resolve to an ephemeral container at load.
+
+    The runtime Docker-flag check remains defense in depth, but a host or exec
+    lane must not appear valid in ``lanes`` or ``doctor``. Resolve project
+    shadows and Assay's inherited environment default after both configs load.
+    """
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    environments = dict(central.get("environments", {}))
+    environments.update(project.get("environments", {}))
+    defaults = project.get("assay", central.get("assay", {}))
+    for name, lane in lanes.items():
+        if lane.get("resource_observer") is None:
+            continue
+        environment_name = lane.get("environment")
+        if environment_name is None and lane.get("kind") == "assay":
+            environment_name = defaults.get("environment")
+        if not isinstance(environment_name, str) or not environment_name.strip():
+            # The established lane/default validator reports the missing
+            # environment during effective-lane construction.
+            continue
+        environment = environments.get(environment_name)
+        if not isinstance(environment, dict):
+            # Keep resolve_environment's source-specific missing-name error.
+            continue
+        if environment.get("mode") != "ephemeral":
+            fail(f"{project_path} [lanes.{name}]: resource_observer="
+                 f"'cgprofile' requires the resolved environment "
+                 f"{environment_name!r} to have mode = 'ephemeral' "
+                 f"(got {environment.get('mode')!r})")
+        resources = lane.get("resources", {})
+        if not isinstance(resources, dict) or not isinstance(
+            resources.get("memory"), str
+        ) or "pids" not in resources:
+            fail(f"{project_path} [lanes.{name}]: resource_observer='cgprofile' "
+                 "requires explicit resources.memory and resources.pids so "
+                 "candidate-local memory and PID limit events are attributable")
 
 
 def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
@@ -6969,30 +7103,63 @@ def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
     if environment.get("mode") != "ephemeral":
         fail("resource_observer='cgprofile' requires the lane's resolved "
              "environment to have mode = 'ephemeral'")
+    if os.environ.get(EXTRA_MOUNT_ENV_VAR):
+        fail_infra(f"${EXTRA_MOUNT_ENV_VAR} is incompatible with an observer lane; "
+                   "extra mounts could expose host control interfaces")
     socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    directory_path = socket_path.parent
+    docker_group_directory = directory_path.parent
     try:
-        parent = os.lstat(socket_path.parent)
+        parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
     except OSError as exc:
-        fail_infra(f"cgprofile resource observer socket is unavailable at "
-                   f"{socket_path}: {exc}")
-    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 \
-            or parent.st_mode & 0o002:
+        fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
+                   f"{directory_path}, {socket_path}: {exc}")
+    try:
+        docker_group_source = os.lstat(docker_group_directory)
+    except OSError as exc:
+        fail_infra("cannot inspect the host Docker group source "
+                   f"{docker_group_directory}: {exc}")
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != 0
+        or parent.st_mode & 0o022
+        or not parent.st_mode & 0o010
+    ):
         fail_infra(f"cgprofile resource observer directory is not a safe "
-                   f"root-owned directory: {socket_path.parent}")
+                   f"root-owned, group-searchable directory: {directory_path}")
     if not stat.S_ISSOCK(observed.st_mode):
         fail_infra(f"cgprofile resource observer path is not a Unix socket: "
                    f"{socket_path}")
     if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
         fail_infra("cgprofile resource observer socket ownership does not "
                    "match its root-owned socket directory")
+    if (
+        not stat.S_ISDIR(docker_group_source.st_mode)
+        or docker_group_source.st_uid != 0
+    ):
+        fail_infra("cannot determine the host Docker group from the root-owned "
+                   f"cgprofile control directory: {docker_group_directory}")
+    if (
+        docker_group_source.st_gid == 0
+        or stat.S_IMODE(docker_group_source.st_mode) != 0o770
+    ):
+        fail_infra("host Docker group source must be root-owned, have a "
+                   "non-root group, and mode 0770: "
+                   f"{docker_group_directory}")
     if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
         fail_infra("cgprofile resource observer socket must be group-connectable "
                    "and not accessible to other users")
+    # `/run/cgprofile` is provisioned root:docker by the host setup unit, so
+    # its numeric GID is the host fact. `grp.getgrnam()` reads this container's
+    # group table, which can map the name to another numeric GID or omit it.
+    if observed.st_gid == docker_group_source.st_gid:
+        fail_infra("cgprofile observer must use its dedicated group, not the "
+                   "host docker group")
     return [
         "--mount",
-        f"type=bind,source={socket_path},target="
-        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+        f"type=bind,source={directory_path},target="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
         "--group-add", str(observed.st_gid),
         "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
         f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
@@ -11794,6 +11961,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # cmru pattern (RG-20): tight RAM cap + ample swap absorbs bursts
         # without OOM-killing the lane mid-campaign.
         argv += ["--memory-swap", lane["resources"]["memory_swap"]]
+    pids_cap = lane.get("resources", {}).get("pids")
+    if pids_cap is not None:
+        argv += ["--pids-limit", str(pids_cap)]
     # RG-48/R-29: lane wins over environment (the same precedence
     # `resources.memory` already has over nothing — there is no
     # environment-level memory fallback, only cpus has one, because a
@@ -13004,6 +13174,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
             bits.append(f"memory={mem}")
         res = lane.get("resources", {})
         res_bits = []
+        if res.get("memory"):
+            res_bits.append(f"memory={res['memory']}")
+        if res.get("pids"):
+            res_bits.append(f"pids={res['pids']}")
         if res.get("cpus"):
             res_bits.append(f"cpus={res['cpus']}")
         if res.get("memory_swap"):
@@ -14324,7 +14498,9 @@ def _dispatch(argv: list[str] | None = None, *,
                             source_commit=verdict_doc.get("commit"),
                             expected_source_commit=(record.get("commit")
                                                     if record else None),
-                            reason=verdict_doc.get("reason_code"))
+                            reason=verdict_doc.get("reason_code"),
+                            claims=verdict_doc.get("claims"),
+                            evidence=verdict_doc.get("evidence"))
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:

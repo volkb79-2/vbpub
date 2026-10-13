@@ -45,7 +45,7 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
    table — `memory`, optional `memory_max` placement ceiling for daemon-backed
-   exec/bare-host lanes, `memory_swap`, `cpu_weight`/`io_weight` advisory,
+   exec/bare-host lanes, `memory_swap`, `pids` (`--pids-limit`), `cpu_weight`/`io_weight` advisory,
    `shared`, and — RG-48, `R-29` amended — `cpus`, a decimal string →
    `docker run --cpus`, with an environment-level fallback
    `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
@@ -67,8 +67,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
    `R-43h`); and `resource_observer = "cgprofile"` for an Assay or command
    lane in any resolved `mode = "ephemeral"` environment, which exposes only
-   the read-only observer socket to recover hidden cgroup ancestors for native
-   R2. Before launch, Run-Gate requires the daemon to advertise observer
+   the read-only observer directory to recover hidden cgroup ancestors for native
+   R2. These lanes declare local memory and PID ceilings and cannot add arbitrary
+   host mounts. Before launch, Run-Gate requires the daemon to advertise observer
    contract 2, the configured socket path, and `listening = true`. A command wrapper that
    invokes Assay must preserve the inherited observer-path variable for its
    Assay process. It does not expose
@@ -141,6 +142,18 @@ raw status already known remains in the result, including when the post-lane
 counters are unavailable or cannot be compared safely. The standalone
 `--version` operation remains available. See the [design rationale](docs/DESIGN-GUIDE.md#pid-1-and-cgroup-resource-events)
 and the [consumer setup](CONSUMERS.md#init-reaping-and-resource-events).
+
+For Assay lanes, `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` maps to gate
+`ERROR`: the R2 measurement could not be made safely, so the gate must not
+report a product failure. Before applying that mapping, run-gate checks the
+claims and external evidence in the verdict: an independent `BUDGET_EXCEEDED`
+remains `BUDGET_EXCEEDED`, and an independent `FAIL`, `INCONCLUSIVE`, or other
+`NO_MEASUREMENT` remains `FAIL`. Only an R2 observer refusal alongside passing
+claims and evidence becomes infrastructure `ERROR`; malformed claim or
+evidence records also become `ERROR`. Other Assay `NO_MEASUREMENT` and
+`INCONCLUSIVE` outcomes retain their existing FAIL mapping. See the
+[Assay result rationale](docs/DESIGN-GUIDE.md#assay-unavailable-observation-is-an-infrastructure-error).
+This v16 reason-code contract requires Assay 10.0.0 or newer.
 
 ### Native sequences and imported assay lanes
 
@@ -270,7 +283,7 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `tester-unified` container, capped at 3 CPUs with one mutant worker.
    The worker count is one because concurrent candidates would share the
    tester cgroup's resource-event counters. Its `resource_observer = "cgprofile"` opt-in mounts only the
-   daemon's read-only resource-observer socket after checking the daemon's
+   daemon's read-only resource-observer directory after checking the daemon's
    contract-2 version advertisement; the control socket is not
    exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
    the complete host cgroup ancestry required by B145 while keeping the

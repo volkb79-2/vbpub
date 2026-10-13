@@ -656,7 +656,7 @@ is not installed — `ctl host` and run-gate `doctor` say "unbounded").
 
 The additive `version.resource_observer` object advertises the separate
 native-R2 listener: `{"contract": 2,
-"path": "/run/cgprofile/resource-observer.sock", "listening": true}`.
+"path": "/run/cgprofile/observer/resource-observer.sock", "listening": true}`.
 This contract number is independent of the control protocol's `contract: 1`;
 `listening` reflects whether the observer socket was bound successfully.
 
@@ -707,7 +707,7 @@ for completeness).
 ## 9. Native-R2 resource observer (RW-484–RW-487)
 
 The daemon exposes a second AF_UNIX listener at
-`/run/cgprofile/resource-observer.sock`. It is distinct from
+`/run/cgprofile/observer/resource-observer.sock`. It is distinct from
 `/run/cgprofile/ctl.sock`; a read-only bind of the control socket would still
 expose its control verbs. The observer listener belongs to the existing
 cgprofile daemon and performs no placement or cgroup write.
@@ -806,16 +806,19 @@ outside the gates slice refuses the query.
 ### 9.3 Consumer rules
 
 Run-Gate's closed `resource_observer = "cgprofile"` lane key is legal only
-for an Assay lane or command lane in `tester-unified`. The explicit lane
+for an Assay lane or command lane in an ephemeral environment. The explicit lane
 declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
-read-only query bound to the command's own peer. Before launch Run-Gate verifies the fixed host
-socket's type and ownership/mode relationship to its root-owned parent;
-missing or unsafe state is an infrastructure refusal. It mounts only the
-observer socket read-only into the test container, adds the observed socket
-GID, and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. It
-does not mount `ctl.sock`, change PID/cgroup/network namespaces, or add a
-Docker socket.
+read-only query bound to the command's own peer. Before launch Run-Gate
+validates the root-owned, non-writable `/run/cgprofile/observer` directory
+and its socket. Host setup provisions that directory as mode `0751` with the
+dedicated `cgprofile-observer` group; it is separate from the Docker group.
+Run-Gate mounts the directory read-only into the test container, so the socket
+path resolves again after daemon restart. It grants that dedicated GID and
+sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. Observer-backed
+lanes declare per-container memory and PID ceilings and refuse arbitrary extra
+mounts. They do not mount `ctl.sock`, change PID/cgroup/network namespaces, or
+add a Docker socket.
 
 Assay first attempts its existing local B145 reader. It uses the configured
 observer only when the local reader specifically proves that the private

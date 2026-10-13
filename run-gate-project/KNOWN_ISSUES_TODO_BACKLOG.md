@@ -109,6 +109,7 @@ SPEC §9.
 | RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | IN PROGRESS (read-only observer socket shipped in source rev 58; rev 66 adds contract-2/path/listener preflight and arbitrary ephemeral-environment support; exact release gates pending) |
 | RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
 | RG-91 | Run-Gate's cgprofile control and watch clients pretty-print JSON to a newline-delimited socket, so the daemon reads only `{` and refuses the request | Major | FIXED in candidate rev 65; byte-at-a-time newline-framing regressions cover control and watch requests; exact gate and release pending |
+| RG-92 | cgroup observer unavailability maps Assay's pre-candidate `NO_MEASUREMENT` to a product FAIL; observer group validation reads the devcontainer's potentially unrelated `docker` name | Major | FIXED in the contract-2 candidate; reason-specific ERROR mapping and host numeric GID check are implemented, exact gate pending |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6012,3 +6013,31 @@ one newline. The socket fixture reads one byte at a time and dispatches at the
 first newline; control and watch tests assert the received line is complete
 valid JSON. The default auto transport may otherwise hide the control failure
 by falling back to Docker exec, but an explicit socket transport still fails.
+
+## RG-92 — cgroup observer unavailability is mapped to a product FAIL
+
+**Status: FIXED IN THE CONTRACT-2 CANDIDATE; exact registered gate pending.**
+
+Assay's `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` means native R2 could
+not start because its required resource counters were unavailable. Run-Gate
+previously mapped every Assay `NO_MEASUREMENT` to FAIL, so a missing observer or
+hidden hierarchy looked like a product regression.
+
+**Fix:** validate the claim and evidence arrays before mapping the R2 refusal.
+If every other claim and evidence entry passed, map it to infrastructure
+`ERROR`. Preserve `BUDGET_EXCEEDED` when another result has that status, and
+preserve product `FAIL` when another result is `FAIL`, `INCONCLUSIVE`, or a
+different `NO_MEASUREMENT`. Malformed arrays or records map to `ERROR`; the raw
+Assay outcome and reason remain in the result. The observer launch guard
+derives the host Docker GID from the root-owned `/run/cgprofile` control
+directory's numeric group instead of the devcontainer's possibly unrelated
+`docker` group-name entry, and refuses if the source is not root-owned, has a
+non-root group, and mode `0770`.
+
+**Oracle:** reason-specific tests prove an isolated R2 observer refusal maps
+to ERROR, independent R1/R3 failures and evidence failures remain FAIL, a
+budget stop remains `BUDGET_EXCEEDED`, and malformed records map to ERROR;
+`EMPTY_COVERAGE` remains FAIL. Observer tests cover a matching Docker group,
+an unavailable or unsafe group source, and a dedicated observer GID. README,
+DESIGN-GUIDE, CONSUMERS and SPEC state the mapping; the exact registered
+`selftest` and observer lanes provide integration evidence.

@@ -223,6 +223,10 @@ environment = "tester-unified"
 assay_lane = "r2"
 resource_observer = "cgprofile"
 clean_tree = true
+
+[lanes.native-r2.resources]
+memory = "2g"                       # required local ceiling for memory.events attribution
+pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
 The `native-r2` lane demonstrates the opt-in observer-only socket integration:
@@ -270,16 +274,23 @@ clean_tree = true
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`
 response and requires observer contract 2, the fixed observer socket path,
-and `listening = true`. It then checks the fixed
-`/run/cgprofile/resource-observer.sock` source and mounts only that socket
-read-only at `/tmp/cgprofile-resource-observer.sock`. It grants the socket's
-observed GID to the tester container and sets
-`ASSAY_RESOURCE_OBSERVER_SOCKET` to that target. It does not mount
+and `listening = true`. It checks the root-owned, non-writable observer
+directory and mounts that directory read-only at `/run/cgprofile-observer`.
+The daemon owns only the socket name inside this host-setup-owned directory,
+so a daemon restart rebinds a path an already-running lane can still resolve.
+Run-Gate grants the dedicated observer GID and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. Observer
+lanes require explicit per-container `resources.memory` and `resources.pids`
+ceilings so candidate-local `memory.events` and `pids.events` can support
+attribution. `RUN_GATE_EXTRA_MOUNTS` is refused for these lanes. It does not mount
 `/run/cgprofile/ctl.sock`, the Docker socket, or any host namespace. The
 existing daemon's separate observer listener accepts only a resource-limit
 query bound to the caller's peer credentials and native thread ID; it returns
 the caller cgroup's ancestry under the configured gates slice, without PIDs or
-sibling cgroups.
+sibling cgroups. The launch guard compares the observer GID with the numeric
+GID of the root-owned `/run/cgprofile` control directory (provisioned as
+`root:docker` by host setup); it does not trust the devcontainer's group-name
+table and refuses when that host path is unavailable.
 
 Assay uses local counters when its own hierarchy view is complete. Remote
 observation is used only when the local error specifically indicates hidden
@@ -294,6 +305,19 @@ in `assay.toml`: workers in the same tester container share cgroup event
 counters even with separate scratch trees. After a budget stop, rerun the
 registered lane on the same exact tree so Assay resumes its saved campaign.
 
+#### Native R2 resource observation refusals
+
+Run-Gate maps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` to gate
+`ERROR` only when the R2 refusal is the sole non-passing result: every other
+claim and external evidence entry must be `PASS`. If another claim or evidence
+entry is `BUDGET_EXCEEDED`, the gate preserves `BUDGET_EXCEEDED`; another
+`FAIL`, `INCONCLUSIVE`, or `NO_MEASUREMENT` remains `FAIL`. Malformed claim or
+evidence records are `ERROR`. Other Assay `NO_MEASUREMENT` and `INCONCLUSIVE`
+outcomes remain FAIL. If an observer read or event comparison fails after a
+candidate starts, Assay returns `ERROR/EXEC_FAILED` and does not assign that
+candidate a mutation bucket. The JSON result keeps the raw Assay outcome and
+reason code. This v16 rollup contract requires Assay 10.0.0 or newer.
+
 ## Closed results and runner mode migration
 
 Every invocation returns one of five statuses: **PASS 0**, **FAIL 1**,
@@ -301,7 +325,8 @@ Every invocation returns one of five statuses: **PASS 0**, **FAIL 1**,
 `./run-gate.py <lane> --json` retain the lane's raw `exit_code`; command
 statuses map to PASS only at zero, and pytest 5 is FAIL with reason
 `pytest-collected-no-tests`. Assay's `NO_MEASUREMENT` and `INCONCLUSIVE`
-outcomes are FAIL. Use verdict plus the raw code; never infer that run-gate
+outcomes are FAIL except `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`,
+which is gate ERROR. Use verdict plus the raw code; never infer that run-gate
 itself returned an ERROR from a raw lane code of 2.
 
 ### Init reaping and resource events

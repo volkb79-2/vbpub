@@ -8,28 +8,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-### Fixed
-- fix(run-gate): preflight cgprofile's advertised observer contract, socket path, and listener state before launching an observer-backed lane; support any configured ephemeral environment (RG-89, rev 66)
-
-### Added
-- feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
-- feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence (RG-55/P5, rev 62)
-- fix(run-gate): hold requested exec/bare-host placement behind a token-bearing ready/continue wrapper; refuse before body entry on explicit refusal or invalid read-back, preserving the R-36h fallback only when no placement result is available (RG-55/P5, rev 63)
-
-### Changed
-- maintenance(run-gate): refresh the tracked lane-footprint manifest and consumer transcript from current daemon-backed histories; keep the short-lived assay-r3 memory peak unknown when profiling cannot attach
-- feat(run-gate): request/read back daemon placement for daemon-backed lanes and apply bounded gates-slice admission without turning load or profiler failures into lane verdicts (RG-55 P5)
-
-### Fixed
-- fix(run-gate): send compact single-line JSON for newline-framed cgprofile control and watch requests (RG-91, rev 65)
-- fix(run-gate): reject nonzero profiler carrier exits, malformed success fields, foreign or malformed watch verdicts, and placement leaves outside this lane's verified gates-slice scope before they can certify a session or release its body (RG-55/P5, rev 64)
-- fix(run-gate): let a healthy daemon watch alone decide liveness, reconcile a terminal verified kill from the stopped session summary, and use report policy for a shared-scope lane without placement (P5 final review, rev 62)
-- fix(run-gate): serialize the observer-backed native R2 lane so a shared tester-cgroup limit event cannot be assigned to the wrong mutant
-- fix(run-gate): scope Assay progress to the latest `run` record, calculate resumed rates from run-local events, and suppress ETAs without a trustworthy current-run `pending_total` (RG-90, rev 60)
-- fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)
-- fix(run-gate): run tester-unified selftest and canary lanes from the selected worktree's project directory, not the image's unset/default working directory
-- fix(run-gate): derive assay pytest temp and Git ceiling paths from the verified state mount, and create the default state root for fresh bare-host lanes (RG-85)
-- fix(run-gate): use calibrated, PSI-paused in-process liveness only when the daemon watch is unavailable; a profiler stall takes only the lane's declared stall path (RG-55 P5)
+<!-- Empty on purpose: CMRU generates versioned history from project-scoped commits. -->
 
 <!-- cmru: release history -->
 

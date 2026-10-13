@@ -115,6 +115,8 @@ clean_tree = true
 budget = "4h"
 
 [lanes.assay-r2.resources]
+memory = "2g"
+pids = 8192
 cpus = "3"
 
 # R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, including

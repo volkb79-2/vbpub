@@ -1348,6 +1348,98 @@ class TestRG78ClosedExitTable:
         assert missing.verdict == "ERROR"
         assert missing.reason == "missing-or-invalid-judge-provenance"
         assert missing.gate_exit_code == 2
+        def claims_with_observer_refusal(**statuses):
+            ordered = [
+                ("R0", statuses.get("R0", "PASS")),
+                ("R1", statuses.get("R1", "PASS")),
+                ("R2", "NO_MEASUREMENT"),
+                ("R3", statuses.get("R3", "PASS")),
+            ]
+            return [
+                {
+                    "rigor": rigor,
+                    "source": "computed",
+                    "status": status,
+                    "verified_by_assay": True,
+                    "reason_code": (
+                        "CGROUP_OBSERVATION_UNAVAILABLE"
+                        if rigor == "R2" else None
+                    ),
+                }
+                for rigor, status in ordered
+            ]
+
+        unavailable = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(), evidence=[])
+        assert unavailable.verdict == "ERROR"
+        assert unavailable.assay_outcome == "NO_MEASUREMENT"
+        assert unavailable.reason == "CGROUP_OBSERVATION_UNAVAILABLE"
+        r1_failed = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R1="FAIL"), evidence=[])
+        assert r1_failed.verdict == "FAIL"
+        assert r1_failed.reason == "assay-adverse-claim-alongside-observer-refusal"
+        r3_failed = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R3="FAIL"), evidence=[])
+        assert r3_failed.verdict == "FAIL"
+        budget_exceeded = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R1="BUDGET_EXCEEDED"), evidence=[])
+        assert budget_exceeded.verdict == "BUDGET_EXCEEDED"
+        malformed_claims = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE", claims=[{}], evidence=[])
+        assert malformed_claims.verdict == "ERROR"
+        assert malformed_claims.reason == "invalid-assay-claims-for-observer-refusal"
+        wrong_rigor = claims_with_observer_refusal()
+        wrong_rigor[2]["rigor"] = "R4"
+        malformed_observer_claim = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=wrong_rigor, evidence=[])
+        assert malformed_observer_claim.verdict == "ERROR"
+        assert malformed_observer_claim.reason == "invalid-assay-observer-refusal-claim"
+        malformed_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(), evidence=[{}])
+        assert malformed_evidence.verdict == "ERROR"
+        assert malformed_evidence.reason == "invalid-assay-evidence-for-observer-refusal"
+        malformed_evidence_source = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": [], "key": "review", "status": "PASS",
+                       "verified_by_assay": True}])
+        assert malformed_evidence_source.verdict == "ERROR"
+        assert malformed_evidence_source.reason == \
+            "invalid-assay-evidence-for-observer-refusal"
+        unverified_passing_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": "attested", "key": "review", "status": "PASS",
+                       "verified_by_assay": False}])
+        assert unverified_passing_evidence.verdict == "ERROR"
+        assert unverified_passing_evidence.reason == \
+            "CGROUP_OBSERVATION_UNAVAILABLE"
+        failed_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": "adjudicated", "key": "review",
+                       "status": "FAIL", "verified_by_assay": True}])
+        assert failed_evidence.verdict == "FAIL"
+        ordinary_no_measurement = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="EMPTY_COVERAGE")
+        assert ordinary_no_measurement.verdict == "FAIL"
         missing_source = run_gate.assay_lane_result(
             0, "PASS", source_mode=True, source_version="8.0.0.dev1",
             source_commit=selected_commit, expected_source_commit=None)
@@ -7897,7 +7989,9 @@ class TestShippedGateFullDeclaration:
         assert lanes["assay-r2"]["assay_lane"] == "r2"
         assert lanes["assay-r2"]["environment"] == "tester-unified"
         assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
-        assert lanes["assay-r2"]["resources"] == {"cpus": "3"}
+        assert lanes["assay-r2"]["resources"] == {
+            "cpus": "3", "memory": "2g", "pids": 8192,
+        }
         # Two scratch worktrees still share one tester-cgroup event counter.
         # Concurrent candidate windows cannot safely attribute a limit hit.
         assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
@@ -7913,9 +8007,14 @@ class TestResourceObserverLane:
                                parent_mode=None, parent_uid=0,
                                parent_gid=994, socket_mode=None,
                                socket_uid=0, socket_gid=994,
+                               docker_group_mode=None, docker_group_uid=0,
+                               docker_gid=994, docker_group_missing=False,
                                missing=None):
-        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o770
+        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o751
         socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
+        docker_group_mode = (
+            docker_group_mode or run_gate.stat.S_IFDIR | 0o770
+        )
 
         def fake_lstat(path):
             path = Path(path)
@@ -7925,6 +8024,12 @@ class TestResourceObserverLane:
                 if missing:
                     raise OSError("socket path missing")
                 return self._stat(socket_mode, socket_uid, socket_gid)
+            if path == socket_path.parent.parent:
+                if docker_group_missing:
+                    raise OSError("host cgprofile control directory missing")
+                return self._stat(
+                    docker_group_mode, docker_group_uid, docker_gid
+                )
             raise AssertionError(f"unexpected lstat path: {path}")
 
         real_os = run_gate.os
@@ -7960,7 +8065,8 @@ class TestResourceObserverLane:
     def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
         run_gate._validate_lane(
             "probe", {"kind": "command", "environment": "tester-unified",
-                      "argv": ["true"], "resource_observer": "cgprofile"},
+                      "argv": ["true"], "resource_observer": "cgprofile",
+                      "resources": {"memory": "2g", "pids": 8192}},
             "fixture")
         with pytest.raises(run_gate.GateError,
                            match="only for assay or command lanes"):
@@ -7969,13 +8075,82 @@ class TestResourceObserverLane:
                           "resource_observer": "cgprofile"}, "fixture")
         run_gate._validate_lane(
             "r2", {"kind": "assay", "environment": "custom-ephemeral",
-                   "assay_lane": "r2", "resource_observer": "cgprofile"},
+                   "assay_lane": "r2", "resource_observer": "cgprofile",
+                   "resources": {"memory": "2g", "pids": 8192}},
             "fixture")
         with pytest.raises(run_gate.GateError, match="must be 'cgprofile'"):
             run_gate._validate_lane(
                 "r2", {"kind": "assay", "environment": "tester-unified",
                        "assay_lane": "r2", "resource_observer": "anything"},
                 "fixture")
+
+    @pytest.mark.parametrize("pids", [0, -1, True, "8192", 1.5])
+    def test_pids_resource_requires_a_positive_integer(self, pids):
+        with pytest.raises(run_gate.GateError, match="positive integer Docker PID limit"):
+            run_gate._validate_lane(
+                "probe",
+                {"kind": "command", "environment": "tester-unified",
+                 "argv": ["true"], "resources": {"pids": pids}},
+                "fixture",
+            )
+
+    def test_effective_observer_lane_requires_local_memory_and_pid_ceilings(self):
+        project = {
+            "lanes": {
+                "r2": {
+                    "kind": "assay", "environment": "runner",
+                    "assay_lane": "r2", "resource_observer": "cgprofile",
+                    "resources": {"pids": 8192},
+                },
+            },
+            "environments": {"runner": {"mode": "ephemeral"}},
+        }
+        with pytest.raises(run_gate.GateError, match="requires explicit resources.memory and resources.pids"):
+            run_gate._validate_effective_resource_observers(project, {}, Path("run-gate.toml"))
+
+    @pytest.mark.parametrize("mode", ["host", "exec"])
+    def test_config_load_refuses_observer_on_non_ephemeral_environment(
+            self, tmp_path, mode):
+        repo = make_repo(tmp_path)
+        image = '\nimage = "runner:local"' if mode == "exec" else ""
+        project = make_project(repo, textwrap.dedent(f'''\
+            schema_version = 1
+            [environments.runner]
+            mode = "{mode}"{image}
+            [lanes.r2]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "r2"
+            resource_observer = "cgprofile"
+        '''))
+        with pytest.raises(run_gate.GateError,
+                           match="requires the resolved environment.*ephemeral"):
+            run_gate.load_config(project)
+
+    def test_inherited_observer_uses_project_shadowed_environment_mode(self,
+                                                                       tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.runner]
+            mode = "ephemeral"
+            image = "runner:local"
+            [lanes.shared]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            resource_observer = "cgprofile"
+        """))
+        commit_all(repo, "shared observer lane")
+        project = make_project(repo, textwrap.dedent("""\
+            schema_version = 1
+            [environments.runner]
+            mode = "host"
+        """))
+
+        with pytest.raises(run_gate.GateError,
+                           match="requires the resolved environment.*ephemeral"):
+            run_gate.load_config(project)
 
     def test_observer_version_preflight_requires_contract2_path_and_listener(
             self, monkeypatch):
@@ -8074,15 +8249,16 @@ class TestResourceObserverLane:
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
-        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+        with pytest.raises(run_gate.GateInfraError, match="host Docker group source"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
-        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "root-owned directory"),
-        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned directory"),
-        (run_gate.stat.S_IFDIR | 0o770, 1000, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "not a safe root-owned"),
+        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned"),
+        (run_gate.stat.S_IFDIR | 0o771, 0, None, 0, 994, "root-owned"),
+        (run_gate.stat.S_IFDIR | 0o750, 1000, None, 0, 994, "root-owned"),
         (None, 0, run_gate.stat.S_IFREG | 0o660, 0, 994, "not a Unix socket"),
         (None, 0, None, 1000, 994, "ownership does not match"),
         (None, 0, None, 0, 995, "ownership does not match"),
@@ -8116,13 +8292,64 @@ class TestResourceObserverLane:
             "kind": kind, "environment": "tester-unified",
             "resource_observer": "cgprofile"}, {"mode": "ephemeral"}) == [
                 "--mount",
-                f"type=bind,source={socket_path},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+                f"type=bind,source={socket_path.parent},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
                 "--group-add", "1234",
                 "-e", "ASSAY_RESOURCE_OBSERVER_SOCKET="
                 f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}",
             ]
         assert "ctl.sock" not in run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE
+
+    def test_observer_refuses_docker_group_socket(self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_gid=1234)
+        with pytest.raises(run_gate.GateInfraError, match="dedicated group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_refuses_when_host_docker_group_source_is_unavailable(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_group_missing=True)
+        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    @pytest.mark.parametrize("mode, uid, gid", [
+        (run_gate.stat.S_IFREG | 0o660, 0, 994),
+        (run_gate.stat.S_IFDIR | 0o770, 1000, 994),
+        (run_gate.stat.S_IFDIR | 0o770, 0, 0),
+        (run_gate.stat.S_IFDIR | 0o750, 0, 994),
+    ])
+    def test_observer_refuses_untrusted_host_docker_group_source(
+            self, tmp_path, monkeypatch, mode, uid, gid):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_group_mode=mode, docker_group_uid=uid, docker_gid=gid)
+        with pytest.raises(run_gate.GateInfraError, match="host Docker group|non-root group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_refuses_extra_mounts(self, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/var/run/docker.sock=/docker.sock")
+        with pytest.raises(run_gate.GateInfraError, match="incompatible with an observer lane"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_container_argv_wires_the_opted_in_observer(
@@ -8139,7 +8366,7 @@ class TestResourceObserverLane:
             "environment": "tester-unified",
             "resource_observer": "cgprofile",
             "budget": "4h",
-            "resources": {"cpus": "3"},
+            "resources": {"cpus": "3", "memory": "2g", "pids": 8192},
         }
         if kind == "assay":
             lane["assay_lane"] = "r2"
@@ -8173,8 +8400,10 @@ class TestResourceObserverLane:
         argv, = assembled
         assert "--cgroup-parent" in argv
         assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "3"
-        assert ["--mount", f"type=bind,source={socket_path},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly"] == argv[
+        assert "--memory" in argv and argv[argv.index("--memory") + 1] == "2g"
+        assert "--pids-limit" in argv and argv[argv.index("--pids-limit") + 1] == "8192"
+        assert ["--mount", f"type=bind,source={socket_path.parent},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly"] == argv[
                     argv.index("--mount"):argv.index("--mount") + 2]
         assert ["--group-add", "1234"] == argv[
             argv.index("--group-add"):argv.index("--group-add") + 2]
