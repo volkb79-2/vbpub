@@ -2897,7 +2897,7 @@ action, reviewed like any other source change before it is committed.
 
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
 the full CMRU test suite. R1 judges the `coverage.json` artifact against
-the highest-version previously published ancestor CMRU release tag (currently `cmru-v5.5.0`), requires 100%
+the highest-version previously published ancestor CMRU release tag (currently `cmru-v6.1.0`), requires 100%
 line and branch coverage, and forbids excluded source. After release N is
 tagged, advance this pin to N on the next release candidate; the candidate
 for N remains pinned to N-1 so a tagged-HEAD rerun excludes its tag and finds

@@ -510,7 +510,7 @@ also removes it from CMRU's mutation and coverage input lists.
 The release candidate is a snapshot of `origin/main`. Assay resolves a named
 base against the tested commit; once a branch is merged, `main` can resolve to
 the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
-the highest-version previously published ancestor release tag (`cmru-v5.5.0` in the current config), which
+the highest-version previously published ancestor release tag (`cmru-v6.1.0` in the current config), which
 keeps changed-line coverage meaningful after merge. Advance this pinned base
 to the newly tagged release on the next release candidate; keep the current
 candidate pinned to the release before it. A rerun on the newly tagged HEAD
