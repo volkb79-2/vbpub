@@ -142,6 +142,71 @@ def test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refuse
     assert err.count("\n") == 1
 
 
+def test_state_directory_entry_budget_counts_unrelated_files(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    state = tmp_path / "state"
+    state.mkdir()
+    for name in ("notes", "cache", "scratch"):
+        (state / name).write_text("ignored by the state parser")
+    monkeypatch.setattr(campaign_api, "MAX_STATE_DIRECTORY_ENTRIES", 2)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+        extra=("--state-dir", str(state)),
+    )
+    document = json.loads(out)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "state",
+        "message": "state directory scan exceeds 2 entries",
+    }]
+    assert "state directory scan exceeds 2 entries" in err
+
+
+def test_state_record_count_budget_refuses_a_foreign_store(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    state = tmp_path / "state"
+    state.mkdir()
+    for index in range(3):
+        (state / f"{index:064x}.json").write_text("{}")
+    monkeypatch.setattr(campaign_api, "MAX_STATE_DIRECTORY_RECORDS", 2)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+        extra=("--state-dir", str(state)),
+    )
+    document = json.loads(out)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "state",
+        "message": "state directory contains more than 2 mutation records",
+    }]
+    assert "mutation records" in err
+
+
+def test_state_aggregate_byte_budget_refuses_before_record_parsing(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / f"{'a' * 64}.json").write_text("{}")
+    monkeypatch.setattr(campaign_api, "MAX_STATE_DIRECTORY_BYTES", 1)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+        extra=("--state-dir", str(state)),
+    )
+    document = json.loads(out)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "state",
+        "message": "state records exceed 1 aggregate bytes",
+    }]
+    assert "aggregate bytes" in err
+
+
 # ---- O5 -------------------------------------------------------------------
 
 def _f2(tmp_path, monkeypatch, *, extra_current=0, judge_in_event=True, mixed=False):

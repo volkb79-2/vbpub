@@ -4781,7 +4781,17 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
 - **Shape.** JSON is closed and schema-validated; `--format text` prints a
   summary whose `projection (diagnostic)` line appears only with `--project`.
   Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
-  `--limit`) and always carry `matching_total` and `next_offset`.
+  `--limit`) and always carry `matching_total` and `next_offset`. The optional
+  state directory scan is capped at 50,000 entries, 10,000 matching records
+  and 64 MiB of record bytes. A complete JSON report is capped at 16 MiB; if
+  unpaged run or reclassification history exceeds that limit, analysis returns
+  a named `evidence_error` rather than silently truncating evidence. Progress
+  input remains capped at 64 MiB and 10,000 runs.
+- **`qualifying` is scope metadata.** `true` means analysis used the whole
+  declared plan rather than a selected pilot. It does not mean the campaign is
+  complete, passed, or acceptable. Read `status`, `verdict`, and
+  `complete_blockers` for those conclusions. A report can be
+  `qualifying: true` with `status: incomplete` or a non-PASS verdict.
 - **Projection contract.** For a native R2 lane, `--project-jobs` must equal
   the lane's declared `mutation.jobs`; a different worker count describes an
   execution model the lane cannot run and is refused in ordinary campaign
