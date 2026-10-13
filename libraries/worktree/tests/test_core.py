@@ -358,7 +358,8 @@ def test_remove_orphan_workspace_uses_another_checkout_in_the_same_git_family(
         ["git", "show-ref", "--verify", "refs/heads/workspace/orphan-target"],
         cwd=repository, capture_output=True, text=True, check=False,
     )
-    assert branch.returncode == 1
+    # `show-ref --verify` exits 1 on older Git and 128 on newer: only "not a valid ref" matters.
+    assert branch.returncode != 0 and "not a valid ref" in branch.stderr
 
 
 def test_remove_orphan_workspace_refuses_when_source_exists_or_lease_is_live(
