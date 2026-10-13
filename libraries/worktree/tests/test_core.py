@@ -452,7 +452,7 @@ def test_remove_orphan_workspace_reports_failed_git_removal_and_branch_deletion(
     locked = _gone_source(repository, tmp_path, "locked-target")
     _git(repository, "worktree", "lock", str(locked.worktree_path))
     with pytest.raises(
-        core.WorkspaceError, match=r"git worktree remove failed \(\d+\): .*locked working tree",
+        core.WorkspaceError, match=r"git worktree remove failed \(\d+\): (fatal|error): .*locked working tree",
     ):
         remove_orphan_workspace(locked, executor_git_root=repository)
     assert locked.worktree_path.is_dir()
@@ -463,7 +463,7 @@ def test_remove_orphan_workspace_reports_failed_git_removal_and_branch_deletion(
     lock_file.write_text("", encoding="utf-8")
     with pytest.raises(
         core.WorkspaceError,
-        match=r"git branch -D workspace/stuck-branch failed \(\d+\): .*(cannot lock ref|Unable to create)",
+        match=r"git branch -D workspace/stuck-branch failed \(\d+\): (fatal|error): .*(cannot lock ref|Unable to create)",
     ):
         remove_orphan_workspace(stuck, executor_git_root=repository)
 
