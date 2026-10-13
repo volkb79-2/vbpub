@@ -94,6 +94,11 @@ an installed wheel or zipapp needs nothing extra:
   candidate's runtime from fixed overhead. See the
   [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
   and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
+  `qualifying: true` means the report covers the whole plan; it does not mean
+  the campaign is complete or passed. State input is limited to 50,000
+  directory entries, 10,000 mutation records and 64 MiB total, and a JSON
+  report is limited to 16 MiB. Exceeding a limit is a named evidence error,
+  never a partial report or an invented zero.
 
 <!-- assay-analysis-example -->
 ```bash
@@ -104,7 +109,8 @@ assay analyze report --expected-commit "$REVIEW_HEAD" \
   --verdict r2 .assay/verdict-r2.json \
   --progress r2 .assay/progress-r2.jsonl --log r2 "$GATE_LOG" --format text
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
-  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json --command-exit 0
+  --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
+  --coverage .assay/coverage-r2.json --command-exit 0
 ```
 
 Set `REVIEW_HEAD` to the full Git commit agreed with the controller and

@@ -5411,7 +5411,8 @@ assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --project --project-jobs 1 --outcome survived --limit 20
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
-  --command-exit 0 --outcome survived --outcome hung
+  --coverage .assay/coverage-r2.json --command-exit 0 \
+  --outcome survived --outcome hung
 ```
 
 Without `--verdict` the status is never `complete` (blocker `no_verdict`). The
@@ -5427,6 +5428,18 @@ measured runtime before adding candidate costs to the projection. Exit codes:
 0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
 `complete_blockers` names why a campaign is incomplete. Without `--verdict`, a
 plan whose lane delegates its base to the request needs `--request-base`.
+For a lane that declares R1 coverage, include `--coverage` with its declared
+artifact; without it the report stays incomplete. The artifact must be present
+in the worktree (and ignored by Git) even when the judge produced it inside a
+snapshot. `qualifying: true` identifies whole-plan scope only; it does not
+mean the verdict passed or that all evidence is complete.
+
+The reader is bounded: a supplied state directory may contain at most 50,000
+directory entries, 10,000 mutation records and 64 MiB of record data. The
+pretty-printed JSON report has a 16 MiB limit. If a large store or campaign
+history exceeds a limit, Assay returns `evidence_error` with the exceeded
+budget; it does not drop records and present a partial summary. Candidate
+details remain paged with `--offset` and `--limit`.
 
 - **Plan rows.** The JSON rows printed by `assay plan --json` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the

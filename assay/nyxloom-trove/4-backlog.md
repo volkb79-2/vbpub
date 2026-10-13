@@ -10963,7 +10963,7 @@ campaign trees and do not relabel the `hung` result as equivalent.
 
 ## B108 — deterministic mutation-campaign analysis and automatic post-lane closeout
 
-**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Phase 2 is the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration, and stays open.**
+**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Controller update 2026-10-13: phase 1's state scan and report output now have explicit budgets, and its adopter docs distinguish whole-plan scope from a completed/passing result; exact tester-unified gate and review are pending on `assay-b108-phase1-closeout-20261013`. Phase 2—the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration—remains open.**
 
 **Observed need:** operators repeatedly call Assay and then write one-off
 Python/LLM analysis to answer basic campaign questions: how many candidates
@@ -11046,6 +11046,11 @@ interpretation step.
       the machine-readable and text closeout in tester-unified gate evidence.
       A command lane without explicit analysis declarations does not guess;
       a closeout failure preserves the original command status and verdict.
+- [ ] A large unrelated state store, a state directory over the entry/record/
+      byte budgets, and a campaign report over the output budget each produce
+      a named evidence error; no path silently drops state, runs, or
+      reclassification history. README, DESIGN-GUIDE and CONSUMERS state the
+      shipped limits and explain that `qualifying` describes scope, not result.
 - [ ] README explains the analysis surface, DESIGN-GUIDE records its identity,
       failure, and estimate rules, and CONSUMERS.md includes pasteable direct
       and run-gate workflows. `run-gate-project/SPEC.md` documents the
