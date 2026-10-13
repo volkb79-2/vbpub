@@ -4803,6 +4803,11 @@ Both files are read through Assay's bounded no-follow reader and their
 fingerprints are retained in the output. Supplying either file without the
 other, combining a selection with a verdict, or projecting a native pilot with
 a worker count different from the lane's declared `mutation.jobs` is refused.
+The B110 and B131 report checkers independently validate the v16
+`process_tree_evidence` object from every native candidate state record and
+pass it into the terminal-result classifier. A killed, survived or equivalent
+result requires an exited leader and zero outliving descendants; timeout and
+hung records must prove the corresponding timeout-killed leader.
 
 A selected sample is a measurement, not a whole-plan judgment. Its report is
 always `status: incomplete`, `qualifying: false`, with no verdict and exit 3,
@@ -4849,6 +4854,9 @@ This second boundary catches replacement or mutation after the inner checker
 runs. The campaign deadline name includes the source commit; the
 registered host runner prints its resolved path in the lane output because
 declaring the containing `.assay` directory does not disclose a child file.
+Each native state record's v16 process-tree evidence is validated and supplied
+to terminal-result classification; a pilot cannot count a kill or survivor
+from a bucket label whose process window is absent or inconsistent.
 No verdict is written: a completed sample
 is a measurement, while timeout, partial state, host refusal or resource limit
 is incomplete. Only measurements from this pilot may set an analysis-specific

@@ -187,6 +187,7 @@ def test_empty_selected_shard_does_not_trigger_cgroup_refusal(
     plan_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(lane),

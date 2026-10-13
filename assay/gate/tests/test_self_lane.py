@@ -772,7 +772,7 @@ def test_o12_the_driver_plans_before_it_runs_an_r2_lane_and_hands_the_plan_to_th
     body = script[start:script.index("\n}\n", start)]
 
     assert 'local plan_path=".assay/plan-$lane.json"' in body
-    assert '"$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2' in body
+    assert '"$assay_bin" plan "$lane" --json --file assay.toml > "$plan_path" || return 2' in body
     assert '--plan-json "$plan_path"' in body
     assert '${plan_args[@]+"${plan_args[@]}"}' in body
     assert 'lane_flags+=(--cold-witness --r2-manifest "$r2_manifest_path")' in body

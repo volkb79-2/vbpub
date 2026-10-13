@@ -12880,3 +12880,36 @@ from runner state and may persist across lanes, so mutable service data still
 needs per-lane isolation or a declared lock/reset policy. Until the v8
 cutover, use the registered `run-gate` workflow; this transition does not
 authorize hand-written Docker commands.
+
+## B168 — B110 and B131 pilot checkers omit v16 process-tree evidence
+
+**Status: IMPLEMENTED IN THE ASSAY 10 CANDIDATE; exact-tip gate pending.**
+
+The native R2 state-record contract now requires `process_tree_evidence` for
+executed outcomes. `_terminal_result_matches_bucket()` uses that evidence to
+refuse a killed, survived or equivalent result unless the leader exited
+normally and no descendants remained. A timeout or hung result must retain
+the matching timeout-killed leader status. The B110 and B131 independent
+pilot checkers called this classifier without parsing or passing the evidence,
+so valid pilot records failed validation and the checkers did not enforce the
+same process-window boundary as `assay verify`.
+
+**Required behavior.** Both pilot readers require the field on every native
+state record, validate its exact schema with `ProcessTreeEvidence.from_dict`,
+and pass it to `_terminal_result_matches_bucket()`. Missing or malformed
+evidence is a named pilot-state refusal. Fixtures describe ordinary exits and
+timeout-killed hung candidates accurately. The public docs explain this
+state-record requirement and how it protects candidate classification.
+
+**Files:** `tools/b110_pilot_report_check.py`,
+`tools/analysis_r2_pilot_check.py`, their gate tests,
+`README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and this backlog.
+
+**Oracles:** (1) B110 and B131 pilot fixtures with valid normal-exit evidence
+are accepted. (2) Removing the evidence from either fixture is refused with
+the named missing-evidence diagnostic. (3) Malformed evidence is refused and
+cannot be downgraded to a cache miss. (4) A killed/survived/equivalent state
+with a non-exited leader or outliving descendants is not accepted as that
+bucket. (5) A hung state is accepted only with `timeout-killed` evidence and
+the existing complete liveness resource trace. (6) All config examples and
+documentation anchors remain valid.

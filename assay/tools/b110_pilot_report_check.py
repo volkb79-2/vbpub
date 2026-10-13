@@ -32,6 +32,7 @@ from assay.mutation import (
     _terminal_result_matches_bucket,
     valid_hung_resource_evidence,
 )
+from assay.process_tree import ProcessTreeEvidence
 from assay.resource_limits import ResourceLimitEvidence
 
 
@@ -616,12 +617,19 @@ def _verify_state(
             raise ValueError(f"mutation state record {identity} records a process or memory limit event")
         if not isinstance(record.get("execution"), dict):
             raise ValueError(f"mutation state record {identity} has no execution evidence")
+        raw_process_tree = record.get("process_tree_evidence")
+        if not isinstance(raw_process_tree, dict):
+            raise ValueError(
+                f"mutation state record {identity} has no process-tree evidence"
+            )
         try:
+            process_tree_evidence = ProcessTreeEvidence.from_dict(raw_process_tree)
             execution = _execution_from_state_record(record)
             terminal_matches = _terminal_result_matches_bucket(
                 record,
                 cold_witness=True,
                 resource_limit_hit=resource_evidence.limit_hit,
+                process_tree_evidence=process_tree_evidence,
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"mutation state record {identity} has invalid terminal or execution evidence: {exc}") from exc

@@ -1184,7 +1184,11 @@ transformed R2 command, configuration digest, and coverage/R2 baselines. The
 gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
 recomputes its ordered collection digest, requires candidate collection facts
 to match the appropriate baseline, and requires every kill witness to name a
-collected test. It validates candidate elapsed and phase evidence and binds
+collected test. It also validates each v16 `process_tree_evidence` object from
+resumable state before accepting the terminal outcome: killed, survived and
+equivalent require a normally exited leader and no outliving descendants;
+timeout and hung records must prove the corresponding timeout-killed leader.
+It validates candidate elapsed and phase evidence and binds
 CPU/RSS/phase/startup measurements between progress and state. It also
 validates resource evidence, pending and resumed progress, campaign deadline,
 the 90-minute attempt window and wheel digest. The 90-minute cap
@@ -5527,6 +5531,8 @@ The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus
 `.assay/analysis-r2-pilot-state-<commit12>/` for resumable execution evidence.
+Each state record must include valid v16 process-tree evidence; the checker
+uses it when reconciling the terminal result with the reported bucket.
 The commit-bound directory keeps a new source revision's selection separate
 from older pilot state while preserving those earlier records. A successful
 gate means only that the sample completed and its evidence verified. It does

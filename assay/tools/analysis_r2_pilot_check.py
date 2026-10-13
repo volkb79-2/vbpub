@@ -29,6 +29,7 @@ from assay.mutation import (
     _terminal_result_matches_bucket,
     _valid_hung_resource_evidence,
 )
+from assay.process_tree import ProcessTreeEvidence
 from assay.resource_limits import ResourceLimitEvidence
 from assay.verdict import MUTATION_BUCKETS, MutantEvidence
 
@@ -610,13 +611,25 @@ def _check_pilot_state(
             raise ValueError(f"pilot state record {identity} has invalid B145 resource evidence: {exc}") from exc
         if resources.limit_hit:
             raise ValueError(f"pilot candidate {identity} hit a process or memory limit")
+        raw_process_tree = record.get("process_tree_evidence")
+        if not isinstance(raw_process_tree, dict):
+            raise ValueError(f"pilot state record {identity} has no process-tree evidence")
+        try:
+            process_tree_evidence = ProcessTreeEvidence.from_dict(raw_process_tree)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"pilot state record {identity} has invalid process-tree evidence: {exc}"
+            ) from exc
         resources_by_id[identity] = {
             "resource_limit_evidence": resources.to_dict(),
             "liveness_resource_evidence": record.get("liveness_resource_evidence"),
             "cost_resources": cost_resources,
         }
         if not _terminal_result_matches_bucket(
-            record, cold_witness=True, resource_limit_hit=False
+            record,
+            cold_witness=True,
+            resource_limit_hit=False,
+            process_tree_evidence=process_tree_evidence,
         ):
             raise ValueError(f"pilot state record {identity} terminal result disagrees with its bucket")
         if outcome["bucket"] == "hung" and not _valid_hung_resource_evidence(

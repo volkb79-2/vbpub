@@ -556,6 +556,8 @@ after Assay cleans and reaps them; it cannot count as killed or survived, and
 the campaign can continue. Timeout and `hung` classifications remain intact
 when cleanup succeeds. A baseline leak or any cleanup failure refuses the
 lane. Native R2 verdicts retain process-tree evidence for each attempt.
+The independent B110 and B131 pilot checkers validate that evidence in every
+candidate state record before accepting a completed disposition.
 `assay verify` also rejects impossible evidence where more descendants were
 signalled than were observed outliving the leader. Every
 materialized-plugin record carries its positive producer `pid` and, when

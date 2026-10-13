@@ -812,7 +812,7 @@ if '--archive-prior-snapshot' in sys.argv:
         minimal_bin = tmp_path / "minimal-bin"
         minimal_bin.mkdir(exist_ok=True)
         for name in (
-            "bash", "git", "findmnt", "realpath", "flock", "chmod", "rm",
+            "bash", "git", "findmnt", "realpath", "dirname", "flock", "chmod", "rm",
             "mkdir", "mv", "python3", "stat",
         ):
             target = shutil.which(name)
@@ -951,7 +951,10 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     assert "--pids-limit=8192" in launch
     assert "--group-add" in launch
     assert "ASSAY_GATE_HOST_DOCKER_GID=994" in launch
-    assert "observer-only tester identity includes the host Docker group" in " ".join(launch)
+    gate_source = (PROJECT_ROOT / "tools" / "tester-unified-gate.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "observer-only tester identity includes the host Docker group" in gate_source
     assert "--network=none" in launch
     assert all("--cgroupns=host" not in call for call in calls if call and call[0] == "run")
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in launch

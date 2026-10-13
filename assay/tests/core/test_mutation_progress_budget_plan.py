@@ -1985,6 +1985,7 @@ def test_plan_accepts_a_valid_operator_override(tmp_path):
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--operators",
             "python:bool-const-flip",
