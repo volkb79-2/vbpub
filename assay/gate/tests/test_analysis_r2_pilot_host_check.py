@@ -81,7 +81,7 @@ def _attested_pilot(tmp_path: Path) -> tuple[list[str], dict[str, Path]]:
             path.write_text(json.dumps(deadline_document, sort_keys=True) + "\n", encoding="utf-8")
         else:
             path.write_text(f"fixture artifact {index}\n", encoding="utf-8")
-    state_dir = state_root / "analysis-r2-pilot-state"
+    state_dir = state_root / f"analysis-r2-pilot-state-{commit[:12]}"
     state_dir.mkdir()
     state_names = ["PILOT-STATE", f"{'b' * 64}.json"]
     for name in state_names:
@@ -134,6 +134,27 @@ def test_host_checker_accepts_exact_attested_inventory_after_container_exit(tmp_
 
     assert status == 0, stderr
     assert stdout.startswith("ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED=")
+
+
+def test_host_checker_keeps_prior_commit_selection_state_separate(tmp_path: Path):
+    argv, paths = _attested_pilot(tmp_path)
+    project = Path(argv[argv.index("--project-root") + 1])
+    old_state = project / ".assay/analysis-r2-pilot-state"
+    old_state.mkdir()
+    old_marker = old_state / "PILOT-STATE"
+    old_marker.write_text(
+        '{"lane":"analysis-r2","schema":"assay-pilot-state/1",'
+        '"selection_sha256":"' + "a" * 64 + '"}\n',
+        encoding="utf-8",
+    )
+    old_contents = old_marker.read_bytes()
+
+    status, stdout, stderr = _run(argv)
+
+    assert status == 0, stderr
+    assert stdout.startswith("ANALYSIS_R2_PILOT_HOST_EVIDENCE_VERIFIED=")
+    assert old_marker.read_bytes() == old_contents
+    assert (paths["plan"].parent / "analysis-r2-pilot-state").is_dir()
 
 
 @pytest.mark.parametrize(

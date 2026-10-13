@@ -267,7 +267,10 @@ run_analysis_r2_pilot() {
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
   local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
   local pilot_checker_stdout pilot_attestation_sha256
-  local state_dir=.assay/analysis-r2-pilot-state
+  # Keep resume records separate for each exact source revision. A fixed path
+  # would make a new pilot collide with the previous
+  # commit's PILOT-STATE sentinel; the old records remain available for audit.
+  local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
   local selection_path=.assay/analysis-r2-pilot-selection.json

@@ -5464,7 +5464,7 @@ For B131, use the analysis lane's retained artifacts instead:
 ```bash
 assay analyze campaign analysis-r2 --file assay.toml \
   --expected-commit "$REVIEW_HEAD" --progress .assay/progress-analysis-r2-pilot.jsonl \
-  --state-dir .assay/analysis-r2-pilot-state \
+  --state-dir ".assay/analysis-r2-pilot-state-${REVIEW_HEAD:0:12}" \
   --plan-json .assay/analysis-r2-pilot-plan.json \
   --selection-file .assay/analysis-r2-pilot-selection.json \
   --project --project-jobs 1 --outcome survived --limit 20
@@ -5526,7 +5526,9 @@ failure, including a recognized first failing test.
 The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus
-`.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
+`.assay/analysis-r2-pilot-state-<commit12>/` for resumable execution evidence.
+The commit-bound directory keeps a new source revision's selection separate
+from older pilot state while preserving those earlier records. A successful
 gate means only that the sample completed and its evidence verified. It does
 not create a verdict or qualify the full plan. A timeout, partial sample,
 host-busy refusal or cgroup resource event is not a successful measurement.

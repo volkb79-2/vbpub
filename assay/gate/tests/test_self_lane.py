@@ -981,7 +981,6 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
         ".assay/analysis-r2-pilot-attestation.json",
         ".assay/r2-manifest-analysis-r2-pilot.txt",
         ".assay/progress-analysis-r2-pilot.jsonl",
-        ".assay/analysis-r2-pilot-state",
     ]
     nyxloom = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"]
     assert nyxloom[B131_PILOT_ID]["timeout_seconds"] == 9000
@@ -990,6 +989,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
 
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     pilot = _shell_function_body(script, "run_analysis_r2_pilot")
+    assert "local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}" in pilot
     assert '--campaign "$campaign" --lane analysis-r2 --hours 2' in pilot
     assert '"$assay_bin" plan analysis-r2 --file assay.toml --cold-witness' in pilot
     assert '"$assay_bin" run analysis-r2 --file assay.toml' in pilot
