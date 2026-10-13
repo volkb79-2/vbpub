@@ -356,7 +356,7 @@ echo "== cgprofile socket carrier (/run/cgprofile, RG-55 A2/D-30, M5) =="
 # is this directory's own fail-open invariant, so like MemoryMin above it
 # gets a hard `fail`, not a printout.
 CGPROFILE_DIR=/run/cgprofile
-if [ -d "$CGPROFILE_DIR" ]; then
+if [ -d "$CGPROFILE_DIR" ] && [ ! -L "$CGPROFILE_DIR" ]; then
   cg_mode=$(stat -c '%a' "$CGPROFILE_DIR" 2>/dev/null)
   cg_owner=$(stat -c '%U:%G' "$CGPROFILE_DIR" 2>/dev/null)
   if [ "$cg_mode" = "770" ] && [ "$cg_owner" = "root:docker" ]; then
@@ -375,8 +375,67 @@ if [ -d "$CGPROFILE_DIR" ]; then
     info "exec carrier only (daemon socket absent) -- docker exec still works; the daemon may not be installed, may predate the listener, or has not started it yet"
   fi
 else
-  fail "$CGPROFILE_DIR does not exist -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"
+  fail "$CGPROFILE_DIR is missing or is not a real directory -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"
 fi
+
+check_cgprofile_observer() {
+  local control_dir="${CGPROFILE_DIR:-/run/cgprofile}"
+  local observer_dir="${CGPROFILE_OBSERVER_DIR:-$control_dir/observer}"
+  local tmpfiles_file="${CGPROFILE_OBSERVER_TMPFILES_FILE:-/etc/tmpfiles.d/mdt-cgprofile-observer.conf}"
+  local sysusers_file="${CGPROFILE_OBSERVER_SYSUSERS_FILE:-/etc/sysusers.d/mdt-cgprofile.conf}"
+  local docker_entry="" observer_entry="" docker_gid="" observer_gid=""
+  local metadata="" tmpfiles_rules="" sysusers_rules=""
+
+  if [ -L "$observer_dir" ] || [ ! -d "$observer_dir" ]; then
+    fail "$observer_dir is missing or is not a real directory; resolve any existing path drift, then run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  if ! docker_entry="$(getent group docker 2>/dev/null)"; then
+    fail "cannot resolve the host docker group while checking $observer_dir"
+    return
+  fi
+  if ! observer_entry="$(getent group cgprofile-observer 2>/dev/null)"; then
+    fail "cannot resolve cgprofile-observer; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  IFS=: read -r _ _ docker_gid _ <<< "$docker_entry"
+  IFS=: read -r _ _ observer_gid _ <<< "$observer_entry"
+  if [[ ! "$docker_gid" =~ ^[1-9][0-9]*$ || ! "$observer_gid" =~ ^[1-9][0-9]*$ ]]; then
+    fail "docker or cgprofile-observer has an invalid GID while checking $observer_dir"
+    return
+  fi
+  if [ "$docker_gid" = "$observer_gid" ]; then
+    fail "cgprofile-observer GID $observer_gid aliases docker; resolve the host group collision before observer lanes can run"
+    return
+  fi
+  metadata="$(stat -c '%u %g %a' "$observer_dir" 2>/dev/null || true)"
+  if [ "$metadata" != "0 $observer_gid 751" ]; then
+    fail "$observer_dir has metadata '${metadata:-unreadable}' (expected 0 $observer_gid 751); resolve the path drift, then rerun 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  if [ -L "$tmpfiles_file" ] || [ ! -f "$tmpfiles_file" ]; then
+    fail "$tmpfiles_file is missing or unsafe; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  if [ -L "$sysusers_file" ] || [ ! -f "$sysusers_file" ]; then
+    fail "$sysusers_file is missing or unsafe; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  tmpfiles_rules="$(awk 'NF && $1 !~ /^#/ { print }' "$tmpfiles_file")"
+  sysusers_rules="$(awk 'NF && $1 !~ /^#/ { print }' "$sysusers_file")"
+  if [ "$tmpfiles_rules" != 'd /run/cgprofile/observer 0751 root cgprofile-observer -' ]; then
+    fail "$tmpfiles_file does not contain exactly the required observer tmpfiles rule; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  if [ "$sysusers_rules" != 'g cgprofile-observer - - -' ]; then
+    fail "$sysusers_file does not contain exactly the required observer group rule; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
+    return
+  fi
+  ok "$observer_dir is root:$observer_gid 0751, distinct from docker; observer sysusers/tmpfiles rules are present"
+}
+
+echo "== cgprofile resource observer (/run/cgprofile/observer, contract 2) =="
+check_cgprofile_observer
 
 echo "== docker-.scope.d default-limits backstop (D-G8) =="
 if [ -f /etc/systemd/system/docker-.scope.d/50-default-limits.conf ]; then

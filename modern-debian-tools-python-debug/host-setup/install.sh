@@ -9,6 +9,7 @@
 #   sudo ./install.sh --wizard              # first install or preserve old values
 #   sudo ./install.sh --wizard --reset      # re-seed answers from this example
 #   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
+#   sudo ./install.sh --observer-only       # provision the cgprofile observer directory only
 # Run these commands from the Docker host shell, never from a devcontainer;
 # container root cannot apply the host's systemd, cgroup, or /etc policy.
 #
@@ -45,6 +46,7 @@ Usage
   sudo ./install.sh --wizard [--reset] [--with-baseline] [--restart-docker]
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
+  sudo ./install.sh --observer-only
   sudo ./install.sh --help
 
 Options
@@ -72,6 +74,11 @@ Options
                       the policy. This disrupts running containers. Without
                       it, changed Docker daemon defaults take effect after
                       a later deliberate restart.
+  --observer-only     Install the cgprofile-observer group and its dedicated
+                      /run/cgprofile/observer tmpfiles rule. Requires the
+                      existing /run/cgprofile control directory to be a
+                      real root:docker 0770 directory. Does not run the
+                      general host policy workflow.
   --help              Show this help and exit.
 
 Files and ownership
@@ -91,13 +98,108 @@ Safety and result
 EOF
 }
 
+provision_cgprofile_observer() {
+  local root="${1:?host root argument is required}"
+  local prefix=""
+  if [ "$root" != / ]; then
+    [[ "$root" == /* ]] || { echo "ERROR: host root must be absolute: $root" >&2; return 2; }
+    prefix="${root%/}"
+  fi
+  local control_directory="${prefix}/run/cgprofile"
+  local observer_directory="${control_directory}/observer"
+  local sysusers_file="${prefix}/etc/sysusers.d/mdt-cgprofile.conf"
+  local tmpfiles_file="${prefix}/etc/tmpfiles.d/mdt-cgprofile-observer.conf"
+
+  if [ -L "$control_directory" ] || [ ! -d "$control_directory" ]; then
+    echo "ERROR: $control_directory must already be a real directory; run the full host setup first" >&2
+    return 2
+  fi
+  local docker_entry docker_gid control_metadata
+  docker_entry="$(getent group docker 2>/dev/null)" || {
+    echo "ERROR: could not resolve the host docker group" >&2
+    return 2
+  }
+  IFS=: read -r _ _ docker_gid _ <<< "$docker_entry"
+  [[ "$docker_gid" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: could not resolve a valid host docker group GID" >&2
+    return 2
+  }
+  control_metadata="$(stat -c '%u %g %a' "$control_directory")" || {
+    echo "ERROR: could not inspect $control_directory" >&2
+    return 2
+  }
+  [[ "$control_metadata" == "0 $docker_gid 770" ]] || {
+    echo "ERROR: $control_directory must be root:docker 0770; found $control_metadata" >&2
+    return 2
+  }
+  local existing_observer_group existing_observer_gid="" existing_observer_metadata
+  existing_observer_group="$(getent group cgprofile-observer 2>/dev/null || true)"
+  if [[ -n "$existing_observer_group" ]]; then
+    IFS=: read -r _ _ existing_observer_gid _ <<< "$existing_observer_group"
+    [[ "$existing_observer_gid" =~ ^[1-9][0-9]*$ ]] || {
+      echo "ERROR: cgprofile-observer has an invalid GID: ${existing_observer_gid:-<empty>}" >&2
+      return 2
+    }
+    [[ "$existing_observer_gid" != "$docker_gid" ]] || {
+      echo "ERROR: cgprofile-observer GID must differ from the docker group GID ($docker_gid)" >&2
+      return 2
+    }
+  fi
+  if [ -L "$observer_directory" ]; then
+    echo "ERROR: refusing symlink at $observer_directory" >&2
+    return 2
+  fi
+  if [ -e "$observer_directory" ]; then
+    if [ ! -d "$observer_directory" ]; then
+      echo "ERROR: refusing non-directory at $observer_directory; inspect and remove or repair this path before rerunning --observer-only" >&2
+      return 2
+    fi
+    if [[ -z "$existing_observer_gid" ]]; then
+      echo "ERROR: refusing pre-existing $observer_directory because cgprofile-observer does not exist; inspect the path and group before rerunning --observer-only" >&2
+      return 2
+    fi
+    existing_observer_metadata="$(stat -c '%u %g %a' "$observer_directory")" || {
+      echo "ERROR: could not inspect pre-existing $observer_directory" >&2
+      return 2
+    }
+    [[ "$existing_observer_metadata" == "0 $existing_observer_gid 751" ]] || {
+      echo "ERROR: refusing drifted $observer_directory: found $existing_observer_metadata; expected 0 $existing_observer_gid 751. Inspect and repair this path before rerunning --observer-only" >&2
+      return 2
+    }
+  fi
+
+  install -D -m 0644 "$HERE/units/mdt-cgprofile.sysusers" "$sysusers_file"
+  install -D -m 0644 "$HERE/units/mdt-cgprofile-observer.conf" "$tmpfiles_file"
+  systemd-sysusers "$sysusers_file"
+  local observer_gid observer_metadata
+  local observer_group_entry
+  observer_group_entry="$(getent group cgprofile-observer 2>/dev/null)" \
+    || { echo 'ERROR: could not resolve cgprofile-observer after systemd-sysusers' >&2; return 1; }
+  IFS=: read -r _ _ observer_gid _ <<< "$observer_group_entry"
+  [[ "$observer_gid" =~ ^[1-9][0-9]*$ ]] \
+    || { echo "ERROR: cgprofile-observer has an invalid GID: $observer_gid" >&2; return 1; }
+  [[ "$observer_gid" != "$docker_gid" ]] \
+    || { echo "ERROR: cgprofile-observer GID must differ from the docker group GID ($docker_gid)" >&2; return 1; }
+  systemd-tmpfiles --create "$tmpfiles_file" \
+    || { echo "ERROR: systemd-tmpfiles --create failed for $tmpfiles_file" >&2; return 1; }
+  [ -d "$observer_directory" ] && [ ! -L "$observer_directory" ] \
+    || { echo "ERROR: $observer_directory is not a real directory" >&2; return 1; }
+  observer_metadata="$(stat -c '%u %g %a' "$observer_directory")" \
+    || { echo "ERROR: $observer_directory was not created by host setup" >&2; return 1; }
+  [[ "$observer_metadata" == "0 $observer_gid 751" ]] \
+    || { echo "ERROR: $observer_directory has unexpected owner, group, or mode: $observer_metadata" >&2; return 1; }
+  echo "cgprofile observer directory ready: $observer_directory (root:$observer_gid 0751)"
+}
+
 WITH_BASELINE=0
 RESET=0
 AUTO_RESTART_DOCKER=0
 WIZARD=0
+OBSERVER_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --wizard) WIZARD=1 ;;
+    --observer-only) OBSERVER_ONLY=1 ;;
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
@@ -122,6 +224,20 @@ _pid1_comm=$(cat /proc/1/comm 2>/dev/null || true)
 if [ "$_pid1_comm" != systemd ] || [ ! -d /run/systemd/system ]; then
   echo "ERROR: host-setup/install.sh requires systemd as PID 1 and /run/systemd/system; run it on the Docker host" >&2
   exit 2
+fi
+
+if [ "$OBSERVER_ONLY" = 1 ]; then
+  if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
+    || [ "$AUTO_RESTART_DOCKER" = 1 ]; then
+    echo "ERROR: --observer-only cannot be combined with general host-setup options" >&2
+    exit 2
+  fi
+  for tool in install systemd-sysusers systemd-tmpfiles getent stat cut; do
+    command -v "$tool" >/dev/null 2>&1 \
+      || { echo "ERROR: required host command is unavailable: $tool" >&2; exit 2; }
+  done
+  provision_cgprofile_observer /
+  exit $?
 fi
 
 if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
@@ -606,9 +722,11 @@ install -m 0644 "$HERE/units/docker-api-socket.conf" \
 
 # /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
 # templates/devcontainer.json bind-mounts to reach the cgroup-profiler
-# daemon's control socket. No template variables, installed directly like
-# docker-api-socket.conf above — see units/mdt-cgprofile.conf for the
-# full reasoning. Named with the mdt- prefix (round-2 review S15(r2)),
+# daemon's control socket. The observer directory has a separate rule so its
+# dedicated provisioning mode need not rewrite this control directory. No
+# template variables, installed directly like docker-api-socket.conf above —
+# see units/mdt-cgprofile.conf for the full reasoning. Named with the mdt-
+# prefix (round-2 review S15(r2)),
 # matching every other mdt-owned drop-in on this host
 # (/etc/modules-load.d/mdt-bfq.conf, docker.socket.d's own
 # 50-mdt-dedicated-api-socket.conf above) rather than the unprefixed
@@ -620,10 +738,12 @@ install -m 0644 "$HERE/units/docker-api-socket.conf" \
 # mode/owner is a no-op) rather than waiting for the next boot's automatic
 # systemd-tmpfiles-setup.service run, so `--mount`'s "source must already
 # exist" requirement is satisfied the moment this script finishes, not
-# after a reboot.
+# after a reboot. The dedicated read-only observer group and directory are
+# provisioned and verified by the same helper used by --observer-only.
 install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
-  || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
+  || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf" >&2; exit 1; }
+provision_cgprofile_observer /
 
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.

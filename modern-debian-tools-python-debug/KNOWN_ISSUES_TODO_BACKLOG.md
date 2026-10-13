@@ -43,4 +43,28 @@ for installed tools and so on.
 
 ## MDT-005 - adopt `cli-extended` for grammer, wizard, sematic check, ... 
 
-vbpub has a library to prohibit handrolling solutions every CLI needs. adopt it. 
+vbpub has a library to prohibit handrolling solutions every CLI needs. adopt it.
+
+## MDT-006 — cgprofile observer directory setup must fail closed
+
+**Status: implementation and behavioral oracles are in the contract-2
+candidate; registered host-setup gate and live host verification pending.**
+
+`install.sh` previously printed a warning and continued when
+`systemd-tmpfiles --create` failed. It could therefore report a successful host
+setup while `/run/cgprofile/observer` was missing or had the wrong owner, group,
+or mode, causing later observer socket mounts to fail or expose the wrong
+access boundary.
+
+The installer now stops on tmpfiles failure and verifies the resulting
+directory against the resolved `cgprofile-observer` group and exact
+`0751 root:cgprofile-observer` contract before proceeding. Before writing, it
+refuses symlinks, non-directories, a missing group identity for an existing
+path, and drifted owner/group/mode on an existing observer directory. The
+host-check also verifies the observer group differs from Docker, the live path
+has the required metadata, and the complete active sysusers/tmpfiles rule sets
+match the contract (comments and blank lines are ignored; extra active
+directives fail closed). `test-render.sh` has behavioral cases for mismatch refusals,
+idempotence, and preserving a live control socket; the registered host-setup
+gate and live post-install `stat` plus `mdt-host-check.sh` are the runtime
+oracles.

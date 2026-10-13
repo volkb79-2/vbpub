@@ -371,6 +371,21 @@ permanent fallback). The daemon package (P6) re-asserts the directory's own
 owner/mode at its own start as belt-and-braces; this package only creates
 it and gets out of the way. Opt out by deleting the `mounts` line.
 
+The observer uses a separate host-owned directory at
+`/run/cgprofile/observer`, created as `0751 root:cgprofile-observer`. Other
+users can traverse the known socket path for preflight, but cannot list or
+write in the directory; only the dedicated group can connect to the `0660`
+socket. The
+install script creates the `cgprofile-observer` group with
+`systemd-sysusers` before applying the tmpfiles entry. Tester containers that
+need R2 counters receive only this dedicated GID; they do not inherit Docker
+group access through the observer. The daemon binds only
+`resource-observer.sock` inside this stable directory, so a daemon restart
+does not strand a gate container on a socket-file bind mount.
+Host setup fails if `systemd-tmpfiles` cannot apply the entry or if the
+resulting directory is not exactly root-owned, assigned to the resolved
+`cgprofile-observer` GID, and mode `0751`.
+
 ## Changes
 
 **2026-09-12 (RG-55 P8, round-1 repairs + M5):** `dev-gates.slice` shipped
@@ -463,6 +478,34 @@ sudo ./install.sh --wizard --reset # deliberately re-seed from example + live ho
 sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min saturated IO — quiet window!)
 sudo mdt-host-check.sh             # verify
 ```
+
+### Provision the cgprofile observer directory
+
+An existing MDT host can prepare cgroup-profiler's read-only observer socket
+directory without rerunning the host policy workflow:
+
+```bash
+sudo ./install.sh --observer-only
+stat -c '%u:%g %a %n' /run/cgprofile/observer
+getent group cgprofile-observer
+sudo mdt-host-check.sh
+```
+
+The focused mode requires `/run/cgprofile` to exist as a real `root:docker`
+directory with mode `0770`. It first refuses an existing
+`cgprofile-observer` group that shares Docker's GID, before writing units or
+creating the observer directory. It then creates the dedicated system group,
+installs and applies only the observer tmpfiles rule, and verifies the
+directory is `root:<observer-gid>` with mode `0751`. Full host installs use the
+same helper. The mode refuses if the control directory's identity or mode is
+unexpected, or if a pre-existing observer path is not a real directory with
+the expected root, group, and mode; it never asks tmpfiles to silently repair
+that drift. `mdt-host-check.sh` verifies the observer group, live directory,
+and the complete active sysusers/tmpfiles rule sets after setup; it ignores
+comments and blank lines but rejects additional active directives. The
+[design rationale](../docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
+and [consumer procedure](../docs/CONSUMERS.md#cgprofile-resource-observer-host-setup)
+cover the daemon deployment that follows.
 
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
 `host-setup.env.example`'s own sections interactively (IO device, static root
