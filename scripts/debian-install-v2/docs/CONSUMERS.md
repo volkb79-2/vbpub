@@ -46,9 +46,14 @@ the shipped loader; omitted fields receive that loader’s current defaults:
   "fresh_install": true,
   "swap_disk_total_gb": 32,
   "swap_file_count": 8,
-  "credential_mode": "systemd"
+  "credential_mode": "systemd",
+  "cloud_init_cleanup_mode": "userdata-only"
 }
 ```
+
+This example opts to remove only the cached raw user-data after successful
+stage two. Omit `cloud_init_cleanup_mode` or set it to `retain` to keep all
+cloud-init cache data, including `/var/lib/cloud/instance/user-data.txt`.
 
 Every verb that consumes settings accepts exactly one of `--config FILE` or
 `--config-json JSON`; its generated usage marks that choice as required. Prefer
@@ -58,11 +63,30 @@ arguments. For example:
 ```bash
 ./debian-install-v2.py plan --config target-host.json
 ./debian-install-v2.py plan --config-json \
-  '{"schema_version":1,"fresh_install":true,"swap_disk_total_gb":32,"swap_file_count":8,"credential_mode":"systemd"}'
+  '{"schema_version":1,"fresh_install":true,"swap_disk_total_gb":32,"swap_file_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
 ```
 
 The parser rejects both a missing source and supplying both forms before any
 installation logic runs.
+
+## Cloud-init cache policy
+
+The `cloud_init_cleanup_mode` value is shared by the wizard, config file, and
+generated custom-script bundle. Choose `retain` (the default) to keep all
+cloud-init cache data, `userdata-only` to delete only the raw cached user-data,
+`clean` to run plain `cloud-init clean`, or `clean-all` to add `--logs --seed`.
+Neither clean mode removes generated SSH/network/fstab configuration; the
+installer does not pass `--configs all`.
+
+Cloud-init stores raw user-data at
+`/var/lib/cloud/instance/user-data.txt` by default. Plain `clean` resets
+cloud-init state so its stages run again at the next boot; `clean-all` does the
+same and also removes cloud-init logs and the guest's cached seed. If the same
+NoCloud seed ISO remains attached, it may provide the same user-data again.
+Detach it before a later boot if that replay is not wanted. These cleanup modes
+run only after successful stage-two install work, leaving cache data intact if
+an earlier install step fails. See the [feature overview](../README.md#cloud-init-cache-cleanup-policy)
+and [design rationale](DESIGN-GUIDE.md#cloud-init-cache-cleanup-policy).
 
 To inspect a real target host’s partition plan, run `plan` on that host. It
 reads the host’s root disk and does not write to it:

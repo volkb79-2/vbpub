@@ -7,9 +7,16 @@ import sys
 import pytest
 from cli_extended import CliFailure
 
-from debian_install_v2.config import Config, ConfigError, load_config, save_config
+from debian_install_v2.config import (
+    CLOUD_INIT_CLEANUP_MODES,
+    Config,
+    ConfigError,
+    load_config,
+    save_config,
+)
 from debian_install_v2.wizard import (
     _load_questionary,
+    WIZARD_SECTIONS,
     run_configuration_wizard,
     uncovered_config_fields,
 )
@@ -122,6 +129,13 @@ class _CrossSectionQuestionary:
 
 def test_wizard_metadata_covers_every_config_field_except_fixed_contract_fields():
     assert uncovered_config_fields() == frozenset()
+    field = next(
+        field
+        for section in WIZARD_SECTIONS
+        for field in section.fields
+        if field.name == "cloud_init_cleanup_mode"
+    )
+    assert field.choices == CLOUD_INIT_CLEANUP_MODES
 
 
 def test_save_config_writes_valid_mode_0600_json_and_refuses_clobber(tmp_path):
