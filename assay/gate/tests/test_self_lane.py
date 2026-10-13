@@ -683,7 +683,7 @@ def test_b105_wheel_mismatch_stops_before_plan_or_run(
         "die() { printf 'self-qualification-gate: %s\\n' \"$*\" >&2; exit 2; }\n"
         "assay() { printf '%s\\n' \"$*\" >> \"$calls\"; }\n"
         f"{guard}"
-        "assay plan\nassay run\n"
+        "assay plan --json\nassay run\n"
     )
     result = subprocess.run(
         [

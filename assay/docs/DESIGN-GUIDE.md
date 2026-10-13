@@ -4492,6 +4492,22 @@ did.
 
 ---
 
+## 17. CLI output is human by default, and JSON is explicit
+
+Commands should explain their result to an operator when run in a terminal and
+offer a machine format when a script asks for one. Assay follows that rule:
+human-readable output is the default; `--json` opts into a structured document.
+This keeps terminal use legible and makes machine consumption visible in the
+command line that creates a file or feeds another program.
+
+`assay plan` historically emitted JSON by default while `assay lanes` required
+`--json`. That split made a plan redirect look like a plain CLI command even
+though its output was a data artifact, and made the two inventory commands
+behave differently. Assay 10 normalizes `plan` to the same explicit format
+choice. Internal scripts and examples use `assay plan --json`; interactive
+operators can omit it. The complete candidate identity rows remain available
+only in JSON so a terminal summary does not dump a potentially large campaign.
+
 ## Appendix — arguments considered and rejected
 
 | Proposal | Rejected because |

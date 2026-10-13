@@ -1693,7 +1693,7 @@ budget_per_candidate = "30s"
     from assay.cli import main
 
     out = io.StringIO()
-    exit_code = main(["plan", "package", "--file", str(project.root / "assay.toml")], stdout=out)
+    exit_code = main(["plan", "--json", "package", "--file", str(project.root / "assay.toml")], stdout=out)
     payload = json.loads(out.getvalue())
 
     # B030/A-319. This fixture genuinely yields ONE `python:bool-const-flip`
@@ -1802,7 +1802,7 @@ operators = ["python:bool-const-flip"]
     from assay.cli import main
 
     out = io.StringIO()
-    exit_code = main(["plan", "whole", "--file", str(project.root / "assay.toml")], stdout=out)
+    exit_code = main(["plan", "--json", "whole", "--file", str(project.root / "assay.toml")], stdout=out)
     payload = json.loads(out.getvalue())
 
     assert exit_code == 0
@@ -1889,7 +1889,7 @@ operators = ["python:bool-const-flip"]
     out = io.StringIO()
     err = io.StringIO()
     exit_code = main(
-        ["plan", "whole", "--file", str(project.root / "assay.toml")],
+        ["plan", "--json", "whole", "--file", str(project.root / "assay.toml")],
         stdout=out,
         stderr=err,
     )
@@ -1971,7 +1971,7 @@ def test_plan_accepts_a_valid_shard(tmp_path):
 
     path = _write_plan_fixture(tmp_path)
     out = io.StringIO()
-    exit_code = main(["plan", "package", "--shard", "0/2", "--file", str(path)], stdout=out)
+    exit_code = main(["plan", "--json", "package", "--shard", "0/2", "--file", str(path)], stdout=out)
     payload = json.loads(out.getvalue())
     assert exit_code == 0
     assert payload["shard"] == "0/2"
@@ -2008,7 +2008,7 @@ def test_plan_refuses_an_out_of_range_shard_with_a_clean_exit_not_a_crash(tmp_pa
 
     path = _write_plan_fixture(tmp_path)
     out, err = io.StringIO(), io.StringIO()
-    exit_code = main(["plan", "package", "--shard", "5/2", "--file", str(path)], stdout=out, stderr=err)
+    exit_code = main(["plan", "--json", "package", "--shard", "5/2", "--file", str(path)], stdout=out, stderr=err)
     assert exit_code != 0
     assert "shard index 5 is outside" in err.getvalue()
     assert out.getvalue() == ""
@@ -2019,7 +2019,7 @@ def test_plan_refuses_a_malformed_shard_spelling(tmp_path):
 
     path = _write_plan_fixture(tmp_path)
     out, err = io.StringIO(), io.StringIO()
-    exit_code = main(["plan", "package", "--shard", "not-a-shard", "--file", str(path)], stdout=out, stderr=err)
+    exit_code = main(["plan", "--json", "package", "--shard", "not-a-shard", "--file", str(path)], stdout=out, stderr=err)
     assert exit_code != 0
     assert "--shard must have the form INDEX/COUNT" in err.getvalue()
 
@@ -2033,7 +2033,7 @@ def test_plan_refuses_an_unknown_operator_with_a_clean_exit_not_a_crash(tmp_path
     path = _write_plan_fixture(tmp_path)
     out, err = io.StringIO(), io.StringIO()
     exit_code = main(
-        ["plan", "package", "--operators", "bogus:does-not-exist", "--file", str(path)],
+        ["plan", "--json", "package", "--operators", "bogus:does-not-exist", "--file", str(path)],
         stdout=out,
         stderr=err,
     )
@@ -2099,7 +2099,7 @@ def test_plan_estimates_with_the_60s_fallback_for_every_non_duration_spelling(
         tmp_path, budget_per_candidate_line=budget_per_candidate_line
     )
     out = io.StringIO()
-    exit_code = main(["plan", "package", "--file", str(path)], stdout=out)
+    exit_code = main(["plan", "--json", "package", "--file", str(path)], stdout=out)
     assert exit_code == 0
     payload = json.loads(out.getvalue())
     assert payload["status"] == "ok"

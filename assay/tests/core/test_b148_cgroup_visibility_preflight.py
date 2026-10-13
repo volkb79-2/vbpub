@@ -155,7 +155,7 @@ def test_plan_reports_selected_candidate_visibility_without_refusing(
     _unavailable(monkeypatch)
     out, err = io.StringIO(), io.StringIO()
 
-    code = main(["plan", "package", "--file", str(lane)], stdout=out, stderr=err)
+    code = main(["plan", "--json", "package", "--file", str(lane)], stdout=out, stderr=err)
 
     payload = json.loads(out.getvalue())
     assert code == 0
@@ -228,7 +228,7 @@ def test_over_limit_inventory_keeps_mutant_limit_refusal_after_r0(
     _unavailable(monkeypatch)
     plan_out, plan_err = io.StringIO(), io.StringIO()
     plan_code = main(
-        ["plan", "package", "--file", str(lane)],
+        ["plan", "--json", "package", "--file", str(lane)],
         stdout=plan_out,
         stderr=plan_err,
     )
@@ -263,7 +263,7 @@ def test_unsupported_native_discovery_does_not_claim_candidates(
     )
     plan_out, plan_err = io.StringIO(), io.StringIO()
     plan_code = main(
-        ["plan", "package", "--file", str(lane)],
+        ["plan", "--json", "package", "--file", str(lane)],
         stdout=plan_out,
         stderr=plan_err,
     )

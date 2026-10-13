@@ -121,7 +121,7 @@ run_b110_pilot_inner() {
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-pilot-plan.json -- \
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-      "$assay_bin" plan self-qualification --file assay.toml
+      "$assay_bin" plan self-qualification --json --file assay.toml
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -317,7 +317,7 @@ run_analysis_r2_pilot() {
   fi
   set +e
   timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-    "$assay_bin" plan analysis-r2 --file assay.toml --cold-witness > "$plan_path"
+    "$assay_bin" plan analysis-r2 --json --file assay.toml --cold-witness > "$plan_path"
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -451,7 +451,7 @@ run_b110_screen() {
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-screen-plan.json -- \
-    "$assay_bin" plan self-qualification --file assay.toml \
+    "$assay_bin" plan self-qualification --json --file assay.toml \
     || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
   set +e
   python3 "$project/tools/b110_pilot_safe_output.py" \
@@ -807,7 +807,7 @@ run_and_verify_lane() {
 
   if [[ "$expected_rigor" == *R2* ]]; then
     echo "B105_PHASE=assay-plan-$lane"
-    "$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2
+    "$assay_bin" plan "$lane" --json --file assay.toml > "$plan_path" || return 2
     plan_args=(--plan-json "$plan_path")
   fi
 

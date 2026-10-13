@@ -463,7 +463,7 @@ Check the candidate selection without running R0:
 
 ```bash
 mkdir -p .assay
-assay plan unit --file assay.toml > .assay/plan-unit.json
+assay plan unit --json --file assay.toml > .assay/plan-unit.json
 ```
 
 The plan's `resource_observation` object reports `applies_to =
@@ -1137,7 +1137,7 @@ admitting it, which is the auditability the flag exists to provide. Declare
 
 Use a pilot to measure a deterministic subset of a native R2 plan before
 committing to a full campaign. This is measurement only; it does not qualify
-B105. The selector requires the JSON from `assay plan`
+B105. The selector requires the JSON from `assay plan --json`
 for the current Git HEAD and tree, and refuses a dirty checkout. It reads the
 source files named by that plan, checks every row's `source_sha256`, and records
 the plan commit, tree, raw plan digest, and selected IDs in its report. A plan
@@ -1338,7 +1338,7 @@ run_pilot_phase() {
   timeout --verbose --signal=TERM --kill-after=30s "${budget_s}s" "$@"
 }
 set +e
-run_pilot_phase assay plan self-qualification --file assay.toml \
+run_pilot_phase assay plan self-qualification --json --file assay.toml \
   > "$pilot_plan"
 phase_status=$?
 set -e
@@ -3261,7 +3261,8 @@ command or creating mutant snapshots:
 assay plan worker_lane --file assay.toml
 ```
 
-The JSON output reports deterministic candidate IDs, total/per-file/per-operator counts, declared
+The default output is a concise human summary. Add `--json` for the full plan:
+deterministic candidate IDs, total/per-file/per-operator counts, declared
 worker concurrency, and runtime estimates. The candidate IDs and counts are the SAME ones a real
 `assay run` of that lane executes — plan resolves them against the same declared source roots, the
 same adapter, and the same `max_mutants`/operator selection.
@@ -3275,14 +3276,14 @@ suite can take longer than the declared bound or the placeholder. Treat them as 
 optional per-candidate bound, never as a forecast.
 
 The plan JSON also carries `lane`, `commit` and `tree` (the full object ids of
-the source it was made at), and `assay plan` prints a one-line hint on stderr
-(stdout stays one JSON document) naming the measured projection. To project
+the source it was made at), and `assay plan --json` prints a one-line hint on
+stderr (stdout stays one JSON document) naming the measured projection. To project
 the campaign from a measured baseline, save the plan and give it a progress
 file from a completed baseline at that same lane and commit, such as a
 preflight or an R0/R1 run:
 
 ```bash
-assay plan worker_lane --file assay.toml > plan.json
+assay plan worker_lane --json --file assay.toml > plan.json
 assay analyze plan-estimate --plan-json plan.json --progress .assay/progress-worker_lane.jsonl --workers 3
 ```
 
@@ -3307,7 +3308,7 @@ budget_per_candidate = "300s"
 `assay plan` enumerates Assay's native candidate inventory. An ingested lane
 such as the Stryker lane above has no such inventory: the foreign report does
 not provide the execution facts Assay needs for candidate-count estimates.
-`assay plan ui_mutation --file assay.toml` therefore returns JSON with
+`assay plan ui_mutation --json --file assay.toml` therefore returns JSON with
 `status = "unsupported"`, the lane, `reason_code = "MUTATION_UNSUPPORTED"`,
 and a named reason. Passing that result to `assay analyze plan-estimate`
 forwards the reason and exits `2`; it does not return a fabricated zero or
@@ -5408,7 +5409,7 @@ measured runtime before adding candidate costs to the projection. Exit codes:
 `complete_blockers` names why a campaign is incomplete. Without `--verdict`, a
 plan whose lane delegates its base to the request needs `--request-base`.
 
-- **Plan rows.** The JSON rows printed by `assay plan` carry `source_sha256` (the
+- **Plan rows.** The JSON rows printed by `assay plan --json` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the
   mutation applied) beside `path`, `lineno`, `operator`, `description`,
   `start_byte` and `end_byte`. `campaign` recomputes each `candidate_id` from

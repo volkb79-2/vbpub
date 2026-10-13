@@ -397,7 +397,7 @@ operators = ["python:compare-swap"]
 def test_op5_a_real_plan_and_a_real_run_progress_project_through_the_judge_entry_point(tmp_path):
     toml, head = _real_lane_repo(tmp_path)
     plan_out, plan_err = io.StringIO(), io.StringIO()
-    assert judge_cli.main(["plan", "package", "--file", str(toml)],
+    assert judge_cli.main(["plan", "--json", "package", "--file", str(toml)],
                           stdout=plan_out, stderr=plan_err) == 0
     plan = json.loads(plan_out.getvalue())
     assert plan["commit"] == head and plan["tree"] == _git(toml.parent, "rev-parse", "HEAD^{tree}")

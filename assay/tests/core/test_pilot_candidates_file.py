@@ -90,7 +90,7 @@ def _run(argv: list[str]) -> tuple[int, str, str]:
 
 
 def _plan(lane_file: Path, lane: str = "package") -> list[dict[str, object]]:
-    code, stdout, stderr = _run(["plan", lane, "--file", str(lane_file)])
+    code, stdout, stderr = _run(["plan", "--json", lane, "--file", str(lane_file)])
     assert code == 0, stderr
     document = json.loads(stdout)
     assert document["status"] == "ok"

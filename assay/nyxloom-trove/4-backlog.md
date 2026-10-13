@@ -12756,3 +12756,24 @@ unrelated children when multiple candidates or embedded callers overlap. The
 documented CLI boundary must explain that `execve` clears inherited
 `SA_NOCLDWAIT`, while unsupported in-process embedders must not enable it; no
 fragile `sigaction` ABI probe is required for the standalone CLI.
+
+## B166 — make Assay plan JSON output explicit
+
+**Status: IMPLEMENTED IN THE ASSAY 10 CANDIDATE; exact-tip gate pending.**
+
+`assay plan` emitted JSON by default while `assay lanes` used human-readable
+output by default and exposed JSON through `--json`. This made terminal output
+inconsistent and made scripts' plan-file creation look like ordinary text
+redirection.
+
+**Chosen behavior:** `assay plan` now prints a concise human summary by default
+and requires `--json` for the complete machine-readable plan. Update every
+internal plan-file producer, parser, example, and consumer guide to request
+JSON explicitly. Keep candidate detail in JSON rather than dumping unbounded
+rows into a terminal.
+
+**Oracle:** the default output is readable text with status, candidate count,
+worker count, estimates, and available summary facts; `--json` emits one
+complete JSON document with the existing schema and candidate rows. Registered
+Assay gates verify both paths and all in-repository JSON consumers pass the
+explicit flag.

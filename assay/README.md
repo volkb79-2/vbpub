@@ -73,7 +73,7 @@ an installed wheel or zipapp needs nothing extra:
   verdicts and progress to the current clean worktree's exact HEAD and tree.
 - `launcher` inspects an existing `tester-unified/run` evidence directory,
   including historical runs, at its explicitly expected commit.
-- `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
+- `plan-estimate` projects a campaign's hours from an `assay plan --json` file
   and a progress stream that holds a completed baseline (a preflight or an R0/R1
   run at the same commit and lane). Its JSON names that lane, and it refuses a
   plan/progress lane mismatch. It is a measured, advisory projection: it never
@@ -275,7 +275,7 @@ assay exists to close that gap mechanically, not by policy:
   capability-based: Assay probes the files and mount options instead of
   treating a kernel version as proof. If neither local interface is available,
   only R2 is unmeasured; R0/R1 remain and independent R3 can still run. Inspect
-  this with `assay plan` or `assay lanes --json`. See the
+  this with `assay plan --json` or `assay lanes --json`. See the
   [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   For a private cgroup namespace, the observer-only cgprofile socket
   must implement resource-observer contract 2, which reports the regular
@@ -298,7 +298,7 @@ assay exists to close that gap mechanically, not by policy:
   the explicitly configured observer-only socket; without a usable local view
   or observer, only the R2 claim is
   `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. R0/R1 evidence is retained
-  and independent R3 can still run. `assay plan` and `assay lanes --json`
+  and independent R3 can still run. `assay plan --json` and `assay lanes --json`
   report current availability. See the
   [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148-a-494)
   and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148-a-494).
@@ -426,6 +426,19 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
+
+#### Cross-cutting capabilities beyond language adapters
+
+| Capability | Current support | Limit |
+|---|---|---|
+| Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. A process-limit or OOM event during a candidate is `ERROR/EXEC_FAILED` and never a mutant kill. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
+| Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |
+| Campaign closeout | `assay analyze campaign` implements the phase-1 analysis of plan, progress, verdict, and supplied coverage inputs. | B108 remains open: phase-1 acceptance and documentation have residuals, and phase 2—Run-Gate's automatic post-lane closeout and SPEC wiring—is not implemented. |
+
+For the rationale and pasteable lane configuration, see the
+[resource-observation design](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
 
 The matrix describes language capability, not a qualification claim for every
 package. B131 declares a separate whole-target `analysis-r2` lane, but its
@@ -1045,7 +1058,7 @@ campaign state. See
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
 
 `assay analyze campaign` can summarize a completed B110 or B131 sample when
-given the exact JSON output from `assay plan` and its selector report. It checks that
+given the exact JSON output from `assay plan --json` and its selector report. It checks that
 the selected IDs and progress digest match those inputs; the result remains
 `incomplete` with `qualifying: false` and exit code 3. See the
 [pilot-analysis design](docs/DESIGN-GUIDE.md#analyze-a-bounded-pilot) and
@@ -1338,9 +1351,13 @@ Two more CLI verbs round out the surface:
   result because the foreign report does not expose Assay's candidate
   inventory; it cannot be used with `plan-estimate`. A successful native plan
   carries the lane, `commit` and `tree` it was made at, and its estimate is the
-  declared budget (a placeholder when none is numeric), not a measurement; save
-  that JSON and pass it to `assay analyze plan-estimate` for a measured
-  projection. The B105 R2 driver plans first and its checker refuses a report
+  declared budget (a placeholder when none is numeric), not a measurement. The
+  default output is a concise human summary; add `--json` for candidate rows
+  consumed by scripts. This follows `assay lanes`' human default and explicit
+  JSON mode; see the [output design](docs/DESIGN-GUIDE.md#17-cli-output-is-human-by-default-and-json-is-explicit)
+  and [consumer examples](docs/CONSUMERS.md#size-a-native-mutation-lane-before-running-it).
+  Save `assay plan --json` output and pass it to `assay analyze plan-estimate`
+  for a measured projection. The B105 R2 driver plans first and its checker refuses a report
   whose campaign is not exactly that complete, unsharded plan at the expected
   commit and tree.
 - `assay verify <verdict.json>` independently re-checks that a verdict

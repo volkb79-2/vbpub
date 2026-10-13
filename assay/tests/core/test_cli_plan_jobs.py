@@ -137,7 +137,7 @@ def _load(toml: Path) -> tuple[LaneFile, object]:
 
 def _plan_payload(toml: Path, *extra: str) -> dict:
     out = io.StringIO()
-    code = main(["plan", "package", "--file", str(toml), *extra], stdout=out, stderr=io.StringIO())
+    code = main(["plan", "--json", "package", "--file", str(toml), *extra], stdout=out, stderr=io.StringIO())
     assert code == 0
     return json.loads(out.getvalue())
 
@@ -525,7 +525,7 @@ operators = ["python:compare-swap"]
 
     out, err = io.StringIO(), io.StringIO()
     code = main(
-        ["plan", "package", "--file", str(toml)],
+        ["plan", "--json", "package", "--file", str(toml)],
         stdout=out,
         stderr=err,
     )

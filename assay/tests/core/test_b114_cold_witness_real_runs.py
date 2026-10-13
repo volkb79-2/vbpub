@@ -362,7 +362,7 @@ def test_assay_run_cold_witness_covers_early_kill_survivor_and_one_fallback(
 
     plan_stdout, plan_stderr = io.StringIO(), io.StringIO()
     plan_code = cli.main(
-        ["plan", "package", "--file", str(config)],
+        ["plan", "--json", "package", "--file", str(config)],
         stdout=plan_stdout,
         stderr=plan_stderr,
     )
@@ -524,7 +524,7 @@ def test_assay_run_liveness_hook_replacement_falls_back_to_declared_command(
 
     plan_stdout, plan_stderr = io.StringIO(), io.StringIO()
     plan_code = cli.main(
-        ["plan", "package", "--file", str(config)],
+        ["plan", "--json", "package", "--file", str(config)],
         stdout=plan_stdout,
         stderr=plan_stderr,
     )

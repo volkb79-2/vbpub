@@ -388,6 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan.add_argument("lane", help="the mutation lane name to inspect")
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the full plan as JSON for scripts and machine consumers",
+    )
     plan.add_argument("--operators", default=None)
     plan.add_argument(
         "--cold-witness",
@@ -4182,12 +4187,82 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             cgroup_capability.reason if cgroup_capability is not None else None
         ),
     }
-    rendered_payload = json.dumps(payload, indent=2, sort_keys=True)
     deadline_check()
-    print(rendered_payload, file=out)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    else:
+        _render_plan_text(payload, out)
     if payload["status"] == "ok" and err is not None:
         print(PLAN_ESTIMATE_HINT, file=err)
     return 0
+
+
+def _render_plan_text(payload: dict[str, Any], out: TextIO) -> None:
+    """Render the concise human view of a plan; ``--json`` carries full rows."""
+    lane = payload["lane"]
+    print(f"Mutation plan for {lane}", file=out)
+    print(f"Status: {payload['status']}", file=out)
+    if payload["status"] != "ok":
+        print(f"Reason: {payload['reason']}", file=out)
+        return
+
+    print(f"Commit: {payload['commit']}", file=out)
+    print(f"Tree: {payload['tree']}", file=out)
+    print(
+        f"Candidates: {payload['candidate_count']} / "
+        f"{payload['max_mutants']} maximum",
+        file=out,
+    )
+    print(
+        f"Workers: {payload['jobs']}; per-candidate budget: "
+        f"{payload['budget_per_candidate']}",
+        file=out,
+    )
+    if payload.get("shard") is not None:
+        print(f"Shard: {payload['shard']}", file=out)
+    print(
+        "Estimated runtime: "
+        f"{payload['estimated_serial_seconds']:.1f}s serial, "
+        f"{payload['estimated_wall_seconds']:.1f}s wall-clock",
+        file=out,
+    )
+    if payload["by_operator"]:
+        print(
+            "By operator: "
+            + ", ".join(
+                f"{name}={count}" for name, count in payload["by_operator"].items()
+            ),
+            file=out,
+        )
+    if payload["by_file"]:
+        print(
+            "By file: "
+            + ", ".join(
+                f"{name}={count}" for name, count in payload["by_file"].items()
+            ),
+            file=out,
+        )
+    observation = payload.get("resource_observation", {})
+    if observation.get("available") is False:
+        print(
+            f"Resource observation: unavailable ({observation.get('reason')})",
+            file=out,
+        )
+    cold_witness = payload.get("cold_witness")
+    if cold_witness is not None:
+        if cold_witness["eligible"]:
+            print("Cold witness: eligible", file=out)
+        else:
+            print(f"Cold witness: refused ({cold_witness['refusal']})", file=out)
+    reuse = payload.get("reuse_from")
+    if reuse is not None:
+        counts = reuse["classification_counts"]
+        rendered_counts = ", ".join(
+            f"{name}={count}" for name, count in counts.items()
+        ) or "none"
+        print(f"Prior-verdict classifications: {rendered_counts}", file=out)
+    if payload.get("candidates"):
+        print("Use --json for candidate identities and detailed evidence.", file=out)
 
 
 def _cold_witness_plan_preview(
