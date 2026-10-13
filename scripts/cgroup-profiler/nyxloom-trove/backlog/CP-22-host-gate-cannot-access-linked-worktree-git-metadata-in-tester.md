@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-22
 title: "Host gate cannot access linked-worktree Git metadata in tester-unified"
-status: open
+status: fixed
 type: "bugfix"
 severity: "high"
 component: "gate"
@@ -13,6 +13,8 @@ filed_by: "vbpub maintenance"
 spec_owner: "cgroup-profiler gate"
 priority: 1
 filed_date: "2026-10-12"
+closed_date: "2026-10-13"
+closed_reason: "The registered r0-r1 coverage lane passed against the linked worktree at 1be40b03a: 2,556 tests passed with 100% line and branch coverage. The gate exercised the live read-only checkout and Git-common-directory mounts under dev-gates.slice."
 ---
 
 ## Observed mechanism and reproduction
