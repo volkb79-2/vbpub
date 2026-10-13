@@ -765,6 +765,9 @@ cmru's gate has no enrollment lane (see "Installer extensions" under `cmru get-p
 Before tester-unified starts, the host gate points all visible root and selected
 project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.
+Its inventory scans the full tester-visible working tree, including ignored
+virtual environments, dependency directories, and generated caches; it does not
+skip those directories just because Git ignores them.
 CMRU's registered release gate requires a linked Git worktree and refuses a
 main checkout: the mounted main tree can contain publisher secrets under sibling
 worktrees. Run the gate from a CMRU or CIU worktree instead. See the
@@ -773,11 +776,11 @@ It uses CMRU's scoped Git auth on the host to prepare token-free origin facts
 for mutation, then restores the original secret files. If restoration fails,
 the gate reports and retains the private backup path for recovery. If a nested
 worktree containing an overlay disappears or is replaced during the gate, CMRU
-does not write the saved secret into a new tree: it warns and retains the
-private backup while preserving the lane result. If a credential is atomically
-replaced while the gate masks or runs, CMRU preserves the replacement and fails
-the gate instead of replacing it with stale bytes. SIGTERM and SIGHUP also run
-the restoration path. See the
+does not write the saved secret into a new tree: it reports the incomplete
+restore, retains the private backup, and fails the gate. If a credential is
+atomically replaced while the gate masks or runs, CMRU preserves the
+replacement and fails the gate instead of replacing it with stale bytes.
+SIGTERM and SIGHUP also run the restoration path. See the
 [gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 When inventory encounters an unreadable directory, it derives the tester UID
 from the final `USER` in `tester-unified/Dockerfile`. It skips only a directory

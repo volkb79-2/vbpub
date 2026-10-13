@@ -657,15 +657,16 @@ The gate-side masker handles credential files physically inside the selected
 linked worktree. CMRU refuses its release gate from a main checkout because
 Run-Gate mounts the whole selected path, which can include sibling publisher
 secrets under `.worktrees/`. In a linked worktree, sibling checkouts are outside
-the mount; the inventory scans the selected tree, including any nested
-`.worktrees/`, but never walks the shared Git common directory or external
-sibling worktrees. This also keeps a transient file in another worktree from
-affecting restoration during a long gate (CMRU KI-64/65). Each overlay is
+the mount; the inventory scans every tester-visible working-tree directory,
+including ignored virtual environments, dependency directories, generated
+caches and nested `.worktrees/`, but never walks the shared Git common directory
+or external sibling worktrees. This also keeps a transient file in another
+worktree from affecting restoration during a long gate (CMRU KI-64/65/73). Each overlay is
 bound to its parent directory identity. If a nested worktree disappears or is
-replaced during the gate, restoration skips that path, warns with the private
-backup location, and keeps the original bytes outside the checkout. It never
-writes an old credential into a new worktree at the same pathname, and this
-concurrent removal alone does not turn passing lanes into a gate failure.
+replaced during the gate, restoration never writes an old credential into the
+new tree. It retains the private backup and fails the release gate because the
+original file was not restored at its recorded path; passing lanes cannot
+certify an incomplete restore.
 Run-Gate RG-NARROW
 mounts a linked lane's judged worktree plus sanitized Git metadata, so a
 release worktree cannot see the caller checkout's secret files.

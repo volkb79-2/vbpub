@@ -125,6 +125,15 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
     tmp_path, monkeypatch,
 ):
     repo, root_secret, project_secret, metadata, _auth, calls = _fixture(tmp_path, monkeypatch)
+    venv_secret = repo / ".venv" / "cmru.secret.toml"
+    venv_secret.parent.mkdir()
+    venv_secret.write_bytes(b"virtualenv publisher credential\n")
+    venv_metadata = (
+        stat.S_IMODE(venv_secret.stat().st_mode),
+        venv_secret.stat().st_mtime_ns,
+        venv_secret.stat().st_uid,
+        venv_secret.stat().st_gid,
+    )
     sibling_secret = tmp_path / "sibling-worktree" / "cmru.secret.toml"
     sibling_secret.parent.mkdir()
     sibling_secret.write_bytes(b"unrelated worktree credential\n")
@@ -142,7 +151,7 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
         assert project_secret.is_symlink()
         assert sibling_secret.is_file() and not sibling_secret.is_symlink()
         assert sibling_secret.read_bytes() == b"unrelated worktree credential\n"
-        for path in (root_secret, project_secret):
+        for path in (root_secret, project_secret, venv_secret):
             target = Path(os.readlink(path)) if path.is_symlink() else None
             assert target is not None and target.is_absolute()
             assert not target.is_relative_to(repo)
@@ -166,6 +175,13 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
     assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary"]
     assert root_secret.read_bytes() == b"root credential\n"
     assert project_secret.read_bytes() == b"project override\n"
+    assert venv_secret.read_bytes() == b"virtualenv publisher credential\n"
+    assert (
+        stat.S_IMODE(venv_secret.stat().st_mode),
+        venv_secret.stat().st_mtime_ns,
+        venv_secret.stat().st_uid,
+        venv_secret.stat().st_gid,
+    ) == venv_metadata
     assert sibling_secret.read_bytes() == b"unrelated worktree credential\n"
     assert {
         path: (
@@ -249,8 +265,27 @@ def test_linked_worktree_inventory_includes_nested_worktree_secrets(tmp_path):
     assert nested_secret in found
 
 
+@pytest.mark.parametrize(
+    "directory_name",
+    [".venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"],
+)
+def test_linked_worktree_inventory_includes_secrets_in_tester_visible_generated_dirs(
+    tmp_path, directory_name,
+):
+    linked = tmp_path / "linked-worktree"
+    project = linked / "cmru"
+    project.mkdir(parents=True)
+    secret = linked / directory_name / "cmru.secret.toml"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("hidden publisher credential", encoding="utf-8")
+
+    found = run_release_gate._secret_overlay_paths(linked, project)
+
+    assert secret in found
+
+
 def test_release_gate_retains_secret_backup_when_nested_worktree_disappears(
-    tmp_path, monkeypatch, capsys,
+    tmp_path, monkeypatch,
 ):
     repo, root_secret, project_secret, _metadata, _auth, _calls = _fixture(
         tmp_path, monkeypatch,
@@ -276,23 +311,27 @@ def test_release_gate_retains_secret_backup_when_nested_worktree_disappears(
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    with pytest.raises(RuntimeError, match="publisher-secret restoration incomplete") as failure:
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
 
-    warning = capsys.readouterr().err
-    assert "WARN" in warning
-    assert str(nested_secret) in warning
-    backup_path = Path(warning.split("original retained at ", 1)[1].strip())
+    message = str(failure.value)
+    assert str(nested_secret) in message
+    backup_root = Path(message.rsplit("private backups retained at ", 1)[1])
+    backup_path = next(
+        path for path in backup_root.glob("overlay-*.bin")
+        if path.read_bytes() == b"nested publisher credential\n"
+    )
     assert backup_path.is_file()
     assert backup_path.read_bytes() == b"nested publisher credential\n"
     assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(backup_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(backup_root.stat().st_mode) == 0o700
     assert not root_secret.is_symlink()
     assert not project_secret.is_symlink()
     assert nested_secret.read_bytes() == b"replacement publisher credential\n"
 
 
 def test_release_gate_retains_backup_when_nested_worktree_disappears(
-    tmp_path, monkeypatch, capsys,
+    tmp_path, monkeypatch,
 ):
     repo, _root_secret, _project_secret, _metadata, _auth, _calls = _fixture(
         tmp_path, monkeypatch,
@@ -309,18 +348,23 @@ def test_release_gate_retains_backup_when_nested_worktree_disappears(
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    with pytest.raises(RuntimeError, match="publisher-secret restoration incomplete") as failure:
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
 
-    warning = capsys.readouterr().err
-    assert "WARN" in warning and str(nested_secret) in warning
-    backup_path = Path(warning.split("original retained at ", 1)[1].strip())
+    message = str(failure.value)
+    assert str(nested_secret) in message
+    backup_root = Path(message.rsplit("private backups retained at ", 1)[1])
+    backup_path = next(
+        path for path in backup_root.glob("overlay-*.bin")
+        if path.read_bytes() == b"nested publisher credential\n"
+    )
     assert backup_path.read_bytes() == b"nested publisher credential\n"
     assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
     assert not nested.exists()
 
 
 def test_release_gate_parent_swap_after_binding_never_writes_into_replacement(
-    tmp_path, monkeypatch, capsys,
+    tmp_path, monkeypatch,
 ):
     repo, _root_secret, _project_secret, _metadata, _auth, _calls = _fixture(
         tmp_path, monkeypatch,
@@ -355,12 +399,17 @@ def test_release_gate_parent_swap_after_binding_never_writes_into_replacement(
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
-    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    with pytest.raises(RuntimeError, match="publisher-secret restoration incomplete") as failure:
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert swapped
     assert nested_secret.read_bytes() == b"replacement nested credential\n"
-    warning = capsys.readouterr().err
-    assert "WARN" in warning and str(nested_secret) in warning
-    backup_path = Path(warning.split("original retained at ", 1)[1].strip())
+    message = str(failure.value)
+    assert str(nested_secret) in message
+    backup_root = Path(message.rsplit("private backups retained at ", 1)[1])
+    backup_path = next(
+        path for path in backup_root.glob("overlay-*.bin")
+        if path.read_bytes() == b"original nested credential\n"
+    )
     assert backup_path.read_bytes() == b"original nested credential\n"
     assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
 

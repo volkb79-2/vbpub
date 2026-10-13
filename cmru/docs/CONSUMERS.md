@@ -779,18 +779,19 @@ Run-Gate's narrow mount keeps a linked release lane from seeing secrets in the
 caller checkout or sibling worktrees. CMRU's registered release gate requires
 a linked Git worktree and refuses a main checkout: the whole mounted main tree
 can include publisher secrets under sibling `.worktrees/`. Inside the selected
-linked worktree, CMRU masks root and project `cmru.secret.toml` files. Its
-inventory scans the selected tree, including nested `.worktrees/`, but never
-walks the shared Git directory or external sibling worktrees (KI-64/65). It points those
+linked worktree, CMRU masks every `cmru.secret.toml` in the tester-visible
+working tree, including ignored virtual environments, dependency directories,
+generated caches, and nested `.worktrees/`. It never walks the shared Git
+directory or external sibling worktrees (KI-64/65/73). It points those
 visible overlays at private host backups outside the judged worktree, strips
 publisher-token and extra-mount variables from nested runner calls, and
 restores the files when the gate exits, including on SIGTERM or SIGHUP. If restoration
 fails, the gate reports and retains the private backup path for recovery. If a credential is
 atomically replaced during the gate, CMRU preserves the replacement and fails rather than
 overwriting it with saved bytes. If a nested worktree disappears or is replaced,
-CMRU warns and retains the original secret backup rather than writing that
-secret into a new tree at the same path; this concurrent removal does not turn
-passing lanes into a gate failure. The host uses CMRU's scoped Git auth to prepare origin facts for
+CMRU fails the gate and retains the original secret backup rather than writing
+that secret into a new tree at the same path. Passing lanes cannot hide an
+incomplete restore. The host uses CMRU's scoped Git auth to prepare origin facts for
 the mutation lane; those facts contain tag names and commit IDs, not credentials. See the
 [gate credential design](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 When inventory hits an unreadable directory, it uses the final `USER` in the

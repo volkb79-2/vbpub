@@ -426,12 +426,15 @@ def _mask_secret_overlays(
                     f"{exc}; private publisher-secret backups retained at {backup_root}"
                 ) from exc
             if retained:
-                for item in retained:
-                    print(
-                        "cmru-release-gate: WARN: secret parent disappeared or changed; "
-                        f"not restoring {item.path}; original retained at {item.backup}",
-                        file=sys.stderr,
-                    )
+                details = "; ".join(
+                    f"{item.path} (original retained at {item.backup})"
+                    for item in retained
+                )
+                raise RuntimeError(
+                    "publisher-secret restoration incomplete because a secret parent "
+                    f"disappeared or changed: {details}; private backups retained at "
+                    f"{backup_root}"
+                )
             else:
                 try:
                     shutil.rmtree(backup_root)
@@ -528,10 +531,11 @@ def _secret_overlay_paths(
                     return
         raise RuntimeError(f"cannot inventory CMRU secret overlays: {error}") from error
 
-    pruned = {
-        ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
-        ".venv", "__pycache__", "node_modules", "venv",
-    }
+    # The tester mounts the selected worktree as a whole. Virtual environments,
+    # bytecode caches and dependency directories are still visible to the lane,
+    # so a cmru.secret.toml hidden there must be masked too. Only Git metadata
+    # is excluded from this working-tree inventory.
+    pruned = {".git"}
     for current, directories, files in os.walk(
         repo_root, topdown=True, followlinks=False, onerror=traversal_failed,
     ):

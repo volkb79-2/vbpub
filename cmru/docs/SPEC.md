@@ -2990,8 +2990,12 @@ The registered CMRU release gate MUST run from a linked Git worktree. It MUST
 refuse a main checkout before masking secrets or launching a lane because the
 whole mounted main path can include publisher secrets from sibling checkouts
 under `.worktrees/`. A linked worktree's inventory covers secret files inside
-that selected tree, including nested `.worktrees/`, and does not traverse the
-shared Git directory or external sibling worktrees.
+every tester-visible working-tree directory, including ignored virtual
+environments, dependency directories, generated caches, and nested
+`.worktrees/`; it does not traverse the shared Git directory or external
+sibling worktrees. An incomplete restore after a parent disappears or changes
+MUST fail the gate while retaining the private backup and MUST NOT write the
+old secret into a replacement directory.
 
 **S16.5 — Real enrollment (moved to ciu).** cmru no longer ships host enrollment:
 `get.py enroll` is ciu-owned code inlined through the installer `extensions`

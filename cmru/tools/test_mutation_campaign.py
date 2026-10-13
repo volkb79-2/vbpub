@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib
 import json
+import py_compile
 import subprocess
 import sys
-import builtins
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -383,6 +385,48 @@ def test_assay_source_status_allows_only_generated_cache_and_egg_info(tmp_path):
     (egg_info / "PKG-INFO").write_text("generated\n", encoding="utf-8")
 
     assert mutation_campaign._assay_source_tree_status(assay) == ""
+
+
+def test_mutation_campaign_uses_a_fresh_cache_before_importing_assay_source(
+    tmp_path, monkeypatch,
+):
+    source_root = tmp_path / "source"
+    package = source_root / "assay_cache_probe"
+    cache = package / "__pycache__"
+    cache.mkdir(parents=True)
+    source = package / "__init__.py"
+    source.write_text("VALUE = 'unchecked cache'\n", encoding="utf-8")
+    bytecode = cache / f"__init__.{sys.implementation.cache_tag}.pyc"
+    py_compile.compile(
+        str(source),
+        cfile=str(bytecode),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+    )
+    source.write_text("VALUE = 'committed source'\n", encoding="utf-8")
+    stale = bytearray(bytecode.read_bytes())
+    stale[4:8] = (1).to_bytes(4, "little")  # PEP 552 unchecked-hash cache.
+    bytecode.write_bytes(stale)
+
+    monkeypatch.delitem(sys.modules, "assay_cache_probe", raising=False)
+
+    original_sys_path = list(sys.path)
+
+    def import_from_assay_source(_argv, *, template_root):
+        assert template_root.is_absolute()
+        assert sys.pycache_prefix is not None
+        assert "cmru-mutation-campaign-" in sys.pycache_prefix
+        sys.path.insert(0, str(source_root))
+        try:
+            module = importlib.import_module("assay_cache_probe")
+            return 0 if module.VALUE == "committed source" else 1
+        finally:
+            sys.path[:] = original_sys_path
+
+    monkeypatch.setattr(mutation_campaign, "_run_campaign", import_from_assay_source)
+
+    assert mutation_campaign.run([]) == 0
+    sys.modules.pop("assay_cache_probe", None)
 
 
 def test_assay_source_status_refuses_a_stale_pyc_outside_pycache(tmp_path):
