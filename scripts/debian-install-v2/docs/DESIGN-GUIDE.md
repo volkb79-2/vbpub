@@ -51,6 +51,33 @@ mutually-exclusive group in `cli-extended`, so parser enforcement, error help,
 and the displayed synopsis all come from the same metadata rather than a
 hand-maintained usage string.
 
+## Cloud-init cache cleanup policy
+
+`cloud_init_cleanup_mode` is part of the shared validated `Config`, not a
+separate command-line switch, so it travels with saved profiles and the
+provider-neutral custom-script bundle. `retain` is the default. The other
+modes run only after all stage-two install actions complete; earlier stage-two
+failures leave the cloud-init cache available for diagnosis. A failure in the
+cleanup action itself is reported as a stage-two failure and may have partially
+cleaned cloud-init state.
+
+The policy deliberately separates removing only raw `user-data.txt` from
+running `cloud-init clean`. A clean resets cloud-init's run state, so its
+stages run again on the next boot. `clean-all` adds `--logs --seed`, but not
+`--configs all`: cloud-init does not preserve a pristine copy of files for
+rollback. Its cleanup implementation removes specific paths it recognizes as
+cloud-init-generated, without comparing them to later edits; it does not
+restore a vanilla file. Removing those paths could therefore discard
+configuration changes made by this installer. The mode also omits
+`--machine-id` (intended for golden-image cloning) and `--reboot`.
+
+`--seed` clears only cloud-init's guest-side seed cache. It cannot detach an
+ISO from the VM, and a still-attached NoCloud ISO can supply the same
+user-data again after a clean. Operators should account for that before the
+next boot. `cloud-init clean` also executes any local cleanup hooks installed
+under `/etc/cloud/clean.d/`; these remain the host administrator's
+responsibility.
+
 ## Prompt library boundary
 
 The prompt package is an optional dependency and is imported only by the

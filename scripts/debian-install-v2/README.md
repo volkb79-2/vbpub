@@ -75,6 +75,30 @@ automatic color on a TTY, `NO_COLOR`/`--no-color` to disable, and `--color` to
 force it. JSON and primary status/plan results remain uncolored. The installer
 does not add its own ANSI formatting.
 
+## Cloud-init cache cleanup policy
+
+The shared config/profile key `cloud_init_cleanup_mode` controls cloud-init
+cache handling for cloud-init-based installs after all stage-two install
+actions succeed. The default, `retain`, leaves the cache untouched—including
+cloud-init's raw `/var/lib/cloud/instance/user-data.txt`, which may contain
+credentials. Earlier stage-two failures do not invoke cleanup.
+
+| Value | Effect after successful stage two |
+| --- | --- |
+| `retain` | Keep all cloud-init cache data (default). |
+| `userdata-only` | Remove only `/var/lib/cloud/instance/user-data.txt`. |
+| `clean` | Run `cloud-init clean`; clear cloud-init run state while retaining logs and the guest's cached seed. |
+| `clean-all` | Run `cloud-init clean --logs --seed`; also remove cloud-init logs and the guest's cached seed. |
+
+Both clean modes make cloud-init run its stages again on the next boot. If the
+same NoCloud seed ISO is still attached, cloud-init may process the same
+user-data again; `--seed` removes only the guest's local cached seed, not the
+attached ISO. `clean-all` intentionally does not pass `--configs all`,
+`--machine-id`, or `--reboot`, so it does not ask cloud-init to remove the
+installed SSH/network/fstab configuration, reset this VM's identity, or reboot
+immediately. See the [design rationale](docs/DESIGN-GUIDE.md#cloud-init-cache-cleanup-policy)
+and the [consumer example](docs/CONSUMERS.md#cloud-init-cache-policy).
+
 ## What it actually does today
 
 ### Disk / swap
