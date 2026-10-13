@@ -339,7 +339,12 @@ statuses map to PASS only at zero, and pytest 5 is FAIL with reason
 `pytest-collected-no-tests`. Assay's `NO_MEASUREMENT` and `INCONCLUSIVE`
 outcomes are FAIL except `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`,
 which is gate ERROR. Use verdict plus the raw code; never infer that run-gate
-itself returned an ERROR from a raw lane code of 2.
+itself returned an ERROR from a raw lane code of 2. For Assay lanes, the
+artifact's `exit_code` must be a non-boolean integer equal to the process
+status, and must match the outcome's closed Assay code table. If the artifact
+is missing that field or either comparison disagrees, the gate returns
+infrastructure ERROR while retaining the runner's raw status and Assay
+outcome. This prevents a PASS artifact from overriding a failing process.
 
 ### Init reaping and resource events
 

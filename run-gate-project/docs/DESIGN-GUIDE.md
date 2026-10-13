@@ -278,6 +278,19 @@ its event window cannot be attributed. See the
 The v16 reason-code mapping requires Assay 10.0.0 or newer because older
 versions do not provide the independent claim and evidence rollup it inspects.
 
+### Assay result requires agreement between process and artifact
+
+An Assay verdict artifact is not a substitute for the process status that
+produced it. Run-Gate compares the raw lane exit with the artifact's top-level
+`exit_code`, then checks that this code matches the outcome's closed table
+(PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3, BUDGET_EXCEEDED 4,
+INCONCLUSIVE 5). Missing, malformed, or disagreeing codes produce infrastructure
+ERROR with the raw runner status and Assay outcome preserved. The gate does not
+repair a mismatch by trusting whichever source says PASS: the artifact can be
+stale or forged, while the process can fail after writing its verdict. This
+comparison keeps both facts visible and fails closed only on an actual
+inconsistency.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral

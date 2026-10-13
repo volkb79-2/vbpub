@@ -111,6 +111,12 @@ five process statuses: **PASS 0**, **FAIL 1**, **ERROR 2**, **NOT_RUN 3**, or
 `--json` to read `verdict`, raw `exit_code`, `reason`, `log_path`, and assay
 outcome and admission as structured result fields. The full mapping is in
 [the CLI contract](SPEC.md#2-cli-contract).
+For an Assay lane, run-gate verifies that the process exit code equals the
+verdict artifact's `exit_code`, and that the artifact's outcome uses Assay's
+closed exit table (PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3,
+BUDGET_EXCEEDED 4, INCONCLUSIVE 5). A missing or inconsistent value is
+infrastructure ERROR with the raw process code and Assay outcome retained; a
+PASS verdict alone cannot override a failed runner.
 NOT_RUN reasons are closed: realness-mismatch, service-down,
 environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
