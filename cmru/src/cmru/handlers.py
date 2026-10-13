@@ -46,6 +46,11 @@ from cmru.release_notes import (
 )
 
 
+def _notes_kwargs(release_notes: Optional[ReleaseNotes]) -> dict:
+    """A project without curated notes publishes through the unchanged call shape."""
+    return {} if release_notes is None else {"release_notes": release_notes}
+
+
 def _curated_release_notes(
     cwd: Path, version: str, build_output: Optional[dict],
 ) -> Optional[ReleaseNotes]:
@@ -145,7 +150,7 @@ def _publish_versioned_artifacts(
     """Publish selected files, isolating retained records from publisher byproducts."""
     # A project that declares no curated notes publishes exactly the generated
     # body, so the keystone is called without the argument.
-    curated = {} if release_notes is None else {"release_notes": release_notes}
+    curated = _notes_kwargs(release_notes)
     if build_output is None:
         return publish_versioned(
             gh, prefix=prefix, version=version, asset_path=asset_path,
@@ -493,7 +498,7 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=wheel,
         notes=notes, extra_assets=extras or None, build_output=build_output,
-        release_notes=release_notes,
+        **_notes_kwargs(release_notes),
     )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
@@ -559,7 +564,7 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=art,
         notes=notes, extra_assets=None, build_output=build_output,
-        release_notes=release_notes,
+        **_notes_kwargs(release_notes),
     )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)
