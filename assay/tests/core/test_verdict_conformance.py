@@ -64,7 +64,12 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT, why_invalid, zero_resource_limit_evidence_dict
+from conftest import (
+    PROJECT_ROOT,
+    process_tree_evidence_dict,
+    why_invalid,
+    zero_resource_limit_evidence_dict,
+)
 from jsonschema import Draft202012Validator
 
 from assay.cli import main
@@ -1397,7 +1402,7 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: Carries forward the retired W9 gate phase's
 #: `test_shipped_schema_is_byte_identical_to_the_locked_v16_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    16: "67fea043a7b517406fe6d10e011bb7ce831113305a232e578d4e6ddc4865c881",
+    16: "700a0afd0ad3c46fcdc9b41d23ac3e7b993b5e755a2a8c62f0ebd9a07e574fc4",
 }
 
 
@@ -1479,6 +1484,7 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
             "mutated_file_sha256": mutated_digest,
             "execution": {"mode": "full"},
             "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+            "process_tree_evidence": process_tree_evidence_dict(),
         }
     )
     claim["mutation"][bucket] = [survivor]
@@ -1506,6 +1512,24 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
 
 
 # --- B050/A-427/DA-R22: the floor is READ FROM THE DOCUMENT ----------------
+
+
+def test_verify_rejects_inconsistent_process_tree_signal_counts(
+    validator: Draft202012Validator,
+):
+    document = _load("r2_fail_mutants_survived.json")
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    entry = claim["mutation"]["killed"][0]
+    evidence = entry["process_tree_evidence"]
+    evidence["outliving_descendants"] = 0
+    evidence["descendants_signalled"] = 1
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "more signalled descendants than outliving descendants" in failure
+        for failure in failures
+    ), failures
 
 
 def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
@@ -1557,6 +1581,7 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
                 "mutated_file_sha256",
                 "execution",
                 "resource_limit_evidence",
+                "process_tree_evidence",
             ):
                 mutant.pop(field, None)
     return document

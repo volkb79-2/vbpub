@@ -13,6 +13,8 @@ module (AUTHORING.md §3b.A).
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import subprocess
 import json
 import os
@@ -29,8 +31,12 @@ from assay.adapters.python import PythonAdapter
 from assay import isolation as isolation_module
 from assay import mutation as mutation_module, runner as runner_module
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.process_tree import ProcessTreeError
 from assay.mutation import MutationTarget, candidate_id, collect_mutation_sites, run_mutation
-from assay.resource_limits import ResourceLimitCounters
+from assay.resource_limits import (
+    ResourceLimitCounters,
+    ResourceLimitObservationError,
+)
 from assay.runner import execute_command
 
 #: Five independent mutable sites (one per line -- each an unrelated
@@ -79,7 +85,7 @@ def _resource_counters_are_faked_for_executor_unit_tests(monkeypatch):
 
 
 def _always_pass(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+    return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
 
 class _RecordingExecutor:
@@ -394,13 +400,13 @@ def _decide5(repo_path: Path, behaviours):
             if f"{name} = False" in source
         ]
         if not changed:
-            return subprocess.CompletedProcess(list(argv), 0, "", "")
+            return completed_process(list(argv), 0, "", "")
         assert len(changed) == 1, f"expected one mutated site, found {changed}"
         action = behaviours.get(changed[0])
         if action is not None:
             return action(argv, cwd)
         # Default: the suite fails, so the mutant is killed.
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     return process_runner
 
@@ -493,6 +499,46 @@ def _run_queue_case(
     assert baseline.outcome is Outcome.PASS
     assert result is not None
     return (result, repo) if return_repo else result
+
+
+def test_after_counter_failure_does_not_hide_process_tree_cleanup_failure(
+    tmp_path, monkeypatch
+):
+    zero = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    reads = 0
+
+    def counters():
+        nonlocal reads
+        reads += 1
+        if reads == 3:  # preflight, before candidate, then failed after-read
+            raise ResourceLimitObservationError("observer disappeared")
+        return zero
+
+    def fail_to_prove_cleanup(*_args, **_kwargs):
+        raise ProcessTreeError("the command window is not empty")
+
+    monkeypatch.setattr(runner_module, "execute_plan", fail_to_prove_cleanup)
+    with pytest.raises(AssayError, match="process-tree cleanup") as failure:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="observer-and-process-tree-failure",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_always_pass,
+            resource_counter_reader=counters,
+        )
+
+    assert failure.value.outcome is Outcome.ERROR
+    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
+    assert reads == 3
 
 
 def test_campaign_plan_mismatch_refuses_before_executor_or_candidate_state(
@@ -592,7 +638,7 @@ def test_resume_reexecutes_state_bound_to_different_campaign_deadline_bytes(
 
     def pass_candidate(argv, cwd):
         calls.append(Path(cwd).name)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     progress_events: list[dict] = []
     resumed = _run_queue_case(
@@ -632,7 +678,7 @@ def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
 
     def timeout_candidate(argv, cwd):
         candidate_calls.append(Path(cwd).name)
-        raise subprocess.TimeoutExpired(list(argv), timeout=60.0, output=b"partial")
+        raise timeout_expired(list(argv), timeout=60.0, output=b"partial")
 
     class Reservation:
         def __init__(self):
@@ -673,7 +719,7 @@ def test_lane_bound_timeout_closes_reservation_and_reexecutes_on_resume(
 
     def pass_candidate(argv, cwd):
         resumed_calls.append(Path(cwd).name)
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     resumed = _run_queue_case(
         tmp_path,
@@ -1036,7 +1082,7 @@ def test_deadline_expiring_during_resume_merge_does_not_return_completed_result(
 
     def candidate_timeout(argv, cwd):
         del cwd
-        raise subprocess.TimeoutExpired(list(argv), timeout=1.0, output=b"partial")
+        raise timeout_expired(list(argv), timeout=1.0, output=b"partial")
 
     seeded, repo = _run_queue_case(
         tmp_path,
@@ -1276,11 +1322,11 @@ def test_completed_candidate_releases_a_slot_without_waiting_for_the_batch(
         zero_started.set()
         if not release_zero.wait(10):
             raise AssertionError("position 0 was never released")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     def observe_three(argv, cwd):
         candidate_three_started.set()
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     behaviours = {
         name_at[0]: hold_zero,
@@ -1349,10 +1395,10 @@ def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_orde
     def hold_zero(argv, cwd):
         if not release_zero.wait(10):
             raise AssertionError("position 0 was never released")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     def complete_one(argv, cwd):
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     def release_zero_after_one_is_recorded(root, payload, **kwargs):
         real_write(root, payload, **kwargs)
@@ -1480,7 +1526,7 @@ def test_lane_timeout_stops_submission_but_drains_completed_in_flight_work(
     def hold(argv, cwd):
         if not release.wait(10):
             raise AssertionError("held in-flight candidate was not released")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     timeout_error = AssayError(
         "campaign deadline during candidate",
@@ -1551,7 +1597,7 @@ def test_fatal_stops_submission_but_records_other_in_flight_results(
     def hold(argv, cwd):
         if not release.wait(10):
             raise AssertionError("held in-flight candidate was not released")
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     fatal = AssayError(
         "candidate infrastructure failure",
@@ -1679,7 +1725,7 @@ def test_resumed_pending_indices_remain_monotonic_under_reverse_completion(
                 raise AssertionError(f"candidate {name} was not released")
             completed.append(name)
             finished[name].set()
-            return subprocess.CompletedProcess(list(argv), 1, "", "")
+            return completed_process(list(argv), 1, "", "")
 
         return action
 

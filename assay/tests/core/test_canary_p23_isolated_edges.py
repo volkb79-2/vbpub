@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import completed_process, timeout_expired
 from conftest import (
     GitRepo,
     make_deadline,
@@ -57,7 +58,7 @@ class CountingMonotonic:
 
 
 def _pass_everything(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), 0, "", "")
+    return completed_process(list(argv), 0, "", "")
 
 
 def _r3_lane(repo: GitRepo, *, mechanism: str = "import-break"):
@@ -101,7 +102,7 @@ def test_a_no_op_transform_judges_nothing_and_runs_no_transform_unit(
 
     def process(argv, *, env, cwd, timeout):
         units.append(Path(cwd))
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         _r3_lane(git_repo),
@@ -144,7 +145,7 @@ def test_a_non_utf8_canary_target_is_a_payload_free_r3_claim(git_repo: GitRepo):
     def process(argv, *, env, cwd, timeout):
         nonlocal units
         units += 1
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         _r3_lane(repo),
@@ -187,7 +188,7 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
     def process(argv, *, env, cwd, timeout):
         nonlocal units
         units += 1
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
         result = run_isolated_canary(

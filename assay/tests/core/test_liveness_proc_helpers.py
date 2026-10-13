@@ -9,6 +9,8 @@ effect of some larger scenario.
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import json
 import os
 import subprocess
@@ -995,7 +997,7 @@ class _DisappearingProc:
         self.pid = pid
 
     def wait(self, timeout=None):
-        raise subprocess.TimeoutExpired(cmd=["x"], timeout=timeout)
+        raise timeout_expired(cmd=["x"], timeout=timeout)
 
 
 def test_kill_tolerates_killpg_process_lookup_error(

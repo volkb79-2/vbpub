@@ -14,6 +14,8 @@ submitted" is a genuine, checked fact rather than an assumption.
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,11 +76,11 @@ class _RecordingProcessRunner:
 
 
 def _always_pass(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+    return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
 
 def _always_fail(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+    return completed_process(list(argv), returncode=1, stdout="", stderr="")
 
 
 def _always_crash(argv, *, env, cwd, timeout):
@@ -86,7 +88,7 @@ def _always_crash(argv, *, env, cwd, timeout):
 
 
 def _always_timeout(argv, *, env, cwd, timeout):
-    raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+    raise timeout_expired(cmd=list(argv), timeout=timeout)
 
 
 # --- a red baseline stops before any mutant --------------------------------

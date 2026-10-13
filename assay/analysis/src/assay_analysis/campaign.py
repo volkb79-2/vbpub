@@ -1455,7 +1455,13 @@ def _fixed_components(latest: dict) -> dict[str, float | None]:
             _timestamp(first["emitted_at"], "candidate emitted_at")
             - _timestamp(latest["started"], "progress run started")
         ).total_seconds()
-        other = max(0.0, elapsed - (coverage or 0.0) - (r2 or 0.0))
+        candidate_seconds = _optional_number(
+            first["elapsed_seconds"], "first candidate elapsed_seconds"
+        ) or 0.0
+        other = max(
+            0.0,
+            elapsed - (coverage or 0.0) - (r2 or 0.0) - candidate_seconds,
+        )
     return {"coverage_baseline": coverage, "r2_baseline": r2, "other": other}
 
 
@@ -1654,6 +1660,11 @@ def campaign(
         verdict = verdict_result["verdict"]
         r2_policy = _check_verdict_against_lane(verdict, lane_name=lane_name, lane=lane)
     native_r2 = _native_r2(lane, r2_policy)
+    if project_jobs is not None and native_r2 \
+            and project_jobs != lane.judge.mutation.jobs:
+        raise ValueError(
+            "native R2 projection jobs must equal the lane's declared mutation jobs"
+        )
     stage.name = "plan"
     plan = _reconstruct_plan(
         lane_file, lane, lane_name,
@@ -1689,10 +1700,6 @@ def campaign(
             expected_tree=tree,
             plan_rows=plan_rows,
         )
-        if project_jobs is not None and native_r2 and project_jobs != lane.judge.mutation.jobs:
-            raise ValueError(
-                "native R2 pilot projection jobs must equal the lane's declared mutation jobs"
-            )
 
     stage.name = "verdict"
     buckets_in_verdict, verdict_by_id = {}, {}

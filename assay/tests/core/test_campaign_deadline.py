@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import io
 import json
 import os
@@ -262,7 +264,7 @@ def test_execute_plan_termination_overrides_every_runner_exit_path(
     def process_runner(argv, *, env, cwd, timeout):
         runner.request_termination()
         if failure == "return":
-            return subprocess.CompletedProcess(list(argv), 0, "", "")
+            return completed_process(list(argv), 0, "", "")
         if failure == "hung":
             raise liveness.LivenessHungExpired(
                 argv,
@@ -272,7 +274,7 @@ def test_execute_plan_termination_overrides_every_runner_exit_path(
                 resource_evidence={},
             )
         if failure == "timeout":
-            raise subprocess.TimeoutExpired(argv, timeout, output=b"", stderr=b"")
+            raise timeout_expired(argv, timeout, output=b"", stderr=b"")
         if failure == "oserror":
             raise OSError("injected launch failure")
         raise AssayError(
@@ -302,7 +304,7 @@ def test_execute_plan_checks_termination_before_calling_the_runner(tmp_path: Pat
     def process_runner(argv, *, env, cwd, timeout):
         nonlocal called
         called = True
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     with pytest.raises(AssayError) as caught:
         runner.execute_plan(
@@ -514,7 +516,7 @@ def test_default_runner_timeout_kills_and_reaps_its_inherited_pipe_group(
             time.sleep(0.01)
         else:
             raise AssertionError("runner child did not start its grandchild")
-        raise subprocess.TimeoutExpired(
+        raise timeout_expired(
             proc.args, timeout, output=b"partial-out", stderr=b"partial-err"
         )
 

@@ -11414,10 +11414,10 @@ The acceptance items above are now owned as follows:
     - the snapshot, collection and prefix distributions;
     - survivor durations;
     - per-candidate peak RSS and aggregate cgroup `memory.peak`;
+    - each candidate's `pids.events.max` and `memory.events.{max,oom,oom_kill,oom_group_kill}` deltas from its retained resource-limit evidence; any positive delta invalidates the pilot report rather than entering a runtime projection;
     - memory-full stall;
     - a stratified p50/p90 projection with fixed overhead;
-    - shard skew;
-    - a survivor-screen cost projection.
+    - a one-worker survivor-screen cost projection.
   - Consolidation cost is measured in B119, not in the pilot.
 - [ ] **Pilot GO (plan §8.1)** is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
 - [ ] **Qualifying GO (plan §8.2)** is recorded after the screens and the ledger audit at X*.
@@ -11577,7 +11577,7 @@ inventories refuse.
 - [ ] The v14 → v15 cold start, B145 judge-identity `/7` → `/8` transition, and B114 `/8` → `/9` transition.
 - [x] B115/P4 direct prerequisite acceptance is covered by the integrated `tester-unified` gate at `b8713d56`.
 - [ ] B117/P6 test oracles and integrated `tester-unified` passed at `b8713d56`, but its direct prerequisite acceptance remains open until `self-qualification-preflight` passes; see B117. B111/P0 and B113/P2 remain closed on the Wave A release gate evidence. B112's slow-tier redecision is explicitly outside this package.
-- [x] B148's full cgroup visibility preflight refuses selected native candidates before R0 and reports the same candidate-selection facts in `assay plan`; covered by the integrated `tester-unified` gate at `b8713d56`.
+- [x] B148's original pre-R0 visibility refusal is superseded by A-494: observer unavailability preserves R0/R1 and only marks R2 unavailable, while R3 remains independent; focused tests pass on this candidate, registered gate pending.
 - [ ] The B105 wrapper binds its kernel-hostname lookup to the cockpit's mount/PID namespaces, and the MDT host `initializeCommand` verifies its declared cgroup slices before Docker creates the cockpit.
 - [ ] Docs are synced.
 - [ ] A cold-policy full kill requires declared coverage-baseline evidence and
@@ -11602,7 +11602,9 @@ inventories refuse.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
 
-**Status: IMPLEMENTED; acceptance is complete on the local v9.0.0 candidate, pending release (filed 2026-09-28; A-467; brief `reports/b110/P4-work-queue-executor.md`).**
+**Status: SHIPPED in Assay 9.0.0; acceptance passed (filed 2026-09-28; A-467; brief `reports/b110/P4-work-queue-executor.md`).**
+
+**Execution constraint (A-491, 2026-10-13):** the executor remains bounded to one native R2 worker, including pilots, because candidates share the lane cgroup's event counters. The queue implementation does not authorize `jobs > 1`; parallel candidate execution waits for independently bound candidate cgroups or an equivalent reviewed isolation boundary (CP-23).
 
 **Scope:**
 - Replace fully joined waves with at most `jobs` candidates in flight, submitted in order.
@@ -11869,9 +11871,9 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 ## B131 — R2 for the analysis package
 
-**Status: IN PROGRESS (stage 1 implementation; plan `reports/assay-B131-PLAN-2026-10-09.md`).** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. B131 owns its analysis selector and checker; the P8 extension in this wave lets its selection report and progress be summarized without qualifying the selected sample (A-490). Measure the exact candidate plan and bounded pilot before choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker and selected-summary tests and syncs README, DESIGN-GUIDE, CONSUMERS and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. Both pilots remain pending; no full R2 qualification is claimed. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. These are capacity refusals; neither pilot produced a measurement, and no full R2 qualification is claimed.
+**Status: IMPLEMENTED (stage 1); bounded measurement pending on the current release candidate; full R2 stage 2 remains open.** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. B131 owns its analysis selector and checker; the P8 extension in this wave lets its selection report and progress be summarized without qualifying the selected sample (A-490). The candidate plan and bounded pilot measure the declared target without choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker and selected-summary tests and syncs README, DESIGN-GUIDE, CONSUMERS and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. None of those attempts produced a measurement.
 
-**Controller update (2026-10-12):** B131's selector and evidence checker are integrated on `main`; its bounded analysis-package pilot is still pending and is included in the current release wave. It remains a non-qualifying measurement. The historical capacity refusals are not pilot results, and no full analysis R2 qualification is claimed.
+**Controller update (2026-10-13):** The selector and checker are integrated in the release candidate. Run the registered `b110-pilot` and `analysis-r2-pilot` on the exact committed candidate after contract-2 observer deployment. These are non-qualifying measurements and do not block the Assay release. Record admission refusals as capacity outcomes, not mutation results. No full analysis R2 qualification is claimed.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 
@@ -12225,18 +12227,26 @@ observer acceptance remain pending.
 
 ## B148 — native R2 discovers a private cgroup namespace only after R0
 
-**Status: FOLDED INTO B114 (2026-10-07; A-484); acceptance passed in B114's integrated `tester-unified` gate at `b8713d56`.** Filed on `rg-small`; no files from that worktree are part of this package.
+**Status: IMPLEMENTED in B114 (2026-10-07; A-484), then behavior superseded in the current release wave by A-494 (2026-10-13).** The earlier implementation refused the entire lane before R0. The current contract preserves completed R0/R1 results and records only R2 as unavailable when cgroup observation cannot be established; independent R3 can continue. Filed on `rg-small`; no files from that worktree are part of this package.
 
-**Observed:** A private cgroup namespace hides the ancestors B145 must observe. Native R2 then fails late with `ERROR/EXEC_FAILED`, after the lane's R0 command has already run. An unchanged retry repeats the same environment failure and spends the R0 cost first.
+**Observed (original filing):** A private cgroup namespace hid the ancestors B145 must observe. Under the earlier implementation, native R2 failed late with `ERROR/EXEC_FAILED`, after the lane's R0 command had already run. An unchanged retry repeated the same environment failure and spent the R0 cost first.
 
-**Chosen contract:** Before R0, probe with B145's complete cgroup reader. If it is unavailable, discover the same ordered candidate set that `assay plan` uses, apply the same operator and shard selection, and refuse with `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` only when a selected native candidate is within `max_mutants`. Discovery failure also stops before R0; it is never interpreted as an empty candidate set. Lane-wide typed discovery errors retain their pair. A native mutation-discovery error is R2-claim-only in the verdict schema, so its exact diagnostic is carried by the lane-wide cgroup refusal rather than producing an unverifiable R0 claim. Ingested R2, unsupported discovery, an empty selection, and an over-limit inventory do not trigger this refusal. The read-only plan reports selected-candidate applicability and ambient capability; `lanes --json` reports only conditional applicability because it does not discover candidates. Assay does not choose a cgroup namespace on the consumer's behalf.
+**Earlier contract (superseded by A-494):** Before R0, probe with B145's complete cgroup reader. If it is unavailable, discover the same ordered candidate set that `assay plan` uses, apply the same operator and shard selection, and refuse with `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` only when a selected native candidate is within `max_mutants`. Discovery failure also stops before R0; it is never interpreted as an empty candidate set. Lane-wide typed discovery errors retain their pair. A native mutation-discovery error is R2-claim-only in the verdict schema, so its exact diagnostic is carried by the lane-wide cgroup refusal rather than producing an unverifiable R0 claim. Ingested R2, unsupported discovery, an empty selection, and an over-limit inventory do not trigger this refusal. The read-only plan reports selected-candidate applicability and ambient capability; `lanes --json` reports only conditional applicability because it does not discover candidates. Assay does not choose a cgroup namespace on the consumer's behalf.
 
-**Acceptance:**
-- [x] Selected native candidates with hidden ancestors refuse before R0; visible hierarchy continues to the lane command.
-- [x] Empty shard, ingested R2, unsupported discovery, and over-limit candidate inventories retain their existing R0/outcome behavior.
-- [x] Discovery failure while the hierarchy is unavailable stops before R0; lane-wide errors retain their pair, and R2-only discovery errors remain diagnosable without emitting a schema-invalid R0 claim.
-- [x] `assay plan` uses the same candidate and shard selection; `assay lanes --json` reports conditional ambient capability without claiming an unplanned lane will refuse.
-- [x] README, DESIGN-GUIDE, and CONSUMERS describe the reason code, report fields, and runner remedy; vocabulary and anchor tests cover them.
+**Current contract (A-494, 2026-10-13):** After R0/R1 measurements and before any native R2 candidate starts, Assay requires the complete B145 observation. If it is unavailable, R0/R1 results remain in the verdict and R2 becomes `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; independent R3 may still run. Positive resource-event deltas during candidate or witness execution remain infrastructure errors and cannot become mutation outcomes. Empty or unsupported selections, ingested R2, and inventories beyond `max_mutants` do not require candidate observation.
+
+**Earlier acceptance (A-484; retained as history):**
+- [x] Selected native candidates with hidden ancestors refused before R0; visible hierarchy continued to the lane command.
+- [x] Empty shard, ingested R2, unsupported discovery, and over-limit candidate inventories retained their existing R0/outcome behavior.
+- [x] Discovery failure while the hierarchy was unavailable stopped before R0; lane-wide errors retained their pair, and R2-only discovery errors remained diagnosable without emitting a schema-invalid R0 claim.
+- [x] `assay plan` used the same candidate and shard selection; `lanes --json` reported conditional ambient capability without claiming an unplanned lane would refuse.
+- [x] README, DESIGN-GUIDE, and CONSUMERS described the reason code, report fields, and runner remedy; vocabulary and anchor tests covered them.
+
+**Current acceptance (A-494):**
+- [x] Observer unavailability retains a passing R0 claim and marks only R2 unavailable.
+- [x] R3 still runs its independent canary after R2 observer unavailability.
+- [x] The unavailable observer check occurs after R0/R1 and before native candidate execution; positive resource-event deltas remain errors.
+- [x] README, DESIGN-GUIDE, and CONSUMERS describe the current behavior and adoption implications.
 
 **Related:** B114 and B145.
 
@@ -12636,3 +12646,113 @@ summary remains incomplete, reports the existing `COMMAND_FAILED` reason,
 executes no candidate, and leaves every selected ID unresolved. A partial R2
 result also retains its claim detail. README, DESIGN-GUIDE and CONSUMERS
 describe the diagnostic field and its meaning.
+
+## B162 — Native R2 detached descendants escape process-group cleanup
+
+**Status: IMPLEMENTED IN THE CONTRACT-2 CANDIDATE; exact-tip gate pending.**
+
+Assay killed each candidate's process group but could not reach descendants that
+called `setsid()` or double-forked. A candidate leader could exit while those
+tests or helpers continued running, changing later candidates' resource-event
+windows or consuming the gate's PID limit. The same defect was found in
+CMRU's custom mutation campaign (KI-70).
+
+**Chosen behavior:** serialized native R2 temporarily makes Assay a Linux
+child subreaper, waits for the leader by PID, and kills and reaps all adopted
+descendants before sampling after-counters or starting another candidate. It
+signals and waits only for known direct child PIDs; it never uses
+`waitpid(-1)`. If a candidate command otherwise completes and leaves
+descendants, Assay cleans them up, records that candidate as `crashed`, and
+continues. It cannot count that attempt as killed or survived. Timeout and
+`hung` classifications stay intact when cleanup succeeds, even when cleanup
+reaps descendants. Baseline leaks refuse the lane because the test command
+itself did not terminate cleanly. Cleanup failure is lane-fatal.
+The CLI resets an inherited ignored `SIGCHLD` before spawning commands, and
+the native window refuses when the kernel's `SigIgn` mask shows it is still
+ignored. After cleanup cannot prove an empty child set, subreaper mode stays
+enabled and the process refuses later native R2 windows. Embedders must not
+enable `SA_NOCLDWAIT` or reap with `waitpid(-1)` during the window. Linux
+`execve` resets caught signal handlers and their flags, so a fresh supported
+CLI process cannot inherit `SA_NOCLDWAIT`; in-process embedding is outside the
+supported contract. B165 may evaluate embedder detection as part of a separate
+embedding design, but it is not required for the standalone CLI release.
+The judge identity advances to `/12` so prior candidate records are not reused.
+
+**Oracle:** real `setsid` descendant tests cover normal exit and timeout,
+asserting the PID is absent (not a zombie) before R2 returns. The normal-exit
+case asserts a `crashed` outcome and proves the next candidate can run. Existing
+resource-event tests prove counters are sampled only after cleanup. README,
+DESIGN-GUIDE and CONSUMERS explain the Linux process-isolation requirement.
+The registered `tester-unified` gate is the integration oracle.
+
+## B163 — mid-campaign cgroup observation failures can be reported as product failures
+
+**Status: IMPLEMENTED IN THE CONTRACT-2 CANDIDATE; exact-tip gates pending.**
+
+The pre-candidate capability check correctly preserves R0/R1 and reports
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` when native R2 cannot safely
+start. The same status was also used for a lost observer, changed hierarchy,
+changed limit, or ambiguous shared-parent event after a candidate had started.
+Run-Gate mapped that result to product FAIL, and a late sample error could hide
+a process-tree cleanup failure.
+
+**Chosen behavior:** only the initial pre-candidate check reports
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. Once candidate execution
+begins, an unavailable or ambiguous counter window is `ERROR/EXEC_FAILED` and
+has no candidate bucket. A process-tree cleanup failure takes precedence over
+a later counter-read failure. Run-Gate maps the specific pre-candidate reason
+to infrastructure `ERROR` only when every other claim and external evidence
+entry passed. It preserves an independent `BUDGET_EXCEEDED`, and maps another
+`FAIL`, `INCONCLUSIVE`, or `NO_MEASUREMENT` to `FAIL`; malformed claim/evidence
+records map to `ERROR`. Other `NO_MEASUREMENT` reasons retain their existing
+mapping.
+
+**Oracle:** focused tests prove the pre-candidate versus mid-campaign outcome
+mapping and the Run-Gate claim-preserving mapping: isolated refusal, independent
+R1/R3 failure, budget stop, evidence failure, and malformed claim/evidence
+records. A candidate-window observer failure, an unattributable parent event,
+and an after-read failure combined with a process-tree cleanup failure all
+produce infrastructure errors with no candidate bucket. README, DESIGN-GUIDE
+and CONSUMERS describe the distinction; the exact registered Assay and
+Run-Gate gates provide integration evidence.
+
+## B164 — process-tree evidence accepts impossible descendant counts
+
+**Status: IMPLEMENTED IN THE CONTRACT-2 CANDIDATE; exact-tip gate pending.**
+
+A modified mutation record could claim that more descendants were signalled
+than were observed outliving the leader. The process-tree model and verifier
+checked each count independently, so the contradictory evidence remained
+acceptable even though the runner can only signal a PID it first observed as a
+live direct child.
+
+**Chosen behavior:** require `descendants_signalled <= outliving_descendants`
+in both persisted-state validation and `assay verify`. Keep `clean = true` as
+the only serializable state: an unproved cleanup is lane-fatal and produces no
+candidate evidence.
+
+**Oracle:** model construction rejects an impossible count, and an otherwise
+schema-valid verdict with `descendants_signalled > outliving_descendants` is
+rejected by `assay verify`. README, DESIGN-GUIDE and CONSUMERS describe the
+verifier's consistency check; the exact registered Assay gate is the
+integration oracle.
+
+## B165 — embedding-safe and parallel native R2 process isolation
+
+**Status: OPEN, design coordination with cgprofile CP-23 required; not a
+release blocker for the standalone CLI contract.**
+
+Assay's current native R2 cleanup uses process-wide child-subreaper state and
+therefore requires one isolated CLI process, one active command window, and
+`jobs=1`. It cannot safely support concurrent embedding or parallel candidates
+inside that process. Evaluate a per-candidate cgroup with `cgroup.kill`
+(coordinated with cgprofile CP-23) or a dedicated supervisor process that
+owns the subreaper state. Include an explicit protocol for injected
+`process_runner` implementations.
+
+**Oracle:** a design and implementation must prove candidate-local cleanup,
+counter sampling only after cleanup, safe cancellation, and no impact on
+unrelated children when multiple candidates or embedded callers overlap. The
+documented CLI boundary must explain that `execve` clears inherited
+`SA_NOCLDWAIT`, while unsupported in-process embedders must not enable it; no
+fragile `sigaction` ABI probe is required for the standalone CLI.

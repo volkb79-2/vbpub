@@ -25,6 +25,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -35,6 +36,8 @@ import pytest
 from gate.tests.support import PROJECT_ROOT
 
 GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
+SELF_QUALIFICATION_SCRIPT = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
+OBSERVER_GID_HELPER = PROJECT_ROOT / "tools" / "resource-observer-gid.sh"
 DISTRIBUTION = PROJECT_ROOT / "gate" / "distribution"
 LOCKED_ASSETS = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P24"
 AMBIENT_TESTER_VENV_PYTHON = "/opt/tester-venv/bin/python"
@@ -84,7 +87,10 @@ def _host_environ() -> dict[str, str]:
     """The caller's environment minus the CD50 opt-in (CD54): a shell that exports
     `ASSAY_GATE_ALLOW_SHARED_HOST` must not flip a test's result. Tests of the opt-in
     set it explicitly on the environment they pass."""
-    return {k: v for k, v in os.environ.items() if k != "ASSAY_GATE_ALLOW_SHARED_HOST"}
+    return {
+        **{k: v for k, v in os.environ.items() if k != "ASSAY_GATE_ALLOW_SHARED_HOST"},
+        "ASSAY_GATE_HOST_DOCKER_GID": "994",
+    }
 
 
 def run_bash(
@@ -140,10 +146,107 @@ def _make_synthetic_untagged_repo(root: Path) -> None:
 
 
 def test_gate_script_has_valid_bash_syntax() -> None:
+    for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT, OBSERVER_GID_HELPER):
+        proc = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True, timeout=10
+        )
+        assert proc.returncode == 0, f"{script}: {proc.stderr}"
+
+
+def test_observer_guards_read_the_host_docker_gid_from_the_runtime_path() -> None:
+    for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT):
+        source = script.read_text(encoding="utf-8")
+        assert 'resource-observer-gid.sh' in source
+        assert 'assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile' in source
+        assert "getent group docker" not in source
+        assert "ASSAY_GATE_HOST_DOCKER_GID" in source
+    helper = OBSERVER_GID_HELPER.read_text(encoding="utf-8")
+    assert "control_gid\" != 0" in helper
+    assert "control_mode\" == 770" in helper
+
+
+@pytest.mark.parametrize(
+    ("control_gid", "control_mode", "socket_gid", "expected_status"),
+    [
+        (994, "770", 995, 0),
+        (0, "770", 995, 1),
+        (994, "750", 995, 1),
+        (994, "770", 994, 1),
+    ],
+)
+def test_observer_gid_guard_rejects_wrong_host_group_facts(
+    tmp_path: Path, control_gid: int, control_mode: str,
+    socket_gid: int, expected_status: int,
+) -> None:
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    observer_socket = observer_dir / "resource-observer.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(observer_socket))
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    script = r'''source "$1"
+observer_socket="$2"
+control_dir="$3"
+control_gid="$4"
+control_mode="$5"
+socket_gid="$6"
+observer_dir="$(dirname "$observer_socket")"
+stat() {
+  local path="${@: -1}"
+  case "$path" in
+    "$observer_dir") printf '0 995 751\n' ;;
+    "$observer_socket") printf '0 %s 660\n' "$socket_gid" ;;
+    "$control_dir") printf '0 %s %s\n' "$control_gid" "$control_mode" ;;
+    *) return 1 ;;
+  esac
+}
+assay_resource_observer_gid "$observer_socket" "$control_dir"
+'''
     proc = subprocess.run(
-        ["bash", "-n", str(GATE_SCRIPT)], capture_output=True, text=True, timeout=10
+        [
+            "bash", "-c", script, "observer-gid-test",
+            str(OBSERVER_GID_HELPER), str(observer_socket), str(control_dir),
+            str(control_gid), control_mode, str(socket_gid),
+        ],
+        capture_output=True, text=True, timeout=10,
     )
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == expected_status, proc.stderr
+    if expected_status == 0:
+        assert proc.stdout == "995\n"
+    else:
+        assert proc.stderr
+
+
+def test_observer_gid_guard_refuses_translated_socket_without_host_gid(
+    tmp_path: Path,
+) -> None:
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    observer_socket = observer_dir / "resource-observer.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(observer_socket))
+    script = r'''source "$1"
+unset ASSAY_GATE_HOST_DOCKER_GID
+stat() {
+  local path="${@: -1}"
+  case "$path" in
+    "$observer_dir") printf '0 995 751\n' ;;
+    "$observer_socket") printf '0 995 660\n' ;;
+    *) return 1 ;;
+  esac
+}
+observer_dir="$(dirname "$2")"
+observer_socket="$2"
+assay_resource_observer_gid "$observer_socket" "$3"
+'''
+    proc = subprocess.run(
+        ["bash", "-c", script, "observer-gid-test", str(OBSERVER_GID_HELPER),
+         str(observer_socket), str(tmp_path / "missing-control")],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode != 0
+    assert "pass ASSAY_GATE_HOST_DOCKER_GID from the host launcher" in proc.stderr
 
 
 def test_gate_driver_git_wrapper_overrides_local_maintenance_settings(tmp_path: Path) -> None:
@@ -279,13 +382,13 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     assert "--cpus=3" in run
     assert "--group-add" in run and "994" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in run
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in run
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
-    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
+    assert "type=bind,source=/run/cgprofile/observer,target=/run/cgprofile-observer,readonly" in run
     assert not any("docker.sock" in value for value in run)
     assert run.index("tester-unified:local") < run.index("bash")
     container_id = "a" * 64
@@ -572,11 +675,11 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert "--pids-limit=32" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in run
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in run
     assert "ASSAY_B145_LOW_PIDS_PROBE=1" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
-    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in run
+    assert "type=bind,source=/run/cgprofile/observer,target=/run/cgprofile-observer,readonly" in run
     assert "tester-unified:local" in run
     probe_command = run[run.index("bash") + 2]
     assert probe_command.startswith(

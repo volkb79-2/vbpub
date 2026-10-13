@@ -89,8 +89,11 @@ an installed wheel or zipapp needs nothing extra:
   adverse candidates by id, path and operator, names why a campaign is not
   complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
   error) or 3 (incomplete). Timing, ETA and `--project` estimates are
-  diagnostic: they never change the status or the exit code. See the
-  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
+  diagnostic: they never change the status or the exit code. Native R2
+  projections use the lane's declared worker count and separate the first
+  candidate's runtime from fixed overhead. See the
+  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
+  and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
 
 <!-- assay-analysis-example -->
 ```bash
@@ -210,7 +213,8 @@ assay exists to close that gap mechanically, not by policy:
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
   replay because it can override configured addopts. A v12, v13, v14, or v15
-  verdict is a cold start under v16, and `assay verify` rejects all four. See the
+  verdict is a cold start under v16, and `assay verify` rejects all four. Assay
+  10.0.0 is the release carrying this v16 hard cut. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -264,7 +268,16 @@ assay exists to close that gap mechanically, not by policy:
   These counters are an execution-validity guard, not a CPU or memory usage
   profile: R2 still measures whether tests detect code mutations. Assay checks
   ancestors because their limits can affect a container whose own limits say
-  `max`. For a private cgroup namespace, the observer-only cgprofile socket
+  `max`. A positive `memory.events:max` remains a conservative infrastructure
+  refusal even when reclaim prevented OOM and the command exited normally. For
+  each active controller, native R2 requires a local event file or a verified
+  mount option that makes the regular event file local. Availability is
+  capability-based: Assay probes the files and mount options instead of
+  treating a kernel version as proof. If neither local interface is available,
+  only R2 is unmeasured; R0/R1 remain and independent R3 can still run. Inspect
+  this with `assay plan` or `assay lanes --json`. See the
+  [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  For a private cgroup namespace, the observer-only cgprofile socket
   must implement resource-observer contract 2, which reports the regular
   counters' scope and supplies effective local counters. Contract 1 is refused
   because it cannot distinguish sibling events from events enforced at a shared ancestor;
@@ -280,14 +293,21 @@ assay exists to close that gap mechanically, not by policy:
   runtime profiling.
   See the [serial-window rationale](docs/DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
-  When native candidates are selected, Assay checks the same complete
-  hierarchy before R0 starts. If its private cgroup view hides ancestors, it
-  may use the explicitly configured observer-only socket; without a usable
-  local view or observer it returns
-  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. `assay plan` and
-  `assay lanes --json` report current availability. See the
-  [preflight design](docs/DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148)
-  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-visibility-preflight-b148).
+  After R0/R1, Assay checks the complete hierarchy before any native R2
+  candidate starts. If its private cgroup view hides ancestors, it may use
+  the explicitly configured observer-only socket; without a usable local view
+  or observer, only the R2 claim is
+  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. R0/R1 evidence is retained
+  and independent R3 can still run. `assay plan` and `assay lanes --json`
+  report current availability. See the
+  [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148-a-494)
+  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148-a-494).
+  If observation is lost or becomes ambiguous after the pre-candidate check,
+  Assay stops R2 with `ERROR/EXEC_FAILED`; it never records that attempt as a
+  product failure or mutation kill. Run-Gate reports the pre-candidate
+  `CGROUP_OBSERVATION_UNAVAILABLE` refusal as infrastructure `ERROR` when all
+  other claims and evidence pass; it preserves any independent budget or
+  product failure.
 - **Assay's own Git children cannot launch detached automatic maintenance (B147).**
   Assay pins automatic maintenance and both detach settings off, independent
   of system or image configuration. See the
@@ -508,8 +528,15 @@ An early xdist worker finish does not expire a candidate still emitting
 events or output: the post-finish grace requires 30 s without either.
 See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
 and the consumer section's xdist identity rules. The candidate process group
-is cleaned up even when its leader exits first, so descendants cannot
-accumulate across mutants and exhaust the gate cgroup's PID budget. Every
+is cleaned up even when its leader exits first, and Linux child-subreaper
+cleanup catches descendants that call `setsid()` or double-fork. A candidate
+that otherwise completes with leftover descendants is recorded as `crashed`
+after Assay cleans and reaps them; it cannot count as killed or survived, and
+the campaign can continue. Timeout and `hung` classifications remain intact
+when cleanup succeeds. A baseline leak or any cleanup failure refuses the
+lane. Native R2 verdicts retain process-tree evidence for each attempt.
+`assay verify` also rejects impossible evidence where more descendants were
+signalled than were observed outliving the leader. Every
 materialized-plugin record carries its positive producer `pid` and, when
 present, the descriptive `PYTEST_XDIST_WORKER` value. Stamped xdist test
 records are read
@@ -519,6 +546,20 @@ each pid timeline and the largest per-process gap is used. The monitor's own
 candidate pid is the only stamped `session_finish` that arms the finish grace.
 Old, malformed, or mixed records retain the merged legacy interpretation, and
 the worker label is never used as identity.
+
+Native R2 temporarily changes Linux's process-wide child-subreaper state. It
+refuses to start when the Assay process already has child processes. An
+embedding caller must also prevent unrelated threads from spawning children
+during a candidate window; use the normal isolated CLI path when that cannot
+be guaranteed. The CLI resets an inherited ignored `SIGCHLD` disposition before
+spawning commands; the native window also checks the kernel's `SigIgn` mask and
+refuses if child exit statuses cannot be reaped reliably. Linux `execve` resets
+caught signal handlers and their flags, so the supported fresh CLI process
+cannot inherit `SA_NOCLDWAIT`. In-process embedders must not ignore `SIGCHLD`,
+enable `SA_NOCLDWAIT`, or reap children with `waitpid(-1)` during a native R2
+window. If cleanup cannot prove the child set empty, Assay keeps subreaper mode
+enabled and refuses later native R2 windows in that process. See the
+[process-tree boundary](docs/DESIGN-GUIDE.md#native-r2-process-tree-isolation-is-process-wide).
 
 RG-55/B107 also makes the `hung` decision resource-aware: it records
 time-aligned process-tree CPU, host/cgroup PSI, and cgroup-throttle evidence.

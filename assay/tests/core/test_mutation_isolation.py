@@ -32,6 +32,8 @@ shares across every unit.
 
 from __future__ import annotations
 
+from conftest import completed_process, file_not_found, timeout_expired
+
 import subprocess
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -119,16 +121,16 @@ def _make_decide_by_mutated_content(repo_path: Path):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo_path:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+            return completed_process(list(argv), returncode=1, stdout="", stderr="")
         if "b = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         if "c = False" in text:
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
+            raise file_not_found(2, "No such file or directory", argv[0])
         if "d = False" in text:
-            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
         raise AssertionError(f"unexpected mutated content in {cwd}: {text!r}")
 
     return decide
@@ -298,7 +300,7 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
 
 
 def _always_pass(argv, *, env, cwd, timeout):
-    return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+    return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
 
 @dataclass(frozen=True)

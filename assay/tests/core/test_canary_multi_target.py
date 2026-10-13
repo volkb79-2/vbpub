@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import completed_process, timeout_expired
 from conftest import (
     GitRepo,
     make_deadline,
@@ -140,7 +141,7 @@ class _Gate:
             for name in TARGETS
             if (Path(cwd) / name).exists()
         )
-        return subprocess.CompletedProcess(list(argv), 1 if broken else 0, "", "")
+        return completed_process(list(argv), 1 if broken else 0, "", "")
 
 
 class _NoOpTransformAdapter(PythonAdapter):
@@ -315,7 +316,7 @@ def test_a_broken_lane_baseline_ends_the_claim_before_any_probe(git_repo: GitRep
     _seed(git_repo)
 
     def failing(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), 1, "", "")
+        return completed_process(list(argv), 1, "", "")
 
     verdict, _ = _run(
         git_repo, _lane(git_repo, aggregation="any"), gate=failing

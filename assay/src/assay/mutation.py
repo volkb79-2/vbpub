@@ -142,6 +142,7 @@ from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
+from .process_tree import ProcessTreeError, ProcessTreeEvidence, ProcessTreeProcessRunner
 from .mutation_witness import (
     ReceiptCapture,
     ReceiptFacts,
@@ -267,7 +268,7 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/10"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/12"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -2111,6 +2112,7 @@ def _terminal_result_matches_bucket(
     kill_signal_artifact: str | None = None,
     cold_witness: bool = False,
     resource_limit_hit: bool = False,
+    process_tree_evidence: ProcessTreeEvidence | None = None,
 ) -> bool:
     """Validate persisted terminal facts and their classified bucket.
 
@@ -2147,6 +2149,14 @@ def _terminal_result_matches_bucket(
     except (TypeError, ValueError) as exc:
         raise ValueError(f"terminal_result contains an unknown outcome or reason: {exc}") from exc
     returncode = terminal["returncode"]
+    if outcome is Outcome.BUDGET_EXCEEDED and process_tree_evidence is not None:
+        allowed_leader_statuses = (
+            {"timeout-killed"}
+            if reason is ReasonCode.CANDIDATE_HUNG
+            else {"timeout-killed", "not-started"}
+        )
+        if process_tree_evidence.leader_status not in allowed_leader_statuses:
+            return False
     if outcome is Outcome.PASS and (
         reason is not None or type(returncode) is not int
     ):
@@ -2211,7 +2221,24 @@ def _terminal_result_matches_bucket(
             raise ValueError("kill_signal_evidence has invalid field types")
 
     bucket = payload.get("outcome_bucket")
-    if forced_bucket == "crashed" or resource_limit_hit:
+    completed_with_process_tree_failure = bool(
+        process_tree_evidence is not None
+        and (
+            (
+                outcome in {Outcome.PASS, Outcome.FAIL}
+                and process_tree_evidence.leader_status != "exited"
+            )
+            or (
+                process_tree_evidence.outliving_descendants > 0
+                and outcome is not Outcome.BUDGET_EXCEEDED
+            )
+        )
+    )
+    if (
+        forced_bucket == "crashed"
+        or resource_limit_hit
+        or completed_with_process_tree_failure
+    ):
         expected_bucket = "crashed"
     elif outcome is Outcome.ERROR:
         expected_bucket = "crashed"
@@ -2272,6 +2299,12 @@ def _terminal_result_matches_bucket(
             ):
                 return False
     else:
+        return False
+    if expected_bucket in {"killed", "survived", "equivalent"} and (
+        process_tree_evidence is None
+        or process_tree_evidence.leader_status != "exited"
+        or process_tree_evidence.outliving_descendants != 0
+    ):
         return False
     return bucket == expected_bucket
 
@@ -2379,6 +2412,23 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} has invalid resource-limit evidence: {exc}"
             ) from exc
+    process_tree_evidence: ProcessTreeEvidence | None = None
+    if "process_tree_evidence" in payload:
+        raw_process_tree = payload["process_tree_evidence"]
+        if not isinstance(raw_process_tree, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} process_tree_evidence must be an object"
+            )
+        try:
+            process_tree_evidence = ProcessTreeEvidence.from_dict(raw_process_tree)
+        except (TypeError, ValueError) as exc:
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid process-tree evidence: {exc}"
+            ) from exc
+    else:
+        # Existing records from the previous judge identity are a routine cold
+        # cache. They cannot prove cleanup and must be re-executed.
+        return _RECORD_REJECTED
     if "outcome_bucket" not in payload:
         raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
     if payload["outcome_bucket"] not in MUTATION_BUCKETS:
@@ -2397,6 +2447,7 @@ def _load_validated_state_record(
                 resource_limit_evidence is not None
                 and resource_limit_evidence.limit_hit
             ),
+            process_tree_evidence=process_tree_evidence,
         )
     except (TypeError, ValueError) as exc:
         raise MutationTerminalEvidenceError(
@@ -2609,6 +2660,11 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             ),
             resource_limit_evidence=ResourceLimitEvidence.from_dict(
                 record["resource_limit_evidence"]
+            ),
+            process_tree_evidence=(
+                ProcessTreeEvidence.from_dict(record["process_tree_evidence"])
+                if isinstance(record.get("process_tree_evidence"), Mapping)
+                else None
             ),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -2859,6 +2915,7 @@ class _MutantRun:
     startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
     resource_limit_evidence: ResourceLimitEvidence | None = None
+    process_tree_evidence: ProcessTreeEvidence | None = None
     evidence: MutantEvidence | None = None
     forced_bucket: str | None = None
 
@@ -2873,15 +2930,15 @@ def _read_candidate_resource_counters() -> ResourceLimitCounters:
         raise AssayError(
             "cannot observe the required cgroup v2 process and memory limit "
             f"events for native R2 candidate execution: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.EXEC_FAILED,
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
         ) from exc
 
 
 def _candidate_resource_limit_evidence(
     before: ResourceLimitCounters, after: ResourceLimitCounters
 ) -> ResourceLimitEvidence:
-    """Bind both samples, turning an unstable observation into a lane error."""
+    """Bind candidate-window samples; an unstable window is a lane error."""
     try:
         return ResourceLimitEvidence.between(before, after)
     except (ResourceLimitObservationError, ValueError) as exc:
@@ -2893,9 +2950,22 @@ def _candidate_resource_limit_evidence(
         ) from exc
 
 
+def _read_candidate_resource_counters_during_campaign() -> ResourceLimitCounters:
+    """A post-preflight observer loss invalidates the R2 execution attempt."""
+    try:
+        return _read_candidate_resource_counters()
+    except AssayError as exc:
+        raise AssayError(
+            "cannot observe cgroup resource-limit counters during native R2 "
+            f"candidate execution: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
+
+
 def _zero_window_resource_limit_evidence() -> ResourceLimitEvidence:
     """Record a zero-duration sample for a candidate that never started."""
-    sample = _read_candidate_resource_counters()
+    sample = _read_candidate_resource_counters_during_campaign()
     return _candidate_resource_limit_evidence(sample, sample)
 
 
@@ -3072,6 +3142,7 @@ def _outcome_of(
     kill_signal: str | None = None,
     execution: MutationExecution | None = None,
     evidence: MutantEvidence | None = None,
+    process_tree_evidence: ProcessTreeEvidence | None = None,
 ) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
@@ -3108,6 +3179,7 @@ def _outcome_of(
         mutated_file_sha256=mutated_file_sha256,
         execution=execution or MutationExecution(mode="full"),
         resource_limit_evidence=resource_limit_evidence,
+        process_tree_evidence=process_tree_evidence,
         evidence=evidence,
     )
 
@@ -3407,6 +3479,14 @@ def run_mutation(
     can never be equal, so no mutant could ever be recorded ``equivalent``,
     hiding exactly the fault the carve's own A-279 finding was about).
     """
+    # The CLI path also wraps native R2's baseline in this runner from
+    # `_run_prepared_lane`. Direct library callers still need candidate-tree
+    # isolation when they pass Assay's ordinary subprocess runner.
+    from . import runner as _runner_module
+
+    if process_runner is _runner_module.default_process_runner:
+        process_runner = ProcessTreeProcessRunner()
+
     if not is_strict_int(jobs):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
     if jobs < 1:
@@ -4183,6 +4263,17 @@ def _execute_mutation_jobs(
     attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
 
     def _classified_bucket(run: _MutantRun) -> str:
+        if run.process_tree_evidence is not None:
+            if (
+                run.result.outcome in {Outcome.PASS, Outcome.FAIL}
+                and run.process_tree_evidence.leader_status != "exited"
+            ):
+                return "crashed"
+            if (
+                run.process_tree_evidence.outliving_descendants > 0
+                and run.result.outcome is not Outcome.BUDGET_EXCEEDED
+            ):
+                return "crashed"
         if run.forced_bucket is not None:
             bucket = run.forced_bucket
         elif equivalence_artifact is None:
@@ -4273,10 +4364,13 @@ def _execute_mutation_jobs(
                 ):
                     command_deadline = budget_per_candidate_seconds
                 command_started_monotonic = time.monotonic()
-                resource_limits_before = _read_candidate_resource_counters()
+                resource_limits_before = (
+                    _read_candidate_resource_counters_during_campaign()
+                )
                 execution_error: BaseException | None = None
                 result: CommandResult | None = None
                 resource_limits_after: ResourceLimitCounters | None = None
+                resource_observation_error: AssayError | None = None
                 receipt_capture = None
                 try:
                     if witness_capture_active and active_injection is not None:
@@ -4298,19 +4392,55 @@ def _execute_mutation_jobs(
                     execution_error = exc
                 finally:
                     try:
-                        resource_limits_after = _read_candidate_resource_counters()
+                        resource_limits_after = (
+                            _read_candidate_resource_counters_during_campaign()
+                        )
+                    except AssayError as exc:
+                        resource_observation_error = exc
                     finally:
                         if receipt_capture is not None:
                             receipt = receipt_capture.finish()
+                # A process-tree proof failure means this attempt's cleanup
+                # is unknown. Do not let an unrelated cgroup event replace
+                # that lane-fatal infrastructure failure with a candidate
+                # attribution result.
+                failure: BaseException | None = execution_error
+                process_tree_failure = False
+                while failure is not None:
+                    if isinstance(failure, ProcessTreeError):
+                        process_tree_failure = True
+                        break
+                    failure = failure.__cause__ or failure.__context__
+                if process_tree_failure:
+                    raise AssayError(
+                        "native R2 process-tree cleanup could not prove an empty command window",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.EXEC_FAILED,
+                    ) from execution_error
+
+                # Preserve the stronger cleanup failure above. Otherwise an
+                # observer loss after candidate execution is an infrastructure
+                # error: only the initial pre-candidate probe may report
+                # NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE.
+                if resource_observation_error is not None:
+                    if execution_error is not None:
+                        raise resource_observation_error from execution_error
+                    raise resource_observation_error
+
                 # Read candidate and ancestor-local event counters immediately
                 # after execution, including exceptional exits. This single
                 # comparison distinguishes candidate/ancestor events from a
                 # hierarchical-only change caused by a sibling; a second
                 # aggregate memory.events check would invalidate the latter.
                 assert resource_limits_after is not None
-                resource_limit_evidence = _candidate_resource_limit_evidence(
-                    resource_limits_before, resource_limits_after
-                )
+                try:
+                    resource_limit_evidence = _candidate_resource_limit_evidence(
+                        resource_limits_before, resource_limits_after
+                    )
+                except AssayError as comparison_error:
+                    if execution_error is not None:
+                        raise comparison_error from execution_error
+                    raise
                 if execution_error is not None:
                     if resource_limit_evidence.limit_hit:
                         raise AssayError(
@@ -4321,6 +4451,13 @@ def _execute_mutation_jobs(
                         ) from execution_error
                     raise execution_error
                 assert result is not None
+                if result.process_tree_evidence is None:
+                    raise AssayError(
+                        "native R2 command runner returned no process-tree proof; "
+                        "refusing to classify the candidate",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.EXEC_FAILED,
+                    )
             except BaseException:
                 _close_attempt_reservations()
                 raise
@@ -4442,6 +4579,11 @@ def _execute_mutation_jobs(
             },
             startup_seconds=startup_seconds,
             resource_limit_evidence=resource_limit_evidence,
+            process_tree_evidence=(
+                ProcessTreeEvidence.from_dict(result.process_tree_evidence)
+                if isinstance(result.process_tree_evidence, Mapping)
+                else None
+            ),
         )
         attempt_receipts[(index, attempt_name)] = receipt
         if target_node_id is not None:
@@ -4809,6 +4951,11 @@ def _execute_mutation_jobs(
                 "resources": resources,
                 "resource_limit_evidence": resource_limit_evidence.to_dict(),
                 **(
+                    {"process_tree_evidence": run.process_tree_evidence.to_dict()}
+                    if run.process_tree_evidence is not None
+                    else {}
+                ),
+                **(
                     {"liveness_resource_evidence": run.liveness_resource_evidence}
                     if run.liveness_resource_evidence is not None
                     else {}
@@ -4856,6 +5003,11 @@ def _execute_mutation_jobs(
             "tests_completed": run.tests_completed,
             **resources,
             "resource_limit_evidence": resource_limit_evidence.to_dict(),
+            **(
+                {"process_tree_evidence": run.process_tree_evidence.to_dict()}
+                if run.process_tree_evidence is not None
+                else {}
+            ),
             **(
                 {"liveness_resource_evidence": run.liveness_resource_evidence}
                 if run.liveness_resource_evidence is not None
@@ -4968,6 +5120,7 @@ def _execute_mutation_jobs(
                 _outcome_of(
                     job,
                     resource_limit_evidence=unattempted_evidence,
+                    process_tree_evidence=ProcessTreeEvidence.not_started(),
                 )
             )
             continue
@@ -4982,6 +5135,7 @@ def _execute_mutation_jobs(
         if complete_campaign:
             deadline.remaining()
         assert run.resource_limit_evidence is not None
+        assert run.process_tree_evidence is not None
         kill_signal = run.kill_signal if bucket == "killed" else None
         buckets[bucket].append(
             _outcome_of(
@@ -4990,6 +5144,7 @@ def _execute_mutation_jobs(
                 execution=run.execution,
                 resource_limit_evidence=run.resource_limit_evidence,
                 evidence=run.evidence,
+                process_tree_evidence=run.process_tree_evidence,
             )
         )
 

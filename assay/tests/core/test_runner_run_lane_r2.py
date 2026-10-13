@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import completed_process, timeout_expired
 from conftest import (
     GitRepo,
     cut_snapshot_history,
@@ -80,7 +81,7 @@ def _kill_on_mutation():
 
     def decide(argv, *, env, cwd, timeout):
         text = (Path(cwd) / "src" / "mod.py").read_text(encoding="utf-8")
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), returncode=0 if "x > 0" in text else 1, stdout="", stderr=""
         )
 
@@ -809,7 +810,7 @@ def test_a_baseline_that_declares_equivalence_artifact_and_does_not_write_it_sto
 
     def counting(argv, *, env, cwd, timeout):
         calls.append(Path(cwd))
-        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
     verdict = runner.run_lane(
         lane,

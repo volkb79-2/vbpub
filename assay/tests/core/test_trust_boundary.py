@@ -74,6 +74,7 @@ _VERDICT_NAMES = (
 #: The committed base: every assay-internal name ``verify.py`` imported before W10.
 VERIFY_IMPORT_BASE = frozenset(
     {("assay.candidate_identity", "candidate_id_from_fields"), ("assay.mutation", "judge_mutation")}
+    | {("assay.process_tree", "ProcessTreeEvidence")}
     | {
         ("assay.r2_command", name)
         for name in (

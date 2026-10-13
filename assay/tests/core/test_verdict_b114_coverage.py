@@ -442,9 +442,17 @@ def test_equivalence_ledger_counts_and_names_only_unexecuted_entries(mode, messa
                                                              entry_count=2))
     else:
         item = mutation.equivalent[0]
-        mutation = replace(mutation, equivalent=(replace(item,
-                            execution=MutationExecution(mode="full"),
-                            resource_limit_evidence=mutation.killed[0].resource_limit_evidence),))
+        mutation = replace(
+            mutation,
+            equivalent=(
+                replace(
+                    item,
+                    execution=MutationExecution(mode="full"),
+                    resource_limit_evidence=mutation.killed[0].resource_limit_evidence,
+                    process_tree_evidence=mutation.killed[0].process_tree_evidence,
+                ),
+            ),
+        )
     with pytest.raises(ValueError, match=message):
         _with_r2(base, policy=policy, mutation=mutation)
 

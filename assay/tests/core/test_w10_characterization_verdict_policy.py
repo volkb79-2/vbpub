@@ -27,6 +27,7 @@ from assay.verdict import (
     MutationWitnessReceipt,
     Verdict,
 )
+from assay.process_tree import ProcessTreeEvidence
 
 NOT_STRICT_INT = [True, False, 1.5, "1", None, b"1"]
 NOT_REAL = [True, False, "1", None, b"1", [1]]
@@ -133,6 +134,14 @@ def _native_outcome(**overrides) -> MutantOutcome:
             memory_events_oom=CounterDelta(before=0, after=0, delta=0),
             memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
             memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
+        ),
+        process_tree_evidence=ProcessTreeEvidence(
+            leader_status="exited",
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            cleanup_seconds=0.001,
+            clean=True,
         ),
     )
     fields.update(overrides)

@@ -1579,6 +1579,32 @@
       },
       "additionalProperties": false
     },
+    "process_tree_evidence": {
+      "description": "B162: Linux child-subreaper proof for one native command. The leader status and cleanup counts are recorded, and clean is true only after waitid proves the caller has no child processes.",
+      "type": "object",
+      "required": [
+        "protocol",
+        "leader_status",
+        "group_signalled_before_reap",
+        "outliving_descendants",
+        "descendants_signalled",
+        "cleanup_seconds",
+        "clean"
+      ],
+      "properties": {
+        "protocol": {"type": "string", "const": "assay-process-tree/1"},
+        "leader_status": {
+          "type": "string",
+          "enum": ["exited", "signaled", "timeout-killed", "not-started"]
+        },
+        "group_signalled_before_reap": {"type": "boolean"},
+        "outliving_descendants": {"type": "integer", "minimum": 0},
+        "descendants_signalled": {"type": "integer", "minimum": 0},
+        "cleanup_seconds": {"type": "number", "minimum": 0},
+        "clean": {"type": "boolean", "const": true}
+      },
+      "additionalProperties": false
+    },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
       "type": "object",
@@ -1648,6 +1674,9 @@
         "resource_limit_evidence": {
           "$ref": "#/$defs/resource_limit_evidence"
         },
+        "process_tree_evidence": {
+          "$ref": "#/$defs/process_tree_evidence"
+        },
         "evidence": {
           "$ref": "#/$defs/mutant_evidence"
         }
@@ -1674,7 +1703,8 @@
           "then": {
             "not": {
               "required": [
-                "resource_limit_evidence"
+                "resource_limit_evidence",
+                "process_tree_evidence"
               ]
             }
           },
@@ -1686,13 +1716,15 @@
             },
             "then": {
               "required": [
-                "resource_limit_evidence"
+                "resource_limit_evidence",
+                "process_tree_evidence"
               ]
             },
             "else": {
               "not": {
                 "required": [
-                  "resource_limit_evidence"
+                  "resource_limit_evidence",
+                  "process_tree_evidence"
                 ]
               }
             }

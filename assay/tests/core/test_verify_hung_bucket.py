@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import copy
 import json
-from conftest import TESTS_ROOT, zero_resource_limit_evidence_dict
+from conftest import (
+    TESTS_ROOT,
+    process_tree_evidence_dict,
+    zero_resource_limit_evidence_dict,
+)
 
 from assay.verify import verify_document
 
@@ -73,6 +77,9 @@ def test_a_hung_entry_verifies_clean_and_counts_toward_total() -> None:
         "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
         "execution": {"mode": "full"},
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+        "process_tree_evidence": process_tree_evidence_dict(
+            leader_status="timeout-killed"
+        ),
     }
     mutation["hung"] = [hung_entry]
     mutation["candidate_count"] = 3
@@ -108,6 +115,9 @@ def test_a_hung_entry_uncounted_in_total_is_refused() -> None:
             "mutated_file_sha256": "93174d3ddf91258398d19c1009184df60c239e33654425191ca696960ac83dc0",
             "execution": {"mode": "full"},
             "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+            "process_tree_evidence": process_tree_evidence_dict(
+                leader_status="timeout-killed"
+            ),
         }
     ]
     # `total`/`candidate_count` deliberately left at their ORIGINAL 2 --
@@ -127,3 +137,12 @@ def test_a_hung_entry_also_present_in_another_bucket_is_refused() -> None:
     mutation["total"] = 3
     failures = verify_document(document)
     assert any("recorded in both" in failure for failure in failures)
+
+
+def test_a_signaled_leader_cannot_verify_as_a_functional_kill() -> None:
+    document = _load()
+    killed = document["claims"][1]["mutation"]["killed"][0]
+    killed["process_tree_evidence"]["leader_status"] = "signaled"
+
+    failures = verify_document(document)
+    assert any("clean leader exit" in failure for failure in failures)

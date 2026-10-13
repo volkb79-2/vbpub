@@ -149,6 +149,11 @@ from .mutation_witness import (
     unsupported_hook_diagnostic,
 )
 from .output import VerdictOutput
+from .process_tree import (
+    ProcessTreeError,
+    ProcessTreeProcessRunner,
+    ProcessTreeSpawnError,
+)
 from .records import record
 from .redaction import redact_passthrough_text as _redact_passthrough_text
 from .statement_attribution import attribute_statements
@@ -897,6 +902,9 @@ class CommandResult:
     #: candidate watchdog terminates this command. It is carried to the
     #: per-candidate mutation artifacts, never used as a functional verdict.
     liveness_resource_evidence: Mapping[str, Any] | None = None
+    #: Native R2 process-tree cleanup proof. A command that leaves adopted
+    #: descendants is recorded as crashed even when its leader returned 0/1.
+    process_tree_evidence: Mapping[str, Any] | None = None
 
 
 def resolve_command_plan(
@@ -1379,6 +1387,8 @@ def _execute_plan_inner(
         stderr_tail, stderr_dropped_bytes = _bounded_tail(
             _decode_timeout_stream(exc.stderr), sensitive_values=sensitive_values
         )
+        stdout_dropped_bytes += int(getattr(exc, "assay_stdout_dropped_bytes", 0))
+        stderr_dropped_bytes += int(getattr(exc, "assay_stderr_dropped_bytes", 0))
         # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises its
         # own `liveness.LivenessHungExpired` -- a `subprocess.TimeoutExpired`
         # subclass -- ONLY for an idle-stall kill, never for a genuine
@@ -1407,8 +1417,9 @@ def _execute_plan_inner(
             liveness_resource_evidence=getattr(
                 exc, "resource_evidence", getattr(exc, "liveness_resource_evidence", None)
             ),
+            process_tree_evidence=getattr(exc, "process_tree_evidence", None),
         )
-    except OSError:
+    except ProcessTreeSpawnError as exc:
         return CommandResult(
             plan=plan,
             outcome=Outcome.ERROR,
@@ -1418,8 +1429,65 @@ def _execute_plan_inner(
             stderr_tail="",
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
+            process_tree_evidence=getattr(exc, "process_tree_evidence", None),
         )
+    except OSError as exc:
+        if isinstance(process_runner, ProcessTreeProcessRunner):
+            # A process-tree runner wraps the one expected candidate-level
+            # spawn failure in ProcessTreeSpawnError. Any other OSError has
+            # escaped its cleanup/monitoring boundary and is an infrastructure
+            # failure; persisting it as a reusable crashed mutant would hide
+            # an Assay-side fault as a candidate fact.
+            raise AssayError(
+                f"native R2 process execution infrastructure failed: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.EXEC_FAILED,
+            ) from exc
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            returncode=None,
+            stdout_tail="",
+            stderr_tail="",
+            started=iso_utc(started_at),
+            ended=iso_utc(clock()),
+            process_tree_evidence=getattr(exc, "process_tree_evidence", None),
+        )
+    except ProcessTreeError as exc:
+        raise AssayError(
+            f"native R2 process-tree isolation failed: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        ) from exc
     ended = iso_utc(clock())
+    process_tree_evidence = getattr(proc, "process_tree_evidence", None)
+    stdout_extra_dropped = int(getattr(proc, "assay_stdout_dropped_bytes", 0))
+    stderr_extra_dropped = int(getattr(proc, "assay_stderr_dropped_bytes", 0))
+    if (
+        isinstance(process_tree_evidence, Mapping)
+        and process_tree_evidence.get("outliving_descendants", 0) > 0
+    ):
+        sensitive_values = _plan_passthrough_values(plan)
+        stdout_tail, stdout_dropped_bytes = _bounded_tail(
+            proc.stdout, sensitive_values=sensitive_values
+        )
+        stderr_tail, stderr_dropped_bytes = _bounded_tail(
+            proc.stderr, sensitive_values=sensitive_values
+        )
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            returncode=None,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            stdout_dropped_bytes=stdout_dropped_bytes + stdout_extra_dropped,
+            stderr_dropped_bytes=stderr_dropped_bytes + stderr_extra_dropped,
+            started=iso_utc(started_at),
+            ended=ended,
+            process_tree_evidence=process_tree_evidence,
+        )
     # (B078/SR-2) The three-way branch, and the whole point of the design.
     #
     # `summary is None` -- no lane declaration, no report written, a truncated
@@ -1444,6 +1512,7 @@ def _execute_plan_inner(
             returncode=0,
             started=iso_utc(started_at),
             ended=ended,
+            process_tree_evidence=process_tree_evidence,
         )
     # B014's bounded tails are retained for every terminal that is NOT the
     # plain green run above -- which now includes a report-driven PASS over a
@@ -1473,6 +1542,8 @@ def _execute_plan_inner(
     stderr_tail, stderr_dropped_bytes = _bounded_tail(
         proc.stderr, sensitive_values=sensitive_values
     )
+    stdout_dropped_bytes += stdout_extra_dropped
+    stderr_dropped_bytes += stderr_extra_dropped
     return CommandResult(
         plan=plan,
         outcome=Outcome.PASS if passed else Outcome.FAIL,
@@ -1484,6 +1555,7 @@ def _execute_plan_inner(
         stderr_dropped_bytes=stderr_dropped_bytes,
         started=iso_utc(started_at),
         ended=ended,
+        process_tree_evidence=process_tree_evidence,
     )
 
 
@@ -3945,6 +4017,12 @@ def _run_prepared_lane(
     # both present or both absent.
     r2_ingested = r2_declared and lane.judge.mutation.is_ingested
     mutation_artifact = lane.judge.mutation.artifact if r2_ingested else None
+    # Native R2's baseline, cold witness, non-liveness candidates, and canary
+    # calls share one isolation boundary. Keep injected test runners intact;
+    # the installed CLI uses this wrapper around the real process boundary.
+    lane_process_runner = process_runner
+    if r2_declared and not r2_ingested and process_runner is default_process_runner:
+        lane_process_runner = ProcessTreeProcessRunner()
     # (B091/D-23/RW-33) Liveness applies ONLY to a native (non-ingested) R2
     # python lane. `plan` is shadowed for the REST of this function -- the
     # baseline call below and the R2 dispatch further down both read this
@@ -4136,7 +4214,7 @@ def _run_prepared_lane(
             coverage_artifact=coverage_artifact,
             coverage_format=coverage_format,
             coverage_producer=coverage_producer,
-            process_runner=process_runner,
+            process_runner=lane_process_runner,
             clock=clock,
             create_missing_parents=True,
             # (B078, round-1 blocker 1) THE fix for RG-45's actual lane.
@@ -4852,7 +4930,7 @@ def _run_prepared_lane(
                     cpu_window_s=lane.judge.mutation.liveness_cpu_window_s,
                 )
             else:
-                candidate_process_runner = process_runner
+                candidate_process_runner = lane_process_runner
             reuse_witnesses: dict[str, tuple[str, str]] = {}
             if reuse_source is not None:
                 from .reuse import eligible_witnesses
@@ -4926,7 +5004,7 @@ def _run_prepared_lane(
                             coverage_artifact=None,
                             coverage_format=None,
                             coverage_producer=None,
-                            process_runner=process_runner,
+                            process_runner=lane_process_runner,
                             clock=clock,
                             create_missing_parents=True,
                             progress=progress_stream,
@@ -5261,7 +5339,12 @@ def _run_prepared_lane(
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None
-    if r3_declared and r2_orchestration_fault is not None:
+    if (
+        r3_declared
+        and r2_orchestration_fault is not None
+        and r2_orchestration_fault.reason_code
+        is not ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE
+    ):
         # No canary unit is started at all: the lane already stopped.
         #
         # (B053/A-439) ONE error, TWO claims, and A-428 puts `detail` on the
@@ -5355,7 +5438,7 @@ def _run_prepared_lane(
                     targets=canary_targets,
                     aggregation=canary_aggregation,
                     adapter=adapter,
-                    process_runner=process_runner,
+                    process_runner=lane_process_runner,
                     clock=clock,
                 )
             except AssayError as exc:

@@ -311,7 +311,7 @@ runtime; it does not run candidates and may use a larger worker count:
 | Counter | What it detects |
 |---|---|
 | `pids.events:max` | A process or thread creation was refused at a `pids.max` boundary. |
-| `memory.events:max` | Memory use was about to exceed a `memory.max` boundary, even if reclaim prevented an OOM. |
+| `memory.events:max` | Memory use reached a `memory.max` boundary; reclaim may succeed and avoid OOM, but Assay still treats the event conservatively as infrastructure interference. |
 | `memory.events:oom` | A memory allocation reached the cgroup OOM condition. |
 | `memory.events:oom_kill` | An OOM killer killed a process belonging to the cgroup, including a global OOM kill. |
 | `memory.events:oom_group_kill` | A cgroup group-OOM kill occurred. |
@@ -325,8 +325,12 @@ are needed because an ancestor may impose a stricter effective limit than the
 container's own cgroup reports. A leaf showing `pids.max = max`, for example,
 can still have a fork refused by a finite parent `pids.max`.
 
-These are event checks, not measurements of current or peak usage. B145 does
-not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
+These are event checks, not measurements of current or peak usage. Even when
+`memory.events:max` increments and reclaim lets the command complete normally,
+Assay conservatively withholds a mutation result: the attempt ran at a hard
+memory boundary, which can affect latency or test behavior. The bounded pilots
+record whether this occurs under their configured envelope; they do not change
+the rule. B145 does not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
 `memory.events:high` to decide whether a mutant was killed. Those measurements
 can help explain runtime or pressure, but they do not by themselves establish
 that a test failure came from resource enforcement.
@@ -351,6 +355,16 @@ daemon release is cgroup-profiler 1.0.0. See B155 in the
 [Assay backlog](../nyxloom-trove/4-backlog.md) and the
 [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 for the hierarchy and event-counter semantics.
+
+Native R2 does not infer support from a numeric kernel-version floor. It probes
+the active cgroup mount and requires `pids.events.local` and
+`memory.events.local`, or a verified `pids_localevents` or
+`memory_localevents` mount option that makes the corresponding regular event
+file local. This capability check accounts for distribution backports and
+mount configuration. If the required local evidence is absent, preflight marks
+only R2 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; completed R0/R1 claims
+remain, and independent R3 can still run. `assay plan` and
+`assay lanes --json` report the observed availability.
 
 Do not move a tester container outside `$CGROUP_PARENT_DEV_GATES` to avoid
 ancestor checks. A higher placement does not remove all host limits, can put
@@ -378,14 +392,16 @@ return a complete verified ancestry, and expose no control verbs. Run-Gate's
 observer socket read-only, supplies its observed GID, and sets this variable.
 Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
 protocol read-only. This socket supplies verified ancestry and event-counter
-evidence; it is not a performance-profile stream. Without the explicit endpoint, or on any endpoint,
-identity, mount, or counter failure, Assay returns `ERROR/EXEC_FAILED`.
-Before R0, B148 applies the same local-first observation rule to the exact
-selected native candidate set: a configured observer can satisfy the preflight
-only when the local reader specifically proves ancestors hidden. Without a
-usable local view or explicit observer, Assay refuses before R0 with
-`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; a visibility loss during a
-candidate remains `ERROR/EXEC_FAILED`. Every visible
+evidence; it is not a performance-profile stream. If the endpoint, identity,
+mount, or counters are unavailable, Assay does not make an R2 claim; R0/R1
+results remain in the verdict. A positive resource-limit event during a
+candidate remains an infrastructure failure, never a mutant kill. After R0/R1,
+B148/A-494 applies the same local-first observation rule before any selected
+native candidate starts: a configured observer can satisfy it only when the
+local reader specifically proves ancestors hidden. Without a usable local
+view or explicit observer, Assay records
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` for R2 and keeps the R0/R1
+claims. Independent R3 can still run. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block
@@ -416,20 +432,32 @@ changed. Ingested third-party R2 reports have no local candidate process and
 do not carry these counters. See the
 [design rationale](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
 
-### Native R2 cgroup visibility preflight (B148)
+### Native R2 cgroup observation (B148/A-494)
 
 Native R2 needs the complete cgroup v2 ancestor hierarchy B145 uses to
-separate a test failure from a process or memory limit event. Before R0,
-Assay probes the same local-first reader for the exact selected native
-candidate set. If a private cgroup namespace hides ancestors, a caller may
-explicitly configure a trusted observer-only socket with
+separate a test failure from a process or memory limit event. After the R0/R1
+measurements and before any selected native candidate starts, Assay checks the
+same local-first reader. If a private cgroup namespace hides ancestors, a
+caller may explicitly configure a trusted observer-only socket with
 `ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay consults it only after the local reader
 specifically proves that ancestors are hidden. Run-Gate's
 `resource_observer = "cgprofile"` option mounts cgprofile's separate observer
 socket read-only and supplies this setting. Do not use `--cgroupns=host` or
 mount cgprofile's control socket as a workaround. If neither the local view
 nor the explicit observer can provide the required hierarchy, Assay writes
-`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` before the lane command starts.
+`NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on the R2 claim. Completed
+R0/R1 claims are retained, and independent R3 may continue.
+
+That no-measurement result applies only before the first candidate starts. If
+the observer disappears, the hierarchy changes, or a shared-parent event
+becomes ambiguous during a candidate window, Assay returns
+`ERROR/EXEC_FAILED` and withholds the candidate bucket. A process-tree cleanup
+failure takes precedence over a later counter-read failure. Run-Gate maps the
+pre-candidate `CGROUP_OBSERVATION_UNAVAILABLE` refusal to gate `ERROR` only
+when every other claim and external evidence entry passes. An independent
+budget stop remains `BUDGET_EXCEEDED`; an independent product failure,
+inconclusive result, or other `NO_MEASUREMENT` remains `FAIL`. Malformed claim
+or evidence records become `ERROR`.
 
 Check the candidate selection without running R0:
 
@@ -3402,9 +3430,47 @@ check — assay now:
    (`Popen(start_new_session=True)`, 1 s sampling) instead of a plain
    blocking wait, watching the plugin's own side-file events AND the
    process tree's `/proc` CPU time. The whole candidate process group is
-   cleaned up after every candidate, including normal leader exit, so leaked
-   descendants cannot accumulate across mutants and exhaust the gate cgroup's
-   PID budget.
+   cleaned up after every candidate, including normal leader exit. Assay uses
+   Linux child-subreaper mode to catch descendants that call `setsid()` or
+   double-fork, then waits for and reaps them before reading the after-counters
+   or starting the next candidate. If a candidate otherwise completes with
+   descendants, Assay cleans them up, records the attempt as `crashed`, and
+   continues; that attempt cannot count as killed or survived. Timeout and
+   `hung` classifications remain intact when cleanup succeeds, even if it
+   reaps descendants. A baseline command that leaves descendants refuses the
+lane. Cleanup failure stops
+the lane without a candidate result. Native R2 therefore requires Linux
+child-subreaper support in addition to its cgroup-v2 observation contract.
+The verifier also checks process-tree evidence consistency: the recorded
+signalled-descendant count cannot exceed the count observed outliving the
+leader.
+
+Each attempted native candidate in the verdict includes
+`process_tree_evidence`: protocol, leader status, whether the group was
+signalled before reaping, counts of outliving and signalled descendants,
+cleanup time, and the clean-tree proof. A native `killed`, `survived`, or
+`equivalent` result requires a normally exited leader and zero outliving
+descendants. A cleaned leak is recorded as `crashed`; an unproved cleanup
+refuses the lane and produces no candidate result.
+
+#### Native R2's process-tree boundary
+
+Linux child-subreaper mode changes process-wide state. Assay refuses to enter a
+native R2 command window if the Assay process already has children, but it
+cannot prevent a different thread from spawning an unrelated child after that
+check. Run native R2 through the normal isolated CLI process, or ensure an
+embedding application cannot spawn children concurrently for the duration of
+the campaign. The CLI resets an inherited ignored `SIGCHLD` before it starts
+subprocesses. Native R2 checks the kernel `SigIgn` mask and refuses if
+`SIGCHLD` is ignored. Linux `execve` resets caught signal handlers and their
+flags, so the supported fresh CLI process cannot inherit `SA_NOCLDWAIT`;
+in-process embedders must avoid it and must not reap children with
+`waitpid(-1)` while a window is active. If cleanup cannot
+prove the process tree empty, the process remains a subreaper and later native
+R2 windows refuse. The `process_runner` injection point is a low-level seam: native
+R2 requires it to provide valid process-tree evidence and to finish cleanup
+before Assay reads after-counters. Do not treat fabricated evidence as a
+substitute for those runtime guarantees.
 
 **New lane key: `judge.mutation.liveness = "auto" | true | false`**
 (default `"auto"`):
@@ -3910,7 +3976,8 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v16, a hard cut from v15. Lane schema v2 was a
+The current verdict schema is v16, a hard cut from v15, carried by Assay
+10.0.0. Lane schema v2 was a
 hard cut from v1 and remains current (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -5321,7 +5388,7 @@ verdict, then close it out with the verdict and the observed gate exit:
 ```bash
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --state-dir .assay/mutation-state \
-  --project --project-jobs 3 --outcome survived --limit 20
+  --project --project-jobs 1 --outcome survived --limit 20
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
   --command-exit 0 --outcome survived --outcome hung
@@ -5331,12 +5398,15 @@ Without `--verdict` the status is never `complete` (blocker `no_verdict`). The
 survivors, hangs, crashes and budget exhaustions are listed by candidate id,
 path and operator, at most `--limit` per page with `matching_total` and
 `next_offset`; take the next page with `--offset`. `--project` adds a
-stratified wall-clock projection for `--project-jobs` workers (1 to 64) from
-measured per-candidate seconds; it needs at least 20 samples per basis and
-says why it has none. Exit codes: 0 complete PASS, 1 complete and not PASS, 2
-evidence error, 3 incomplete. `complete_blockers` names why a campaign is
-incomplete. Without `--verdict`, a plan whose lane delegates its base to the
-request needs `--request-base`.
+stratified wall-clock projection from measured per-candidate seconds; it needs
+at least 20 samples per basis and says why it has none. `--project-jobs` accepts
+1 to 64 for other plans. For a native R2 lane it must match the lane's declared
+`mutation.jobs`; this Assay configuration runs native R2 serially, so the
+example uses 1. The fixed-overhead estimate subtracts the first candidate's
+measured runtime before adding candidate costs to the projection. Exit codes:
+0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
+`complete_blockers` names why a campaign is incomplete. Without `--verdict`, a
+plan whose lane delegates its base to the request needs `--request-base`.
 
 - **Plan rows.** The JSON rows printed by `assay plan` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the

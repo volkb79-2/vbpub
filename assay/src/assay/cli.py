@@ -82,6 +82,7 @@ from . import (
     liveness,
     measurability,
     mutation,
+    process_tree,
     provenance,
     registry,
     resource_limits,
@@ -613,6 +614,20 @@ def main(
     inp = sys.stdin if stdin is None else stdin
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
+    if sys.platform.startswith("linux"):
+        try:
+            sigchld_ignored = process_tree._sigchld_is_ignored()
+        except process_tree.ProcessTreeError as exc:
+            err.write(f"assay: cannot verify child exit-status handling: {exc}\n")
+            return 2
+        if sigchld_ignored:
+            if threading.current_thread() is not threading.main_thread():
+                err.write(
+                    "assay: cannot run with SIGCHLD ignored from a non-main thread; "
+                    "subprocess exit status would be unreliable\n"
+                )
+                return 2
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raw = list(sys.argv[1:] if argv is None else argv)
     # Analysis owns its record-command separator. Lane argv appending belongs
     # to the existing lane commands and must not consume the recorded command.
@@ -3460,94 +3475,9 @@ def _run_reserved(
             except AssayError as exc:
                 return _deliver_refusal(exc)
 
-        if _has_native_r2(lane):
-            capability = _current_cgroup_observation_capability()
-            if not capability.available:
-                try:
-                    if (
-                        getattr(args, "reuse_from", None) is not None
-                        and getattr(args, "shard", None) is not None
-                    ):
-                        raise LaneConfigError(
-                            "--reuse-from cannot be combined with --shard; "
-                            "selective reuse produces only a complete unsharded "
-                            "campaign"
-                        )
-                    _parse_mutation_shard(getattr(args, "shard", None))
-                    base_declaration = runner.resolve_base_declaration(
-                        lane, getattr(args, "request_base", None)
-                    )
-                    discovered = _discover_plan_jobs(
-                        lane_file,
-                        lane,
-                        adapter=adapter,
-                        base_declaration=base_declaration,
-                        operators=lane.judge.mutation.operators,
-                        allow_dirty=getattr(args, "allow_dirty", False),
-                        resolve_reuse_command=False,
-                        deadline=deadline,
-                    )
-                except AssayError as exc:
-                    # Without visibility, candidate selection is a required
-                    # precondition. A failed discovery is not evidence that
-                    # the lane has no candidates, so its own typed error
-                    # takes precedence and R0 remains unstarted. A native
-                    # mutation-discovery code is R2-claim-only in the wire
-                    # schema; keep its diagnostic in the lane-wide cgroup
-                    # refusal rather than emitting a claim that cannot verify.
-                    if exc.reason_code is ReasonCode.MUTATION_DISCOVERY_FAILED:
-                        exc = AssayError(
-                            "cannot determine whether native R2 candidates are "
-                            "selected because mutation discovery failed while "
-                            "cgroup observation is unavailable; "
-                            f"discovery error: {exc}; cgroup observation error: "
-                            f"{capability.reason}",
-                            outcome=Outcome.NO_MEASUREMENT,
-                            reason_code=ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
-                        )
-                    return _deliver_refusal(exc)
-
-                if discovered.commit != commit:
-                    return _deliver_refusal(
-                        AssayError(
-                            "HEAD changed while Assay checked native R2 candidate "
-                            f"selection for cgroup visibility: resolved {commit}, "
-                            f"then observed {discovered.commit}; rerun against one "
-                            "unchanged commit",
-                            outcome=Outcome.NO_MEASUREMENT,
-                            reason_code=ReasonCode.HEAD_CHANGED,
-                        )
-                    )
-                if discovered.jobs != mutation.UNSUPPORTED:
-                    mutation_config = lane.judge.mutation
-                    if len(discovered.jobs) <= mutation_config.max_mutants:
-                        try:
-                            selected_jobs = _select_plan_jobs(
-                                discovered.jobs,
-                                getattr(args, "shard", None),
-                                deadline_check=discovered.deadline.remaining,
-                            )
-                        except AssayError as exc:
-                            if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
-                                raise
-                            return _deliver_refusal(exc)
-                        if selected_jobs:
-                            return _deliver_refusal(
-                                AssayError(
-                                    "native R2 candidates are selected, but this "
-                                    "process cannot observe the complete cgroup v2 "
-                                    "ancestor hierarchy required to distinguish "
-                                    "resource-limit failures from mutant kills; run "
-                                    "Assay where the complete hierarchy is visible; "
-                                    "configure the runner so this process can observe "
-                                    "its complete cgroup v2 ancestor hierarchy. "
-                                    f"Observation failed: {capability.reason}",
-                                    outcome=Outcome.NO_MEASUREMENT,
-                                    reason_code=(
-                                        ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE
-                                    ),
-                                )
-                            )
+        # Native-R2 counter availability is checked by the campaign runner
+        # after the independent R0/R1 measurements. Refusing here would erase
+        # valid coverage evidence for an R2-only observer problem.
         try:
             verdict = runner.run_lane(
                 lane,

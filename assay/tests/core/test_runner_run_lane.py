@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import completed_process, timeout_expired
 from conftest import (
     FakeAdapter,
     GitRepo,
@@ -931,7 +932,7 @@ def test_run_lane_r1_renders_empty_coverage_when_r0_never_starts(git_repo: GitRe
 
 
 def _raise_timeout(argv, *, env, cwd, timeout):
-    raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+    raise timeout_expired(cmd=list(argv), timeout=timeout)
 
 
 def test_run_lane_r1_renders_empty_coverage_when_r0_budget_expires(

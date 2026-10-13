@@ -2138,8 +2138,8 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in mounts
     socket_source = gate_functions.read_text(encoding="utf-8").split("docker_socket=", 1)[1].split()[0]
     assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
-    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in mounts
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in launch
+    assert not any("resource-observer.sock" in value for value in launch)
+    assert not any("resource-observer" in value for value in mounts)
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls

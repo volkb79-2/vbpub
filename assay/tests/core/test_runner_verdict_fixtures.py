@@ -26,6 +26,8 @@ predicted).
 
 from __future__ import annotations
 
+from conftest import completed_process, file_not_found, timeout_expired
+
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -104,7 +106,7 @@ def test_r0_only_error_exec_failed_missing_executable_matches_the_fixture(
     )
 
     def raise_missing(argv, *, env, cwd, timeout):
-        raise FileNotFoundError(2, "No such file or directory", argv[0])
+        raise file_not_found(2, "No such file or directory", argv[0])
 
     result = runner.execute_command(
         lane, cwd=tmp_path, process_runner=raise_missing, clock=clock
@@ -170,7 +172,7 @@ def test_r0_only_budget_exceeded_matches_p01bs_own_hand_written_fixture(
     )
 
     def raise_timeout(argv, *, env, cwd, timeout):
-        exc = subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+        exc = timeout_expired(cmd=list(argv), timeout=timeout)
         exc.stdout = ""
         exc.stderr = ""
         raise exc

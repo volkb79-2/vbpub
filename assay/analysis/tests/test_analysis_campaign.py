@@ -899,10 +899,31 @@ def test_native_pilot_projection_must_use_declared_worker_count(tmp_path, monkey
     _validate(result)
     assert result["status"] == "evidence_error"
     assert result["errors"][0]["message"] == (
-        "native R2 pilot projection jobs must equal the lane's declared mutation jobs"
+        "native R2 projection jobs must equal the lane's declared mutation jobs"
     )
     assert error.endswith(
-        "native R2 pilot projection jobs must equal the lane's declared mutation jobs\n"
+        "native R2 projection jobs must equal the lane's declared mutation jobs\n"
+    )
+
+
+def test_native_r2_campaign_projection_rejects_a_parallel_worker_assumption(
+        tmp_path, monkeypatch):
+    root, head, _verdict, progress = _complete_fixture(
+        tmp_path, monkeypatch, "r2_pass"
+    )
+    code, output, error = _invoke(
+        root, head, None, progress,
+        extra=("--project", "--project-jobs", "2"),
+    )
+    assert code == 2
+    result = json.loads(output)
+    _validate(result)
+    assert result["status"] == "evidence_error"
+    assert result["errors"][0]["message"] == (
+        "native R2 projection jobs must equal the lane's declared mutation jobs"
+    )
+    assert error.endswith(
+        "native R2 projection jobs must equal the lane's declared mutation jobs\n"
     )
 
 

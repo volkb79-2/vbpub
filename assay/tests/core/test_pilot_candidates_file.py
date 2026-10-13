@@ -21,7 +21,7 @@ from assay.adapters.python import PythonAdapter
 from assay.cli import main
 from assay.errors import LaneConfigError, Outcome, ReasonCode
 from assay.verdict import CLAIM_DETAIL_BYTES
-from conftest import GitRepo, PROJECT_ROOT
+from conftest import GitRepo, PROJECT_ROOT, process_tree_evidence_dict
 
 
 def _seed_pilot_repo(repo: GitRepo) -> tuple[Path, tuple[int, ...]]:
@@ -1572,6 +1572,9 @@ def test_real_candidate_timeout_record_is_valid_but_not_a_completed_pilot(
                 returncode=None,
                 started=fixed_time,
                 ended=fixed_time,
+                process_tree_evidence=process_tree_evidence_dict(
+                    leader_status="not-started"
+                ),
             )
         return original_execute_plan(plan, cwd=cwd, **kwargs)
 
@@ -1662,6 +1665,9 @@ def test_malformed_terminal_evidence_refuses_before_pilot_summary(
                 returncode=None,
                 started=fixed_time,
                 ended=fixed_time,
+                process_tree_evidence=process_tree_evidence_dict(
+                    leader_status="not-started"
+                ),
             )
         return original_execute_plan(plan, cwd=cwd, **kwargs)
 
@@ -1716,6 +1722,9 @@ def test_resume_reexecutes_incomplete_budget_record(
                 returncode=None,
                 started=fixed_time,
                 ended=fixed_time,
+                process_tree_evidence=process_tree_evidence_dict(
+                    leader_status="not-started"
+                ),
             )
         return original_execute_plan(plan, cwd=cwd, **kwargs)
 

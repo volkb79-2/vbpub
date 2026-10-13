@@ -32,6 +32,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
+from conftest import completed_process, timeout_expired
 from conftest import (
     FakeAdapter,
     GitRepo,
@@ -271,7 +272,7 @@ def _recording_process_runner(cov_target: PurePosixPath | None = None):
             write_coverage_json(
                 Path(cwd) / cov_target, {"src/mod.zzz": {"executed_lines": [1, 2]}}
             )
-        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
     return process_runner, calls
 
@@ -528,7 +529,7 @@ def _make_cross_unit_process_runner():
         text = (cwd_path / "pkg" / "mod.py").read_text(encoding="utf-8")
         _write_fake_coverage(cwd_path, text)
         returncode = 1 if ">=" in text else 0
-        return subprocess.CompletedProcess(list(argv), returncode=returncode, stdout="", stderr="")
+        return completed_process(list(argv), returncode=returncode, stdout="", stderr="")
 
     return process_runner, calls
 

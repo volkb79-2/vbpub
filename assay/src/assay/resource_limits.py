@@ -48,6 +48,8 @@ LimitSignatureEntry = tuple[
 
 _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS = 5.0
 _RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS = 1.0
+_RESOURCE_OBSERVER_RESTART_RETRY_SECONDS = 30.0
+_RESOURCE_OBSERVER_RETRY_INTERVAL_SECONDS = 0.2
 
 
 class ResourceLimitObservationError(RuntimeError):
@@ -1008,57 +1010,76 @@ def read_resource_observer_counters(socket_path: str) -> ResourceLimitCounters:
             "configured resource observer socket path must be absolute"
         )
     path = Path(socket_path)
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise ResourceLimitObservationError(
-            f"cannot inspect configured resource observer socket: {exc}"
-        ) from exc
-    if not stat.S_ISSOCK(metadata.st_mode):
-        raise ResourceLimitObservationError(
-            "configured resource observer endpoint is not a Unix socket"
-        )
-
     thread_id = threading.get_native_id()
     request = json.dumps(
         {"verb": "resource-limits", "args": {"thread_id": thread_id}, "contract": 2},
         separators=(",", ":"),
     ).encode("utf-8") + b"\n"
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    response = bytearray()
-    deadline = time.monotonic() + _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS
-
-    def set_remaining_timeout() -> None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ResourceLimitObservationError(
-                "resource observer socket request timed out"
-            )
-        client.settimeout(remaining)
-
-    try:
-        set_remaining_timeout()
-        client.connect(socket_path)
-        set_remaining_timeout()
-        client.sendall(request)
-        while True:
-            set_remaining_timeout()
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            response.extend(chunk)
-            if len(response) > 1024 * 1024:
+    retry_deadline = time.monotonic() + _RESOURCE_OBSERVER_RESTART_RETRY_SECONDS
+    response: bytearray | None = None
+    while response is None:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED) \
+                    or time.monotonic() >= retry_deadline:
                 raise ResourceLimitObservationError(
-                    "resource observer response exceeds 1 MiB"
+                    f"cannot inspect configured resource observer socket: {exc}"
+                ) from exc
+            time.sleep(min(
+                _RESOURCE_OBSERVER_RETRY_INTERVAL_SECONDS,
+                max(0.0, retry_deadline - time.monotonic()),
+            ))
+            continue
+        if not stat.S_ISSOCK(metadata.st_mode):
+            raise ResourceLimitObservationError(
+                "configured resource observer endpoint is not a Unix socket"
+            )
+
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        candidate_response = bytearray()
+        request_deadline = time.monotonic() + _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS
+
+        def set_remaining_timeout() -> None:
+            remaining = request_deadline - time.monotonic()
+            if remaining <= 0:
+                raise ResourceLimitObservationError(
+                    "resource observer socket request timed out"
                 )
-    except ResourceLimitObservationError:
-        raise
-    except OSError as exc:
-        raise ResourceLimitObservationError(
-            f"resource observer socket request failed: {exc}"
-        ) from exc
-    finally:
-        client.close()
+            client.settimeout(remaining)
+
+        try:
+            set_remaining_timeout()
+            client.connect(socket_path)
+            set_remaining_timeout()
+            client.sendall(request)
+            while True:
+                set_remaining_timeout()
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                candidate_response.extend(chunk)
+                if len(candidate_response) > 1024 * 1024:
+                    raise ResourceLimitObservationError(
+                        "resource observer response exceeds 1 MiB"
+                    )
+        except ResourceLimitObservationError:
+            raise
+        except OSError as exc:
+            if exc.errno not in (errno.ENOENT, errno.ECONNREFUSED) \
+                    or time.monotonic() >= retry_deadline:
+                raise ResourceLimitObservationError(
+                    f"resource observer socket request failed: {exc}"
+                ) from exc
+            time.sleep(min(
+                _RESOURCE_OBSERVER_RETRY_INTERVAL_SECONDS,
+                max(0.0, retry_deadline - time.monotonic()),
+            ))
+        else:
+            response = candidate_response
+        finally:
+            client.close()
+    assert response is not None
     if not response.endswith(b"\n") or response.count(b"\n") != 1:
         raise ResourceLimitObservationError(
             "resource observer response is not exactly one JSON line"
