@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import stat
 import sys
@@ -41,6 +42,7 @@ def _fixture(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repository"
     project = repo / "cmru"
     project.mkdir(parents=True)
+    (repo / ".git").write_text("gitdir: /tmp/test-worktree/.git/worktrees/repository\n")
     root_secret = repo / "cmru.secret.toml"
     project_secret = project / "cmru.secret.toml"
     root_secret.write_bytes(b"root credential\n")
@@ -78,13 +80,54 @@ def _fixture(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(run_release_gate, "PROJECT_ROOT", project)
     monkeypatch.setattr(run_release_gate, "_load_components", load_components)
+    monkeypatch.setattr(run_release_gate, "_preflight_assay_source", lambda _root: None)
     return repo, root_secret, project_secret, metadata, auth, calls
+
+
+def test_assay_source_preflight_runs_before_loading_release_components_and_lanes(
+    tmp_path, monkeypatch,
+):
+    repo, *_rest, _calls = _fixture(tmp_path, monkeypatch)
+    events = []
+    load_components = run_release_gate._load_components
+
+    def preflight(root):
+        assert root == repo
+        events.append("assay-source-preflight")
+
+    def load():
+        events.append("load-components")
+        return load_components()
+
+    def invoke(_root, lane, _environment):
+        events.append(lane)
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_preflight_assay_source", preflight)
+    monkeypatch.setattr(run_release_gate, "_load_components", load)
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    assert events == [
+        "assay-source-preflight",
+        "load-components",
+        "installed-wheel",
+        "assay",
+        "coverage",
+        "mutation",
+        "canary",
+    ]
 
 
 def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
     tmp_path, monkeypatch,
 ):
     repo, root_secret, project_secret, metadata, _auth, calls = _fixture(tmp_path, monkeypatch)
+    sibling_secret = tmp_path / "sibling-worktree" / "cmru.secret.toml"
+    sibling_secret.parent.mkdir()
+    sibling_secret.write_bytes(b"unrelated worktree credential\n")
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
     monkeypatch.setenv("GITHUB_PUSH_PAT", "ambient-push-token")
@@ -97,6 +140,8 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
         assert root == repo
         assert root_secret.is_symlink()
         assert project_secret.is_symlink()
+        assert sibling_secret.is_file() and not sibling_secret.is_symlink()
+        assert sibling_secret.read_bytes() == b"unrelated worktree credential\n"
         for path in (root_secret, project_secret):
             target = Path(os.readlink(path)) if path.is_symlink() else None
             assert target is not None and target.is_absolute()
@@ -121,6 +166,7 @@ def test_release_lanes_run_with_secret_files_and_ambient_credentials_masked(
     assert calls == ["installed-wheel", "assay", "coverage", "mutation", "canary"]
     assert root_secret.read_bytes() == b"root credential\n"
     assert project_secret.read_bytes() == b"project override\n"
+    assert sibling_secret.read_bytes() == b"unrelated worktree credential\n"
     assert {
         path: (
             stat.S_IMODE(path.stat().st_mode),
@@ -148,12 +194,16 @@ def test_release_gate_restores_secrets_after_a_failed_registered_lane(tmp_path, 
     assert project_secret.read_bytes() == b"project override\n"
 
 
-def _inventory_with_walk_error(tmp_path, monkeypatch, error):
+def _inventory_with_walk_error(tmp_path, monkeypatch, error, *, tester_uid=1003):
     """Run the overlay inventory while os.walk reports ``error`` for one directory."""
     root = tmp_path / "mount"
     (root / "cmru").mkdir(parents=True)
     (root / "elsewhere" / "deep").mkdir(parents=True)
     (root / "elsewhere" / "deep" / "cmru.secret.toml").write_text("x", encoding="utf-8")
+    (root / "tester-unified").mkdir()
+    (root / "tester-unified" / "Dockerfile").write_text(
+        f"USER root\nUSER {tester_uid}\n", encoding="utf-8",
+    )
     real_walk = os.walk
 
     def walk(top, **kwargs):
@@ -161,26 +211,235 @@ def _inventory_with_walk_error(tmp_path, monkeypatch, error):
         yield from real_walk(top, **kwargs)
 
     monkeypatch.setattr(run_release_gate.os, "walk", walk)
-    return root, run_release_gate._secret_overlay_paths(root, root, root / "cmru")
+    return root, run_release_gate._secret_overlay_paths(root, root / "cmru")
+
+
+def test_overlay_inventory_is_scoped_to_the_judged_linked_worktree(tmp_path):
+    common_root = tmp_path / "main-checkout"
+    judged = common_root / ".worktrees" / "release-candidate"
+    sibling = common_root / ".worktrees" / "other-agent"
+    project = judged / "cmru"
+    project.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    main_secret = common_root / "cmru.secret.toml"
+    project_secret = project / "cmru.secret.toml"
+    sibling_secret = sibling / "cmru.secret.toml"
+    main_secret.write_text("main credential", encoding="utf-8")
+    project_secret.write_text("judged credential", encoding="utf-8")
+    sibling_secret.write_text("sibling credential", encoding="utf-8")
+
+    found = run_release_gate._secret_overlay_paths(judged, project)
+
+    assert project_secret in found
+    assert main_secret not in found
+    assert sibling_secret not in found
+
+
+def test_linked_worktree_inventory_includes_nested_worktree_secrets(tmp_path):
+    linked = tmp_path / "linked-worktree"
+    project = linked / "cmru"
+    sibling = linked / ".worktrees" / "nested-checkout"
+    project.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    nested_secret = sibling / "cmru.secret.toml"
+    nested_secret.write_text("nested credential", encoding="utf-8")
+
+    found = run_release_gate._secret_overlay_paths(linked, project)
+
+    assert nested_secret in found
+
+
+def test_release_gate_retains_secret_backup_when_nested_worktree_disappears(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, root_secret, project_secret, _metadata, _auth, _calls = _fixture(
+        tmp_path, monkeypatch,
+    )
+    nested = repo / ".claude" / "worktrees" / "hotfix"
+    nested.mkdir(parents=True)
+    (nested / ".git").write_text("gitdir: /tmp/other/.git/worktrees/hotfix\n")
+    nested_secret = nested / "cmru.secret.toml"
+    nested_secret.write_bytes(b"nested publisher credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    removed = False
+
+    def invoke(_root, _lane, _environment):
+        nonlocal removed
+        if not removed:
+            shutil.rmtree(nested)
+            nested.mkdir(parents=True)
+            (nested / ".git").write_text("gitdir: /tmp/new/.git/worktrees/hotfix\n")
+            nested_secret.write_bytes(b"replacement publisher credential\n")
+            removed = True
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+
+    warning = capsys.readouterr().err
+    assert "WARN" in warning
+    assert str(nested_secret) in warning
+    backup_path = Path(warning.split("original retained at ", 1)[1].strip())
+    assert backup_path.is_file()
+    assert backup_path.read_bytes() == b"nested publisher credential\n"
+    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(backup_path.parent.stat().st_mode) == 0o700
+    assert not root_secret.is_symlink()
+    assert not project_secret.is_symlink()
+    assert nested_secret.read_bytes() == b"replacement publisher credential\n"
+
+
+def test_release_gate_retains_backup_when_nested_worktree_disappears(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, _root_secret, _project_secret, _metadata, _auth, _calls = _fixture(
+        tmp_path, monkeypatch,
+    )
+    nested = repo / ".worktrees" / "removed"
+    nested.mkdir(parents=True)
+    nested_secret = nested / "cmru.secret.toml"
+    nested_secret.write_bytes(b"nested publisher credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    def invoke(*_args):
+        shutil.rmtree(nested)
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+
+    warning = capsys.readouterr().err
+    assert "WARN" in warning and str(nested_secret) in warning
+    backup_path = Path(warning.split("original retained at ", 1)[1].strip())
+    assert backup_path.read_bytes() == b"nested publisher credential\n"
+    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
+    assert not nested.exists()
+
+
+def test_release_gate_parent_swap_after_binding_never_writes_into_replacement(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, _root_secret, _project_secret, _metadata, _auth, _calls = _fixture(
+        tmp_path, monkeypatch,
+    )
+    nested = repo / ".worktrees" / "raced"
+    nested.mkdir(parents=True)
+    nested_secret = nested / "cmru.secret.toml"
+    nested_secret.write_bytes(b"original nested credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    swapped = False
+    original_matches = run_release_gate._secret_parent_path_matches
+
+    def swap_after_parent_check(item):
+        nonlocal swapped
+        result = original_matches(item)
+        if item.path == nested_secret and result and not swapped:
+            # The restore has an open descriptor for the original parent. Swap
+            # the pathname immediately after its identity check, before it can
+            # create the restored file.
+            shutil.rmtree(nested)
+            nested.mkdir(parents=True)
+            nested_secret.write_bytes(b"replacement nested credential\n")
+            swapped = True
+        return result
+
+    def invoke(*_args):
+        monkeypatch.setattr(
+            run_release_gate, "_secret_parent_path_matches", swap_after_parent_check,
+        )
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    assert swapped
+    assert nested_secret.read_bytes() == b"replacement nested credential\n"
+    warning = capsys.readouterr().err
+    assert "WARN" in warning and str(nested_secret) in warning
+    backup_path = Path(warning.split("original retained at ", 1)[1].strip())
+    assert backup_path.read_bytes() == b"original nested credential\n"
+    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
+
+
+def test_release_gate_refuses_main_checkout_with_nested_worktree_secret(
+    tmp_path, monkeypatch,
+):
+    repo, root_secret, project_secret, _metadata, _auth, calls = _fixture(
+        tmp_path, monkeypatch,
+    )
+    git_marker = repo / ".git"
+    git_marker.unlink()
+    git_marker.mkdir()
+    sibling_secret = repo / ".worktrees" / "other-agent" / "cmru.secret.toml"
+    sibling_secret.parent.mkdir(parents=True)
+    sibling_secret.write_bytes(b"sibling credential\n")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    def invoke(*_args):
+        calls.append("launched")
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
+
+    with pytest.raises(RuntimeError, match="requires a linked Git worktree"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+    assert calls == []
+    assert sibling_secret.read_bytes() == b"sibling credential\n"
+    assert not root_secret.is_symlink()
+    assert not project_secret.is_symlink()
 
 
 def _unreadable_dir_error(path):
     return PermissionError(13, "Permission denied", str(path))
 
 
-def test_overlay_inventory_skips_foreign_owned_unreadable_directory_with_warning(
+def test_overlay_inventory_skips_directory_not_traversable_by_tester_uid(
     tmp_path, monkeypatch, capsys,
 ):
     foreign = tmp_path / "volume"
-    foreign.mkdir()
-    monkeypatch.setattr(run_release_gate.os, "geteuid", lambda: foreign.lstat().st_uid + 1)
+    foreign.mkdir(mode=0o700)
+    foreign.chmod(0o700)
+    tester_uid = foreign.lstat().st_uid + 1
     root, found = _inventory_with_walk_error(
-        tmp_path, monkeypatch, _unreadable_dir_error(foreign),
+        tmp_path, monkeypatch, _unreadable_dir_error(foreign), tester_uid=tester_uid,
     )
     assert root / "elsewhere" / "deep" / "cmru.secret.toml" in found
     err = capsys.readouterr().err
     assert err.count("\n") == 1
-    assert "WARN" in err and str(foreign) in err
+    assert "WARN" in err and f"tester-unified UID {tester_uid}" in err
+    assert str(foreign) in err
+
+
+def test_overlay_inventory_fails_closed_for_directory_owned_by_tester_uid(
+    tmp_path, monkeypatch,
+):
+    owned = tmp_path / "tester-owned"
+    owned.mkdir(mode=0o700)
+    owned.chmod(0o700)
+    tester_uid = owned.lstat().st_uid
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(
+            tmp_path, monkeypatch, _unreadable_dir_error(owned), tester_uid=tester_uid,
+        )
+
+
+def test_overlay_inventory_fails_closed_for_possible_supplementary_group_access(
+    tmp_path, monkeypatch,
+):
+    group_accessible = tmp_path / "observer-group-volume"
+    group_accessible.mkdir(mode=0o710)
+    group_accessible.chmod(0o710)
+    tester_uid = group_accessible.lstat().st_uid + 1
+    with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
+        _inventory_with_walk_error(
+            tmp_path, monkeypatch, _unreadable_dir_error(group_accessible),
+            tester_uid=tester_uid,
+        )
 
 
 def test_overlay_inventory_skips_vanished_unreadable_directory(
@@ -216,13 +475,17 @@ def test_overlay_inventory_fails_closed_on_filenotfound_without_filename(
         )
 
 
-def test_overlay_inventory_fails_closed_on_unreadable_directory_we_own(
+def test_overlay_inventory_fails_closed_when_the_tester_can_traverse_a_directory(
     tmp_path, monkeypatch,
 ):
     own = tmp_path / "ours"
-    own.mkdir()
+    own.mkdir(mode=0o700)
+    own.chmod(0o700)
+    tester_uid = own.lstat().st_uid
     with pytest.raises(RuntimeError, match="cannot inventory CMRU secret overlays"):
-        _inventory_with_walk_error(tmp_path, monkeypatch, _unreadable_dir_error(own))
+        _inventory_with_walk_error(
+            tmp_path, monkeypatch, _unreadable_dir_error(own), tester_uid=tester_uid,
+        )
 
 
 def test_overlay_inventory_fails_closed_when_error_has_no_filename(

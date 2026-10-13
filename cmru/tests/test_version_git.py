@@ -234,6 +234,50 @@ class TestDetectChangedProjects(unittest.TestCase):
             _, _, _, bump = changed[0]
             self.assertEqual(bump, "major")
 
+    def test_known_project_scope_limits_cross_project_breaking_bump(self):
+        with _TempRepo() as repo:
+            _commit(repo, "chore: init", {
+                "assay/src/assay.py": "base\n",
+                "run-gate-project/run_gate.py": "base\n",
+            })
+            _tag(repo, "assay-v1.0.0")
+            _tag(repo, "run-gate-v1.0.0")
+            _commit(repo, "feat(assay)!: change the verdict contract", {
+                "assay/src/assay.py": "breaking\n",
+                "run-gate-project/run_gate.py": "integration\n",
+            })
+            projects = {
+                "assay": _ProjCfg("assay-v", "assay", paths=["assay"]),
+                "run-gate": _ProjCfg(
+                    "run-gate-v", "run-gate-project", paths=["run-gate-project"]
+                ),
+            }
+            changed = {name: bump for name, _proj, _tag, bump in
+                       detect_changed_projects(repo, projects)}
+            self.assertEqual(changed, {"assay": "major", "run-gate": "patch"})
+
+    def test_unknown_scope_preserves_path_based_breaking_bump(self):
+        with _TempRepo() as repo:
+            _commit(repo, "chore: init", {
+                "assay/src/assay.py": "base\n",
+                "run-gate-project/run_gate.py": "base\n",
+            })
+            _tag(repo, "assay-v1.0.0")
+            _tag(repo, "run-gate-v1.0.0")
+            _commit(repo, "feat(platform)!: hard cut", {
+                "assay/src/assay.py": "breaking\n",
+                "run-gate-project/run_gate.py": "breaking\n",
+            })
+            projects = {
+                "assay": _ProjCfg("assay-v", "assay", paths=["assay"]),
+                "run-gate": _ProjCfg(
+                    "run-gate-v", "run-gate-project", paths=["run-gate-project"]
+                ),
+            }
+            changed = {name: bump for name, _proj, _tag, bump in
+                       detect_changed_projects(repo, projects)}
+            self.assertEqual(changed, {"assay": "major", "run-gate": "major"})
+
     def test_bump_patch_rule_overrides_conventional(self):
         """bump='patch' in config → always patch, even for feat: commits."""
         with _TempRepo() as repo:

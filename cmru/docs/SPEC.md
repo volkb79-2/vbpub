@@ -2674,7 +2674,7 @@ or appear to fail, over cleanup of a branch whose job is already done) but MUST 
 **S12.4** Version bump rules (in priority order):
 1. `--set-version <v>` — explicit override.
 2. `--major` / `--minor` — force bump level.
-3. `conventional` strategy: scan commits since last tag; `feat:` → minor, `BREAKING CHANGE` or `!` → major, all else → patch.
+3. `conventional` strategy: scan commits since last tag; `feat:` → minor, `BREAKING CHANGE` or `!` → major, all else → patch. A scope matching a configured project name or alias limits that subject's feature/breaking effect to the matching project. An unscoped subject or a subject with an unknown scope retains its path-based effect on every changed project.
 4. `patch` strategy: always increment patch.
 
 **S12.5** Versioning strategies:
@@ -2944,7 +2944,20 @@ mutation lane records `.assay/mutation-cmru.json` and appends
 file is an append-only progress stream. Its first-failure limit stops a bad mutant from running
 the rest of the suite. Mutation outcomes MAY be reused on resume only when the test suite and
 copied fixture closure exactly match the recorded run; any test or fixture change requires a
-new campaign. Both campaigns preserve their own resume state. The mutation and canary controls copy the CMRU test closure,
+new campaign. The mutation evidence uses schema 5 and records
+`candidate_isolation = "process-tree/1"` with per-run process-tree evidence;
+a reusable kill requires a normally exited leader, no outliving descendants,
+and clean cgroup resource evidence. It records `assay_distribution_version` as
+package metadata and `assay_source_commit` as the exact source identity. CMRU
+checks Assay's declared package roots with sanitized Git before import, validates
+that the imported package is within those roots, and repeats cleanliness and
+HEAD checks after the baseline control. Unsupported package layouts refuse
+closed. Before editable installation, the mutation, coverage, and canary lanes
+check the complete Assay checkout for uncommitted build inputs. CMRU copies
+tracked project inputs once into a frozen fixture template; the baseline and
+each mutant use independent copies of that template. Run-Gate state, Assay
+state, coverage outputs, and untracked files are not candidate inputs. The
+controller and child processes use private bytecode caches. Both campaigns preserve their own resume state. The mutation and canary controls copy the CMRU test closure,
 including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
 contract test reads. Missing closure files fail the control before mutation or
 canary evidence is written. The `gate` lane runs these with the total-coverage
@@ -2972,6 +2985,13 @@ without following symlinks, reject symlink and nonregular destination paths, and
 mode-0600 copy atomically from a sibling temporary file.
 Direct tester component lanes do not apply this host wrapper and MUST only run
 when the mounted checkout contains no publisher secret overlays.
+
+The registered CMRU release gate MUST run from a linked Git worktree. It MUST
+refuse a main checkout before masking secrets or launching a lane because the
+whole mounted main path can include publisher secrets from sibling checkouts
+under `.worktrees/`. A linked worktree's inventory covers secret files inside
+that selected tree, including nested `.worktrees/`, and does not traverse the
+shared Git directory or external sibling worktrees.
 
 **S16.5 — Real enrollment (moved to ciu).** cmru no longer ships host enrollment:
 `get.py enroll` is ciu-owned code inlined through the installer `extensions`

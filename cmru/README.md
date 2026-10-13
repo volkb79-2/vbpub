@@ -172,6 +172,16 @@ cmru get-py ciu --config cmru.orchestration.toml --output ciu-get.py  # render f
 cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
 
+### Conventional Commit scopes in multi-project commits
+
+With `version.strategy = "conventional"`, a scope matching a configured project name or
+alias limits that commit's feature or breaking bump to the matching project. For example,
+`feat(assay)!: change verdict format` requests a major bump for Assay when the same commit
+also touches Run-Gate. An unscoped breaking subject still affects every changed project.
+Unknown scopes keep the historical path-based behavior so a typo or new scope cannot silently
+downgrade a breaking change. See the [scope-bump design](docs/DESIGN-GUIDE.md#known-project-scopes-localize-version-bumps)
+and [consumer example](docs/CONSUMERS.md#scoping-conventional-commits-in-a-multi-project-release).
+
 These are representative operator workflows. The complete registered grammar,
 including nested handler verbs, the supported
 handlers module adapter, every option, and the required semantic review table, is maintained
@@ -726,11 +736,28 @@ comparison commit: if Assay resolves a merge's first parent after the tag, the
 configured CMRU source roots must be unchanged across the gap. A missing tag or
 mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
 origin facts immediately before mutation.
-Each mutation test command runs in its own process group. If a candidate
-times out, CMRU kills the whole group before sampling resource counters or
-starting another candidate, so pytest grandchildren cannot continue into the
-next candidate's evidence window. A timeout or any cgroup resource event is an
-inconclusive infrastructure outcome, never a killed mutant.
+Each mutation test command runs in a fresh process group while CMRU's host
+process acts as a Linux child subreaper. If a candidate times out, CMRU kills
+and reaps its process tree before sampling resource counters or starting
+another candidate, including descendants that call `setsid()` or double-fork.
+A normal leader exit with remaining descendants is recorded as `crashed`; CMRU
+cleans them up and continues without calling the mutant killed or survived.
+Timeouts and cgroup resource events are also inconclusive, never killed
+mutants. Resume accepts a killed result only when its process-tree proof says
+the leader exited and no descendants outlived it. See the
+[mutation-isolation design](docs/DESIGN-GUIDE.md#mutation-process-tree-isolation)
+and [consumer evidence contract](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
+Evidence schema 5 records `assay_distribution_version` as package metadata and
+`assay_source_commit` as the exact implementation identity. CMRU verifies Assay
+source cleanliness with an independent Git process before importing it, and
+refuses package layouts it cannot bind safely. Before an editable Assay install,
+the registered CMRU lanes check the full Assay checkout for uncommitted build
+inputs. CMRU then assembles one fixture from tracked files and reuses copies of
+that frozen snapshot for the baseline and every candidate. Run-Gate/Assay state
+and coverage outputs are not copied; untracked source or test files and Git
+index entries marked assume-unchanged or skip-worktree refuse the campaign.
+Python bytecode is directed to private temporary caches so stale `.pyc` files
+cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
 Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;
@@ -738,12 +765,24 @@ cmru's gate has no enrollment lane (see "Installer extensions" under `cmru get-p
 Before tester-unified starts, the host gate points all visible root and selected
 project secret overlays at private host backups outside the repository mount
 and strips publisher-token and extra-mount variables from nested runner calls.
+CMRU's registered release gate requires a linked Git worktree and refuses a
+main checkout: the mounted main tree can contain publisher secrets under sibling
+worktrees. Run the gate from a CMRU or CIU worktree instead. See the
+[gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 It uses CMRU's scoped Git auth on the host to prepare token-free origin facts
 for mutation, then restores the original secret files. If restoration fails,
-the gate reports and retains the private backup path for recovery. If a credential is atomically
-replaced while the gate masks or runs, CMRU preserves the replacement and fails the gate instead
-of replacing it with stale bytes. SIGTERM and SIGHUP also run the restoration path. See the
+the gate reports and retains the private backup path for recovery. If a nested
+worktree containing an overlay disappears or is replaced during the gate, CMRU
+does not write the saved secret into a new tree: it warns and retains the
+private backup while preserving the lane result. If a credential is atomically
+replaced while the gate masks or runs, CMRU preserves the replacement and fails
+the gate instead of replacing it with stale bytes. SIGTERM and SIGHUP also run
+the restoration path. See the
 [gate credential design](docs/DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
+When inventory encounters an unreadable directory, it derives the tester UID
+from the final `USER` in `tester-unified/Dockerfile`. It skips only a directory
+whose mode proves that tester UID cannot traverse it, or a path that has
+actually vanished; possible group or other traversal access fails closed.
 When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
 release tag at HEAD and selects the highest-version published tag in its full
 ancestry. An empty source diff records a skip bound to the candidate HEAD. The
@@ -755,9 +794,18 @@ See the [Assay baseline design](docs/DESIGN-GUIDE.md#why-cmru-pins-assay-r1-to-a
 Mutation runs stop each
 failing candidate at its first failed test (`--maxfail=1`), cap each candidate
 at 120 seconds, and resume killed outcomes from `.assay/mutation-cmru.json` only
-while the test suite and copied fixture closure are unchanged. The append-only
+while the test suite, copied fixture closure, and timeout are unchanged. Changing
+the timeout starts a fresh campaign because it changes whether a candidate could
+have completed. Resume also requires the selected Assay source tree to be clean
+and unchanged across every packaged source root declared in its `pyproject.toml`;
+changing any shipped Assay package requires a fresh campaign. The append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress; it is not the
-resumable result record. Any test or fixture change requires a new campaign. A
+resumable result record. CMRU compares source history from Assay's own Git
+worktree, including when the selected Assay source is in a linked worktree. It
+refuses unsupported package-source mappings and ignored files under package
+roots, except generated bytecode, pytest and Hypothesis caches, coverage
+outputs, and editable-install metadata. Any test
+or fixture change requires a new campaign. A
 successful full-suite run still executes all tests. `.assay/` verdict, result,
 and progress artifacts are retained as gate evidence.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

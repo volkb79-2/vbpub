@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -32,6 +34,8 @@ EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
 @dataclass(frozen=True)
 class _SecretBackup:
     path: Path
+    parent_device: int
+    parent_inode: int
     backup: Path
     device: int
     inode: int
@@ -59,18 +63,26 @@ def _load_components():
     return assay_git, prepare_assay_baseline
 
 
-def _common_mount_root(repo_root: Path, assay_git) -> Path:
-    raw = assay_git.run(
-        repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir",
-    ).strip()
-    if not raw:
-        raise RuntimeError("Assay could not resolve the Git common directory")
-    common_dir = Path(raw).resolve()
-    # run-gate mounts the repository containing this common directory. This
-    # also covers worktrees whose .git file points back to the primary checkout.
-    if common_dir.name == ".git":
-        return common_dir.parent
-    return repo_root.resolve()
+def _preflight_assay_source(repo_root: Path) -> None:
+    """Check the source tree before any registered lane can install it."""
+    script = PROJECT_ROOT / "tools" / "check_assay_source.py"
+    assay_source = repo_root / "assay"
+    if script.is_symlink() or not script.is_file():
+        raise RuntimeError(f"Assay source preflight is missing or unsafe: {script}")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "--assay-source", str(assay_source)],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not run the Assay editable-install source preflight") from exc
+    if result.returncode != 0 or "CMRU_ASSAY_SOURCE_PREFLIGHT=clean" not in result.stdout.splitlines():
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"Assay editable-install source preflight refused: {detail}")
 
 
 def _read_secret(path: Path) -> tuple[bytes, os.stat_result] | None:
@@ -124,58 +136,105 @@ def _secret_overlay_lock(temp_parent: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _restore(backups: list[_SecretBackup]) -> None:
+def _restore(backups: list[_SecretBackup]) -> list[_SecretBackup]:
+    """Restore through the original directory handle, retaining uncertain backups."""
     errors: list[str] = []
+    retained: list[_SecretBackup] = []
     for item in reversed(backups):
+        parent_fd: int | None = None
         try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
             try:
-                current = item.path.lstat()
+                parent_fd = os.open(item.path.parent, flags)
+            except OSError as exc:
+                if exc.errno in {
+                    errno.EACCES, errno.ELOOP, errno.ENOENT, errno.ENOTDIR,
+                }:
+                    # Do not inspect or mutate the path through a replacement
+                    # parent. The private backup is the recovery copy.
+                    retained.append(item)
+                    continue
+                raise
+            parent_metadata = os.fstat(parent_fd)
+            if (
+                not stat.S_ISDIR(parent_metadata.st_mode)
+                or (parent_metadata.st_dev, parent_metadata.st_ino)
+                != (item.parent_device, item.parent_inode)
+                or not _secret_parent_path_matches(item)
+            ):
+                retained.append(item)
+                continue
+
+            basename = item.path.name
+            try:
+                current = os.stat(basename, dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
                 current = None
             if current is not None and (current.st_dev, current.st_ino) == (
                 item.device, item.inode,
             ):
+                if _secret_parent_path_matches(item):
+                    continue
+                retained.append(item)
                 continue
             if current is not None:
-                displaced = item.path.with_name(
-                    f".{item.path.name}.restore-{secrets.token_hex(16)}"
-                )
+                displaced = f".{basename}.restore-{secrets.token_hex(16)}"
                 # Move the current directory entry atomically before deciding
                 # whether it is our overlay. A prior lstat followed by unlink
                 # could erase a credential atomically rotated into this path
-                # between those operations.
-                os.replace(item.path, displaced)
-                displaced_metadata = displaced.lstat()
+                # between those operations. The directory FD pins this move
+                # to the parent that was masked, even if its pathname changes.
+                os.replace(
+                    basename, displaced,
+                    src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                )
+                displaced_metadata = os.stat(
+                    displaced, dir_fd=parent_fd, follow_symlinks=False,
+                )
                 displaced_identity = (displaced_metadata.st_dev, displaced_metadata.st_ino)
                 if displaced_identity == (item.device, item.inode):
                     try:
-                        os.link(displaced, item.path, follow_symlinks=False)
+                        os.link(
+                            displaced, basename,
+                            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                            follow_symlinks=False,
+                        )
                     except OSError as exc:
                         raise RuntimeError(
                             f"the original publisher secret was moved during restoration; "
-                            f"it is preserved at {displaced}: {exc}"
+                            f"it is preserved at {item.path.parent / displaced}: {exc}"
                         ) from exc
-                    displaced.unlink()
+                    os.unlink(displaced, dir_fd=parent_fd)
+                    if _secret_parent_path_matches(item):
+                        continue
+                    retained.append(item)
                     continue
                 if displaced_identity != (item.overlay_device, item.overlay_inode):
                     try:
                         # link() is atomic and fails if a newer entry has
                         # appeared, preserving both versions instead of
                         # replacing either one.
-                        os.link(displaced, item.path, follow_symlinks=False)
+                        os.link(
+                            displaced, basename,
+                            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                            follow_symlinks=False,
+                        )
                     except OSError as exc:
                         raise RuntimeError(
                             "publisher secret changed while the gate was running; "
-                            f"preserving the replacement at {displaced} and any newer path entry: {exc}"
+                            f"preserving the replacement at {item.path.parent / displaced} "
+                            f"and any newer path entry: {exc}"
                         ) from exc
-                    displaced.unlink()
+                    os.unlink(displaced, dir_fd=parent_fd)
                     raise RuntimeError(
                         "publisher secret changed while the gate was running; "
                         "preserving the replacement"
                     )
-                displaced.unlink()
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(item.path, flags, item.mode)
+                os.unlink(displaced, dir_fd=parent_fd)
+            file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            file_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(basename, file_flags, item.mode, dir_fd=parent_fd)
             try:
                 with os.fdopen(descriptor, "wb", closefd=False) as stream:
                     with item.backup.open("rb") as source:
@@ -187,10 +246,34 @@ def _restore(backups: list[_SecretBackup]) -> None:
                 os.utime(descriptor, ns=(item.atime_ns, item.mtime_ns))
             finally:
                 os.close(descriptor)
+            if not _secret_parent_path_matches(item):
+                # All writes above used the opened parent, never the possibly
+                # replaced pathname. Keep the backup if that parent moved.
+                retained.append(item)
         except Exception as exc:  # restore all files before reporting any failure
+            if not _secret_parent_path_matches(item):
+                retained.append(item)
+                continue
             errors.append(f"{item.path}: {exc}")
+        finally:
+            if parent_fd is not None:
+                os.close(parent_fd)
     if errors:
         raise RuntimeError("could not restore publisher secret overlay(s): " + "; ".join(errors))
+    return retained
+
+
+def _secret_parent_path_matches(item: _SecretBackup) -> bool:
+    """Return whether the pathname still names the directory masked earlier."""
+    try:
+        metadata = item.path.parent.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and (metadata.st_dev, metadata.st_ino)
+        == (item.parent_device, item.parent_inode)
+    )
 
 
 @contextmanager
@@ -234,10 +317,29 @@ def _mask_secret_overlays(
                 signum, _restore_on_termination_signal,
             )
         for index, path in enumerate(dict.fromkeys(paths)):
+            try:
+                parent_metadata = path.parent.lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                # Inventory may have found an overlay in a nested worktree
+                # that was removed before masking began. There is no file to
+                # expose or restore at that path now.
+                continue
+            if not stat.S_ISDIR(parent_metadata.st_mode):
+                raise RuntimeError(f"publisher secret parent is not a real directory: {path.parent}")
             saved = _read_secret(path)
             if saved is None:
                 continue
             data, metadata = saved
+            try:
+                parent_recheck = path.parent.lstat()
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                raise RuntimeError(
+                    f"publisher secret parent changed before masking: {path.parent}"
+                ) from exc
+            if (parent_metadata.st_dev, parent_metadata.st_ino) != (
+                parent_recheck.st_dev, parent_recheck.st_ino,
+            ):
+                raise RuntimeError(f"publisher secret parent changed before masking: {path.parent}")
             backup = backup_root / f"overlay-{index}.bin"
             _write_private_backup(backup, data)
             current = path.lstat()
@@ -254,6 +356,8 @@ def _mask_secret_overlays(
                 overlay_metadata = temporary_link.lstat()
                 record = _SecretBackup(
                     path=path,
+                    parent_device=parent_metadata.st_dev,
+                    parent_inode=parent_metadata.st_ino,
                     backup=backup,
                     device=metadata.st_dev,
                     inode=metadata.st_ino,
@@ -316,18 +420,26 @@ def _mask_secret_overlays(
         restoring = True
         try:
             try:
-                _restore(backups)
+                retained = _restore(backups)
             except Exception as exc:
                 raise RuntimeError(
                     f"{exc}; private publisher-secret backups retained at {backup_root}"
                 ) from exc
-            try:
-                shutil.rmtree(backup_root)
-            except OSError as exc:
-                raise RuntimeError(
-                    "publisher secret overlays were restored, but private backups "
-                    f"could not be removed at {backup_root}: {exc}"
-                ) from exc
+            if retained:
+                for item in retained:
+                    print(
+                        "cmru-release-gate: WARN: secret parent disappeared or changed; "
+                        f"not restoring {item.path}; original retained at {item.backup}",
+                        file=sys.stderr,
+                    )
+            else:
+                try:
+                    shutil.rmtree(backup_root)
+                except OSError as exc:
+                    raise RuntimeError(
+                        "publisher secret overlays were restored, but private backups "
+                        f"could not be removed at {backup_root}: {exc}"
+                    ) from exc
         finally:
             for signum, previous_handler in previous_signal_handlers.items():
                 signal.signal(signum, previous_handler)
@@ -341,48 +453,79 @@ def _lane_environment() -> dict[str, str]:
 
 
 def _secret_overlay_paths(
-    mount_root: Path,
     repo_root: Path,
     project_root: Path,
 ) -> list[Path]:
-    """Find CMRU credential overlays visible through the repository mounts."""
+    """Find secret overlays inside the linked worktree mounted by run-gate.
+
+    The Git common directory can be shared by many worktrees, but its sibling
+    checkouts are not mounted into a linked-worktree lane. Walking that common
+    root makes an unrelated worktree appearing or disappearing during a long
+    release gate affect the result. The release gate refuses a main checkout:
+    Run-Gate mounts that whole path, including sibling checkouts under
+    ``.worktrees``.
+    """
     candidates = {
-        mount_root / "cmru.secret.toml",
-        mount_root / "cmru" / "cmru.secret.toml",
         repo_root / "cmru.secret.toml",
         project_root / "cmru.secret.toml",
     }
 
+    def tester_unified_uid() -> int:
+        """Derive the lane UID from the image's final Docker USER declaration."""
+        dockerfile = repo_root / "tester-unified" / "Dockerfile"
+        try:
+            lines = dockerfile.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot derive tester-unified's run UID from {dockerfile}"
+            ) from exc
+        users = [
+            match.group(1)
+            for line in lines
+            if (match := re.fullmatch(r"USER\s+([^\s#]+)\s*(?:#.*)?", line.strip()))
+        ]
+        if not users:
+            raise RuntimeError(f"tester-unified has no final USER declaration: {dockerfile}")
+        uid_text = users[-1].split(":", 1)[0]
+        if not uid_text.isdecimal():
+            raise RuntimeError(
+                f"cannot derive tester-unified's numeric run UID from {dockerfile}: {users[-1]}"
+            )
+        return int(uid_text)
+
     def traversal_failed(error: OSError) -> None:
-        # A credential overlay must be a regular file owned by the effective
-        # uid (`_read_secret` refuses anything else). A directory owned by
-        # another uid that we cannot list is equally unlistable for the gate
-        # container's mapped uid, so it can neither hold an overlay we would
-        # use nor expose one to the container: skip it (e.g. a live service
-        # data dir such as a postgres volume). Everything else fails closed,
-        # including PermissionError on a directory we own and an unknown path.
-        # A path that vanished between listing and scanning (worktrees come
-        # and go on the shared tree) cannot expose an overlay either: skip it.
-        if (
-            isinstance(error, (PermissionError, FileNotFoundError))
-            and error.filename is not None
-        ):
-            if isinstance(error, FileNotFoundError):
-                foreign = True
-            else:
-                try:
-                    foreign = os.lstat(error.filename).st_uid != os.geteuid()
-                except FileNotFoundError:
-                    foreign = True  # vanished mid-walk: nothing left to inventory
-                except OSError:
-                    foreign = False
-            if foreign:
+        # The gate's UID is the final USER in tester-unified, not the host
+        # caller's EUID. Conservatively account for any group execute bit,
+        # because observer lanes add a supplementary group. We skip only a
+        # directory that the lane credentials cannot traverse at all.
+        if isinstance(error, (PermissionError, FileNotFoundError)) and error.filename is not None:
+            try:
+                metadata = os.lstat(error.filename)
+            except FileNotFoundError:
                 print(
-                    "cmru-release-gate: WARN: skipping vanished or other-uid "
-                    f"unreadable directory during secret-overlay inventory: {error.filename}",
+                    "cmru-release-gate: WARN: skipping vanished directory during "
+                    f"secret-overlay inventory: {error.filename}",
                     file=sys.stderr,
                 )
                 return
+            except OSError:
+                metadata = None
+            if metadata is not None and isinstance(error, PermissionError):
+                lane_uid = tester_unified_uid()
+                lane_can_traverse = (
+                    (
+                        metadata.st_uid == lane_uid
+                        and bool(metadata.st_mode & stat.S_IXUSR)
+                    )
+                    or bool(metadata.st_mode & (stat.S_IXGRP | stat.S_IXOTH))
+                )
+                if stat.S_ISDIR(metadata.st_mode) and not lane_can_traverse:
+                    print(
+                        "cmru-release-gate: WARN: skipping directory not traversable "
+                        f"by tester-unified UID {lane_uid}: {error.filename}",
+                        file=sys.stderr,
+                    )
+                    return
         raise RuntimeError(f"cannot inventory CMRU secret overlays: {error}") from error
 
     pruned = {
@@ -390,7 +533,7 @@ def _secret_overlay_paths(
         ".venv", "__pycache__", "node_modules", "venv",
     }
     for current, directories, files in os.walk(
-        mount_root, topdown=True, followlinks=False, onerror=traversal_failed,
+        repo_root, topdown=True, followlinks=False, onerror=traversal_failed,
     ):
         current_path = Path(current)
         directories[:] = [
@@ -507,19 +650,31 @@ def run_release_gate(
         raise RuntimeError(
             f"release gate helper is not running from the selected worktree: {PROJECT_ROOT}"
         )
+    git_marker = repo_root / ".git"
+    try:
+        git_marker_metadata = git_marker.lstat()
+    except OSError as exc:
+        raise RuntimeError(
+            "CMRU release gate requires a linked Git worktree; a main checkout "
+            "can expose publisher secrets from sibling worktrees"
+        ) from exc
+    if not stat.S_ISREG(git_marker_metadata.st_mode):
+        raise RuntimeError(
+            "CMRU release gate requires a linked Git worktree; a main checkout "
+            "can expose publisher secrets from sibling worktrees"
+        )
 
+    _preflight_assay_source(repo_root)
     assay_git, baseline = _load_components()
     if assay_git.repo_top(project_root).resolve() != repo_root:
         raise RuntimeError("selected CMRU project does not belong to the requested worktree")
-    mount_root = _common_mount_root(repo_root, assay_git)
     temp_parent = temp_parent.resolve(strict=True)
-    if temp_parent == mount_root or temp_parent.is_relative_to(mount_root):
-        raise RuntimeError("private publisher-secret directory is inside the mounted repository")
+    if temp_parent == repo_root or temp_parent.is_relative_to(repo_root):
+        raise RuntimeError("private publisher-secret directory is inside the judged worktree")
     with _secret_overlay_lock(temp_parent):
         return _run_locked_gate(
             repo_root,
             project_root,
-            mount_root,
             baseline,
             assay_git,
             temp_parent,
@@ -530,7 +685,6 @@ def run_release_gate(
 def _run_locked_gate(
     repo_root: Path,
     project_root: Path,
-    mount_root: Path,
     baseline,
     assay_git,
     temp_parent: Path,
@@ -538,11 +692,11 @@ def _run_locked_gate(
 ) -> int:
     auth = baseline._repository_git_auth(repo_root)
     lane_environment = _lane_environment()
-    secret_paths = _secret_overlay_paths(mount_root, repo_root, project_root)
+    secret_paths = _secret_overlay_paths(repo_root, project_root)
 
     with _mask_secret_overlays(
         secret_paths,
-        mount_root=mount_root,
+        mount_root=repo_root,
         temp_parent=temp_parent,
     ):
         for lane in ("installed-wheel", "assay", "coverage"):

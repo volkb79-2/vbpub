@@ -273,10 +273,51 @@ def _latest_tag_for_prefix(
 
 _CC_BREAKING = re.compile(r"^[a-z]+(\([^)]+\))?!:|BREAKING[ -]CHANGE")
 _CC_FEAT = re.compile(r"^feat(\([^)]+\))?:")
+_CC_SUBJECT_SCOPE = re.compile(r"^[a-z]+(?:\(([^)]+)\))?!?:")
 
 
-def _bump_from_commits(messages: List[str]) -> str:
-    """Return 'major', 'minor', or 'patch' based on conventional commits."""
+def _project_scope_names(name: str, project: Any) -> frozenset[str]:
+    """Return the configured project names accepted in a commit scope."""
+    prefix = getattr(project, "prefix", None) or f"{name}-v"
+    cwd = getattr(project, "cwd", None) or name
+    candidates = {
+        name,
+        getattr(project, "scm_dist", None),
+        str(cwd).rstrip("/").rsplit("/", 1)[-1],
+        prefix[:-2] if isinstance(prefix, str) and prefix.endswith("-v") else None,
+    }
+    return frozenset(str(candidate).lower() for candidate in candidates if candidate)
+
+
+def _bump_from_commits(
+    messages: List[str],
+    *,
+    project_names: frozenset[str] | None = None,
+    known_project_names: frozenset[str] | None = None,
+) -> str:
+    """Return a project's Conventional Commit bump.
+
+    A scope matching a configured project (or alias) limits that commit's
+    feature/breaking effect to the named project. Unknown scopes retain the
+    historical path-based behavior so a new or local scope cannot silently
+    downgrade a breaking change.
+    """
+    if project_names is not None and known_project_names is not None:
+        scoped_messages: list[str] = []
+        for message in messages:
+            match = _CC_SUBJECT_SCOPE.match(message)
+            if match is None or match.group(1) is None:
+                scoped_messages.append(message)
+                continue
+            scopes = {
+                part.strip().lower()
+                for part in match.group(1).split(",")
+                if part.strip()
+            }
+            recognized = scopes & known_project_names
+            if not recognized or recognized & project_names:
+                scoped_messages.append(message)
+        messages = scoped_messages
     for msg in messages:
         if _CC_BREAKING.search(msg):
             return "major"
@@ -567,6 +608,11 @@ def detect_changed_projects(
     there.
     """
     changed = []
+    known_project_names = frozenset(
+        alias
+        for project_name, project in projects.items()
+        for alias in _project_scope_names(project_name, project)
+    )
     for name, proj in projects.items():
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         paths = getattr(proj, "paths", None) or [getattr(proj, "cwd", None) or name]
@@ -600,7 +646,11 @@ def detect_changed_projects(
         version_cfg = getattr(proj, "version", None)
         bump_rule = getattr(version_cfg, "bump", "conventional") if version_cfg else "conventional"
         if bump_rule == "conventional" and messages:
-            bump = _bump_from_commits(messages)
+            bump = _bump_from_commits(
+                messages,
+                project_names=_project_scope_names(name, proj),
+                known_project_names=known_project_names,
+            )
         else:
             bump = "patch"
 

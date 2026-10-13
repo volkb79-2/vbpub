@@ -54,6 +54,7 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 exec env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json --junitxml=junit-coverage.xml
 ''',
@@ -106,6 +107,7 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
@@ -128,6 +130,7 @@ budget = "7h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.mutation.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -140,6 +143,7 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
