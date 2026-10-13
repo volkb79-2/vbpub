@@ -1503,7 +1503,10 @@ def test_reviewed_hypothesis_hooks_accept_real_receipts_and_preserve_collection(
     )
     assert coverage_result.returncode == 0, coverage_result.stderr
     assert coverage_receipt is not None
-    assert coverage_receipt["unsupported"] is False
+    # Coverage hooks are intentionally classified as the only unsupported
+    # hooks; the declared-command proof accepts this exact reviewed set.
+    assert coverage_receipt["unsupported"] is True
+    assert coverage_receipt["unsupported_pytest_cov_only"] is True
     assert coverage_receipt["unsupported_hook_names"] == []
     coverage_facts = receipt_facts(coverage_receipt)
     assert coverage_facts is not None
@@ -1594,7 +1597,9 @@ def test_reviewed_hypothesis_call_hook_records_generated_failure_and_rejects_bad
     )
     assert malformed_result.returncode != 0
     assert malformed_receipt is not None
-    assert malformed_receipt["unsupported"] is False
+    assert malformed_receipt["unsupported"] is True
+    assert malformed_receipt["unsupported_pytest_cov_only"] is True
+    assert malformed_receipt["unsupported_hook_names"] == []
     malformed_facts = receipt_facts(malformed_receipt)
     refusal = survivor_proof_failure(
         malformed_receipt,
@@ -1613,7 +1618,6 @@ def test_reviewed_hypothesis_report_hook_preserves_call_and_teardown_outcomes(tm
     project = tmp_path / "project"
     tests = project / "tests"
     tests.mkdir(parents=True)
-    junit_path = tmp_path / "junit.xml"
     (tests / "test_report_outcomes.py").write_text(
         "import pytest\n"
         "from hypothesis import given, strategies as st\n\n"
@@ -1635,24 +1639,25 @@ def test_reviewed_hypothesis_report_hook_preserves_call_and_teardown_outcomes(tm
         project,
         tmp_path / "plugins",
         tmp_path / "receipt.json",
-        pytest_args=("--cov=tests", "--junitxml", str(junit_path)),
+        pytest_args=("--cov=tests",),
         autoload_plugins=True,
     )
     assert result.returncode != 0
     assert receipt is not None
-    assert receipt["unsupported"] is False
+    # pytest-cov is the only unsupported execution-hook set. Assay records
+    # the call failure separately from the teardown error.
+    assert receipt["unsupported"] is True
+    assert receipt["unsupported_pytest_cov_only"] is True
     assert receipt["unsupported_hook_names"] == []
     assert receipt["session_exit_status"] != 0
     assert receipt_facts(receipt) is not None
-
-    from xml.etree import ElementTree
-
-    root = ElementTree.parse(junit_path).getroot()
-    cases = {case.attrib["name"]: case for case in root.iter("testcase")}
-    assert cases["test_hypothesis_call_passes"].find("failure") is None
-    assert cases["test_hypothesis_call_passes"].find("error") is None
-    assert cases["test_hypothesis_call_fails"].find("failure") is not None
-    assert cases["test_teardown_fails"].find("error") is not None
+    assert receipt["witness_node_id"] == (
+        "tests/test_report_outcomes.py::test_hypothesis_call_fails"
+    )
+    assert receipt["witness_when"] == "call"
+    assert receipt["auxiliary_failure"] is True
+    assert "FAILED tests/test_report_outcomes.py::test_hypothesis_call_fails" in result.stdout
+    assert "ERROR tests/test_report_outcomes.py::test_teardown_fails" in result.stdout
 
 
 @pytest.mark.parametrize(
