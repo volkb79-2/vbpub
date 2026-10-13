@@ -3021,6 +3021,7 @@ def _release_projects_sequentially(
                     )
                     released.append(f"{name} ({tag})")
                     transaction.write_release_result(repo_root, workspace, name, tag)
+                    _consume_published_unreleased_notes(repo_root, project, tag)
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
@@ -4269,6 +4270,33 @@ def _commit_prepared_generated(
     return True
 
 
+def _consume_published_unreleased_notes(repo_root: Path, project, tag: str) -> bool:
+    """After a SUCCESSFUL publish, move ``[Unreleased]`` into the released version (KI-78).
+
+    The notes were already part of the published body; this keeps the changelog
+    from describing them as pending forever. It runs only after the publish and
+    before promotion, so every earlier failure (and every dry run) leaves the
+    author's notes where they were. A failure here is loud but never un-publishes:
+    the tag, artifacts and candidate branch are retained for the operator.
+    """
+    from cmru.changelog import consume_published_notes
+
+    if not getattr(project, "changelog", None):
+        return False
+    if not consume_published_notes(repo_root, project, tag):
+        return False
+    changelog = (Path(_project_working_directory(project)) / project.changelog).as_posix()
+    subprocess.run(["git", "add", "--", changelog], cwd=repo_root, check=True)
+    run_local_git(
+        repo_root, "commit", "-m",
+        f"chore({project.name}): move [Unreleased] notes into {tag}\n\n"
+        f"{RELEASE_CANDIDATE_TRAILER}: {tag}",
+        check=True,
+    )
+    log_info(f"{project.name}: moved the published [Unreleased] notes into {tag}'s history")
+    return True
+
+
 def _pending_release_notes_or_refuse(repo_root: Path, project, **plan):
     """Resolve the pending release's curated section or refuse before any side effect."""
     from cmru.changelog import pending_release_notes
@@ -4318,9 +4346,11 @@ def _preview_release_bodies(
         )
         log_info(
             f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
-            f"(curated section from {project.changelog}; the artifact name and SHA256 "
-            "are placeholders until the build; a --notes-env text replaces only the "
-            "opening line):"
+            f"(curated section from {project.changelog}"
+            + ("; its pending [Unreleased] notes are appended and stay in the file "
+               "until the publish succeeds" if notes.unreleased else "")
+            + "; the artifact name and SHA256 are placeholders until the build; a "
+            "--notes-env text replaces only the opening line):"
         )
         print("----- begin release body -----")
         print(body)

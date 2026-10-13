@@ -478,8 +478,14 @@ release tag.
 A GitHub Release published by a CMRU handler (`wheel-publish`, `tarball-publish`) is the
 generated install/artifact block (artifact name, SHA256, verification and
 resolve-latest instructions) followed by the **exact `## [X.Y.Z] - YYYY-MM-DD`
-section of the project's changelog for the version being released**, verbatim.
-`[Unreleased]` and every other version are never included. A project that opted out
+section of the project's changelog for the version being released**, verbatim, and then
+whatever the author left under `## [Unreleased]` (migration notes included), also
+verbatim and last. `[Unreleased]` never *replaces* the version section and no other
+version is included. Those pending notes stay in the file through a dry run or any
+failure and move into the released version's history in one commit **after a successful
+publish** (before promotion), so they are neither lost nor published twice; this needs
+the changelog to be named `CHANGES.md` or `CHANGELOG.md`, otherwise a non-empty
+`[Unreleased]` still refuses a tagged release. A project that opted out
 (`changelog = false`) gets the generated body alone. A changelog without exactly one
 dated, non-empty section for that version **refuses before the gate, tag or upload**
 instead of publishing a body without notes. `cmru release --dry-run` prints the complete

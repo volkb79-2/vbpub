@@ -152,11 +152,14 @@ def test_backfill_catalogues_an_already_published_tag_without_moving_it(tmp_path
     assert backfill_release_changelog(tmp_path, _project(), "demo-v0.1.0") is False
 
 
-def _init_demo(repo: Path, changelog: str = "# Changelog\n\n<!-- cmru: release history -->\n") -> None:
+def _init_demo(
+    repo: Path, changelog: str = "# Changelog\n\n<!-- cmru: release history -->\n",
+    name: str = "CHANGES.md",
+) -> None:
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.email", "test@cmru.test")
     _git(repo, "config", "user.name", "CMRU test")
-    _commit(repo, "chore: initialise demo", "demo/CHANGES.md", changelog)
+    _commit(repo, "chore: initialise demo", f"demo/{name}", changelog)
     _git(repo, "tag", "-a", "demo-v1.0.0", "-m", "Release demo-v1.0.0")
 
 
@@ -215,23 +218,43 @@ def test_rel02_stale_section_keeps_older_sections_intact(tmp_path):
     assert history.index("## [1.0.1]") < history.index("## [0.9.0]")
 
 
-def test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section(tmp_path):
+def test_ki78_tagged_release_carries_a_nonempty_unreleased_section_untouched(tmp_path):
+    """KI-78: the author's [Unreleased] notes ride the release; generation keeps them."""
+    notes = "### Added\n- hand-written entry\n\n### Migration\n- run `tool migrate` first\n"
+    _init_demo(
+        tmp_path,
+        f"# Changelog\n\n## [Unreleased]\n\n{notes}\n<!-- cmru: release history -->\n",
+    )
+    _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert f"## [Unreleased]\n\n{notes}\n<!-- cmru: release history -->" in history
+    assert "## [1.0.1]" in history
+
+
+def test_ki30_a_custom_named_changelog_still_refuses_unreleased_notes(tmp_path):
+    """Only CHANGES.md/CHANGELOG.md can be consumed after the publish (KI-78)."""
     _init_demo(
         tmp_path,
         "# Changelog\n\n## [Unreleased]\n\n### Added\n- hand-written entry\n\n"
         "<!-- cmru: release history -->\n",
+        name="HISTORY.md",
     )
     _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
-    before = (tmp_path / "demo" / "CHANGES.md").read_bytes()
+    before = (tmp_path / "demo" / "HISTORY.md").read_bytes()
+    project = _project()
+    project.changelog = "HISTORY.md"
 
     try:
-        generate_release_changelog(tmp_path, _project())
+        generate_release_changelog(tmp_path, project)
     except RuntimeError as exc:
-        assert "KI-30" in str(exc)
+        assert "KI-30" in str(exc) and "KI-78" in str(exc)
         assert "[Unreleased]" in str(exc)
     else:  # pragma: no cover
-        raise AssertionError("a non-empty [Unreleased] must block a tagged release")
-    assert (tmp_path / "demo" / "CHANGES.md").read_bytes() == before
+        raise AssertionError("a custom-named changelog cannot carry [Unreleased] notes")
+    assert (tmp_path / "demo" / "HISTORY.md").read_bytes() == before
 
 
 def test_rel10_cleared_unreleased_section_with_a_comment_is_accepted(tmp_path):

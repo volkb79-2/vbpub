@@ -12,6 +12,12 @@ Absence of notes is never silent: a project either declares no changelog
 A missing, malformed, duplicated, empty, or wrong-version section refuses
 before any tag or upload; nothing falls back to a generic prefix, to
 ``[Unreleased]``, or to another version's text.
+
+The author's pending ``## [Unreleased]`` entries (migration notes included) are
+a SUPPLEMENT, never a substitute: they ride below the version section in the
+body, stay in the changelog through a dry run or a failed release, and are moved
+into that version's history only after the publish succeeded (``changelog.
+consume_published_notes``, KI-78).
 """
 from __future__ import annotations
 
@@ -32,6 +38,12 @@ SHA256_PLACEHOLDER = "<sha256 of the built artifact>"
 
 _HEADING_LINE = re.compile(r"^## .*$", re.MULTILINE)
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_PLAIN_UNRELEASED = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
+
+#: Where CMRU may insert release sections; also ends an ``[Unreleased]`` body.
+HISTORY_MARKER = "<!-- cmru: release history -->"
+#: Written above notes that moved from ``[Unreleased]`` into a published version.
+CONSUMED_MARKER = "<!-- cmru: unreleased notes published with this release -->"
 
 
 class ReleaseNotesError(RuntimeError):
@@ -40,11 +52,43 @@ class ReleaseNotesError(RuntimeError):
 
 @dataclass(frozen=True)
 class ReleaseNotes:
-    """One version's curated section, verbatim, and where it came from."""
+    """One version's curated section plus the pending ``[Unreleased]`` notes.
+
+    ``text`` is the dated version section, verbatim. ``unreleased`` is the
+    author's ``## [Unreleased]`` body (HTML comments removed, otherwise verbatim,
+    migration notes included); empty when there is none. It is appended to the
+    release body below the section and moved into the version's history only
+    after the publish succeeds (:func:`cmru.changelog.consume_published_notes`).
+    """
 
     version: str
     source: str
     text: str
+    unreleased: str = ""
+
+
+def unreleased_span(markdown: str) -> tuple[int, int] | None:
+    """Character span of a plain ``## [Unreleased]`` body, or ``None`` if absent.
+
+    The body runs to the next ``## `` heading or the history marker.
+    """
+    match = _PLAIN_UNRELEASED.search(markdown)
+    if match is None:
+        return None
+    rest = markdown[match.end():]
+    ends = [i for i in (
+        rest.find(HISTORY_MARKER),
+        *(m.start() for m in re.finditer(r"^## ", rest, re.MULTILINE)),
+    ) if i >= 0]
+    return match.end(), match.end() + (min(ends) if ends else len(rest))
+
+
+def unreleased_body(markdown: str) -> str:
+    """The non-comment text of the ``[Unreleased]`` section (``""`` when empty)."""
+    span = unreleased_span(markdown)
+    if span is None:
+        return ""
+    return _HTML_COMMENT.sub("", markdown[span[0]:span[1]]).strip()
 
 
 def declaration_for(changelog: str | None) -> str:
@@ -87,7 +131,9 @@ def extract_release_section(markdown: str, version: str, *, source: str) -> Rele
             f"{source}: the `## [{version}]` section has no release notes; write them "
             "or declare the project without a changelog (release.changelog = false)"
         )
-    return ReleaseNotes(version=version, source=source, text=section)
+    return ReleaseNotes(
+        version=version, source=source, text=section, unreleased=unreleased_body(markdown),
+    )
 
 
 def _read_changelog(project_dir: Path, relative: str, commit: str | None) -> tuple[str, str]:
@@ -155,10 +201,13 @@ def compose_release_body(headline: str, generated: str, notes: ReleaseNotes | No
 
     ``headline`` is the opening line (the operator's supplementary
     ``--notes-env`` text or ``<prefix> <version>``); ``generated`` is the
-    install/artifact block; the curated section, when present, comes last and
-    verbatim.
+    install/artifact block; the curated section, when present, follows verbatim,
+    and the pending ``[Unreleased]`` notes come last, also verbatim, so the
+    generic install/usage text is always first.
     """
     body = headline + generated
     if notes is not None:
         body += "\n\n" + notes.text
+        if notes.unreleased:
+            body += "\n\n" + notes.unreleased
     return body

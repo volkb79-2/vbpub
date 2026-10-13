@@ -1231,7 +1231,7 @@ surface and normative details are synced in `README.md`, `docs/DESIGN-GUIDE.md`,
 
 ### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
 
-**Status:** FIXED 2026-10-05 (program 2026-10 W0-REL, REL-10). A tagged release now refuses while a plain `## [Unreleased]` has a non-empty body (HTML comments and whitespace do not count), in the KI-23 guard's style (`changelog.py::_unreleased_body`). Tests: `tests/test_changelog.py::test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section`, `::test_rel10_cleared_unreleased_section_with_a_comment_is_accepted`. Originally OPEN 2026-09-23; filed from assay Wave C P0.
+**Status:** FIXED 2026-10-05 (program 2026-10 W0-REL, REL-10); **narrowed 2026-10-13 by KI-78:** for a changelog named `CHANGES.md`/`CHANGELOG.md` the `[Unreleased]` text is now carried into the release body and consumed after a successful publish instead of refused (the helper is `release_notes.unreleased_body`); the refusal below still applies to any other changelog file name. A tagged release refuses while a plain `## [Unreleased]` has a non-empty body (HTML comments and whitespace do not count), in the KI-23 guard's style (`changelog.py::_unreleased_body`). Tests: `tests/test_changelog.py::test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section`, `::test_rel10_cleared_unreleased_section_with_a_comment_is_accepted`. Originally OPEN 2026-09-23; filed from assay Wave C P0.
 
 The assay changelog's hand-written `## [Unreleased]` block was left in place
 through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already
@@ -1686,6 +1686,8 @@ complete KI-51.
 
 **Current disposition:** the sections remain empty for CMRU's preflight. The removed Run-Gate and cgprofile notes are preserved in `run-gate-project/nyxloom-trove/reports/CMRU-KI58-unreleased-notes-carry-forward-2026-10-13.md` and must be placed in the matching versioned release sections before tagging. Do not call this complete until the notes appear in the tagged changelogs and the dry-runs pass.
 
+**KI-78 (same branch) supersedes the parking requirement:** pending entries may simply stay under `## [Unreleased]` in `CHANGES.md`; the release appends them to the GitHub Release body and moves them into the released version after a successful publish. The carry-forward below remains valid for notes that were already parked, and is still the way to review them as part of the version's history.
+
 **KI-75 now makes this a verifiable data move (CMRU branch `cmru-release-fixes-20261013`).** That report is the single source: it is a superset of the older draft `scripts/cgroup-profiler/docs/release-notes-next-draft.md` on the unmerged `cmru-bugs62` (retire the draft once carried; never merge that branch). The downstream edit is deliberately NOT made from CMRU. The exact safe carry-forward, after a CMRU containing KI-75 is released: for each project, in ONE commit on `main`, author the pending version's section (`## [X.Y.Z] - <date>`, `<!-- cmru: generated -->`, `<!-- cmru: source-end=<full SHA of the final project commit, excluding the changelog> -->`) holding the parked entries under their `### Added/Changed/Fixed/Documentation` groups, leave `[Unreleased]` empty, pin `--set-version X.Y.Z`, and run `cmru release <name> --dry-run` from the pushed `main`: the printed body must end with exactly those entries. KI-68's refusal (below) now stops a later project commit from silently dropping them. Run-Gate has a handler publisher, so its GitHub Release body carries the notes; cgroup-profiler's push is an image push (`build-push.py --push`) with no release body, so its notes stay in its changelog (its `CHANGES.md` also has no versioned section yet).
 
 **Oracle:** run `cmru release --dry-run` for each selected project from the pushed integration snapshot and confirm each passes the changelog check and prints a body ending with the carried notes.
@@ -1857,7 +1859,9 @@ changed or how to migrate.
 generated artifact and installation instructions, then appends the curated
 notes for the exact released version from the configured project changelog.
 The release must not silently omit notes, duplicate them, or pull text from
-`[Unreleased]` or another version. Projects with no curated notes retain the
+another version, and `[Unreleased]` can never substitute for the version section
+(KI-78 separately appends pending `[Unreleased]` entries as a supplement and consumes
+them after a successful publish). Projects with no curated notes retain the
 generated body. This works for each CMRU-managed artifact type and custom
 changelog paths.
 
@@ -1868,8 +1872,8 @@ publication side effects.
 
 **Oracles:** a fixture with Added, Fixed, and migration notes proves their
 order after the generated installation block and exact preservation of
-Markdown; a second version and an `[Unreleased]` section prove no cross-version
-mixing; empty-note and missing-section cases distinguish “no notes” from
+Markdown; a second version proves no cross-version mixing and an `[Unreleased]`
+section is never substituted for a missing version section (KI-78 owns appending it); empty-note and missing-section cases distinguish “no notes” from
 “could not read the requested notes”; tests bind the dry-run preview to the
 body passed to the publisher. README, DESIGN-GUIDE, and CONSUMERS explain the
 note source, ordering, preview, and failure behavior before the feature ships.
@@ -1909,3 +1913,27 @@ one-command UX without shell-specific pipe-status traps.
 **Expected:** the gate preflight reads Run-Gate's recorded revision and refuses, naming the capability (hook/`info` read-only mounts), when it is below the floor; the docs state which lanes carry container-level event evidence, and the short ephemeral lanes declare `resource_observer` plus `resources.memory`/`resources.pids` where Run-Gate supports it. Out of scope for the 2026-10-13 fix wave (it needs a Run-Gate-side revision API); record the floor with the Run-Gate release that ships the mounts.
 
 **Oracle:** a gate run against a Run-Gate older than the floor refuses before any lane with a message naming the missing mount protections.
+
+### KI-78 — `[Unreleased]` entries (migration notes included) are refused by the preflight instead of shipping with, then being consumed by, the release — *implemented in branch `cmru-release-fixes-20261013`, pending registered gate (operator requirement 2026-10-13), severity: major (upgrade guidance is lost or parked outside the changelog)*
+
+**Observed:** KI-30 refuses a tagged release while a plain `## [Unreleased]` section has a non-empty body, and KI-75 deliberately never read `[Unreleased]`. Authors therefore had to park pending entries and migration notes elsewhere until after the release (KI-58), and nothing guaranteed they were then carried into the published GitHub Release. KI-75 does not cover this: its oracle forbids pulling `[Unreleased]` text into the body, so it needed a deliberate, narrower rule rather than a reading of KI-75.
+
+**Operator requirement:** preserve each project's `CHANGES.md` `[Unreleased]` entries, including migration notes; append them to the generated GitHub Release body below the generic install/usage text; consume or clear the source notes only after a successful publish; keep them on a dry run or failure.
+
+**Implemented behaviour:**
+- `release_notes.extract_release_section` also returns the `[Unreleased]` body (`ReleaseNotes.unreleased`, HTML comments removed, otherwise verbatim); `compose_release_body` (reached by `release.build_release_body` / `build_variants_release_body`, the one builder used by the publisher and by `--dry-run`) emits generated block, then the exact version section, then the `[Unreleased]` text. KI-75's rule that `[Unreleased]` can never *replace* the version section stands: a missing version section still refuses.
+- `changelog.generate_release_changelog` no longer refuses a non-empty `[Unreleased]` for a changelog named `CHANGES.md`/`CHANGELOG.md`. Any other file name keeps the KI-30 refusal (message now cites KI-78), because only those two are excluded from change detection and the post-publish commit must not schedule the next release.
+- `cli._consume_published_unreleased_notes` runs in `_release_projects_sequentially` after `_run_tagged_build_and_publish` and `write_release_result`, before `promote_workspace`: one commit `chore(<name>): move [Unreleased] notes into <tag>` with the `Cmru-Release-Candidate` trailer, appending the text to the released section behind `<!-- cmru: unreleased notes published with this release -->` and emptying `[Unreleased]` (its comments kept). It is idempotent (nothing pending: no commit) and unreachable from a dry run, a failed gate/build/publish, or `--no-build`.
+- Docs: README (what), DESIGN-GUIDE (why, rejected alternatives), CONSUMERS (how, a pasteable `[Unreleased]` example), RELEASE-TRANSACTIONS; `tests/test_docs_config_examples.py` requires the "after a successful publish" contract in all three user guides.
+
+**Known limits:** if the post-publish commit itself fails, the release is already public: the tag, artifacts and candidate branch are retained and the error is loud (the existing post-publication recovery applies); a re-run of the same version is not possible, so the operator moves the text by hand. The promoted `origin/main` now carries one commit after the tag (the tag still names the exact published source); the `_assert_release_candidate_unchanged` HEAD pin runs inside the publish, before this commit.
+
+**Acceptance oracles (all in `tests/test_unreleased_notes.py` unless noted):**
+1. A changelog with `[Unreleased]` migration notes, a dated version section and an older version: the composed body is install block, then the exact section, then the notes, byte for byte, with Markdown fences intact; with `--notes-env` only the opening line changes; with nothing pending the body equals the KI-75 body.
+2. `cmru release --dry-run` prints that same body (the preview test substitutes the two build facts and asserts equality with the publisher's) and leaves the file bytes unchanged.
+3. The consume step is called after the publish and before promotion; a publisher that raises, and `--no-build`, never reach it (spies on the real `_release_projects_sequentially`).
+4. In a real Git repository the hook makes exactly one commit touching only the changelog, with the candidate trailer, leaves a clean tree, and a second call makes no commit.
+5. `consume_unreleased_notes` is verbatim, keeps `[Unreleased]` comments, handles the last section, is idempotent, and refuses when the released version has zero or two dated sections.
+6. A custom-named changelog with non-empty `[Unreleased]` still refuses (KI-30/KI-78 message) and is left byte-identical (`tests/test_changelog.py`).
+
+**Still to verify on the registered lanes (not run yet: gates held by the operator):** `./run-gate.py coverage` (100% line and branch) and the aggregate `./run-gate.py gate`.

@@ -255,11 +255,18 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 
 ### Release history behaviour changes (REL-02, REL-10)
 
-- **A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body**
-  (KI-30). cmru generates the notes for the release, so hand-written text left under
-  `[Unreleased]` would be silently dropped or duplicated. Remedy: move the text into the
-  generated notes of the release (or the project's own release-notes source), or empty the
-  section (a comment may stay). A comment-only body is accepted.
+- **A non-empty plain `## [Unreleased]` section is carried, then consumed after the publish
+  (KI-78).** For a changelog named `CHANGES.md` or `CHANGELOG.md` the text is appended
+  verbatim to the GitHub Release body below the version section. After the tagged build and
+  publish succeeded, and before promotion, cmru commits one
+  `chore(<name>): move [Unreleased] notes into <tag>` change (trailer
+  `Cmru-Release-Candidate`) that moves the text to the end of the released version's section
+  and empties `[Unreleased]`. The consume step is never reached by a dry run, a failed
+  gate/build/publish, or `--no-build`, so the notes survive for the next attempt. For any
+  other changelog file name the original rule stands (KI-30): the tagged release is refused,
+  because the text would otherwise be orphaned and the post-publish commit would look like
+  product work to the next release. Remedy: rename the file, move the text into the
+  generated notes, or empty the section (a comment may stay). A comment-only body is accepted.
 - **Regenerating a stale generated section overwrites hand edits inside it.** When project
   commits landed after a generated section's `source-end` cursor (for example on `--resume`
   of a candidate that was prepared earlier), the section is rebuilt in place from the project

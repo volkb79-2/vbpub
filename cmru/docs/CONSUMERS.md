@@ -861,9 +861,32 @@ and a current section is kept byte-identical. The publish step must run through
 declaration; a handler started by hand without it refuses and prints the two values it
 accepts (`changelog:<project-relative path>` or `none`).
 
-**Carrying forward notes that were parked outside a changelog (KI-58).** When a
-release's notes were removed from `## [Unreleased]` so the KI-30 preflight passes, move
-them into the pending version's section in ONE commit on `main` before releasing:
+**Pending notes and migration guidance: write them under `## [Unreleased]` (KI-78).**
+Whatever is under `## [Unreleased]` in a changelog named `CHANGES.md` or `CHANGELOG.md` is
+appended to the release body, verbatim, after the version section:
+
+```markdown
+## [Unreleased]
+
+### Migration
+1. Run `tool migrate --yes` before upgrading; it rewrites `tool.toml`.
+```
+
+`cmru release <name> --dry-run` prints the body with those lines last and leaves the file
+untouched. After a **successful publish** (and only then) CMRU commits one
+`chore(<name>): move [Unreleased] notes into <tag>` change, before promotion, that appends
+the text to the released version's section behind
+`<!-- cmru: unreleased notes published with this release -->` and empties `[Unreleased]`
+(its comments stay). A failed gate, build or publish, and `--no-build`, leave your notes in
+place for the next attempt. A changelog with any other file name keeps the KI-30 refusal for
+a non-empty `[Unreleased]`: rename it, or empty the section. This also removes the need to
+park notes outside the changelog (KI-58): leave them under `[Unreleased]` and the release
+carries them.
+
+**Carrying forward notes that were parked outside a changelog (KI-58).** Notes that were
+already removed from `## [Unreleased]` can either be put back under `[Unreleased]` (above)
+or, to review them as part of the history, moved into the pending version's section in ONE
+commit on `main` before releasing:
 author `## [X.Y.Z] - <date>` with the generated marker, `source-end` set as above, and the
 parked entries under their `### Added/Changed/Fixed/Documentation` groups; leave
 `[Unreleased]` empty. Pin the version with `--set-version X.Y.Z` if the planner could
@@ -1176,7 +1199,9 @@ valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
-A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body (KI-30),
+A non-empty plain `## [Unreleased]` section is carried into the release body and moved into the
+released version after a successful publish (KI-78), except in a changelog not named `CHANGES.md` or
+`CHANGELOG.md`, where a tagged release is still refused (KI-30),
 and a stale generated history section that holds hand edits is refused rather than regenerated
 over them (KI-68); see
 [release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).

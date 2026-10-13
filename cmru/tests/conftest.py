@@ -68,15 +68,24 @@ def _neutral_release_notes_preflight(request):
 
     from cmru import cli
 
-    saved = (cli._pending_release_notes_or_refuse, cli._preview_release_bodies)
+    saved = (
+        cli._pending_release_notes_or_refuse,
+        cli._preview_release_bodies,
+        cli._consume_published_unreleased_notes,
+    )
     cli._pending_release_notes_or_refuse = (
         lambda *_args, **_kwargs: SimpleNamespace(version="0.0.0")
     )
     cli._preview_release_bodies = lambda *_args, **_kwargs: None
+    cli._consume_published_unreleased_notes = lambda *_args, **_kwargs: False
     try:
         yield
     finally:
-        cli._pending_release_notes_or_refuse, cli._preview_release_bodies = saved
+        (
+            cli._pending_release_notes_or_refuse,
+            cli._preview_release_bodies,
+            cli._consume_published_unreleased_notes,
+        ) = saved
 
 
 @pytest.fixture(autouse=True)

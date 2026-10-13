@@ -16,7 +16,15 @@ import subprocess
 from typing import Any
 
 from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
-from cmru.release_notes import ReleaseNotes, ReleaseNotesError, extract_release_section
+from cmru.release_notes import (
+    CONSUMED_MARKER,
+    HISTORY_MARKER,
+    ReleaseNotes,
+    ReleaseNotesError,
+    extract_release_section,
+    unreleased_body,
+    unreleased_span,
+)
 from cmru.version import (
     _RELEASE_CONTROL_EXCLUDES,
     _external_version,
@@ -26,7 +34,7 @@ from cmru.version import (
 )
 
 
-_HISTORY_MARKER = "<!-- cmru: release history -->"
+_HISTORY_MARKER = HISTORY_MARKER
 _GENERATED_MARKER = "<!-- cmru: generated -->"
 _SOURCE_END_MARKER_RE = re.compile(r"<!-- cmru: source-end=([0-9a-f]{40}) -->")
 _HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
@@ -39,27 +47,65 @@ _UNRELEASED_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - UNRELEASED$", re.MULTIL
 _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
 
 
-_PLAIN_UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+#: Changelog file names CMRU's change detection already treats as release
+#: metadata (``version._RELEASE_CONTROL_EXCLUDES``). Only these may carry
+#: ``[Unreleased]`` notes through a release (KI-78): the consume commit that
+#: follows the publish must not look like product work to the NEXT release.
+_CONSUMABLE_CHANGELOG_NAMES = ("CHANGES.md", "CHANGELOG.md")
 
 
-def _unreleased_body(existing: str) -> str:
-    """Return the non-comment text of a plain ``## [Unreleased]`` section (KI-30).
+def consume_unreleased_notes(markdown: str, version: str) -> str | None:
+    """Move the ``[Unreleased]`` notes into ``version``'s section; ``None`` if none.
 
-    The body runs to the next ``## `` heading or the history marker. HTML comments
-    and whitespace do not count, so a cleared section that keeps an explanatory
-    comment is empty.
+    The author's text is appended verbatim to the end of the released version's
+    section behind :data:`~cmru.release_notes.CONSUMED_MARKER`, and the
+    ``[Unreleased]`` body is cleared down to any HTML comments it already held, so
+    the file is back to the empty-and-ready state and nothing is published twice.
+    Idempotent: with nothing under ``[Unreleased]`` the document is unchanged
+    (``None``).
     """
-    match = _PLAIN_UNRELEASED_RE.search(existing)
-    if match is None:
-        return ""
-    rest = existing[match.end():]
-    ends = [i for i in (
-        rest.find(_HISTORY_MARKER),
-        *(m.start() for m in re.finditer(r"^## ", rest, re.MULTILINE)),
-    ) if i >= 0]
-    body = rest[:min(ends)] if ends else rest
-    return _HTML_COMMENT_RE.sub("", body).strip()
+    notes = unreleased_body(markdown)
+    span = unreleased_span(markdown) if notes else None
+    if span is None:
+        return None
+    comments = "".join(f"{item}\n\n" for item in _HTML_COMMENT_RE.findall(markdown[span[0]:span[1]]))
+    cleared = markdown[:span[0]] + "\n\n" + comments + markdown[span[1]:]
+    headings = list(re.finditer(r"^## .*$", cleared, re.MULTILINE))
+    target = [
+        item for item in headings
+        if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.group(0))
+    ]
+    if len(target) != 1:
+        raise ReleaseNotesError(
+            f"cannot move the [Unreleased] notes: the changelog has {len(target)} dated "
+            f"`## [{version}]` sections (expected exactly one)"
+        )
+    later = [item.start() for item in headings if item.start() > target[0].start()]
+    end = min(later) if later else len(cleared)
+    section = cleared[target[0].start():end].rstrip("\n")
+    return (
+        cleared[:target[0].start()]
+        + f"{section}\n\n{CONSUMED_MARKER}\n{notes}\n"
+        + ("\n" + cleared[end:] if later else "")
+    )
+
+
+def consume_published_notes(repo_root: Path, project: Any, tag: str) -> bool:
+    """Rewrite the changelog to move ``[Unreleased]`` into the published release (KI-78).
+
+    The release transaction calls this only after the publish succeeded and
+    before promotion, then commits the file, so a dry run, a failed
+    gate/build/publish, or ``--no-build`` leaves the author's notes in place.
+    Returns whether the file changed.
+    """
+    path = _validate_changelog_path(project, repo_root)
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    updated = consume_unreleased_notes(path.read_text(encoding="utf-8"), tag[len(prefix):])
+    if updated is None:
+        return False
+    path.write_text(updated, encoding="utf-8")
+    return True
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -454,13 +500,22 @@ def generate_release_changelog(
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
         )
-    if version is not None and _unreleased_body(existing):
+    if (
+        version is not None
+        and path.name not in _CONSUMABLE_CHANGELOG_NAMES
+        and unreleased_body(existing)
+    ):
+        # KI-78: for CHANGES.md / CHANGELOG.md the notes ride the release body and
+        # move into the version's history after the publish. Any other file name
+        # cannot (the post-publish commit would read as product work to the next
+        # release), so the original KI-30 refusal stands for it.
         raise RefusedBeforeChange(
             f"{project.name}: {path} has a non-empty hand-written `## [Unreleased]` "
-            "section (KI-30); CMRU does not fold it, so a tagged release would leave "
-            "it orphaned and describing already-shipped work -- fold its content into "
-            "the commit history / next section by hand, then empty its body (keep a "
-            "comment if you like) before releasing"
+            "section (KI-30) and CMRU can only carry [Unreleased] notes through a "
+            "release for a changelog named CHANGES.md or CHANGELOG.md (KI-78); a "
+            "tagged release would leave it orphaned and describing already-shipped "
+            "work -- fold its content into the commit history / next section by "
+            "hand, then empty its body (keep a comment if you like) before releasing"
         )
     existing_versions = set(_HEADING_RE.findall(existing))
     if heading in existing_versions:

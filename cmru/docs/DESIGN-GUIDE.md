@@ -769,7 +769,25 @@ The choices, and what was rejected:
 - **Exact section, verbatim, last.** The `## [X.Y.Z] - YYYY-MM-DD` heading through
   the line before the next `## ` heading, unmodified, so Markdown, code fences and
   migration steps survive byte for byte. It follows the install block because that
-  is what a reader needs first. `[Unreleased]` and other versions are never read.
+  is what a reader needs first. Other versions are never read, and `[Unreleased]` is
+  never a *substitute* for the section (see the next item for what it is).
+- **`[Unreleased]` is a supplement, consumed only after success (KI-78).** The original
+  KI-30 rule refused a tagged release while `[Unreleased]` held text, because CMRU does
+  not fold it and the text would be orphaned. That forced authors to park migration
+  notes outside the changelog until after the release (KI-58), which is exactly where
+  they get lost. Instead the body is generated block, then the exact version section,
+  then the `[Unreleased]` text verbatim, so the notes an author wrote for the next
+  release are in the body of that release. Moving the text is a *consequence of
+  publishing*, so it happens in a single commit after the publish succeeded and before
+  promotion (trailer `Cmru-Release-Candidate`), appended to that version's section
+  behind a marker comment; `[Unreleased]` returns to its empty (comments kept) state.
+  A dry run, a failed gate, build or publish, and `--no-build` all return before that
+  commit, so the notes stay where the author put them and the next attempt publishes
+  them. Rejected: clearing before the publish (a failed upload would lose the notes);
+  a second changelog file for pending notes (one more place to forget). The rule is
+  limited to files named `CHANGES.md`/`CHANGELOG.md` because only those are excluded
+  from change detection: the post-publish commit must not read as product work and
+  schedule the next release. Any other name keeps the KI-30 refusal.
 - **No silent fallback.** A missing, undated (`UNRELEASED`), duplicated, wrong-version
   or empty section refuses. The alternative, publishing the generic body, is the
   exact failure this change exists to remove. A project that declares

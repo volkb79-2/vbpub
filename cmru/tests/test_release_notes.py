@@ -19,7 +19,7 @@ CHANGES = """\
 <!-- cmru: release history -->
 
 ## [Unreleased]
-- Pending work that must never reach a release body.
+<!-- cleared: nothing pending -->
 
 ## [2.0.0] - 2026-10-13
 <!-- cmru: generated -->
@@ -60,7 +60,7 @@ def test_the_exact_version_section_is_returned_verbatim_without_neighbours():
     assert notes.text.startswith("## [2.0.0] - 2026-10-13\n")
     assert notes.text.endswith('key = "value"\n```')
     assert "Repaired the ordering." in notes.text and "Migration" in notes.text
-    assert "first release" not in notes.text and "Pending work" not in notes.text
+    assert "first release" not in notes.text and notes.unreleased == ""
     # exactly the document's own bytes for that section
     start = CHANGES.index("## [2.0.0]")
     assert CHANGES[start:].startswith(notes.text)
@@ -189,7 +189,7 @@ def test_the_body_is_the_generated_block_then_the_exact_curated_section():
     )
     assert body == generated + "\n\n" + _notes().text
     assert body.index("**Artifact:**") < body.index("## [2.0.0]")
-    assert "Pending work" not in body and "first release" not in body
+    assert "first release" not in body
 
 
 def test_operator_notes_only_replace_the_opening_line_and_cannot_drop_the_section():
