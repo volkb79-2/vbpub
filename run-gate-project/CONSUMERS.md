@@ -237,6 +237,14 @@ selected worktree's `assay/` source. Explicit command plus immutable pin
 sidecars remain available for external consumers. Lane options belong on the
 lane itself, and the target `assay.toml` owns the mutation budget.
 
+The host's shipped `dev-gates.slice` example has a `1.5G` memory maximum, so it
+cannot admit this `2G` R2 lane. Before running it, configure the gate slice and
+its `dev.slice` ancestor for the requested lane caps plus overhead. Two
+concurrent `2G` lanes need more than `4G` of gate-slice headroom; the full MDT
+assay lane declares `6G`. Keep the conservative host defaults when that
+capacity is unavailable; run-gate will refuse a request that exceeds its
+admission budget. See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
+
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
 run-gate derives the ceiling from the verified gates-slice cap and request.
