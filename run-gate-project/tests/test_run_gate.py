@@ -8170,6 +8170,7 @@ class TestShippedGateFullDeclaration:
             "argv": ["bash", "-c", "cd {worktree}/run-gate-project && "
                      "exec tools/canary-run.sh"],
             "budget": "15m",
+            "resources": {"memory": "1g", "memory_swap": "16g"},
         }
         assert lanes["assay-r2"]["assay_lane"] == "r2"
         assert lanes["assay-r2"]["environment"] == "tester-unified"
