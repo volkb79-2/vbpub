@@ -35,8 +35,9 @@ contract 1. The combined first cgroup-profiler release is 1.0.0.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
-`cgprofile-host-daemon`; **consumer** = the installed Run-Gate wheel (stdlib-only runtime, docker
-CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
+`cgprofile-host-daemon`; **consumer** = the installed Run-Gate wheel
+(stdlib-only runtime, docker CLI only), invoking
+`docker exec cgprofile-host-daemon cgprofile ctl <verb>
 [args] --json` from any devcontainer, worktree or instance.
 
 ---
