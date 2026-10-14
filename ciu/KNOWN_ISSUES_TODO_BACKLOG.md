@@ -4993,7 +4993,7 @@ Severity: High (the root-level `authorized_keys` writer lost its automated real-
 **Oracles.** A ciu release cannot complete without the `enroll` lane verdict PASS (or a recorded manual run), and a controlled break of `_enroll_install_key` (e.g. appending a duplicate line) fails the lane.
 
 **Implementation update (2026-10-14).** CIU's `[steps.run-tests]` now invokes
-`python3 ../run-gate.py enroll` after the isolated `tester-unified` suite;
+`python3 run-gate.py enroll` after the isolated `tester-unified` suite;
 SPEC S18.6, README, Design Guide, and Consumers Guide describe the separate
 host lane and its fail-closed Docker/gates-slice prerequisites. The item stays
 OPEN until the registered lane passes on the release candidate tip.

@@ -5417,7 +5417,8 @@ evidence-judgment command.
   the detached run form.
 - **S18.6** *Enrollment security lane.* Every CIU release runs the registered
   `enroll` lane after the `tester-unified` suite, via the project release
-  command `python3 ../run-gate.py enroll`. This lane runs on the invoking host
+  command `python3 run-gate.py enroll` from the `ciu/` directory. This lane
+  runs on the invoking host
   because its real-system enrollment oracles create and log into disposable
   sshd containers, while `tester-unified` has no Docker socket. It requires
   Docker access and a loaded `$CGROUP_PARENT_DEV_GATES` slice; the lane's

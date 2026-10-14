@@ -299,7 +299,8 @@ cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
 The release gate runs the full suite in `tester-unified`, then invokes the
-registered bare-host `enroll` lane through `../run-gate.py`. The enrollment
+registered bare-host `enroll` lane through the project's
+`run-gate.py` entry point. The enrollment
 oracles need Docker to create disposable sshd containers, so they cannot run
 inside `tester-unified`; the lane must pass for every CIU release. Its Docker
 children are bounded and placed under `$CGROUP_PARENT_DEV_GATES`, and a missing

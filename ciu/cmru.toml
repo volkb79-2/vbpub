@@ -62,7 +62,7 @@ commands = [
   # CIU-131: enrollment creates and logs into disposable sshd containers, so
   # its registered bare-host lane runs after the isolated suite. It fails
   # closed when Docker or the loaded gates slice is unavailable.
-  { label = "CIU: real-system enrollment gate", argv = ["python3", "../run-gate.py", "enroll"], cwd = "." },
+  { label = "CIU: real-system enrollment gate", argv = ["python3", "run-gate.py", "enroll"], cwd = "." },
 ]
 
 [steps.build]

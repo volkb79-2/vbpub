@@ -993,7 +993,7 @@ authorized-key write, ownership and modes, host-key fingerprint, and login.
 Run the same registered lane from the `ciu/` project directory with:
 
 ```console
-$ python3 ../run-gate.py enroll
+$ python3 run-gate.py enroll
 ```
 
 The invoking environment must provide Docker access and a loaded
