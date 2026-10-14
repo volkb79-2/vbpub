@@ -122,7 +122,7 @@ def test_running_image_identity_must_match_receipted_candidate(monkeypatch, tmp_
     release_candidate.verify_running_image(receipt_path)
 
     identity_path.write_text(json.dumps({"version": "24.0.0", "sha256": "c" * 64}), encoding="utf-8")
-    with pytest.raises(release_candidate.ReleaseCandidateError, match="running tester image wheel SHA-256"):
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="running tester image Run-Gate wheel SHA-256"):
         release_candidate.verify_running_image(receipt_path)
 
 
