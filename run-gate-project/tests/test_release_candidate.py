@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
+import runpy
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 
@@ -16,6 +18,24 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 release_candidate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_candidate)
+
+
+def _receipt(**overrides):
+    record = {
+        "schema_version": 1,
+        "candidate_commit": "1" * 40,
+        "version": "24.0.0",
+        "filename": "run_gate-24.0.0-py3-none-any.whl",
+        "sha256": "a" * 64,
+        "image_tag": "tester-unified:local",
+        "image_id": "sha256:" + "b" * 64,
+    }
+    record.update(overrides)
+    return record
+
+
+def _completed(stdout="", stderr="", returncode=0):
+    return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
 
 
 def test_prepared_release_version_uses_first_dated_stable_section(tmp_path):
@@ -60,6 +80,46 @@ def test_prepared_release_version_refuses_an_unrelated_installed_cmru(monkeypatc
         release_candidate.prepared_release_version(changes)
 
 
+def test_prepared_release_version_keeps_existing_cmru_source_path(monkeypatch, tmp_path):
+    changes = tmp_path / "CHANGES.md"
+    changes.write_text("## [24.0.0] - 2026-10-14\n", encoding="utf-8")
+    source_entry = str(release_candidate.REPOSITORY_ROOT / "cmru" / "src")
+    monkeypatch.setattr(sys, "path", [source_entry, *(entry for entry in sys.path if entry != source_entry)])
+
+    assert release_candidate.prepared_release_version(changes) == "24.0.0"
+    assert sys.path.count(source_entry) == 1
+
+
+def test_prepared_release_version_reports_import_and_read_failures(monkeypatch, tmp_path):
+    import builtins
+
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    source_entry = str(tmp_path / "cmru" / "src")
+    original_import = builtins.__import__
+
+    def fail_cmru_import(name, *args, **kwargs):
+        if name == "cmru.release_notes":
+            raise ImportError("missing parser")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_cmru_import)
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="cannot load.*parser"):
+        release_candidate.prepared_release_version(tmp_path / "CHANGES.md")
+    assert source_entry not in sys.path
+
+    monkeypatch.setattr(builtins, "__import__", original_import)
+    fake_cmru = type(sys)("cmru")
+    fake_cmru.__path__ = []
+    fake_notes = type(sys)("cmru.release_notes")
+    fake_notes.__file__ = str(tmp_path / "cmru" / "src" / "cmru" / "release_notes.py")
+    fake_notes.markdown_h2_headings = lambda _markdown: ()
+    monkeypatch.setitem(sys.modules, "cmru", fake_cmru)
+    monkeypatch.setitem(sys.modules, "cmru.release_notes", fake_notes)
+    missing = tmp_path / "missing-CHANGES.md"
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="cannot read prepared changelog"):
+        release_candidate.prepared_release_version(missing)
+
+
 def test_wheel_identity_must_match_both_version_and_digest():
     expected = {"version": "24.0.0", "sha256": "a" * 64}
     release_candidate._require_same_wheel(expected.copy(), expected, "rebuilt wheel")
@@ -68,19 +128,71 @@ def test_wheel_identity_must_match_both_version_and_digest():
         release_candidate._require_same_wheel(
             {"version": "24.0.0", "sha256": "b" * 64}, expected, "rebuilt wheel"
         )
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="version"):
+        release_candidate._require_same_wheel(
+            {"version": "23.10.0", "sha256": "a" * 64}, expected, "rebuilt wheel"
+        )
+
+
+def test_wheel_identity_parses_valid_receipt_and_refuses_bad_outputs(monkeypatch):
+    identity = {
+        "version": "24.0.0",
+        "filename": "run_gate-24.0.0-py3-none-any.whl",
+        "sha256": "a" * 64,
+    }
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(json.dumps(identity)),
+    )
+    assert release_candidate._wheel_identity() == identity
+
+    cases = [
+        (_completed(stderr="wheel scan failed", returncode=2), "cannot identify"),
+        (_completed("not-json"), "not JSON"),
+        (_completed(json.dumps({"version": "24.0.0"})), "incomplete"),
+        (_completed(json.dumps({**identity, "sha256": "bad"})), "malformed SHA-256"),
+    ]
+    for result, message in cases:
+        monkeypatch.setattr(
+            release_candidate.subprocess, "run", lambda *_args, _r=result, **_kwargs: _r
+        )
+        with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+            release_candidate._wheel_identity()
+
+
+def test_image_identity_parses_labels_and_refuses_bad_images(monkeypatch):
+    labels = {
+        release_candidate.IMAGE_VERSION_LABEL: "24.0.0",
+        release_candidate.IMAGE_SHA256_LABEL: "a" * 64,
+    }
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(json.dumps(labels)),
+    )
+    assert release_candidate._image_identity("tester-unified:local") == {
+        "version": "24.0.0",
+        "sha256": "a" * 64,
+    }
+
+    cases = [
+        (_completed(stderr="image absent", returncode=1), "cannot inspect tester image"),
+        (_completed("not-json"), "malformed labels"),
+        (_completed("null"), "no label object"),
+        (_completed("{}"), "no Run-Gate version and wheel digest labels"),
+    ]
+    for result, message in cases:
+        monkeypatch.setattr(
+            release_candidate.subprocess, "run", lambda *_args, _r=result, **_kwargs: _r
+        )
+        with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+            release_candidate._image_identity("tester-unified:local")
 
 
 def test_receipt_requires_a_candidate_commit_and_wheel_digest(tmp_path):
     path = tmp_path / "receipt.json"
-    valid = {
-        "schema_version": 1,
-        "candidate_commit": "1" * 40,
-        "version": "24.0.0",
-        "filename": "run_gate-24.0.0-py3-none-any.whl",
-        "sha256": "a" * 64,
-        "image_tag": "tester-unified:local",
-        "image_id": "sha256:" + "b" * 64,
-    }
+    valid = _receipt()
     path.write_text(json.dumps(valid), encoding="utf-8")
     assert release_candidate._read_receipt(path) == valid
 
@@ -101,17 +213,67 @@ def test_receipt_requires_a_candidate_commit_and_wheel_digest(tmp_path):
     with pytest.raises(release_candidate.ReleaseCandidateError, match="malformed image ID"):
         release_candidate._read_receipt(path)
 
+    valid = _receipt(image_tag="")
+    path.write_text(json.dumps(valid), encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt .* is malformed"):
+        release_candidate._read_receipt(path)
+
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt .* is malformed"):
+        release_candidate._read_receipt(path)
+
+    malformed_records = [
+        (_receipt(candidate_commit="short"), "malformed commit"),
+        (_receipt(version="24.0"), "malformed stable version"),
+        (_receipt(filename="../run_gate.whl"), "malformed filename"),
+        (_receipt(filename="folder\\run_gate.whl"), "malformed filename"),
+    ]
+    for record, message in malformed_records:
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+            release_candidate._read_receipt(path)
+
+    path.write_text("not-json", encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="cannot read Run-Gate wheel receipt"):
+        release_candidate._read_receipt(path)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="cannot read Run-Gate wheel receipt"):
+        release_candidate._read_receipt(tmp_path / "missing.json")
+
+    path.write_bytes(b"\xff")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="cannot read Run-Gate wheel receipt"):
+        release_candidate._read_receipt(path)
+
+
+def test_receipt_writer_creates_parent_and_atomically_writes_json(tmp_path):
+    target = tmp_path / "nested" / "candidate.json"
+    record = _receipt()
+
+    release_candidate._write_receipt(record, target)
+
+    assert json.loads(target.read_text(encoding="utf-8")) == record
+    assert not target.with_suffix(".json.tmp").exists()
+
+
+def test_git_reader_returns_output_and_surfaces_command_failure(monkeypatch):
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(" commit-id \n"),
+    )
+    assert release_candidate._git("rev-parse", "HEAD") == "commit-id"
+
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(stderr="not a repository", returncode=128),
+    )
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="git rev-parse HEAD failed"):
+        release_candidate._git("rev-parse", "HEAD")
+
 
 def test_running_image_identity_must_match_receipted_candidate(monkeypatch, tmp_path):
-    receipt = {
-        "schema_version": 1,
-        "candidate_commit": "1" * 40,
-        "version": "24.0.0",
-        "filename": "run_gate-24.0.0-py3-none-any.whl",
-        "sha256": "a" * 64,
-        "image_tag": "tester-unified:local",
-        "image_id": "sha256:" + "b" * 64,
-    }
+    receipt = _receipt()
     receipt_path = tmp_path / "receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     identity_path = tmp_path / "image-identity.json"
@@ -122,8 +284,207 @@ def test_running_image_identity_must_match_receipted_candidate(monkeypatch, tmp_
     release_candidate.verify_running_image(receipt_path)
 
     identity_path.write_text(json.dumps({"version": "24.0.0", "sha256": "c" * 64}), encoding="utf-8")
-    with pytest.raises(release_candidate.ReleaseCandidateError, match="running tester image Run-Gate wheel SHA-256"):
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="running tester image Run-Gate wheel SHA-256",
+    ):
         release_candidate.verify_running_image(receipt_path)
+
+
+def test_running_image_rejects_wrong_commit_bad_identity_and_resolves_relative_receipt(
+    monkeypatch, tmp_path
+):
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(_receipt()), encoding="utf-8")
+    identity_path = tmp_path / "image-identity.json"
+    monkeypatch.setattr(release_candidate, "IMAGE_IDENTITY_PATH", identity_path)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "2" * 40)
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt is for"):
+        release_candidate.verify_running_image(receipt_path)
+
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "1" * 40)
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="no readable Run-Gate wheel identity"):
+        release_candidate.verify_running_image(receipt_path)
+    identity_path.write_text("not-json", encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="no readable Run-Gate wheel identity"):
+        release_candidate.verify_running_image(receipt_path)
+    identity_path.write_bytes(b"\xff")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="no readable Run-Gate wheel identity"):
+        release_candidate.verify_running_image(receipt_path)
+    identity_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="identity is malformed"):
+        release_candidate.verify_running_image(receipt_path)
+
+    identity_path.write_text(json.dumps({"version": "24.0.0", "sha256": "a" * 64}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    release_candidate.verify_running_image(Path("receipt.json"))
+
+
+def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path, capsys):
+    wheel = {
+        "version": "24.0.0",
+        "filename": "run_gate-24.0.0-py3-none-any.whl",
+        "sha256": "a" * 64,
+    }
+    image_id = "sha256:" + "b" * 64
+    monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *args: "1700000000" if args[0] == "log" else "1" * 40,
+    )
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel.copy())
+    monkeypatch.setattr(
+        release_candidate,
+        "_image_identity",
+        lambda _tag: {"version": "24.0.0", "sha256": "a" * 64},
+    )
+    monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    results = iter((_completed(), _completed(), _completed(image_id)))
+    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    record = release_candidate.prepare("tester-unified:candidate")
+
+    assert release_candidate._read_receipt(tmp_path / "receipt.json") == {
+        **_receipt(), "image_tag": "tester-unified:candidate", "image_id": image_id,
+    }
+    assert record["candidate_commit"] == "1" * 40
+    assert "prepared Run-Gate 24.0.0 wheel" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("wheel_version", "image_identity", "image_result", "message"),
+    [
+        (
+            "23.10.0",
+            {"version": "24.0.0", "sha256": "a" * 64},
+            _completed("sha256:" + "b" * 64),
+            "does not match prepared release",
+        ),
+        (
+            "24.0.0",
+            {"version": "23.10.0", "sha256": "a" * 64},
+            _completed("sha256:" + "b" * 64),
+            "tester image Run-Gate version",
+        ),
+        (
+            "24.0.0",
+            {"version": "24.0.0", "sha256": "a" * 64},
+            _completed(stderr="missing image id", returncode=1),
+            "cannot read tester image ID",
+        ),
+        (
+            "24.0.0",
+            {"version": "24.0.0", "sha256": "a" * 64},
+            _completed("not-an-image-id"),
+            "tester image ID is malformed",
+        ),
+    ],
+)
+def test_prepare_refuses_mismatched_build_and_image(
+    monkeypatch, tmp_path, wheel_version, image_identity, image_result, message
+):
+    wheel = {
+        "version": wheel_version,
+        "filename": f"run_gate-{wheel_version}-py3-none-any.whl",
+        "sha256": "a" * 64,
+    }
+    monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *args: "1700000000" if args[0] == "log" else "1" * 40,
+    )
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel)
+    monkeypatch.setattr(release_candidate, "_image_identity", lambda _tag: image_identity)
+    monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    results = iter((_completed(), _completed(), image_result))
+    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate.prepare()
+
+
+def test_verify_built_checks_receipt_wheel_image_and_image_id(monkeypatch, tmp_path, capsys):
+    receipt = _receipt()
+    wheel = {key: receipt[key] for key in ("version", "filename", "sha256")}
+    monkeypatch.setattr(release_candidate, "_read_receipt", lambda _path: receipt)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: receipt["candidate_commit"])
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel)
+    monkeypatch.setattr(
+        release_candidate,
+        "_image_identity",
+        lambda _tag: {"version": receipt["version"], "sha256": receipt["sha256"]},
+    )
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(receipt["image_id"]),
+    )
+
+    release_candidate.verify_built(receipt_path=tmp_path / "receipt.json")
+    assert "matches the gated wheel" in capsys.readouterr().out
+
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "2" * 40)
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt is for"):
+        release_candidate.verify_built(receipt_path=tmp_path / "receipt.json")
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: receipt["candidate_commit"])
+
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: {**wheel, "filename": "other.whl"})
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="filename"):
+        release_candidate.verify_built(receipt_path=tmp_path / "receipt.json")
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel)
+
+    results = iter((_completed("different-image-id"), _completed(stderr="inspect failed", returncode=1)))
+    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="changed after its gate"):
+        release_candidate.verify_built("tester-unified:alternate", tmp_path / "receipt.json")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="changed after its gate"):
+        release_candidate.verify_built(receipt_path=tmp_path / "receipt.json")
+
+
+def test_main_dispatches_all_commands_and_reports_supported_failures(monkeypatch, capsys, tmp_path):
+    calls = []
+    monkeypatch.setattr(release_candidate, "prepare", lambda image: calls.append(("prepare", image)))
+    monkeypatch.setattr(
+        release_candidate,
+        "verify_built",
+        lambda image, receipt: calls.append(("verify", image, receipt)),
+    )
+    monkeypatch.setattr(
+        release_candidate,
+        "verify_running_image",
+        lambda receipt: calls.append(("verify-running", receipt)),
+    )
+
+    assert release_candidate.main(["prepare"]) == 0
+    assert release_candidate.main(["prepare", "--image", "tester-unified:custom"]) == 0
+    assert release_candidate.main(["verify"]) == 0
+    assert release_candidate.main(
+        ["verify", "--image", "tester-unified:custom", "--receipt", str(tmp_path / "receipt")]
+    ) == 0
+    assert release_candidate.main(["verify-running", "--receipt", str(tmp_path / "receipt")]) == 0
+    assert calls[0] == ("prepare", "tester-unified:local")
+    assert calls[1] == ("prepare", "tester-unified:custom")
+    assert calls[-1] == ("verify-running", Path(tmp_path / "receipt"))
+
+    def fail_verify(*_args):
+        raise OSError("broken receipt")
+
+    monkeypatch.setattr(release_candidate, "verify_built", fail_verify)
+    assert release_candidate.main(["verify"]) == 2
+    assert "run-gate release candidate: broken receipt" in capsys.readouterr().err
+
+
+def test_script_entrypoint_exits_with_reported_release_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["release_candidate.py", "verify-running", "--receipt", str(tmp_path / "absent.json")],
+    )
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(TOOLS / "release_candidate.py"), run_name="__main__")
+    assert error.value.code == 2
 
 
 def test_release_image_builder_checks_governed_parent_and_exact_labels(tmp_path):
