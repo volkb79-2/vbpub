@@ -1111,6 +1111,26 @@ class TestRenderedInstaller:
         assert "--extra-asset" in argv
         assert argv[argv.index("--extra-asset") + 1] == "get.py"
 
+    def test_release_enroll_lane_uses_isolated_tester_gate_dind(self):
+        project = tomllib.loads((CIU_ROOT / "cmru.toml").read_text(encoding="utf-8"))
+        run_gate = tomllib.loads((CIU_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+        commands = project["steps"]["run-tests"]["commands"]
+        assert len(commands) == 2
+        argv = commands[1]["argv"]
+        assert argv[:5] == ["cmru", "tester-gate", "--cwd", ".", "--enable-docker"]
+        assert argv[5:] == ["--", "run-gate", "enroll"]
+        assert commands[1]["cwd"] == "."
+        assert project["env"]["CMRU_TESTER_DIND_IMAGE"].startswith("docker@sha256:")
+        lane = run_gate["lanes"]["enroll"]
+        assert lane["environment"] == "enroll-tester"
+        assert set(lane["required_env"]) == {"DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"}
+        assert run_gate["environments"]["enroll-tester"]["mode"] == "host"
+        assert "forward_env" not in run_gate["environments"]["enroll-tester"]
+        assert "CIU_ENROLL_REQUIRED=1" in lane["argv"][-1]
+        assert "tcp://localhost:2375" in (CIU_ROOT / "tests/tests/test_getpy_enroll.py").read_text(
+            encoding="utf-8"
+        )
+
     def test_render_is_byte_identical_to_the_committed_file(self, tmp_path, capsys):
         """O6's byte-identity half. It needs cmru's `get.py.tmpl`, which the
         installed cmru wheel does not ship (`[tool.setuptools.package-data]`

@@ -988,19 +988,34 @@ suite; they do not replace the declared Assay judgment.
 ### The enrollment security lane also gates releases (CIU-131)
 
 The release workflow runs the real-system enrollment lane after the isolated
-suite. It uses Docker to create a disposable sshd container and verifies the
-authorized-key write, ownership and modes, host-key fingerprint, and login.
-Run the same registered lane from the `ciu/` project directory with:
+suite, inside `tester-unified` with CMRU's isolated nested Docker daemon. The
+outer `cmru tester-gate` verifies the host gates slice before it starts the
+sidecar and test container. The lane then creates a disposable sshd fixture and
+verifies the authorized-key write, ownership and modes, host-key fingerprint,
+and login without access to the host Docker socket.
+
+Run the complete registered release test sequence from the repository root:
 
 ```console
-$ python3 run-gate.py enroll
+$ cmru run ciu --step run-tests
 ```
 
-The invoking environment must provide Docker access and a loaded
-`$CGROUP_PARENT_DEV_GATES` slice. The lane fails if either prerequisite is
-missing; do not treat a skip or a local pytest run as release evidence. The
-disposable containers carry their own CPU and memory bounds under the gates
-slice. See [the design rationale](DESIGN-GUIDE.md#why-enrollment-has-a-separate-release-lane).
+The step invokes the installed Run-Gate CLI as `run-gate enroll` inside
+`tester-unified`. The registered lane requires the exact DinD endpoint and
+forwarded `$CGROUP_PARENT_DEV_GATES` value created by CMRU. With
+`CIU_ENROLL_REQUIRED=1`, the enrollment oracle fails if that endpoint is
+missing; it does not silently skip the security assertions.
+
+Run-Gate supports host-mode and built-in `bare-host` execution for general use;
+it does not impose a universal ban on running a lane on the host. MDT's cockpit
+policy is narrower: use the devcontainer to drive gates, and let a stable,
+declared test environment host the suite so its dependencies and resource
+conditions are repeatable. If stronger independence from the host kernel and
+container daemon is needed, an externally managed VM runner is an alternative.
+The VM still shares physical CPU, memory, and I/O with its host unless those
+resources are reserved. CIU and CMRU do not provision that VM in this release
+workflow; its supported path uses CMRU's tester-unified DinD setup. See
+[the design rationale](DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate).
 
 ## 13. Read the per-stack status report (`ciu status --json`, S7.10, CIU-QOL-6)
 

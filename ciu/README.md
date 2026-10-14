@@ -298,16 +298,23 @@ cmru build   ciu     # retained worktree: gate + wheel build, no publish
 cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
-The release gate runs the full suite in `tester-unified`, then invokes the
-registered bare-host `enroll` lane through the project's
-`run-gate.py` entry point. The enrollment
-oracles need Docker to create disposable sshd containers, so they cannot run
-inside `tester-unified`; the lane must pass for every CIU release. Its Docker
-children are bounded and placed under `$CGROUP_PARENT_DEV_GATES`, and a missing
-Docker daemon or unloaded gates slice is a release failure. See
+The release gate runs the full suite in `tester-unified`, then runs the
+registered `enroll` lane inside `tester-unified` with CMRU's isolated
+`--enable-docker` sidecar. CMRU verifies the host gates slice before starting
+the sidecar and gate container; the host Docker socket is never mounted into
+the suite.
+The nested fixtures are bounded inside the sidecar, and the lane refuses
+when the required isolated-Docker endpoint is missing. CMRU invokes the
+installed Run-Gate CLI (`run-gate enroll`) inside the tester container. Run-Gate
+also supports host-mode and built-in `bare-host` execution for general use;
+MDT's cockpit policy
+recommends using the cockpit to drive gates while a stable test container hosts
+the suite. See
 [CONSUMERS §12](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18)
-for the manual command and prerequisites. An old,
-unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
+for the command and prerequisites, and the
+[design rationale](docs/DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate)
+for the VM alternative. An old unmanaged GitHub Release is CMRU maintenance,
+not CIU behavior: inspect first with
 `cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
 then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.
 

@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-14 — **CIU-131 release-gate wiring implemented; registered enrollment lane still needs a passing candidate run.** The release flow now invokes the bare-host `enroll` lane after the tester-unified suite. CIU-134 remains OPEN: worktree removal can finish CIU cleanup and then fail deleting a checkout on permission-protected descendants, leaving a partial Git lifecycle state; offer a checked retry through CIU's existing S6.5 root helper and report exactly what remains. CIU-118 follow-up remains OPEN (service discovery: attached networks, aliases, URLs, exit status; filed from nyxloom NL-38, no new id; the shipped `ciu resolve`/`ciu exec` stay FIXED). Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-14 — **CIU-131 release-gate wiring reworked for tester-unified/DinD; registered acceptance pending.** The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path. CIU-134 remains OPEN: worktree removal can finish CIU cleanup and then fail deleting a checkout on permission-protected descendants, leaving a partial Git lifecycle state; offer a checked retry through CIU's existing S6.5 root helper and report exactly what remains. CIU-118 follow-up remains OPEN (service discovery: attached networks, aliases, URLs, exit status; filed from nyxloom NL-38, no new id; the shipped `ciu resolve`/`ciu exec` stay FIXED). Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -4986,17 +4986,21 @@ Severity: High (the root-level `authorized_keys` writer lost its automated real-
 
 **Observed.** Until the move, cmru's `gate` ran an `enroll` lane (`TestEnrollAgainstRealSystem`: real user creation, `authorized_keys` writes, modes/ownership, a host-key fingerprint cross-check and a real-sshd login) on every cmru release. The code and tests moved to ciu (`ciu/installer/enroll.py`, `ciu/tests/tests/test_getpy_enroll.py`) and cmru's lane was removed. ciu's `[lanes.enroll]` (`ciu/run-gate.toml`, `CIU_ENROLL_REQUIRED=1`, bare-host) exists but nothing runs it: ciu's release gate is the `ciu` assay lane in tester-unified, which has no docker socket, so the 8 container tests skip there.
 
-**Fix direction.** Wire the lane into ciu's release flow (for example a `cmru tester-gate --enable-docker` step in ciu's `[steps.run-tests]`, or an explicit pre-release step that runs `./run-gate.py enroll`), or document it as a mandatory manual pre-release run until that exists, recorded in the release evidence. Whichever is chosen must keep `CIU_ENROLL_REQUIRED=1` so a missing prerequisite fails rather than skips.
+**Fix direction.** Wire the lane into CIU's release flow: CMRU starts `tester-unified` with its isolated DinD sidecar, and the registered lane runs inside that container through the installed `run-gate enroll` CLI. Keep `CIU_ENROLL_REQUIRED=1` so a missing Docker prerequisite or fixture build fails rather than skips. Run-Gate's general `host` and `bare-host` modes remain available; MDT's cockpit policy recommends that the cockpit drive gates while a stable test container hosts the suite.
 
-**Cost to note.** The lane builds the image `ciu-enroll-fixture:local` (`apt-get install openssh-server ...` from `debian:bookworm-slim`) and starts non-privileged containers on the gates slice (`--cgroup-parent=$CGROUP_PARENT_DEV_GATES`, 3 CPUs, 2 GiB), which needs the Docker host and a loaded gates slice; it must not run next to production without that placement.
+**Cost to note.** The lane builds the image `ciu-enroll-fixture:local` (`apt-get install openssh-server ...` from `debian:bookworm-slim`) and starts non-privileged containers through an isolated DinD sidecar. CMRU caps the tester and sidecar separately, and the sidecar runs under the verified gates slice; the nested fixture is capped at 1.5 CPUs and 1 GiB.
 
 **Oracles.** A ciu release cannot complete without the `enroll` lane verdict PASS (or a recorded manual run), and a controlled break of `_enroll_install_key` (e.g. appending a duplicate line) fails the lane.
 
 **Implementation update (2026-10-14).** CIU's `[steps.run-tests]` now invokes
-`python3 run-gate.py enroll` after the isolated `tester-unified` suite;
-SPEC S18.6, README, Design Guide, and Consumers Guide describe the separate
-host lane and its fail-closed Docker/gates-slice prerequisites. The item stays
-OPEN until the registered lane passes on the release candidate tip.
+`cmru tester-gate --enable-docker -- run-gate enroll` after the ordinary
+`tester-unified` suite. The installed Run-Gate CLI executes the registered
+lane inside that tester container. The lane requires CMRU's exact
+`tcp://localhost:2375` endpoint and the forwarded gates-slice fact; the
+enrollment tests fail closed when this CIU release-gate wiring is absent and do
+not inspect or mutate the host Docker daemon. The item stays OPEN until the
+nested-Docker acceptance run and registered release gate pass on the candidate
+tip.
 
 **Related.** CIU-122/CIU-123 (the fix work these oracles protect), cmru KI-25 (the original lane).
 

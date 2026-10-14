@@ -5416,15 +5416,19 @@ evidence-judgment command.
   passthrough, dual-path mount for worktree gitfiles, `safe.directory`, and
   the detached run form.
 - **S18.6** *Enrollment security lane.* Every CIU release runs the registered
-  `enroll` lane after the `tester-unified` suite, via the project release
-  command `python3 run-gate.py enroll` from the `ciu/` directory. This lane
-  runs on the invoking host
-  because its real-system enrollment oracles create and log into disposable
-  sshd containers, while `tester-unified` has no Docker socket. It requires
-  Docker access and a loaded `$CGROUP_PARENT_DEV_GATES` slice; the lane's
-  `CIU_ENROLL_REQUIRED=1` makes missing prerequisites fail rather than skip.
-  Its child containers have their own CPU and memory limits. Both the
-  isolated suite and enrollment lane must pass before a CIU release proceeds.
+  `enroll` lane after the ordinary suite, inside `tester-unified` through
+  `cmru tester-gate --enable-docker`; that command invokes the installed
+  Run-Gate CLI as `run-gate enroll` inside the tester container. The lane's
+  declared `mode = "host"` runs its subprocess in that current tester
+  container. CMRU verifies the host gates slice before starting the
+  tester-unified container and its isolated DinD sidecar; the host Docker
+  socket is never mounted. The lane requires `DOCKER_HOST` to equal
+  `tcp://localhost:2375` and requires the forwarded
+  `$CGROUP_PARENT_DEV_GATES` fact. Its nested fixture containers are bounded
+  inside the sidecar and do not specify the host slice as their cgroup parent.
+  `CIU_ENROLL_REQUIRED=1` makes missing Docker prerequisites or fixture-build
+  failures fatal rather than skips. Both the ordinary suite and enrollment lane
+  must pass before a CIU release proceeds.
 
 ## S19 — Repository scaffolding (`ciu init`)
 

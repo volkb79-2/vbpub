@@ -23,21 +23,27 @@ cpus = "3"
 memory = "2g"
 memory_swap = "16g"
 
+[environments.enroll-tester]
+mode = "host"
+
 # `get.py enroll` is ciu-owned (ciu/installer/enroll.py, inlined into ciu/get.py by
 # cmru's installer extensions; cmru program 2026-10 W1-CIU-ENROLL, O4). Its
 # security-critical container oracles (O2/O3: real user creation, authorized_keys
-# writes, modes/ownership, a fingerprint cross-check and a login against a REAL
-# sshd) moved here from cmru's former [lanes.enroll] (KI-25). They start their own
-# disposable docker containers from inside the test process, and tester-unified has
-# no docker-socket mount, so this runs bare-host on the invoking shell's python
-# (no /opt/tester-venv/ path: that venv exists only inside the tester-unified
-# image). CIU_ENROLL_REQUIRED=1 makes missing docker / CGROUP_PARENT_DEV_GATES /
-# a failed fixture-image build FAIL the lane instead of skipping O2/O3. No
-# [lanes.enroll.resources]: the fixture caps its own containers
-# (--cgroup-parent/--cpus/--memory). The pytest process needs cmru importable for
-# the gate-slice preflight (cmru.tester_gate), hence ../cmru/src on PYTHONPATH.
+# writes, modes/ownership, fingerprint cross-check and a real sshd login) moved
+# here from cmru's former [lanes.enroll] (KI-25). CMRU's release step runs this
+# registered lane inside tester-unified with `--enable-docker`: the outer
+# tester-gate verifies the host gates slice and gives the step an isolated nested
+# daemon; no host Docker socket is mounted. The lane requires both forwarded
+# facts and the exact CMRU DinD endpoint. Its command sets CIU_ENROLL_REQUIRED=1,
+# so missing prerequisites fail rather than silently skipping the real-system
+# assertions. Run-Gate remains a general tool: `mode = "host"` runs a
+# subprocess in its invoking environment, and the built-in `bare-host` lane is
+# also available when a consumer's policy permits it. The inner fixtures keep
+# CPU/RAM bounds but inherit the outer DinD sidecar's host placement instead of
+# naming a host systemd slice the nested daemon cannot resolve.
 [lanes.enroll]
 kind = "command"
-environment = "bare-host"
+environment = "enroll-tester"
+required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
 argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q"]
 budget = "20m"

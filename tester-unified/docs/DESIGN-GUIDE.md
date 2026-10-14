@@ -33,6 +33,17 @@ closure keeps that install offline and deterministic while still recording the
 exact runtime Assay version in the verdict. The image does not install a
 copied Assay tree, because the judged worktree is the source of truth.
 
+## The installed Run-Gate CLI
+
+Some CMRU steps must invoke Run-Gate after CMRU has started tester-unified,
+where no repository-level `run-gate.py` is in the project directory. The image
+builds the internal Run-Gate wheel from the copied source and installs its
+console script into `/opt/tester-venv`; `PATH` places that venv first. This
+keeps the command readable as `run-gate <lane>` and avoids relying on the
+base image's private `/home/vscode/.venv`, which the uid 1003 tester cannot
+traverse. The wheel supplies the command entry point; the selected checkout
+still supplies the lane configuration and judged project files.
+
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more
 than two concurrent tester containers, and any mismatch in Docker's accepted

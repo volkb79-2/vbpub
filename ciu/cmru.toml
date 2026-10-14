@@ -5,11 +5,19 @@ kind = "ciu"
 
 [env]
 CIU_RELEASE_NOTES = "## CIU CLI wheel\n\nRelease history is generated from the project-scoped source range in `CHANGES.md`.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+# CIU-131: enrollment's disposable sshd tests use CMRU's isolated DinD path.
+# Keep the privileged sidecar digest-pinned. Its 2 GiB cap bounds the nested
+# daemon and the single 1 GiB fixture container. The outer tester-gate verifies and
+# applies the host gates slice before either container starts.
+CMRU_TESTER_DIND_IMAGE = "docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
+CMRU_TESTER_DIND_MEMORY = "2g"
+CMRU_TESTER_DIND_CPUS = "1.5"
+CMRU_TESTER_DIND_PIDS_LIMIT = "2048"
 
 [project]
 id = "ciu"
 description = "Compose inventory and update tooling for vbpub deployments."
-template_revision = 4
+template_revision = 5
 prefix = "ciu-v"
 artifacts = ["wheel"]
 scm_dist = "ciu"
@@ -59,10 +67,9 @@ distribution = "ciu"
 quiet = true
 commands = [
   { label = "CIU: tester-unified coverage gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "run-ciu-tests.py"], cwd = "." },
-  # CIU-131: enrollment creates and logs into disposable sshd containers, so
-  # its registered bare-host lane runs after the isolated suite. It fails
-  # closed when Docker or the loaded gates slice is unavailable.
-  { label = "CIU: real-system enrollment gate", argv = ["python3", "run-gate.py", "enroll"], cwd = "." },
+  # CIU-131: run the registered lane inside tester-unified with CMRU's isolated
+  # nested daemon. No host Docker socket or cockpit pytest process is involved.
+  { label = "CIU: isolated enrollment gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--enable-docker", "--", "run-gate", "enroll"], cwd = "." },
 ]
 
 [steps.build]

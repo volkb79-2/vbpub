@@ -611,18 +611,37 @@ the identifiers advertised in this release. Each maps to a shipped code path:
 An identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the
 code path it names, or not at all.
 
-## Why enrollment has a separate release lane
+## Why enrollment runs in the isolated gate
 
-The enrollment test proves behavior that the ordinary CIU unit and coverage
-suite cannot: it creates a disposable sshd container, writes an authorized
-key with the expected owner and modes, checks the host-key fingerprint, and
-logs in with that key. The `tester-unified` container deliberately has no
-Docker socket, so running this test inside that container either skips the
-security oracle or requires a different privileged container topology. CIU's
-release workflow therefore runs the regular isolated suite first, followed by
-the registered `enroll` lane on the invoking host. That lane creates only
-bounded, gates-slice children and fails closed when Docker or the configured
-slice is unavailable. Both verdicts are required before a release can proceed.
+The enrollment oracle creates a disposable sshd container, writes an
+authorized key with the expected owner and modes, checks the host-key
+fingerprint, and logs in with that key. The ordinary tester-unified suite has
+no host Docker socket. CMRU's `tester-gate --enable-docker` gives this one
+registered lane a disposable nested Docker daemon instead of exposing the host
+daemon, which would grant root-equivalent host access.
+
+Before starting either container, CMRU verifies the declared host gates slice
+and places both the DinD sidecar and the tester-unified container there. The
+lane's nested fixtures inherit the sidecar's placement and resource ceiling;
+they do not try to name a host systemd slice that the nested daemon cannot
+resolve. The in-test preflight requires the exact CMRU DinD endpoint and the
+forwarded gates-slice fact. The release step invokes the installed Run-Gate
+CLI (`run-gate enroll`) inside tester-unified, where this lane's declared
+`mode = "host"` means a subprocess in the current tester container. Run-Gate
+also supports host-mode and built-in `bare-host` execution for general use;
+this CIU path chooses a stable tester image so package versions and the test
+environment are declared.
+MDT's cockpit policy advises against hosting the suite in the interactive
+devcontainer, while keeping the cockpit available to drive and inspect gates.
+
+A VM-based runner is the stronger alternative when a lane needs its own guest
+kernel and container daemon rather than a nested Docker daemon. A VM separates
+guest process, filesystem, and kernel state from the host containers, but it
+does not eliminate contention for physical CPU, memory, or I/O unless the host
+reserves those resources. CIU and CMRU do not provision that VM in the current
+release flow; the supported CIU route here is tester-unified with DinD. This
+separates host placement evidence (the outer tester-gate receipt) from the
+enrollment assertions.
 
 ## Why `up` and `exec` take one exact selected instance
 

@@ -10,6 +10,21 @@ tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest
 tester-unified/run --workdir run-gate-project -- ./run-gate.py --base BASE_SHA assay-r1
 ```
 
+### Invoking Run-Gate from a CMRU step
+
+When CMRU has already started this image for a declared workflow step, invoke
+the installed console script directly:
+
+```console
+$ run-gate enroll
+```
+
+The image builds the Run-Gate wheel from the repository source and installs it
+into `/opt/tester-venv`; that venv is first on `PATH`. The selected checkout
+provides `run-gate.toml` and the worktree being judged. This console command is
+available to the non-root tester user and does not depend on a script path
+inside the project's directory.
+
 Assay's offline wheel/self-hosting phases can run through the same launcher:
 
 ```bash
